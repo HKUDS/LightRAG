@@ -758,15 +758,27 @@ async def test_get_knowledge_graph_bfs_depth_beats_degree_on_truncation():
 
 
 @pytest.mark.asyncio
-async def test_bfs_hop_ranks_and_caps_in_sql_without_per_level_degree_roundtrip():
+async def test_bfs_hop_ranks_and_caps_in_sql_without_any_degree_roundtrip():
     """Each hop must rank + cap server-side and cost ONE query.
 
     Previously a hop fetched every neighbour (full JSONB properties included),
     then issued a second node_degrees_batch round trip over that whole
     neighbourhood, then ranked and truncated in Python. On a hub that meant
     shipping the entire neighbour set just to discard all but `node_budget` of
-    it. node_degrees_batch must now be called exactly once — for the seed's
-    ordering tie-break — no matter how many levels are walked.
+    it.
+
+    node_degrees_batch must now not be awaited at all. It previously ran once
+    more, after the loop, to fill in the seed's own degree "for the ordering
+    tie-break" — but the seed's degree cannot affect that ordering.
+    get_knowledge_graph sorts on the tuple
+
+        (r["id"] != node_label, depth, -degrees[id], id)
+
+    and the seed wins on both leading elements independently: the first is False
+    only for the seed, and the seed's depth is 0 while every other collected row
+    is at depth >= 1. The comparison therefore short-circuits before the degree
+    element. That round trip also cost an O(deg(seed)) edge enumeration inside
+    node_degrees_batch — a full hub scan for a value no caller reads.
     """
     storage = make_storage()
 
@@ -790,10 +802,10 @@ async def test_bfs_hop_ranks_and_caps_in_sql_without_per_level_degree_roundtrip(
     ):
         rows, degrees = await storage._bfs_frontier("seed", max_depth=3, node_budget=10)
 
-    # Seed only — NOT once per level.
-    degrees_batch.assert_awaited_once_with(["seed"])
-    # Degrees come from the hop query itself.
-    assert degrees == {"a": 9, "b": 4, "c": 1, "seed": 7}
+    # Never — not once per level, and not once more for the seed.
+    degrees_batch.assert_not_awaited()
+    # Degrees come from the hop query itself, and carry no seed entry.
+    assert degrees == {"a": 9, "b": 4, "c": 1}
     assert [r["id"] for r in rows] == ["seed", "a", "b", "c"]
     assert [r["depth"] for r in rows] == [0, 1, 1, 2]
 
@@ -829,15 +841,98 @@ async def test_bfs_hop_cap_never_exceeds_remaining_budget():
     with (
         patch.object(storage, "_fetchrow", new=AsyncMock(return_value=seed_row)),
         patch.object(storage, "_fetch", new=fetch),
-        patch.object(
-            storage, "node_degrees_batch", new=AsyncMock(return_value={"seed": 0})
-        ),
     ):
         await storage._bfs_frontier("seed", max_depth=5, node_budget=1)
 
     # budget 1, seed already collected -> cap 1, and the loop stops after it.
     assert fetch.await_args_list[0].args[5] == 1
     assert fetch.await_count == 1
+
+
+def _bfs_mocks(hop_rows):
+    """Build mocks for the three DB entry points _bfs_frontier can reach.
+
+    Returns (fetchrow, fetch, degrees_batch) so a test can count round trips.
+    """
+    fetchrow = AsyncMock(
+        return_value={"id": "seed", "properties": json.dumps({"entity_id": "seed"})}
+    )
+    fetch = AsyncMock(side_effect=hop_rows)
+    degrees_batch = AsyncMock(return_value={"seed": 99})
+    return fetchrow, fetch, degrees_batch
+
+
+@pytest.mark.asyncio
+async def test_bfs_costs_one_round_trip_per_hop_plus_the_seed_lookup():
+    """Total DB round trips must be max_depth + 1, not max_depth + 2.
+
+    One _fetchrow for the seed row, one _fetch per hop, and nothing else. The
+    trailing node_degrees_batch call for the seed's own degree used to make this
+    max_depth + 2 for every single traversal.
+    """
+    storage = make_storage()
+    hop_rows = [
+        [{"id": "a", "properties": json.dumps({"entity_id": "a"}), "degree": 3}],
+        [{"id": "b", "properties": json.dumps({"entity_id": "b"}), "degree": 2}],
+        [{"id": "c", "properties": json.dumps({"entity_id": "c"}), "degree": 1}],
+    ]
+    fetchrow, fetch, degrees_batch = _bfs_mocks(hop_rows)
+
+    with (
+        patch.object(storage, "_fetchrow", new=fetchrow),
+        patch.object(storage, "_fetch", new=fetch),
+        patch.object(storage, "node_degrees_batch", new=degrees_batch),
+    ):
+        await storage._bfs_frontier("seed", max_depth=3, node_budget=100)
+
+    assert fetchrow.await_count == 1
+    assert fetch.await_count == 3
+    degrees_batch.assert_not_awaited()
+    total = fetchrow.await_count + fetch.await_count + degrees_batch.await_count
+    assert total == 3 + 1, f"expected max_depth + 1 round trips, got {total}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "max_depth,hop_rows,expected_fetches",
+    [
+        # No hop ever runs: the while condition fails before the first query.
+        pytest.param(0, [], 0, id="max_depth_0"),
+        # A seed whose neighbours are all already visited (or has none) — the
+        # hop query runs but returns zero rows, so no candidate row exists.
+        pytest.param(3, [[]], 1, id="isolated_seed"),
+    ],
+)
+async def test_bfs_degenerate_seeds_issue_no_degree_round_trip(
+    max_depth, hop_rows, expected_fetches
+):
+    """Degenerate seeds must not fall back to a degree round trip either.
+
+    These are the two cases where the seed's degree cannot be carried on a hop
+    row: with max_depth=0 no hop query is issued at all, and an isolated seed's
+    hop returns no rows to attach it to. A self-loop-only seed lands in the
+    second case while having a non-zero degree (self-loops count twice), so any
+    scheme that recovers the seed degree from hop output would be wrong here.
+    Not computing it at all is well-defined in both.
+    """
+    storage = make_storage()
+    fetchrow, fetch, degrees_batch = _bfs_mocks(hop_rows)
+
+    with (
+        patch.object(storage, "_fetchrow", new=fetchrow),
+        patch.object(storage, "_fetch", new=fetch),
+        patch.object(storage, "node_degrees_batch", new=degrees_batch),
+    ):
+        rows, degrees = await storage._bfs_frontier(
+            "seed", max_depth=max_depth, node_budget=10
+        )
+
+    assert fetchrow.await_count == 1
+    assert fetch.await_count == expected_fetches
+    degrees_batch.assert_not_awaited()
+    # The seed is still returned as a row; only its degree entry is absent.
+    assert [r["id"] for r in rows] == ["seed"]
+    assert degrees == {}
 
 
 # ---------------------------------------------------------------------------

@@ -15,12 +15,8 @@ import pytest
 from lightrag.parser.markdown import parser as md_parser
 from lightrag.parser.markdown.parser import NativeMarkdownParser
 
-# A 1x1 transparent PNG.
-_PNG_BYTES = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06"
-    b"\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05"
-    b"\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
-)
+from tests.parser.markdown.conftest import PNG_BYTES as _PNG_BYTES
+
 _URL = "http://host/y.png"
 _MD = f"# H\n\n![x]({_URL})\n"
 
@@ -201,6 +197,134 @@ def test_svg_cached_as_png_and_reused_without_rasterizing(tmp_path, monkeypatch)
     monkeypatch.setattr(cairosvg, "svg2png", _boom)
     _, warnings, meta = _extract(p, src, parsed)
     assert warnings.get("images_cache_hit") == 1
+
+
+def test_a_failed_required_parse_persists_downloads_for_the_retry(
+    tmp_path, monkeypatch
+):
+    """Fix-proof for the re-download loop: with DOWNLOAD_REQUIRED and a request
+    budget smaller than the image count, attempt 1 dies over budget AFTER
+    downloading what it could. Before the fix its bundle had no manifest, so
+    attempt 2 wiped it, re-downloaded the same image and failed identically —
+    forever. With the failure-path flush, attempt 2 serves image A from the
+    cache (a hit costs no request budget), spends its one request on image B,
+    and succeeds.
+    """
+    counter = {"n": 0}
+
+    def _fake(self, src):
+        counter["n"] += 1
+        return (_PNG_BYTES + src.encode(), "png")
+
+    monkeypatch.setattr(md_parser._MarkdownImageResolver, "_download", _fake)
+    monkeypatch.setenv("NATIVE_MD_IMAGE_DOWNLOAD_REQUIRED", "true")
+    monkeypatch.setenv("NATIVE_MD_IMAGE_MAX_REQUESTS", "1")
+    p = NativeMarkdownParser()
+    src, parsed = _make_doc(
+        tmp_path, text="# H\n\n![a](http://host/a.png)\n\n![b](http://host/b.png)\n"
+    )
+
+    with pytest.raises(md_parser._ImageRequestBudgetExceeded):
+        _extract(p, src, parsed)
+    assert counter["n"] == 1  # image A was downloaded before the budget stop
+
+    _wipe_parsed(parsed)
+    _, warnings, meta = _extract(p, src, parsed)
+    assert warnings.get("images_cache_hit") == 1  # A came from the bundle
+    assert counter["n"] == 2  # only B hit the network on the retry
+    assert len(meta["md_assets"]) == 2
+
+
+def test_failure_flush_keeps_prior_entries_the_aborted_run_never_reached(tmp_path):
+    """flush(prune=False) must union the prior valid bundle into the manifest:
+    pruning keys on the entries referenced THIS run, and an aborted run never
+    referenced the images it did not get to."""
+    from lightrag.parser.markdown.raw_cache import (
+        NativeImageRawCache,
+        native_md_options_signature,
+    )
+
+    src = tmp_path / "doc.md"
+    src.write_text(_MD)
+    raw = tmp_path / "doc.md.native_raw"
+    sig = native_md_options_signature()
+
+    def _cache() -> NativeImageRawCache:
+        cache = NativeImageRawCache(
+            raw, source_path=src, options_signature=sig, force_reparse=False
+        )
+        cache.load()
+        return cache
+
+    first = _cache()
+    first.put("http://host/a.png", b"A" * 8, "png")
+    first.put("http://host/b.png", b"B" * 8, "png")
+    first.flush()
+
+    # A later aborted run reaches only a NEW image before dying: neither prior
+    # entry is revisited, and neither may be pruned.
+    aborted = _cache()
+    aborted.put("http://host/c.png", b"C" * 8, "png")
+    aborted.flush(prune=False)
+
+    retry = _cache()
+    assert retry.get("http://host/a.png") == (b"A" * 8, "png")
+    assert retry.get("http://host/b.png") == (b"B" * 8, "png")
+    assert retry.get("http://host/c.png") == (b"C" * 8, "png")
+
+
+def test_an_aborted_first_parse_still_persists_its_downloads(tmp_path):
+    from lightrag.parser.markdown.raw_cache import (
+        NativeImageRawCache,
+        native_md_options_signature,
+    )
+
+    src = tmp_path / "doc.md"
+    src.write_text(_MD)
+    raw = tmp_path / "doc.md.native_raw"
+    sig = native_md_options_signature()
+
+    aborted = NativeImageRawCache(
+        raw, source_path=src, options_signature=sig, force_reparse=False
+    )
+    aborted.load()  # no manifest yet: the bundle is invalid
+    aborted.put(_URL, _PNG_BYTES, "png")
+    aborted.flush(prune=False)
+
+    retry = NativeImageRawCache(
+        raw, source_path=src, options_signature=sig, force_reparse=False
+    )
+    retry.load()
+    assert retry.get(_URL) == (_PNG_BYTES, "png")
+
+
+def test_an_over_budget_cache_hit_warns_once(tmp_path, monkeypatch, caplog):
+    """The cache-hit degrade path used to warn twice for the same image (once
+    in _local, once in _budget_degraded) while the mid-read path warned once."""
+    import logging
+
+    from lightrag.utils import logger as lightrag_logger
+
+    _patch_download(monkeypatch)
+    p = NativeMarkdownParser()
+    src, parsed = _make_doc(tmp_path)
+    _extract(p, src, parsed)  # populate the cache
+
+    _wipe_parsed(parsed)
+    _forbid_download(monkeypatch)
+    # Tighter than the cached image: the hit is refused by the byte budget
+    # (budgets are excluded from the options signature, so the bundle stays
+    # valid) and degrades to an external link.
+    monkeypatch.setenv("NATIVE_MD_IMAGE_MAX_TOTAL_BYTES", "1")
+    monkeypatch.setattr(lightrag_logger, "propagate", True)
+    with caplog.at_level(logging.WARNING, logger="lightrag"):
+        _, warnings, _ = _extract(p, src, parsed)
+
+    assert warnings.get("images_byte_budget_exceeded") == 1
+    budget_warnings = [
+        r for r in caplog.records if "budget exhausted" in r.getMessage()
+    ]
+    assert len(budget_warnings) == 1
 
 
 def test_native_raw_is_sibling_and_survives_parsed_rmtree(tmp_path, monkeypatch):

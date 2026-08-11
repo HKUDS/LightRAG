@@ -1093,8 +1093,8 @@ class PGTableGraphStorage(BaseGraphStorage):
         the server-side edge enumeration: ranking a hub's neighbours by degree
         requires visiting that hub's edges, which is a lower bound for any
         correct top-k-by-degree. Those scans are index-driven (see the UNION
-        note below) and no longer duplicated by a second node_degrees_batch
-        round trip.
+        note below) and are the only degree work the traversal does: there is no
+        node_degrees_batch round trip left, per hop or after the loop.
 
         Within each depth level the highest-degree unvisited neighbours are
         admitted first, so when the budget cuts a level the retained nodes are
@@ -1102,8 +1102,16 @@ class PGTableGraphStorage(BaseGraphStorage):
         prior recursive CTE (which degree-sorted the full reachable set before
         truncating). Returns ``(rows, degrees)``: rows are shaped like the
         wildcard path ({"id", "properties", "depth"}) and degrees maps every
-        collected node id to its full-graph degree, so the caller reuses them for
-        the final seed-pinned ordering instead of recomputing node_degrees_batch.
+        collected node id **except the seed** to its full-graph degree, so the
+        caller reuses them for the final ordering instead of recomputing
+        node_degrees_batch. The seed is excluded because that ordering cannot
+        reach its degree: the sort key is ``(id != node_label, depth, -degree,
+        id)`` and the seed wins on *both* leading elements independently — the
+        pin term is False only for the seed, and its depth is 0 while every
+        other collected row is at depth >= 1. So the comparison short-circuits
+        before the degree element no matter which of the two is relaxed, and the
+        seed's own degree cannot change the result. Callers must therefore read
+        this mapping with ``.get(id, 0)``.
         """
         seed_row = await self._fetchrow(
             "SELECT id, properties FROM lightrag_graph_nodes "
@@ -1210,11 +1218,11 @@ class PGTableGraphStorage(BaseGraphStorage):
                 }
                 next_frontier.append(nid)
             frontier = next_frontier
-        # The seed is never a candidate (it seeds the frontier), so its degree
-        # was never gathered in the loop — fetch it once for the ordering
-        # tie-break. Isolated seeds (no neighbours) also land here.
-        if seed not in degrees:
-            degrees[seed] = (await self.node_degrees_batch([seed])).get(seed, 0)
+        # No trailing round trip for the seed's own degree: get_knowledge_graph
+        # pins the seed at position 0, so that degree can never be compared (see
+        # the Returns note above). Fetching it cost every traversal one round
+        # trip, plus an O(deg(seed)) edge enumeration inside node_degrees_batch,
+        # to produce a value no caller reads.
         return list(collected.values()), degrees
 
     async def get_knowledge_graph(
@@ -1265,6 +1273,8 @@ class PGTableGraphStorage(BaseGraphStorage):
             # which the degree-aware truncation below orders on.
             # Degrees were gathered during the BFS (see _bfs_frontier) — reused
             # below instead of a second full node_degrees_batch over the set.
+            # They cover every collected node except the seed, which the sort
+            # below pins ahead of the degree term (hence the .get default).
             node_rows, degrees = await self._bfs_frontier(
                 node_label, max_depth, node_budget
             )
@@ -1274,7 +1284,9 @@ class PGTableGraphStorage(BaseGraphStorage):
 
         # Sort before truncation so the retained set is deterministic AND faithful
         # to the BFS-level semantics of the reference backends (networkx/AGE):
-        #   1. seed pinned to position 0 (exact-label queries),
+        #   1. seed pinned to position 0 (exact-label queries) — because term 1
+        #      already separates it from every other row, the seed's own degree is
+        #      never compared, which is why _bfs_frontier does not fetch it,
         #   2. shallower BFS depth first — never drop a near node for a distant one,
         #      which keeps the truncated subgraph connected to the seed,
         #   3. higher degree first within a depth level (matches networkx),

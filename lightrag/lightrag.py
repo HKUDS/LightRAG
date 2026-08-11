@@ -186,6 +186,9 @@ from lightrag.utils import (
     normalize_source_ids_limit_method,
     normalize_string_list,
     run_in_chunking_executor,
+    TokenLimitTruncationTally,
+    LLM_TRUNCATION_METADATA_KEY,
+    merge_truncation_metadata,
 )
 from lightrag.types import KnowledgeGraph
 from dotenv import load_dotenv
@@ -2078,6 +2081,38 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 # BEFORE any data store is touched (discoverability before
                 # mutation). doc_status backends persist on upsert.
                 now_iso = datetime.now(timezone.utc).isoformat()
+                # Pre-operation llm_truncation snapshot (None = key absent).
+                # Captured on the FIRST attempt, while ``existing_row`` is
+                # still the untouched base document; a resume MUST reuse the
+                # journaled value instead of re-reading the row, because the
+                # failed attempt's terminal write already stamped its own
+                # tally there. This snapshot is what the terminal writes merge
+                # the operation tally INTO, and what a rollback restores.
+                if existing_journal and "prior_llm_truncation" in existing_journal:
+                    prior_truncation = existing_journal["prior_llm_truncation"]
+                elif mode == "patch":
+                    prior_truncation = ((existing_row or {}).get("metadata") or {}).get(
+                        LLM_TRUNCATION_METADATA_KEY
+                    )
+                else:
+                    # create: the document is born with this operation, so
+                    # there is nothing prior to preserve or restore.
+                    prior_truncation = None
+                # Truncation accumulated by PREVIOUS attempts of this
+                # operation. Truncated extraction responses are never cached,
+                # so a resume re-runs those calls and can get a clean sample —
+                # but the failed attempt's partial graph mutations stay (the
+                # resume is additive, it never purges them). Without this
+                # carry, a clean resume's terminal write would merge only
+                # snapshot + its own empty tally and silently drop the record
+                # of the truncated output still living in the graph. Captured
+                # ONCE from the journal as loaded — the applying/FAILED writes
+                # below fold the current attempt into the journal copy, and
+                # recomputing from that copy would double-count (the merge
+                # sums event counts exactly).
+                carried_operation_truncation = (existing_journal or {}).get(
+                    "operation_llm_truncation"
+                )
                 journal: dict[str, Any] = {
                     "schema_version": 1,
                     "operation_id": operation_id,
@@ -2089,6 +2124,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     "relation_pairs": (existing_journal or {}).get(
                         "relation_pairs", []
                     ),
+                    "prior_llm_truncation": prior_truncation,
+                    "operation_llm_truncation": carried_operation_truncation,
                     "created_at": (existing_journal or {}).get("created_at") or now_iso,
                     "updated_at": now_iso,
                 }
@@ -2100,6 +2137,85 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     full_text=full_text,
                     file_path=file_path,
                 )
+                # Operation-scoped truncation record, fed by both KG stages
+                # below and stamped onto whichever terminal transition this
+                # operation reaches — the same durable evidence the normal
+                # pipeline writes, for the path that does not go through it.
+                truncation_tally = TokenLimitTruncationTally()
+
+                def _operation_truncation_record() -> dict[str, Any] | None:
+                    """Previous attempts' accumulated payload + this attempt.
+
+                    Always recomputed from ``carried_operation_truncation``
+                    (previous attempts ONLY), never from the journal copy the
+                    applying write already folded this attempt into — the
+                    merge sums event counts exactly, so folding twice would
+                    double-count.
+                    """
+                    return merge_truncation_metadata(
+                        carried_operation_truncation,
+                        truncation_tally.as_metadata(),
+                    )
+
+                def _terminal_truncation_kwargs() -> dict[str, Any]:
+                    """Set-or-drop arguments for a terminal status write.
+
+                    The operation-accumulated record (every attempt of this
+                    operation, current one included) is merged into the
+                    journal's pre-operation snapshot — never into the live
+                    row, whose value after a failed attempt is that attempt's
+                    own stamp and would double-count across resumes. Replace
+                    semantics with an explicit drop: when neither the base run
+                    nor any attempt of this operation truncated, the key must
+                    come OFF the row (the live row may still carry a dead
+                    attempt's stamp).
+                    """
+                    merged = merge_truncation_metadata(
+                        journal.get("prior_llm_truncation"),
+                        _operation_truncation_record(),
+                    )
+                    if merged is None:
+                        return {"metadata_drop": (LLM_TRUNCATION_METADATA_KEY,)}
+                    return {"metadata_extra": {LLM_TRUNCATION_METADATA_KEY: merged}}
+
+                truncation_persist_lock = asyncio.Lock()
+
+                async def _journal_truncation_write_ahead(
+                    pending: TokenLimitTruncationTally,
+                ) -> None:
+                    """Journal a truncation event BEFORE the mutation it warns about.
+
+                    Awaited by the merge's summary path between recording a
+                    truncated summary and upserting the object that carries
+                    it, so even a hard crash (no FAILED write) cannot leave
+                    truncated output in the graph with no journaled evidence.
+                    ``pending`` is the merge-local summary tally: its events
+                    reach the operation tally only when the merge publishes,
+                    which happens after every hook call has completed (a
+                    failing phase drains its sibling tasks first) — so the two
+                    sides of this merge are disjoint, and the later FAILED or
+                    terminal recompute overwrites this snapshot with a
+                    superset. A hook failure fails the recording entity or
+                    relation itself — fail-closed into the normal FAILED
+                    path. Fires once per truncation event (rare); serialized
+                    because sibling merges can record concurrently.
+                    """
+                    nonlocal status_row
+                    async with truncation_persist_lock:
+                        status_row = await self._upsert_custom_chunk_status(
+                            doc_key,
+                            DocStatus.PROCESSING,
+                            base_row=status_row,
+                            journal={
+                                **journal,
+                                "operation_llm_truncation": merge_truncation_metadata(
+                                    _operation_truncation_record(),
+                                    pending.as_metadata(),
+                                ),
+                                "updated_at": datetime.now(timezone.utc).isoformat(),
+                            },
+                        )
+
                 try:
                     # Stage 1 (barrier): persist chunks BEFORE extraction.
                     # Extraction records per-chunk LLM cache references
@@ -2153,7 +2269,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # extraction, never call the LLM again and merge a
                     # different result into a partially applied operation.
                     chunk_results = await self._process_extract_entities(
-                        inserting_chunks, pipeline_status, pipeline_status_lock
+                        inserting_chunks,
+                        pipeline_status,
+                        pipeline_status_lock,
+                        truncation_tally=truncation_tally,
                     )
                     staging_flush = [
                         self.text_chunks,
@@ -2166,9 +2285,32 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
                     # Persist the complete candidate set in the journal BEFORE
                     # merging — the write-ahead anchor for this operation.
+                    #
+                    # UNIONED with the previous attempt's candidates (carried
+                    # into ``journal`` at the prepared write), never replaced:
+                    # truncated extraction responses are deliberately excluded
+                    # from the LLM cache, so a resume re-runs those calls and
+                    # can extract a DIFFERENT sample. A previous attempt whose
+                    # Stage 3 merge partially applied has already written ITS
+                    # candidates into the graph; dropping them here would strand
+                    # exactly those objects — the journal is this operation's
+                    # only recovery anchor and must keep naming the complete
+                    # superset across every attempt. Union is safe on the
+                    # consuming side by contract: candidates are a superset,
+                    # and purge/commit treat absent objects as no-ops.
                     candidate_entities, candidate_relations = (
                         collect_kg_merge_candidates(chunk_results or [])
                     )
+                    candidate_entities |= {
+                        name
+                        for name in (journal.get("entity_names") or [])
+                        if isinstance(name, str) and name
+                    }
+                    candidate_relations |= {
+                        (pair[0], pair[1])
+                        for pair in (journal.get("relation_pairs") or [])
+                        if isinstance(pair, (list, tuple)) and len(pair) == 2
+                    }
                     journal = {
                         **journal,
                         "phase": "applying",
@@ -2176,6 +2318,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         "relation_pairs": [
                             list(pair) for pair in sorted(candidate_relations)
                         ],
+                        # Write-ahead for the truncation record too. The
+                        # invariant: any truncation event whose subject's
+                        # graph mutation has landed is already journaled —
+                        # extraction-stage events by this write (which
+                        # precedes ALL merge mutation), summary-stage events
+                        # by _journal_truncation_write_ahead (awaited before
+                        # the object carrying the truncated summary is
+                        # upserted).
+                        "operation_llm_truncation": _operation_truncation_record(),
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                     }
                     status_row = await self._upsert_custom_chunk_status(
@@ -2212,17 +2363,34 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             entity_chunks_storage=self.entity_chunks,
                             relation_chunks_storage=self.relation_chunks,
                             file_path=file_path,
+                            truncation_tally=truncation_tally,
+                            truncation_write_ahead=_journal_truncation_write_ahead,
                         )
 
-                    # ---- Commit: flush ALL derived stores, union the patch
-                    # into the base document's anchors, then write PROCESSED
-                    # (the commit record) last with the journal cleared.
+                    # ---- Commit: flush ALL derived stores, union the
+                    # accumulated candidates into the document's anchors, then
+                    # write PROCESSED (the commit record) last with the
+                    # journal cleared.
                     await self._insert_done()
 
-                    if mode == "patch":
+                    # Patch mode AND resumed creates, not patch alone. Patch
+                    # merges pass None for the anchor storages, so this union
+                    # is their only anchor write. Create merges DO write
+                    # anchors in Phase 0 — but from the current attempt's
+                    # chunk_results only (replace semantics, correct for the
+                    # pipeline's whole-document reprocess). A resumed create
+                    # can extract a DIFFERENT sample (truncated responses are
+                    # never cached), and the PROCESSED write below clears the
+                    # journal — without this union, first-attempt-only graph
+                    # objects would be named nowhere durable and stranded
+                    # from later document purges. A first-attempt create
+                    # skips it: Phase 0 already wrote exactly these
+                    # candidates.
+                    if mode == "patch" or resume:
                         await self._union_doc_recovery_anchors(
                             doc_key, candidate_entities, candidate_relations
                         )
+                    if mode == "patch":
                         base_chunks = [
                             cid
                             for cid in ((status_row or {}).get("chunks_list") or [])
@@ -2240,6 +2408,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         base_row=status_row,
                         journal=None,
                         chunks_list=final_chunks_list,
+                        **_terminal_truncation_kwargs(),
                     )
                 except BaseException as op_exc:
                     # Journal is durable: record FAILED, keep the journal and
@@ -2251,6 +2420,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         failed_journal = {
                             **journal,
                             "phase": "failed",
+                            # Recompute — overwrites the applying write's and
+                            # the write-ahead hook's copies (which already
+                            # folded this attempt in) with the same
+                            # carried-plus-current merge; the tally has
+                            # absorbed the merge's summary events by now, so
+                            # this is always a superset of those snapshots.
+                            "operation_llm_truncation": (
+                                _operation_truncation_record()
+                            ),
                             "updated_at": datetime.now(timezone.utc).isoformat(),
                         }
                         await self._upsert_custom_chunk_status(
@@ -2259,6 +2437,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             base_row=status_row,
                             journal=failed_journal,
                             error_msg=str(op_exc)[:500],
+                            **_terminal_truncation_kwargs(),
                         )
                     except Exception as bookkeeping_error:
                         logger.error(
@@ -2423,6 +2602,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         file_path: str | None = None,
         chunks_list: list[str] | None = None,
         error_msg: str | None = None,
+        metadata_extra: dict[str, Any] | None = None,
+        metadata_drop: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         """Upsert the doc_status row for a custom-chunk operation.
 
@@ -2477,6 +2658,20 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             payload["metadata"].pop(CUSTOM_CHUNK_PATCH_METADATA_KEY, None)
         else:
             payload["metadata"][CUSTOM_CHUNK_PATCH_METADATA_KEY] = journal
+
+        # ``base_row``'s metadata is copied verbatim above, so keys the caller
+        # does not name are left standing — the opposite default from the
+        # pipeline's whitelist-rebuilt transition metadata, and the right one
+        # here because a patch ADDS to a base document whose earlier records
+        # still describe live graph objects. A caller that must retire a key
+        # (rollback restoring "no truncation ever happened") therefore needs
+        # ``metadata_drop``: as with doc_status_transition_metadata, passing
+        # None/empty via ``metadata_extra`` would persist that value rather
+        # than remove the key. ``metadata_drop`` wins over ``metadata_extra``.
+        if metadata_extra:
+            payload["metadata"].update(metadata_extra)
+        for key in metadata_drop:
+            payload["metadata"].pop(key, None)
 
         if error_msg is not None:
             payload["error_msg"] = error_msg
@@ -2795,6 +2990,23 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             for cid in ((row or {}).get("chunks_list") or [])
             if isinstance(cid, str) and cid and cid not in staged_set
         ]
+        # The FAILED row this restore copies from carries the failed attempt's
+        # llm_truncation stamp, describing extractions the purge above just
+        # removed — restoring it verbatim would leave a clean base document
+        # permanently advertising truncation from rolled-back content. The
+        # journal's pre-operation snapshot is the authority: reinstate it, or
+        # drop the key when the base never truncated. A journal written before
+        # the snapshot existed has no key and changes nothing (its attempts
+        # never stamped a tally either).
+        truncation_restore: dict[str, Any] = {}
+        if "prior_llm_truncation" in journal:
+            prior_truncation = journal["prior_llm_truncation"]
+            if prior_truncation is None:
+                truncation_restore["metadata_drop"] = (LLM_TRUNCATION_METADATA_KEY,)
+            else:
+                truncation_restore["metadata_extra"] = {
+                    LLM_TRUNCATION_METADATA_KEY: prior_truncation
+                }
         await self._upsert_custom_chunk_status(
             doc_id,
             DocStatus.PROCESSED,
@@ -2802,6 +3014,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             journal=None,
             chunks_list=cleaned_chunks,
             error_msg="",
+            **truncation_restore,
         )
 
     async def _persist_custom_chunk_recovery_warning(
@@ -2999,7 +3212,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         await self._flush_storages([self.full_entities, self.full_relations])
 
     async def _process_extract_entities(
-        self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
+        self,
+        chunk: dict[str, Any],
+        pipeline_status=None,
+        pipeline_status_lock=None,
+        truncation_tally: TokenLimitTruncationTally | None = None,
     ) -> list:
         try:
             chunk_results = await extract_entities(
@@ -3009,6 +3226,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 pipeline_status_lock=pipeline_status_lock,
                 llm_response_cache=self.llm_response_cache,
                 text_chunks_storage=self.text_chunks,
+                truncation_tally=truncation_tally,
             )
             return chunk_results
         except Exception as e:
@@ -3303,6 +3521,21 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         field=f"relationships[{index}].tgt_id",
                     )
                 )
+                # Compared after normalization, because the normalized values
+                # are the ones written as the graph edge below: two spellings
+                # that canonicalize to the same name are the same self-loop.
+                # Extraction drops self-loops (operate.py) and amerge_entities
+                # refuses to form one, so accepting them here would make this
+                # the only path that puts src == tgt into the graph.
+                if (
+                    normalized_relationship_data["src_id"]
+                    == normalized_relationship_data["tgt_id"]
+                ):
+                    raise ValueError(
+                        f"Custom KG relationships[{index}] is a self-loop on "
+                        f"'{normalized_relationship_data['src_id']}': src_id and "
+                        "tgt_id must be different entities"
+                    )
                 normalized_relationships.append(normalized_relationship_data)
 
             # Insert chunks into vector storage

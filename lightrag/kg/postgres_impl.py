@@ -6170,49 +6170,23 @@ class PGDocStatusStorage(DocStatusStorage):
         result = await self.db.query(sql, list(params.values()), True)
 
         docs_by_track_id = {}
-        for element in result:
-            # Parse chunks_list JSON string back to list
-            chunks_list = element.get("chunks_list", [])
-            if isinstance(chunks_list, str):
-                try:
-                    chunks_list = json.loads(chunks_list)
-                except json.JSONDecodeError:
-                    chunks_list = []
-
-            # Parse metadata JSON string back to dict
-            metadata = element.get("metadata", {})
-            if isinstance(metadata, str):
-                try:
-                    metadata = json.loads(metadata)
-                except json.JSONDecodeError:
-                    metadata = {}
-            # Ensure metadata is a dict
-            if not isinstance(metadata, dict):
-                metadata = {}
-
-            # Safe handling for file_path
-            file_path = element.get("file_path")
-            if file_path is None:
-                file_path = "no-file-path"
-
-            # Convert datetime objects to ISO format strings with timezone info
-            created_at = self._format_datetime_with_timezone(element["created_at"])
-            updated_at = self._format_datetime_with_timezone(element["updated_at"])
-
-            docs_by_track_id[element["id"]] = DocProcessingStatus(
-                content_summary=element["content_summary"],
-                content_length=element["content_length"],
-                status=element["status"],
-                created_at=created_at,
-                updated_at=updated_at,
-                chunks_count=element["chunks_count"],
-                file_path=file_path,
-                chunks_list=chunks_list,
-                track_id=element.get("track_id"),
-                metadata=metadata,
-                error_msg=element.get("error_msg"),
-                content_hash=element.get("content_hash"),
-            )
+        for element in result or []:
+            try:
+                docs_by_track_id[element["id"]] = (
+                    self._pg_doc_processing_status_from_row(element)
+                )
+            except (KeyError, TypeError) as e:
+                # Relaxed skip-and-log, matching get_docs_by_statuses: this
+                # path had no handler at all, so one row with a missing or
+                # renamed column (schema drift after an upgrade/rollback)
+                # aborted the listing for every sibling document sharing the
+                # track_id.
+                doc_id_hint = element.get("id", "<unknown>") if element else "<unknown>"
+                logger.error(
+                    f"[{self.workspace}] Skipping document '{doc_id_hint}' — "
+                    f"required field missing or wrong type while parsing DB row: {e!r}"
+                )
+                continue
 
         return docs_by_track_id
 
@@ -8635,7 +8609,25 @@ class PGGraphStorage(BaseGraphStorage):
             # that is mostly an edge target is not under-ranked and dropped on
             # truncation. LEFT JOIN from the base vertex table + COALESCE keeps
             # isolated (degree-0) nodes, matching the previous OPTIONAL MATCH
-            # behaviour when the graph is not truncated. Stable tie-break on id.
+            # behaviour when the graph is not truncated.
+            #
+            # KNOWN DEVIATION from the BaseGraphStorage tie-break, which is on
+            # the label: this ranks on v.id, AGE's internal vertex id. Ordering
+            # on the entity_id is what the contract asks for and it was measured
+            # too expensive here. Selecting only v.id lets the vertex scan be
+            # index-only (entity_p_idx); the label lives in `properties`, so
+            # sorting on it forces a full heap read -- ~1.5x buffers and ~25%
+            # wall clock on a 200k-vertex / 600k-edge graph. No index removes
+            # that: the ORDER BY leads with an aggregate computed from the edge
+            # table, so no index can supply the ordering, and a covering index
+            # on (id, label) is not chosen even with enable_seqscan off.
+            #
+            # What that costs: v.id is an insertion counter, so this view is
+            # stable for a given database but still varies with ingestion order
+            # ACROSS databases holding the same graph. get_popular_labels on
+            # this backend does order by label, so the entity picker and the
+            # graph view can disagree at the same cutoff. Revisit if AGE ever
+            # gains a cheap way to read entity_id without visiting the heap.
             query_nodes = f"""
                 WITH node_degrees AS (
                     SELECT node_id, COUNT(*) AS degree

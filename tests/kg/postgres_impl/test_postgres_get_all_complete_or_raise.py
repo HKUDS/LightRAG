@@ -68,8 +68,8 @@ async def test_get_all_edges_raises_on_corrupt_properties():
     storage._query = AsyncMock(
         return_value=[
             {
-                "source": '"ACME"',
-                "target": '"ALICE"',
+                "source": "ACME",
+                "target": "ALICE",
                 "properties": '{"source_id": "chunk-1"',
             },
         ]
@@ -83,18 +83,34 @@ async def test_get_all_edges_raises_on_corrupt_properties():
 
 @pytest.mark.asyncio
 async def test_get_all_edges_keeps_source_id_attribution():
+    # get_all_edges() projects each endpoint with
+    # ``agtype_access_operator(props, '"entity_id"')::text``. The ``::text`` cast
+    # on an agtype SCALAR returns its raw string content, so endpoints arrive as
+    # plain entity_ids ('ACME', not '"ACME"') -- identical to get_all_nodes() and
+    # every other backend. A surrounding double quote here is therefore part of
+    # the id, never an AGE serialization artifact to strip. The mock inputs mirror
+    # that real form (verified end-to-end against AGE 1.7.0 and 1.8.0); a quoted
+    # mock would encode a contract the backend does not actually produce.
     storage = make_graph_storage()
     storage._query = AsyncMock(
         return_value=[
             {
-                "source": '"ACME"',
-                "target": '"ALICE"',
+                "source": "ACME",
+                "target": "ALICE",
                 "properties": '{"source_id": "chunk-1", "weight": 1.0}',
             },
             {
-                "source": '"ACME"',
-                "target": '"BOB"',
+                "source": "ACME",
+                "target": "BOB",
                 "properties": {"source_id": "chunk-2", "weight": 1.0},
+            },
+            {
+                # An id whose double quotes are part of the name (survives
+                # normalize_entity_name because of the inner quote) must pass
+                # through verbatim, not be stripped.
+                "source": '"Al"ice"',
+                "target": "ACME",
+                "properties": {"source_id": "chunk-3", "weight": 1.0},
             },
         ]
     )
@@ -102,8 +118,10 @@ async def test_get_all_edges_keeps_source_id_attribution():
     edges = await storage.get_all_edges()
 
     assert edges[0]["source_id"] == "chunk-1"
-    assert edges[0]["source"] == '"ACME"'
-    assert edges[0]["target"] == '"ALICE"'
+    assert edges[0]["source"] == "ACME"
+    assert edges[0]["target"] == "ALICE"
     # Already-parsed dict properties pass through unchanged.
     assert edges[1]["source_id"] == "chunk-2"
-    assert edges[1]["target"] == '"BOB"'
+    assert edges[1]["target"] == "BOB"
+    # A quote that is part of the id is preserved, not treated as a cast artifact.
+    assert edges[2]["source"] == '"Al"ice"'

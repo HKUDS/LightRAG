@@ -326,7 +326,6 @@ class _Runtime:
     def __init__(self, llm):
         self.engine_params = {"smart_heading": True}
         self.llm_invoke = llm
-        self.cancel_event = None
 
 
 def _make_llm(title_responses: dict[str, dict], counter: list | None = None):

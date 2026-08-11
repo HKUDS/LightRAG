@@ -501,6 +501,70 @@ async def test_get_knowledge_graph_truncation_prefers_high_degree(store):
     assert kg.is_truncated is True
 
 
+@pytest.mark.asyncio
+async def test_get_knowledge_graph_seed_leads_and_survives_truncation(store):
+    """The seed leads the result and survives truncation on its own merit.
+
+    _bfs_frontier deliberately does not fetch the seed's degree, so `degrees`
+    carries no entry for it and the ordering falls back to `.get(seed, 0)`.
+    This is the adversarial shape for that: the seed has the LOWEST real degree
+    in the graph, and the budget forces a cut. If the degree term ever preceded
+    the pin/depth terms, the seed would sort last on a 0 default and be the
+    first row dropped. Only a live DB proves it, because the neighbour degrees
+    here come from the hop query's real aggregate rather than a mock.
+    """
+    for x in ("seedlow", "big", "mid"):
+        await store.upsert_node(x, _node(x))
+    await store.upsert_edge("seedlow", "big", _edge())
+    await store.upsert_edge("seedlow", "mid", _edge())
+    # seedlow degree 2; boost the neighbours well past it (extras sit at depth 2)
+    for i in range(6):
+        await store.upsert_edge("big", f"bx{i}", _edge())
+    for i in range(3):
+        await store.upsert_edge("mid", f"mx{i}", _edge())
+
+    kg = await store.get_knowledge_graph("seedlow", max_depth=1, max_nodes=2)
+
+    assert kg.nodes[0].id == "seedlow", (
+        f"seed must lead regardless of its degree: {[n.id for n in kg.nodes]}"
+    )
+    # Budget 2 = seed + the single highest-degree neighbour.
+    assert [n.id for n in kg.nodes] == ["seedlow", "big"]
+    assert kg.is_truncated is True
+
+
+@pytest.mark.asyncio
+async def test_get_knowledge_graph_self_loop_seed(store):
+    """A seed whose only edge is a self-loop still returns cleanly.
+
+    The hop query finds the seed as its own neighbour, the visited anti-join
+    removes it, and the hop yields zero rows. The seed's degree is 2 here (a
+    self-loop counts on both the src and tgt arms) yet nothing in the traversal
+    reads it — the degenerate path that any scheme recovering the seed degree
+    from hop output would get wrong.
+    """
+    await store.upsert_node("loop", _node("loop"))
+    await store.upsert_edge("loop", "loop", _edge())
+    assert await store.node_degree("loop") == 2
+
+    kg = await store.get_knowledge_graph("loop", max_depth=3, max_nodes=10)
+
+    assert [n.id for n in kg.nodes] == ["loop"]
+    assert kg.is_truncated is False
+
+
+@pytest.mark.asyncio
+async def test_get_knowledge_graph_isolated_seed(store):
+    """An isolated seed returns itself, with no degree round trip to fall back on."""
+    await store.upsert_node("lonely", _node("lonely"))
+
+    kg = await store.get_knowledge_graph("lonely", max_depth=3, max_nodes=10)
+
+    assert [n.id for n in kg.nodes] == ["lonely"]
+    assert kg.edges == []
+    assert kg.is_truncated is False
+
+
 # ---------------------------------------------------------------------------
 # Real-PG semantics the mock-based unit tests cannot exercise
 # (FK visibility inside a data-modifying CTE, concurrent JSONB merge, atomic drop)
@@ -866,7 +930,14 @@ async def test_bfs_matches_degree_ordered_reference_traversal(store):
         assert {r["id"]: r["depth"] for r in rows} == expected, (
             f"BFS depths diverged for seed={seed} depth={max_depth} budget={budget}"
         )
+        # Degrees cover every collected node except the seed, whose degree the
+        # traversal deliberately never fetches (the caller pins it ahead of the
+        # degree term — see _bfs_frontier's Returns note). Assert the exclusion
+        # explicitly so a reintroduced round trip shows up as a failure here.
+        assert seed not in degrees, f"seed degree should not be fetched: {seed}"
         for row in rows:
+            if row["id"] == seed:
+                continue
             assert degrees[row["id"]] == degree.get(row["id"], 0), (
                 f"degree diverged for {row['id']}"
             )

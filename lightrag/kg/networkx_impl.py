@@ -1,11 +1,16 @@
 import os
 from collections import deque
 from dataclasses import dataclass
+from operator import itemgetter
 from typing import final
 
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from lightrag.utils import logger, validate_workspace
+from lightrag.utils import (
+    logger,
+    validate_xml_attributes,
+    validate_workspace,
+)
 from lightrag.base import BaseGraphStorage
 import networkx as nx
 from .shared_storage import (
@@ -104,6 +109,59 @@ class NetworkXStorage(BaseGraphStorage):
           ``remove_edges``); each goes through ``_get_graph`` once and
           then operates synchronously on ``self._graph``.
 
+    Attribute validation (why this backend validates, and why the rule is
+    narrower than the caller contract):
+        The ``upsert_*`` methods reject an attribute name or value XML
+        cannot encode (``validate_xml_attributes``) **before** touching
+        ``self._graph``. This backend needs the guard more than the
+        others because of the shape above, not because its callers are
+        less trustworthy: the mutation happens in memory, the
+        serialization that would reject the value happens later in
+        ``index_done_callback``, and nothing rolls the mutation back. One
+        unencodable value therefore stops *all* persistence for the life
+        of the process -- ``write_nx_graph`` serializes the whole graph,
+        so every later flush by any caller re-hits the same failure while
+        reads keep succeeding. Validating first converts that into a
+        failed single write. See GHSA-c922-pw4m-4wcv.
+
+        The rule is exactly "can GraphML encode this", not the portable
+        contract in ``BaseGraphStorage.upsert_node``. ``NaN``, ``inf``
+        and an integer past int64 are all refused by that contract (the
+        Neo4j driver cannot pack them) but round-trip through GraphML
+        unchanged -- so a workspace can already hold one, and every
+        rewrite path spreads a fetched object's stored attributes back
+        into the upsert payload. Enforcing the portable rule here would
+        make those objects permanently unmodifiable; enforcing it where
+        caller input enters (``utils_graph``) costs nothing. The portable
+        bounds are not this backend's to police.
+
+        Names get the same XML rule and nothing more. GraphML writes them
+        into the XML ``attr.name`` field, so an unencodable *name* breaks
+        the write exactly like an unencodable value -- but ``a.b``,
+        ``$set``, ``display-name`` and ``has space`` all round-trip, so
+        refusing those would strand a node whose stored names predate
+        this validation while preventing nothing. Rules about names a
+        backend *interprets* belong to the backends that interpret them
+        (MongoDB's ``$set`` paths).
+
+        The XML name rule is safe to apply to a rewrite payload for the
+        reason a portable rule would not be: a name it rejects can never
+        have been persisted here, because the write that would have
+        stored it failed.
+
+        The batch variants validate the entire batch before applying any
+        of it: rejecting halfway would leave the earlier items in the
+        in-memory graph, which is exactly the partial-mutation state the
+        guard exists to prevent.
+
+        All four methods validate *after* ``_get_graph()`` -- their only
+        await -- and then mutate with nothing awaited in between. That
+        ordering is what makes the guard airtight rather than advisory:
+        by invariant (3) above a synchronous run cannot be preempted, so a
+        caller that retains the mapping it passed in has no window in which
+        to add a value after the check and before ``add_node`` /
+        ``add_edge`` consumes it.
+
     Non-pipeline write paths:
         The pipeline's ``busy`` gate serializes mutation calls reached
         through the document ingestion and purge flows. The following
@@ -120,6 +178,14 @@ class NetworkXStorage(BaseGraphStorage):
               must arrange single-writer serialization the same way the
               pipeline does.
     """
+
+    def _node_context(self, node_id: str) -> str:
+        """Error-message prefix identifying a node write."""
+        return f"[{self.workspace}] node `{node_id}`"
+
+    def _edge_context(self, source_node_id: str, target_node_id: str) -> str:
+        """Error-message prefix identifying an edge write."""
+        return f"[{self.workspace}] edge `{source_node_id}`~`{target_node_id}`"
 
     @staticmethod
     def load_nx_graph(file_name) -> nx.Graph:
@@ -272,8 +338,14 @@ class NetworkXStorage(BaseGraphStorage):
 
         Correctness relies on the class docstring *Lock scope* invariant
         (synchronous networkx ops + single-writer pipeline gate).
+
+        Validates before mutating: see *Attribute validation* in the class
+        docstring.
         """
         graph = await self._get_graph()
+        # Validate *after* the only await, so the check and the mutation are one
+        # synchronous block -- see *Attribute validation* in the class docstring.
+        validate_xml_attributes(node_data, context=self._node_context(node_id))
         graph.add_node(node_id, **node_data)
 
     async def upsert_edge(
@@ -287,8 +359,15 @@ class NetworkXStorage(BaseGraphStorage):
             pipeline must persist explicitly.
 
         Correctness relies on the class docstring *Lock scope* invariant.
+
+        Validates before mutating: see *Attribute validation* in the class
+        docstring.
         """
         graph = await self._get_graph()
+        # See upsert_node: checked after the await, mutated with none in between.
+        validate_xml_attributes(
+            edge_data, context=self._edge_context(source_node_id, target_node_id)
+        )
         graph.add_edge(source_node_id, target_node_id, **edge_data)
 
     async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
@@ -306,6 +385,12 @@ class NetworkXStorage(BaseGraphStorage):
             nodes: List of (node_id, node_data) tuples.
         """
         graph = await self._get_graph()
+        # Validate the whole batch before applying any of it: a rejection halfway
+        # through the apply loop would leave the earlier nodes in the in-memory
+        # graph, which is the partial-mutation state this exists to prevent. Both
+        # loops run after the only await, with none in between.
+        for node_id, node_data in nodes:
+            validate_xml_attributes(node_data, context=self._node_context(node_id))
         for node_id, node_data in nodes:
             graph.add_node(node_id, **node_data)
 
@@ -332,6 +417,9 @@ class NetworkXStorage(BaseGraphStorage):
             edges: List of (source_id, target_id, edge_data) tuples.
         """
         graph = await self._get_graph()
+        # Whole batch first, after the only await -- see upsert_nodes_batch.
+        for src, tgt, edge_data in edges:
+            validate_xml_attributes(edge_data, context=self._edge_context(src, tgt))
         for src, tgt, edge_data in edges:
             graph.add_edge(src, tgt, **edge_data)
 
@@ -535,8 +623,20 @@ class NetworkXStorage(BaseGraphStorage):
         if node_label == "*":
             # Get degrees of all nodes
             degrees = dict(graph.degree())
-            # Sort nodes by degree in descending order and take top max_nodes
-            sorted_nodes = sorted(degrees.items(), key=lambda x: x[1], reverse=True)
+            # Degree descending, then label ascending — same contract as
+            # get_popular_labels / BaseGraphStorage. Stable degree-only sort
+            # kept insertion order on ties, so max_nodes truncation dropped
+            # different isolates depending on insert order.
+            #
+            # Two stable passes rather than one `(-degree, label)` tuple key:
+            # this ranks EVERY node in the graph, and building a tuple per node
+            # costs about 3x the sort (measured 56ms -> 189ms at 500k nodes,
+            # against 74ms for the two passes). The label pass runs FIRST and
+            # the degree pass second — `list.sort` is stable, so equal degrees
+            # keep the label order established by the first pass. Swapping them
+            # silently restores the insertion-order bug.
+            sorted_nodes = sorted(degrees.items(), key=lambda item: str(item[0]))
+            sorted_nodes.sort(key=itemgetter(1), reverse=True)
 
             # Check if graph is truncated
             if len(sorted_nodes) > max_nodes:
@@ -576,8 +676,13 @@ class NetworkXStorage(BaseGraphStorage):
                 while queue and queue[0][1] == current_depth:
                     current_level_nodes.append(queue.popleft())
 
-                # Sort nodes at current depth by degree (highest first)
-                current_level_nodes.sort(key=lambda x: x[2], reverse=True)
+                # Degree descending, then label ascending — matches '*' mode
+                # and get_popular_labels. Degree-only reverse sort is stable and
+                # kept neighbor insertion order on ties at the max_nodes cutoff.
+                # Plain tuple key here, unlike '*' mode: this sorts one depth
+                # level, not the whole graph, so the tuple allocation does not
+                # pay for the two-pass idiom's dependence on sort stability.
+                current_level_nodes.sort(key=lambda x: (-x[2], str(x[0])))
 
                 # Process all nodes at current depth in order of degree
                 for idx, (current_node, depth, degree) in enumerate(
