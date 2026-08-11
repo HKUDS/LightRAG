@@ -39,7 +39,7 @@ import numpy as np
 from dotenv import load_dotenv
 import json_repair
 
-from lightrag.exceptions import ChunkBlockMatchError
+from lightrag.exceptions import ChunkBlockMatchError, EmptyTruncatedResponseError
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
@@ -259,6 +259,57 @@ def parse_optional_float(raw: str | None) -> float | None:
     if not math.isfinite(value):
         raise ValueError(f"expected a finite float, got {raw!r}")
     return value
+
+
+def validate_file_path_security(file_path_str: str, base_dir: Path) -> Optional[Path]:
+    """
+    Validate file path security to prevent Path Traversal attacks.
+
+    Args:
+        file_path_str: The file path string to validate
+        base_dir: The base directory that the file must be within
+
+    Returns:
+        Path: Safe file path (resolved, contained to ``base_dir``) if valid;
+            None if unsafe, malformed, or unresolvable. Does NOT check
+            existence — a returned path is guaranteed inside ``base_dir`` but
+            may not exist; the caller decides what "inside but absent" means.
+    """
+    if not file_path_str or not file_path_str.strip():
+        return None
+
+    try:
+        # Clean the file path string
+        clean_path_str = file_path_str.strip()
+
+        # Check for obvious path traversal patterns before processing
+        # This catches both Unix (..) and Windows (..\) style traversals
+        if ".." in clean_path_str:
+            # Additional check for Windows-style backslash traversal
+            if (
+                "\\..\\" in clean_path_str
+                or clean_path_str.startswith("..\\")
+                or clean_path_str.endswith("\\..")
+            ):
+                return None
+
+        # Normalize path separators (convert backslashes to forward slashes)
+        # This helps handle Windows-style paths on Unix systems
+        normalized_path = clean_path_str.replace("\\", "/")
+
+        # Create path object and resolve it (handles symlinks and relative paths)
+        candidate_path = (base_dir / normalized_path).resolve()
+        base_dir_resolved = base_dir.resolve()
+
+        # Check if the resolved path is within the base directory
+        if not candidate_path.is_relative_to(base_dir_resolved):
+            return None
+
+        return candidate_path
+
+    except Exception as e:
+        logger.warning(f"Invalid file path detected: {file_path_str} - {str(e)}")
+        return None
 
 
 def get_env_value(
@@ -4451,20 +4502,258 @@ def is_truncated_response(value: Any) -> bool:
     return isinstance(value, TruncatedResponse)
 
 
+def format_response_diagnostics(**fields: Any) -> str:
+    """Render provider response diagnostics as ``key=value`` pairs.
+
+    ``None`` becomes ``n/a`` so a field the provider did not report is visibly
+    absent rather than looking like a zero.
+    """
+    return ", ".join(
+        f"{key}={'n/a' if value is None else value}" for key, value in fields.items()
+    )
+
+
+def empty_length_truncated_hint(
+    budget_hint: str, *, reasoning_consumed_budget: bool = False
+) -> str:
+    """Explain an EMPTY response whose finish reason is the output token limit.
+
+    Shared by every binding so the four providers describe the same failure
+    identically. This is the structurally-broken case, not "ran a bit long":
+    generation stopped before producing a single content token, so there is
+    nothing to salvage and nothing to cache — the caller raises rather than
+    returning "" and letting the document be indexed as an empty graph
+    (issue #3601 gap 4).
+
+    ``budget_hint`` names the provider's own output-budget knob, since that is
+    the actionable part and only the binding knows it.
+    """
+    cause = "generation hit the token limit before emitting any content"
+    if reasoning_consumed_budget:
+        cause += " (budget consumed by reasoning)"
+    return f"{cause}; {budget_hint}"
+
+
+# doc_status.metadata key holding the per-document truncation summary.
+LLM_TRUNCATION_METADATA_KEY = "llm_truncation"
+
+# Cap on the number of affected subjects (chunk ids / entity names) echoed into
+# that metadata entry. The doc_status row is serialized into every documents
+# listing response, so the summary must stay O(1) in document size; the exact
+# per-chunk detail lives in the server log, which is unbounded by design.
+TRUNCATION_METADATA_SAMPLE_LIMIT = 10
+
+
+class TokenLimitTruncationTally:
+    """Accumulator for token-limit truncation events over one scope.
+
+    A document whose output budget is too small does not truncate once, it
+    truncates on EVERY chunk: publishing one ``pipeline_status`` line per event
+    would push the rest of the run out of the bounded ``history_messages`` ring
+    and still leave the operator counting lines. So each producer stage keeps a
+    tally, publishes its FIRST event immediately (the condition must not stay
+    hidden until a long run ends) plus ONE aggregated line when it finishes,
+    and folds its counts into the document-scoped tally the pipeline stamps
+    into ``doc_status.metadata`` — the durable, machine-readable record that
+    outlives the status ring and reaches the API.
+
+    Not thread-safe, and does not need to be: every mutation is a plain,
+    await-free update made from tasks on a single event loop.
+    """
+
+    __slots__ = ("_events", "_stages", "_subjects")
+
+    def __init__(self) -> None:
+        self._events = 0
+        self._stages: dict[str, int] = {}
+        # Ordered set: preserves first-seen order for the metadata sample while
+        # de-duplicating a subject that truncated at more than one stage.
+        self._subjects: dict[str, None] = {}
+
+    def __bool__(self) -> bool:
+        return self._events > 0
+
+    @property
+    def events(self) -> int:
+        """Total truncated responses, counting a subject once per stage."""
+        return self._events
+
+    @property
+    def affected(self) -> int:
+        """Distinct subjects (chunk ids / entity names) with >= 1 truncation."""
+        return len(self._subjects)
+
+    def record(self, stage: str, subject: str) -> bool:
+        """Record one truncated response; True when it is this tally's first."""
+        first = self._events == 0
+        self._events += 1
+        self._stages[stage] = self._stages.get(stage, 0) + 1
+        if subject:
+            self._subjects.setdefault(subject, None)
+        return first
+
+    def absorb(self, other: "TokenLimitTruncationTally | None") -> None:
+        """Fold a stage-scoped tally into this (document-scoped) one."""
+        if not other:
+            return
+        self._events += other._events
+        for stage, count in other._stages.items():
+            self._stages[stage] = self._stages.get(stage, 0) + count
+        for subject in other._subjects:
+            self._subjects.setdefault(subject, None)
+
+    def stage_breakdown(self) -> str:
+        """Human-readable per-stage counts, e.g. ``initial: 12, gleaning: 3``."""
+        return ", ".join(f"{stage}: {count}" for stage, count in self._stages.items())
+
+    def as_metadata(self) -> dict[str, Any] | None:
+        """Summary payload for ``doc_status.metadata``; None when nothing hit."""
+        if not self._events:
+            return None
+        subjects = list(self._subjects)
+        payload: dict[str, Any] = {
+            "events": self._events,
+            "affected": len(subjects),
+            "stages": dict(self._stages),
+            "samples": subjects[:TRUNCATION_METADATA_SAMPLE_LIMIT],
+        }
+        omitted = len(subjects) - TRUNCATION_METADATA_SAMPLE_LIMIT
+        if omitted > 0:
+            payload["samples_omitted"] = omitted
+        return payload
+
+    def as_metadata_extra(self) -> dict[str, Any]:
+        """``metadata_extra`` fragment for a doc_status transition upsert.
+
+        Empty on a clean run, so the key is simply absent rather than persisting
+        a zeroed record. Because ``LLM_TRUNCATION_METADATA_KEY`` is deliberately
+        NOT in ``_DOC_STATUS_METADATA_CARRY_OVER_KEYS``, that absence also
+        CLEARS a previous attempt's summary instead of resurrecting it — a
+        re-run with a larger token budget must not keep reporting the old
+        truncation.
+        """
+        payload = self.as_metadata()
+        return {LLM_TRUNCATION_METADATA_KEY: payload} if payload else {}
+
+
+def merge_truncation_metadata(
+    base: dict[str, Any] | None, extra: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Combine two persisted ``llm_truncation`` payloads into one.
+
+    Exists for paths that ADD to a surviving record instead of replacing it:
+    the custom-chunk patch (its truncations must not overwrite the base run's
+    record, nor a truncated base be blanked by a clean patch), the same
+    operation's resumed attempts (a failed attempt's partial graph writes stay,
+    so its record must survive a clean resume), and the analyze→process
+    hand-off. The pipeline's whole-document reprocess never needs this —
+    there replace-or-clear is the correct semantics.
+
+    Merging live tallies would be exact, but only the persisted payloads
+    survive (the base run's tally object is long gone), and those are lossy:
+    ``samples`` is capped at :data:`TRUNCATION_METADATA_SAMPLE_LIMIT`, so
+    subjects beyond the cap cannot be de-duplicated. ``events`` and ``stages``
+    are exact sums regardless. ``affected`` is exact whenever both sample
+    lists are complete (no ``samples_omitted``); otherwise it deduplicates
+    what the samples do show and over-counts a subject that truncated on both
+    sides but is visible in neither. Base-vs-patch merges rarely collide
+    (different chunk id schemes; only repeat ``summary`` subjects overlap),
+    but attempt-over-attempt merges re-run the SAME chunk ids, so collision is
+    the normal case there — still exact up to the sample cap, over-counted
+    past it.
+    """
+    if not base:
+        return dict(extra) if extra else None
+    if not extra:
+        return dict(base)
+
+    base_samples = [s for s in (base.get("samples") or []) if isinstance(s, str)]
+    extra_samples = [s for s in (extra.get("samples") or []) if isinstance(s, str)]
+    # Ordered union, base first — mirrors the tally's first-seen ordering.
+    union_samples = list(dict.fromkeys(base_samples + extra_samples))
+
+    both_complete = not base.get("samples_omitted") and not extra.get("samples_omitted")
+    if both_complete:
+        affected = len(union_samples)
+    else:
+        overlap = len(set(base_samples) & set(extra_samples))
+        affected = int(base.get("affected") or 0) + int(extra.get("affected") or 0)
+        affected -= overlap
+
+    stages: dict[str, int] = dict(base.get("stages") or {})
+    for stage, count in (extra.get("stages") or {}).items():
+        stages[stage] = stages.get(stage, 0) + int(count)
+
+    merged: dict[str, Any] = {
+        "events": int(base.get("events") or 0) + int(extra.get("events") or 0),
+        "affected": affected,
+        "stages": stages,
+        "samples": union_samples[:TRUNCATION_METADATA_SAMPLE_LIMIT],
+    }
+    omitted = affected - len(merged["samples"])
+    if omitted > 0:
+        merged["samples_omitted"] = omitted
+    return merged
+
+
 def remove_think_tags(text: str) -> str:
     """Remove <think>...</think> tags and their content from the text.
+
+    Preserves the :class:`TruncatedResponse` marker so downstream consumers
+    can still distinguish partial model output after sanitization.
 
     Handles two cases:
     1. Complete <think>...</think> blocks anywhere in the text.
     2. Orphaned </think> at the very start (e.g., from streaming that begins
        mid-think-block), removing everything before and including it.
     """
+    was_truncated = is_truncated_response(text)
+
     # First, remove orphaned </think> prefix (content before first </think>
     # when there is no preceding <think> tag)
     text = re.sub(r"^((?!<think>).)*?</think>", "", text, flags=re.DOTALL)
     # Then remove all complete <think>...</think> blocks
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    return text.strip()
+    cleaned = text.strip()
+    return TruncatedResponse(cleaned) if was_truncated else cleaned
+
+
+def _reject_empty_truncated_response(
+    cleaned: str, *, raw_len: int, cache_type: str, chunk_id: str | None
+) -> None:
+    """Fail a truncated response that think-tag removal left with nothing.
+
+    The provider bindings each escalate their own empty + token-limit response,
+    but they cannot see this one: ``<think>reasoning</think>`` with no answer
+    after it is a NON-empty payload, so it passes every binding's check and
+    only becomes visibly empty here. This function is the shared throat that
+    every KG-building LLM call passes through, so the rule lands once for all
+    four providers.
+
+    Parse-stage callers (``cache_type="smartheading"``) already treat an empty
+    answer as an error — ``_parse_llm_json`` raises ``TitleBlockLLMError`` on
+    it — so this only replaces "answer carries no JSON object" with the actual
+    cause and its remedy.
+    """
+    if not is_truncated_response(cleaned) or cleaned.strip():
+        return
+    diagnostics = format_response_diagnostics(
+        chunk_id=chunk_id,
+        # Everything the model produced was reasoning, by construction: the
+        # payload was non-empty before think-tag removal and empty after.
+        reasoning_content_len=raw_len,
+    )
+    hint = empty_length_truncated_hint(
+        "consider raising the LLM's output token limit or disabling thinking "
+        "mode for this role",
+        reasoning_consumed_budget=True,
+    )
+    message = (
+        f"Received empty {cache_type} content after think-tag removal "
+        f"({diagnostics}): {hint}"
+    )
+    logger.error(message)
+    raise EmptyTruncatedResponseError(message)
 
 
 async def use_llm_func_with_cache(
@@ -4598,11 +4887,15 @@ async def use_llm_func_with_cache(
             safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
         )
 
-        # Capture the token-limit truncation flag before remove_think_tags
-        # rebuilds a plain str and drops the TruncatedResponse marker.
-        res_truncated = is_truncated_response(res)
-
+        # ``remove_think_tags`` re-wraps its result, so the marker survives
+        # sanitization and both this cache guard and the caller (which reports
+        # the truncation to pipeline status) read the same flag off ``res``.
+        raw_len = len(res)
         res = remove_think_tags(res)
+        _reject_empty_truncated_response(
+            res, raw_len=raw_len, cache_type=cache_type, chunk_id=chunk_id
+        )
+        res_truncated = is_truncated_response(res)
 
         # Generate timestamp for cache miss (LLM call completion time)
         current_timestamp = int(time.time())
@@ -4655,7 +4948,12 @@ async def use_llm_func_with_cache(
 
     # Generate timestamp for non-cached LLM call
     current_timestamp = int(time.time())
-    return remove_think_tags(res), current_timestamp
+    raw_len = len(res)
+    cleaned = remove_think_tags(res)
+    _reject_empty_truncated_response(
+        cleaned, raw_len=raw_len, cache_type=cache_type, chunk_id=chunk_id
+    )
+    return cleaned, current_timestamp
 
 
 def get_content_summary(content: str, max_length: int = 250) -> str:
@@ -5729,7 +6027,30 @@ def normalize_source_ids_limit_method(method: str | None) -> str:
 def merge_source_ids(
     existing_ids: Iterable[str] | None, new_ids: Iterable[str] | None
 ) -> list[str]:
-    """Merge two iterables of source IDs while preserving order and removing duplicates."""
+    """Merge two iterables of source IDs into one flat, ordered, deduplicated list.
+
+    Every element is split on ``GRAPH_FIELD_SEP``, stripped, and deduplicated by
+    first-seen order. The split is what makes this the normalization boundary
+    for chunk-id lists: an element that is itself a joined string
+    (``"chunk-a<SEP>chunk-b"``) would otherwise be stored as a single id, and
+    such an id matches no key in ``text_chunks``. It would then corrupt the
+    ``chunk_ids``/``count`` rows of ``entity_chunks_storage`` /
+    ``relation_chunks_storage``, miscount ``apply_source_ids_limit``'s
+    truncation (two chunks counted as one), and miss every downstream
+    ``get_by_ids`` lookup.
+
+    No in-tree producer passes a joined element today — every caller splits its
+    graph ``source_id`` first, and extraction emits one ``chunk_key`` per record
+    — so the split is a guard against a future upstream regression rather than a
+    fix for a live path. A joined element arriving here therefore means an
+    upstream bug and is logged at debug level so the silent repair does not hide
+    the root cause.
+
+    Despite the name, this also merges the sibling union fields that share the
+    same ``GRAPH_FIELD_SEP`` encoding: ``file_path`` and ``description`` in the
+    edge-dedup merges of ``mongo_impl`` / ``opensearch_impl``. Stripping applies
+    to those fragments too, so ``" foo"`` and ``"foo"`` collapse into one entry.
+    """
 
     merged: list[str] = []
     seen: set[str] = set()
@@ -5740,9 +6061,26 @@ def merge_source_ids(
         for source_id in sequence:
             if not source_id:
                 continue
-            if source_id not in seen:
-                seen.add(source_id)
-                merged.append(source_id)
+            if not isinstance(source_id, str):
+                # Coerce rather than skip: dropping the value would silently
+                # lose provenance, which is the failure mode this function
+                # exists to prevent. The warning surfaces the type bug.
+                logger.warning(
+                    f"merge_source_ids received a non-string id "
+                    f"{source_id!r} ({type(source_id).__name__}); coercing to str"
+                )
+                source_id = str(source_id)
+            if GRAPH_FIELD_SEP in source_id:
+                logger.debug(
+                    f"merge_source_ids splitting a GRAPH_FIELD_SEP-joined value "
+                    f"{source_id!r}; callers are expected to pass individual ids"
+                )
+            # split_string_by_multi_markers already strips each fragment and
+            # drops the empty ones, so a whitespace-only element yields nothing.
+            for sid in split_string_by_multi_markers(source_id, [GRAPH_FIELD_SEP]):
+                if sid not in seen:
+                    seen.add(sid)
+                    merged.append(sid)
 
     return merged
 
@@ -5792,7 +6130,26 @@ def compute_incremental_chunk_ids(
 
     This function applies delta changes (additions and removals) to an existing
     list of chunk IDs while maintaining order and ensuring deduplication.
-    Delta additions from new_chunk_ids are placed at the end.
+    Delta additions from new_chunk_ids are placed at the end. Empty IDs are
+    dropped from both inputs.
+
+    Authority model:
+        ``existing_full_chunk_ids`` — the entity/relation chunk-tracking row — is
+        AUTHORITATIVE. A graph node's ``source_id`` is only a truncated view of it
+        (see ``apply_source_ids_limit``), and it may legitimately retain STALE chunk
+        IDs that tracking has already pruned: the purge path reads tracking first and
+        falls back to ``source_id`` only when the tracking row is absent, and its
+        ``graph_references_deleted_chunks`` branch exists precisely to handle a graph
+        that still references chunks tracking has dropped.
+
+        Consequently an ID present in BOTH ``old_chunk_ids`` and ``new_chunk_ids`` but
+        absent from ``existing_full_chunk_ids`` is treated as intentionally pruned and
+        is NOT restored — only genuine additions (``new - old``) are appended. Widening
+        Step 2 to append every entry of ``new_chunk_ids`` would resurrect stale
+        attribution into the authoritative store, which a later purge would then use to
+        rebuild or retain KG objects sourced from chunks that no longer exist.
+        Repairing genuinely missing attribution is the job of
+        ``audit_kg_integrity(..., apply=True)``, never of this function.
 
     Args:
         existing_full_chunk_ids: Complete list of existing chunk IDs from storage
@@ -5807,22 +6164,25 @@ def compute_incremental_chunk_ids(
         >>> old = ['chunk-1', 'chunk-2']
         >>> new = ['chunk-2', 'chunk-4']
         >>> compute_incremental_chunk_ids(existing, old, new)
-        ['chunk-3', 'chunk-2', 'chunk-4']
+        ['chunk-2', 'chunk-3', 'chunk-4']
     """
     # Calculate changes
     chunks_to_remove = set(old_chunk_ids) - set(new_chunk_ids)
     chunks_to_add = set(new_chunk_ids) - set(old_chunk_ids)
 
-    # Apply changes to full chunk_ids
     # Step 1: Remove chunks that are no longer needed
     updated_chunk_ids = [
-        cid for cid in existing_full_chunk_ids if cid not in chunks_to_remove
+        cid for cid in existing_full_chunk_ids if cid and cid not in chunks_to_remove
     ]
+    seen = set(updated_chunk_ids)
 
-    # Step 2: Add new chunks (preserving order from new_chunk_ids)
-    # Note: 'cid not in updated_chunk_ids' check ensures deduplication
+    # Step 2: Append genuine additions only (preserving order from new_chunk_ids).
+    # The `seen` check is not redundant with `chunks_to_add`: tracking may already
+    # hold an ID that is in new_chunk_ids but not in old_chunk_ids, because
+    # source_id is a truncated view of the tracking row.
     for cid in new_chunk_ids:
-        if cid in chunks_to_add and cid not in updated_chunk_ids:
+        if cid and cid in chunks_to_add and cid not in seen:
+            seen.add(cid)
             updated_chunk_ids.append(cid)
 
     return updated_chunk_ids
@@ -6378,3 +6738,381 @@ def validate_workspace(workspace: str) -> str:
             "separators ('/', '\\') or be a relative path reference ('.', '..')"
         )
     return workspace
+
+
+# Complement of the XML 1.0 ``Char`` production. GraphML is XML, so a string
+# holding any other code point cannot be serialized at all -- tab, newline and
+# carriage return are the only C0 controls XML admits, and descriptions
+# legitimately carry those.
+_XML_INCOMPATIBLE_CHAR_PATTERN = re.compile(
+    r"[^\u0009\u000a\u000d\u0020-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]"
+)
+
+# Attribute names a backend would read as something other than a name. Kept to
+# exactly that: MongoGraphStorage passes names straight into a ``$set``
+# document, where a dot is a *path* separator (``source_ids.0`` rewrites an
+# element of the chunk-attribution array rather than creating a field) and a
+# leading ``$`` is an update operator.
+#
+# Deliberately NOT "must be an identifier". Names like ``display-name`` or
+# ``has space`` carry no interpretation hazard on any backend, and the manual
+# edit API accepted them before the field allowlist landed -- so the document
+# backends that persisted them hold such names today. Refusing them here would
+# make those entities unmodifiable, because every rewrite path (entity edit,
+# rename, merge, extraction rebuild) spreads the *stored* attributes back into
+# the upsert payload.
+_GRAPH_ATTRIBUTE_NAME_DISALLOWED_SUBSTRING = "."
+_GRAPH_ATTRIBUTE_NAME_DISALLOWED_PREFIX = "$"
+
+# Integer attributes must fit in a signed 64-bit integer. Verified against the
+# installed driver rather than assumed: neo4j's packstream Packer raises
+# ``OverflowError("Integer ... out of range")`` outside ``[-2**63, 2**63)``
+# (``neo4j/_codec/packstream/v1/__init__.py``), and GraphML declares an int
+# attribute as ``attr.type="long"``, which is ``xsd:long`` -- also int64. So a
+# larger int is outside the intersection this module defines, even though
+# networkx will happily write it and PostgreSQL's arbitrary-precision ``jsonb``
+# numeric will happily store it.
+_GRAPH_ATTRIBUTE_INT_MIN = -(2**63)
+_GRAPH_ATTRIBUTE_INT_MAX = 2**63 - 1
+
+
+def _graphml_encodable_types() -> frozenset[type]:
+    """The exact types networkx's GraphML writer knows how to encode.
+
+    Asked of networkx rather than enumerated here, because ``add_data`` resolves
+    a value by looking its type up in ``self.xml_type`` -- so that table *is* the
+    definition, and reproducing it by hand would drift. Sourcing it also makes
+    the guard's justification true by construction: every type this module
+    refuses is a type the write would have failed on.
+
+    An ``isinstance`` shortcut over ``np.integer`` / ``np.floating`` would be
+    wrong, not merely loose: ``np.longdouble`` is an ``np.floating`` and is *not*
+    in the table, so it would be accepted here and rejected at write time --
+    the poisoning this exists to prevent.
+
+    The four builtins are unioned in as a floor, and a failure to read the table
+    degrades to exactly that floor. ``networkx`` carries no version bound in
+    pyproject.toml, so its internals could move; degrading to the floor is
+    stricter, never looser, so it cannot open the hole it guards.
+    """
+    builtin_scalars = frozenset({str, int, float, bool})
+    try:
+        from networkx.readwrite.graphml import GraphML
+
+        probe = GraphML()
+        probe.construct_types()
+        return frozenset(probe.xml_type) | builtin_scalars
+    except Exception:  # networkx internals moved: fall back to the strict floor
+        return builtin_scalars
+
+
+_GRAPHML_ENCODABLE_TYPES = _graphml_encodable_types()
+
+# The intersection every registered backend can carry. Narrower than
+# ``_GRAPHML_ENCODABLE_TYPES``, which also holds the numpy scalar types GraphML
+# writes: those are not portable, and not marginally so -- ``json.dumps``
+# (PGTableGraphStorage's jsonb column) and ``bson`` (MongoGraphStorage) both
+# refuse ``np.float32`` / ``np.int64`` / ``np.uint32`` / ``np.bool_`` outright.
+_PORTABLE_SCALAR_TYPES = frozenset({str, int, float, bool})
+
+
+def xml_attribute_name_rejection(name: Any) -> str | None:
+    """Explain why *name* cannot be used as an XML-serialized attribute name.
+
+    GraphML writes attribute names into the XML ``attr.name`` field, so a name is
+    subject to the same character rule as a value -- a claim checked against
+    networkx rather than assumed: a name holding a control character, a lone
+    surrogate or U+FFFE makes ``write_graphml`` raise, which on
+    ``NetworkXStorage`` is the instance-wide persistence outage the storage guard
+    exists to prevent.
+
+    Everything else is allowed, including names a *portable* rule would refuse
+    (``a.b``, ``$set``, ``display-name``, ``has space``, ``""``). Two reasons:
+    GraphML round-trips all of those, and -- the load-bearing one -- a name this
+    function rejects can never have been persisted in an existing GraphML file,
+    because the write that would have stored it failed. That is what makes the
+    check safe to apply to a rewrite payload, which spreads a fetched object's
+    stored names back in.
+
+    Args:
+        name: Candidate attribute name.
+
+    Returns:
+        A reason fragment, or ``None`` when XML can carry the name.
+    """
+    if not isinstance(name, str):
+        # networkx raises TypeError("keywords must be strings") before mutating,
+        # so this cannot poison the graph -- it is folded in so the caller gets a
+        # validation error rather than an unhandled TypeError.
+        return f"must be a string, got {type(name).__name__}"
+    match = _XML_INCOMPATIBLE_CHAR_PATTERN.search(name)
+    if match:
+        return (
+            "must not contain the character "
+            f"U+{ord(match.group()):04X}, which XML cannot encode"
+        )
+    return None
+
+
+def xml_attribute_value_rejection(value: Any) -> str | None:
+    """Explain why *value* cannot be encoded in XML at all.
+
+    The narrower of the two value rules, and the one a GraphML-backed store
+    should enforce: it rejects only what cannot be *serialized*, not what is
+    merely unportable. ``NaN``, ``inf`` and an integer past int64 all round-trip
+    through GraphML unchanged, so they are accepted here even though
+    ``graph_attribute_value_rejection`` refuses them.
+
+    "Serialized" is the operative word, and it is not the same as "is a scalar":
+    an integer with more digits than ``sys.get_int_max_str_digits()`` cannot be
+    rendered as text at all, so GraphML cannot hold it however ordinary it looks.
+
+    That difference is deliberate, and it is what keeps a backend guard from
+    stranding data. A workspace can already hold such a value -- the manual edit
+    API accepted anything before its field allowlist landed -- and every rewrite
+    path (entity edit, extraction rebuild) spreads a fetched object's stored
+    attributes back into the upsert payload. Enforcing the *portable* rule at the
+    storage layer would therefore make those objects unmodifiable, while
+    enforcing it where caller input enters costs nothing.
+
+    Args:
+        value: Candidate attribute value.
+
+    Returns:
+        A reason fragment suitable for appending to ``"attribute 'x' "``, or
+        ``None`` when XML can carry the value.
+    """
+    # Exact type, not ``isinstance``. networkx's GraphML writer resolves a value
+    # by looking its type up in a dict (``add_data``: ``if element_type not in
+    # self.xml_type``), so a *subclass* of a supported scalar is rejected at write
+    # time -- ``enum.StrEnum``, ``enum.IntEnum``, ``np.str_``, ``Decimal`` and any
+    # user ``class X(str)`` all satisfy ``isinstance`` and all make
+    # ``write_graphml`` raise. Read from the installed networkx, not assumed.
+    #
+    # The set comes from that same table (see ``_graphml_encodable_types``), so
+    # it includes the numpy scalar types GraphML writes -- and so that every type
+    # refused here is one the write would genuinely have failed on.
+    value_type = type(value)
+    if value_type not in _GRAPHML_ENCODABLE_TYPES:
+        if isinstance(value, (str, int, float, bool)):
+            # A subclass: worth saying so, because the caller reasonably expects
+            # a `str` subclass to be a string.
+            return (
+                f"must be a type GraphML can encode, got {value_type.__name__} "
+                "(GraphML resolves value types exactly, so a subclass of a "
+                "supported scalar is still refused)"
+            )
+        return f"must be a string, number or boolean, got {value_type.__name__}"
+    if value_type is not str and value_type is not int:
+        # bool, float and the numpy numeric scalars need nothing further: the
+        # only remaining checks are the digit limit (int) and the character rule
+        # (str). A numpy int is width-bounded, so it cannot hit the digit limit.
+        return None
+    if value_type is int:
+        # GraphML stores values as text, and networkx stringifies them on write.
+        # CPython refuses to stringify an integer with more digits than
+        # ``sys.get_int_max_str_digits()`` (4300 by default since 3.11, and
+        # settable at runtime), so a large enough int makes ``write_graphml``
+        # raise even though the int itself is a perfectly ordinary scalar.
+        # Attempt the same conversion the writer will make rather than comparing
+        # against the limit, so this cannot drift from it if the limit is changed.
+        try:
+            str(value)
+        except ValueError:
+            # `get_int_max_str_digits` arrived in 3.11 and was backported to
+            # 3.10.7, so it can be missing on the `requires-python = ">=3.10"`
+            # floor. It is unreachable here when missing -- no limit means
+            # `str()` cannot raise -- but read it defensively rather than relying
+            # on that.
+            read_limit = getattr(sys, "get_int_max_str_digits", None)
+            limit = f" (limit {read_limit()} digits)" if read_limit else ""
+            return f"has more digits than Python will render as text{limit}"
+        return None
+    match = _XML_INCOMPATIBLE_CHAR_PATTERN.search(value)
+    if match:
+        return (
+            "must not contain the character "
+            f"U+{ord(match.group()):04X}, which XML cannot encode"
+        )
+    return None
+
+
+def graph_attribute_value_rejection(value: Any) -> str | None:
+    """Explain why *value* cannot be stored as a graph node/edge attribute.
+
+    The wider of the two value rules: the intersection of what *every*
+    registered backend can carry, meant for the point where caller input enters
+    (see ``xml_attribute_value_rejection`` for the narrower serialization rule a
+    storage backend should enforce instead, and why the two differ).
+
+    The rules are the intersection of what the seven registered
+    ``GRAPH_STORAGE`` backends can carry, so the same payload behaves the same
+    way on all of them:
+
+    * ``bool`` -- accepted everywhere.
+    * ``int`` -- must fit in int64. A larger int is written happily by networkx
+      and stored happily by PostgreSQL's arbitrary-precision ``jsonb`` numeric,
+      but the Neo4j driver refuses to pack it and GraphML mislabels it as
+      ``xsd:long``. See ``_GRAPH_ATTRIBUTE_INT_MIN``.
+    * ``float`` -- must be finite. ``NaN`` / ``inf`` survive GraphML but
+      ``json.dumps`` renders them as bare ``NaN`` / ``Infinity``, which is not
+      valid JSON and is rejected by the ``jsonb`` column PGTableGraphStorage
+      writes to.
+    * ``str`` -- must be XML-compatible, because GraphML cannot encode the
+      other code points at all (see ``_XML_INCOMPATIBLE_CHAR_PATTERN``).
+    * anything else (``dict``, ``list``, ``None``, ``bytes``, ...) -- rejected.
+      ``None`` is called out because it is the one non-scalar that reads as
+      harmless: GraphML refuses it outright, while on the Cypher backends
+      ``SET n += {k: null}`` silently *deletes* the property.
+
+    Args:
+        value: Candidate attribute value.
+
+    Returns:
+        A reason fragment suitable for appending to ``"attribute 'x' "``, or
+        ``None`` when the value is storable.
+    """
+    rejection = xml_attribute_value_rejection(value)
+    if rejection is not None:
+        return rejection
+    # The XML rule accepts what GraphML can write, which includes numpy scalars;
+    # portability is narrower. ``json.dumps`` (PGTableGraphStorage's jsonb
+    # column) and ``bson`` (MongoGraphStorage) both refuse ``np.float32`` /
+    # ``np.int64`` / ``np.uint32`` / ``np.bool_``, so a numpy value that persists
+    # fine on NetworkX cannot cross to another backend.
+    value_type = type(value)
+    if value_type not in _PORTABLE_SCALAR_TYPES:
+        return (
+            f"must be a str, int, float or bool to be portable across graph "
+            f"backends, got {value_type.__name__}"
+        )
+    # The type is pinned exactly now, so ``is int`` rather than ``isinstance`` --
+    # a bool cannot reach the range check.
+    if value_type is int:
+        if not _GRAPH_ATTRIBUTE_INT_MIN <= value <= _GRAPH_ATTRIBUTE_INT_MAX:
+            return (
+                "must be a 64-bit integer "
+                f"({_GRAPH_ATTRIBUTE_INT_MIN} to {_GRAPH_ATTRIBUTE_INT_MAX})"
+            )
+        return None
+    if value_type is float and not math.isfinite(value):
+        return "must be a finite number"
+    return None
+
+
+def validate_graph_attributes(attributes: dict[str, Any], *, context: str) -> None:
+    """Reject a node/edge attribute mapping no graph backend could store.
+
+    Args:
+        attributes: Attribute mapping about to be written to graph storage.
+        context: Prefix identifying the object being written, used in the error
+            message (e.g. ``"entity 'Tesla'"``).
+
+    Raises:
+        ValueError: On the first unusable attribute name or value.
+    """
+    # The portable contract is the intersection, so it owns both name rules: a
+    # name XML cannot encode is unstorable on NetworkX, and a name MongoDB would
+    # read as a field path is unstorable there. Neither backend needs the other's
+    # rule (see each rejection helper), but caller input has to satisfy both.
+    validate_xml_attributes(attributes, context=context)
+    validate_interpreted_attribute_names(attributes, context=context)
+    validate_graph_attribute_values(attributes, context=context)
+
+
+def validate_interpreted_attribute_names(
+    attributes: dict[str, Any], *, context: str
+) -> None:
+    """Reject attribute names a backend would read as something other than a name.
+
+    The *interpretation* rule, not the serialization one: see
+    ``xml_attribute_name_rejection`` for the character rule a GraphML-backed
+    store needs. A backend should enforce the hazard it actually has, and the two
+    hazards live in different backends:
+
+    * Names are dangerous only where they are *interpreted*. MongoDB passes them
+      into a ``$set`` document, so a dot is a path (``source_ids.0`` rewrites an
+      element of the chunk-attribution array instead of creating a field) and a
+      leading ``$`` is an update operator.
+    * Names are inert in GraphML, which is why NetworkXStorage validates values
+      only. Enforcing names there would additionally reject re-ingesting a node
+      whose *stored* attributes predate this validation, which is a migration
+      failure with no safety benefit.
+
+    The rule is the interpretation hazard and nothing beyond it -- see
+    ``_GRAPH_ATTRIBUTE_NAME_DISALLOWED_SUBSTRING`` for why "must be an
+    identifier" would be the wrong rule. A name that a backend *stores* rather
+    than interprets is legal here even if it is unusual, because rewrite paths
+    feed stored attributes back into the upsert payload and a stricter rule
+    would strand existing data.
+
+    Args:
+        attributes: Attribute mapping about to be written to graph storage.
+        context: Prefix identifying the object being written.
+
+    Raises:
+        ValueError: On the first unusable attribute name.
+    """
+    for key in attributes:
+        if not isinstance(key, str) or not key:
+            raise ValueError(
+                f"{context}: invalid attribute name {key!r}: must be a non-empty string"
+            )
+        if _GRAPH_ATTRIBUTE_NAME_DISALLOWED_SUBSTRING in key:
+            raise ValueError(
+                f"{context}: invalid attribute name {key!r}: must not contain "
+                f"{_GRAPH_ATTRIBUTE_NAME_DISALLOWED_SUBSTRING!r}, which is read "
+                "as a field path rather than part of the name"
+            )
+        if key.startswith(_GRAPH_ATTRIBUTE_NAME_DISALLOWED_PREFIX):
+            raise ValueError(
+                f"{context}: invalid attribute name {key!r}: must not start with "
+                f"{_GRAPH_ATTRIBUTE_NAME_DISALLOWED_PREFIX!r}, which is read as "
+                "an update operator"
+            )
+
+
+def validate_xml_attributes(attributes: dict[str, Any], *, context: str) -> None:
+    """Reject attribute names or values XML cannot encode.
+
+    For a GraphML-backed store. Names are checked as well as values because
+    GraphML serializes them into the XML ``attr.name`` field, so an unencodable
+    name breaks the same write. See ``xml_attribute_name_rejection`` and
+    ``xml_attribute_value_rejection`` for why both rules are narrower than the
+    portable contract.
+
+    Args:
+        attributes: Attribute mapping about to be written to graph storage.
+        context: Prefix identifying the object being written.
+
+    Raises:
+        ValueError: On the first name or value XML cannot carry.
+    """
+    for key, value in attributes.items():
+        rejection = xml_attribute_name_rejection(key)
+        if rejection is not None:
+            raise ValueError(f"{context}: attribute name {key!r} {rejection}")
+        rejection = xml_attribute_value_rejection(value)
+        if rejection is not None:
+            raise ValueError(f"{context}: attribute {key!r} {rejection}")
+
+
+def validate_graph_attribute_values(
+    attributes: dict[str, Any], *, context: str
+) -> None:
+    """Reject attribute values no graph backend can store.
+
+    See ``graph_attribute_value_rejection`` for the rules and
+    ``validate_interpreted_attribute_names`` for why the halves are separate.
+
+    Args:
+        attributes: Attribute mapping about to be written to graph storage.
+        context: Prefix identifying the object being written.
+
+    Raises:
+        ValueError: On the first unstorable value.
+    """
+    for key, value in attributes.items():
+        rejection = graph_attribute_value_rejection(value)
+        if rejection is not None:
+            raise ValueError(f"{context}: attribute {key!r} {rejection}")

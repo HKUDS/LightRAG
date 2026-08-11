@@ -86,7 +86,7 @@ async def test_legacy_parse_whitespace_only_extraction_raises(
     # must fail the doc instead of persisting an empty document.
     monkeypatch.setattr(
         "lightrag.parser.legacy.extractors.extract_text",
-        lambda file_bytes, suffix, *, pdf_password=None: "\n \n\t\n",
+        lambda file_bytes, suffix, *, pdf_password=None, file_path=None: "\n \n\t\n",
     )
     source = tmp_path / "scanned.pdf"
     source.write_bytes(b"%PDF-fake")
@@ -104,9 +104,10 @@ async def test_legacy_parse_passes_pdf_password_from_env(
 ):
     seen = {}
 
-    def _capture(file_bytes, suffix, *, pdf_password=None):
+    def _capture(file_bytes, suffix, *, pdf_password=None, file_path=None):
         seen["suffix"] = suffix
         seen["pdf_password"] = pdf_password
+        seen["file_path"] = file_path
         return "decrypted text"
 
     monkeypatch.setattr("lightrag.parser.legacy.extractors.extract_text", _capture)
@@ -117,5 +118,9 @@ async def test_legacy_parse_passes_pdf_password_from_env(
 
     result = await LegacyParser().parse(_ctx(rag, source))
 
-    assert seen == {"suffix": "pdf", "pdf_password": "s3cret"}
+    assert seen == {
+        "suffix": "pdf",
+        "pdf_password": "s3cret",
+        "file_path": _ctx(rag, source).file_path,
+    }
     assert result.content == "decrypted text"

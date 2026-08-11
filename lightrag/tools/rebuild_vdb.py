@@ -95,23 +95,6 @@ RESET = "\033[0m"
 ProgressCallback = Callable[[int, int], None]
 
 
-def _strip_agtype_quotes(value: Any) -> Any:
-    """Strip surrounding double quotes from PostgreSQL/AGE agtype text casts.
-
-    PGGraphStorage.get_all_edges() extracts entity ids via an
-    ``agtype::text`` cast, which leaves string values wrapped in double
-    quotes (e.g. ``'"Alice"'``). Other backends return plain strings.
-    """
-    if (
-        isinstance(value, str)
-        and len(value) >= 2
-        and value[0] == '"'
-        and value[-1] == '"'
-    ):
-        return value[1:-1]
-    return value
-
-
 def _new_stats(label: str, source_total: int) -> Dict[str, Any]:
     return {
         "label": label,
@@ -249,7 +232,7 @@ async def rebuild_entities_vdb(
 
     payloads: Dict[str, Dict[str, Any]] = {}
     for node in nodes:
-        entity_name = _strip_agtype_quotes(node.get("entity_id") or node.get("id"))
+        entity_name = node.get("entity_id") or node.get("id")
         if entity_name is None or not str(entity_name).strip():
             stats["skipped"] += 1
             logger.warning(
@@ -309,8 +292,8 @@ async def rebuild_relationships_vdb(
 
     payloads: Dict[str, Dict[str, Any]] = {}
     for edge in edges:
-        src = _strip_agtype_quotes(edge.get("source"))
-        tgt = _strip_agtype_quotes(edge.get("target"))
+        src = edge.get("source")
+        tgt = edge.get("target")
         if src is None or tgt is None or not str(src).strip() or not str(tgt).strip():
             stats["skipped"] += 1
             logger.warning(
@@ -499,7 +482,7 @@ async def check_vdb_consistency(
     entity_items: List[tuple] = []
     seen_entity_ids: set = set()
     for node in nodes:
-        entity_name = _strip_agtype_quotes(node.get("entity_id") or node.get("id"))
+        entity_name = node.get("entity_id") or node.get("id")
         if entity_name is None or not str(entity_name).strip():
             report["skipped_nodes"] += 1
             continue
@@ -525,8 +508,8 @@ async def check_vdb_consistency(
     relation_items: List[tuple] = []
     seen_relation_ids: set = set()
     for edge in edges:
-        src = _strip_agtype_quotes(edge.get("source"))
-        tgt = _strip_agtype_quotes(edge.get("target"))
+        src = edge.get("source")
+        tgt = edge.get("target")
         if src is None or tgt is None or not str(src).strip() or not str(tgt).strip():
             report["skipped_edges"] += 1
             continue

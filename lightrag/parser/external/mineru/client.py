@@ -17,11 +17,9 @@ Both protocols request a zip result bundle. Archives are extracted under
 from __future__ import annotations
 
 import asyncio
-import io
 import json
 import os
 import shutil
-import zipfile
 from collections.abc import AsyncIterator, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, urlparse
 
 from lightrag.parser.external._common import raise_for_status_with_detail
+from lightrag.parser.external._zip import result_bundle_limits, safe_extract_zip
 from lightrag.parser.external.mineru.cache import (
     MinerUParserOptions,
     compute_size_and_hash,
@@ -450,14 +449,19 @@ class MinerURawClient:
         if resp is None or not hasattr(resp, "content"):
             resp = await client.get(result_url)
             raise_for_status_with_detail(resp, "MinerU result bundle download")
-        buf = io.BytesIO(resp.content)
-        with zipfile.ZipFile(buf) as zf:
-            # Safe-extract: refuse absolute paths and ``..`` traversal.
-            for name in zf.namelist():
-                norm = os.path.normpath(name)
-                if norm.startswith("..") or os.path.isabs(norm):
-                    raise RuntimeError(f"Refusing zip entry with unsafe path: {name!r}")
-            zf.extractall(raw_dir)
+        # Safe-extract with the shared result-bundle budget: refuse path
+        # traversal / absolute entries AND cap declared entry count / total
+        # uncompressed size. The default MINERU_ENDPOINT is the remote
+        # mineru.net API, so a compromised or misbehaving endpoint returning a
+        # zip declaring gigabytes must not expand unbounded onto disk — the same
+        # defense-in-depth the docling path applies.
+        max_entries, max_total_bytes = result_bundle_limits()
+        safe_extract_zip(
+            resp.content,
+            raw_dir,
+            max_entries=max_entries,
+            max_total_bytes=max_total_bytes,
+        )
 
         # Normalize: if the zip nested everything under a single top-level
         # dir, hoist its contents up so content_list.json sits at raw_dir

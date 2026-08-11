@@ -25,6 +25,7 @@ from urllib.parse import quote
 
 import pytest
 
+from lightrag.parser.external.docling import client as client_mod
 from lightrag.parser.external.docling.client import (
     CONVERT_PATH,
     POLL_PATH,
@@ -839,3 +840,84 @@ async def test_docling_client_default_upload_filename_falls_back_to_source_name(
 
     name, _blob, _ctype = recorder.post_calls[0]["files"]["files"]
     assert name == "demo.pdf"
+
+
+async def test_docling_result_zip_is_extracted_under_a_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source_pdf: Path
+) -> None:
+    # ``safe_extract_zip`` defaults both guards to unlimited, so an
+    # unbudgeted call inherits no zip-bomb protection at all. The docling
+    # server is operator-configured rather than attacker-supplied, which
+    # makes this depth rather than the defect in GHSA-2wpj-ffvv-2pq8 — but
+    # the call has to pass real values for the guards to exist.
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=_fake_zip_with_main_json("demo"),
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    seen: dict[str, object] = {}
+    real = client_mod.safe_extract_zip
+
+    def _spy(payload, dest_dir, **kwargs):
+        seen.update(kwargs)
+        return real(payload, dest_dir, **kwargs)
+
+    monkeypatch.setattr(client_mod, "safe_extract_zip", _spy)
+
+    await DoclingRawClient().download_into(tmp_path / "demo.docling_raw", source_pdf)
+
+    assert isinstance(seen.get("max_entries"), int)
+    assert seen["max_entries"] > 0
+    assert isinstance(seen.get("max_total_bytes"), int)
+    assert seen["max_total_bytes"] > 0
+
+
+async def test_docling_oversized_result_zip_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source_pdf: Path
+) -> None:
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=_fake_zip_with_main_json("demo"),
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+    monkeypatch.setenv("PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES", "8")
+
+    with pytest.raises(RuntimeError) as exc:
+        await DoclingRawClient().download_into(
+            tmp_path / "demo.docling_raw", source_pdf
+        )
+    assert "uncompressed size" in str(exc.value)
+
+
+async def test_docling_result_bundle_budget_can_be_disabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source_pdf: Path
+) -> None:
+    """A non-positive env value disables that gate (maps to None = unlimited).
+
+    Passing 0 straight into safe_extract_zip would refuse every bundle; the
+    live-read must map non-positive to None so an operator whose legitimate
+    result bundle exceeds the default ceiling can raise/disable it without a
+    code change.
+    """
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=_fake_zip_with_main_json("demo"),
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+    # A ceiling below the real bundle size that would refuse it if honored...
+    monkeypatch.setenv("PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES", "8")
+    monkeypatch.setenv("PARSER_RESULT_BUNDLE_MAX_ENTRIES", "1")
+
+    with pytest.raises(RuntimeError):
+        await DoclingRawClient().download_into(
+            tmp_path / "demo.docling_raw", source_pdf
+        )
+
+    # ...disabled by a non-positive value, the bundle extracts normally.
+    monkeypatch.setenv("PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES", "0")
+    monkeypatch.setenv("PARSER_RESULT_BUNDLE_MAX_ENTRIES", "0")
+    await DoclingRawClient().download_into(tmp_path / "demo2.docling_raw", source_pdf)

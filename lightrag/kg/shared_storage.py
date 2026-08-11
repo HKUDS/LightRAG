@@ -3632,10 +3632,7 @@ async def get_all_update_flags_status(workspace: str | None = None) -> Dict[str,
             # of ValueProxy handles, then read each .value.
             worker_statuses = []
             for flag in flags[:]:
-                if _is_multiprocess:
-                    worker_statuses.append(flag.value)
-                else:
-                    worker_statuses.append(flag)
+                worker_statuses.append(flag.value)
             result[namespace] = worker_statuses
 
     return result

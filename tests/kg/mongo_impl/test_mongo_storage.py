@@ -22,6 +22,11 @@ pytestmark = pytest.mark.offline
 class _AsyncCursor:
     def __init__(self, docs):
         self._docs = list(docs)
+        self.sort_calls = []
+
+    def sort(self, *args, **kwargs):
+        self.sort_calls.append((args, kwargs))
+        return self
 
     def limit(self, n: int):
         self._docs = self._docs[:n]
@@ -102,22 +107,24 @@ class TestMongoGraphStorage:
             )
         )
 
+        # The ranked page is resolved against the node collection BEFORE the
+        # isolated top-up runs, so the $in query names only the ranked ids and
+        # the top-up excludes what that resolved to. Deliberately answers out of
+        # order: _fetch_nodes_by_ids re-imposes the requested order.
         def collection_find_side_effect(query, projection=None):
+            if query == {"_id": {"$in": ["A", "B"]}}:
+                return _AsyncCursor(
+                    [
+                        {"_id": "B", "entity_type": "person"},
+                        {"_id": "A", "entity_type": "person"},
+                    ]
+                )
             if query == {"_id": {"$nin": ["A", "B"]}}:
                 return _AsyncCursor(
                     [
                         {"_id": "C", "entity_type": "person"},
                         {"_id": "D", "entity_type": "person"},
                         {"_id": "E", "entity_type": "person"},
-                    ]
-                )
-            if query == {"_id": {"$in": ["A", "B", "C", "D"]}}:
-                return _AsyncCursor(
-                    [
-                        {"_id": "B", "entity_type": "person"},
-                        {"_id": "D", "entity_type": "person"},
-                        {"_id": "A", "entity_type": "person"},
-                        {"_id": "C", "entity_type": "person"},
                     ]
                 )
             raise AssertionError(f"Unexpected node query: {query}")
@@ -144,6 +151,218 @@ class TestMongoGraphStorage:
         assert len(result.edges) == 1
         assert result.edges[0].source == "A"
         assert result.edges[0].target == "B"
+
+    @pytest.mark.asyncio
+    async def test_get_knowledge_graph_all_breaks_degree_ties_on_the_label(self):
+        """``$limit max_nodes`` cuts through a band of equal-degree entities,
+        and the BaseGraphStorage contract orders that band by the label.
+
+        Without the second sort key, which entities survived the cutoff was
+        whatever order the aggregation happened to emit them in.
+        """
+        storage = self._make_storage()
+        storage.collection.count_documents = AsyncMock(return_value=5)
+        storage.edge_collection.aggregate = AsyncMock(
+            return_value=_AsyncCursor([{"_id": "A", "degree": 1}])
+        )
+        storage.collection.find = Mock(return_value=_AsyncCursor([]))
+        storage.edge_collection.find = Mock(return_value=_AsyncCursor([]))
+
+        await storage.get_knowledge_graph_all_by_degree(max_depth=2, max_nodes=2)
+
+        pipeline = storage.edge_collection.aggregate.call_args[0][0]
+        assert {"$sort": {"degree": -1, "_id": 1}} in pipeline, pipeline
+        assert {"$sort": {"degree": -1}} not in pipeline, pipeline
+
+    @pytest.mark.asyncio
+    async def test_get_knowledge_graph_all_tops_up_isolated_nodes_in_label_order(self):
+        """The degree-0 top-up needs an order for the same reason the ranking
+        does: an unsorted ``find`` handed the remaining slots to whichever
+        documents the collection scan reached first."""
+        storage = self._make_storage()
+        storage.collection.count_documents = AsyncMock(return_value=9)
+        storage.edge_collection.aggregate = AsyncMock(
+            return_value=_AsyncCursor([{"_id": "Connected", "degree": 2}])
+        )
+        top_up = _AsyncCursor([{"_id": "Aardvark"}, {"_id": "Orphan"}])
+
+        def _find(query, projection=None):
+            if "$in" in query["_id"]:  # resolving the ranked page
+                return _AsyncCursor([{"_id": "Connected", "entity_type": "person"}])
+            return top_up
+
+        storage.collection.find = Mock(side_effect=_find)
+        storage.edge_collection.find = Mock(return_value=_AsyncCursor([]))
+
+        result = await storage.get_knowledge_graph_all_by_degree(
+            max_depth=2, max_nodes=3
+        )
+
+        assert [node.id for node in result.nodes] == [
+            "Connected",
+            "Aardvark",
+            "Orphan",
+        ]
+        assert top_up.sort_calls == [(("_id", 1), {})], top_up.sort_calls
+        # Asserting the filter AFTER the call is what pins the snapshot: the
+        # same list is appended to while this cursor is consumed, so a live
+        # reference would read back as ["Connected", "Aardvark", "Orphan"].
+        top_up_query = next(
+            call[0][0]
+            for call in storage.collection.find.call_args_list
+            if "$nin" in call[0][0]["_id"]
+        )
+        assert top_up_query == {"_id": {"$nin": ["Connected"]}}
+
+    @pytest.mark.asyncio
+    async def test_get_knowledge_graph_all_does_not_let_a_dangling_id_take_a_slot(self):
+        """The ranked ids are edge ENDPOINTS, and upsert_edge only guarantees
+        the source node exists, so one can be a dangling id with no node
+        document -- a legacy state this backend tolerates on purpose.
+
+        Treating the server-side ``$limit`` as final let such an id consume a
+        real node's slot, and ``_fetch_nodes_by_ids`` then dropped it without
+        refilling. The label tie-break is what makes it reachable: here the
+        dangling ``A`` sorts ahead of the real ``B`` and, left unresolved, the
+        wildcard view comes back empty.
+        """
+        storage = self._make_storage()
+        storage.collection.count_documents = AsyncMock(return_value=3)
+        # What the server returns for max_nodes=1 with an edge B -> A: both tie
+        # at degree 1 and "A" sorts first.
+        storage.edge_collection.aggregate = AsyncMock(
+            side_effect=[
+                _AsyncCursor([{"_id": "A", "degree": 1}]),
+                _AsyncCursor([{"_id": "B", "degree": 1}]),  # the refill page
+            ]
+        )
+
+        def _find(query, projection=None):
+            if "$in" in query["_id"]:  # only B has a node document
+                return _AsyncCursor(
+                    [
+                        {"_id": node_id, "entity_type": "person"}
+                        for node_id in query["_id"]["$in"]
+                        if node_id == "B"
+                    ]
+                )
+            return _AsyncCursor([])
+
+        storage.collection.find = Mock(side_effect=_find)
+        storage.edge_collection.find = Mock(return_value=_AsyncCursor([]))
+
+        result = await storage.get_knowledge_graph_all_by_degree(
+            max_depth=2, max_nodes=1
+        )
+
+        assert [node.id for node in result.nodes] == ["B"]
+
+    @pytest.mark.asyncio
+    async def test_get_knowledge_graph_all_refills_from_the_next_ranked_page(self):
+        """A slot a dangling id vacated goes to the NEXT-RANKED entry.
+
+        The $limit is server-side, so the refill has to re-aggregate with a
+        $skip. That is only sound because the sort is a total order -- degree
+        descending then the unique _id -- and it must be preferred over the
+        isolated top-up, which would hand the slot to an arbitrary entity.
+        """
+        storage = self._make_storage()
+        storage.collection.count_documents = AsyncMock(return_value=9)
+        storage.edge_collection.aggregate = AsyncMock(
+            side_effect=[
+                _AsyncCursor(
+                    [{"_id": "Dangling", "degree": 9}, {"_id": "Real", "degree": 5}]
+                ),
+                _AsyncCursor([{"_id": "Next", "degree": 4}]),
+            ]
+        )
+
+        def _find(query, projection=None):
+            if "$in" in query["_id"]:
+                return _AsyncCursor(
+                    [
+                        {"_id": node_id, "entity_type": "person"}
+                        for node_id in query["_id"]["$in"]
+                        if node_id != "Dangling"
+                    ]
+                )
+            raise AssertionError("isolated top-up must not run: the band refilled")
+
+        storage.collection.find = Mock(side_effect=_find)
+        storage.edge_collection.find = Mock(return_value=_AsyncCursor([]))
+
+        result = await storage.get_knowledge_graph_all_by_degree(
+            max_depth=2, max_nodes=2
+        )
+
+        assert [node.id for node in result.nodes] == ["Real", "Next"]
+        # A whole page, skipping the one already consumed: pages are
+        # {_id, degree} rows and cheap next to the aggregation producing them,
+        # so each extra pass should make as much progress as it can.
+        refill_pipeline = storage.edge_collection.aggregate.call_args_list[1][0][0]
+        assert {"$skip": 2} in refill_pipeline, refill_pipeline
+        assert {"$limit": 2} in refill_pipeline, refill_pipeline
+
+    @pytest.mark.asyncio
+    async def test_get_knowledge_graph_all_exhausts_the_band_before_topping_up(self):
+        """An isolate must never outrank an entity still left in the ranked band.
+
+        Stopping the refill after one page let the degree-0 top-up -- which
+        orders on the label alone, over EVERY remaining node document, not just
+        isolates -- take slots the band could still fill. Here "Aaa" sorts ahead
+        of the degree-1 "Zed", so a single dangling id in each of the first two
+        pages was enough to drop Zed from a degree-ranked view.
+
+        The top-up is only correct where it is reachable only on exhaustion:
+        that is what makes "the isolated (degree-0) entities" true of whatever
+        it can still pick.
+        """
+        storage = self._make_storage()
+        storage.collection.count_documents = AsyncMock(return_value=9)
+        # One dangling id in each of the first two pages.
+        band = [
+            {"_id": "Hi", "degree": 5},
+            {"_id": "Dang1", "degree": 4},
+            {"_id": "Dang2", "degree": 3},
+            {"_id": "Zed", "degree": 1},
+        ]
+
+        async def _aggregate(pipeline, **kwargs):
+            # Honour $skip/$limit: a mock that ignores them hands a
+            # shortfall-sized request a whole page and hides the defect.
+            skip = next((s["$skip"] for s in pipeline if "$skip" in s), 0)
+            limit = next(s["$limit"] for s in pipeline if "$limit" in s)
+            return _AsyncCursor(band[skip : skip + limit])
+
+        storage.edge_collection.aggregate = _aggregate
+
+        real = {"Hi", "Zed", "Aaa"}  # Dang1/Dang2 have no node document
+
+        def _find(query, projection=None):
+            if "$in" in query["_id"]:
+                return _AsyncCursor(
+                    [
+                        {"_id": node_id, "entity_type": "person"}
+                        for node_id in query["_id"]["$in"]
+                        if node_id in real
+                    ]
+                )
+            # The top-up scans every node not already accepted, label-ordered.
+            return _AsyncCursor(
+                [
+                    {"_id": node_id, "entity_type": "person"}
+                    for node_id in sorted(real - set(query["_id"]["$nin"]))
+                ]
+            )
+
+        storage.collection.find = Mock(side_effect=_find)
+        storage.edge_collection.find = Mock(return_value=_AsyncCursor([]))
+
+        result = await storage.get_knowledge_graph_all_by_degree(
+            max_depth=2, max_nodes=2
+        )
+
+        assert [node.id for node in result.nodes] == ["Hi", "Zed"]
 
     @pytest.mark.asyncio
     async def test_bidirectional_bfs_reports_truncated_and_respects_cap(self):

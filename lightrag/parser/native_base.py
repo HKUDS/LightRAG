@@ -40,14 +40,20 @@ class NativeExtractRuntime:
     Bundles the per-file state the async template resolves BEFORE entering the
     worker thread: the decoded ``parse_engine`` params, an optional synchronous
     LLM callable (built only when :meth:`NativeParserBase.wants_llm_bridge`
-    says the params need one), and the cancellation event the bridge polls.
-    The three travel together — a subclass that consumes none of them simply
-    ignores the argument.
+    says the params need one), and the cancellation events any blocking work
+    in the worker thread should poll. They travel together — a subclass that
+    consumes none of them simply ignores the argument.
+
+    ``cancel_events`` is the full set, in the ``(event, exception_type)`` shape
+    :func:`~lightrag.parser.llm_bridge.normalize_cancel_events` accepts, so a
+    consumer stays agnostic about which source fired: the per-parse event
+    (first entry), the pipeline's (``/documents/cancel_pipeline``), and the
+    rag shutdown event.
     """
 
     engine_params: Mapping[str, Any] = field(default_factory=dict)
     llm_invoke: Callable[..., str] | None = None
-    cancel_event: threading.Event | None = None
+    cancel_events: tuple = ()
 
 
 class NativeParserBase(BaseParser):
@@ -62,11 +68,31 @@ class NativeParserBase(BaseParser):
 
     # --- engine-private hooks ------------------------------------------------
     def validate_source(self, source: Path, file_path: str) -> None:
-        """Validate the resolved source (default: must be an existing file)."""
+        """Validate the resolved source (default: must be an existing file).
+
+        Runs inline in :meth:`parse`, i.e. ON THE EVENT LOOP, so it must stay
+        stat-level. Anything that reads the file belongs in
+        :meth:`validate_source_blocking`.
+        """
         if not (source.exists() and source.is_file()):
             raise FileNotFoundError(
                 f"{self.engine_name} source file not found: {source}"
             )
+
+    def validate_source_blocking(self, source: Path, file_path: str) -> None:
+        """Validate what cannot be checked without reading the source.
+
+        Runs at the top of ``_extract_sync`` — inside the parser executor, and
+        BEFORE the ``parsed_dir`` cleanup — so that:
+
+        * a check whose cost scales with the file (opening the archive of a
+          .docx with a huge central directory takes seconds) cannot stall the
+          event loop and every unrelated request with it, and
+        * a refusal has not already deleted the previous attempt's artifacts.
+
+        Default is a no-op; engines that need a read-level gate override it.
+        """
+        return None
 
     @abstractmethod
     def extract(
@@ -232,7 +258,28 @@ class NativeParserBase(BaseParser):
         # Per-parse cancel event, polled by the LLM bridge between waits. The
         # rag-level shutdown event (when present) covers finalize_storages
         # while an extract is still in flight.
+        from lightrag.parser.llm_bridge import (
+            LLMBridgePipelineCancelled,
+            LLMBridgeShutdown,
+        )
+
         cancel_event = threading.Event()
+        # Captured ONCE here, deliberately: _shutdown_parser_executor() sets the
+        # current event and then replaces the attribute with a fresh, unset one,
+        # so an in-flight parse must keep its reference to the event that was
+        # live when it started. Re-reading ctx.rag._parser_shutdown_event later
+        # would observe the replacement and miss the shutdown entirely.
+        shutdown_event = getattr(ctx.rag, "_parser_shutdown_event", None)
+        # Built once and shared by every consumer in the worker thread — the
+        # LLM bridge and, since GHSA-25c3-j78v-83qx, the native markdown image
+        # downloader. Before that the pipeline event reached the bridge only,
+        # so a cancel was invisible to a document whose parse was stuck in a
+        # network read.
+        cancel_events = (
+            cancel_event,
+            (ctx.pipeline_cancel_event, LLMBridgePipelineCancelled),
+            (shutdown_event, LLMBridgeShutdown),
+        )
         llm_invoke = None
         smartheading_cache_keys: list = []
         i4_cache_disabled = False
@@ -241,29 +288,17 @@ class NativeParserBase(BaseParser):
                 ctx
             )
             if submit is not None:
-                from lightrag.parser.llm_bridge import (
-                    LLMBridgePipelineCancelled,
-                    LLMBridgeShutdown,
-                    SyncLLMBridge,
-                )
+                from lightrag.parser.llm_bridge import SyncLLMBridge
 
-                shutdown_event = getattr(ctx.rag, "_parser_shutdown_event", None)
                 llm_invoke = SyncLLMBridge(
                     asyncio.get_running_loop(),
                     submit,
-                    cancel_events=(
-                        cancel_event,
-                        (
-                            ctx.pipeline_cancel_event,
-                            LLMBridgePipelineCancelled,
-                        ),
-                        (shutdown_event, LLMBridgeShutdown),
-                    ),
+                    cancel_events=cancel_events,
                 )
         runtime = NativeExtractRuntime(
             engine_params=engine_params,
             llm_invoke=llm_invoke,
-            cancel_event=cancel_event,
+            cancel_events=cancel_events,
         )
 
         rs = ctx.resolve(self.engine_name)
@@ -275,7 +310,77 @@ class NativeParserBase(BaseParser):
         parsed_dir = rs.parsed_dir
         asset_dir = parsed_dir / f"{base_name}.blocks.assets"
 
+        # Whether _extract_sync got as far as replacing parsed_dir. Written in
+        # the executor thread, read here after the await. It exists because the
+        # two failure modes need opposite handling: once the directory is being
+        # replaced a failure must roll it back, but a refusal that happens
+        # BEFORE that must leave the previous attempt's sidecar alone.
+        #
+        # For normal completion the future's completion is the happens-before
+        # edge, but a CANCELLED future completes while the worker thread is
+        # still running — so the checkpoint's {read events, set flag} and the
+        # coroutine's {set cancel_event, read flag} race. cleanup_lock makes
+        # each of those a critical section: the coroutine either sees
+        # cleanup_started before the worker commits to the rmtree (and rolls
+        # back) or the worker sees the cancel event at the checkpoint (and
+        # never starts). Both sections are pure in-memory work, so holding the
+        # lock never blocks on I/O.
+        cleanup_started = False
+        cleanup_lock = threading.Lock()
+
         def _extract_sync():
+            nonlocal cleanup_started
+            # Read-level validation runs here, not in parse(): it opens the
+            # source, and on the event loop that cost is paid by every other
+            # request.
+            self.validate_source_blocking(source, ctx.file_path)
+            # Cancellation checkpoint, and the last moment one is useful.
+            # Cancelling run_in_executor cancels only the future — THIS thread
+            # keeps running, and everything below destroys parsed_dir and
+            # rebuilds it. Ordinary extraction polls nothing, so without this
+            # a cancel arriving during validation lets an abandoned worker
+            # delete a complete sidecar from an earlier parse and leave a
+            # partial one behind, after the coroutine has already returned.
+            # The source is gone from INPUT_DIR by then, so that is not
+            # recoverable.
+            #
+            # Raise LLMBridgePipelineCancelled, NOT asyncio.CancelledError:
+            # the pipeline-level cancel (_watch_pipeline_cancellation) only
+            # SETS ctx.pipeline_cancel_event, it never cancels the worker task,
+            # so a CancelledError raised here would be set on a live, un-
+            # cancelled future and re-raised into _parse_worker as a
+            # BaseException that matches neither of its except clauses — the
+            # doc would strand in PARSING and, if every worker died this way,
+            # wedge the batch on q.join() with busy=True. LLMBridgePipelineCancelled
+            # is the repo-wide "blocking parse wait was cancelled" signal that
+            # _parse_worker catches to mark the doc cancelled. In the task-
+            # cancel case the future is already cancelled, so awaiting it raises
+            # CancelledError regardless of what the worker raised — one uniform
+            # raise covers both.
+            #
+            # The rag-level shutdown event is checked here too, and raises the
+            # distinct LLMBridgeShutdown. _shutdown_parser_executor() sets it
+            # and then calls executor.shutdown(wait=False), i.e. it does NOT
+            # wait for a running extract — its contract is that in-flight work
+            # exits via the event. Without this branch a worker still inside
+            # validate_source_blocking when finalize_storages() runs would walk
+            # on to rmtree parsed_dir and extract into storages being torn down.
+            # Shutdown stays a generic parse failure for audit (the parse worker
+            # catches only PipelineCancelledException / LLMBridgePipelineCancelled
+            # as "cancelled"), which is the documented intent.
+            pipeline_cancelled = ctx.pipeline_cancel_event
+            with cleanup_lock:
+                if shutdown_event is not None and shutdown_event.is_set():
+                    raise LLMBridgeShutdown(
+                        f"parser executor shut down before extraction: {ctx.file_path}"
+                    )
+                if cancel_event.is_set() or (
+                    pipeline_cancelled is not None and pipeline_cancelled.is_set()
+                ):
+                    raise LLMBridgePipelineCancelled(
+                        f"parse cancelled before extraction: {ctx.file_path}"
+                    )
+                cleanup_started = True
             # Pre-clean parsed_dir and pre-create asset_dir so the extractor
             # can write image bytes BEFORE write_sidecar (clean_parsed_dir=False
             # then keeps them). parsed_artifact_dir_for returns a unique dir per
@@ -314,8 +419,24 @@ class NativeParserBase(BaseParser):
             # the pre-created (possibly partial) dirs. The worker thread may
             # briefly outlive the rmtree; the pre-clean at the next parse
             # attempt sweeps any late writes.
-            cancel_event.set()
-            if parsed_dir.exists():
+            #
+            # Only roll back what this attempt started building. A refusal from
+            # validate_source_blocking lands here having touched nothing, and
+            # deleting parsed_dir for it would destroy a COMPLETE sidecar from
+            # an earlier successful parse — one a persisted sidecar_location
+            # still points at, which the reuse path then cannot resolve.
+            #
+            # Take cleanup_lock around {set cancel_event, read cleanup_started}
+            # so it interlocks with the worker's checkpoint (see cleanup_lock
+            # above): on a cancelled future the worker is still running, and
+            # without this the coroutine could read cleanup_started=False and
+            # skip the rollback while the worker goes on to set the flag and
+            # rmtree the prior complete sidecar. Snapshot the flag inside the
+            # lock, do the I/O outside it.
+            with cleanup_lock:
+                cancel_event.set()
+                should_roll_back = cleanup_started
+            if should_roll_back and parsed_dir.exists():
                 shutil.rmtree(parsed_dir, ignore_errors=True)
             raise
         if not blocks:
