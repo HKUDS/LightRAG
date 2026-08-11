@@ -168,6 +168,63 @@ ARCHIVED_FILE_SUFFIX_RE = re.compile(r"_(?:\d{3}|\d{10,})$")
 _ADMISSION_RETRY_AFTER_SECONDS = 30
 
 
+# Characters a document source must not carry. Stricter than the graph-attribute
+# rule in ``lightrag.utils`` on purpose: tab/newline/carriage return are legal
+# XML and legal in a description, but a *filename* holding one is pathological,
+# and ``sanitize_filename`` has always refused them. Surrogates and the
+# non-characters are the additions -- they reach a filename through
+# ``surrogateescape`` decoding of a non-UTF-8 multipart header, and they are
+# exactly as unserializable as a control character once the value is stamped
+# onto graph nodes.
+_UNSAFE_DOCUMENT_SOURCE_CHAR_PATTERN = re.compile(
+    "[\u0000-\u001f\u007f\ud800-\udfff\ufffe\uffff]"
+)
+
+
+def find_unsafe_document_source_character(value: str) -> str | None:
+    """Return the first character that disqualifies *value* as a document source.
+
+    A document source is not only a display string: it is stamped onto the
+    ``file_path`` attribute of every entity and relation extracted from the
+    document. Nothing downstream cleans it -- the extraction handlers pass
+    ``file_path`` through untouched, unlike ``description`` / ``entity_type`` /
+    ``keywords``, which all go through ``sanitize_text_for_encoding``. So a value
+    accepted here is a value the graph backends must be able to store, and one
+    they cannot store takes out writes for the whole instance on NetworkX (see
+    GHSA-c922-pw4m-4wcv).
+
+    Rejecting rather than rewriting, for the reason ``sanitize_filename``
+    already gives: the source doubles as a document identifier, a dedup key and
+    the ``doc_id`` seed, so silently rewriting it would change document identity
+    and could collide with a legitimate document.
+
+    Args:
+        value: Candidate document source (uploaded filename or ``file_source``).
+
+    Returns:
+        The offending character, or ``None`` when the value is usable.
+    """
+    match = _UNSAFE_DOCUMENT_SOURCE_CHAR_PATTERN.search(value)
+    return match.group() if match else None
+
+
+def reject_unsafe_document_source(value: str | None) -> str | None:
+    """Raise ``ValueError`` when *value* holds a character a source may not carry.
+
+    Shaped for a Pydantic field validator (the one place ``/documents/text`` and
+    ``/documents/texts`` both pass through); ``sanitize_filename`` performs the
+    same check but raises ``HTTPException`` to match the rest of the upload path.
+    """
+    if value is None:
+        return None
+    offender = find_unsafe_document_source_character(value)
+    if offender is not None:
+        raise ValueError(
+            f"file_source must not contain the character U+{ord(offender):04X}"
+        )
+    return value
+
+
 def normalize_file_path(file_path: str | None) -> str:
     """Normalize missing document sources to a single non-null sentinel."""
     if file_path is None:
@@ -211,7 +268,10 @@ def sanitize_filename(filename: str, input_dir: Path) -> str:
     if filename != filename.strip():
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    if any(ord(c) < 32 or c == "\x7f" for c in filename):
+    # Shared with the ``file_source`` body fields so both ingress paths agree on
+    # what a document source may contain -- see
+    # ``find_unsafe_document_source_character``.
+    if find_unsafe_document_source_character(filename) is not None:
         raise HTTPException(status_code=400, detail="Invalid filename")
 
     if "/" in filename or "\\" in filename:
@@ -749,6 +809,11 @@ class InsertTextRequest(BaseModel):
     @field_validator("file_source", mode="before")
     @classmethod
     def normalize_source_before(cls, file_source: Optional[str]) -> str:
+        # Reject before normalizing: `normalize_file_path` is also used on read
+        # paths (building document listings from stored values), so it must stay
+        # non-raising -- a document already holding a bad source has to remain
+        # listable and deletable.
+        reject_unsafe_document_source(file_source)
         return normalize_file_path(file_source)
 
     model_config = ConfigDict(
@@ -806,6 +871,10 @@ class InsertTextsRequest(BaseModel):
         if file_sources is None:
             return None
 
+        # See TextRequest.normalize_source_before for why the rejection is here
+        # and not inside normalize_file_path.
+        for file_source in file_sources:
+            reject_unsafe_document_source(file_source)
         return [normalize_file_path(file_source) for file_source in file_sources]
 
     model_config = ConfigDict(
