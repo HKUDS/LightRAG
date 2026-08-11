@@ -154,6 +154,14 @@ class NetworkXStorage(BaseGraphStorage):
         in-memory graph, which is exactly the partial-mutation state the
         guard exists to prevent.
 
+        All four methods validate *after* ``_get_graph()`` -- their only
+        await -- and then mutate with nothing awaited in between. That
+        ordering is what makes the guard airtight rather than advisory:
+        by invariant (3) above a synchronous run cannot be preempted, so a
+        caller that retains the mapping it passed in has no window in which
+        to add a value after the check and before ``add_node`` /
+        ``add_edge`` consumes it.
+
     Non-pipeline write paths:
         The pipeline's ``busy`` gate serializes mutation calls reached
         through the document ingestion and purge flows. The following
@@ -334,8 +342,10 @@ class NetworkXStorage(BaseGraphStorage):
         Validates before mutating: see *Attribute validation* in the class
         docstring.
         """
-        validate_xml_attributes(node_data, context=self._node_context(node_id))
         graph = await self._get_graph()
+        # Validate *after* the only await, so the check and the mutation are one
+        # synchronous block -- see *Attribute validation* in the class docstring.
+        validate_xml_attributes(node_data, context=self._node_context(node_id))
         graph.add_node(node_id, **node_data)
 
     async def upsert_edge(
@@ -353,10 +363,11 @@ class NetworkXStorage(BaseGraphStorage):
         Validates before mutating: see *Attribute validation* in the class
         docstring.
         """
+        graph = await self._get_graph()
+        # See upsert_node: checked after the await, mutated with none in between.
         validate_xml_attributes(
             edge_data, context=self._edge_context(source_node_id, target_node_id)
         )
-        graph = await self._get_graph()
         graph.add_edge(source_node_id, target_node_id, **edge_data)
 
     async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
@@ -373,12 +384,13 @@ class NetworkXStorage(BaseGraphStorage):
         Args:
             nodes: List of (node_id, node_data) tuples.
         """
-        # Validate the whole batch first: a rejection halfway through the loop
-        # would leave the earlier nodes applied to the in-memory graph, which is
-        # the partial-mutation state this validation exists to prevent.
+        graph = await self._get_graph()
+        # Validate the whole batch before applying any of it: a rejection halfway
+        # through the apply loop would leave the earlier nodes in the in-memory
+        # graph, which is the partial-mutation state this exists to prevent. Both
+        # loops run after the only await, with none in between.
         for node_id, node_data in nodes:
             validate_xml_attributes(node_data, context=self._node_context(node_id))
-        graph = await self._get_graph()
         for node_id, node_data in nodes:
             graph.add_node(node_id, **node_data)
 
@@ -404,10 +416,10 @@ class NetworkXStorage(BaseGraphStorage):
         Args:
             edges: List of (source_id, target_id, edge_data) tuples.
         """
-        # Whole batch first -- see upsert_nodes_batch.
+        graph = await self._get_graph()
+        # Whole batch first, after the only await -- see upsert_nodes_batch.
         for src, tgt, edge_data in edges:
             validate_xml_attributes(edge_data, context=self._edge_context(src, tgt))
-        graph = await self._get_graph()
         for src, tgt, edge_data in edges:
             graph.add_edge(src, tgt, **edge_data)
 
