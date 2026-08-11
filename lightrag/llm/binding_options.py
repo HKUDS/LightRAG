@@ -534,13 +534,17 @@ class OllamaLLMOptions(_OllamaOptionsMixin, BindingOptions):
 
     # Whether the model may emit a hidden reasoning trace before its answer.
     # Only meaningful for LLM calls, not embeddings, hence living here rather
-    # than on _OllamaOptionsMixin. True (matching each model's own default)
-    # is right for a user-facing query, where a bit of extra latency for a
-    # better answer is a reasonable trade. It is the wrong default for
-    # extraction/keyword calls, which need deterministic structured output
-    # and no visible reasoning -- resolve_role_llm_settings() in
-    # lightrag_server.py overrides those two roles to False unless a role
-    # explicitly sets OLLAMA_LLM_THINK/EXTRACT_OLLAMA_LLM_THINK itself.
+    # than on _OllamaOptionsMixin. Defaults to True (matching each model's
+    # own default) for every role, including extraction/keyword, and the
+    # framework never overrides that default itself. A thinking-capable
+    # model can exhaust its whole generation budget on hidden reasoning
+    # before extraction ever emits structured output (issue #3597), but
+    # disabling thinking isn't universally correct either -- it measurably
+    # hurts extraction quality on some smaller models. That's a judgment
+    # call about a specific model, which the person running it is better
+    # placed to make than this library: set EXTRACT_OLLAMA_LLM_THINK=false
+    # / KEYWORD_OLLAMA_LLM_THINK=false (or OLLAMA_LLM_THINK=false globally)
+    # if your model needs it.
     think: bool = True
 
     # mandatory name of binding
