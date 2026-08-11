@@ -174,15 +174,19 @@ def _oversize_above_side_effect(
     return _side_effect
 
 
-class _ResourceExhaustedRpcError(grpc.RpcError):
-    """grpc error carrying RESOURCE_EXHAUSTED with a message that holds no
-    size marker — so only the status-code branch can classify it."""
+class _QuotaExhaustedRpcError(grpc.RpcError):
+    """RESOURCE_EXHAUSTED carrying no size marker — the shape a per-user quota
+    or rate-limit rejection takes. grpc reuses this status for both, so only
+    the message text separates throttling from an oversized response."""
 
     def code(self) -> grpc.StatusCode:
         return grpc.StatusCode.RESOURCE_EXHAUSTED
 
     def __str__(self) -> str:
-        return "rpc terminated"
+        return (
+            "<_InactiveRpcError of RPC that terminated with: "
+            "StatusCode.RESOURCE_EXHAUSTED, rate limit exceeded>"
+        )
 
 
 def _ordered_echo_side_effect(
@@ -475,30 +479,31 @@ class TestOversizePageBisection:
         assert call_sizes == [8, 4, 4, 4, 4, 4]
 
     @pytest.mark.asyncio
-    async def test_bisection_classifies_grpc_resource_exhausted_status(self) -> None:
-        """The size signal can arrive as a RESOURCE_EXHAUSTED status whose
-        message carries no marker text — the status code alone must classify
-        it, or a real overflow would propagate as a hard failure."""
+    async def test_bare_resource_exhausted_status_is_not_bisected(self) -> None:
+        """grpc reuses RESOURCE_EXHAUSTED for per-user quota, so classifying on
+        the status alone would read a rate-limit rejection as an oversized
+        response and re-issue it at every halved size with no backoff —
+        hammering the gateway that is already throttling. Only the size marker
+        in the message may trigger bisection; a genuine overflow always carries
+        it (see issue #3584), so nothing real is lost."""
         embed = MockEmbeddingFunc(dim=8)
         s = _make_storage(embed, meta_fields={"content"})
 
         call_sizes: list[int] = []
 
         def _side_effect(*, filter: str, **kwargs: Any) -> list[dict[str, Any]]:
-            count = _requested_id_count(filter)
-            call_sizes.append(count)
-            if count > 2:
-                raise _ResourceExhaustedRpcError()
-            return []
+            call_sizes.append(_requested_id_count(filter))
+            raise _QuotaExhaustedRpcError()
 
         s._client.query.side_effect = _side_effect
 
-        ids = [f"srv-{i}" for i in range(4)]
-        with patch("lightrag.kg.milvus_impl.MILVUS_QUERY_MAX_RECORDS_PER_BATCH", 4):
+        ids = [f"srv-{i}" for i in range(8)]
+        with patch("lightrag.kg.milvus_impl.MILVUS_QUERY_MAX_RECORDS_PER_BATCH", 8):
             results = await s.get_by_ids(ids)
 
-        assert call_sizes == [4, 2, 2]
-        assert results == [None] * 4
+        # One attempt only: no 8 -> 4 -> 2 -> 1 retry ladder.
+        assert call_sizes == [8]
+        assert results == []
 
     @pytest.mark.asyncio
     async def test_non_size_error_is_not_bisected(self) -> None:

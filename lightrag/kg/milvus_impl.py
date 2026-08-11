@@ -79,10 +79,14 @@ MILVUS_QUERY_ROW_OVERHEAD_BYTES = 256
 # those schema limits statically would instead assume ~200KB per row and
 # shrink every page to ~10 ids, inflating the common case (multi-KB
 # `content`) by roughly an order of magnitude for an overflow that is rare.
-MILVUS_QUERY_RESPONSE_TOO_LARGE_MARKERS = (
-    "received message larger than max",
-    "resource_exhausted",
-)
+#
+# Matched on the message text only, never on the gRPC RESOURCE_EXHAUSTED
+# status: that status also covers per-user quota (grpc's own docs say so), and
+# a rate-limited call bisected into ~log2(page_size) immediate no-backoff
+# retries would amplify the throttling it misread. The status buys no recall
+# either — grpc-core always attaches this text to a genuine oversize response
+# (see the traceback in issue #3584) — so quota errors fail fast instead.
+MILVUS_QUERY_RESPONSE_TOO_LARGE_MARKERS = ("received message larger than max",)
 
 # Schema-migration resilience. A transient Milvus outage during the long
 # iterator-based migration must not kill worker startup: when pymilvus'
@@ -2725,21 +2729,17 @@ class MilvusVectorDBStorage(BaseVectorStorage):
     def _is_response_too_large_error(error: BaseException) -> bool:
         """Return True when the error chain says a query() response overflowed.
 
-        Walks __cause__/__context__ like _is_retryable_connection_error:
-        pymilvus wraps the grpc error in MilvusException, so the
-        RESOURCE_EXHAUSTED status usually sits one level down. Connection,
-        schema and parameter errors fall through to False — bisecting those
-        would only re-issue a failure that a smaller page cannot fix.
+        Walks __cause__/__context__ like _is_retryable_connection_error,
+        because pymilvus wraps the grpc error in MilvusException and the
+        size text can sit a level down. Connection, schema, parameter and
+        quota errors fall through to False — bisecting those would only
+        re-issue a failure that a smaller page cannot fix, and for a
+        rate-limited call it would re-issue it several times over.
         """
         seen: set[int] = set()
         current: BaseException | None = error
         while current is not None and id(current) not in seen:
             seen.add(id(current))
-            if isinstance(current, grpc.RpcError):
-                code_getter = getattr(current, "code", None)
-                code = code_getter() if callable(code_getter) else None
-                if code is grpc.StatusCode.RESOURCE_EXHAUSTED:
-                    return True
             if any(
                 marker in str(current).lower()
                 for marker in MILVUS_QUERY_RESPONSE_TOO_LARGE_MARKERS
