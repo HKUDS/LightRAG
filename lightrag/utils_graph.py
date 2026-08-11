@@ -167,6 +167,29 @@ def _require_non_empty_description(
         )
 
 
+def _reject_self_loop_relation(
+    source_entity: Any, target_entity: Any, *, operation: str
+) -> None:
+    """Refuse a relation whose two endpoints are the same entity.
+
+    LightRAG's own extraction never emits a self-loop: ``operate.py`` drops
+    ``source == target`` in both record parsers and again in
+    ``_merge_edges_then_upsert``, and ``amerge_entities`` skips any endpoint
+    pair that would collapse into one. Manual creation is therefore the only
+    way such an edge can reach the graph, and a self-loop carries no
+    connectivity for graph retrieval — it only widens the surface where the
+    rest of the code has to reason about ``src == tgt``.
+
+    Rejected at the same layer as an empty description: before the keyed lock,
+    so a refusal writes nothing.
+    """
+    if source_entity == target_entity:
+        raise ValueError(
+            f"Cannot {operation} a self-loop relation on '{source_entity}': "
+            "source and target must be different entities"
+        )
+
+
 def _normalize_manual_entity_name(entity_name: Any) -> str:
     """Apply the extraction naming contract to a manual entity identifier."""
     if not isinstance(entity_name, str):
@@ -1389,6 +1412,9 @@ async def acreate_relation(
     _require_non_empty_description(
         relation_data.get("description"), operation="create", object_type="relation"
     )
+    # The graph edge below is written with these exact strings, so comparing
+    # them raw is precisely the condition that would produce a self-loop.
+    _reject_self_loop_relation(source_entity, target_entity, operation="create")
 
     # Same reasoning as `acreate_entity`: values of the recognised fields are
     # type-checked, unrecognised keys stay ignored.
