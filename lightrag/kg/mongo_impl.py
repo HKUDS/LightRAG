@@ -2302,6 +2302,8 @@ class MongoGraphStorage(BaseGraphStorage):
     # MongoDB owns ``_id``: it is the node/edge document key and this class uses
     # it as the update *filter*, so a caller-supplied ``_id`` in the attribute
     # mapping is never an attribute -- it is an attempt to move the document.
+    # No legacy exposure: ``get_node`` / ``get_edge`` already strip ``_id`` for
+    # exactly this reason, so a rewrite never carries it back in.
     # (``source_node_id`` / ``target_node_id`` / ``edge_lo`` / ``edge_hi`` need no
     # entry here: ``upsert_edge`` assigns them *after* spreading the caller's
     # mapping, so a supplied value is discarded by construction.)
@@ -2316,6 +2318,16 @@ class MongoGraphStorage(BaseGraphStorage):
         creating a field called ``source_ids.0``, and a leading ``$`` is read as
         an update operator. Unlike the value rules, this hazard is specific to
         this backend -- see ``validate_graph_attribute_names``.
+
+        Safe against pre-existing data despite rewrite paths spreading stored
+        attributes back into the payload: the two refused shapes cannot come
+        *out* of this collection. A legacy ``{"a.b": v}`` was interpreted as a
+        path when it was written, so the document holds ``{"a": {"b": v}}`` and
+        ``get_node`` returns the key ``a``; a ``$``-prefixed name was refused by
+        the server outright. That is also why the rule stops at the
+        interpretation hazard -- a merely unusual name such as ``display-name``
+        *is* stored flat and does round-trip, so rejecting it would strand the
+        entity.
         """
         validate_graph_attribute_names(attributes, context=context)
         reserved = sorted(self._RESERVED_ATTRIBUTE_NAMES.intersection(attributes))

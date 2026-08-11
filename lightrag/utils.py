@@ -6748,12 +6748,21 @@ _XML_INCOMPATIBLE_CHAR_PATTERN = re.compile(
     r"[^\u0009\u000a\u000d\u0020-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]"
 )
 
-# Graph attribute names must be plain identifiers. This is deliberately
-# narrower than "any string": MongoGraphStorage passes attribute names straight
-# into a ``$set`` document, where a dot is a *path* separator (``source_ids.0``
-# would rewrite an element of the chunk-attribution array rather than create a
-# field) and a leading ``$`` is read as an update operator.
-_GRAPH_ATTRIBUTE_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Attribute names a backend would read as something other than a name. Kept to
+# exactly that: MongoGraphStorage passes names straight into a ``$set``
+# document, where a dot is a *path* separator (``source_ids.0`` rewrites an
+# element of the chunk-attribution array rather than creating a field) and a
+# leading ``$`` is an update operator.
+#
+# Deliberately NOT "must be an identifier". Names like ``display-name`` or
+# ``has space`` carry no interpretation hazard on any backend, and the manual
+# edit API accepted them before the field allowlist landed -- so the document
+# backends that persisted them hold such names today. Refusing them here would
+# make those entities unmodifiable, because every rewrite path (entity edit,
+# rename, merge, extraction rebuild) spreads the *stored* attributes back into
+# the upsert payload.
+_GRAPH_ATTRIBUTE_NAME_DISALLOWED_SUBSTRING = "."
+_GRAPH_ATTRIBUTE_NAME_DISALLOWED_PREFIX = "$"
 
 
 def graph_attribute_value_rejection(value: Any) -> str | None:
@@ -6829,15 +6838,21 @@ def validate_graph_attribute_names(attributes: dict[str, Any], *, context: str) 
     Split from the value check because a backend should guard the hazard it
     actually has, and the two hazards live in different backends:
 
-    * Names are dangerous where they are interpreted. MongoDB passes them into a
-      ``$set`` document, so a dot is a *path* (``source_ids.0`` rewrites an
+    * Names are dangerous only where they are *interpreted*. MongoDB passes them
+      into a ``$set`` document, so a dot is a path (``source_ids.0`` rewrites an
       element of the chunk-attribution array instead of creating a field) and a
-      leading ``$`` is an update operator; OpenSearch turns a dotted name into a
-      nested object in the index mapping.
+      leading ``$`` is an update operator.
     * Names are inert in GraphML, which is why NetworkXStorage validates values
       only. Enforcing names there would additionally reject re-ingesting a node
       whose *stored* attributes predate this validation, which is a migration
       failure with no safety benefit.
+
+    The rule is the interpretation hazard and nothing beyond it -- see
+    ``_GRAPH_ATTRIBUTE_NAME_DISALLOWED_SUBSTRING`` for why "must be an
+    identifier" would be the wrong rule. A name that a backend *stores* rather
+    than interprets is legal here even if it is unusual, because rewrite paths
+    feed stored attributes back into the upsert payload and a stricter rule
+    would strand existing data.
 
     Args:
         attributes: Attribute mapping about to be written to graph storage.
@@ -6847,11 +6862,21 @@ def validate_graph_attribute_names(attributes: dict[str, Any], *, context: str) 
         ValueError: On the first unusable attribute name.
     """
     for key in attributes:
-        if not isinstance(key, str) or not _GRAPH_ATTRIBUTE_KEY_PATTERN.match(key):
+        if not isinstance(key, str) or not key:
             raise ValueError(
-                f"{context}: invalid attribute name {key!r}: must start with a "
-                "letter or underscore and contain only letters, digits and "
-                "underscores"
+                f"{context}: invalid attribute name {key!r}: must be a non-empty string"
+            )
+        if _GRAPH_ATTRIBUTE_NAME_DISALLOWED_SUBSTRING in key:
+            raise ValueError(
+                f"{context}: invalid attribute name {key!r}: must not contain "
+                f"{_GRAPH_ATTRIBUTE_NAME_DISALLOWED_SUBSTRING!r}, which is read "
+                "as a field path rather than part of the name"
+            )
+        if key.startswith(_GRAPH_ATTRIBUTE_NAME_DISALLOWED_PREFIX):
+            raise ValueError(
+                f"{context}: invalid attribute name {key!r}: must not start with "
+                f"{_GRAPH_ATTRIBUTE_NAME_DISALLOWED_PREFIX!r}, which is read as "
+                "an update operator"
             )
 
 

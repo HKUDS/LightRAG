@@ -10,6 +10,12 @@ Companion to the entry-layer allowlist in ``utils_graph`` (GHSA-c922-pw4m-4wcv):
 that stops the reported route from delivering such a name, this stops any other
 caller, including the Python API.
 
+The rule stops at the interpretation hazard. A merely unusual name such as
+``display-name`` is stored flat, comes back out of ``get_node``, and is spread
+into the next rewrite payload by every edit / rename / merge / rebuild path --
+so refusing it would make the entity permanently unmodifiable.
+``TestLegacyStoredNamesStillWrite`` pins that.
+
 The collection is a double -- the assertion is that the write is refused
 *before* any server call, so no live MongoDB is needed or wanted here.
 """
@@ -30,8 +36,15 @@ UNSAFE_NAMES = [
     pytest.param("a.b", id="dotted"),
     pytest.param("$set", id="update-operator"),
     pytest.param("$where", id="query-operator"),
-    pytest.param("has space", id="space"),
     pytest.param("", id="empty"),
+]
+
+# Names the pre-allowlist edit API accepted and this collection stores flat, so
+# they DO come back out of `get_node` and into the next rewrite payload.
+LEGACY_STORED_NAMES = [
+    pytest.param("display-name", id="dashed"),
+    pytest.param("has space", id="space"),
+    pytest.param("9legacy", id="leading-digit"),
 ]
 
 
@@ -144,3 +157,48 @@ class TestBatchesValidateBeforeWriting:
             await storage.upsert_edges_batch(edges)
 
         _assert_no_server_call(storage)
+
+
+class TestLegacyStoredNamesStillWrite:
+    """Unusual names that predate the field allowlist must keep working.
+
+    A graph edited through the pre-allowlist API can hold ``display-name``; the
+    rewrite paths read the stored object and spread every attribute back into
+    ``upsert_node``. A name rule wider than the interpretation hazard would turn
+    that entity into a permanent 400 even when the request only changes
+    ``description``.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", LEGACY_STORED_NAMES)
+    async def test_node_rewrite_carrying_a_legacy_name_succeeds(self, name):
+        storage = _make_storage()
+
+        await storage.upsert_node(
+            "n1", {"entity_id": "n1", name: "legacy", "description": "updated"}
+        )
+
+        storage.collection.update_one.assert_awaited_once()
+        _filter, update = storage.collection.update_one.await_args.args
+        assert update["$set"][name] == "legacy"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", LEGACY_STORED_NAMES)
+    async def test_edge_rewrite_carrying_a_legacy_name_succeeds(self, name):
+        storage = _make_storage()
+
+        await storage.upsert_edge("a", "b", {"weight": 1.0, name: "legacy"})
+
+        storage.edge_collection.update_one.assert_awaited_once()
+        _filter, update = storage.edge_collection.update_one.await_args.args
+        assert update["$set"][name] == "legacy"
+
+    @pytest.mark.asyncio
+    async def test_a_dollar_sign_inside_the_name_is_accepted(self):
+        """Only a *leading* ``$`` is an operator."""
+        storage = _make_storage()
+
+        await storage.upsert_node("n1", {"entity_id": "n1", "cost$usd": "5"})
+
+        _filter, update = storage.collection.update_one.await_args.args
+        assert update["$set"]["cost$usd"] == "5"

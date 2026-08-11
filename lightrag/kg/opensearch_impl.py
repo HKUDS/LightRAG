@@ -51,7 +51,6 @@ from ..utils import (
     compute_mdhash_id,
     _cooperative_yield,
     merge_source_ids,
-    validate_graph_attribute_names,
     validate_workspace,
 )
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
@@ -4029,35 +4028,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
     # --- Upsert operations ---
 
-    def _validate_attribute_names(self, attributes: dict, *, context: str) -> None:
-        """Reject attribute names OpenSearch would interpret rather than store.
-
-        Both graph indices are created with ``dynamic: true``, so an unknown
-        attribute name does not fail -- it is *added to the index mapping*. A
-        dotted name becomes a nested object there rather than a field of that
-        name, and every distinct name consumes one of the index's
-        ``mapping.total_fields.limit`` slots, which no per-document write can
-        give back. Restricting names to identifiers keeps the mapping shaped by
-        the schema instead of by request payloads. Unlike the value rules, this
-        hazard is specific to the mapping-carrying backends -- see
-        ``validate_graph_attribute_names``.
-
-        ``_id`` needs no entry: the upsert paths already drop it explicitly
-        because it addresses the document, not its contents.
-        """
-        validate_graph_attribute_names(attributes, context=context)
-
-    def _node_context(self, node_id: str) -> str:
-        """Error-message prefix identifying a node write."""
-        return f"[{self.workspace}] node `{node_id}`"
-
-    def _edge_context(self, source_node_id: str, target_node_id: str) -> str:
-        """Error-message prefix identifying an edge write."""
-        return f"[{self.workspace}] edge `{source_node_id}`~`{target_node_id}`"
-
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """Insert or update a node. Adds entity_id for PPL compatibility."""
-        self._validate_attribute_names(node_data, context=self._node_context(node_id))
         try:
             await self._ensure_indices_ready()
             doc = {k: v for k, v in node_data.items() if k != "_id"}
@@ -4117,9 +4089,6 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         id), so there is no need to delete a reverse-orientation doc on each
         write — the index is canonical before any write happens.
         """
-        self._validate_attribute_names(
-            edge_data, context=self._edge_context(source_node_id, target_node_id)
-        )
         try:
             await self._ensure_indices_ready()
             # Materialize BOTH endpoints, not just the source. A target-only
@@ -4165,12 +4134,6 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         """
         if not nodes:
             return
-        # Whole batch before the bulk call: a mapping-shaping name must not be
-        # accepted just because it shared a request with valid ones.
-        for node_id, node_data in nodes:
-            self._validate_attribute_names(
-                node_data, context=self._node_context(node_id)
-            )
         try:
             await self._ensure_indices_ready()
             actions = []
@@ -4261,13 +4224,6 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         """
         if not edges:
             return
-        # Whole batch first: placeholder endpoints are created below before any
-        # edge document is written, so rejecting mid-loop would leave them behind
-        # for edges that were never created.
-        for src, tgt, edge_data in edges:
-            self._validate_attribute_names(
-                edge_data, context=self._edge_context(src, tgt)
-            )
         try:
             await self._ensure_indices_ready()
 

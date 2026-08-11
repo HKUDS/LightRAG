@@ -675,10 +675,10 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
         Attribute contract (applies to ``upsert_edge`` and the batch variants
         too):
-            Every attribute name must be a plain identifier
-            (``[A-Za-z_][A-Za-z0-9_]*``) and every value must be a storable
-            scalar -- ``str`` (XML-compatible), ``int``, finite ``float``, or
-            ``bool``. Nothing else: no nested containers, and no ``None``.
+            Every value must be a storable scalar -- ``str``
+            (XML-compatible), ``int``, finite ``float``, or ``bool``. Nothing
+            else: no nested containers, and no ``None``. Attribute names must
+            not contain ``"."`` or start with ``"$"``.
 
             This is the intersection of what the registered backends can carry,
             and callers are responsible for it because the backends disagree on
@@ -689,6 +689,14 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             error on NetworkX. ``lightrag.utils.validate_graph_attributes``
             is the shared enforcement point -- prefer it over re-deriving the
             rule per backend.
+
+            The name rule is limited to what a backend *interprets* rather than
+            stores, and nothing beyond it. Every rewrite path (entity edit,
+            rename, merge, extraction rebuild) spreads a fetched object's stored
+            attributes back into the upsert payload, so a stricter name rule
+            would make any object holding an unusual-but-harmless name -- which
+            the manual edit API accepted before its field allowlist landed --
+            permanently unmodifiable.
 
         Args:
             node_id: The ID of the node to insert or update

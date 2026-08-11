@@ -96,7 +96,23 @@ class TestUnstorableValues:
 
 class TestAttributeNames:
     @pytest.mark.parametrize("key", ["entity_id", "_private", "created_at", "a9", "A"])
-    def test_identifiers_are_accepted(self, key):
+    def test_ordinary_names_are_accepted(self, key):
+        validate_graph_attributes({key: "x"}, context="entity 'X'")
+
+    @pytest.mark.parametrize(
+        "key",
+        ["display-name", "has space", "9leading_digit", "MiXeD Case!", "名前"],
+    )
+    def test_unusual_but_stored_names_are_accepted(self, key):
+        """The rule is the interpretation hazard, not "must be an identifier".
+
+        These carry no hazard on any backend, and the manual edit API accepted
+        them before its field allowlist landed -- so the document backends that
+        persisted them hold such names today. Every rewrite path (entity edit,
+        rename, merge, extraction rebuild) spreads a fetched object's stored
+        attributes back into the upsert payload, so refusing them would make
+        those objects permanently unmodifiable.
+        """
         validate_graph_attributes({key: "x"}, context="entity 'X'")
 
     @pytest.mark.parametrize(
@@ -107,22 +123,26 @@ class TestAttributeNames:
             # create a field named "source_ids.0".
             "source_ids.0",
             "a.b",
-            # A leading ``$`` is read as an update operator.
-            "$set",
-            "$where",
-            "has space",
-            "9leading_digit",
-            "dash-ed",
-            "",
+            ".leading",
+            "trailing.",
         ],
     )
-    def test_unsafe_names_are_rejected(self, key):
-        with pytest.raises(ValueError, match="invalid attribute name"):
+    def test_names_read_as_a_field_path_are_rejected(self, key):
+        with pytest.raises(ValueError, match="read as a field path"):
             validate_graph_attributes({key: "x"}, context="entity 'X'")
 
-    @pytest.mark.parametrize("key", [1, None, ("a",)])
-    def test_non_string_names_are_rejected(self, key):
-        with pytest.raises(ValueError, match="invalid attribute name"):
+    @pytest.mark.parametrize("key", ["$set", "$where", "$"])
+    def test_names_read_as_an_update_operator_are_rejected(self, key):
+        with pytest.raises(ValueError, match="read as\\s+an update operator"):
+            validate_graph_attributes({key: "x"}, context="entity 'X'")
+
+    def test_a_dollar_sign_inside_the_name_is_accepted(self):
+        """Only the *leading* ``$`` is an operator; mid-name it is just a char."""
+        validate_graph_attributes({"cost$usd": "x"}, context="entity 'X'")
+
+    @pytest.mark.parametrize("key", [1, None, ("a",), ""])
+    def test_non_string_and_empty_names_are_rejected(self, key):
+        with pytest.raises(ValueError, match="must be a non-empty string"):
             validate_graph_attributes({key: "x"}, context="entity 'X'")
 
 
