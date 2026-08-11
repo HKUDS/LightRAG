@@ -81,6 +81,26 @@ async def test_options_dict_is_not_mutated_across_repeated_calls():
 
 
 @pytest.mark.asyncio
+async def test_think_on_an_old_ollama_is_refused_before_the_call(monkeypatch):
+    """The API server validates think= at startup, but library callers never
+    go through create_app -- so the call path keeps its own refusal, and it
+    must fire before chat() is reached rather than letting the ollama client
+    silently drop the argument."""
+    import lightrag.llm.ollama as ollama_binding
+
+    monkeypatch.setattr(ollama_binding, "_OLLAMA_SUPPORTS_THINK", False)
+    fake_client = _make_fake_client()
+
+    with patch("lightrag.llm.ollama.ollama.AsyncClient", return_value=fake_client):
+        with pytest.raises(RuntimeError, match="ollama>=0.5.0"):
+            await _ollama_model_if_cache(
+                model="test-model", prompt="Extract", options={"think": False}
+            )
+
+    fake_client.chat.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_missing_options_dict_entirely_does_not_crash():
     fake_client = _make_fake_client()
 

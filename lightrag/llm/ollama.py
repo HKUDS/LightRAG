@@ -54,9 +54,39 @@ _CLOUD_MODEL_SUFFIX_PATTERN = re.compile(r"(?:-cloud|:cloud)$")
 # floor declared in pyproject.toml and both offline-requirements files.
 # Checked once here (no network call, just installed-package metadata) and
 # consulted only where think is actually forwarded, in
-# _ollama_model_if_cache -- an environment that already has an older ollama
+# ensure_think_supported -- an environment that already has an older ollama
 # still imports and works normally for every call that doesn't set think.
 _OLLAMA_SUPPORTS_THINK = pm.is_installed("ollama", ">=0.5.0")
+
+
+def ensure_think_supported(options: Any, *, context: str = "") -> None:
+    """Reject a think= option the installed ollama package cannot forward.
+
+    Called from two places on purpose:
+
+    - ``_ollama_model_if_cache``, right before the option is lifted out --
+      the only defence library callers (who never go through the API server)
+      get.
+    - the API server's option-resolution chokepoints, so a misconfigured
+      OLLAMA_LLM_THINK fails while the server is still starting up instead of
+      mid-pipeline, hours into a document run.
+
+    ``options`` that is not a dict, or carries no ``think`` key at all (e.g.
+    the embedding options dict, which has no such field), is left alone: the
+    model keeps its own thinking default and an older ollama stays usable.
+    """
+    if not isinstance(options, dict) or "think" not in options:
+        return
+    if _OLLAMA_SUPPORTS_THINK:
+        return
+    where = f" for {context}" if context else ""
+    raise RuntimeError(
+        f"OLLAMA_LLM_THINK / {{ROLE}}_OLLAMA_LLM_THINK is set{where}, but the "
+        "installed ollama package does not support think= (needs "
+        'ollama>=0.5.0). Run `pip install -U "ollama>=0.5.0"` (or `uv sync`) '
+        "to use it, or unset the option to leave thinking at the model's own "
+        "default."
+    )
 
 
 def _coerce_host_for_cloud_model(host: Optional[str], model: object) -> Optional[str]:
@@ -188,15 +218,8 @@ async def _ollama_model_if_cache(
     # call site. Absent entirely (e.g. the embedding options dict, which has
     # no `think` field) leaves thinking at the model's own default.
     options = kwargs.get("options")
+    ensure_think_supported(options)
     if isinstance(options, dict) and "think" in options:
-        if not _OLLAMA_SUPPORTS_THINK:
-            raise RuntimeError(
-                "OLLAMA_LLM_THINK / {ROLE}_OLLAMA_LLM_THINK is set, but the "
-                "installed ollama package does not support think= (needs "
-                'ollama>=0.5.0). Run `pip install -U "ollama>=0.5.0"` (or '
-                "`uv sync`) to use it, or unset the option to leave thinking "
-                "at the model's own default."
-            )
         # Read without mutating -- options can be the same dict object
         # reused across every call for a role's lifetime (library callers
         # pass it once via llm_model_kwargs), so popping from it here would

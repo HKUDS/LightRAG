@@ -23,6 +23,16 @@ from lightrag.llm.binding_options import OllamaLLMOptions
 pytestmark = pytest.mark.offline
 
 
+@pytest.fixture(autouse=True)
+def _ollama_llm_binding(monkeypatch):
+    """parse_args only registers the Ollama option group when LLM_BINDING
+    resolves to ollama. That default holds in CI (no .env), but a developer
+    .env pointing LLM_BINDING elsewhere would silently strip every option
+    asserted below -- making the absence assertions pass for the wrong reason
+    and the presence ones fail. Pin the binding instead of inheriting it."""
+    monkeypatch.setenv("LLM_BINDING", "ollama")
+
+
 def test_think_is_absent_when_unset(monkeypatch):
     """Every OllamaLLMOptions field is argparse.SUPPRESS-default until
     configured (confirmed against num_predict too, not think-specific) --
