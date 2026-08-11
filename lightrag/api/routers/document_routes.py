@@ -225,6 +225,22 @@ def reject_unsafe_document_source(value: str | None) -> str | None:
     return value
 
 
+def describe_rejected_document_source(value: str) -> str:
+    """Render a rejected source safely for a log line or operator message.
+
+    A value ``find_unsafe_document_source_character`` rejects may hold a lone
+    surrogate — that is how a directory entry whose bytes are not valid UTF-8
+    reaches Python, via ``surrogateescape``. Interpolating it raw into a scan
+    warning would carry it into ``pipeline_status`` history and the scan job's
+    bounded samples, and both are rendered by Starlette's ``JSONResponse`` with
+    ``json.dumps(..., ensure_ascii=False).encode("utf-8")`` — which *raises* on
+    a lone surrogate. The rejected file would then take out every later read of
+    ``/documents/pipeline_status`` and ``/documents/scan/status``. ``ascii()``
+    keeps the name recognisable while guaranteeing the message is pure ASCII.
+    """
+    return ascii(value)
+
+
 def normalize_file_path(file_path: str | None) -> str:
     """Normalize missing document sources to a single non-null sentinel."""
     if file_path is None:
@@ -2339,6 +2355,23 @@ async def pipeline_enqueue_file(
     if track_id is None:
         track_id = generate_track_id("unknown")
 
+    # Single chokepoint for every file-shaped ingest: refuse a basename that
+    # cannot survive as a document source before anything is written. Reachable
+    # only from a caller that has NOT validated (a scan whose classification was
+    # bypassed); ``/documents/upload`` already rejects at ``sanitize_filename``.
+    # No error document either — that would persist the offending name into
+    # ``doc_status.file_path``, which is the outcome this guard exists to
+    # prevent, and every error-document construction below (including the
+    # catch-all) interpolates ``file_path.name`` raw.
+    unsafe_char = find_unsafe_document_source_character(file_path.name)
+    if unsafe_char is not None:
+        logger.error(
+            "[File Extraction]Refusing file with an unsafe document source: "
+            f"{describe_rejected_document_source(file_path.name)} contains "
+            f"U+{ord(unsafe_char):04X}"
+        )
+        return False, track_id
+
     try:
         # File size is used only for error reporting. Scan-time mtime ordering
         # happens before this function, in the disk-backed candidate spool;
@@ -2951,11 +2984,12 @@ async def _renew_scan_job_lease(reporter: _ScanJobReporter, scan_task: Any) -> N
 
 
 class _ScanFileClass(str, Enum):
-    """The seven mutually exclusive scan classification exits (LR2 §8.3).
+    """The eight mutually exclusive scan classification exits (LR2 §8.3).
 
     Values double as the scan job's counter keys, so a ``/scan/status`` reader
     sees the taxonomy verbatim."""
 
+    UNSAFE_SOURCE = "unsafe_source"
     CLAIMED_NEW = "claimed_new"
     SOURCE_CONFLICT = "source_conflict"
     PROCESSED = "processed"
@@ -3021,7 +3055,12 @@ async def _row_source_file(rag: LightRAG, doc_id: str) -> str | None:
 async def classify_scan_file(
     rag: LightRAG, file_path: Path, canonical_source_key: str
 ) -> _ScanFileDecision:
-    """Classify one physical file into the seven §8.3 exits.
+    """Classify one physical file into the §8.3 exits below.
+
+    UNSAFE_SOURCE is decided by the caller before this function runs — it is a
+    property of the filename alone, needs no identity resolution, and must be
+    settled before any code path formats the raw name (see
+    ``describe_rejected_document_source``).
 
     Identity is resolved with ``resolve_doc_source_strict``: the doc ID is the
     identity every later operation uses, and the canonical basename only LOCATES
@@ -3765,6 +3804,35 @@ async def run_scanning_process(
                 # reaped to ABANDONED under a live owner.
                 reporter.renew()
                 filename = file_path.name
+
+                # §8.3.0 UNSAFE_SOURCE — FIRST, ahead of every other exit.
+                # Nothing between the filesystem and here filters characters:
+                # ``iter_new_files`` gates on suffix, and ``normalize_file_path``
+                # only strips a parser hint. The basename becomes the document's
+                # ``file_path``, which is stamped verbatim onto every entity and
+                # relation the document produces, so an unsafe name here is the
+                # same ingress hazard the upload and ``/documents/text`` paths
+                # reject (GHSA-c922-pw4m-4wcv).
+                #
+                # The file stays put, exactly as SOURCE_CONFLICT does: the
+                # basename is the document identity, dedup key and doc_id seed,
+                # so the fix is an operator renaming the file, not this scan
+                # rewriting it or hiding it in __parsed__. Being first also means
+                # no later exit ever formats the raw name into a warning, a job
+                # sample or a doc_status row.
+                unsafe_char = find_unsafe_document_source_character(filename)
+                if unsafe_char is not None:
+                    unsafe_detail = (
+                        "Skipping file with an unsafe document source: "
+                        f"{describe_rejected_document_source(filename)} contains "
+                        f"U+{ord(unsafe_char):04X}; rename it in the input "
+                        "directory to make it ingestible"
+                    )
+                    await record_scan_warning(rag, unsafe_detail)
+                    reporter.count(_ScanFileClass.UNSAFE_SOURCE.value)
+                    reporter.sample("warning", unsafe_detail)
+                    continue
+
                 canonical_key = normalize_file_path(str(file_path))
                 decision = await classify_scan_file(rag, file_path, canonical_key)
 
