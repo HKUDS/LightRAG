@@ -97,11 +97,12 @@ async def test_track_id_listing_survives_a_row_missing_required_fields(
     assert "invalid_doc" not in docs
 
 
-async def test_track_id_listing_survives_a_row_with_an_unknown_field(redis_doc_status):
+async def test_track_id_listing_hydrates_a_row_with_an_unknown_field(redis_doc_status):
     """Version-rollback shape: a field the running build does not declare.
 
-    ``doc-a-*`` / ``doc-b-*``: the bad row must be scanned FIRST — see
-    ``test_a_bad_row_does_not_truncate_the_rest_of_the_scan``.
+    Undeclared fields are ignored at construction
+    (``DocProcessingStatus.from_stored``), so the row stays visible instead
+    of silently vanishing from the listing.
     """
     _store_raw(
         redis_doc_status,
@@ -112,7 +113,8 @@ async def test_track_id_listing_survives_a_row_with_an_unknown_field(redis_doc_s
 
     docs = await redis_doc_status.get_docs_by_track_id("track_123")
 
-    assert set(docs) == {"doc-b-old"}
+    assert set(docs) == {"doc-a-written-by-newer-build", "doc-b-old"}
+    assert not hasattr(docs["doc-a-written-by-newer-build"], "field_from_the_future")
 
 
 async def test_a_bad_row_does_not_truncate_the_rest_of_the_scan(redis_doc_status):
