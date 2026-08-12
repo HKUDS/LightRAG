@@ -48,10 +48,14 @@ class DocumentDBDocStatusStorage(
 ):
     """DocumentDB-backed document status storage."""
 
+    supports_collation_indexes: ClassVar[bool] = False
+
 
 @final
 class DocumentDBGraphStorage(_DocumentDBStorageMixin, _MongoGraphStorageBase):
     """DocumentDB-backed graph storage using native ``$graphLookup``."""
+
+    edge_index_partial_filter: ClassVar[dict | None] = None
 
     async def create_search_index_if_not_exists(self) -> None:
         # DocumentDB does not implement Atlas createSearchIndexes. Entity lookup

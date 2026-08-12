@@ -605,6 +605,7 @@ class _MongoDocStatusStorageBase(DocStatusStorage):
     supports_strict_point_reads: ClassVar[bool] = True
     client_manager: ClassVar[type[ClientManager]] = ClientManager
     workspace_env_var: ClassVar[str] = "MONGODB_WORKSPACE"
+    supports_collation_indexes: ClassVar[bool] = True
 
     # Bounded upper limit on the sample of conflicting doc IDs surfaced by the
     # source-conflict listing/repair APIs — never materialize the whole set.
@@ -940,6 +941,12 @@ class _MongoDocStatusStorageBase(DocStatusStorage):
                     "keys": [("status", 1), ("created_at", 1), ("_id", 1)],
                 },
             ]
+            if not self.supports_collation_indexes:
+                all_indexes = [
+                    index_info
+                    for index_info in all_indexes
+                    if "collation" not in index_info
+                ]
 
             # 2. Handle legacy index cleanup: only drop old indexes that exist in THIS collection
             legacy_index_names = [
@@ -1741,6 +1748,10 @@ class _MongoGraphStorageBase(BaseGraphStorage):
     edgeCollection: AsyncCollection = field(default=None)
     client_manager: ClassVar[type[ClientManager]] = ClientManager
     workspace_env_var: ClassVar[str] = "MONGODB_WORKSPACE"
+    edge_index_partial_filter: ClassVar[dict[str, Any] | None] = {
+        "edge_lo": {"$exists": True, "$type": "string"},
+        "edge_hi": {"$exists": True, "$type": "string"},
+    }
 
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
         super().__init__(
@@ -1878,14 +1889,11 @@ class _MongoGraphStorageBase(BaseGraphStorage):
         # The unique index is the completion flag — only created on full success.
         # unique build raises if any duplicate slipped through (e.g. a concurrent
         # old-version writer), which fails startup so the next run retries.
+        index_options: dict[str, Any] = {"name": index_name, "unique": True}
+        if self.edge_index_partial_filter is not None:
+            index_options["partialFilterExpression"] = self.edge_index_partial_filter
         await self.edge_collection.create_index(
-            [("edge_lo", 1), ("edge_hi", 1)],
-            name=index_name,
-            unique=True,
-            partialFilterExpression={
-                "edge_lo": {"$exists": True, "$type": "string"},
-                "edge_hi": {"$exists": True, "$type": "string"},
-            },
+            [("edge_lo", 1), ("edge_hi", 1)], **index_options
         )
         scanned = total if total is not None else "?"
         logger.info(
