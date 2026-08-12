@@ -106,6 +106,37 @@ DEFAULT_PG_DELETE_MAX_RECORDS_PER_BATCH = 1000
 AGE_FIRST_UNSUPPORTED_VERSION = (1, 8, 0)
 AGE_ALLOW_UNSUPPORTED_ENV = "POSTGRES_AGE_ALLOW_UNSUPPORTED_VERSION"
 
+# Both sources are consulted, because neither alone sees every affected deployment.
+# pg_extension.extversion is the version of the SQL script that was last run against
+# this database, so it does not move when the binaries are swapped underneath it:
+# starting 1.8.0 binaries over a data directory created under 1.7.0 leaves it at
+# '1.7.0' while the 1.8.0 age.so is what actually executes. default_version comes from
+# the on-disk age.control and therefore tracks the binaries.
+AGE_VERSION_SQL = """
+    SELECT e.extversion      AS installed_version,
+           a.default_version AS available_version
+    FROM pg_available_extensions a
+    LEFT JOIN pg_extension e ON e.extname = a.name
+    WHERE a.name = 'age'
+"""
+
+
+def _parse_age_version(raw: Any) -> tuple[int, int, int] | None:
+    """Parse an Apache AGE version string into a comparable tuple.
+
+    Returns None rather than raising, so that one unreadable source does not stop the
+    other from deciding. Only when neither source parses does the caller fail closed.
+    """
+    if not raw:
+        return None
+    try:
+        parts = [int(p) for p in str(raw).split(".")[:3]]
+    except (ValueError, IndexError):
+        return None
+    while len(parts) < 3:
+        parts.append(0)
+    return (parts[0], parts[1], parts[2])
+
 
 def _estimate_record_bytes(record: tuple[Any, ...]) -> int:
     """Estimate the serialized byte size of one asyncpg parameter tuple.
@@ -860,51 +891,63 @@ class PostgreSQLDB:
             # Don't raise - let the system continue without AGE extension
             return
 
-        row = await connection.fetchrow(
-            "SELECT extversion FROM pg_extension WHERE extname = 'age'"
-        )
-        if not row or not row["extversion"]:
-            raise RuntimeError(
-                "Could not read the Apache AGE extension version, which PGGraphStorage "
-                "needs in order to reject versions that crash the PostgreSQL backend "
-                "(https://github.com/apache/age/issues/2500). Ensure "
-                "CREATE EXTENSION age succeeded."
-            )
-        raw_version = row["extversion"]
-        try:
-            parts = [int(p) for p in str(raw_version).split(".")[:3]]
-            while len(parts) < 3:
-                parts.append(0)
-            version_tuple = (parts[0], parts[1], parts[2])
-        except (ValueError, IndexError):
-            raise RuntimeError(
-                f"Could not parse the Apache AGE version {raw_version!r}. PGGraphStorage "
-                "needs it in order to reject versions that crash the PostgreSQL backend "
-                "(https://github.com/apache/age/issues/2500)."
-            ) from None
+        row = await connection.fetchrow(AGE_VERSION_SQL)
+        installed_raw = row["installed_version"] if row else None
+        available_raw = row["available_version"] if row else None
+        found = f"installed={installed_raw!r} available={available_raw!r}"
+        override_set = get_env_value(AGE_ALLOW_UNSUPPORTED_ENV, False, bool)
 
+        parsed = [
+            v
+            for v in (
+                _parse_age_version(installed_raw),
+                _parse_age_version(available_raw),
+            )
+            if v is not None
+        ]
+        if not parsed:
+            if override_set:
+                logger.warning(
+                    f"PostgreSQL, could not determine the Apache AGE version ({found}), "
+                    f"but {AGE_ALLOW_UNSUPPORTED_ENV} is set, so PGGraphStorage is "
+                    "starting anyway."
+                )
+                return
+            raise RuntimeError(
+                f"Could not determine the Apache AGE version ({found}). PGGraphStorage "
+                "needs it in order to reject versions that crash the PostgreSQL backend "
+                "(https://github.com/apache/age/issues/2500). Set "
+                f"{AGE_ALLOW_UNSUPPORTED_ENV}=true to start anyway, at your own risk."
+            )
+
+        # The higher of the two decides: a stale catalog must not mask newer binaries.
+        version_tuple = max(parsed)
         if version_tuple < AGE_FIRST_UNSUPPORTED_VERSION:
             return
 
+        raw_version = ".".join(str(p) for p in version_tuple)
         unsupported = ".".join(str(p) for p in AGE_FIRST_UNSUPPORTED_VERSION)
-        if get_env_value(AGE_ALLOW_UNSUPPORTED_ENV, False, bool):
+        if override_set:
             logger.warning(
-                f"PostgreSQL, Apache AGE {raw_version} is known to crash the backend from "
-                f"PGGraphStorage's graph queries, but {AGE_ALLOW_UNSUPPORTED_ENV} is set, so "
-                "the check is being skipped. A single graph request may take the whole "
+                f"PostgreSQL, Apache AGE {raw_version} ({found}) is known to break "
+                f"PGGraphStorage's graph queries, but {AGE_ALLOW_UNSUPPORTED_ENV} is set, "
+                "so the check is being skipped. A single graph request may take the whole "
                 "PostgreSQL instance through crash recovery."
             )
             return
 
         raise RuntimeError(
-            f"Apache AGE {raw_version} is not supported by PGGraphStorage: from {unsupported} "
-            "onward, a graph query can terminate the PostgreSQL backend with SIGSEGV and take "
-            "the whole instance through crash recovery "
-            "(https://github.com/apache/age/issues/2500). Verified good: AGE 1.7.0. "
-            "Either pin AGE to 1.7.x, or switch LIGHTRAG_GRAPH_STORAGE to PGTableGraphStorage, "
-            "which needs no PostgreSQL extension. Note that AGE reports its version per release, "
-            f"not per commit, so a build that fixes the crash may still report {raw_version}; "
-            f"set {AGE_ALLOW_UNSUPPORTED_ENV}=true to run against such a build at your own risk."
+            f"Apache AGE {raw_version} is not supported by PGGraphStorage ({found}): from "
+            f"{unsupported} onward, get_knowledge_graph fails, and a graph query can terminate "
+            "the PostgreSQL backend with SIGSEGV and take the whole instance through crash "
+            "recovery (https://github.com/apache/age/issues/2500). Verified good: AGE 1.7.0. "
+            "Pin AGE to a verified version, or switch LIGHTRAG_GRAPH_STORAGE to "
+            "PGTableGraphStorage, which needs no PostgreSQL extension. If installed and "
+            "available differ above, the binaries were swapped under an existing data "
+            "directory without ALTER EXTENSION age UPDATE; the loaded binaries are what runs. "
+            "AGE also reports its version per release rather than per commit, so a build that "
+            f"fixes the crash may still report {raw_version}; set "
+            f"{AGE_ALLOW_UNSUPPORTED_ENV}=true to run against such a build at your own risk."
         )
 
     @staticmethod
