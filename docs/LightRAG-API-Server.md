@@ -908,6 +908,7 @@ The environment variables required at startup for each storage implementation ar
 | `PGKVStorage` / `PGVectorStorage` / `PGGraphStorage` / `PGTableGraphStorage` / `PGDocStatusStorage` | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE` (plus `POSTGRES_HOST` and `POSTGRES_PORT`) |
 | `Neo4JStorage` | `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD` |
 | `MongoKVStorage` / `MongoVectorDBStorage` / `MongoGraphStorage` / `MongoDocStatusStorage` | `MONGO_URI`, `MONGO_DATABASE` (`MongoVectorDBStorage` requires a MongoDB deployment that supports Atlas Search / Vector Search) |
+| `DocumentDBKVStorage` / `DocumentDBVectorDBStorage` / `DocumentDBGraphStorage` / `DocumentDBDocStatusStorage` | `DOCUMENTDB_URI`, `DOCUMENTDB_DATABASE` |
 | `RedisKVStorage` / `RedisDocStatusStorage` | `REDIS_URI` |
 | `MilvusVectorDBStorage` | `MILVUS_URI`, `MILVUS_DB_NAME` |
 | `QdrantVectorDBStorage` | `QDRANT_URL` (`QDRANT_API_KEY` is optional) |

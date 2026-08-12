@@ -98,7 +98,7 @@ Menu options:
   vector record they previously lacked (improving their retrievability).
 - **Chunk enumeration is backend-specific.** `BaseKVStorage` has no key
   enumeration API, so the tool scans each KV backend directly (JsonKV,
-  Redis, PostgreSQL, MongoDB, OpenSearch). When a new KV backend is added,
+  Redis, PostgreSQL, MongoDB, DocumentDB, OpenSearch). When a new KV backend is added,
   `enumerate_kv_keys()` in `rebuild_vdb.py` must be extended.
 
 ## Library usage

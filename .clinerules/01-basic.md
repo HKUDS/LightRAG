@@ -162,7 +162,7 @@ for key, value in matching_items:
 
 ### 2. Storage Backends
 - **Default**: In-memory with file persistence
-- **Production Options**: PostgreSQL, MongoDB, Redis, Neo4j
+- **Production Options**: PostgreSQL, MongoDB, DocumentDB, OpenSearch, Redis, Neo4j
 - **Pattern**: Abstract storage interface with multiple implementations
 
 ### 3. API Architecture
