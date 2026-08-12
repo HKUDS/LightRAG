@@ -647,6 +647,7 @@ JsonKVStorage        JsonFile (default)
 PGKVStorage          Postgres
 RedisKVStorage       Redis
 MongoKVStorage       MongoDB
+DocumentDBKVStorage  DocumentDB
 OpenSearchKVStorage  OpenSearch
 ```
 
@@ -657,6 +658,7 @@ Neo4JStorage             Neo4J
 PGGraphStorage           PostgreSQL with AGE plugin
 PGTableGraphStorage      PostgreSQL, plain tables (no AGE, no extensions)
 MemgraphStorage          Memgraph
+DocumentDBGraphStorage   DocumentDB
 OpenSearchGraphStorage   OpenSearch
 ```
 
@@ -676,6 +678,7 @@ MilvusVectorDBStorage       Milvus
 FaissVectorDBStorage        Faiss
 QdrantVectorDBStorage       Qdrant
 MongoVectorDBStorage        MongoDB
+DocumentDBVectorDBStorage   DocumentDB
 OpenSearchVectorDBStorage   OpenSearch
 ```
 
@@ -684,6 +687,7 @@ OpenSearchVectorDBStorage   OpenSearch
 JsonDocStatusStorage        JsonFile (default)
 PGDocStatusStorage          Postgres
 MongoDocStatusStorage       MongoDB
+DocumentDBDocStatusStorage  DocumentDB
 OpenSearchDocStatusStorage  OpenSearch
 ```
 
@@ -811,6 +815,29 @@ rag = LightRAG(
 MongoDB provides a one-stop storage solution for LightRAG with native KV storage and vector storage. LightRAG uses MongoDB collections to implement a simple graph storage.
 
 `MongoVectorDBStorage` requires a MongoDB deployment with Atlas Search / Vector Search support (e.g., MongoDB Atlas or Atlas local). The setup wizard's bundled local Docker MongoDB service is MongoDB Community Edition — it can be used for KV/graph/doc-status storage but **not** for `MongoVectorDBStorage`.
+
+#### Using DocumentDB Storage
+
+[DocumentDB](https://github.com/documentdb/documentdb) is an open-source,
+PostgreSQL-based database that exposes a MongoDB-compatible wire protocol.
+LightRAG supports it for KV, graph, vector, and document-status storage through
+the `DocumentDB*Storage` backends.
+
+```bash
+export DOCUMENTDB_URI="mongodb://user:password@localhost:10260/?tls=true&tlsAllowInvalidCertificates=true"
+export DOCUMENTDB_DATABASE="LightRAG"
+export LIGHTRAG_KV_STORAGE="DocumentDBKVStorage"
+export LIGHTRAG_VECTOR_STORAGE="DocumentDBVectorDBStorage"
+export LIGHTRAG_GRAPH_STORAGE="DocumentDBGraphStorage"
+export LIGHTRAG_DOC_STATUS_STORAGE="DocumentDBDocStatusStorage"
+```
+
+The invalid-certificate setting above is suitable only for the self-signed
+certificate used by a local development container. Production deployments
+should validate TLS certificates with a trusted CA. DocumentDB vector indexes
+use native HNSW `cosmosSearch` indexes and currently support embedding dimensions
+up to 2000. Tune index creation with `DOCUMENTDB_HNSW_M` and
+`DOCUMENTDB_HNSW_EF_CONSTRUCTION`.
 
 #### Using Redis Storage
 
