@@ -4146,6 +4146,21 @@ async def background_delete_documents(
 
             file_path = "#"
             try:
+                # A duplicate-attempt row deliberately reuses the primary
+                # document's canonical file_path for display.  Capture that
+                # distinction before adelete_by_doc_id removes the status row;
+                # the marker does not own the shared physical source file.
+                delete_physical_file = delete_file
+                if delete_file:
+                    status_row = await rag.doc_status.get_by_id(doc_id)
+                    metadata = (
+                        status_row.get("metadata")
+                        if isinstance(status_row, dict)
+                        else getattr(status_row, "metadata", None)
+                    )
+                    if isinstance(metadata, dict) and metadata.get("is_duplicate"):
+                        delete_physical_file = False
+
                 result = await rag.adelete_by_doc_id(
                     doc_id, delete_llm_cache=delete_llm_cache
                 )
@@ -4163,7 +4178,7 @@ async def background_delete_documents(
 
                     # Handle file deletion if requested and source information is available
                     if (
-                        delete_file
+                        delete_physical_file
                         and result.file_path
                         and result.file_path != UNKNOWN_FILE_SOURCE
                     ):
@@ -4213,7 +4228,16 @@ async def background_delete_documents(
                             async with pipeline_status_lock:
                                 pipeline_status["latest_message"] = file_error_msg
                                 append_pipeline_history(pipeline_status, file_error_msg)
-                    elif delete_file:
+                    elif delete_file and not delete_physical_file:
+                        file_preserved_msg = (
+                            "Source file preserved for duplicate marker "
+                            f"{doc_id}: {result.file_path}"
+                        )
+                        logger.info(file_preserved_msg)
+                        async with pipeline_status_lock:
+                            pipeline_status["latest_message"] = file_preserved_msg
+                            append_pipeline_history(pipeline_status, file_preserved_msg)
+                    elif delete_physical_file:
                         no_file_msg = (
                             f"File deletion skipped, missing file path: {doc_id}"
                         )

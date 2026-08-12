@@ -340,11 +340,20 @@ class _DuplicateUploadRag:
         self.workspace = f"upload-test-{uuid4().hex}"
 
 
+class _DeleteDocStatus:
+    def __init__(self, rows: dict | None = None):
+        self.rows = rows or {}
+
+    async def get_by_id(self, doc_id: str) -> dict | None:
+        return self.rows.get(doc_id)
+
+
 class _DeleteRag:
-    def __init__(self, result):
+    def __init__(self, result, status_rows=None):
         self.result = result
         self.workspace = f"delete-test-{uuid4().hex}"
         self.deleted_doc_ids = []
+        self.doc_status = _DeleteDocStatus(status_rows)
 
     async def adelete_by_doc_id(self, doc_id, delete_llm_cache=False):
         self.deleted_doc_ids.append((doc_id, delete_llm_cache))
@@ -3113,6 +3122,86 @@ async def test_background_delete_removes_parser_hint_file_variants(tmp_path):
     assert not source_file.exists()
     assert not parsed_variant.exists()
     assert unrelated_file.exists()
+
+
+async def test_background_delete_duplicate_marker_preserves_shared_source_file(
+    tmp_path,
+):
+    """Deleting a ``dup-*`` status row must not delete the primary's file.
+
+    Duplicate-attempt rows deliberately share the primary document's canonical
+    ``file_path``.  That value is display metadata for the marker, not ownership
+    of the physical source file.
+    """
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    source_file = tmp_path / "paper.pdf"
+    source_file.write_bytes(b"primary source")
+    doc_manager = DocumentManager(str(tmp_path))
+    duplicate_id = "dup-attempt"
+    rag = _DeleteRag(
+        DeletionResult(
+            status="success",
+            doc_id=duplicate_id,
+            message="deleted duplicate marker",
+            file_path="paper.pdf",
+        ),
+        status_rows={
+            duplicate_id: {
+                "file_path": "paper.pdf",
+                "metadata": {
+                    "is_duplicate": True,
+                    "original_doc_id": "doc-primary",
+                },
+            }
+        },
+    )
+    shared_storage.initialize_share_data()
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+
+    await _document_routes.background_delete_documents(
+        rag,
+        doc_manager,
+        [duplicate_id],
+        delete_file=True,
+    )
+
+    assert rag.deleted_doc_ids == [(duplicate_id, False)]
+    assert source_file.read_bytes() == b"primary source"
+
+
+async def test_background_delete_primary_still_removes_source_file(tmp_path):
+    """The duplicate guard must not weaken ordinary ``delete_file=True``."""
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    source_file = tmp_path / "paper.pdf"
+    source_file.write_bytes(b"primary source")
+    doc_manager = DocumentManager(str(tmp_path))
+    primary_id = "doc-primary"
+    rag = _DeleteRag(
+        DeletionResult(
+            status="success",
+            doc_id=primary_id,
+            message="deleted primary document",
+            file_path="paper.pdf",
+        ),
+        status_rows={
+            primary_id: {
+                "file_path": "paper.pdf",
+                "metadata": {},
+            }
+        },
+    )
+    shared_storage.initialize_share_data()
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+
+    await _document_routes.background_delete_documents(
+        rag,
+        doc_manager,
+        [primary_id],
+        delete_file=True,
+    )
+
+    assert rag.deleted_doc_ids == [(primary_id, False)]
+    assert not source_file.exists()
 
 
 async def test_docx_archive_failure_is_best_effort(tmp_path, monkeypatch):
