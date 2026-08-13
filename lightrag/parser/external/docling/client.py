@@ -42,9 +42,11 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 from lightrag.parser.external._common import (
+    download_deadline_seconds,
     env_bool,
     env_int,
     raise_for_status_with_detail,
+    stream_capped_get,
 )
 from lightrag.parser.external._zip import result_bundle_limits, safe_extract_zip
 from lightrag.parser.external.docling.cache import (
@@ -301,20 +303,41 @@ class DoclingRawClient:
     ) -> None:
         encoded_task_id = quote(task_id, safe="")
         url = f"{self.endpoint}{RESULT_PATH.format(task_id=encoded_task_id)}"
-        resp = await client.get(url)
+        max_entries, max_total_bytes = result_bundle_limits()
+        # Stream-capped, not client.get(): a plain get() fully buffers the
+        # response before returning regardless of size, so a compromised or
+        # misbehaving docling-serve deployment could hold an arbitrarily
+        # large body in memory before safe_extract_zip's checks below ever
+        # run. Streaming lets an oversized response be rejected mid-
+        # download. Wrapped in a wall-clock deadline too — the per-read
+        # httpx.Timeout(120.0, ...) set around this client only bounds a
+        # single socket operation, so a peer trickling one byte per
+        # interval can reset it indefinitely; the deadline bounds the
+        # whole download regardless of how it stalls.
+        try:
+            async with asyncio.timeout(download_deadline_seconds()):
+                resp, body = await stream_capped_get(
+                    client,
+                    url,
+                    max_bytes=max_total_bytes,
+                    operation=f"Docling result {task_id} download",
+                )
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"Docling result {task_id} download exceeded its wall-clock deadline"
+            ) from exc
         raise_for_status_with_detail(resp, f"Docling result {task_id} download")
         ctype = resp.headers.get("content-type", "")
         if "zip" not in ctype.lower():
-            if _is_json_result(resp, ctype):
-                _materialize_json_result(resp, task_id, raw_dir, upload_filename)
+            if _is_json_result(body, ctype):
+                _materialize_json_result(body, task_id, raw_dir, upload_filename)
                 return
             raise RuntimeError(
                 f"Docling result {task_id} returned non-zip content-type "
-                f"{ctype!r}; body prefix={resp.text[:400]!r}"
+                f"{ctype!r}; body prefix={body[:400]!r}"
             )
-        max_entries, max_total_bytes = result_bundle_limits()
         safe_extract_zip(
-            resp.content,
+            body,
             raw_dir,
             max_entries=max_entries,
             max_total_bytes=max_total_bytes,
@@ -346,11 +369,11 @@ def _parse_ocr_lang(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
-def _is_json_result(resp: Any, content_type: str) -> bool:
+def _is_json_result(body: bytes, content_type: str) -> bool:
     ctype = content_type.lower()
     if "json" in ctype:
         return True
-    return resp.content.lstrip().startswith((b"{", b"["))
+    return body.lstrip().startswith((b"{", b"["))
 
 
 def _result_envelope_status(payload: Any) -> str:
@@ -366,10 +389,10 @@ def _result_envelope_status(payload: Any) -> str:
 
 
 def _materialize_json_result(
-    resp: Any, task_id: str, raw_dir: Path, upload_filename: str
+    body: bytes, task_id: str, raw_dir: Path, upload_filename: str
 ) -> None:
     try:
-        payload = resp.json() if resp.text else json.loads(resp.content)
+        payload = json.loads(body) if body else {}
     except json.JSONDecodeError as exc:
         raise RuntimeError(
             "Docling result returned JSON content-type but the body is not valid JSON"

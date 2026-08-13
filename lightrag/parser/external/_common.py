@@ -15,10 +15,16 @@ import json
 import os
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from lightrag.constants import PARSED_DIR_SUFFIX
+from lightrag.constants import (
+    DEFAULT_PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT,
+    PARSED_DIR_SUFFIX,
+)
 from lightrag.utils import logger
+
+if TYPE_CHECKING:
+    import httpx
 
 
 def compute_size_and_hash(path: Path) -> tuple[int, str]:
@@ -125,6 +131,77 @@ def response_error_detail(resp: Any, *, limit: int = 1000) -> str:
     return detail
 
 
+def download_deadline_seconds() -> float | None:
+    """Live-read the overall result-bundle download wall-clock budget.
+
+    Read at call time (like :func:`result_bundle_limits`) so an operator
+    can raise or disable it without a code change. A non-positive value
+    disables the deadline (``None``), matching the zip-bomb guards'
+    "non-positive = unlimited" convention. Parsed as a float, not through
+    ``env_int`` — this value feeds straight into ``asyncio.timeout()``,
+    which takes fractional seconds natively, and mirrors the float style
+    ``httpx.Timeout(120.0, connect=30.0)`` already uses for the per-read
+    timeout it complements.
+    """
+    raw = os.getenv("PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT", "").strip()
+    if not raw:
+        seconds = float(DEFAULT_PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT)
+    else:
+        try:
+            seconds = float(raw)
+        except ValueError:
+            logger.warning(
+                "[external_parser] PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT=%r "
+                "is not a number; using %s",
+                raw,
+                DEFAULT_PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT,
+            )
+            seconds = float(DEFAULT_PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT)
+    return seconds if seconds > 0 else None
+
+
+async def stream_capped_get(
+    client: "httpx.AsyncClient", url: str, *, max_bytes: int | None, operation: str
+) -> tuple["httpx.Response", bytes]:
+    """GET ``url`` via streaming, rejecting once more than ``max_bytes`` of
+    body have been received.
+
+    A plain ``client.get(url)`` fully buffers the response into memory
+    before returning, no matter its size — a compromised or misbehaving
+    endpoint can hold arbitrarily large data in memory before any
+    zip-level check (entry count, declared uncompressed size) ever runs.
+    Checking the running total on every chunk means an oversized response
+    is rejected mid-download instead of after being fully buffered.
+    ``max_bytes=None`` disables the cap (reads the full body, same as
+    ``client.get()``).
+
+    Returns ``(response, body)`` rather than relying on
+    ``response.content`` / ``response.text`` — accessing either on a
+    streamed response before the body has been read raises httpx's
+    ``ResponseNotRead``, so callers that need the body must use the
+    returned ``body`` instead.
+
+    ``operation`` labels the error message the same way
+    ``raise_for_status_with_detail`` does, deliberately instead of
+    including ``url`` itself: a MinerU official-mode ``full_zip_url`` is a
+    cloud-storage download link that may carry a signed access token in
+    its query string, and this error can end up persisted into
+    ``doc_status.error_msg`` or logs — so the URL must never appear here.
+    """
+    async with client.stream("GET", url) as response:
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in response.aiter_bytes():
+            total += len(chunk)
+            if max_bytes is not None and total > max_bytes:
+                raise RuntimeError(
+                    f"{operation}: response body exceeds {max_bytes} bytes; "
+                    f"refusing to buffer further"
+                )
+            chunks.append(chunk)
+        return response, b"".join(chunks)
+
+
 def raise_for_status_with_detail(resp: Any, operation: str) -> None:
     """Raise an HTTP error that preserves service-provided response details.
 
@@ -143,10 +220,12 @@ def raise_for_status_with_detail(resp: Any, operation: str) -> None:
 __all__ = [
     "clear_dir_contents",
     "compute_size_and_hash",
+    "download_deadline_seconds",
     "env_bool",
     "env_int",
     "env_json",
     "raise_for_status_with_detail",
     "raw_dir_for_parsed_dir",
     "response_error_detail",
+    "stream_capped_get",
 ]

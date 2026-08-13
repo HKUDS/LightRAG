@@ -213,6 +213,14 @@ DEFAULT_NATIVE_DOCX_IMAGE_MAX_TOTAL_BYTES = 64 * 1024 * 1024
 DEFAULT_PARSER_RESULT_BUNDLE_MAX_ENTRIES = 10_000
 DEFAULT_PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES = 512 * 1024 * 1024  # 512 MiB
 
+# Overall wall-clock budget for downloading the result bundle from docling
+# or mineru, on top of (not instead of) the per-read httpx timeout each
+# client already sets. A per-read timeout only bounds a single socket
+# operation — a peer trickling one byte per interval keeps resetting it
+# and can hold the download open indefinitely. Env:
+# PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT.
+DEFAULT_PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT = 300  # 5 minutes
+
 # Native docx smart_heading (opt-in engine param) tunables. Each DEFAULT_*
 # below has a matching env var (drop the DEFAULT_ prefix) read at run time
 # by lightrag/parser/docx/smart_heading (same live-env pattern as the

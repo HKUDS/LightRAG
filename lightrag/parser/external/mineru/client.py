@@ -26,7 +26,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, urlparse
 
-from lightrag.parser.external._common import raise_for_status_with_detail
+from lightrag.parser.external._common import (
+    download_deadline_seconds,
+    raise_for_status_with_detail,
+    stream_capped_get,
+)
 from lightrag.parser.external._zip import result_bundle_limits, safe_extract_zip
 from lightrag.parser.external.mineru.cache import (
     MinerUParserOptions,
@@ -446,18 +450,46 @@ class MinerURawClient:
         resp: Any = None,
     ) -> None:
         """Download (or re-use already-fetched response) and extract."""
+        max_entries, max_total_bytes = result_bundle_limits()
         if resp is None or not hasattr(resp, "content"):
-            resp = await client.get(result_url)
+            # Stream-capped, not client.get(): a plain get() fully buffers
+            # the response before returning regardless of size, so a
+            # compromised/misbehaving endpoint could hold an arbitrarily
+            # large body in memory before safe_extract_zip's checks below
+            # ever run. Streaming lets an oversized response be rejected
+            # mid-download. Wrapped in a wall-clock deadline too — the
+            # per-read httpx.Timeout(120.0, ...) set around this client only
+            # bounds a single socket operation, so a peer trickling one byte
+            # per interval can reset it indefinitely; the deadline bounds
+            # the whole download regardless of how it stalls.
+            try:
+                async with asyncio.timeout(download_deadline_seconds()):
+                    resp, body = await stream_capped_get(
+                        client,
+                        result_url,
+                        max_bytes=max_total_bytes,
+                        operation="MinerU result bundle download",
+                    )
+            except TimeoutError as exc:
+                # No result_url here (or below in raise_for_status_with_detail's
+                # operation label) -- an official-mode full_zip_url is a
+                # cloud-storage link that may carry a signed access token in
+                # its query string, and this text can end up persisted into
+                # doc_status.error_msg or logs.
+                raise RuntimeError(
+                    "MinerU result bundle download exceeded its wall-clock deadline"
+                ) from exc
             raise_for_status_with_detail(resp, "MinerU result bundle download")
+        else:
+            body = resp.content
         # Safe-extract with the shared result-bundle budget: refuse path
         # traversal / absolute entries AND cap declared entry count / total
         # uncompressed size. The default MINERU_ENDPOINT is the remote
         # mineru.net API, so a compromised or misbehaving endpoint returning a
         # zip declaring gigabytes must not expand unbounded onto disk — the same
         # defense-in-depth the docling path applies.
-        max_entries, max_total_bytes = result_bundle_limits()
         safe_extract_zip(
-            resp.content,
+            body,
             raw_dir,
             max_entries=max_entries,
             max_total_bytes=max_total_bytes,

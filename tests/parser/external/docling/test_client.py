@@ -97,6 +97,49 @@ class _Recorder:
 _CURRENT: dict[str, _Recorder] = {}
 
 
+class _FakeStreamContext:
+    """Async context manager mirroring ``httpx.AsyncClient.stream()``.
+
+    Yields a response-like object exposing ``.aiter_bytes()`` so the
+    production stream_capped_get helper can iterate it exactly like a real
+    streamed httpx response.
+    """
+
+    def __init__(self, response: "_FakeStreamResponse") -> None:
+        self._response = response
+
+    async def __aenter__(self) -> "_FakeStreamResponse":
+        return self._response
+
+    async def __aexit__(self, *_: Any) -> None:
+        pass
+
+
+class _FakeStreamResponse:
+    def __init__(
+        self,
+        *,
+        status_code: int = 200,
+        text: str = "",
+        content: bytes = b"",
+        headers: dict[str, str] | None = None,
+        chunk_size: int = 1 << 16,
+    ) -> None:
+        self.status_code = status_code
+        self.text = text
+        self.content = content or text.encode("utf-8")
+        self.headers = headers or {}
+        self._chunk_size = chunk_size
+
+    def json(self) -> Any:
+        return json.loads(self.text) if self.text else {}
+
+    async def aiter_bytes(self):
+        data = self.content
+        for i in range(0, len(data), self._chunk_size):
+            yield data[i : i + self._chunk_size]
+
+
 class _FakeAsyncClient:
     def __init__(self, *_: Any, **__: Any) -> None:
         pass
@@ -161,19 +204,28 @@ class _FakeAsyncClient:
             if recorder.terminal_status != "success":
                 payload["error_message"] = "synthetic-failure"
             return _FakeResponse(status_code=200, text=json_dump(payload))
-        if RESULT_PATH.format(task_id=encoded) in url:
+        raise AssertionError(f"unexpected GET {url}")
+
+    def stream(self, method: str, url: str, **_: Any) -> "_FakeStreamContext":
+        recorder = _CURRENT["recorder"]
+        encoded = quote(recorder.task_id, safe="")
+        if method == "GET" and RESULT_PATH.format(task_id=encoded) in url:
             recorder.result_calls += 1
             if recorder.result_status_code != 200:
-                return _FakeResponse(
-                    status_code=recorder.result_status_code,
-                    text=recorder.result_text or "",
+                return _FakeStreamContext(
+                    _FakeStreamResponse(
+                        status_code=recorder.result_status_code,
+                        text=recorder.result_text or "",
+                    )
                 )
-            return _FakeResponse(
-                status_code=200,
-                content=recorder.result_content or recorder.zip_bytes,
-                headers={"content-type": recorder.result_content_type},
+            return _FakeStreamContext(
+                _FakeStreamResponse(
+                    status_code=200,
+                    content=recorder.result_content or recorder.zip_bytes,
+                    headers={"content-type": recorder.result_content_type},
+                )
             )
-        raise AssertionError(f"unexpected GET {url}")
+        raise AssertionError(f"unexpected stream {method} {url}")
 
 
 def json_dump(payload: Any) -> str:
@@ -889,7 +941,12 @@ async def test_docling_oversized_result_zip_is_refused(
         await DoclingRawClient().download_into(
             tmp_path / "demo.docling_raw", source_pdf
         )
-    assert "uncompressed size" in str(exc.value)
+    # stream_capped_get shares this same budget and sits earlier in the
+    # pipeline than safe_extract_zip's declared-uncompressed-size check, so
+    # it rejects first now -- belt-and-suspenders, same cap, earlier catch.
+    # See test_docling_declared_size_lies_but_raw_response_is_small for
+    # coverage of safe_extract_zip's own check still firing independently.
+    assert "exceeds 8 bytes" in str(exc.value)
 
 
 async def test_docling_result_bundle_budget_can_be_disabled(

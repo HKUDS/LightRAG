@@ -50,6 +50,22 @@ class _FakeResponse:
         if self.status_code >= 400:
             raise RuntimeError(f"HTTP {self.status_code}")
 
+    async def aiter_bytes(self):
+        yield self.content
+
+
+class _FakeStreamContext:
+    """Async context manager mirroring ``httpx.AsyncClient.stream()``."""
+
+    def __init__(self, response: _FakeResponse) -> None:
+        self._response = response
+
+    async def __aenter__(self) -> _FakeResponse:
+        return self._response
+
+    async def __aexit__(self, *_: Any) -> None:
+        pass
+
 
 class _FakeAsyncClient:
     """Routes calls through a per-test dispatcher."""
@@ -101,6 +117,14 @@ class _FakeAsyncClient:
     ) -> _FakeResponse:
         self.gets.append(url)
         return _CURRENT.dispatcher.get(url, params=params, headers=headers)
+
+    def stream(self, method: str, url: str, **kwargs: Any) -> _FakeStreamContext:
+        assert method == "GET", f"unexpected stream method {method}"
+        # Delegates to the same dispatcher.get() every existing test fixture
+        # already implements, rather than requiring every _Dispatcher
+        # subclass to separately implement streaming.
+        self.gets.append(url)
+        return _FakeStreamContext(_CURRENT.dispatcher.get(url, **kwargs))
 
 
 class _Dispatcher:
@@ -1124,6 +1148,9 @@ async def test_client_local_result_bundle_byte_budget_is_enforced(
     raw.mkdir()
 
     _CURRENT.dispatcher = _LocalFlatZipDispatcher()
-    with pytest.raises(RuntimeError, match="uncompressed size"):
+    # stream_capped_get shares this same budget and sits earlier in the
+    # pipeline than safe_extract_zip's declared-uncompressed-size check, so
+    # it rejects first now -- belt-and-suspenders, same cap, earlier catch.
+    with pytest.raises(RuntimeError, match="exceeds 1 bytes"):
         await MinerURawClient().download_into(raw, src)
     assert not (raw / "content_list.json").exists()
