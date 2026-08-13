@@ -1057,9 +1057,11 @@ class RedisDocStatusStorage(DocStatusStorage):
 
         Single source of the decoded-JSON -> status construction shared by
         ``get_docs_by_statuses`` and the ``get_full_docs_by_ids`` hydration
-        path. Raises ``KeyError``/``TypeError`` on a malformed row (``TypeError``
-        is what ``DocProcessingStatus(**data)`` raises on missing required
+        path. Raises ``KeyError``/``TypeError`` on a malformed row
+        (``TypeError`` is what construction raises on missing required
         fields); the caller decides strict (raise) vs relaxed (skip).
+        Fields the dataclass does not declare are tolerated — see
+        ``DocProcessingStatus.from_stored``.
         """
         data = data.copy()
         data.pop("content", None)
@@ -1069,7 +1071,7 @@ class RedisDocStatusStorage(DocStatusStorage):
             data["metadata"] = {}
         if "error_msg" not in data:
             data["error_msg"] = None
-        return DocProcessingStatus(**data)
+        return DocProcessingStatus.from_stored(data)
 
     async def get_docs_by_statuses(
         self, statuses: list[DocStatus], strict: bool = False
@@ -1571,7 +1573,7 @@ class RedisDocStatusStorage(DocStatusStorage):
                                     else:
                                         sort_key = data.get(sort_field, "")
 
-                                    doc_status = DocProcessingStatus(**data)
+                                    doc_status = DocProcessingStatus.from_stored(data)
                                     all_docs.append((doc_id, doc_status, sort_key))
 
                                 except (json.JSONDecodeError, KeyError) as e:

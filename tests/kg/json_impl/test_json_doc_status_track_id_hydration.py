@@ -7,7 +7,8 @@ does not crash queries for that track_id with an unhandled TypeError.
 track_id groups a whole upload BATCH, so the blast radius of letting one bad row
 escape is every healthy sibling document in that batch — and permanently, since
 the row stays in the store. These tests pin skip-and-log for each shape a row can
-be unusable in: missing required field, unknown field, and not a mapping at all.
+be unusable in — missing required field, and not a mapping at all — and pin that
+an unknown field does NOT make a row unusable (it is ignored at construction).
 """
 
 import logging
@@ -90,13 +91,14 @@ async def test_get_docs_by_track_id_handles_unhydratable_row_without_crashing(
     assert "invalid_doc" not in docs
 
 
-async def test_get_docs_by_track_id_skips_row_carrying_an_unknown_field(tmp_path):
-    """The realistic trigger: a version rollback.
+async def test_get_docs_by_track_id_hydrates_row_carrying_an_unknown_field(tmp_path):
+    """The realistic trigger: a version rollback, or an external producer.
 
-    A newer build persists a field the running (older) DocProcessingStatus does
-    not declare, so construction fails with ``TypeError: got an unexpected
-    keyword argument`` — no corruption required, and it hits EVERY row the newer
-    build wrote.
+    A newer build (or a producer like RAG-Anything) persists a field the
+    running DocProcessingStatus does not declare. Construction now ignores
+    undeclared fields (``DocProcessingStatus.from_stored``, matching the
+    PG backend's long-standing explicit-kwargs behavior), so the row stays
+    visible instead of silently vanishing from every listing.
     """
     storage = await _make_storage(tmp_path)
     await storage.upsert(
@@ -111,8 +113,8 @@ async def test_get_docs_by_track_id_skips_row_carrying_an_unknown_field(tmp_path
 
     docs = await storage.get_docs_by_track_id("track_123")
 
-    assert "old_doc" in docs
-    assert "written_by_newer_build" not in docs
+    assert set(docs) == {"old_doc", "written_by_newer_build"}
+    assert not hasattr(docs["written_by_newer_build"], "field_from_the_future")
 
 
 async def test_get_docs_by_track_id_logs_and_skips_a_non_mapping_row(tmp_path, caplog):
