@@ -28,6 +28,7 @@ from urllib.parse import quote, urlparse
 
 from lightrag.parser.external._common import (
     download_deadline_seconds,
+    download_max_bytes,
     download_timeout,
     raise_for_status_with_detail,
     stream_capped_get,
@@ -468,7 +469,7 @@ class MinerURawClient:
                     resp, body = await stream_capped_get(
                         client,
                         result_url,
-                        max_bytes=max_total_bytes,
+                        max_bytes=download_max_bytes(),
                         operation="MinerU result bundle download",
                     )
             except TimeoutError as exc:

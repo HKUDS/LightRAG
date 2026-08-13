@@ -206,7 +206,7 @@ async def test_download_result_rejects_oversized_response_before_full_buffer(
             200, content=oversized_zip, headers={"content-type": "application/zip"}
         )
 
-    os.environ["PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES"] = "100"
+    os.environ["PARSER_RESULT_BUNDLE_DOWNLOAD_MAX_BYTES"] = "100"
     try:
         transport = httpx.MockTransport(handler)
         raw_dir = tmp_path / "raw"
@@ -215,6 +215,41 @@ async def test_download_result_rejects_oversized_response_before_full_buffer(
 
         async with httpx.AsyncClient(transport=transport) as client:
             with pytest.raises(RuntimeError, match="exceeds 100 bytes"):
+                await client_obj._download_result_into(
+                    client, "task-1", raw_dir, "demo.pdf"
+                )
+    finally:
+        os.environ.pop("PARSER_RESULT_BUNDLE_DOWNLOAD_MAX_BYTES", None)
+
+
+@pytest.mark.asyncio
+async def test_download_result_wire_cap_is_independent_of_uncompressed_cap(
+    tmp_path,
+):
+    """PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES (uncompressed, checked by
+    safe_extract_zip against the zip's declared size) and
+    PARSER_RESULT_BUNDLE_DOWNLOAD_MAX_BYTES (compressed wire bytes, checked
+    by stream_capped_get) must be independently configurable. Setting the
+    uncompressed cap far below the response's actual wire size must NOT
+    trip the streaming cap -- the failure must come from safe_extract_zip's
+    later, distinctly-worded check, proving the streaming step never even
+    consulted PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES."""
+    small_zip = _small_valid_zip()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=small_zip, headers={"content-type": "application/zip"}
+        )
+
+    os.environ["PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES"] = "1"
+    try:
+        transport = httpx.MockTransport(handler)
+        raw_dir = tmp_path / "raw"
+        raw_dir.mkdir()
+        client_obj = DoclingRawClient()
+
+        async with httpx.AsyncClient(transport=transport) as client:
+            with pytest.raises(RuntimeError, match="uncompressed size"):
                 await client_obj._download_result_into(
                     client, "task-1", raw_dir, "demo.pdf"
                 )
@@ -255,3 +290,32 @@ async def test_download_result_declared_size_lie_still_caught_when_raw_is_small(
                 )
     finally:
         os.environ.pop("PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES", None)
+
+
+@pytest.mark.asyncio
+async def test_download_result_http_error_detail_survives_full_streaming(tmp_path):
+    """A non-2xx response's body text must still reach the raised error
+    message after being read via stream_capped_get's manual
+    response.aiter_bytes() loop rather than client.get(). httpx populates
+    a streamed response's .text/.json() once its body iterator has been
+    fully drained, even though it was never read via .aread() -- this
+    pins that real-httpx behaviour (as opposed to a hand-rolled fake
+    response) so a future httpx upgrade that changes it is caught here."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, content=b"disk full: no space for temp file")
+
+    transport = httpx.MockTransport(handler)
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    client_obj = DoclingRawClient()
+
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(RuntimeError) as excinfo:
+            await client_obj._download_result_into(
+                client, "task-1", raw_dir, "demo.pdf"
+            )
+
+    message = str(excinfo.value)
+    assert "HTTP 500" in message
+    assert "disk full: no space for temp file" in message

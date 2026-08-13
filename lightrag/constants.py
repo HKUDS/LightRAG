@@ -221,6 +221,18 @@ DEFAULT_PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES = 512 * 1024 * 1024  # 512 MiB
 # PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT.
 DEFAULT_PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT = 300  # 5 minutes
 
+# Cap on the raw HTTP response body streamed off the wire while downloading
+# the result bundle, checked chunk-by-chunk before the bytes are ever handed
+# to safe_extract_zip. Deliberately a separate knob from
+# DEFAULT_PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES above: that one bounds the
+# *uncompressed* size a zip's central directory declares (safe_extract_zip's
+# zip-bomb check), while this bounds the *compressed* bytes actually received
+# — different budgets an operator may need to tune independently. Same
+# default value only because it's a reasonable starting point for both, not
+# because the two are meant to move together. Env:
+# PARSER_RESULT_BUNDLE_DOWNLOAD_MAX_BYTES.
+DEFAULT_PARSER_RESULT_BUNDLE_DOWNLOAD_MAX_BYTES = 512 * 1024 * 1024  # 512 MiB
+
 # Native docx smart_heading (opt-in engine param) tunables. Each DEFAULT_*
 # below has a matching env var (drop the DEFAULT_ prefix) read at run time
 # by lightrag/parser/docx/smart_heading (same live-env pattern as the

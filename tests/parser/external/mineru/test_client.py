@@ -1148,9 +1148,10 @@ async def test_client_local_result_bundle_byte_budget_is_enforced(
     raw.mkdir()
 
     _CURRENT.dispatcher = _LocalFlatZipDispatcher()
-    # stream_capped_get shares this same budget and sits earlier in the
-    # pipeline than safe_extract_zip's declared-uncompressed-size check, so
-    # it rejects first now -- belt-and-suspenders, same cap, earlier catch.
-    with pytest.raises(RuntimeError, match="exceeds 1 bytes"):
+    # stream_capped_get has its own separate PARSER_RESULT_BUNDLE_DOWNLOAD_MAX_BYTES
+    # budget (unset here, so it stays at its generous default) and does not
+    # consult this uncompressed-size cap -- only safe_extract_zip's
+    # declared-size check below sees it.
+    with pytest.raises(RuntimeError, match="uncompressed size"):
         await MinerURawClient().download_into(raw, src)
     assert not (raw / "content_list.json").exists()

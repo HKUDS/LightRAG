@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 import async_timeout
 
 from lightrag.constants import (
+    DEFAULT_PARSER_RESULT_BUNDLE_DOWNLOAD_MAX_BYTES,
     DEFAULT_PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT,
     PARSED_DIR_SUFFIX,
 )
@@ -162,6 +163,26 @@ def download_deadline_seconds() -> float | None:
     return seconds if seconds > 0 else None
 
 
+def download_max_bytes() -> int | None:
+    """Live-read the raw-wire streaming cap for a result-bundle download.
+
+    Deliberately a separate env var from ``PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES``
+    (see :func:`result_bundle_limits`): that one bounds the *uncompressed*
+    size a zip's central directory declares, checked by ``safe_extract_zip``
+    against archive metadata after download. This bounds the *compressed*
+    bytes actually received over the wire, checked chunk-by-chunk by
+    :func:`stream_capped_get` before the bytes ever reach that check.
+    Reusing one value for both would force an operator who wants to tune
+    one budget to also move the other. Same "non-positive disables the
+    gate" convention as the rest of this module's env-driven limits.
+    """
+    raw = env_int(
+        "PARSER_RESULT_BUNDLE_DOWNLOAD_MAX_BYTES",
+        DEFAULT_PARSER_RESULT_BUNDLE_DOWNLOAD_MAX_BYTES,
+    )
+    return raw if raw > 0 else None
+
+
 def download_timeout(seconds: float | None) -> "async_timeout.Timeout":
     """Wall-clock timeout context manager for a download call.
 
@@ -235,6 +256,7 @@ __all__ = [
     "clear_dir_contents",
     "compute_size_and_hash",
     "download_deadline_seconds",
+    "download_max_bytes",
     "download_timeout",
     "env_bool",
     "env_int",

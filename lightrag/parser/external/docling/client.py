@@ -43,6 +43,7 @@ from urllib.parse import quote
 
 from lightrag.parser.external._common import (
     download_deadline_seconds,
+    download_max_bytes,
     download_timeout,
     env_bool,
     env_int,
@@ -320,7 +321,7 @@ class DoclingRawClient:
                 resp, body = await stream_capped_get(
                     client,
                     url,
-                    max_bytes=max_total_bytes,
+                    max_bytes=download_max_bytes(),
                     operation=f"Docling result {task_id} download",
                 )
         except TimeoutError as exc:

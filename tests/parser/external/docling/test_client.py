@@ -941,12 +941,13 @@ async def test_docling_oversized_result_zip_is_refused(
         await DoclingRawClient().download_into(
             tmp_path / "demo.docling_raw", source_pdf
         )
-    # stream_capped_get shares this same budget and sits earlier in the
-    # pipeline than safe_extract_zip's declared-uncompressed-size check, so
-    # it rejects first now -- belt-and-suspenders, same cap, earlier catch.
-    # See test_docling_declared_size_lies_but_raw_response_is_small for
-    # coverage of safe_extract_zip's own check still firing independently.
-    assert "exceeds 8 bytes" in str(exc.value)
+    # stream_capped_get has its own separate PARSER_RESULT_BUNDLE_DOWNLOAD_MAX_BYTES
+    # budget (unset here, so it stays at its generous default) and does not
+    # consult this uncompressed-size cap -- only safe_extract_zip's
+    # declared-size check below sees it. See
+    # test_docling_declared_size_lies_but_raw_response_is_small for more
+    # coverage of that same check.
+    assert "uncompressed size" in str(exc.value)
 
 
 async def test_docling_result_bundle_budget_can_be_disabled(
