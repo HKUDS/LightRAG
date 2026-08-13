@@ -286,18 +286,69 @@ async def test_download_zip_declared_size_lie_still_caught_when_raw_is_small(
         os.environ.pop("PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES", None)
 
 
+class _GenuineStream(httpx.AsyncByteStream):
+    """A real streamed byte source with nothing preloaded.
+
+    ``httpx.Response(..., content=b"...")`` pre-populates ``_content`` and
+    marks the response already-read (``is_stream_consumed=True``) at
+    *construction* time -- before any client or transport touches it. A
+    test built on that never exercises a genuinely unread response and
+    cannot catch a regression in how stream_capped_get's manual
+    ``aiter_bytes()`` consumption interacts with httpx's read-tracking.
+    This stream starts unread and only becomes "read" through actual
+    iteration, matching what a real network response looks like.
+    """
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+
+    async def __aiter__(self):
+        for chunk in self._chunks:
+            yield chunk
+
+    async def aclose(self) -> None:
+        pass
+
+
 @pytest.mark.asyncio
-async def test_download_zip_http_error_detail_survives_full_streaming(tmp_path):
-    """A non-2xx response's body text must still reach the raised error
-    message after being read via stream_capped_get's manual
-    response.aiter_bytes() loop rather than client.get(). httpx populates
-    a streamed response's .text/.json() once its body iterator has been
-    fully drained, even though it was never read via .aread() -- this
-    pins that real-httpx behaviour (as opposed to a hand-rolled fake
-    response) so a future httpx upgrade that changes it is caught here."""
+@pytest.mark.parametrize(
+    "content_type,chunks,expected_detail",
+    [
+        (
+            "text/plain",
+            [b"disk full", b": no space for temp file"],
+            "disk full: no space for temp file",
+        ),
+        (
+            "application/json",
+            [b'{"error": "', b'disk full"}'],
+            '{"error": "disk full"}',
+        ),
+    ],
+    ids=["text-body", "json-body"],
+)
+async def test_download_zip_http_error_detail_survives_genuine_streaming(
+    tmp_path, content_type, chunks, expected_detail
+):
+    """A non-2xx response's body text must reach the raised error message
+    after being read via stream_capped_get's manual
+    response.aiter_bytes() loop, for a genuinely unread stream (see
+    _GenuineStream). Without stream_capped_get's collected body being
+    threaded into raise_for_status_with_detail, this response is never
+    marked read in a way httpx accepts for .text/.json(), so accessing
+    either raises httpx.ResponseNotRead -- which is itself a RuntimeError
+    subclass (via httpx.StreamError) and would otherwise silently
+    masquerade as this function's own intended error. The strict
+    ``type(...) is RuntimeError`` check below is what actually catches
+    that regression; a bare ``pytest.raises(RuntimeError)`` would not,
+    since ResponseNotRead IS a RuntimeError."""
 
     async def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, content=b"disk full: no space for temp file")
+        return httpx.Response(
+            500,
+            stream=_GenuineStream(chunks),
+            headers={"content-type": content_type},
+        )
 
     transport = httpx.MockTransport(handler)
     raw_dir = tmp_path / "raw"
@@ -308,6 +359,12 @@ async def test_download_zip_http_error_detail_survives_full_streaming(tmp_path):
         with pytest.raises(RuntimeError) as excinfo:
             await client_obj._download_zip(client, "https://x/result.zip", raw_dir)
 
+    assert type(excinfo.value) is RuntimeError, (
+        f"expected our own RuntimeError, got {type(excinfo.value).__name__} "
+        f"(httpx.ResponseNotRead escaping disguised as RuntimeError would "
+        f"also pass a bare pytest.raises(RuntimeError) check)"
+    )
     message = str(excinfo.value)
-    assert "HTTP 500" in message
-    assert "disk full: no space for temp file" in message
+    assert "MinerU result bundle download failed: HTTP 500" in message
+    assert expected_detail in message
+    assert not (raw_dir / "content_list.json").exists()

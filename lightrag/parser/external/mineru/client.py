@@ -472,7 +472,7 @@ class MinerURawClient:
                         max_bytes=download_max_bytes(),
                         operation="MinerU result bundle download",
                     )
-            except TimeoutError as exc:
+            except asyncio.TimeoutError as exc:
                 # No result_url here (or below in raise_for_status_with_detail's
                 # operation label) -- an official-mode full_zip_url is a
                 # cloud-storage link that may carry a signed access token in
@@ -481,7 +481,9 @@ class MinerURawClient:
                 raise RuntimeError(
                     "MinerU result bundle download exceeded its wall-clock deadline"
                 ) from exc
-            raise_for_status_with_detail(resp, "MinerU result bundle download")
+            raise_for_status_with_detail(
+                resp, "MinerU result bundle download", body=body
+            )
         else:
             body = resp.content
         # Safe-extract with the shared result-bundle budget: refuse path

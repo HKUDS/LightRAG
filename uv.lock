@@ -312,9 +312,6 @@ name = "async-timeout"
 version = "5.0.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14'",
-    "python_full_version == '3.13.*'",
-    "python_full_version == '3.12.*'",
     "python_full_version == '3.11.*'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a5/ae/136395dfbfe00dfc94da3f3e136d0b13f394cba8f4841120e34226265780/async_timeout-5.0.1.tar.gz", hash = "sha256:d9321a7a3d5a6a5e187e824d2fa0793ce379a202935782d555d6e9d2735677d3", size = 9274, upload-time = "2024-11-06T16:41:39.6Z" }
@@ -2265,7 +2262,6 @@ api = [
     { name = "aiohttp" },
     { name = "ascii-colors" },
     { name = "async-timeout", version = "4.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "async-timeout", version = "5.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "bcrypt" },
     { name = "cairosvg" },
     { name = "configparser" },
@@ -2318,7 +2314,6 @@ evaluation = [
     { name = "aiohttp" },
     { name = "ascii-colors" },
     { name = "async-timeout", version = "4.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "async-timeout", version = "5.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "bcrypt" },
     { name = "cairosvg" },
     { name = "configparser" },
@@ -2378,7 +2373,6 @@ offline = [
     { name = "anthropic" },
     { name = "ascii-colors" },
     { name = "async-timeout", version = "4.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "async-timeout", version = "5.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "asyncpg" },
     { name = "bcrypt" },
     { name = "cairosvg" },
@@ -2475,7 +2469,6 @@ test = [
     { name = "aiohttp" },
     { name = "ascii-colors" },
     { name = "async-timeout", version = "4.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "async-timeout", version = "5.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "bcrypt" },
     { name = "cairosvg" },
     { name = "configparser" },
@@ -2537,7 +2530,7 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'api'" },
     { name = "anthropic", marker = "extra == 'offline-llm'", specifier = ">=0.18.0,<1.0.0" },
     { name = "ascii-colors", marker = "extra == 'api'" },
-    { name = "async-timeout", marker = "extra == 'api'", specifier = ">=4.0.3" },
+    { name = "async-timeout", marker = "python_full_version < '3.11' and extra == 'api'", specifier = ">=4.0.3" },
     { name = "asyncpg", marker = "extra == 'offline-storage'", specifier = ">=0.31.0,<1.0.0" },
     { name = "bcrypt", marker = "extra == 'api'", specifier = ">=4.0.0" },
     { name = "cairosvg", marker = "extra == 'api'", specifier = ">=2.5.0,<3.0.0" },

@@ -324,11 +324,13 @@ class DoclingRawClient:
                     max_bytes=download_max_bytes(),
                     operation=f"Docling result {task_id} download",
                 )
-        except TimeoutError as exc:
+        except asyncio.TimeoutError as exc:
             raise RuntimeError(
                 f"Docling result {task_id} download exceeded its wall-clock deadline"
             ) from exc
-        raise_for_status_with_detail(resp, f"Docling result {task_id} download")
+        raise_for_status_with_detail(
+            resp, f"Docling result {task_id} download", body=body
+        )
         ctype = resp.headers.get("content-type", "")
         if "zip" not in ctype.lower():
             if _is_json_result(body, ctype):
