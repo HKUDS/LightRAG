@@ -82,6 +82,9 @@ api = [
     # API-specific dependencies
     "aiofiles",
     "ascii_colors",
+    # asyncio.timeout() is Python 3.11+ only; requires-python allows 3.10 --
+    # used as the wall-clock deadline for MinerU/Docling result downloads.
+    "async-timeout>=4.0.3",
     "distro",
     "fastapi>=0.108",  # 0.108 adds FastAPI.__call__ scope["root_path"] override; api_prefix relies on it
     "httpcore",

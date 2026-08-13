@@ -17,6 +17,8 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import async_timeout
+
 from lightrag.constants import (
     DEFAULT_PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT,
     PARSED_DIR_SUFFIX,
@@ -138,7 +140,7 @@ def download_deadline_seconds() -> float | None:
     can raise or disable it without a code change. A non-positive value
     disables the deadline (``None``), matching the zip-bomb guards'
     "non-positive = unlimited" convention. Parsed as a float, not through
-    ``env_int`` — this value feeds straight into ``asyncio.timeout()``,
+    ``env_int`` — this value feeds straight into :func:`download_timeout`,
     which takes fractional seconds natively, and mirrors the float style
     ``httpx.Timeout(120.0, connect=30.0)`` already uses for the per-read
     timeout it complements.
@@ -158,6 +160,18 @@ def download_deadline_seconds() -> float | None:
             )
             seconds = float(DEFAULT_PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT)
     return seconds if seconds > 0 else None
+
+
+def download_timeout(seconds: float | None) -> "async_timeout.Timeout":
+    """Wall-clock timeout context manager for a download call.
+
+    Delegates to the ``async_timeout`` backport rather than the stdlib
+    ``asyncio.timeout()``, which is Python 3.11+ only while this package
+    declares ``requires-python = ">=3.10"``. Raises the same builtin
+    ``TimeoutError`` and preserves the same distinction between its own
+    deadline firing and an unrelated external cancellation.
+    """
+    return async_timeout.timeout(seconds)
 
 
 async def stream_capped_get(
@@ -221,6 +235,7 @@ __all__ = [
     "clear_dir_contents",
     "compute_size_and_hash",
     "download_deadline_seconds",
+    "download_timeout",
     "env_bool",
     "env_int",
     "env_json",

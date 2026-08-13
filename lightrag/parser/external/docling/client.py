@@ -43,6 +43,7 @@ from urllib.parse import quote
 
 from lightrag.parser.external._common import (
     download_deadline_seconds,
+    download_timeout,
     env_bool,
     env_int,
     raise_for_status_with_detail,
@@ -315,7 +316,7 @@ class DoclingRawClient:
         # interval can reset it indefinitely; the deadline bounds the
         # whole download regardless of how it stalls.
         try:
-            async with asyncio.timeout(download_deadline_seconds()):
+            async with download_timeout(download_deadline_seconds()):
                 resp, body = await stream_capped_get(
                     client,
                     url,

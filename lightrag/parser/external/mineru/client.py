@@ -28,6 +28,7 @@ from urllib.parse import quote, urlparse
 
 from lightrag.parser.external._common import (
     download_deadline_seconds,
+    download_timeout,
     raise_for_status_with_detail,
     stream_capped_get,
 )
@@ -463,7 +464,7 @@ class MinerURawClient:
             # per interval can reset it indefinitely; the deadline bounds
             # the whole download regardless of how it stalls.
             try:
-                async with asyncio.timeout(download_deadline_seconds()):
+                async with download_timeout(download_deadline_seconds()):
                     resp, body = await stream_capped_get(
                         client,
                         result_url,
