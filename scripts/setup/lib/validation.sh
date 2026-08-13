@@ -42,7 +42,7 @@ validate_api_key() {
   fi
 
   case "$provider" in
-    openai|openrouter)
+    openai|openrouter|lmstudio)
       return 0; ;;
     *)
       [[ ${#key} -ge 8 ]]

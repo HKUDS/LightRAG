@@ -853,7 +853,7 @@ reset_state
 prompt_choice() {{ printf 'openai'; }}
 prompt_with_default() {{
   case "$1" in
-    "LLM model") printf 'gpt-4o' ;;
+    "LLM model (blank = any-available)") printf 'gpt-4o' ;;
     *) printf '%s' "$2" ;;
   esac
 }}
@@ -905,6 +905,35 @@ printf 'QUERY_LLM_MODEL=%s\\n' "${{ENV_VALUES[QUERY_LLM_MODEL]}}\"
     assert values["LLM_MODEL"] == "gpt-4o"
     assert values["KEYWORD_LLM_MODEL"] == "custom-keyword-model"
     assert values["QUERY_LLM_MODEL"] == "custom-query-model"
+
+
+def test_collect_llm_config_lmstudio_defaults_any_available_over_legacy_local_model(
+    tmp_path: Path,
+) -> None:
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=lmstudio",
+            "LLM_MODEL=local-model",
+            "LLM_BINDING_HOST=http://localhost:1234/v1",
+        ],
+    )
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+prompt_choice() {{ printf 'lmstudio'; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+
+collect_llm_config
+
+printf 'LLM_MODEL=%s\\n' "${{ENV_VALUES[LLM_MODEL]}}"
+""")
+    values = parse_lines(output)
+    assert values["LLM_MODEL"] == "any-available"
 
 
 def test_collect_rerank_config_preserves_api_key_when_disabled(tmp_path: Path) -> None:
@@ -1887,3 +1916,135 @@ collect_opensearch_config "yes"
 printf 'PASSWORD_VALIDATOR=%s\\n' "$(cat "$validator_file")\"
 """)
     assert values["PASSWORD_VALIDATOR"] == "validate_opensearch_password_strength"
+
+
+def test_collect_embedding_config_lmstudio_skips_embedding_dim() -> None:
+    """LM Studio embeddings should not set EMBEDDING_DIM in wizard state."""
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[LLM_BINDING]="lmstudio"
+ENV_VALUES[LLM_BINDING_HOST]="http://localhost:1234/v1"
+
+prompt_choice() {{ printf 'lmstudio'; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+
+collect_embedding_config
+
+printf 'EMBEDDING_DIM_SET=%s\\n' "${{ENV_VALUES[EMBEDDING_DIM]+set}}"
+printf 'EMBEDDING_MODEL=%s\\n' "${{ENV_VALUES[EMBEDDING_MODEL]}}"
+""")
+    values = parse_lines(output)
+    assert values["EMBEDDING_DIM_SET"] == ""
+    assert values["EMBEDDING_MODEL"] == "any-available"
+
+
+def test_normalize_lmstudio_env_state_applies_concurrency_defaults() -> None:
+    """LM Studio wizard normalization should apply safe concurrency defaults."""
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[LLM_BINDING]="lmstudio"
+ENV_VALUES[EMBEDDING_BINDING]="lmstudio"
+
+normalize_lmstudio_env_state yes
+
+printf 'MAX_ASYNC_LLM=%s\\n' "${{ENV_VALUES[MAX_ASYNC_LLM]}}"
+printf 'KEYWORD_MAX_ASYNC_LLM=%s\\n' "${{ENV_VALUES[KEYWORD_MAX_ASYNC_LLM]}}"
+printf 'QUERY_MAX_ASYNC_LLM=%s\\n' "${{ENV_VALUES[QUERY_MAX_ASYNC_LLM]}}"
+printf 'MAX_PARALLEL_INSERT=%s\\n' "${{ENV_VALUES[MAX_PARALLEL_INSERT]}}"
+printf 'EMBEDDING_FUNC_MAX_ASYNC=%s\\n' "${{ENV_VALUES[EMBEDDING_FUNC_MAX_ASYNC]}}"
+printf 'EMBEDDING_BATCH_NUM=%s\\n' "${{ENV_VALUES[EMBEDDING_BATCH_NUM]}}"
+printf 'EMBEDDING_DIM_SET=%s\\n' "${{ENV_VALUES[EMBEDDING_DIM]+set}}"
+printf 'SUPPRESS_EMBEDDING_DIM=%s\\n' "${{ENV_SUPPRESS_ACTIVE_KEYS[EMBEDDING_DIM]+set}}"
+""")
+    values = parse_lines(output)
+    assert values["MAX_ASYNC_LLM"] == "1"
+    assert values["KEYWORD_MAX_ASYNC_LLM"] == "1"
+    assert values["QUERY_MAX_ASYNC_LLM"] == "1"
+    assert values["MAX_PARALLEL_INSERT"] == "1"
+    assert values["EMBEDDING_FUNC_MAX_ASYNC"] == "1"
+    assert values["EMBEDDING_BATCH_NUM"] == "16"
+    assert values["EMBEDDING_DIM_SET"] == ""
+    assert values["SUPPRESS_EMBEDDING_DIM"] == "set"
+
+
+def test_normalize_lmstudio_env_state_prompt_declined_preserves_concurrency() -> None:
+    """Declining the single-threaded prompt should not overwrite concurrency."""
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[LLM_BINDING]="lmstudio"
+ENV_VALUES[EMBEDDING_BINDING]="lmstudio"
+ENV_VALUES[MAX_ASYNC_LLM]="4"
+ENV_VALUES[EMBEDDING_BATCH_NUM]="32"
+
+confirm_default_yes() {{ return 1; }}
+
+normalize_lmstudio_env_state prompt
+
+printf 'MAX_ASYNC_LLM=%s\\n' "${{ENV_VALUES[MAX_ASYNC_LLM]}}"
+printf 'EMBEDDING_BATCH_NUM=%s\\n' "${{ENV_VALUES[EMBEDDING_BATCH_NUM]}}"
+printf 'EMBEDDING_DIM_SET=%s\\n' "${{ENV_VALUES[EMBEDDING_DIM]+set}}"
+printf 'SUPPRESS_EMBEDDING_DIM=%s\\n' "${{ENV_SUPPRESS_ACTIVE_KEYS[EMBEDDING_DIM]+set}}"
+""")
+    values = parse_lines(output)
+    assert values["MAX_ASYNC_LLM"] == "4"
+    assert values["EMBEDDING_BATCH_NUM"] == "32"
+    assert values["EMBEDDING_DIM_SET"] == ""
+    assert values["SUPPRESS_EMBEDDING_DIM"] == "set"
+
+
+def test_normalize_lmstudio_env_state_prompt_accepted_applies_defaults() -> None:
+    """Accepting the single-threaded prompt should apply safe concurrency limits."""
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[LLM_BINDING]="lmstudio"
+ENV_VALUES[EMBEDDING_BINDING]="lmstudio"
+ENV_VALUES[MAX_ASYNC_LLM]="4"
+
+confirm_default_yes() {{ return 0; }}
+
+normalize_lmstudio_env_state prompt
+
+printf 'MAX_ASYNC_LLM=%s\\n' "${{ENV_VALUES[MAX_ASYNC_LLM]}}"
+printf 'EMBEDDING_BATCH_NUM=%s\\n' "${{ENV_VALUES[EMBEDDING_BATCH_NUM]}}"
+""")
+    values = parse_lines(output)
+    assert values["MAX_ASYNC_LLM"] == "1"
+    assert values["EMBEDDING_BATCH_NUM"] == "16"
+
+
+def test_normalize_lmstudio_env_state_without_apply_preserves_concurrency() -> None:
+    """env-storage/env-server should suppress EMBEDDING_DIM but not reset concurrency."""
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[LLM_BINDING]="lmstudio"
+ENV_VALUES[EMBEDDING_BINDING]="lmstudio"
+ENV_VALUES[MAX_ASYNC_LLM]="4"
+ENV_VALUES[EMBEDDING_BATCH_NUM]="32"
+
+normalize_lmstudio_env_state no
+
+printf 'MAX_ASYNC_LLM=%s\\n' "${{ENV_VALUES[MAX_ASYNC_LLM]}}"
+printf 'EMBEDDING_BATCH_NUM=%s\\n' "${{ENV_VALUES[EMBEDDING_BATCH_NUM]}}"
+printf 'EMBEDDING_DIM_SET=%s\\n' "${{ENV_VALUES[EMBEDDING_DIM]+set}}"
+printf 'SUPPRESS_EMBEDDING_DIM=%s\\n' "${{ENV_SUPPRESS_ACTIVE_KEYS[EMBEDDING_DIM]+set}}"
+""")
+    values = parse_lines(output)
+    assert values["MAX_ASYNC_LLM"] == "4"
+    assert values["EMBEDDING_BATCH_NUM"] == "32"
+    assert values["EMBEDDING_DIM_SET"] == ""
+    assert values["SUPPRESS_EMBEDDING_DIM"] == "set"

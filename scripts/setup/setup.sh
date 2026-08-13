@@ -15,6 +15,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 declare -A ENV_VALUES
 declare -A ORIGINAL_ENV_VALUES
+declare -A ENV_SUPPRESS_ACTIVE_KEYS
 declare -A COMPOSE_ENV_OVERRIDES
 declare -A COMPOSE_REWRITE_SERVICE_SET
 declare -A COMPOSE_SERVICE_IMAGE_OVERRIDES
@@ -102,6 +103,7 @@ init_colors() {
 reset_state() {
   ENV_VALUES=()
   ORIGINAL_ENV_VALUES=()
+  ENV_SUPPRESS_ACTIVE_KEYS=()
   COMPOSE_ENV_OVERRIDES=()
   COMPOSE_REWRITE_SERVICE_SET=()
   COMPOSE_SERVICE_IMAGE_OVERRIDES=()
@@ -1826,6 +1828,36 @@ provider_default_or_existing() {
   printf '%s' "$default_value"
 }
 
+is_lmstudio_auto_model_value() {
+  local value="${1:-}"
+  value="${value// }"
+  case "${value,,}" in
+    ""|local-model|local_model|any-available|any_available|auto|any|\*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+model_default_for_binding() {
+  local binding="$1"
+  local existing_binding="${2:-}"
+  local existing_value="${3:-}"
+  local default_value="${4:-}"
+
+  if [[ "$binding" == "lmstudio" ]]; then
+    if [[ "$binding" == "$existing_binding" && -n "$existing_value" ]] \
+      && ! is_lmstudio_auto_model_value "$existing_value"; then
+      printf '%s' "$existing_value"
+      return 0
+    fi
+    printf '%s' "$default_value"
+    return 0
+  fi
+
+  provider_default_or_existing "$binding" "$existing_binding" "$existing_value" "$default_value"
+}
+
 default_llm_model_for_binding() {
   local binding="$1"
 
@@ -1835,6 +1867,9 @@ default_llm_model_for_binding() {
       ;;
     ollama|lollms|openai-ollama)
       printf 'mistral-nemo:latest'
+      ;;
+    lmstudio)
+      printf 'any-available'
       ;;
     gemini)
       printf 'gemini-flash-latest'
@@ -1857,6 +1892,9 @@ default_embedding_model_for_binding() {
       ;;
     ollama)
       printf 'bge-m3:latest'
+      ;;
+    lmstudio)
+      printf 'any-available'
       ;;
     jina)
       printf 'jina-embeddings-v4'
@@ -1886,6 +1924,9 @@ default_embedding_dim_for_binding() {
     ollama|bedrock|lollms)
       printf '1024'
       ;;
+    lmstudio)
+      printf ''
+      ;;
     jina)
       printf '2048'
       ;;
@@ -1898,14 +1939,97 @@ default_embedding_dim_for_binding() {
   esac
 }
 
+apply_lmstudio_llm_concurrency_defaults() {
+  log_info "LM Studio: setting LLM concurrency limits."
+  log_info "  MAX_ASYNC_LLM=1, KEYWORD_MAX_ASYNC_LLM=1, QUERY_MAX_ASYNC_LLM=1, MAX_PARALLEL_INSERT=1"
+  ENV_VALUES["MAX_ASYNC_LLM"]="1"
+  ENV_VALUES["KEYWORD_MAX_ASYNC_LLM"]="1"
+  ENV_VALUES["QUERY_MAX_ASYNC_LLM"]="1"
+  ENV_VALUES["MAX_PARALLEL_INSERT"]="1"
+}
+
+apply_lmstudio_embedding_concurrency_defaults() {
+  log_info "LM Studio: setting embedding concurrency limits."
+  log_info "  EMBEDDING_FUNC_MAX_ASYNC=1, EMBEDDING_BATCH_NUM=16"
+  ENV_VALUES["EMBEDDING_FUNC_MAX_ASYNC"]="1"
+  ENV_VALUES["EMBEDDING_BATCH_NUM"]="16"
+}
+
+prompt_lmstudio_single_threaded_defaults() {
+  echo "LM Studio often runs short on resources and can crash when configured for"
+  echo "concurrent LLM or embedding requests (env.example defaults use MAX_ASYNC_LLM=4"
+  echo "and larger embedding batches)."
+  echo "Single-threaded limits (MAX_ASYNC_LLM=1, EMBEDDING_BATCH_NUM=16, etc.) improve"
+  echo "stability on typical local hardware."
+  if confirm_default_yes "Use single-threaded LM Studio concurrency limits?"; then
+    return 0
+  fi
+  log_info "Keeping concurrency settings from env.example or your existing .env."
+  log_info "See docs/LMSTUDIO_SETUP.md if LM Studio crashes under load."
+  return 1
+}
+
+normalize_lmstudio_env_state() {
+  # apply_runtime_defaults:
+  #   no    — env-storage/env-server: only keep EMBEDDING_DIM out of generated .env
+  #   yes   — apply safe concurrency limits without prompting (tests)
+  #   prompt — env-base: ask before applying concurrency limits
+  # When EMBEDDING_BINDING=lmstudio, EMBEDDING_DIM is always kept out of generated .env.
+  local apply_runtime_defaults="${1:-no}"
+  local llm_lmstudio="no"
+  local embed_lmstudio="no"
+  local should_apply_defaults="no"
+
+  if [[ "${ENV_VALUES[LLM_BINDING]:-}" == "lmstudio" ]]; then
+    llm_lmstudio="yes"
+  fi
+  if [[ "${ENV_VALUES[EMBEDDING_BINDING]:-}" == "lmstudio" ]]; then
+    embed_lmstudio="yes"
+  fi
+
+  if [[ "$llm_lmstudio" != "yes" && "$embed_lmstudio" != "yes" ]]; then
+    unset 'ENV_SUPPRESS_ACTIVE_KEYS[EMBEDDING_DIM]'
+    return 0
+  fi
+
+  if [[ "$apply_runtime_defaults" == "yes" ]]; then
+    should_apply_defaults="yes"
+  elif [[ "$apply_runtime_defaults" == "prompt" ]]; then
+    if prompt_lmstudio_single_threaded_defaults; then
+      should_apply_defaults="yes"
+    fi
+  fi
+
+  if [[ "$embed_lmstudio" == "yes" ]]; then
+    unset 'ENV_VALUES[EMBEDDING_DIM]'
+    ENV_SUPPRESS_ACTIVE_KEYS["EMBEDDING_DIM"]=1
+    if [[ "$should_apply_defaults" == "yes" ]]; then
+      apply_lmstudio_embedding_concurrency_defaults
+    fi
+  else
+    unset 'ENV_SUPPRESS_ACTIVE_KEYS[EMBEDDING_DIM]'
+  fi
+
+  if [[ "$llm_lmstudio" == "yes" && "$should_apply_defaults" == "yes" ]]; then
+    apply_lmstudio_llm_concurrency_defaults
+  fi
+
+  if [[ "$should_apply_defaults" == "yes" ]]; then
+    log_info "LM Studio tuning guide: docs/LMSTUDIO_SETUP.md"
+  fi
+}
+
 collect_llm_config() {
-  local options=("openai" "azure_openai" "ollama" "openai-ollama" "lollms" "gemini" "bedrock")
+  local options=("openai" "azure_openai" "ollama" "openai-ollama" "lmstudio" "lollms" "gemini" "bedrock")
   local current_binding="${ENV_VALUES[LLM_BINDING]:-openai}"
   local binding model model_default host host_default api_key
 
   binding="$(prompt_choice "LLM provider" "$current_binding" "${options[@]}")"
-  model_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_MODEL]:-}" "$(default_llm_model_for_binding "$binding")")"
-  model="$(prompt_with_default "LLM model" "$model_default")"
+  model_default="$(model_default_for_binding "$binding" "$current_binding" "${ENV_VALUES[LLM_MODEL]:-}" "$(default_llm_model_for_binding "$binding")")"
+  model="$(prompt_with_default "LLM model (blank = any-available)" "$model_default")"
+  if [[ "$binding" == "lmstudio" && -z "${model// }" ]]; then
+    model="any-available"
+  fi
 
   case "$binding" in
     ollama)
@@ -1917,6 +2041,12 @@ collect_llm_config() {
       host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "$(default_loopback_url 11434 "/v1")")"
       host="$(prompt_with_default "OpenAI-compatible Ollama endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "LLM API key: " "${ENV_VALUES[LLM_BINDING_API_KEY]:-}" validate_api_key openai)"
+      ;;
+    lmstudio)
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "$(default_loopback_url 1234 "/v1")")"
+      host="$(prompt_with_default "LM Studio endpoint" "$host_default")"
+      api_key="$(prompt_with_default "LM Studio API key" "${ENV_VALUES[LLM_BINDING_API_KEY]:-lm-studio}")"
+      log_info "LM Studio: safe concurrency limits can be applied when the wizard writes .env (see docs/LMSTUDIO_SETUP.md)."
       ;;
     lollms)
       host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "http://localhost:9600")"
@@ -1961,7 +2091,7 @@ collect_llm_config() {
 }
 
 collect_embedding_config() {
-  local options=("openai" "azure_openai" "ollama" "jina" "lollms" "gemini" "bedrock")
+  local options=("openai" "azure_openai" "ollama" "lmstudio" "jina" "lollms" "gemini" "bedrock")
   local current_binding="${ENV_VALUES[EMBEDDING_BINDING]:-openai}"
   local binding model model_default host host_default api_key dim dim_default
 
@@ -1970,13 +2100,23 @@ collect_embedding_config() {
     if [[ "$current_binding" != "ollama" ]]; then
       log_info "openai-ollama uses Ollama embeddings. Forcing embedding provider to ollama."
     fi
+  elif [[ "${ENV_VALUES[LLM_BINDING]:-}" == "lmstudio" && "$current_binding" != "lmstudio" ]]; then
+    binding="lmstudio"
+    log_info "LM Studio LLM selected. Defaulting embedding provider to lmstudio."
   else
     binding="$(prompt_choice "Embedding provider" "$current_binding" "${options[@]}")"
   fi
-  model_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_MODEL]:-}" "$(default_embedding_model_for_binding "$binding")")"
-  dim_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_DIM]:-}" "$(default_embedding_dim_for_binding "$binding")")"
-  model="$(prompt_with_default "Embedding model" "$model_default")"
-  dim="$(prompt_with_default "Embedding dimension" "$dim_default")"
+  model_default="$(model_default_for_binding "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_MODEL]:-}" "$(default_embedding_model_for_binding "$binding")")"
+  model="$(prompt_with_default "Embedding model (blank = any-available)" "$model_default")"
+  if [[ "$binding" == "lmstudio" && -z "${model// }" ]]; then
+    model="any-available"
+  fi
+  if [[ "$binding" == "lmstudio" ]]; then
+    log_info "LM Studio: EMBEDDING_DIM is not set — LightRAG probes vector size at server startup."
+  else
+    dim_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_DIM]:-}" "$(default_embedding_dim_for_binding "$binding")")"
+    dim="$(prompt_with_default "Embedding dimension" "$dim_default")"
+  fi
 
   local llm_host_fallback="" llm_api_key_default=""
   if [[ "$binding" == "${ENV_VALUES[LLM_BINDING]:-}" ]]; then
@@ -1994,6 +2134,11 @@ collect_embedding_config() {
       host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-http://localhost:9600}")"
       host="$(prompt_with_default "LoLLMs embedding host" "$host_default")"
       api_key=""
+      ;;
+    lmstudio)
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-$(default_loopback_url 1234 "/v1")}")"
+      host="$(prompt_with_default "LM Studio embedding endpoint" "$host_default")"
+      api_key="$(prompt_with_default "LM Studio API key" "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-${llm_api_key_default:-lm-studio}}")"
       ;;
     azure_openai)
       host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-https://example.openai.azure.com/}")"
@@ -2024,7 +2169,11 @@ collect_embedding_config() {
 
   ENV_VALUES["EMBEDDING_BINDING"]="$binding"
   ENV_VALUES["EMBEDDING_MODEL"]="$model"
-  ENV_VALUES["EMBEDDING_DIM"]="$dim"
+  if [[ "$binding" == "lmstudio" ]]; then
+    unset 'ENV_VALUES[EMBEDDING_DIM]'
+  else
+    ENV_VALUES["EMBEDDING_DIM"]="$dim"
+  fi
   ENV_VALUES["EMBEDDING_BINDING_HOST"]="$host"
   store_optional_env_value "EMBEDDING_BINDING_API_KEY" "$api_key"
   # User chose a remote provider — clear the Docker deployment marker.
@@ -2618,6 +2767,7 @@ finalize_base_setup() {
   fi
 
   clear_deprecated_vllm_dtype_state
+  normalize_lmstudio_env_state prompt
   set_runtime_target "$runtime_target" || return 1
   generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
   log_success "Wrote .env"
@@ -2749,6 +2899,7 @@ finalize_storage_setup() {
   fi
 
   clear_deprecated_vllm_dtype_state
+  normalize_lmstudio_env_state no
   set_runtime_target "$runtime_target" || return 1
   generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
   log_success "Wrote .env"
@@ -2894,6 +3045,7 @@ finalize_server_setup() {
   fi
 
   clear_deprecated_vllm_dtype_state
+  normalize_lmstudio_env_state no
   set_runtime_target "$runtime_target" || return 1
   generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
   log_success "Wrote .env"
