@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from enum import Enum
 import os
 from dotenv import load_dotenv
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import (
     Any,
     ClassVar,
@@ -1045,6 +1045,25 @@ class DocProcessingStatus:
                 and self.status == DocStatus.PROCESSED
             ):
                 self.status = DocStatus.PREPROCESSED
+
+    @classmethod
+    def from_stored(cls, data: dict[str, Any]) -> "DocProcessingStatus":
+        """Construct from a stored doc_status row, ignoring undeclared fields.
+
+        Producers evolve independently of this schema: RAG-Anything writes
+        ``scheme_name``/``multimodal_content``, other LightRAG versions write
+        fields an installed release does not declare yet (or no longer does).
+        ``DocProcessingStatus(**row)`` raises ``TypeError`` on any such field,
+        which makes every read path treat the row as malformed and drop it
+        from listings — the document silently disappears from the WebUI and
+        the API even though its record is intact (HKUDS/RAG-Anything#73).
+
+        Extra fields are ignored for construction only; the stored row is
+        not modified. A *missing required* field still raises ``TypeError``
+        — tolerance is strictly for extras, not for malformed rows.
+        """
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
 
 
 class CursorPosition:
