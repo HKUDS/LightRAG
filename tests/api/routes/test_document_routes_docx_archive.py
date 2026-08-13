@@ -347,6 +347,13 @@ class _DeleteDocStatus:
     async def get_by_id(self, doc_id: str) -> dict | None:
         return self.rows.get(doc_id)
 
+    async def get_doc_by_file_basename(self, basename: str):
+        for doc_id, row in self.rows.items():
+            metadata = row.get("metadata") or {}
+            if row.get("file_path") == basename and not metadata.get("is_duplicate"):
+                return doc_id, row
+        return None
+
 
 class _DeleteRag:
     def __init__(self, result, status_rows=None):
@@ -357,6 +364,7 @@ class _DeleteRag:
 
     async def adelete_by_doc_id(self, doc_id, delete_llm_cache=False):
         self.deleted_doc_ids.append((doc_id, delete_llm_cache))
+        self.doc_status.rows.pop(doc_id, None)
         return self.result
 
     async def apipeline_process_enqueue_documents(self):
@@ -3152,7 +3160,11 @@ async def test_background_delete_duplicate_marker_preserves_shared_source_file(
                     "is_duplicate": True,
                     "original_doc_id": "doc-primary",
                 },
-            }
+            },
+            "doc-primary": {
+                "file_path": "paper.pdf",
+                "metadata": {},
+            },
         },
     )
     shared_storage.initialize_share_data()
@@ -3167,6 +3179,62 @@ async def test_background_delete_duplicate_marker_preserves_shared_source_file(
 
     assert rag.deleted_doc_ids == [(duplicate_id, False)]
     assert source_file.read_bytes() == b"primary source"
+
+
+async def test_background_delete_post_parse_duplicate_removes_owned_archive(
+    tmp_path,
+):
+    """A demoted ``doc-*`` row still owns its unique archived source."""
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    parsed_dir = tmp_path / PARSED_DIR_NAME
+    parsed_dir.mkdir()
+    archived_source = parsed_dir / "twin.pdf"
+    archived_source.write_bytes(b"duplicate content under a unique filename")
+    artifact_dir = parsed_dir / "twin.pdf.parsed"
+    artifact_dir.mkdir()
+    sidecar = artifact_dir / "twin.blocks.jsonl"
+    sidecar.write_text("{}", encoding="utf-8")
+    primary_source = parsed_dir / "primary.pdf"
+    primary_source.write_bytes(b"primary source")
+    doc_manager = DocumentManager(str(tmp_path))
+    duplicate_id = "doc-twin"
+    rag = _DeleteRag(
+        DeletionResult(
+            status="success",
+            doc_id=duplicate_id,
+            message="deleted post-parse duplicate",
+            file_path="twin.pdf",
+        ),
+        status_rows={
+            duplicate_id: {
+                "file_path": "twin.pdf",
+                "metadata": {
+                    "is_duplicate": True,
+                    "duplicate_kind": "content_hash",
+                    "original_doc_id": "doc-primary",
+                },
+            },
+            "doc-primary": {
+                "file_path": "primary.pdf",
+                "metadata": {},
+            },
+        },
+    )
+    shared_storage.initialize_share_data()
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+
+    await _document_routes.background_delete_documents(
+        rag,
+        doc_manager,
+        [duplicate_id],
+        delete_file=True,
+    )
+
+    assert rag.deleted_doc_ids == [(duplicate_id, False)]
+    assert not archived_source.exists()
+    assert not artifact_dir.exists()
+    assert not sidecar.exists()
+    assert primary_source.read_bytes() == b"primary source"
 
 
 async def test_background_delete_primary_still_removes_source_file(tmp_path):

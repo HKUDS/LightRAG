@@ -1721,6 +1721,7 @@ class DeletionResult:
     message: str
     status_code: int = 200
     file_path: str | None = None
+    """Canonical source basename; another status row may reference it too."""
 
 
 # Unified Query Result Data Structures for Reference List Support

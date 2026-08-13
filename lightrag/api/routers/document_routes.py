@@ -4146,20 +4146,8 @@ async def background_delete_documents(
 
             file_path = "#"
             try:
-                # A duplicate-attempt row deliberately reuses the primary
-                # document's canonical file_path for display.  Capture that
-                # distinction before adelete_by_doc_id removes the status row;
-                # the marker does not own the shared physical source file.
                 delete_physical_file = delete_file
-                if delete_file:
-                    status_row = await rag.doc_status.get_by_id(doc_id)
-                    metadata = (
-                        status_row.get("metadata")
-                        if isinstance(status_row, dict)
-                        else getattr(status_row, "metadata", None)
-                    )
-                    if isinstance(metadata, dict) and metadata.get("is_duplicate"):
-                        delete_physical_file = False
+                file_preservation_reason = None
 
                 result = await rag.adelete_by_doc_id(
                     doc_id, delete_llm_cache=delete_llm_cache
@@ -4168,6 +4156,34 @@ async def background_delete_documents(
                     getattr(result, "file_path", "-") if "result" in locals() else "-"
                 )
                 if result.status == "success":
+                    if (
+                        delete_file
+                        and result.file_path
+                        and result.file_path != UNKNOWN_FILE_SOURCE
+                    ):
+                        try:
+                            # Duplicate-attempt and source-conflict rows share a
+                            # primary document's basename. Check ownership only
+                            # after the deleted row is gone so a post-parse
+                            # content duplicate, which owns its unique archive,
+                            # still removes that archive normally.
+                            other = await rag.doc_status.get_doc_by_file_basename(
+                                result.file_path
+                            )
+                            if other is not None and other[0] != doc_id:
+                                delete_physical_file = False
+                                file_preservation_reason = (
+                                    f"still referenced by document {other[0]}"
+                                )
+                        except Exception as ownership_error:
+                            # Fail closed: a storage read failure must never
+                            # turn a successful record deletion into accidental
+                            # removal of a possibly shared physical file.
+                            delete_physical_file = False
+                            file_preservation_reason = (
+                                f"ownership check failed: {ownership_error}"
+                            )
+
                     successful_deletions.append(doc_id)
                     success_msg = (
                         f"Document deleted {i}/{total_docs}: {doc_id}[{file_path}]"
@@ -4230,8 +4246,8 @@ async def background_delete_documents(
                                 append_pipeline_history(pipeline_status, file_error_msg)
                     elif delete_file and not delete_physical_file:
                         file_preserved_msg = (
-                            "Source file preserved for duplicate marker "
-                            f"{doc_id}: {result.file_path}"
+                            f"Source file preserved for {doc_id}: {result.file_path} "
+                            f"({file_preservation_reason})"
                         )
                         logger.info(file_preserved_msg)
                         async with pipeline_status_lock:
