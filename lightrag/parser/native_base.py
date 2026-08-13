@@ -359,7 +359,7 @@ class NativeParserBase(BaseParser):
             # raise covers both.
             #
             # The rag-level shutdown event is checked here too, and raises the
-            # distinct LLMBridgeShutdown. _shutdown_parser_executor() sets it
+            # distinct ParseShutdown. _shutdown_parser_executor() sets it
             # and then calls executor.shutdown(wait=False), i.e. it does NOT
             # wait for a running extract — its contract is that in-flight work
             # exits via the event. Without this branch a worker still inside
