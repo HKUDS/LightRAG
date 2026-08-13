@@ -710,6 +710,22 @@ def create_optimized_embedding_function(
     except ImportError as e:
         logger.warning(f"Could not import provider function for {binding}: {e}")
 
+    if (
+        binding == "ollama"
+        and model
+        and args.embedding_dim is None
+        and provider_func is not None
+    ):
+        default_model = provider_func.model_name
+        configured_model = model.removesuffix(":latest")
+        normalized_default = default_model.removesuffix(":latest")
+        if configured_model != normalized_default:
+            raise ValueError(
+                "EMBEDDING_DIM must be set when EMBEDDING_MODEL selects a "
+                f"custom Ollama model ({model!r}); the provider default "
+                f"dimension only applies to {default_model!r}"
+            )
+
     # Step 2: Apply priority (user config > provider default)
     # For max_token_size: explicit env var > provider default > None
     final_max_token_size = args.embedding_token_limit or provider_max_token_size
