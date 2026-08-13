@@ -6738,3 +6738,381 @@ def validate_workspace(workspace: str) -> str:
             "separators ('/', '\\') or be a relative path reference ('.', '..')"
         )
     return workspace
+
+
+# Complement of the XML 1.0 ``Char`` production. GraphML is XML, so a string
+# holding any other code point cannot be serialized at all -- tab, newline and
+# carriage return are the only C0 controls XML admits, and descriptions
+# legitimately carry those.
+_XML_INCOMPATIBLE_CHAR_PATTERN = re.compile(
+    r"[^\u0009\u000a\u000d\u0020-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]"
+)
+
+# Attribute names a backend would read as something other than a name. Kept to
+# exactly that: MongoGraphStorage passes names straight into a ``$set``
+# document, where a dot is a *path* separator (``source_ids.0`` rewrites an
+# element of the chunk-attribution array rather than creating a field) and a
+# leading ``$`` is an update operator.
+#
+# Deliberately NOT "must be an identifier". Names like ``display-name`` or
+# ``has space`` carry no interpretation hazard on any backend, and the manual
+# edit API accepted them before the field allowlist landed -- so the document
+# backends that persisted them hold such names today. Refusing them here would
+# make those entities unmodifiable, because every rewrite path (entity edit,
+# rename, merge, extraction rebuild) spreads the *stored* attributes back into
+# the upsert payload.
+_GRAPH_ATTRIBUTE_NAME_DISALLOWED_SUBSTRING = "."
+_GRAPH_ATTRIBUTE_NAME_DISALLOWED_PREFIX = "$"
+
+# Integer attributes must fit in a signed 64-bit integer. Verified against the
+# installed driver rather than assumed: neo4j's packstream Packer raises
+# ``OverflowError("Integer ... out of range")`` outside ``[-2**63, 2**63)``
+# (``neo4j/_codec/packstream/v1/__init__.py``), and GraphML declares an int
+# attribute as ``attr.type="long"``, which is ``xsd:long`` -- also int64. So a
+# larger int is outside the intersection this module defines, even though
+# networkx will happily write it and PostgreSQL's arbitrary-precision ``jsonb``
+# numeric will happily store it.
+_GRAPH_ATTRIBUTE_INT_MIN = -(2**63)
+_GRAPH_ATTRIBUTE_INT_MAX = 2**63 - 1
+
+
+def _graphml_encodable_types() -> frozenset[type]:
+    """The exact types networkx's GraphML writer knows how to encode.
+
+    Asked of networkx rather than enumerated here, because ``add_data`` resolves
+    a value by looking its type up in ``self.xml_type`` -- so that table *is* the
+    definition, and reproducing it by hand would drift. Sourcing it also makes
+    the guard's justification true by construction: every type this module
+    refuses is a type the write would have failed on.
+
+    An ``isinstance`` shortcut over ``np.integer`` / ``np.floating`` would be
+    wrong, not merely loose: ``np.longdouble`` is an ``np.floating`` and is *not*
+    in the table, so it would be accepted here and rejected at write time --
+    the poisoning this exists to prevent.
+
+    The four builtins are unioned in as a floor, and a failure to read the table
+    degrades to exactly that floor. ``networkx`` carries no version bound in
+    pyproject.toml, so its internals could move; degrading to the floor is
+    stricter, never looser, so it cannot open the hole it guards.
+    """
+    builtin_scalars = frozenset({str, int, float, bool})
+    try:
+        from networkx.readwrite.graphml import GraphML
+
+        probe = GraphML()
+        probe.construct_types()
+        return frozenset(probe.xml_type) | builtin_scalars
+    except Exception:  # networkx internals moved: fall back to the strict floor
+        return builtin_scalars
+
+
+_GRAPHML_ENCODABLE_TYPES = _graphml_encodable_types()
+
+# The intersection every registered backend can carry. Narrower than
+# ``_GRAPHML_ENCODABLE_TYPES``, which also holds the numpy scalar types GraphML
+# writes: those are not portable, and not marginally so -- ``json.dumps``
+# (PGTableGraphStorage's jsonb column) and ``bson`` (MongoGraphStorage) both
+# refuse ``np.float32`` / ``np.int64`` / ``np.uint32`` / ``np.bool_`` outright.
+_PORTABLE_SCALAR_TYPES = frozenset({str, int, float, bool})
+
+
+def xml_attribute_name_rejection(name: Any) -> str | None:
+    """Explain why *name* cannot be used as an XML-serialized attribute name.
+
+    GraphML writes attribute names into the XML ``attr.name`` field, so a name is
+    subject to the same character rule as a value -- a claim checked against
+    networkx rather than assumed: a name holding a control character, a lone
+    surrogate or U+FFFE makes ``write_graphml`` raise, which on
+    ``NetworkXStorage`` is the instance-wide persistence outage the storage guard
+    exists to prevent.
+
+    Everything else is allowed, including names a *portable* rule would refuse
+    (``a.b``, ``$set``, ``display-name``, ``has space``, ``""``). Two reasons:
+    GraphML round-trips all of those, and -- the load-bearing one -- a name this
+    function rejects can never have been persisted in an existing GraphML file,
+    because the write that would have stored it failed. That is what makes the
+    check safe to apply to a rewrite payload, which spreads a fetched object's
+    stored names back in.
+
+    Args:
+        name: Candidate attribute name.
+
+    Returns:
+        A reason fragment, or ``None`` when XML can carry the name.
+    """
+    if not isinstance(name, str):
+        # networkx raises TypeError("keywords must be strings") before mutating,
+        # so this cannot poison the graph -- it is folded in so the caller gets a
+        # validation error rather than an unhandled TypeError.
+        return f"must be a string, got {type(name).__name__}"
+    match = _XML_INCOMPATIBLE_CHAR_PATTERN.search(name)
+    if match:
+        return (
+            "must not contain the character "
+            f"U+{ord(match.group()):04X}, which XML cannot encode"
+        )
+    return None
+
+
+def xml_attribute_value_rejection(value: Any) -> str | None:
+    """Explain why *value* cannot be encoded in XML at all.
+
+    The narrower of the two value rules, and the one a GraphML-backed store
+    should enforce: it rejects only what cannot be *serialized*, not what is
+    merely unportable. ``NaN``, ``inf`` and an integer past int64 all round-trip
+    through GraphML unchanged, so they are accepted here even though
+    ``graph_attribute_value_rejection`` refuses them.
+
+    "Serialized" is the operative word, and it is not the same as "is a scalar":
+    an integer with more digits than ``sys.get_int_max_str_digits()`` cannot be
+    rendered as text at all, so GraphML cannot hold it however ordinary it looks.
+
+    That difference is deliberate, and it is what keeps a backend guard from
+    stranding data. A workspace can already hold such a value -- the manual edit
+    API accepted anything before its field allowlist landed -- and every rewrite
+    path (entity edit, extraction rebuild) spreads a fetched object's stored
+    attributes back into the upsert payload. Enforcing the *portable* rule at the
+    storage layer would therefore make those objects unmodifiable, while
+    enforcing it where caller input enters costs nothing.
+
+    Args:
+        value: Candidate attribute value.
+
+    Returns:
+        A reason fragment suitable for appending to ``"attribute 'x' "``, or
+        ``None`` when XML can carry the value.
+    """
+    # Exact type, not ``isinstance``. networkx's GraphML writer resolves a value
+    # by looking its type up in a dict (``add_data``: ``if element_type not in
+    # self.xml_type``), so a *subclass* of a supported scalar is rejected at write
+    # time -- ``enum.StrEnum``, ``enum.IntEnum``, ``np.str_``, ``Decimal`` and any
+    # user ``class X(str)`` all satisfy ``isinstance`` and all make
+    # ``write_graphml`` raise. Read from the installed networkx, not assumed.
+    #
+    # The set comes from that same table (see ``_graphml_encodable_types``), so
+    # it includes the numpy scalar types GraphML writes -- and so that every type
+    # refused here is one the write would genuinely have failed on.
+    value_type = type(value)
+    if value_type not in _GRAPHML_ENCODABLE_TYPES:
+        if isinstance(value, (str, int, float, bool)):
+            # A subclass: worth saying so, because the caller reasonably expects
+            # a `str` subclass to be a string.
+            return (
+                f"must be a type GraphML can encode, got {value_type.__name__} "
+                "(GraphML resolves value types exactly, so a subclass of a "
+                "supported scalar is still refused)"
+            )
+        return f"must be a string, number or boolean, got {value_type.__name__}"
+    if value_type is not str and value_type is not int:
+        # bool, float and the numpy numeric scalars need nothing further: the
+        # only remaining checks are the digit limit (int) and the character rule
+        # (str). A numpy int is width-bounded, so it cannot hit the digit limit.
+        return None
+    if value_type is int:
+        # GraphML stores values as text, and networkx stringifies them on write.
+        # CPython refuses to stringify an integer with more digits than
+        # ``sys.get_int_max_str_digits()`` (4300 by default since 3.11, and
+        # settable at runtime), so a large enough int makes ``write_graphml``
+        # raise even though the int itself is a perfectly ordinary scalar.
+        # Attempt the same conversion the writer will make rather than comparing
+        # against the limit, so this cannot drift from it if the limit is changed.
+        try:
+            str(value)
+        except ValueError:
+            # `get_int_max_str_digits` arrived in 3.11 and was backported to
+            # 3.10.7, so it can be missing on the `requires-python = ">=3.10"`
+            # floor. It is unreachable here when missing -- no limit means
+            # `str()` cannot raise -- but read it defensively rather than relying
+            # on that.
+            read_limit = getattr(sys, "get_int_max_str_digits", None)
+            limit = f" (limit {read_limit()} digits)" if read_limit else ""
+            return f"has more digits than Python will render as text{limit}"
+        return None
+    match = _XML_INCOMPATIBLE_CHAR_PATTERN.search(value)
+    if match:
+        return (
+            "must not contain the character "
+            f"U+{ord(match.group()):04X}, which XML cannot encode"
+        )
+    return None
+
+
+def graph_attribute_value_rejection(value: Any) -> str | None:
+    """Explain why *value* cannot be stored as a graph node/edge attribute.
+
+    The wider of the two value rules: the intersection of what *every*
+    registered backend can carry, meant for the point where caller input enters
+    (see ``xml_attribute_value_rejection`` for the narrower serialization rule a
+    storage backend should enforce instead, and why the two differ).
+
+    The rules are the intersection of what the seven registered
+    ``GRAPH_STORAGE`` backends can carry, so the same payload behaves the same
+    way on all of them:
+
+    * ``bool`` -- accepted everywhere.
+    * ``int`` -- must fit in int64. A larger int is written happily by networkx
+      and stored happily by PostgreSQL's arbitrary-precision ``jsonb`` numeric,
+      but the Neo4j driver refuses to pack it and GraphML mislabels it as
+      ``xsd:long``. See ``_GRAPH_ATTRIBUTE_INT_MIN``.
+    * ``float`` -- must be finite. ``NaN`` / ``inf`` survive GraphML but
+      ``json.dumps`` renders them as bare ``NaN`` / ``Infinity``, which is not
+      valid JSON and is rejected by the ``jsonb`` column PGTableGraphStorage
+      writes to.
+    * ``str`` -- must be XML-compatible, because GraphML cannot encode the
+      other code points at all (see ``_XML_INCOMPATIBLE_CHAR_PATTERN``).
+    * anything else (``dict``, ``list``, ``None``, ``bytes``, ...) -- rejected.
+      ``None`` is called out because it is the one non-scalar that reads as
+      harmless: GraphML refuses it outright, while on the Cypher backends
+      ``SET n += {k: null}`` silently *deletes* the property.
+
+    Args:
+        value: Candidate attribute value.
+
+    Returns:
+        A reason fragment suitable for appending to ``"attribute 'x' "``, or
+        ``None`` when the value is storable.
+    """
+    rejection = xml_attribute_value_rejection(value)
+    if rejection is not None:
+        return rejection
+    # The XML rule accepts what GraphML can write, which includes numpy scalars;
+    # portability is narrower. ``json.dumps`` (PGTableGraphStorage's jsonb
+    # column) and ``bson`` (MongoGraphStorage) both refuse ``np.float32`` /
+    # ``np.int64`` / ``np.uint32`` / ``np.bool_``, so a numpy value that persists
+    # fine on NetworkX cannot cross to another backend.
+    value_type = type(value)
+    if value_type not in _PORTABLE_SCALAR_TYPES:
+        return (
+            f"must be a str, int, float or bool to be portable across graph "
+            f"backends, got {value_type.__name__}"
+        )
+    # The type is pinned exactly now, so ``is int`` rather than ``isinstance`` --
+    # a bool cannot reach the range check.
+    if value_type is int:
+        if not _GRAPH_ATTRIBUTE_INT_MIN <= value <= _GRAPH_ATTRIBUTE_INT_MAX:
+            return (
+                "must be a 64-bit integer "
+                f"({_GRAPH_ATTRIBUTE_INT_MIN} to {_GRAPH_ATTRIBUTE_INT_MAX})"
+            )
+        return None
+    if value_type is float and not math.isfinite(value):
+        return "must be a finite number"
+    return None
+
+
+def validate_graph_attributes(attributes: dict[str, Any], *, context: str) -> None:
+    """Reject a node/edge attribute mapping no graph backend could store.
+
+    Args:
+        attributes: Attribute mapping about to be written to graph storage.
+        context: Prefix identifying the object being written, used in the error
+            message (e.g. ``"entity 'Tesla'"``).
+
+    Raises:
+        ValueError: On the first unusable attribute name or value.
+    """
+    # The portable contract is the intersection, so it owns both name rules: a
+    # name XML cannot encode is unstorable on NetworkX, and a name MongoDB would
+    # read as a field path is unstorable there. Neither backend needs the other's
+    # rule (see each rejection helper), but caller input has to satisfy both.
+    validate_xml_attributes(attributes, context=context)
+    validate_interpreted_attribute_names(attributes, context=context)
+    validate_graph_attribute_values(attributes, context=context)
+
+
+def validate_interpreted_attribute_names(
+    attributes: dict[str, Any], *, context: str
+) -> None:
+    """Reject attribute names a backend would read as something other than a name.
+
+    The *interpretation* rule, not the serialization one: see
+    ``xml_attribute_name_rejection`` for the character rule a GraphML-backed
+    store needs. A backend should enforce the hazard it actually has, and the two
+    hazards live in different backends:
+
+    * Names are dangerous only where they are *interpreted*. MongoDB passes them
+      into a ``$set`` document, so a dot is a path (``source_ids.0`` rewrites an
+      element of the chunk-attribution array instead of creating a field) and a
+      leading ``$`` is an update operator.
+    * Names are inert in GraphML, which is why NetworkXStorage validates values
+      only. Enforcing names there would additionally reject re-ingesting a node
+      whose *stored* attributes predate this validation, which is a migration
+      failure with no safety benefit.
+
+    The rule is the interpretation hazard and nothing beyond it -- see
+    ``_GRAPH_ATTRIBUTE_NAME_DISALLOWED_SUBSTRING`` for why "must be an
+    identifier" would be the wrong rule. A name that a backend *stores* rather
+    than interprets is legal here even if it is unusual, because rewrite paths
+    feed stored attributes back into the upsert payload and a stricter rule
+    would strand existing data.
+
+    Args:
+        attributes: Attribute mapping about to be written to graph storage.
+        context: Prefix identifying the object being written.
+
+    Raises:
+        ValueError: On the first unusable attribute name.
+    """
+    for key in attributes:
+        if not isinstance(key, str) or not key:
+            raise ValueError(
+                f"{context}: invalid attribute name {key!r}: must be a non-empty string"
+            )
+        if _GRAPH_ATTRIBUTE_NAME_DISALLOWED_SUBSTRING in key:
+            raise ValueError(
+                f"{context}: invalid attribute name {key!r}: must not contain "
+                f"{_GRAPH_ATTRIBUTE_NAME_DISALLOWED_SUBSTRING!r}, which is read "
+                "as a field path rather than part of the name"
+            )
+        if key.startswith(_GRAPH_ATTRIBUTE_NAME_DISALLOWED_PREFIX):
+            raise ValueError(
+                f"{context}: invalid attribute name {key!r}: must not start with "
+                f"{_GRAPH_ATTRIBUTE_NAME_DISALLOWED_PREFIX!r}, which is read as "
+                "an update operator"
+            )
+
+
+def validate_xml_attributes(attributes: dict[str, Any], *, context: str) -> None:
+    """Reject attribute names or values XML cannot encode.
+
+    For a GraphML-backed store. Names are checked as well as values because
+    GraphML serializes them into the XML ``attr.name`` field, so an unencodable
+    name breaks the same write. See ``xml_attribute_name_rejection`` and
+    ``xml_attribute_value_rejection`` for why both rules are narrower than the
+    portable contract.
+
+    Args:
+        attributes: Attribute mapping about to be written to graph storage.
+        context: Prefix identifying the object being written.
+
+    Raises:
+        ValueError: On the first name or value XML cannot carry.
+    """
+    for key, value in attributes.items():
+        rejection = xml_attribute_name_rejection(key)
+        if rejection is not None:
+            raise ValueError(f"{context}: attribute name {key!r} {rejection}")
+        rejection = xml_attribute_value_rejection(value)
+        if rejection is not None:
+            raise ValueError(f"{context}: attribute {key!r} {rejection}")
+
+
+def validate_graph_attribute_values(
+    attributes: dict[str, Any], *, context: str
+) -> None:
+    """Reject attribute values no graph backend can store.
+
+    See ``graph_attribute_value_rejection`` for the rules and
+    ``validate_interpreted_attribute_names`` for why the halves are separate.
+
+    Args:
+        attributes: Attribute mapping about to be written to graph storage.
+        context: Prefix identifying the object being written.
+
+    Raises:
+        ValueError: On the first unstorable value.
+    """
+    for key, value in attributes.items():
+        rejection = graph_attribute_value_rejection(value)
+        if rejection is not None:
+            raise ValueError(f"{context}: attribute {key!r} {rejection}")

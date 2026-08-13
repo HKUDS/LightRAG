@@ -84,8 +84,13 @@ async def test_track_id_listing_survives_a_doc_missing_required_fields():
     assert "invalid_doc" not in docs
 
 
-async def test_track_id_listing_survives_a_doc_with_an_unknown_field():
-    """Version-rollback shape: a field the running build does not declare."""
+async def test_track_id_listing_hydrates_a_doc_with_an_unknown_field():
+    """Version-rollback shape: a field the running build does not declare.
+
+    Undeclared fields are ignored at construction
+    (``DocProcessingStatus.from_stored``), so the row stays visible instead
+    of silently vanishing from the listing.
+    """
     storage = _storage(
         [
             _valid_doc("old_doc"),
@@ -95,8 +100,8 @@ async def test_track_id_listing_survives_a_doc_with_an_unknown_field():
 
     docs = await storage.get_docs_by_track_id("track_123")
 
-    assert "old_doc" in docs
-    assert "written_by_newer_build" not in docs
+    assert set(docs) == {"old_doc", "written_by_newer_build"}
+    assert not hasattr(docs["written_by_newer_build"], "field_from_the_future")
 
 
 async def test_one_bad_doc_does_not_hide_its_healthy_siblings():
