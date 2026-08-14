@@ -767,8 +767,10 @@ class JsonDocStatusStorage(DocStatusStorage):
         Single source of the raw → status construction shared by
         ``get_docs_by_statuses``, ``get_docs_paginated`` and the
         ``get_full_docs_by_ids`` hydration path. Raises ``KeyError``/
-        ``TypeError`` on a malformed row; the caller decides strict (raise)
-        vs relaxed (skip).
+        ``TypeError`` on a malformed row (missing required fields); the
+        caller decides strict (raise) vs relaxed (skip). Fields the
+        dataclass does not declare are tolerated, not treated as malformed
+        — see ``DocProcessingStatus.from_stored``.
 
         Deep-copies ``row`` before use: the returned ``DocProcessingStatus``
         carries nested mutable fields (``metadata``, ``chunks_list``) that
@@ -777,17 +779,18 @@ class JsonDocStatusStorage(DocStatusStorage):
         class of bug fixed for the other read paths.
         """
         data = cls._normalize_status_row(copy.deepcopy(row))
-        return DocProcessingStatus(**data)
+        return DocProcessingStatus.from_stored(data)
 
     def _row_is_hydratable(self, doc_id: str, row: dict[str, Any]) -> bool:
         """True if ``row`` can be hydrated into a full DocProcessingStatus.
 
         Used by ``get_docs_paginated``'s validation pass to keep
         ``total_count`` consistent with what the page-hydration step can
-        actually return: a row missing a required field OR carrying an
-        unexpected one would fail ``DocProcessingStatus(**data)`` — counting
-        it as present without confirming that would let ``total_count``
-        overstate what pages can actually deliver.
+        actually return: a row missing a required field would fail
+        construction — counting it as present without confirming that
+        would let ``total_count`` overstate what pages can actually
+        deliver. (Fields the dataclass does not declare are tolerated,
+        not treated as malformed.)
 
         Attempts the SAME normalisation + construction as
         ``_doc_processing_status_from_row``, but on a shallow copy that is
@@ -797,7 +800,7 @@ class JsonDocStatusStorage(DocStatusStorage):
         ever deep-copied.
         """
         try:
-            DocProcessingStatus(**self._normalize_status_row(dict(row)))
+            DocProcessingStatus.from_stored(self._normalize_status_row(dict(row)))
             return True
         except (KeyError, TypeError) as e:
             logger.error(f"[{self.workspace}] Error processing document {doc_id}: {e}")

@@ -17,6 +17,7 @@ symbol.
 from __future__ import annotations
 
 import io
+import os
 import struct
 import zipfile
 from functools import lru_cache
@@ -98,6 +99,24 @@ def _benign(path: Path) -> Path:
     return _write_docx(path, body_xml="<w:p><w:r><w:t>hello world</w:t></w:r></w:p>")
 
 
+def _write_padded_high_ratio_zip(
+    path: Path,
+    *,
+    member_sizes: list[int],
+    padding_size: int,
+) -> Path:
+    """Write high-ratio members plus unrelated incompressible stored padding."""
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+        for index, size in enumerate(member_sizes):
+            zf.writestr(f"payload-{index}.bin", b"\0" * size)
+        zf.writestr(
+            "padding.bin",
+            os.urandom(padding_size),
+            compress_type=zipfile.ZIP_STORED,
+        )
+    return path
+
+
 # --- fix proof -------------------------------------------------------------
 
 
@@ -165,6 +184,146 @@ def test_ratio_gate_refuses_below_the_absolute_ceiling(tmp_path, monkeypatch):
     assert total < 512 * 1024 * 1024  # under the hard cap...
     with pytest.raises(DocxDecompressionBudgetError):  # ...refused anyway
         enforce_docx_decompression_budget(src, "ratio.docx")
+
+
+def test_member_ratio_rejects_stored_padding_before_decompression(
+    tmp_path, monkeypatch
+):
+    """Unrelated stored bytes must not dilute a 1000x member below the cap."""
+    monkeypatch.setenv("DOCX_MAX_UNCOMPRESSED_BYTES", str(8 * 1024 * 1024))
+    monkeypatch.setenv("DOCX_MAX_COMPRESSION_RATIO", "100")
+    monkeypatch.setenv("DOCX_RATIO_FLOOR_BYTES", str(1024 * 1024))
+    src = _write_padded_high_ratio_zip(
+        tmp_path / "padded.docx",
+        member_sizes=[4 * 1024 * 1024],
+        padding_size=64 * 1024,
+    )
+
+    with zipfile.ZipFile(src) as zf:
+        infos = zf.infolist()
+        total = sum(info.file_size for info in infos)
+        assert total / src.stat().st_size < 100
+        assert infos[0].file_size / infos[0].compress_size > 1000
+
+    def _explode(*args, **kwargs):  # pragma: no cover - only on regression
+        raise AssertionError("member-ratio guard decompressed a member")
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", _explode)
+    monkeypatch.setattr(zipfile.ZipFile, "open", _explode)
+
+    with pytest.raises(DocxDecompressionBudgetError) as exc:
+        NativeDocxParser().validate_source_blocking(src, "padded.docx")
+
+    message = str(exc.value)
+    assert "over-ratio members" in message
+    assert "payload-0.bin" not in message
+
+
+def test_real_stored_content_supports_repetitive_xml_one_for_one(tmp_path, monkeypatch):
+    """Real media may offset excess XML expansion, but only byte for byte.
+
+    The former absolute member-floor rule rejected this mixed archive even
+    though its total ratio is low. The stored bytes here model JPEG/media
+    payloads; unlike a ratio multiplier, their allowance equals their cost.
+    """
+    mib = 1024 * 1024
+    monkeypatch.setenv("DOCX_MAX_UNCOMPRESSED_BYTES", str(16 * mib))
+    monkeypatch.setenv("DOCX_MAX_COMPRESSION_RATIO", "100")
+    monkeypatch.setenv("DOCX_RATIO_FLOOR_BYTES", str(mib))
+    src = _write_padded_high_ratio_zip(
+        tmp_path / "mixed.docx",
+        member_sizes=[6 * mib],
+        padding_size=5 * mib,
+    )
+
+    with zipfile.ZipFile(src) as zf:
+        infos = zf.infolist()
+        assert infos[0].file_size / infos[0].compress_size > 100
+        assert sum(info.file_size for info in infos) / src.stat().st_size < 100
+
+    enforce_docx_decompression_budget(src, src.name)
+
+
+@pytest.mark.parametrize("suffix", ["docx", "pptx", "xlsx"])
+def test_padded_member_is_rejected_by_every_legacy_ooxml_entrypoint(
+    tmp_path, monkeypatch, suffix
+):
+    from lightrag.parser.legacy.extractors import extract_text
+
+    monkeypatch.setenv("DOCX_MAX_UNCOMPRESSED_BYTES", str(8 * 1024 * 1024))
+    monkeypatch.setenv("DOCX_MAX_COMPRESSION_RATIO", "100")
+    monkeypatch.setenv("DOCX_RATIO_FLOOR_BYTES", str(1024 * 1024))
+    payload = _write_padded_high_ratio_zip(
+        tmp_path / f"padded.{suffix}",
+        member_sizes=[4 * 1024 * 1024],
+        padding_size=64 * 1024,
+    ).read_bytes()
+
+    with pytest.raises(DocxDecompressionBudgetError):
+        extract_text(payload, suffix, file_path=f"padded.{suffix}")
+
+
+def test_ratio_floor_applies_to_cumulative_high_ratio_member_bytes(
+    tmp_path, monkeypatch
+):
+    """Splitting a bomb into individually-sub-floor members must not bypass."""
+    floor = 1024 * 1024
+    monkeypatch.setenv("DOCX_MAX_UNCOMPRESSED_BYTES", str(8 * 1024 * 1024))
+    monkeypatch.setenv("DOCX_MAX_COMPRESSION_RATIO", "100")
+    monkeypatch.setenv("DOCX_RATIO_FLOOR_BYTES", str(floor))
+    src = _write_padded_high_ratio_zip(
+        tmp_path / "split.docx",
+        member_sizes=[floor // 2, floor // 2, floor // 2],
+        padding_size=64 * 1024,
+    )
+
+    with zipfile.ZipFile(src) as zf:
+        infos = zf.infolist()
+        assert all(info.file_size <= floor for info in infos)
+        assert sum(info.file_size for info in infos) / src.stat().st_size < 100
+
+    with pytest.raises(DocxDecompressionBudgetError, match="over-ratio members"):
+        enforce_docx_decompression_budget(src, "split.docx")
+
+
+@pytest.mark.parametrize("high_ratio_bytes", [512 * 1024, 1024 * 1024])
+def test_cumulative_member_ratio_floor_keeps_small_content_exempt(
+    tmp_path, monkeypatch, high_ratio_bytes
+):
+    """The exemption includes its exact boundary and ignores stored padding."""
+    floor = 1024 * 1024
+    monkeypatch.setenv("DOCX_MAX_UNCOMPRESSED_BYTES", str(8 * 1024 * 1024))
+    monkeypatch.setenv("DOCX_MAX_COMPRESSION_RATIO", "100")
+    monkeypatch.setenv("DOCX_RATIO_FLOOR_BYTES", str(floor))
+    src = _write_padded_high_ratio_zip(
+        tmp_path / f"small-{high_ratio_bytes}.docx",
+        member_sizes=[high_ratio_bytes],
+        padding_size=64 * 1024,
+    )
+
+    enforce_docx_decompression_budget(src, src.name)
+
+
+def test_negative_ratio_floor_rejects_only_archives_with_over_ratio_members(
+    tmp_path, monkeypatch
+):
+    """A negative floor removes the exemption; it does not reject ratio-safe ZIPs."""
+    monkeypatch.setenv("DOCX_MAX_UNCOMPRESSED_BYTES", str(8 * 1024 * 1024))
+    monkeypatch.setenv("DOCX_MAX_COMPRESSION_RATIO", "100")
+    monkeypatch.setenv("DOCX_RATIO_FLOOR_BYTES", "-1")
+
+    safe = tmp_path / "stored.docx"
+    with zipfile.ZipFile(safe, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("stored.bin", b"A" * 1024)
+    enforce_docx_decompression_budget(safe, safe.name)
+
+    high_ratio = _write_padded_high_ratio_zip(
+        tmp_path / "strict.docx",
+        member_sizes=[512 * 1024],
+        padding_size=64 * 1024,
+    )
+    with pytest.raises(DocxDecompressionBudgetError, match="over-ratio members"):
+        enforce_docx_decompression_budget(high_ratio, high_ratio.name)
 
 
 def test_ratio_floor_exempts_small_documents(tmp_path, monkeypatch):

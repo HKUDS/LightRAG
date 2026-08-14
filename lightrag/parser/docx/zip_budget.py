@@ -57,12 +57,15 @@ def _limits() -> tuple[int, int, int, int]:
     Returns ``(max_uncompressed, max_ratio, ratio_floor, max_entries)``. For
     the three GATES — ``max_uncompressed``, ``max_ratio``, ``max_entries`` — a
     non-positive value disables that gate. ``ratio_floor`` is NOT a gate: it is
-    the small-file EXEMPTION threshold for the ratio gate (the ratio is only
-    checked once uncompressed size exceeds it, because small documents
-    legitimately compress far better than large ones). A non-positive
+    the small-content EXEMPTION threshold for the ratio gate. The member-ratio
+    check sums the bytes by which over-ratio members exceed their individual
+    ratio budgets. The fixed floor plus the archive bytes outside those
+    members form the allowance for that excess. This lets real stored media
+    support highly repetitive XML at one byte per byte without letting it buy
+    another ``max_ratio``-fold expansion. The archive-wide ratio likewise
+    applies only once the archive total exceeds the floor. A non-positive
     ``ratio_floor`` therefore does the OPPOSITE of "disable" — it removes the
-    exemption and makes the ratio gate apply to every non-empty archive, its
-    strictest setting.
+    fixed exemption and makes both ratio views strictest.
     """
     return (
         get_env_value(
@@ -121,17 +124,65 @@ def enforce_docx_decompression_budget(source: Path | bytes, file_path: str) -> N
             f"(limit {max_entries}, env DOCX_MAX_ENTRIES)"
         )
 
-    total = sum(info.file_size for info in infos)
+    total = 0
+    over_ratio_excess_bytes = 0
+    over_ratio_compressed_bytes = 0
+    over_ratio_members = 0
+    for info in infos:
+        member_size = info.file_size
+        total += member_size
+
+        # The total ceiling necessarily bounds every member too, but keep the
+        # member verdict explicit: it rejects as soon as one entry alone is
+        # over budget and makes the protected quantity clear in the error.
+        if max_uncompressed > 0 and member_size > max_uncompressed:
+            raise DocxDecompressionBudgetError(
+                f"Refusing {file_path}: one archive member declares "
+                f"{member_size} uncompressed bytes (per-member limit "
+                f"{max_uncompressed}, env DOCX_MAX_UNCOMPRESSED_BYTES)"
+            )
+
+        if max_ratio <= 0 or member_size <= 0:
+            continue
+
+        # Give each member its own max_ratio * compressed-size allowance.
+        # Only the expansion beyond that allowance is suspicious. This is
+        # additive across members, so splitting cannot recreate a per-member
+        # floor. A positive member with no compressed bytes has no allowance.
+        member_ratio_budget = max(0, info.compress_size) * max_ratio
+        if member_size > member_ratio_budget:
+            over_ratio_members += 1
+            over_ratio_excess_bytes += member_size - member_ratio_budget
+            over_ratio_compressed_bytes += max(0, info.compress_size)
+
     if max_uncompressed > 0 and total > max_uncompressed:
         raise DocxDecompressionBudgetError(
             f"Refusing {file_path}: declares {total} uncompressed bytes "
             f"(limit {max_uncompressed}, env DOCX_MAX_UNCOMPRESSED_BYTES)"
         )
 
-    # Ratio is measured against the whole archive, not against the summed
-    # compress_size: the gap between them (local headers, the central
-    # directory itself) is part of what the attacker had to send. ``compressed``
-    # was derived above in the same dispatch that produced ``handle``.
+    # The floor exempts a fixed amount of excess high-ratio expansion. Real
+    # archive bytes outside those members add a 1:1 allowance: this preserves
+    # mixed OOXML documents with repetitive XML plus incompressible media, but
+    # padding cannot buy max_ratio-fold expansion and member splitting remains
+    # additive. Clamp a non-positive floor to zero (strictest fixed exemption).
+    supporting_archive_bytes = max(0, compressed - over_ratio_compressed_bytes)
+    excess_allowance = max(0, ratio_floor) + supporting_archive_bytes
+    if (
+        max_ratio > 0
+        and over_ratio_members > 0
+        and over_ratio_excess_bytes > excess_allowance
+    ):
+        raise DocxDecompressionBudgetError(
+            f"Refusing {file_path}: archive contains {over_ratio_members} "
+            f"over-ratio members with {over_ratio_excess_bytes} excess "
+            f"uncompressed bytes (allowance {excess_allowance}, limit "
+            f"{max_ratio}x, env DOCX_MAX_COMPRESSION_RATIO)"
+        )
+
+    # Retain the archive-wide gate as a second view of amplification. The
+    # member gate above closes stored-padding dilution; this one includes local
+    # headers and the central directory in what the attacker had to send.
     if (
         max_ratio > 0
         and compressed > 0

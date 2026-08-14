@@ -516,6 +516,7 @@ async def openai_complete_if_cache(
             cot_active = False
             cot_started = False
             initial_content_seen = False
+            closing_via_generator_exit = False
 
             try:
                 iteration_started = True
@@ -611,6 +612,12 @@ async def openai_complete_if_cache(
                     logger.debug(f"Streaming token usage (from API): {token_counts}")
                 elif token_tracker:
                     logger.debug("No usage information available in streaming response")
+            except GeneratorExit:
+                # Consumer disconnect mid-COT: tell the finally block below to
+                # skip its yield, which would otherwise abort cleanup with
+                # "async generator ignored GeneratorExit".
+                closing_via_generator_exit = True
+                raise
             except Exception as e:
                 # Ensure COT is properly closed before handling exception
                 if enable_cot and cot_active:
@@ -645,8 +652,9 @@ async def openai_complete_if_cache(
                     )
                 raise
             finally:
-                # Final safety check for unclosed COT tags
-                if enable_cot and cot_active:
+                # Final safety check for unclosed COT tags, skipped while
+                # closing via GeneratorExit (see the except clause above).
+                if enable_cot and cot_active and not closing_via_generator_exit:
                     try:
                         yield "</think>"
                         cot_active = False
