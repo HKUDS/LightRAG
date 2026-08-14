@@ -710,21 +710,44 @@ def create_optimized_embedding_function(
     except ImportError as e:
         logger.warning(f"Could not import provider function for {binding}: {e}")
 
+    # Fail-fast guard: require explicit EMBEDDING_DIM when a non-default
+    # embedding model is configured. Without this, the provider's decorator
+    # dimension silently applies regardless of the actual model selected,
+    # causing vector-store write failures at runtime.
+    # See: https://github.com/HKUDS/LightRAG/issues/3644
+    _BINDINGS_WITH_DIM_GUARD = frozenset(
+        ["ollama", "openai", "jina", "gemini", "bedrock", "voyageai"]
+    )
     if (
-        binding == "ollama"
+        binding in _BINDINGS_WITH_DIM_GUARD
         and model
         and args.embedding_dim is None
         and provider_func is not None
     ):
-        default_model = provider_func.model_name
-        configured_model = model.removesuffix(":latest")
-        normalized_default = default_model.removesuffix(":latest")
-        if configured_model != normalized_default:
-            raise ValueError(
-                "EMBEDDING_DIM must be set when EMBEDDING_MODEL selects a "
-                f"custom Ollama model ({model!r}); the provider default "
-                f"dimension only applies to {default_model!r}"
-            )
+        default_model = getattr(provider_func, "model_name", None)
+        if default_model:
+            configured_model = model.removesuffix(":latest")
+            normalized_default = default_model.removesuffix(":latest")
+            if configured_model != normalized_default:
+                raise ValueError(
+                    f"EMBEDDING_DIM must be set when EMBEDDING_MODEL selects a "
+                    f"custom {binding} model ({model!r}); the provider default "
+                    f"dimension only applies to {default_model!r}"
+                )
+
+    # Azure OpenAI uses deployment names that never match a universal default,
+    # so any configured model requires an explicit EMBEDDING_DIM.
+    if (
+        binding == "azure_openai"
+        and model
+        and args.embedding_dim is None
+        and provider_func is not None
+    ):
+        raise ValueError(
+            f"EMBEDDING_DIM must be set when using Azure OpenAI with a "
+            f"configured deployment ({model!r}); Azure deployment names have "
+            f"no universal default dimension"
+        )
 
     # Step 2: Apply priority (user config > provider default)
     # For max_token_size: explicit env var > provider default > None
