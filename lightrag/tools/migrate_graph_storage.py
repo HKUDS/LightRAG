@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import configparser
 import json
 import os
 from collections.abc import Iterable
@@ -94,8 +95,8 @@ def edge_properties(edge: dict[str, Any]) -> dict[str, Any]:
 def payloads_equal(a: Any, b: Any) -> bool:
     """Type-strict structural equality for payload values.
 
-    The single comparison rule shared by ``detect_divergent_reciprocals``
-    and ``verify_source_side`` (node and edge payloads alike). Recurses into
+    The single comparison rule used everywhere this module compares payloads
+    — ``verify_source_side``, node and edge payloads alike. Recurses into
     dicts and lists; every leaf must match in TYPE and value. Bare ``==``
     would coerce across ``bool``/``int``/``float`` (``True == 1``,
     ``1 == 1.0``), silently passing a payload whose type changed — and both
@@ -183,6 +184,19 @@ def validate_source_nodes(nodes: Iterable[dict[str, Any]]) -> None:
             )
 
 
+def _is_non_text_safe(text: str) -> bool:
+    """True when PostgreSQL ``text`` (and therefore jsonb) cannot hold ``text``.
+
+    Exactly two cases, both of which a Python ``str`` and AGE's agtype accept
+    but ``text`` does not: an embedded NUL, and an unpaired surrogate. The
+    surrogate test is an explicit code-point range rather than a
+    ``value.encode("utf-8")`` try/except because the range says what is
+    rejected, while the encode also depends on which surrogate handler the
+    driver happens to use.
+    """
+    return "\x00" in text or any(0xD800 <= ord(char) <= 0xDFFF for char in text)
+
+
 def _unrepresentable_paths(value: Any, path: str = "") -> list[str]:
     """Paths of every value PostgreSQL jsonb cannot store faithfully.
 
@@ -196,6 +210,19 @@ def _unrepresentable_paths(value: Any, path: str = "") -> list[str]:
       (``'{"w": -0.0}'::jsonb`` stores ``{"w": 0.0}``). This tool's comparison
       rule deliberately treats signed zeros as different, so migrating one
       would write successfully and then fail its own verification.
+
+    Two string families qualify for the same reason — jsonb is stored as
+    PostgreSQL ``text``, which is strictly valid UTF-8 with no embedded NUL:
+
+    - a ``\\x00`` anywhere in a string ("unsupported Unicode escape sequence:
+      \\u0000 cannot be converted to text");
+    - a lone surrogate (U+D800..U+DFFF), which Python tolerates in a ``str``
+      but which has no UTF-8 encoding at all, so the driver cannot even send
+      it. AGE stores both happily, so a source graph can carry them.
+
+    Dict KEYS are checked with the same string rule: a key is serialized into
+    the same jsonb document, so a NUL or lone surrogate in a key aborts the
+    write exactly as one in a value does.
     """
     found: list[str] = []
     if isinstance(value, float) and not isinstance(value, bool):
@@ -207,11 +234,15 @@ def _unrepresentable_paths(value: Any, path: str = "") -> list[str]:
             or (value == 0.0 and math.copysign(1.0, value) < 0)
         ):
             found.append(path or "<root>")
+    elif isinstance(value, str):
+        if _is_non_text_safe(value):
+            found.append(path or "<root>")
     elif isinstance(value, dict):
         for key, item in value.items():
-            found.extend(
-                _unrepresentable_paths(item, f"{path}.{key}" if path else str(key))
-            )
+            child = f"{path}.{key}" if path else str(key)
+            if isinstance(key, str) and _is_non_text_safe(key):
+                found.append(child)
+            found.extend(_unrepresentable_paths(item, child))
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
             found.extend(_unrepresentable_paths(item, f"{path}[{index}]"))
@@ -241,70 +272,6 @@ def find_non_jsonb_representable(
     return sorted(offenders)
 
 
-@dataclass(frozen=True)
-class DivergentReciprocal:
-    """A reciprocal directed pair whose payloads disagree.
-
-    ``canonical_key`` is the (min, max) undirected key; ``forward`` holds
-    the properties of the canonical-order row (canonical_key[0] ->
-    canonical_key[1]) and ``backward`` the reverse row's.
-    """
-
-    canonical_key: tuple[str, str]
-    forward: dict[str, Any]
-    backward: dict[str, Any]
-
-
-def detect_divergent_reciprocals(
-    directed_edges: Iterable[dict[str, Any]],
-) -> list[DivergentReciprocal]:
-    """Detect reciprocal directed pairs (a->b AND b->a) whose payloads differ.
-
-    Canonicalizing such a pair would keep exactly one payload and silently
-    drop the other — the loss class this tool exists to prevent. Phase 1
-    policy is fail-closed: this function only DETECTS; the caller aborts on a
-    non-empty result.
-
-    Property comparison rule: strip the ``source``/``target`` endpoint keys,
-    then compare the remaining dicts with ``payloads_equal`` — type-strict
-    structural equality. Every remaining key participates (the tool cannot
-    know which keys a downstream consumer relies on, so no key is exempt),
-    key order never matters, and no normalisation is applied: see the
-    ``payloads_equal`` docstring for the full rule and its rationale.
-
-    Self-loops (a->a) have a single orientation and can never diverge.
-    Parallel rows for the SAME ordered pair are a different invariant
-    violation — ``count_parallel_edges`` is the backstop for those; here the
-    input is deterministically ordered first (``sort_directed_edges``) and
-    the last row per ordered pair is compared, so even violating input
-    yields the same verdict regardless of enumeration order.
-
-    Results are sorted by canonical key so two runs over the same (unordered)
-    enumeration report identically.
-    """
-    by_ordered_pair: dict[tuple[str, str], dict[str, Any]] = {}
-    for edge in sort_directed_edges(directed_edges):
-        by_ordered_pair[(edge["source"], edge["target"])] = edge_properties(edge)
-
-    divergent: list[DivergentReciprocal] = []
-    for (src, tgt), forward_props in by_ordered_pair.items():
-        if src >= tgt:
-            # Visit each unordered pair once, from its canonical-order row;
-            # self-loops (src == tgt) have no reverse orientation.
-            continue
-        reverse = by_ordered_pair.get((tgt, src))
-        if reverse is not None and not payloads_equal(reverse, forward_props):
-            divergent.append(
-                DivergentReciprocal(
-                    canonical_key=(src, tgt),
-                    forward=forward_props,
-                    backward=reverse,
-                )
-            )
-    divergent.sort(key=lambda d: d.canonical_key)
-    return divergent
-
-
 def detect_reciprocal_pairs(
     directed_edges: Iterable[dict[str, Any]],
 ) -> list[tuple[str, str]]:
@@ -319,6 +286,14 @@ def detect_reciprocal_pairs(
     not produce reciprocals: finding one means the source violates the
     invariant this tool assumes, and refusing keeps ``verified`` meaning that
     node/edge cardinality and degree were preserved too.
+
+    A payload-aware relaxation — rejecting only the reciprocal pairs whose two
+    payloads disagree — is deliberately NOT provided. It would be wrong, not
+    merely conservative: AGE computes degree by counting relationship rows, so
+    collapsing even a byte-identical ``a->b`` / ``b->a`` pair drops the degree
+    of both endpoints by one and changes what traversal returns, while losing
+    no property. Phase 1 therefore fails closed on all of them, and an operator
+    who knows the reciprocal is redundant deletes it at the source instead.
     """
     seen: dict[tuple[str, str], set[tuple[str, str]]] = {}
     for edge in directed_edges:
@@ -337,6 +312,11 @@ def detect_duplicate_node_ids(nodes: Iterable[dict[str, Any]]) -> list[str]:
     and the graph's node cardinality (and any degree derived from the edges
     that pointed at each of them) changes. Refused regardless of whether the
     payloads match.
+
+    As with ``detect_reciprocal_pairs``, a payload-aware relaxation that passed
+    duplicates with identical payloads is deliberately NOT provided: the
+    cardinality and degree change happens whether or not a property differs, so
+    equal payloads make the collapse invisible rather than harmless.
     """
     counts: dict[str, int] = {}
     for node in nodes:
@@ -361,58 +341,13 @@ def count_parallel_edges(
 
     Keyed by the ordered pair, not the canonical key, because a legitimate
     reciprocal pair (a->b plus b->a) also maps two rows onto one canonical
-    key — that case belongs to ``detect_divergent_reciprocals``, not here.
+    key — that case belongs to ``detect_reciprocal_pairs``, not here.
     """
     counts: dict[tuple[str, str], int] = {}
     for edge in directed_edges:
         key = (edge["source"], edge["target"])
         counts[key] = counts.get(key, 0) + 1
     return counts
-
-
-def detect_divergent_duplicate_nodes(
-    nodes: Iterable[dict[str, Any]],
-) -> list[tuple[str, list[dict[str, Any]]]]:
-    """Detect node ids enumerated more than once with differing payloads.
-
-    The node-axis mirror of ``detect_divergent_reciprocals``: the target's
-    ``upsert_nodes_batch`` dedups in-batch last-write-wins, so a duplicated
-    source id would keep one payload and silently drop the rest — and
-    source-driven verification cannot catch it afterwards, because its own
-    per-id map collapses the same way. So the invariant must be checked on
-    the raw enumeration, before any write.
-
-    Policy mirrors the reciprocal rule exactly: duplicates whose payloads
-    are ``payloads_equal`` PASS (collapsing equal payloads loses nothing,
-    just as equal reciprocal rows pass), any observable difference is
-    returned for the caller to fail closed on.
-
-    Returns (node_id, payloads) pairs sorted by node id, with each payload
-    list in canonical-JSON order — the source enumeration has no ORDER BY,
-    so the report must not depend on enumeration order.
-    """
-    groups: dict[str, list[dict[str, Any]]] = {}
-    for node in nodes:
-        groups.setdefault(node["id"], []).append(_node_payload(node))
-    divergent: list[tuple[str, list[dict[str, Any]]]] = []
-    for node_id in sorted(groups):
-        payloads = groups[node_id]
-        if len(payloads) < 2:
-            continue
-        if all(payloads_equal(payloads[0], other) for other in payloads[1:]):
-            continue
-        divergent.append(
-            (
-                node_id,
-                sorted(
-                    payloads,
-                    key=lambda p: json.dumps(
-                        p, sort_keys=True, ensure_ascii=False, default=str
-                    ),
-                ),
-            )
-        )
-    return divergent
 
 
 def derive_written_node_ids(
@@ -929,9 +864,10 @@ async def _plan_migration(
     if non_jsonb:
         raise MigrationDataError(
             "source payloads contain values PostgreSQL jsonb cannot store "
-            "faithfully (NaN, +-Infinity, or -0.0, whose sign jsonb "
-            "normalises away); migrating them would fail after the point of "
-            "no return: "
+            "faithfully (NaN, +-Infinity, -0.0 whose sign jsonb normalises "
+            "away, or a string carrying a NUL or an unpaired surrogate, "
+            "neither of which PostgreSQL text can hold); migrating them would "
+            "fail after the point of no return: "
             f"{[(label, paths) for label, paths in non_jsonb]}"
         )
 
@@ -1012,16 +948,34 @@ def _precheck_requested_workspace(requested: str) -> None:
     So a check that can only read the *resolved* workspace — which the backend
     settles during ``initialize()`` — necessarily runs after the wrong slice has
     already been touched. This mirrors the backend's documented priority
-    (``POSTGRES_WORKSPACE`` env > constructor argument > ``"default"``,
-    pgtable_impl.py:531) to catch the dangerous case before any connection is
-    opened. ``_check_resolved_workspace`` stays as the backstop for whatever
-    this cannot predict.
+    (``POSTGRES_WORKSPACE`` env > ``config.ini`` ``[postgres] workspace`` >
+    constructor argument > ``"default"``, pgtable_impl.py:531 resolving what
+    ``PGPostgresDB.get_config`` settled) to catch the dangerous case before any
+    connection is opened. ``_check_resolved_workspace`` stays as the backstop
+    for whatever this cannot predict.
+
+    ``config.ini`` matters as much as the env var and is easier to forget: it
+    is not visible in the operator's shell, so a checked-in
+    ``[postgres] workspace`` silently outranks ``--workspace`` with nothing on
+    screen to suggest it. The error names which of the two sources spoke.
     """
     env_workspace = os.getenv("POSTGRES_WORKSPACE")
-    if requested and env_workspace and env_workspace != requested:
+    if env_workspace is not None:
+        # An env var set to "" is what get_config passes on, and an empty
+        # workspace is falsy to the backend, so the constructor argument still
+        # wins — and config.ini is never consulted. Mirror that exactly.
+        effective, origin = env_workspace, "POSTGRES_WORKSPACE"
+    else:
+        # Same read as PGPostgresDB.get_config: cwd-relative, and a missing
+        # file makes ConfigParser.read a silent no-op.
+        config = configparser.ConfigParser()
+        config.read("config.ini", "utf-8")
+        effective = config.get("postgres", "workspace", fallback=None) or ""
+        origin = "config.ini [postgres] workspace"
+    if requested and effective and effective != requested:
         raise MigrationPreconditionError(
-            f"requested workspace {requested!r} but POSTGRES_WORKSPACE is set to "
-            f"{env_workspace!r} and outranks it; refusing before opening any "
+            f"requested workspace {requested!r} but {origin} is set to "
+            f"{effective!r} and outranks it; refusing before opening any "
             "connection, because initializing a graph storage mutates the "
             "workspace it lands in"
         )
@@ -1031,8 +985,10 @@ def _check_resolved_workspace(requested: str, source: Any, target: Any) -> None:
     """Fail closed when the backends did not land on the workspace we asked for.
 
     The graph backends resolve their workspace as ``POSTGRES_WORKSPACE`` env >
-    the value passed to the constructor > ``"default"`` (pgtable_impl.py:531),
-    so an environment variable silently outranks ``--workspace``. That matters
+    ``config.ini`` ``[postgres] workspace`` > the value passed to the
+    constructor > ``"default"`` (pgtable_impl.py:531 on top of
+    ``PGPostgresDB.get_config``), so the environment or a checked-in config
+    file silently outranks ``--workspace``. That matters
     because this tool has a destructive mode: without this check,
     ``--workspace staging --force-empty-target`` could drop a slice the
     operator never named. An empty request means the operator named nothing, so

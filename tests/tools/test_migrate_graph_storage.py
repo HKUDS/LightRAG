@@ -2,9 +2,9 @@
 
 Covers the Phase 1 (AGE -> PGTable) migration invariants:
 canonical ordering parity with PGTableGraphStorage (Python min/max, incl.
-non-ASCII), fail-closed detection of divergent reciprocal directed edges,
-the parallel-edge backstop, derived written-node sets for compensation, and
-source-driven verification.
+non-ASCII), fail-closed detection of reciprocal directed edges and duplicate
+node ids, the parallel-edge backstop, derived written-node sets for
+compensation, and source-driven verification.
 """
 
 import asyncio
@@ -16,7 +16,6 @@ from typing import Any
 import pytest
 
 from lightrag.tools.migrate_graph_storage import (
-    DivergentReciprocal,
     MigrationDataError,
     MigrationPreconditionError,
     MigrationWriteError,
@@ -27,8 +26,6 @@ from lightrag.tools.migrate_graph_storage import (
     compensate_partial_migration,
     count_parallel_edges,
     derive_written_node_ids,
-    detect_divergent_duplicate_nodes,
-    detect_divergent_reciprocals,
     detect_duplicate_node_ids,
     detect_reciprocal_pairs,
     find_non_jsonb_representable,
@@ -141,98 +138,6 @@ class TestPayloadsEqual:
 
 
 # ---------------------------------------------------------------------------
-# detect_divergent_reciprocals — AC-c / AC-d
-# ---------------------------------------------------------------------------
-
-
-class TestDetectDivergentReciprocals:
-    def test_divergent_reciprocal_detected(self):
-        # AC-d: synthesized AGE-shaped directed reciprocal rows with divergent
-        # properties. NetworkX cannot express this input (it enumerates each
-        # undirected edge once), so the dicts are built directly.
-        edges = [
-            _edge("a", "b", weight=1.0, description="forward"),
-            _edge("b", "a", weight=2.0, description="backward"),
-        ]
-        result = detect_divergent_reciprocals(edges)
-        assert len(result) == 1
-        found = result[0]
-        assert isinstance(found, DivergentReciprocal)
-        assert found.canonical_key == ("a", "b")
-        assert found.forward == {"weight": 1.0, "description": "forward"}
-        assert found.backward == {"weight": 2.0, "description": "backward"}
-
-    def test_equal_reciprocals_not_flagged(self):
-        edges = [
-            _edge("a", "b", weight=1.0),
-            _edge("b", "a", weight=1.0),
-        ]
-        assert detect_divergent_reciprocals(edges) == []
-
-    def test_key_order_insensitive_comparison(self):
-        # Same payload, different key insertion order: dict == ignores order,
-        # so this must NOT be flagged as divergent.
-        forward = {"source": "a", "target": "b", "x": 1, "y": 2}
-        backward = {"y": 2, "x": 1, "source": "b", "target": "a"}
-        assert detect_divergent_reciprocals([forward, backward]) == []
-
-    def test_none_vs_absent_is_divergent(self):
-        # Fail-closed rule: a key present with None is observably different
-        # from a missing key; no normalisation is applied.
-        edges = [
-            _edge("a", "b", weight=None),
-            _edge("b", "a"),
-        ]
-        assert len(detect_divergent_reciprocals(edges)) == 1
-
-    def test_single_direction_never_flagged(self):
-        assert detect_divergent_reciprocals([_edge("a", "b", w=1)]) == []
-
-    def test_self_loop_never_flagged(self):
-        assert detect_divergent_reciprocals([_edge("a", "a", w=1)]) == []
-
-    def test_non_ascii_reciprocals(self):
-        edges = [
-            _edge("한국", "일본", relation="이웃"),
-            _edge("일본", "한국", relation="neighbor"),
-        ]
-        result = detect_divergent_reciprocals(edges)
-        assert len(result) == 1
-        assert result[0].canonical_key == canonicalize_edge("한국", "일본")
-
-    def test_bool_vs_int_is_divergent(self):
-        edges = [_edge("a", "b", flag=True), _edge("b", "a", flag=1)]
-        assert len(detect_divergent_reciprocals(edges)) == 1
-
-    def test_int_vs_float_is_divergent(self):
-        edges = [_edge("a", "b", weight=1), _edge("b", "a", weight=1.0)]
-        assert len(detect_divergent_reciprocals(edges)) == 1
-
-    def test_str_vs_int_is_divergent(self):
-        edges = [_edge("a", "b", weight="1"), _edge("b", "a", weight=1)]
-        assert len(detect_divergent_reciprocals(edges)) == 1
-
-    def test_equal_nested_payloads_not_flagged(self):
-        edges = [
-            _edge("a", "b", meta={"w": 1.0, "tags": ["x"]}, n=2),
-            _edge("b", "a", n=2, meta={"tags": ["x"], "w": 1.0}),
-        ]
-        assert detect_divergent_reciprocals(edges) == []
-
-    def test_results_sorted_and_input_order_independent(self):
-        edges = [
-            _edge("c", "d", w=1),
-            _edge("d", "c", w=2),
-            _edge("a", "b", w=1),
-            _edge("b", "a", w=2),
-        ]
-        forward_order = detect_divergent_reciprocals(edges)
-        reverse_order = detect_divergent_reciprocals(list(reversed(edges)))
-        assert forward_order == reverse_order
-        assert [d.canonical_key for d in forward_order] == [("a", "b"), ("c", "d")]
-
-
-# ---------------------------------------------------------------------------
 # count_parallel_edges — backstop for the AGE ordered-pair invariant
 # ---------------------------------------------------------------------------
 
@@ -254,7 +159,7 @@ class TestCountParallelEdges:
 
     def test_reciprocal_pair_is_not_a_violation(self):
         # a->b plus b->a share a canonical key but are DISTINCT ordered pairs;
-        # they belong to detect_divergent_reciprocals, not this backstop.
+        # they belong to detect_reciprocal_pairs, not this backstop.
         edges = [_edge("a", "b", w=1), _edge("b", "a", w=2)]
         counts = count_parallel_edges(edges)
         assert counts == {("a", "b"): 1, ("b", "a"): 1}
@@ -263,53 +168,6 @@ class TestCountParallelEdges:
     def test_parallel_self_loops(self):
         edges = [_edge("a", "a", w=1), _edge("a", "a", w=2)]
         assert count_parallel_edges(edges) == {("a", "a"): 2}
-
-
-# ---------------------------------------------------------------------------
-# detect_divergent_duplicate_nodes — node-axis mirror of the reciprocal rule
-# ---------------------------------------------------------------------------
-
-
-class TestDetectDivergentDuplicateNodes:
-    def test_divergent_duplicate_detected(self):
-        nodes = [
-            {"id": "a", "entity_id": "a", "p": 1},
-            {"id": "a", "entity_id": "a", "p": 2},
-            {"id": "b", "entity_id": "b"},
-        ]
-        result = detect_divergent_duplicate_nodes(nodes)
-        assert [node_id for node_id, _ in result] == ["a"]
-        assert result[0][1] == [
-            {"entity_id": "a", "p": 1},
-            {"entity_id": "a", "p": 2},
-        ]
-
-    def test_equal_duplicates_pass(self):
-        # Mirrors the reciprocal rule: collapsing equal payloads loses
-        # nothing, so byte-equal duplicates are not flagged.
-        nodes = [
-            {"id": "a", "entity_id": "a", "p": 1},
-            {"id": "a", "entity_id": "a", "p": 1},
-        ]
-        assert detect_divergent_duplicate_nodes(nodes) == []
-
-    def test_type_strict(self):
-        nodes = [
-            {"id": "a", "entity_id": "a", "p": 1},
-            {"id": "a", "entity_id": "a", "p": 1.0},
-        ]
-        assert len(detect_divergent_duplicate_nodes(nodes)) == 1
-
-    def test_order_independent(self):
-        nodes = [
-            {"id": "a", "entity_id": "a", "p": 2},
-            {"id": "a", "entity_id": "a", "p": 1},
-            {"id": "a", "entity_id": "a", "p": 1},
-        ]
-        forward = detect_divergent_duplicate_nodes(nodes)
-        backward = detect_divergent_duplicate_nodes(list(reversed(nodes)))
-        assert forward == backward
-        assert len(forward) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -538,10 +396,13 @@ class TestVerifySourceSide:
 
 
 class TestDeterministicPipeline:
-    def test_non_divergent_graph_identical_across_two_runs(self):
-        # AC-c second half: with no divergent reciprocals (divergent input
-        # fails closed instead of proceeding), two runs over differently
-        # enumerated source reads produce identical canonical write sets.
+    def test_canonical_write_set_identical_across_two_runs(self):
+        # AC-c second half: two runs over differently enumerated source reads
+        # produce identical canonical write sets. This exercises the ordering
+        # pipeline only — the fail-closed gates (reciprocals, duplicates,
+        # parallel rows) are the callers' job and are covered separately, so
+        # this input deliberately includes a reciprocal pair to prove that
+        # canonicalization itself is enumeration-order independent.
         run_a = [
             _edge("b", "a", weight=1.0),
             _edge("a", "b", weight=1.0),
@@ -552,7 +413,6 @@ class TestDeterministicPipeline:
         run_b = list(reversed(run_a))
 
         def pipeline(directed_edges):
-            assert detect_divergent_reciprocals(directed_edges) == []
             assert not any(c > 1 for c in count_parallel_edges(directed_edges).values())
             ordered = sort_directed_edges(directed_edges)
             return [
@@ -786,7 +646,9 @@ class TestCardinalityPreservingPolicy:
 
 
 class TestJsonbRepresentability:
-    """agtype represents NaN/+-Infinity; PostgreSQL jsonb rejects all three."""
+    """agtype represents values PostgreSQL jsonb cannot: NaN/+-Infinity, -0.0
+    (whose sign is normalised away), and strings holding a NUL or an unpaired
+    surrogate (which jsonb's underlying text type cannot hold)."""
 
     async def test_non_finite_payload_is_refused_before_the_drop(self):
         target = PGTableGraphStorage(seed_nodes={"pre": {"entity_id": "pre"}})
@@ -808,6 +670,53 @@ class TestJsonbRepresentability:
         assert [label for label, _ in offenders] == ["edge x", "node y"]
         assert offenders[0][1] == ["w"]
         assert offenders[1][1] == ["meta.vals[1]"]
+
+    def test_finds_nul_and_lone_surrogate_strings(self):
+        # jsonb is stored as PostgreSQL text: a NUL is rejected outright
+        # ("\\u0000 cannot be converted to text") and an unpaired surrogate has
+        # no UTF-8 encoding at all, so the driver cannot even send it. Python
+        # str and AGE's agtype both accept them, so a source graph can carry
+        # them all the way to the write.
+        offenders = find_non_jsonb_representable(
+            [
+                ("node nul", {"description": "before\x00after"}),
+                ("edge surrogate", {"meta": {"vals": ["ok", "lone\ud800"]}}),
+            ]
+        )
+        assert offenders == [
+            ("edge surrogate", ["meta.vals[1]"]),
+            ("node nul", ["description"]),
+        ]
+
+    def test_offending_key_is_reported(self):
+        # A key is serialized into the same jsonb document, so a NUL in a key
+        # aborts the write exactly as one in a value does.
+        offenders = find_non_jsonb_representable([("node k", {"bad\x00key": 1})])
+        assert offenders == [("node k", ["bad\x00key"])]
+
+    def test_ordinary_unicode_passes(self):
+        # The gate must not become a general non-ASCII filter: everything here
+        # round-trips through jsonb unchanged. "\U0001f600" is a PAIRED
+        # surrogate pair on narrow builds and a single astral code point here;
+        # either way it is valid UTF-8 and must not be flagged.
+        assert (
+            find_non_jsonb_representable(
+                [
+                    ("node ko", {"entity_id": "한국", "desc": "이웃 관계"}),
+                    ("node astral", {"label": "graph \U0001f600 store"}),
+                    ("node quotes", {"q": 'He said "hi" - O\'Brien'}),
+                ]
+            )
+            == []
+        )
+
+    async def test_nul_bearing_payload_is_refused_before_the_drop(self):
+        target = PGTableGraphStorage(seed_nodes={"pre": {"entity_id": "pre"}})
+        source = _source(["a", "b"], [_edge("a", "b", description="x\x00y")])
+        with pytest.raises(MigrationDataError, match="NUL"):
+            await migrate_graph(source, target, force_empty_target=True)
+        assert "drop" not in target.calls
+        assert target.nodes == {"pre": {"entity_id": "pre"}}
 
 
 class TestNegativeZero:
@@ -925,6 +834,49 @@ class TestResolvedWorkspace:
         monkeypatch.setenv("POSTGRES_WORKSPACE", "production")
         with pytest.raises(MigrationPreconditionError, match="outranks it"):
             _precheck_requested_workspace("staging")
+
+    def test_config_ini_workspace_is_refused_like_the_env_var(
+        self, monkeypatch, tmp_path
+    ):
+        # Regression: the precheck only read POSTGRES_WORKSPACE, but the
+        # backends resolve through PGPostgresDB.get_config, which falls back to
+        # config.ini's [postgres] workspace when the env var is unset. A
+        # checked-in config.ini therefore outranked --workspace with nothing on
+        # screen to suggest it, and initialize() would mutate the wrong slice
+        # before the resolved-workspace backstop could speak.
+        monkeypatch.delenv("POSTGRES_WORKSPACE", raising=False)
+        (tmp_path / "config.ini").write_text(
+            "[postgres]\nworkspace = production\n", encoding="utf-8"
+        )
+        monkeypatch.chdir(tmp_path)  # config.ini is read cwd-relative
+        with pytest.raises(MigrationPreconditionError, match="config.ini") as excinfo:
+            _precheck_requested_workspace("staging")
+        assert "production" in str(excinfo.value)
+        # Matching or unnamed requests still pass through the same branch.
+        _precheck_requested_workspace("production")
+        _precheck_requested_workspace("")
+
+    def test_config_ini_without_a_workspace_key_is_ignored(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("POSTGRES_WORKSPACE", raising=False)
+        (tmp_path / "config.ini").write_text(
+            "[postgres]\nhost = localhost\n", encoding="utf-8"
+        )
+        monkeypatch.chdir(tmp_path)
+        _precheck_requested_workspace("staging")
+
+    def test_env_var_outranks_config_ini(self, monkeypatch, tmp_path):
+        # get_config reads os.environ FIRST, so config.ini must not be
+        # consulted (let alone reported) when the env var is set.
+        (tmp_path / "config.ini").write_text(
+            "[postgres]\nworkspace = fromfile\n", encoding="utf-8"
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("POSTGRES_WORKSPACE", "production")
+        with pytest.raises(
+            MigrationPreconditionError, match="POSTGRES_WORKSPACE"
+        ) as excinfo:
+            _precheck_requested_workspace("staging")
+        assert "fromfile" not in str(excinfo.value)
 
     def test_precheck_allows_matching_or_unnamed_workspace(self, monkeypatch):
         monkeypatch.setenv("POSTGRES_WORKSPACE", "production")

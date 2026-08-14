@@ -68,18 +68,37 @@ real run, so it predicts what `--apply` will do. With `--force-empty-target`
 it reports that the apply run *would* drop the pre-existing slice, but never
 drops anything itself.
 
-**A dry run migrates nothing, but it is not read-only.** Both backends have to
-be initialized before their contents can be inspected, and `initialize()` is not
-a passive step: `PGTableGraphStorage` creates its tables and then runs
-`_normalize_legacy_edges`, which **deletes and re-inserts edge rows** (reversed
-duplicates, legacy orderings); the AGE side creates the graph and its indexes.
-So a dry run can modify the workspace it touches. It migrates no data and
-copies nothing between backends — that is the guarantee, and it is narrower
-than "writes nothing".
+**A dry run migrates nothing, but it is not read-only, and its blast radius is
+not limited to one workspace.** Both backends have to be initialized before
+their contents can be inspected, and `initialize()` is not a passive step. Two
+different scopes are involved:
+
+- *Scoped to the workspace being migrated:* `_normalize_legacy_edges`
+  **deletes and re-inserts edge rows** (reversed duplicates, legacy
+  orderings) for this workspace and namespace only; the AGE side creates the
+  graph and its indexes.
+- *Table-wide, across every workspace and namespace:* the schema migration in
+  `PGTableGraphStorage`'s DDL. On a table whose primary key predates the
+  `namespace` column it **DELETEs duplicate rows** from `lightrag_graph_nodes`
+  and `lightrag_graph_edges` (keeping the most recently updated row per key)
+  before rebuilding the primary keys, and when the endpoint foreign keys are
+  absent it then **DELETEs every orphan edge** — an edge whose endpoint node
+  is missing — from the whole table. That sweep cannot be narrowed: as
+  `pgtable_impl` puts it, "the sweep is table-wide because the FK is a global
+  composite constraint and cannot be validated per workspace." Both paths are
+  one-time (first install, or the first run after the namespace-PK upgrade)
+  and are skipped once the constraints exist, but the run that performs them
+  touches rows belonging to workspaces `--workspace` never named.
+
+So a dry run against one workspace can still modify others, on a legacy
+schema. What it never does is migrate data or copy anything between backends —
+that is the guarantee, and it is narrower than "writes nothing". Take a backup
+of both tables before the first run against a pre-`namespace` schema.
 
 **`--workspace` is cross-checked, not trusted.** The backends resolve their
-workspace as `POSTGRES_WORKSPACE` env > the value passed in > `"default"`, so
-the environment can outrank the flag. The tool compares what was requested
+workspace as `POSTGRES_WORKSPACE` env > `config.ini` `[postgres] workspace` >
+the value passed in > `"default"`, so either the environment or a checked-in
+config file can outrank the flag. The tool compares what was requested
 against what the backends actually resolved to, refuses when they differ, and
 reports the resolved workspace — the slice a destructive run acted on is never
 left implicit.
