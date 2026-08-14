@@ -715,6 +715,7 @@ def create_optimized_embedding_function(
     # dimension silently applies regardless of the actual model selected,
     # causing vector-store write failures at runtime.
     # See: https://github.com/HKUDS/LightRAG/issues/3644
+    # Note: lollms is excluded because it ignores the model parameter entirely.
     _BINDINGS_WITH_DIM_GUARD = frozenset(
         ["ollama", "openai", "jina", "gemini", "bedrock", "voyageai"]
     )
@@ -726,11 +727,13 @@ def create_optimized_embedding_function(
     ):
         default_model = getattr(provider_func, "model_name", None)
         if default_model:
+            # The `:latest` suffix is an Ollama/OCI convention; stripping it
+            # is a no-op for other bindings but keeps one unified comparison.
             configured_model = model.removesuffix(":latest")
             normalized_default = default_model.removesuffix(":latest")
             if configured_model != normalized_default:
                 raise ValueError(
-                    f"EMBEDDING_DIM must be set when EMBEDDING_MODEL selects a "
+                    "EMBEDDING_DIM must be set when EMBEDDING_MODEL selects a "
                     f"custom {binding} model ({model!r}); the provider default "
                     f"dimension only applies to {default_model!r}"
                 )
@@ -744,9 +747,9 @@ def create_optimized_embedding_function(
         and provider_func is not None
     ):
         raise ValueError(
-            f"EMBEDDING_DIM must be set when using Azure OpenAI with a "
-            f"configured deployment ({model!r}); Azure deployment names have "
-            f"no universal default dimension"
+            "EMBEDDING_DIM must be set when using Azure OpenAI with a "
+            f"configured deployment ({model!r}); Azure deployment names "
+            f"require an explicit dimension"
         )
 
     # Step 2: Apply priority (user config > provider default)
