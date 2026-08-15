@@ -14,6 +14,7 @@ Two contracts introduced for the pipeline scheduling control-plane:
 """
 
 import asyncio
+from collections import Counter
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -647,12 +648,34 @@ def _bfs_mget_side_effect(real_nodes: dict):
 
 
 def _bfs_search_side_effect(edges: list):
-    """Mock ``client.search`` for both the per-level edge scan (``should``,
-    at least one endpoint in the frontier) and the final PIT-scrolled
-    edge fetch (``must``, both endpoints in the seen-node set)."""
+    """Mock ``client.search`` for the per-level edge scan (``should``, at least
+    one endpoint in the frontier), the degree aggregation that ranks a level
+    (``aggs``, same ``should`` query shape), and the final PIT-scrolled edge
+    fetch (``must``, both endpoints in the seen-node set)."""
 
     async def _search(index=None, body=None, **kwargs):
         bool_query = body["query"]["bool"]
+        if "aggs" in body:
+            ids = set(bool_query["should"][0]["terms"]["source_node_id"])
+            matching = [
+                e
+                for e in edges
+                if e["source_node_id"] in ids or e["target_node_id"] in ids
+            ]
+
+            def _buckets(field):
+                counts = Counter(e[field] for e in matching)
+                return [
+                    {"key": key, "doc_count": count} for key, count in counts.items()
+                ]
+
+            return {
+                "hits": {"hits": []},
+                "aggregations": {
+                    "source_degrees": {"buckets": _buckets("source_node_id")},
+                    "target_degrees": {"buckets": _buckets("target_node_id")},
+                },
+            }
         if "should" in bool_query:
             ids = set(bool_query["should"][0]["terms"]["source_node_id"])
             hits = [

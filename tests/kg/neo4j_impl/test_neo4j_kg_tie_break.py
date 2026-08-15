@@ -1,10 +1,10 @@
-"""``get_knowledge_graph('*')`` must break degree ties on the entity label.
+"""``get_knowledge_graph`` must break degree ties on the entity label.
 
 The BaseGraphStorage contract ranks by degree descending, ties on the label
 ascending, because ``LIMIT max_nodes`` almost always cuts through a band of
 equal-degree entities: with no second sort key, which nodes survive is whatever
 order the plan happened to produce, so the same graph can answer differently
-run to run.
+run to run. The BFS path obeys the same rule within a depth level (#3612).
 
 The Cypher is asserted rather than the returned node set: exercising the real
 ordering needs a live Neo4j, and the ORDER BY clause is the whole fix.
@@ -95,4 +95,32 @@ async def test_star_mode_ranks_by_degree_then_entity_id():
     # The tie-break is the point: a bare degree ordering is what allowed the
     # equal-degree band at the cutoff to come back in an arbitrary order.
     assert "ORDER BY degree DESC LIMIT" not in main_query, main_query
+    assert result.is_truncated is True
+
+
+@pytest.mark.asyncio
+async def test_bfs_mode_ranks_each_depth_by_degree_then_entity_id():
+    """The truncating BFS query must rank inside a depth level.
+
+    ``apoc.path.subgraphAll``'s own ``limit`` cuts in traversal order, which is
+    ingestion order in practice; ``expandConfig`` is used instead because its
+    per-node path carries the depth and node the ranking needs.
+    """
+    storage, calls = _make_storage(
+        [
+            {"node_info": [], "relationships": [], "total_nodes": 9},
+            {"node_info": [], "relationships": []},
+        ]
+    )
+
+    result = await storage.get_knowledge_graph("A", max_depth=2, max_nodes=3)
+
+    assert len(calls) == 2, calls
+    limited_query = _normalize(calls[1])
+    assert "ORDER BY depth ASC, degree DESC, node.entity_id ASC" in limited_query, (
+        limited_query
+    )
+    assert "apoc.path.expandConfig" in limited_query, limited_query
+    # The traversal-order truncation this replaces.
+    assert "limit: $max_nodes" not in limited_query, limited_query
     assert result.is_truncated is True

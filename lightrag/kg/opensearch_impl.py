@@ -4577,13 +4577,18 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         return node_ids
 
     @staticmethod
-    def _edge_rank_key(edge: dict[str, Any]) -> tuple[int, float]:
-        """Rank traversal edges by shallower depth first, then higher weight."""
+    def _edge_depth(edge: dict[str, Any]) -> int:
+        """Traversal depth of an edge row, defaulting to 0 when unusable."""
         depth = edge.get("_depth", edge.get("depth", 0))
         try:
-            depth_value = int(depth)
+            return int(depth)
         except (TypeError, ValueError):
-            depth_value = 0
+            return 0
+
+    @staticmethod
+    def _edge_rank_key(edge: dict[str, Any]) -> tuple[int, float]:
+        """Rank traversal edges by shallower depth first, then higher weight."""
+        depth_value = OpenSearchGraphStorage._edge_depth(edge)
 
         weight = edge.get("weight", 0)
         try:
@@ -4948,9 +4953,12 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             )
             return await self._bfs_subgraph(start_label, max_depth, max_nodes)
 
-        ordered_node_ids = [start_label]
+        # _edge_rank_key settles depth but leaves same-depth nodes in edge-weight
+        # order, so bucket by depth and rank each bucket on the node instead.
+        levels: dict[int, list[str]] = {}
         discovered_nodes = {start_label}
         for edge_row in sorted_edge_rows:
+            depth = self._edge_depth(edge_row)
             for node_id in (
                 edge_row.get("source_node_id"),
                 edge_row.get("target_node_id"),
@@ -4958,8 +4966,26 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 if not node_id or node_id in discovered_nodes:
                     continue
                 discovered_nodes.add(node_id)
-                if len(ordered_node_ids) < max_nodes:
-                    ordered_node_ids.append(node_id)
+                levels.setdefault(depth, []).append(node_id)
+
+        # One lookup for the whole reachable set rather than one per level: the
+        # rows already name it, so extra ids cost buckets, not round trips.
+        degrees: dict[str, int] = {}
+        if len(discovered_nodes) > max_nodes:
+            degrees = await self.node_degrees_batch(
+                [nid for level in levels.values() for nid in level]
+            )
+
+        ranked = [
+            node_id
+            for depth in sorted(levels)
+            for node_id in sorted(
+                levels[depth], key=lambda nid: (-degrees.get(nid, 0), nid)
+            )
+        ]
+        # max(..., 0) keeps a max_nodes of 0 from slicing off the tail instead
+        # of admitting nothing.
+        ordered_node_ids = [start_label] + ranked[: max(max_nodes - 1, 0)]
 
         result.is_truncated = len(discovered_nodes) > max_nodes
 
@@ -5071,6 +5097,18 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     for doc in node_resp["docs"]
                     if doc.get("found") and doc["_id"] not in seen_nodes
                 ]
+
+            # mget answers in request order, so an overflowing level needs the
+            # contract's ranking before the cap reads it. Only an overflowing
+            # level pays: a level that fits is admitted whole, and the contract
+            # binds which nodes survive, not their order.
+            if len(real_docs) > 1 and len(seen_nodes) + len(real_docs) > max_nodes:
+                level_degrees = await self.node_degrees_batch(
+                    [doc["_id"] for doc in real_docs]
+                )
+                real_docs.sort(
+                    key=lambda doc: (-level_degrees.get(doc["_id"], 0), doc["_id"])
+                )
 
             new_docs = []
             for doc in real_docs:

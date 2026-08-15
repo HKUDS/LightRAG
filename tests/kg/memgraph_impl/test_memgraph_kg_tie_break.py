@@ -93,3 +93,25 @@ async def test_star_mode_ranks_by_degree_then_entity_id():
     assert "ORDER BY degree DESC, n.entity_id ASC" in main_query, main_query
     assert "ORDER BY degree DESC LIMIT" not in main_query, main_query
     assert result.is_truncated is True
+
+
+@pytest.mark.asyncio
+async def test_bfs_mode_ranks_each_depth_by_degree_then_entity_id():
+    """The BFS query must rank inside a depth level before slicing.
+
+    ``collect(DISTINCT end)`` had no order, so slicing it handed the surviving
+    slots to whatever order the expansion produced.
+    """
+    storage, calls = _make_storage(
+        [{"node_info": [], "relationships": [], "is_truncated": True}]
+    )
+
+    result = await storage.get_knowledge_graph("A", max_depth=2, max_nodes=3)
+
+    assert len(calls) == 1, calls
+    subgraph_query = _normalize(calls[0])
+    assert "ORDER BY depth ASC, degree DESC, end.entity_id ASC" in subgraph_query, (
+        subgraph_query
+    )
+    assert "collect(DISTINCT end)" not in subgraph_query, subgraph_query
+    assert result.is_truncated is True

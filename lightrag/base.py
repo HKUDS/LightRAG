@@ -856,16 +856,26 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         Order the labels by code point (SQL ``COLLATE "C"``, not a locale
         collation) so every backend agrees with Python's ``str`` comparison.
 
-        **Scope: the ``*`` whole-graph ranking on every backend.** The rule
-        should govern the non-wildcard path too -- a BFS level that overflows
+        **Scope: both selection paths.** The rule governs the non-wildcard path
+        for the same reason it governs ``*`` -- a BFS level that overflows
         ``max_nodes`` faces the same tie, and it decides both which neighbours
-        survive and which get expanded next -- but today only
-        :class:`~lightrag.kg.networkx_impl.NetworkXStorage` and
-        :class:`~lightrag.kg.pgtable_impl.PGTableGraphStorage` order their BFS
-        levels that way. Neo4j, Memgraph, Mongo and OpenSearch admit same-depth
-        nodes in traversal order, so their non-wildcard cutoff is still
-        ingestion-order dependent. Tracked in issue #3612; a new backend should
-        implement both paths rather than match that gap.
+        survive and which get expanded next. A level is therefore ranked on
+        ``(degree DESC, label ASC)`` before the cap reads it, after the depth it
+        was reached at, so the full key is ``(depth, -degree, label)`` with the
+        seed at depth 0. Every backend implements both paths; a new one should
+        too.
+
+        Two narrow exceptions remain, both tracked in issue #3612:
+
+        - :meth:`~lightrag.kg.neo4j_impl.Neo4JStorage._robust_fallback`, used
+          only when APOC is unavailable, walks a plain FIFO queue and admits in
+          traversal order.
+        - ``MongoGraphStorage`` under the opt-in
+          ``MONGO_GRAPH_BFS_MODE=in_out_bound``, which orders candidates on edge
+          weight. It confirms node existence in bounded batches and stops at the
+          first ``max_nodes`` real ids; ranking the whole candidate set by
+          degree would defeat that probe. Its default ``bidirectional`` path
+          complies.
 
         **Known deviation -- PGGraphStorage (Apache AGE)** ranks the ``*`` view
         on ``degree DESC, v.id ASC``, the internal vertex id, not the label.

@@ -2889,10 +2889,32 @@ class MongoGraphStorage(BaseGraphStorage):
 
         cursor = self.collection.find({"_id": {"$in": node_labels}})
 
+        # node_labels can name the same node twice (reached by two edges of the
+        # previous level); a duplicate reaching the admission loop would spend a
+        # second slot and trip the cap on a node that is not new.
+        level_nodes = []
+        level_seen = set()
         async for node in cursor:
             node_id = node["_id"]
-            if node_id in seen_nodes:
+            if node_id in seen_nodes or node_id in level_seen:
                 continue
+            level_seen.add(node_id)
+            level_nodes.append(node)
+
+        # find() answers in natural order, not $in order, so an overflowing
+        # level needs the contract's ranking before the cap reads it. Only an
+        # overflowing level pays: a level that fits is admitted whole, and the
+        # contract binds which nodes survive, not their order.
+        if len(level_nodes) > 1 and len(result.nodes) + len(level_nodes) > max_nodes:
+            level_degrees = await self.node_degrees_batch(
+                [node["_id"] for node in level_nodes]
+            )
+            level_nodes.sort(
+                key=lambda node: (-level_degrees.get(node["_id"], 0), node["_id"])
+            )
+
+        for node in level_nodes:
+            node_id = node["_id"]
             if len(result.nodes) >= max_nodes:
                 result.is_truncated = True
                 return result
