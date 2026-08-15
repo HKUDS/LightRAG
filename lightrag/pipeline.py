@@ -79,7 +79,9 @@ from lightrag import pipeline_metrics
 from lightrag.kg.pipeline_ingress import PipelineIngressMessage
 from lightrag.operate import merge_nodes_and_edges
 from lightrag.parser.base import ParseContext
-from lightrag.parser.llm_bridge import LLMBridgePipelineCancelled
+from lightrag.parser.exceptions import (
+    ParsePipelineCancelled,
+)
 from lightrag.parser.registry import (
     get_parser,
     parser_specs_snapshot,
@@ -4492,11 +4494,11 @@ class _PipelineMixin:
                 # body from full_docs by doc_id.
                 parsed_data_w.pop("content", None)
                 await ctx.q_analyze.put((doc_id_w, status_doc_w, parsed_data_w))
-            except (PipelineCancelledException, LLMBridgePipelineCancelled):
+            except (PipelineCancelledException, ParsePipelineCancelled):
                 # Cancellation raised from inside the parse engine (future-
                 # proofing — engines do not generally call
                 # _raise_if_cancelled, but native smart-heading's bridge raises
-                # LLMBridgePipelineCancelled while waiting on the batch cancel
+                # ParsePipelineCancelled while waiting on the batch cancel
                 # event. Parser-executor shutdown is intentionally a distinct
                 # exception and remains a generic parse failure for audit.
                 await self._mark_doc_cancelled_in_stage(

@@ -1471,10 +1471,12 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         construction shared by :meth:`get_docs_by_statuses` (via
         :meth:`_search_all_docs`) and the :meth:`get_full_docs_by_ids`
         hydration path. Raises ``KeyError``/``TypeError`` on a malformed
-        source; the caller decides strict (raise) vs relaxed (skip).
+        source (missing required fields); the caller decides strict (raise)
+        vs relaxed (skip). Fields the dataclass does not declare are
+        tolerated — see ``DocProcessingStatus.from_stored``.
         """
         data = self._prepare_doc_status_data(source)
-        return DocProcessingStatus(**data)
+        return DocProcessingStatus.from_stored(data)
 
     async def initialize(self):
         """Initialize client connection and create the doc-status index."""
@@ -2095,7 +2097,9 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             for hit in response["hits"]["hits"]:
                 try:
                     data = self._prepare_doc_status_data(hit["_source"])
-                    documents.append((hit["_id"], DocProcessingStatus(**data)))
+                    documents.append(
+                        (hit["_id"], DocProcessingStatus.from_stored(data))
+                    )
                 except (KeyError, TypeError) as e:
                     logger.error(
                         f"[{self.workspace}] Error parsing doc {hit['_id']}: {e}"

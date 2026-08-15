@@ -710,6 +710,22 @@ def create_optimized_embedding_function(
     except ImportError as e:
         logger.warning(f"Could not import provider function for {binding}: {e}")
 
+    if (
+        binding == "ollama"
+        and model
+        and args.embedding_dim is None
+        and provider_func is not None
+    ):
+        default_model = provider_func.model_name
+        configured_model = model.removesuffix(":latest")
+        normalized_default = default_model.removesuffix(":latest")
+        if configured_model != normalized_default:
+            raise ValueError(
+                "EMBEDDING_DIM must be set when EMBEDDING_MODEL selects a "
+                f"custom Ollama model ({model!r}); the provider default "
+                f"dimension only applies to {default_model!r}"
+            )
+
     # Step 2: Apply priority (user config > provider default)
     # For max_token_size: explicit env var > provider default > None
     final_max_token_size = args.embedding_token_limit or provider_max_token_size
@@ -771,6 +787,7 @@ def create_optimized_embedding_function(
                     "texts": texts,
                     "host": host,
                     "api_key": api_key,
+                    "embedding_dim": embedding_dim,
                     "options": ollama_options,
                 }
                 if provider_supports_asymmetric and asymmetric_opt_in:
@@ -1757,14 +1774,22 @@ def create_app(args):
             try:
                 from lightrag.llm.binding_options import OllamaLLMOptions
 
-                return {
-                    "host": args.llm_binding_host,
-                    "timeout": llm_timeout,
-                    "options": OllamaLLMOptions.options_dict(args),
-                    "api_key": args.llm_binding_api_key,
-                }
+                options = OllamaLLMOptions.options_dict(args)
             except ImportError as e:
                 raise Exception(f"Failed to import {binding} options: {e}")
+            if binding == "ollama":
+                # Imported lazily (the module installs the ollama package on
+                # import) and only for the binding that actually forwards
+                # think= -- lollms never reaches the ollama client.
+                from lightrag.llm.ollama import ensure_think_supported
+
+                ensure_think_supported(options, context="the base LLM binding")
+            return {
+                "host": args.llm_binding_host,
+                "timeout": llm_timeout,
+                "options": options,
+                "api_key": args.llm_binding_api_key,
+            }
         return {}
 
     def resolve_role_llm_settings(
@@ -1839,6 +1864,17 @@ def create_app(args):
                 )
             else:
                 role_provider_options = {}
+
+        if role_binding == "ollama":
+            # Validated after the whole resolution above (including the
+            # override_meta short-circuit), so what is checked is exactly what
+            # the role will call with -- inherited global OLLAMA_LLM_THINK
+            # included. Every role is resolved once while create_app builds
+            # role_llm_configs, so an unsupported think= stops the server at
+            # startup rather than at the role's first call.
+            from lightrag.llm.ollama import ensure_think_supported
+
+            ensure_think_supported(role_provider_options, context=f"LLM role '{role}'")
 
         bedrock_aws_options = {}
         if role_binding == "bedrock":

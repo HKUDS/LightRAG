@@ -40,7 +40,8 @@ from lightrag.kg.shared_storage import (
     get_pipeline_ingress,
 )
 from lightrag.pipeline import _BatchRunContext
-from lightrag.parser.llm_bridge import LLMBridgePipelineCancelled, SyncLLMBridge
+from lightrag.parser.exceptions import ParsePipelineCancelled
+from lightrag.parser.llm_bridge import SyncLLMBridge
 from lightrag.parser.registry import parser_specs_snapshot
 from lightrag.utils import EmbeddingFunc, Tokenizer
 
@@ -291,7 +292,7 @@ async def test_pipeline_cancel_interrupts_inflight_native_parser_llm(
                     cancel_events=(
                         (
                             parse_ctx.pipeline_cancel_event,
-                            LLMBridgePipelineCancelled,
+                            ParsePipelineCancelled,
                         ),
                     ),
                     poll_interval=0.02,
@@ -419,7 +420,12 @@ async def test_analyze_multimodal_inflight_cancellation_polls_flag(
     (≤ 0.5s), cancel pending tasks, write the sidecar with partial
     results, and raise PipelineCancelledException."""
 
+    # Signals that a VLM call has actually started, i.e. analyze_multimodal
+    # is past its pre-schedule cancellation check and the item tasks exist.
+    vlm_inflight = asyncio.Event()
+
     async def slow_vlm(prompt, **kwargs):
+        vlm_inflight.set()
         # 1.2s is short enough that even when the priority-queue worker
         # finishes the in-flight call after we've already raised (the
         # role wrapper does not propagate outer-future cancellation to
@@ -484,14 +490,26 @@ async def test_analyze_multimodal_inflight_cancellation_polls_flag(
         }
         pipeline_status_lock = asyncio.Lock()
 
-        async def flip_after(delay: float):
-            await asyncio.sleep(delay)
+        # Flip the flag off the first VLM call rather than off a wall-clock
+        # delay. analyze_multimodal re-checks cancellation immediately BEFORE
+        # spawning the item tasks, so a flag already set by then raises on
+        # that pre-schedule path: no task ever runs and the sidecar is never
+        # rewritten, which is a different code path than the in-flight one
+        # this test covers. A fixed delay only wins that race on an idle
+        # machine — on a loaded CI runner the startup work outlasts it and
+        # the test fails on the missing llm_analyze_result entries. Gating on
+        # vlm_inflight makes "flag set while tasks are running" an ordering
+        # guarantee instead of a timing bet.
+        flipped_at: list[float] = []
+
+        async def flip_when_inflight():
+            await vlm_inflight.wait()
             async with pipeline_status_lock:
                 pipeline_status["cancellation_requested"] = True
+                flipped_at.append(time.monotonic())
 
-        flipper = asyncio.create_task(flip_after(0.1))
+        flipper = asyncio.create_task(flip_when_inflight())
 
-        start = time.monotonic()
         with pytest.raises(PipelineCancelledException):
             await asyncio.wait_for(
                 rag.analyze_multimodal(
@@ -504,11 +522,25 @@ async def test_analyze_multimodal_inflight_cancellation_polls_flag(
                 ),
                 timeout=15.0,
             )
-        elapsed = time.monotonic() - start
-        await flipper
+        raised_at = time.monotonic()
+        # Never plain-await the flipper: if analyze_multimodal raised without
+        # ever reaching the VLM, vlm_inflight stays clear and the wait would
+        # hang the suite instead of failing the assertions below.
+        flipper.cancel()
+        await asyncio.gather(flipper, return_exceptions=True)
 
-        # Must cancel well before the 1.2s sleep — poll interval is 0.5s.
-        assert elapsed < 1.0, f"in-flight cancel took {elapsed:.2f}s (>1.0s)"
+        # A raise with the flag never set means the pre-schedule check (or an
+        # earlier boundary) fired instead — not the in-flight path under test.
+        assert flipped_at, "cancellation was never requested while VLM ran"
+
+        # Measure from the flag flip, not from the call: only the poll loop's
+        # reaction time is under test, and timing the whole call would fold in
+        # storage/parser startup and re-introduce a load-sensitive threshold.
+        detect_latency = raised_at - flipped_at[0]
+        assert detect_latency < 1.0, (
+            f"poll loop took {detect_latency:.2f}s to observe the flag (>1.0s); "
+            f"the interval is 0.5s and the VLM call is 1.2s"
+        )
 
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
         # Sidecar should have been written even though we raised — every

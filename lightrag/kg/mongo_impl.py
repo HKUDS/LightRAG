@@ -625,12 +625,13 @@ class MongoDocStatusStorage(DocStatusStorage):
         Single source of the raw -> status construction shared by
         ``get_docs_by_statuses`` and the ``get_full_docs_by_ids`` hydration
         path. Raises ``KeyError``/``TypeError`` on a malformed document
-        (``TypeError`` is what ``DocProcessingStatus(**data)`` raises on
-        missing required fields); the caller decides strict (raise) vs relaxed
-        (skip).
+        (``TypeError`` is what construction raises on missing required
+        fields); the caller decides strict (raise) vs relaxed (skip).
+        Fields the dataclass does not declare are tolerated — see
+        ``DocProcessingStatus.from_stored``.
         """
         data = self._prepare_doc_status_data(doc)
-        return DocProcessingStatus(**data)
+        return DocProcessingStatus.from_stored(data)
 
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
         super().__init__(
@@ -1071,7 +1072,7 @@ class MongoDocStatusStorage(DocStatusStorage):
 
                 data = self._prepare_doc_status_data(doc)
 
-                doc_status = DocProcessingStatus(**data)
+                doc_status = DocProcessingStatus.from_stored(data)
                 documents.append((doc_id, doc_status))
             except KeyError as e:
                 logger.error(

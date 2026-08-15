@@ -11,11 +11,8 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from lightrag.parser.llm_bridge import (
-    LLMBridgeCancelled,
-    LLMBridgeShutdown,
-    SyncLLMBridge,
-)
+from lightrag.parser.exceptions import ParseCancelled, ParseShutdown
+from lightrag.parser.llm_bridge import SyncLLMBridge
 
 pytestmark = pytest.mark.offline
 
@@ -66,7 +63,7 @@ async def test_bridge_cancel_event_aborts_within_poll_interval() -> None:
     await started.wait()
     t0 = time.monotonic()
     cancel.set()
-    with pytest.raises(LLMBridgeCancelled):
+    with pytest.raises(ParseCancelled):
         await task
     # Exit within a couple of poll slices, not an unbounded wait.
     assert time.monotonic() - t0 < 1.0
@@ -83,7 +80,7 @@ async def test_bridge_pre_cancelled_never_submits() -> None:
         return "x"
 
     bridge = SyncLLMBridge(loop, submit, cancel_events=(cancel,), poll_interval=0.05)
-    with pytest.raises(LLMBridgeCancelled):
+    with pytest.raises(ParseCancelled):
         await _call_bridge_in_thread(bridge, "p")
     assert calls == []
 
@@ -99,10 +96,10 @@ async def test_bridge_preserves_shutdown_cancellation_source() -> None:
     bridge = SyncLLMBridge(
         loop,
         submit,
-        cancel_events=((shutdown, LLMBridgeShutdown),),
+        cancel_events=((shutdown, ParseShutdown),),
         poll_interval=0.05,
     )
-    with pytest.raises(LLMBridgeShutdown):
+    with pytest.raises(ParseShutdown):
         await _call_bridge_in_thread(bridge, "p")
 
 
@@ -348,7 +345,7 @@ async def test_per_instance_executor_isolation_and_shutdown(tmp_path) -> None:
     await asyncio.sleep(0.1)
 
     await rag_a.finalize_storages()
-    with pytest.raises(LLMBridgeCancelled):
+    with pytest.raises(ParseCancelled):
         await parked
     assert rag_a._parser_executor is None
     # A fresh (unset) event replaced the old one for a later re-init.
