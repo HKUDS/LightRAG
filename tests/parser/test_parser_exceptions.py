@@ -1,12 +1,9 @@
-"""Tests for the parser cancellation exception hierarchy and its
-backward-compatible LLMBridge* aliases (see issue #3608).
+"""Tests for the parser cancellation exception hierarchy (see issue #3608).
 
-The hierarchy moved from lightrag.parser.llm_bridge to
-lightrag.parser.exceptions and was renamed ParseCancelled /
-ParsePipelineCancelled / ParseShutdown to reflect its actual parser-wide
-scope. The old LLMBridge* names remain importable from llm_bridge.py as
-plain assignments (not subclasses), so isinstance/except behave identically
-regardless of which name is used to catch.
+The hierarchy lives in lightrag.parser.exceptions as ParseCancelled /
+ParsePipelineCancelled / ParseShutdown, reflecting its actual parser-wide
+scope. The historical LLMBridge* names were internal-only and have been
+removed outright — no compatibility aliases.
 """
 
 from __future__ import annotations
@@ -18,36 +15,12 @@ from lightrag.parser.exceptions import (
     ParsePipelineCancelled,
     ParseShutdown,
 )
-from lightrag.parser.llm_bridge import (
-    LLMBridgeCancelled,
-    LLMBridgePipelineCancelled,
-    LLMBridgeShutdown,
-)
 
 pytestmark = pytest.mark.offline
 
 
 # ---------------------------------------------------------------------------
-# Alias identity: old names must be the SAME object as the new names, not
-# subclasses — a subclass would break `except LLMBridgeCancelled` catching a
-# raised ParseCancelled.
-# ---------------------------------------------------------------------------
-
-
-def test_llm_bridge_cancelled_is_parse_cancelled() -> None:
-    assert LLMBridgeCancelled is ParseCancelled
-
-
-def test_llm_bridge_pipeline_cancelled_is_parse_pipeline_cancelled() -> None:
-    assert LLMBridgePipelineCancelled is ParsePipelineCancelled
-
-
-def test_llm_bridge_shutdown_is_parse_shutdown() -> None:
-    assert LLMBridgeShutdown is ParseShutdown
-
-
-# ---------------------------------------------------------------------------
-# Hierarchy shape, under the new names.
+# Hierarchy shape.
 # ---------------------------------------------------------------------------
 
 
@@ -64,44 +37,16 @@ def test_parse_cancelled_is_a_runtime_error() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Cross-catch: raise via one name, catch via the other — both directions.
+# The internal-only LLMBridge* aliases are gone — the rename is complete, and
+# nothing should quietly reintroduce the misleading old names.
 # ---------------------------------------------------------------------------
 
 
-def test_raise_new_name_caught_by_old_name() -> None:
-    with pytest.raises(LLMBridgeCancelled):
-        raise ParseCancelled("boom")
+@pytest.mark.parametrize(
+    "old_name",
+    ["LLMBridgeCancelled", "LLMBridgePipelineCancelled", "LLMBridgeShutdown"],
+)
+def test_old_llm_bridge_names_are_removed(old_name: str) -> None:
+    import lightrag.parser.llm_bridge as llm_bridge
 
-
-def test_raise_old_name_caught_by_new_name() -> None:
-    with pytest.raises(ParseCancelled):
-        raise LLMBridgeCancelled("boom")
-
-
-def test_raise_new_pipeline_cancelled_caught_by_old_name() -> None:
-    with pytest.raises(LLMBridgePipelineCancelled):
-        raise ParsePipelineCancelled("boom")
-
-
-def test_raise_old_pipeline_cancelled_caught_by_new_name() -> None:
-    with pytest.raises(ParsePipelineCancelled):
-        raise LLMBridgePipelineCancelled("boom")
-
-
-def test_raise_new_shutdown_caught_by_old_name() -> None:
-    with pytest.raises(LLMBridgeShutdown):
-        raise ParseShutdown("boom")
-
-
-def test_raise_old_shutdown_caught_by_new_name() -> None:
-    with pytest.raises(ParseShutdown):
-        raise LLMBridgeShutdown("boom")
-
-
-def test_raise_pipeline_cancelled_caught_by_base_class_either_name() -> None:
-    # A subclass instance must still satisfy the broader base-class except,
-    # under both the old and new spelling of the base.
-    with pytest.raises(ParseCancelled):
-        raise LLMBridgePipelineCancelled("boom")
-    with pytest.raises(LLMBridgeCancelled):
-        raise ParsePipelineCancelled("boom")
+    assert not hasattr(llm_bridge, old_name)

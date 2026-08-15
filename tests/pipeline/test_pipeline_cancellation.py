@@ -40,7 +40,8 @@ from lightrag.kg.shared_storage import (
     get_pipeline_ingress,
 )
 from lightrag.pipeline import _BatchRunContext
-from lightrag.parser.llm_bridge import LLMBridgePipelineCancelled, SyncLLMBridge
+from lightrag.parser.exceptions import ParsePipelineCancelled
+from lightrag.parser.llm_bridge import SyncLLMBridge
 from lightrag.parser.registry import parser_specs_snapshot
 from lightrag.utils import EmbeddingFunc, Tokenizer
 
@@ -291,7 +292,7 @@ async def test_pipeline_cancel_interrupts_inflight_native_parser_llm(
                     cancel_events=(
                         (
                             parse_ctx.pipeline_cancel_event,
-                            LLMBridgePipelineCancelled,
+                            ParsePipelineCancelled,
                         ),
                     ),
                     poll_interval=0.02,

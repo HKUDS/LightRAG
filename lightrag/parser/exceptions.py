@@ -16,10 +16,8 @@ class ParseCancelled(RuntimeError):
     """The parse was cancelled (or the rag shut down) during a blocking wait.
 
     This is the repo-wide "a blocking parse wait was cancelled" signal.
-    Originally introduced for the LLM bridge (hence the historical
-    ``LLMBridge*`` names, still available as aliases in
-    ``lightrag.parser.llm_bridge``), the hierarchy now covers any blocking
-    parse path — not just LLM calls.
+    Originally introduced for the LLM bridge, the hierarchy now covers any
+    blocking parse path — not just LLM calls.
     """
 
 

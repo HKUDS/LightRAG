@@ -24,15 +24,9 @@ from typing import Any
 
 from lightrag.parser.exceptions import (
     ParseCancelled,
-    ParsePipelineCancelled,
-    ParseShutdown,
     first_cancellation,
     normalize_cancel_events,
 )
-
-LLMBridgeCancelled = ParseCancelled
-LLMBridgePipelineCancelled = ParsePipelineCancelled
-LLMBridgeShutdown = ParseShutdown
 
 
 class SyncLLMBridge:
