@@ -59,6 +59,7 @@ from ..utils import (
     logger,
     compute_mdhash_id,
     _cooperative_yield,
+    get_env_value,
     performance_timing_log,
     validate_workspace,
 )
@@ -96,6 +97,100 @@ PG_MAX_IDENTIFIER_LENGTH = 63
 DEFAULT_PG_UPSERT_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024  # 16 MiB
 DEFAULT_PG_UPSERT_MAX_RECORDS_PER_BATCH = 200
 DEFAULT_PG_DELETE_MAX_RECORDS_PER_BATCH = 1000
+
+# Connection-level failures that are worth retrying rather than reporting. Module-level
+# so that code without a PostgreSQLDB instance in hand -- notably the static
+# configure_age_extension -- can tell "the connection blipped" from "the server answered
+# something we cannot use", and let the former reach _run_with_retry unwrapped.
+TRANSIENT_DB_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    asyncio.TimeoutError,
+    TimeoutError,
+    ConnectionError,
+    OSError,
+    asyncpg.exceptions.InterfaceError,
+    asyncpg.exceptions.TooManyConnectionsError,
+    asyncpg.exceptions.CannotConnectNowError,
+    asyncpg.exceptions.PostgresConnectionError,
+    asyncpg.exceptions.ConnectionDoesNotExistError,
+    asyncpg.exceptions.ConnectionFailureError,
+)
+
+# First Apache AGE version whose graph queries can crash the PostgreSQL backend from
+# PGGraphStorage. Deliberately an upper bound rather than a blocklist of known-bad
+# points: a later AGE release is only safe once someone has verified it, and letting
+# unverified versions through would defeat the check. Raise this only with evidence.
+# See https://github.com/apache/age/issues/2500.
+AGE_FIRST_UNSUPPORTED_VERSION = (1, 8, 0)
+AGE_ALLOW_UNSUPPORTED_ENV = "POSTGRES_AGE_ALLOW_UNSUPPORTED_VERSION"
+
+# Both sources are consulted, because neither alone sees every affected deployment.
+# pg_extension.extversion is the version of the SQL script that was last run against
+# this database, so it does not move when the binaries are swapped underneath it:
+# starting 1.8.0 binaries over a data directory created under 1.7.0 leaves it at
+# '1.7.0' while the 1.8.0 age.so is what actually executes. default_version comes from
+# the on-disk age.control and therefore tracks the binaries.
+#
+# Two independent lookups rather than one join, because the two catalogs do not fail
+# alike. pg_extension is an ordinary catalog table. pg_available_extensions is a view
+# that parses every control file in the sharedir, so one malformed file belonging to an
+# unrelated extension makes the whole view raise -- and that says nothing about AGE, so
+# it must not be able to refuse startup on a server that has no AGE at all. Read apart,
+# each source can be missing or unreadable on its own, and "neither catalog names age"
+# -- the only state where there is genuinely nothing to gate -- means both lookups
+# returned None *and* both actually answered: a lookup that failed is not a lookup that
+# found nothing. default_version is itself NULLABLE, so the available lookup is read with
+# fetchrow rather than fetchval -- a row naming 'age' with a NULL version is an age.control
+# that is on disk, which is the opposite of the absence a bare None would suggest.
+# The asymmetry in how these two are read is load-bearing, not an oversight to tidy up:
+# the installed lookup may use fetchval only because pg_extension.extversion is
+# text NOT NULL, so "no row" and "NULL value" cannot both occur there. Giving the
+# available lookup the same treatment would reopen the bug the paragraph above describes.
+AGE_INSTALLED_SQL = "SELECT extversion FROM pg_extension WHERE extname = 'age'"
+AGE_AVAILABLE_SQL = (
+    "SELECT default_version FROM pg_available_extensions WHERE name = 'age'"
+)
+
+
+# Distinguishes "this source said nothing" from "this source said something we cannot
+# read". Both used to collapse to None, which let an unreadable source be ignored while
+# its sibling decided alone -- exactly the in-place-upgrade hole the second source exists
+# to close. A named type rather than a bare object() so that the return annotation below
+# stays narrower than `object`, and a type checker can still catch a caller that treats
+# the sentinel as a version.
+class _AgeVersionUnparseable:
+    """Singleton marker: the source is present but not a version we understand."""
+
+
+_AGE_VERSION_UNPARSEABLE = _AgeVersionUnparseable()
+
+# Exactly three ASCII numeric components. Signs, PEP-515 underscores and non-ASCII
+# digits are all accepted by int() but are not things AGE reports, and short forms are
+# deliberately no longer padded to three: a value we had to repair before comparing it
+# is not a value we read, and per AGE_FIRST_UNSUPPORTED_VERSION anything we have not
+# verified must not reach the safe side of the comparison.
+_AGE_VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
+
+
+def _parse_age_version(
+    raw: Any,
+) -> tuple[int, int, int] | _AgeVersionUnparseable | None:
+    """Parse an Apache AGE version string into a comparable tuple.
+
+    Returns None only if the source is absent (``raw is None``), so that a source this
+    deployment simply does not have cannot stop the other from deciding. Returns
+    ``_AGE_VERSION_UNPARSEABLE`` if the source is present but is not a version we
+    understand -- including present-but-blank: that is an *unverified* version, not a
+    silent one, and by the policy stated on AGE_FIRST_UNSUPPORTED_VERSION an unverified
+    version must not be let through. An unrecognised value is reported through that
+    return value rather than as an exception; the caller decides.
+    """
+    if raw is None:
+        return None
+    raw_str = str(raw)
+    if not _AGE_VERSION_RE.fullmatch(raw_str):
+        return _AGE_VERSION_UNPARSEABLE
+    major, minor, patch = (int(p) for p in raw_str.split("."))
+    return (major, minor, patch)
 
 
 def _estimate_record_bytes(record: tuple[Any, ...]) -> int:
@@ -361,18 +456,7 @@ class PostgreSQLDB:
         # Guard concurrent pool resets
         self._pool_reconnect_lock = asyncio.Lock()
 
-        self._transient_exceptions = (
-            asyncio.TimeoutError,
-            TimeoutError,
-            ConnectionError,
-            OSError,
-            asyncpg.exceptions.InterfaceError,
-            asyncpg.exceptions.TooManyConnectionsError,
-            asyncpg.exceptions.CannotConnectNowError,
-            asyncpg.exceptions.PostgresConnectionError,
-            asyncpg.exceptions.ConnectionDoesNotExistError,
-            asyncpg.exceptions.ConnectionFailureError,
-        )
+        self._transient_exceptions = TRANSIENT_DB_EXCEPTIONS
 
         # Connection retry configuration
         self.connection_retry_attempts = config["connection_retry_attempts"]
@@ -832,13 +916,300 @@ class PostgreSQLDB:
 
     @staticmethod
     async def configure_age_extension(connection: asyncpg.Connection) -> None:
-        """Create AGE extension if it doesn't exist for graph operations."""
+        """Refuse AGE versions known to break PGGraphStorage, then create the extension.
+
+        AGE 1.8.0 changed Cypher ``id()`` to return ``graphid``. That breaks
+        ``get_knowledge_graph`` twice over: the labelled branch fails on the
+        ``graphid`` -> ``bigint`` column cast, and the wildcard branch segfaults the
+        backend, taking the whole instance through crash recovery. The wildcard is
+        what the WebUI issues by default, so this is refused at startup rather than
+        left to surface as an instance-wide crash on the first graph request.
+
+        See https://github.com/apache/age/issues/2500.
+        """
+        # Read before the catalog lookup, so that the override also covers a lookup that
+        # itself fails; otherwise that one path would be an unbypassable startup failure.
+        override_set = get_env_value(AGE_ALLOW_UNSUPPORTED_ENV, False, bool)
+
+        # Decide before creating. CREATE EXTENSION writes pg_extension.extversion, and
+        # AGE ships no downgrade script, so creating first would leave every refused
+        # startup with a version the operator cannot lower again -- see the stale-catalog
+        # paragraph below for what that state costs them.
+        installed_raw: Any = None
+        available_raw: Any = None
+        version_known = True
+        # Tracked separately from available_raw for the same reason _parse_age_version has
+        # a sentinel: "the view said nothing" and "the view could not be read" are
+        # different states, and collapsing them into None would let a failed lookup pass
+        # for evidence that AGE is absent.
+        available_unreadable = False
+        # Two states set available_unreadable -- the view raised, or it named 'age' with a
+        # NULL default_version -- and they are the same decision but not the same fact.
+        # Kept apart so the operator-facing text never reports an error that did not
+        # happen. Only read when available_unreadable is True.
+        #
+        # Deliberately initialised to None rather than to either state's wording: a default
+        # that reads as one of the two states would let a future third writer set the flag
+        # without setting these, and the operator would then be told about an error that
+        # did not happen -- the exact failure this pair exists to prevent. With None, every
+        # site that sets the flag must supply the value, so the omission cannot pass
+        # silently.
+        available_unreadable_reason: str | None = None
+        available_unreadable_display: str | None = None
+
+        try:
+            installed_raw = await connection.fetchval(AGE_INSTALLED_SQL)
+        except Exception as e:
+            if isinstance(e, TRANSIENT_DB_EXCEPTIONS):
+                # Checked before the override, because a connection blip is not a
+                # version-determination outcome at all: the server never got to answer.
+                # The override exists to tolerate an unsupported or undeterminable
+                # version, not to turn a blip into a silently skipped safety gate -- with
+                # the opposite order the blip would be swallowed and the retry below
+                # would never happen.
+                #
+                # Propagate it unwrapped so that the _run_with_retry wrapping this call
+                # can recognise and retry it -- wrapping it in RuntimeError would make a
+                # transient startup blip a permanent startup failure.
+                #
+                # A statement or lock timeout (QueryCanceledError) is not in that tuple,
+                # so it refuses instead of retrying. Deliberate: the tuple is what
+                # _run_with_retry uses everywhere else in this file, and this gate is not
+                # the place to redefine cluster-wide retry policy. The override covers the
+                # case, and the catalog read is a cheap unlocked lookup, so a timeout there
+                # means the server is in no state to be answering for the AGE version
+                # anyway.
+                raise
+            if override_set:
+                # Names the consequence rather than deferring to the generic
+                # could-not-determine wording: version_known = False skips the available
+                # lookup entirely, so unlike every other override state the gate ends up
+                # having seen nothing at all, and the CREATE EXTENSION below still runs.
+                # Says nothing about whether 'age' is registered here -- that is precisely
+                # what the failed lookup did not establish.
+                logger.warning(
+                    f"PostgreSQL, could not determine the Apache AGE version ({e}), but "
+                    f"{AGE_ALLOW_UNSUPPORTED_ENV} is set, so PGGraphStorage is starting "
+                    "anyway. The available-version lookup is skipped in this state, so "
+                    "nothing has inspected the Apache AGE that CREATE EXTENSION may be "
+                    "about to install. If that AGE is 1.8.0 or newer, a single "
+                    "get_knowledge_graph request may take the whole PostgreSQL instance "
+                    "through crash recovery."
+                )
+                version_known = False
+            else:
+                raise RuntimeError(
+                    f"Could not determine the Apache AGE version ({e}). PGGraphStorage "
+                    "needs it in order to reject versions that crash the PostgreSQL backend "
+                    "(https://github.com/apache/age/issues/2500). Set "
+                    f"{AGE_ALLOW_UNSUPPORTED_ENV}=true to start anyway, at your own risk."
+                ) from e
+
+        if version_known:
+            try:
+                # fetchrow, not fetchval: default_version is NULLABLE, so fetchval returns
+                # None both for "no row" and for "a row whose value is NULL". Those are
+                # opposite facts -- 'age' absent from the extension path, versus an
+                # age.control that is on disk (so age.so may be too) but names no version
+                # -- and collapsing them lets a present-but-unversioned AGE read as absent.
+                available_row = await connection.fetchrow(AGE_AVAILABLE_SQL)
+            except Exception as e:
+                if isinstance(e, TRANSIENT_DB_EXCEPTIONS):
+                    raise
+                # Anything else here is the sharedir view failing over a control file that
+                # need not be AGE's, which is no evidence about AGE either way -- but it
+                # is also no evidence that AGE is absent, and pg_extension cannot stand in
+                # for it because extversion does not move when the binaries are swapped.
+                # The flag below therefore does two things: it keeps this from being read
+                # as "AGE is absent", and it makes the version undeterminable rather than
+                # letting pg_extension decide alone.
+                logger.warning(
+                    "PostgreSQL, could not read the available Apache AGE version from "
+                    f"pg_available_extensions ({e}); the version cannot be confirmed from "
+                    "pg_extension alone, because it does not track the loaded binaries."
+                )
+                available_unreadable = True
+                available_unreadable_reason = (
+                    "pg_available_extensions could not be read"
+                )
+                available_unreadable_display = "<lookup failed>"
+            else:
+                if available_row is None:
+                    # No control file for 'age' anywhere on the extension path, so the
+                    # view genuinely has nothing to say: AGE is absent.
+                    available_raw = None
+                elif available_row["default_version"] is None:
+                    # age.control is on disk -- so age.so may well be too -- but the file
+                    # names no version. Present-and-unreadable, not absent: pg_extension
+                    # must not decide alone, because extversion cannot see a binary swap.
+                    available_unreadable = True
+                    available_unreadable_reason = "pg_available_extensions names 'age' but reports no version for it"
+                    available_unreadable_display = "<no version reported>"
+                else:
+                    available_raw = available_row["default_version"]
+
+        if installed_raw is None and available_unreadable:
+            # Not the nothing-to-gate state below: 'age' is merely absent from
+            # pg_extension, and the one source that could have reported an AGE sitting on
+            # disk gave no usable answer. Falling through would CREATE EXTENSION -- and
+            # register whatever version is there -- without the gate ever having seen it,
+            # which is precisely the crash this function exists to prevent.
+            if not override_set:
+                # Refusing outright would be wrong too: nothing here is evidence of an
+                # unsupported version. So neither create nor refuse; leave the database as
+                # it was found.
+                logger.warning(
+                    "PostgreSQL, the Apache AGE version could not be determined because "
+                    f"{available_unreadable_reason}, and 'age' is not registered "
+                    "in this database. Skipping CREATE EXTENSION so that the gate does not "
+                    "install an AGE version it never checked. Set "
+                    f"{AGE_ALLOW_UNSUPPORTED_ENV}=true to create it anyway, at your own risk."
+                )
+                return
+            # Named separately from the generic could-not-determine warning below, because
+            # the consequence is not the generic one: everywhere else the override starts a
+            # deployment against an AGE that is already there, while here CREATE EXTENSION
+            # is about to install one that nothing has looked at.
+            logger.warning(
+                "PostgreSQL, 'age' is not registered in this database and "
+                f"{available_unreadable_reason}, so the version of any Apache AGE on disk "
+                f"is unknown, but {AGE_ALLOW_UNSUPPORTED_ENV} is set, so CREATE EXTENSION "
+                "is installing it without the gate having seen it. If that AGE is 1.8.0 or "
+                "newer, a single get_knowledge_graph request may take the whole PostgreSQL "
+                "instance through crash recovery."
+            )
+            # This warning has already named the consequence for this state, so suppress
+            # the generic one: the branches below are all guarded on version_known.
+            version_known = False
+
+        if (
+            version_known
+            and installed_raw is None
+            and available_raw is None
+            and not available_unreadable
+        ):
+            # Neither catalog names 'age': the extension is not on disk and not registered
+            # in this database, so no ag_catalog functions exist to call, no age.so gets
+            # loaded, and there is nothing to gate.
+            # Logged at INFO, not DEBUG: this is the one state in which the gate proceeds
+            # without having checked anything, so it must be visible at the default level.
+            logger.info(
+                "PostgreSQL, no Apache AGE version check was performed: neither "
+                "pg_available_extensions nor pg_extension names 'age', so AGE is not "
+                "installed on this server and there is nothing to gate"
+            )
+        elif version_known:
+            # Rendered distinctly from `available=None`: an operator reading this needs to
+            # see that no version came back, not that the view answered "absent" -- and
+            # which of the two it was, since a lookup that raised and a control file that
+            # names no version call for different things to go and look at.
+            available_found = (
+                available_unreadable_display
+                if available_unreadable
+                else repr(available_raw)
+            )
+            found = f"installed={installed_raw!r} available={available_found}"
+            installed_parsed = _parse_age_version(installed_raw)
+            # A source that gave no usable answer -- the lookup raised, or the row named no
+            # version -- is not a source that said nothing, so it gets the same sentinel as
+            # a value we could not parse. pg_available_extensions is
+            # the source that tracks the binaries; pg_extension.extversion cannot see a
+            # binary swap, so letting it decide alone here would start a deployment whose
+            # loaded age.so was never checked. Fail closed instead -- the override still
+            # covers this state, as it does every other refusal.
+            available_parsed = (
+                _AGE_VERSION_UNPARSEABLE
+                if available_unreadable
+                else _parse_age_version(available_raw)
+            )
+            candidates = (installed_parsed, available_parsed)
+            parsed = [c for c in candidates if isinstance(c, tuple)]
+
+            # The higher of the two decides: a stale catalog must not mask newer binaries.
+            # An unreadable sibling source cannot make the situation safer, so a version we
+            # can read and know to be unsupported is reported as such before anything else.
+            if parsed and max(parsed) >= AGE_FIRST_UNSUPPORTED_VERSION:
+                raw_version = ".".join(str(p) for p in max(parsed))
+                unsupported = ".".join(str(p) for p in AGE_FIRST_UNSUPPORTED_VERSION)
+                if override_set:
+                    logger.warning(
+                        f"PostgreSQL, Apache AGE {raw_version} ({found}) is known to break "
+                        f"PGGraphStorage's graph queries, but {AGE_ALLOW_UNSUPPORTED_ENV} is set, "
+                        "so the check is being skipped. A single graph request may take the whole "
+                        "PostgreSQL instance through crash recovery."
+                    )
+                else:
+                    message = (
+                        f"Apache AGE {raw_version} is not supported by PGGraphStorage ({found}): from "
+                        f"{unsupported} onward, get_knowledge_graph fails, and a graph query can terminate "
+                        "the PostgreSQL backend with SIGSEGV and take the whole instance through crash "
+                        "recovery (https://github.com/apache/age/issues/2500). Verified good: AGE 1.7.0. "
+                    )
+                    if (
+                        isinstance(installed_parsed, tuple)
+                        and installed_parsed >= AGE_FIRST_UNSUPPORTED_VERSION
+                        and isinstance(available_parsed, tuple)
+                        and available_parsed < AGE_FIRST_UNSUPPORTED_VERSION
+                    ):
+                        # The generic remedies are assembled only in the other cells,
+                        # because neither one applies here: pinning is what produced this
+                        # state, and the override would start a deployment whose graph
+                        # reads all fail. Offering them and then withdrawing them, as the
+                        # text used to, reads as a contradiction to the operator.
+                        message += (
+                            "Here pg_extension records the newer AGE script while age.control "
+                            "reports the older one, so the older library is what loads: AGE is "
+                            "then non-functional rather than crash-prone. Writes still go through "
+                            "-- CREATE ... RETURN n succeeds -- but every MATCH fails with 'ag "
+                            "function does not exist' because the newer script declares functions "
+                            "the older library does not export, so nothing can be read back. "
+                            "ALTER EXTENSION age UPDATE cannot repair this -- AGE ships no "
+                            "downgrade script, so extversion cannot be lowered, and "
+                            f"{AGE_ALLOW_UNSUPPORTED_ENV}=true only starts a deployment in that "
+                            "same read-broken state. The ways out are to restore the newer "
+                            "binaries, which PGGraphStorage will then refuse as unsupported, to "
+                            "DROP EXTENSION age CASCADE and recreate the graph, or to switch "
+                            "LIGHTRAG_GRAPH_STORAGE to PGTableGraphStorage, which needs no "
+                            "PostgreSQL extension."
+                        )
+                    else:
+                        message += (
+                            "Pin AGE to a verified version, or switch LIGHTRAG_GRAPH_STORAGE to "
+                            "PGTableGraphStorage, which needs no PostgreSQL extension. If installed and "
+                            "available differ above, the binaries were swapped under an existing data "
+                            "directory without ALTER EXTENSION age UPDATE; the loaded binaries are what runs. "
+                            "AGE also reports its version per release rather than per commit, so a build that "
+                            f"fixes the crash may still report {raw_version}; set "
+                            f"{AGE_ALLOW_UNSUPPORTED_ENV}=true to run against such a build at your own risk."
+                        )
+                    raise RuntimeError(message)
+
+            # Either nothing parsed, or one source is present but unreadable. An unverified
+            # version is not a safe one, so fail closed even when the sibling looks fine.
+            elif any(c is _AGE_VERSION_UNPARSEABLE for c in candidates) or not parsed:
+                if override_set:
+                    logger.warning(
+                        f"PostgreSQL, could not determine the Apache AGE version ({found}), "
+                        f"but {AGE_ALLOW_UNSUPPORTED_ENV} is set, so PGGraphStorage is "
+                        "starting anyway."
+                    )
+                else:
+                    raise RuntimeError(
+                        f"Could not determine the Apache AGE version ({found}). PGGraphStorage "
+                        "needs it in order to reject versions that crash the PostgreSQL backend "
+                        "(https://github.com/apache/age/issues/2500). Set "
+                        f"{AGE_ALLOW_UNSUPPORTED_ENV}=true to start anyway, at your own risk."
+                    )
+
         try:
             await connection.execute("CREATE EXTENSION IF NOT EXISTS AGE CASCADE")  # type: ignore
             logger.info("PostgreSQL, AGE extension enabled")
         except Exception as e:
+            # Non-fatal, as before: the system may run without AGE. On a server that has
+            # never had it this is where the pre-existing 'extension "age" is not
+            # available' lands, which is why the no-AGE path above falls through to here
+            # rather than returning.
             logger.warning(f"Could not create AGE extension: {e}")
-            # Don't raise - let the system continue without AGE extension
 
     @staticmethod
     async def configure_age(connection: asyncpg.Connection, graph_name: str) -> None:
@@ -8385,10 +8756,15 @@ class PGGraphStorage(BaseGraphStorage):
         label = self._normalize_node_id(node_label)
 
         # Build Cypher query with dynamic dollar-quoting to handle entity_id containing $ sequences
+        # NOTE: id(n) is deliberately not selected here. AGE >= 1.8.0 returns
+        # graphid from id(), which cannot be cast to bigint in the column
+        # definition list ("cannot cast type graphid to bigint"). The internal
+        # id is read from the returned vertex below, so selecting it separately
+        # was redundant anyway.
         cypher_query = f"""MATCH (n:base {{entity_id: "{label}"}})
-                    RETURN id(n) as node_id, n"""
+                    RETURN n"""
 
-        query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(cypher_query)}) AS (node_id bigint, n agtype)"
+        query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(cypher_query)}) AS (n agtype)"
 
         node_result = await self._query(query)
         if not node_result or not node_result[0].get("n"):
@@ -8445,11 +8821,15 @@ class PGGraphStorage(BaseGraphStorage):
             )
 
             # Build Cypher queries with dynamic dollar-quoting to handle entity_id containing $ sequences
+            # NOTE: id() results are declared agtype, not bigint. AGE >= 1.8.0
+            # returns graphid from id(), which the column definition list
+            # refuses to cast to bigint. agtype works on both 1.7.x and 1.8.x,
+            # and the values are consumed via str() below either way.
+            # current_internal_id is dropped entirely — it was never read.
             outgoing_cypher = f"""UNWIND [{formatted_ids}] AS node_id
                 MATCH (n:base {{entity_id: node_id}})
                 OPTIONAL MATCH (n)-[r]->(neighbor:base)
                 RETURN node_id AS current_id,
-                       id(n) AS current_internal_id,
                        id(neighbor) AS neighbor_internal_id,
                        neighbor.entity_id AS neighbor_id,
                        id(r) AS edge_id,
@@ -8461,7 +8841,6 @@ class PGGraphStorage(BaseGraphStorage):
                 MATCH (n:base {{entity_id: node_id}})
                 OPTIONAL MATCH (n)<-[r]-(neighbor:base)
                 RETURN node_id AS current_id,
-                       id(n) AS current_internal_id,
                        id(neighbor) AS neighbor_internal_id,
                        neighbor.entity_id AS neighbor_id,
                        id(r) AS edge_id,
@@ -8469,9 +8848,9 @@ class PGGraphStorage(BaseGraphStorage):
                        neighbor,
                        false AS is_outgoing"""
 
-            outgoing_query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(outgoing_cypher)}) AS (current_id text, current_internal_id bigint, neighbor_internal_id bigint, neighbor_id text, edge_id bigint, r agtype, neighbor agtype, is_outgoing bool)"
+            outgoing_query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(outgoing_cypher)}) AS (current_id text, neighbor_internal_id agtype, neighbor_id text, edge_id agtype, r agtype, neighbor agtype, is_outgoing bool)"
 
-            incoming_query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(incoming_cypher)}) AS (current_id text, current_internal_id bigint, neighbor_internal_id bigint, neighbor_id text, edge_id bigint, r agtype, neighbor agtype, is_outgoing bool)"
+            incoming_query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(incoming_cypher)}) AS (current_id text, neighbor_internal_id agtype, neighbor_id text, edge_id agtype, r agtype, neighbor agtype, is_outgoing bool)"
 
             # Execute queries
             outgoing_results = await self._query(outgoing_query)
