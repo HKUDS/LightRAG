@@ -472,9 +472,9 @@ async def initialize_rag():
 
 **Further reading:**
 - [LlamaIndex Documentation](https://developers.llamaindex.ai/python/framework/)
-- [Direct OpenAI Example](examples/unofficial-sample/lightrag_llamaindex_direct_demo.py)
-- [LiteLLM Proxy Example](examples/unofficial-sample/lightrag_llamaindex_litellm_demo.py)
-- [LiteLLM Proxy with Opik Example](examples/unofficial-sample/lightrag_llamaindex_litellm_opik_demo.py)
+- [Direct OpenAI Example](../examples/unofficial-sample/lightrag_llamaindex_direct_demo.py)
+- [LiteLLM Proxy Example](../examples/unofficial-sample/lightrag_llamaindex_litellm_demo.py)
+- [LiteLLM Proxy with Opik Example](../examples/unofficial-sample/lightrag_llamaindex_litellm_opik_demo.py)
 
 #### Using Azure OpenAI Models
 
@@ -937,7 +937,7 @@ The `workspace` parameter ensures data isolation between different LightRAG inst
 
 Storage-specific workspace environment variables override the common `WORKSPACE` variable: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `OPENSEARCH_WORKSPACE`.
 
-For a practical demonstration of managing multiple isolated knowledge bases, see [Workspace Demo](examples/lightrag_gemini_workspace_demo.py).
+For a practical demonstration of managing multiple isolated knowledge bases, see [Workspace Demo](../examples/lightrag_gemini_workspace_demo.py).
 
 
 ## Insert
