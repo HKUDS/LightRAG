@@ -125,6 +125,11 @@ comparison passed. The destructive-consequence field is mode-symmetric:
 — so the preview cannot look clean while hiding that `--force-empty-target`
 will destroy the existing slice.
 
+`nodes` / `edges` in a dry run also double as a sizing signal for the apply
+run: both modes hold the whole graph in memory (see **It does not stream**
+below), so a dry run against the real source is the cheapest way to gauge how
+much memory the real run will need.
+
 ## What makes it refuse
 
 Every check below runs *before* the first write, and each one aborts the run
@@ -235,6 +240,18 @@ rows can be removed by hand.
   precondition, not a convenience.
 - **It does not run in a single transaction.** Two backends, no shared
   transaction; the failure handling above is the substitute.
+- **It does not stream.** The storage API enumerates whole graphs, so a run
+  holds the source graph, the derived write plan and — during verification —
+  the target graph in memory at the same time. Peak memory grows with the
+  graph, roughly 2x its decoded size, and no setting bounds it: the fail-closed
+  checks (duplicate ids, reciprocals, parallel pairs) are global properties
+  that need the whole-graph view. For a very large graph, run the tool on a
+  host sized accordingly, or migrate workspace by workspace. Running out of
+  memory *inside* the process (`MemoryError`) is handled like any other
+  failure — compensation removes what the run wrote — but a kernel OOM kill
+  terminates the process outright: nothing compensates, the report never
+  prints, and under `--force-empty-target` it lands after the drop. Size the
+  host before reaching for that flag.
 - **It does not protect you from a live writer.** See the preconditions.
 - **It does not disambiguate workspaces that share an AGE graph.** AGE derives
   its graph name by replacing every non-alphanumeric character with `_`, so
