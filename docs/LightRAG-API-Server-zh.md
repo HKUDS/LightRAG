@@ -729,7 +729,7 @@ API 服务器可以通过两种方式配置（优先级从高到低）：
 * 命令行参数
 * 环境变量或 .env 文件
 
-大多数配置都有默认设置，详细信息请查看示例文件：`.env.example`。存储配置也应通过环境变量或 `.env` 文件设置。
+大多数配置都有默认设置，详细信息请查看示例文件：`env.example`。存储配置也应通过环境变量或 `.env` 文件设置。
 
 ### 支持的 LLM 和嵌入后端
 
@@ -929,7 +929,7 @@ LIGHTRAG_GRAPH_STORAGE=PGTableGraphStorage
 LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 ```
 
-在向 LightRAG 添加文档后，您不能更改存储实现选择。目前尚不支持从一个存储实现迁移到另一个存储实现，但图数据从 `PGGraphStorage` 迁移到 `PGTableGraphStorage`（参见下文*从 Apache AGE 迁移图数据到 PostgreSQL 表*）以及 LLM 缓存迁移（参见下文*在不同存储类型之间迁移LLM缓存*）除外。更多配置信息请阅读示例 `.env.example` 文件。
+在向 LightRAG 添加文档后，您不能更改存储实现选择。目前尚不支持从一个存储实现迁移到另一个存储实现，但图数据从 `PGGraphStorage` 迁移到 `PGTableGraphStorage`（参见下文*从 Apache AGE 迁移图数据到 PostgreSQL 表*）以及 LLM 缓存迁移（参见下文*在不同存储类型之间迁移LLM缓存*）除外。更多配置信息请阅读示例 `env.example` 文件。
 
 > 开发分支 [dev-lancedb](https://github.com/HKUDS/LightRAG/tree/dev-lancedb) 提供了由社区贡献的 LanceDB 存储实现，支持键值（KV）、向量、图及文档状态四类存储。开发分支 [dev-nebula-graph](https://github.com/HKUDS/LightRAG/tree/dev-nebula-graph) 则提供了社区贡献的 Nebula 图存储实现。欢迎有需求的开发者试用并持续完善上述两项存储方案。
 

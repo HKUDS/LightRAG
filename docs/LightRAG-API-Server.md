@@ -729,7 +729,7 @@ The API Server can be configured in two ways (highest priority first):
 * Command line arguments
 * Environment variables or .env file
 
-Most of the configurations come with default settings; check out the details in the sample file: `.env.example`. Storage configuration should also be set through environment variables or the `.env` file.
+Most of the configurations come with default settings; check out the details in the sample file: `env.example`. Storage configuration should also be set through environment variables or the `.env` file.
 
 ### LLM and Embedding Backend Supported
 
@@ -929,7 +929,7 @@ LIGHTRAG_GRAPH_STORAGE=PGTableGraphStorage
 LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 ```
 
-You cannot change storage implementation selection after adding documents to LightRAG. Data migration from one storage implementation to another is not supported yet, except for the graph moving from `PGGraphStorage` to `PGTableGraphStorage` (see *Graph Migration From Apache AGE To PostgreSQL Tables* below) and the LLM cache (see *LLM Cache Migration Between Storage Types* below). For further information, please read the sample `.env.example` file.
+You cannot change storage implementation selection after adding documents to LightRAG. Data migration from one storage implementation to another is not supported yet, except for the graph moving from `PGGraphStorage` to `PGTableGraphStorage` (see *Graph Migration From Apache AGE To PostgreSQL Tables* below) and the LLM cache (see *LLM Cache Migration Between Storage Types* below). For further information, please read the sample `env.example` file.
 
 > The [dev-lancedb](https://github.com/HKUDS/LightRAG/tree/dev-lancedb) development branch provides community-contributed LanceDB storage implementations for all four storage types: key-value (KV), vector, graph, and document status. The [dev-nebula-graph](https://github.com/HKUDS/LightRAG/tree/dev-nebula-graph) development branch provides a community-contributed Nebula graph storage implementation. Developers who need these storage options are welcome to try them and help improve them.
 
