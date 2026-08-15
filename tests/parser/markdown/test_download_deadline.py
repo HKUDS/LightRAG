@@ -32,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from lightrag.parser.markdown import parser as md_parser
-from lightrag.parser.llm_bridge import LLMBridgePipelineCancelled
+from lightrag.parser.exceptions import ParsePipelineCancelled
 
 from tests.parser.markdown.conftest import PNG_BYTES as _PNG_BYTES
 
@@ -60,10 +60,10 @@ def test_trip_reason_is_none_while_the_fetch_is_healthy(clock):
 
 def test_trip_reason_reports_cancellation_without_the_watchdog(clock):
     event = threading.Event()
-    state = _state(clock, cancel_events=((event, LLMBridgePipelineCancelled),))
+    state = _state(clock, cancel_events=((event, ParsePipelineCancelled),))
     event.set()
     # No watchdog has run: the reason is derived synchronously.
-    assert isinstance(state.trip_reason(), LLMBridgePipelineCancelled)
+    assert isinstance(state.trip_reason(), ParsePipelineCancelled)
 
 
 def test_trip_reason_reports_the_request_deadline_without_the_watchdog(clock):
@@ -74,14 +74,12 @@ def test_trip_reason_reports_the_request_deadline_without_the_watchdog(clock):
 
 def test_cancellation_outranks_an_expired_deadline(clock):
     event = threading.Event()
-    state = _state(
-        clock, timeout=5.0, cancel_events=((event, LLMBridgePipelineCancelled),)
-    )
+    state = _state(clock, timeout=5.0, cancel_events=((event, ParsePipelineCancelled),))
     event.set()
     clock.advance(6.0)
     # A cancelled document must be reported as cancelled, not as a timeout:
     # only the former is recorded as "cancelled" rather than "failed".
-    assert isinstance(state.trip_reason(), LLMBridgePipelineCancelled)
+    assert isinstance(state.trip_reason(), ParsePipelineCancelled)
 
 
 def test_watchdog_shuts_down_a_registered_socket_and_records_the_reason(clock):
@@ -226,10 +224,10 @@ def test_connect_aborts_promptly_on_cancellation(monkeypatch, clock, stalled_con
     monkeypatch.setattr(_NeverWritableSelector, "on_select", staticmethod(_on_select))
     with md_parser._download_context(
         deadline=clock.now + 300.0,
-        cancel_events=((event, LLMBridgePipelineCancelled),),
+        cancel_events=((event, ParsePipelineCancelled),),
         poll_interval=60.0,  # the watchdog must not be what notices
     ):
-        with pytest.raises(LLMBridgePipelineCancelled):
+        with pytest.raises(ParsePipelineCancelled):
             md_parser._pin_socket("host.example", 80, 30, None)
     # Noticed within a couple of poll intervals, and aborted by THIS thread —
     # a cross-thread shutdown cannot abort a connect (on macOS it makes
@@ -296,10 +294,10 @@ def test_cancel_during_dns_is_not_swallowed(monkeypatch, clock, resolved):
 
     with md_parser._download_context(
         deadline=clock.now + 300.0,
-        cancel_events=((event, LLMBridgePipelineCancelled),),
+        cancel_events=((event, ParsePipelineCancelled),),
         poll_interval=60.0,
     ):
-        with pytest.raises(LLMBridgePipelineCancelled):
+        with pytest.raises(ParsePipelineCancelled):
             md_parser._host_is_public("host.example")
     assert calls["resolve"] == 1
 
@@ -643,7 +641,7 @@ def test_pipeline_cancel_event_aborts_a_native_md_parse(
         return await asyncio.wait_for(task, timeout=10.0)
 
     started = time.monotonic()
-    with pytest.raises(LLMBridgePipelineCancelled):
+    with pytest.raises(ParsePipelineCancelled):
         asyncio.run(_drive())
     elapsed = time.monotonic() - started
 
@@ -651,7 +649,7 @@ def test_pipeline_cancel_event_aborts_a_native_md_parse(
     assert elapsed < 10.0, f"cancel took {elapsed:.1f}s to reach the download"
     # The type matters as much as the timing: pipeline.py catches exactly this
     # family to record the document as cancelled rather than failed.
-    assert issubclass(LLMBridgePipelineCancelled, RuntimeError)
+    assert issubclass(ParsePipelineCancelled, RuntimeError)
     # No parse thread left behind holding the pool slot.
     leftover = [
         t for t in _threading.enumerate() if t.name.startswith("native-md-download")
@@ -662,7 +660,7 @@ def test_pipeline_cancel_event_aborts_a_native_md_parse(
 def test_cancellation_is_not_swallowed_into_an_external_link(monkeypatch):
     """A cancel must abort the document, not degrade one image and carry on.
 
-    LLMBridgeCancelled derives from RuntimeError, so without the explicit
+    ParseCancelled derives from RuntimeError, so without the explicit
     re-raise ahead of ``_resolve_remote``'s blanket ``except Exception`` this
     would quietly become an external-link fallback — and the parse would keep
     fetching the rest of the document after the user asked it to stop.
@@ -682,11 +680,11 @@ def test_cancellation_is_not_swallowed_into_an_external_link(monkeypatch):
 
     md = "\n\n".join(f"![i{i}](http://host.example/x.png?u={i})" for i in range(3))
     parser = md_parser.NativeMarkdownParser()
-    with pytest.raises(LLMBridgePipelineCancelled):
+    with pytest.raises(ParsePipelineCancelled):
         parser._extract_text(
             md,
             bundle_root=None,
-            cancel_events=((event, LLMBridgePipelineCancelled),),
+            cancel_events=((event, ParsePipelineCancelled),),
         )
     # Stopped at the first image rather than working through all three.
     assert opens["n"] == 1
@@ -718,11 +716,11 @@ def test_cancellation_is_seen_on_repeated_references_to_one_url(monkeypatch):
     # One URL, 50 references: exactly one fetch, then 49 memo hits.
     md = "\n\n".join("![x](http://host.example/same.png)" for _ in range(50))
     parser = md_parser.NativeMarkdownParser()
-    with pytest.raises(LLMBridgePipelineCancelled):
+    with pytest.raises(ParsePipelineCancelled):
         parser._extract_text(
             md,
             bundle_root=None,
-            cancel_events=((event, LLMBridgePipelineCancelled),),
+            cancel_events=((event, ParsePipelineCancelled),),
         )
     assert resolved["n"] == 1  # the memo hits stopped the document, not a refetch
 
@@ -755,12 +753,12 @@ def test_cancellation_is_seen_between_all_cache_hit_images(monkeypatch, tmp_path
 
     md = "\n\n".join(f"![i{i}](http://host.example/x.png?u={i})" for i in range(5))
     parser = md_parser.NativeMarkdownParser()
-    with pytest.raises(LLMBridgePipelineCancelled):
+    with pytest.raises(ParsePipelineCancelled):
         parser._extract_text(
             md,
             bundle_root=None,
             raw_cache=_Cache(),
-            cancel_events=((event, LLMBridgePipelineCancelled),),
+            cancel_events=((event, ParsePipelineCancelled),),
         )
     assert hits["n"] == 2  # stopped on the image after the cancel landed
 
