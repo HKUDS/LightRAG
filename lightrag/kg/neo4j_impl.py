@@ -872,8 +872,12 @@ class Neo4JStorage(BaseGraphStorage):
             pairs: List of dictionaries, e.g. [{"src": "node1", "tgt": "node2"}, ...]
 
         Returns:
-            A dictionary mapping (src, tgt) tuples to their edge properties.
+            A dictionary mapping existing (src, tgt) tuples to their edge
+            properties. Missing pairs are omitted.
         """
+        if not pairs:
+            return {}
+
         workspace_label = self._get_workspace_label()
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
@@ -889,26 +893,19 @@ class Neo4JStorage(BaseGraphStorage):
                 src = record["src_id"]
                 tgt = record["tgt_id"]
                 edges = record["edges"]
-                if edges and len(edges) > 0:
-                    edge_props = edges[0]  # choose the first if multiple exist
-                    # Ensure required keys exist with defaults
-                    for key, default in {
-                        "weight": 1.0,
-                        "source_id": None,
-                        "description": None,
-                        "keywords": None,
-                    }.items():
-                        if key not in edge_props:
-                            edge_props[key] = default
-                    edges_dict[(src, tgt)] = edge_props
-                else:
-                    # No edge found – set default edge properties
-                    edges_dict[(src, tgt)] = {
-                        "weight": 1.0,
-                        "source_id": None,
-                        "description": None,
-                        "keywords": None,
-                    }
+                # MATCH only emits records for existing relationships, so the
+                # aggregate always contains at least one relationship.
+                edge_props = dict(edges[0])  # choose the first if multiple exist
+                # Ensure required keys exist with defaults
+                for key, default in {
+                    "weight": 1.0,
+                    "source_id": None,
+                    "description": None,
+                    "keywords": None,
+                }.items():
+                    if key not in edge_props:
+                        edge_props[key] = default
+                edges_dict[(src, tgt)] = edge_props
             await result.consume()
             return edges_dict
 
