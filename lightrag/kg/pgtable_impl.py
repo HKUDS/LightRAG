@@ -528,7 +528,10 @@ class PGTableGraphStorage(BaseGraphStorage):
                 self.db = await ClientManager.get_client(
                     vector_storage=self.global_config.get("vector_storage")
                 )
-                # Workspace priority: POSTGRES_WORKSPACE env > self.workspace > "default"
+                # Workspace priority: POSTGRES_WORKSPACE env > config.ini
+                # [postgres] workspace > self.workspace > "default". The first
+                # two are what ClientManager already resolved into db.workspace
+                # (see PGPostgresDB.get_config).
                 if self.db.workspace:
                     self.workspace = self.db.workspace
                 elif not getattr(self, "workspace", None):
