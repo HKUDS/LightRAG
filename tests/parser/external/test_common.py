@@ -18,6 +18,7 @@ import sys
 import zipfile
 from pathlib import Path
 
+import httpx
 import pytest
 
 from lightrag.parser.external import (
@@ -294,3 +295,160 @@ async def test_download_timeout_uses_async_timeout_backport_below_311(monkeypatc
     assert isinstance(result, async_timeout.Timeout), (
         f"expected async_timeout.Timeout below 3.11, got {type(result).__name__}"
     )
+
+
+# ---------------------------------------------------------------------------
+# stream_capped_get -- Accept-Encoding: identity + Content-Encoding rejection
+#
+# Uses genuine httpx.AsyncByteStream fixtures (not content=...-preloaded
+# responses) so these tests prove a rejected stream is never consumed.
+# ---------------------------------------------------------------------------
+
+
+class _GenuineStream(httpx.AsyncByteStream):
+    """A streamed byte source with nothing preloaded, unlike
+    ``httpx.Response(..., content=...)``."""
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+
+    async def __aiter__(self):
+        for chunk in self._chunks:
+            yield chunk
+
+    async def aclose(self) -> None:
+        pass
+
+
+class _NeverIterateStream(httpx.AsyncByteStream):
+    """Fails the test immediately if ever iterated, proving a rejected
+    response's body is never touched."""
+
+    async def __aiter__(self):
+        pytest.fail("body stream was iterated despite a rejected Content-Encoding")
+        yield b""  # pragma: no cover -- unreachable; makes this an async generator
+
+    async def aclose(self) -> None:
+        pass
+
+
+async def test_stream_capped_get_sends_accept_encoding_identity():
+    """Accept-Encoding: identity must override httpx's own default
+    ('gzip, deflate, zstd'), not merely be added alongside it."""
+    from lightrag.parser.external._common import stream_capped_get
+
+    seen_headers: dict[str, str] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_headers.update(request.headers)
+        return httpx.Response(200, stream=_GenuineStream([b"ok"]))
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        await stream_capped_get(
+            client, "https://x/y", max_bytes=None, operation="identity header check"
+        )
+
+    assert seen_headers.get("accept-encoding") == "identity"
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"content-encoding": "identity"},
+        {"content-encoding": "  Identity  "},
+        {"content-encoding": "IDENTITY"},
+    ],
+    ids=["absent", "identity", "identity-whitespace", "identity-uppercase"],
+)
+async def test_stream_capped_get_accepts_absent_or_identity_encoding(headers):
+    from lightrag.parser.external._common import stream_capped_get
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, stream=_GenuineStream([b"data ", b"chunk"]), headers=headers
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        resp, body = await stream_capped_get(
+            client, "https://x/y", max_bytes=None, operation="accept check"
+        )
+
+    assert body == b"data chunk"
+
+
+@pytest.mark.parametrize(
+    "content_encoding",
+    [
+        "gzip",
+        "deflate",
+        "br",
+        "zstd",
+        "gzip, identity",
+        "identity, gzip",
+        "chunked",
+        "",
+        "gzip;q=1.0",
+    ],
+    ids=[
+        "gzip",
+        "deflate",
+        "br",
+        "zstd",
+        "multiple-gzip-identity",
+        "multiple-identity-gzip",
+        "malformed-chunked",
+        "malformed-empty",
+        "malformed-qvalue",
+    ],
+)
+async def test_stream_capped_get_rejects_non_identity_encoding(content_encoding):
+    """Also proves the rejected stream is never iterated (via
+    _NeverIterateStream) and that the error names the operation but not
+    the URL, for every encoding/malformed-value case in one pass."""
+    from lightrag.parser.external._common import stream_capped_get
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            stream=_NeverIterateStream(),
+            headers={"content-encoding": content_encoding},
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(RuntimeError) as excinfo:
+            await stream_capped_get(
+                client,
+                "https://x/result.zip?token=secret",
+                max_bytes=None,
+                operation="my download op",
+            )
+
+    message = str(excinfo.value)
+    assert "my download op" in message
+    assert "https://x/result.zip?token=secret" not in message
+    assert "secret" not in message
+
+
+async def test_stream_capped_get_cap_still_interrupts_an_accepted_identity_stream():
+    """Regression guard: the encoding gate must not weaken the existing
+    oversized-response protection for the (now identity-only) accepted
+    path."""
+    from lightrag.parser.external._common import stream_capped_get
+
+    chunks = [b"x" * 1000 for _ in range(50)]  # 50,000 bytes total
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=_GenuineStream(chunks))
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(RuntimeError) as excinfo:
+            await stream_capped_get(
+                client, "https://x/y", max_bytes=10_000, operation="cap check"
+            )
+
+    assert "10000 bytes" in str(excinfo.value)

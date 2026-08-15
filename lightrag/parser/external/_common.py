@@ -193,17 +193,14 @@ def download_deadline_seconds() -> float | None:
 
 
 def download_max_bytes() -> int | None:
-    """Live-read the raw-wire streaming cap for a result-bundle download.
+    """Live-read the streaming cap on a result-bundle download's response body.
 
-    Deliberately a separate env var from ``PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES``
-    (see :func:`result_bundle_limits`): that one bounds the *uncompressed*
-    size a zip's central directory declares, checked by ``safe_extract_zip``
-    against archive metadata after download. This bounds the *compressed*
-    bytes actually received over the wire, checked chunk-by-chunk by
-    :func:`stream_capped_get` before the bytes ever reach that check.
-    Reusing one value for both would force an operator who wants to tune
-    one budget to also move the other. Same "non-positive disables the
-    gate" convention as the rest of this module's env-driven limits.
+    Bounds the accepted response-body bytes received, checked chunk-by-chunk
+    by :func:`stream_capped_get`. Separate from
+    ``PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES`` (see :func:`result_bundle_limits`),
+    which bounds the *uncompressed* size a zip's central directory declares.
+    Non-positive disables the cap, same convention as this module's other
+    env-driven limits.
     """
     raw = env_int(
         "PARSER_RESULT_BUNDLE_DOWNLOAD_MAX_BYTES",
@@ -265,14 +262,33 @@ async def stream_capped_get(
     ``ResponseNotRead``, so callers that need the body must use the
     returned ``body`` instead.
 
-    ``operation`` labels the error message the same way
-    ``raise_for_status_with_detail`` does, deliberately instead of
-    including ``url`` itself: a MinerU official-mode ``full_zip_url`` is a
-    cloud-storage download link that may carry a signed access token in
-    its query string, and this error can end up persisted into
-    ``doc_status.error_msg`` or logs — so the URL must never appear here.
+    ``operation`` labels the error message instead of ``url`` itself: a
+    MinerU official-mode ``full_zip_url`` is a cloud-storage link that may
+    carry a signed access token in its query string, and this error can
+    end up persisted into ``doc_status.error_msg`` or logs.
+
+    Requests ``Accept-Encoding: identity`` and rejects any response whose
+    ``Content-Encoding`` is not absent/``identity``, checked right after
+    the response headers arrive and before any body byte is read.
+    Content-decoding would hand back decoded bytes instead of what was
+    received, letting a compressed body expand past ``max_bytes`` in
+    memory before the count catches up; rejecting any encoding keeps the
+    byte count accurate and avoids that amplification.
     """
-    async with client.stream("GET", url) as response:
+    async with client.stream(
+        "GET", url, headers={"Accept-Encoding": "identity"}
+    ) as response:
+        content_encoding = response.headers.get("content-encoding")
+        if (
+            content_encoding is not None
+            and content_encoding.strip().lower() != "identity"
+        ):
+            raise RuntimeError(
+                f"{operation}: refusing response with Content-Encoding "
+                f"{content_encoding!r}; only an absent header or "
+                f"'identity' is accepted so the download's byte cap "
+                f"measures the accepted response-body bytes"
+            )
         chunks: list[bytes] = []
         total = 0
         async for chunk in response.aiter_bytes():
