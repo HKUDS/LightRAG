@@ -344,15 +344,33 @@ class _DeleteDocStatus:
     def __init__(self, rows: dict | None = None):
         self.rows = rows or {}
 
-    async def get_by_id(self, doc_id: str) -> dict | None:
-        return self.rows.get(doc_id)
+    def _primary_matches(self, basename: str) -> list[tuple[str, dict]]:
+        return [
+            (doc_id, row)
+            for doc_id, row in self.rows.items()
+            if row.get("file_path") == basename
+            and not (row.get("metadata") or {}).get("is_duplicate")
+        ]
 
     async def get_doc_by_file_basename(self, basename: str):
-        for doc_id, row in self.rows.items():
-            metadata = row.get("metadata") or {}
-            if row.get("file_path") == basename and not metadata.get("is_duplicate"):
-                return doc_id, row
-        return None
+        # Legacy best-effort lookup; real backends expose both methods. The
+        # route's ownership check must NOT use this one (mongo/redis/opensearch
+        # swallow query failures into None), which the fail-closed regression
+        # test below pins behaviorally.
+        matches = self._primary_matches(basename)
+        return matches[0] if matches else None
+
+    async def resolve_doc_source_strict(self, canonical_source_key: str):
+        matches = self._primary_matches(canonical_source_key)
+        if not matches:
+            return SourceAbsent()
+        if len(matches) == 1:
+            doc_id, row = matches[0]
+            return SourceUnique(doc_id=doc_id, doc=row)
+        return SourceConflict(
+            candidate_count=len(matches),
+            sample_doc_ids=tuple(doc_id for doc_id, _ in matches[:2]),
+        )
 
 
 class _DeleteRag:
@@ -3270,6 +3288,136 @@ async def test_background_delete_primary_still_removes_source_file(tmp_path):
 
     assert rag.deleted_doc_ids == [(primary_id, False)]
     assert not source_file.exists()
+
+
+class _FailingOwnershipDocStatus(_DeleteDocStatus):
+    """Simulates a transient backend read failure during the ownership check.
+
+    Mirrors real backend semantics: the legacy ``get_doc_by_file_basename``
+    swallows the failure and returns ``None`` (mongo/redis/opensearch
+    "best-effort miss"), while ``resolve_doc_source_strict`` raises per its
+    fail-closed contract. An ownership check built on the legacy lookup reads
+    the swallowed failure as "unreferenced" and deletes the shared file.
+    """
+
+    async def get_doc_by_file_basename(self, basename: str):
+        return None
+
+    async def resolve_doc_source_strict(self, canonical_source_key: str):
+        raise RuntimeError("simulated backend read failure")
+
+
+async def test_background_delete_ownership_lookup_failure_preserves_file(tmp_path):
+    """A swallowed/raised lookup failure must never delete a shared file."""
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    source_file = tmp_path / "paper.pdf"
+    source_file.write_bytes(b"primary source")
+    doc_manager = DocumentManager(str(tmp_path))
+    duplicate_id = "dup-attempt"
+    rag = _DeleteRag(
+        DeletionResult(
+            status="success",
+            doc_id=duplicate_id,
+            message="deleted duplicate marker",
+            file_path="paper.pdf",
+        ),
+        status_rows={
+            duplicate_id: {
+                "file_path": "paper.pdf",
+                "metadata": {"is_duplicate": True},
+            },
+            "doc-primary": {
+                "file_path": "paper.pdf",
+                "metadata": {},
+            },
+        },
+    )
+    rag.doc_status = _FailingOwnershipDocStatus(rag.doc_status.rows)
+    shared_storage.initialize_share_data()
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+
+    await _document_routes.background_delete_documents(
+        rag,
+        doc_manager,
+        [duplicate_id],
+        delete_file=True,
+    )
+
+    # The record deletion itself still succeeds; only the physical file
+    # cleanup is suppressed (fail closed).
+    assert rag.deleted_doc_ids == [(duplicate_id, False)]
+    assert source_file.read_bytes() == b"primary source"
+
+
+async def test_background_delete_source_conflict_preserves_file(tmp_path):
+    """With a historical basename conflict, surviving primaries keep the file."""
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    source_file = tmp_path / "paper.pdf"
+    source_file.write_bytes(b"conflicted source")
+    doc_manager = DocumentManager(str(tmp_path))
+    deleted_id = "doc-a"
+    rag = _DeleteRag(
+        DeletionResult(
+            status="success",
+            doc_id=deleted_id,
+            message="deleted one conflicting primary",
+            file_path="paper.pdf",
+        ),
+        status_rows={
+            deleted_id: {"file_path": "paper.pdf", "metadata": {}},
+            "doc-b": {"file_path": "paper.pdf", "metadata": {}},
+            "doc-c": {"file_path": "paper.pdf", "metadata": {}},
+        },
+    )
+    shared_storage.initialize_share_data()
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+
+    await _document_routes.background_delete_documents(
+        rag,
+        doc_manager,
+        [deleted_id],
+        delete_file=True,
+    )
+
+    assert rag.deleted_doc_ids == [(deleted_id, False)]
+    assert source_file.read_bytes() == b"conflicted source"
+
+
+async def test_background_delete_stale_self_match_preserves_file(tmp_path):
+    """An eventually-consistent index may still return the deleted row itself."""
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    source_file = tmp_path / "paper.pdf"
+    source_file.write_bytes(b"primary source")
+    doc_manager = DocumentManager(str(tmp_path))
+    deleted_id = "doc-stale"
+
+    class _StaleDocStatus(_DeleteDocStatus):
+        async def resolve_doc_source_strict(self, canonical_source_key: str):
+            return SourceUnique(
+                doc_id=deleted_id, doc={"file_path": canonical_source_key}
+            )
+
+    rag = _DeleteRag(
+        DeletionResult(
+            status="success",
+            doc_id=deleted_id,
+            message="deleted document",
+            file_path="paper.pdf",
+        ),
+    )
+    rag.doc_status = _StaleDocStatus()
+    shared_storage.initialize_share_data()
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+
+    await _document_routes.background_delete_documents(
+        rag,
+        doc_manager,
+        [deleted_id],
+        delete_file=True,
+    )
+
+    assert rag.deleted_doc_ids == [(deleted_id, False)]
+    assert source_file.read_bytes() == b"primary source"
 
 
 async def test_docx_archive_failure_is_best_effort(tmp_path, monkeypatch):

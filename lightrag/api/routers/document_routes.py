@@ -4167,21 +4167,67 @@ async def background_delete_documents(
                             # after the deleted row is gone so a post-parse
                             # content duplicate, which owns its unique archive,
                             # still removes that archive normally.
-                            other = await rag.doc_status.get_doc_by_file_basename(
+                            #
+                            # resolve_doc_source_strict is the fail-closed
+                            # contract: a backend failure RAISES here. The
+                            # legacy get_doc_by_file_basename lookup swallows
+                            # query failures into a best-effort None on some
+                            # backends, which would read as "unreferenced" and
+                            # delete a file a live primary still uses.
+                            resolution = await rag.doc_status.resolve_doc_source_strict(
                                 result.file_path
                             )
-                            if other is not None and other[0] != doc_id:
+                            if isinstance(resolution, SourceUnique):
+                                if resolution.doc_id == doc_id:
+                                    # The deleted row is still visible to the
+                                    # lookup (eventually-consistent index).
+                                    # Preserve: a stale leak beats deleting a
+                                    # file another writer may have claimed.
+                                    delete_physical_file = False
+                                    file_preservation_reason = (
+                                        "deleted row still visible to the "
+                                        "ownership lookup"
+                                    )
+                                else:
+                                    delete_physical_file = False
+                                    file_preservation_reason = (
+                                        "still referenced by document "
+                                        f"{resolution.doc_id}"
+                                    )
+                            elif isinstance(resolution, SourceConflict):
                                 delete_physical_file = False
                                 file_preservation_reason = (
-                                    f"still referenced by document {other[0]}"
+                                    "still referenced by conflicting documents "
+                                    f"{', '.join(resolution.sample_doc_ids)}"
                                 )
+                            elif not isinstance(
+                                resolution, SourceAbsent
+                            ):  # pragma: no cover - typed union
+                                # The raise is caught below and preserves the
+                                # file.
+                                raise TypeError(
+                                    "resolve_doc_source_strict returned "
+                                    f"{type(resolution).__name__}; expected "
+                                    "SourceAbsent | SourceUnique | SourceConflict"
+                                )
+                            # SourceAbsent: no primary references the basename
+                            # any more; the deleted row was its sole owner.
                         except Exception as ownership_error:
                             # Fail closed: a storage read failure must never
                             # turn a successful record deletion into accidental
-                            # removal of a possibly shared physical file.
+                            # removal of a possibly shared physical file. Keep
+                            # the raw error in the log only; pipeline_status is
+                            # serialized into API responses.
+                            logger.error(
+                                "Ownership check failed for %s (%s): %s",
+                                doc_id,
+                                result.file_path,
+                                ownership_error,
+                            )
                             delete_physical_file = False
                             file_preservation_reason = (
-                                f"ownership check failed: {ownership_error}"
+                                "ownership check failed: "
+                                f"{type(ownership_error).__name__}"
                             )
 
                     successful_deletions.append(doc_id)
