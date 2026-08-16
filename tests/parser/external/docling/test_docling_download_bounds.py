@@ -13,7 +13,6 @@ submit/poll/download round trip.
 
 import asyncio
 import io
-import os
 import time
 import zipfile
 
@@ -38,29 +37,26 @@ def _docling_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_download_result_deadline_cuts_off_a_slow_peer(tmp_path):
+async def test_download_result_deadline_cuts_off_a_slow_peer(tmp_path, monkeypatch):
     async def slow_handler(request: httpx.Request) -> httpx.Response:
         await asyncio.sleep(0.3)
         return httpx.Response(
             200, content=_small_valid_zip(), headers={"content-type": "application/zip"}
         )
 
-    os.environ["PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT"] = "0.05"
-    try:
-        transport = httpx.MockTransport(slow_handler)
-        raw_dir = tmp_path / "raw"
-        raw_dir.mkdir()
-        client_obj = DoclingRawClient()
+    monkeypatch.setenv("PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT", "0.05")
+    transport = httpx.MockTransport(slow_handler)
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    client_obj = DoclingRawClient()
 
-        start = time.monotonic()
-        async with httpx.AsyncClient(transport=transport) as client:
-            with pytest.raises(RuntimeError, match="wall-clock deadline"):
-                await client_obj._download_result_into(
-                    client, "task-1", raw_dir, "demo.pdf"
-                )
-        elapsed = time.monotonic() - start
-    finally:
-        os.environ.pop("PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT", None)
+    start = time.monotonic()
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(RuntimeError, match="wall-clock deadline"):
+            await client_obj._download_result_into(
+                client, "task-1", raw_dir, "demo.pdf"
+            )
+    elapsed = time.monotonic() - start
 
     assert elapsed < 0.2, (
         f"expected the deadline to cut the call off well before the "
@@ -69,32 +65,31 @@ async def test_download_result_deadline_cuts_off_a_slow_peer(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_download_result_disabled_deadline_lets_a_slow_peer_finish(tmp_path):
+async def test_download_result_disabled_deadline_lets_a_slow_peer_finish(
+    tmp_path, monkeypatch
+):
     async def slow_handler(request: httpx.Request) -> httpx.Response:
         await asyncio.sleep(0.05)
         return httpx.Response(
             200, content=_small_valid_zip(), headers={"content-type": "application/zip"}
         )
 
-    os.environ["PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT"] = "0"
-    try:
-        transport = httpx.MockTransport(slow_handler)
-        raw_dir = tmp_path / "raw"
-        raw_dir.mkdir()
-        client_obj = DoclingRawClient()
+    monkeypatch.setenv("PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT", "0")
+    transport = httpx.MockTransport(slow_handler)
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    client_obj = DoclingRawClient()
 
-        async with httpx.AsyncClient(transport=transport) as client:
-            await client_obj._download_result_into(
-                client, "task-1", raw_dir, "demo.pdf"
-            )
-    finally:
-        os.environ.pop("PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT", None)
+    async with httpx.AsyncClient(transport=transport) as client:
+        await client_obj._download_result_into(client, "task-1", raw_dir, "demo.pdf")
 
     assert (raw_dir / "content_list.json").is_file()
 
 
 @pytest.mark.asyncio
-async def test_download_result_external_cancellation_is_not_a_timeout(tmp_path):
+async def test_download_result_external_cancellation_is_not_a_timeout(
+    tmp_path, monkeypatch
+):
     """asyncio.timeout() must distinguish its own deadline firing from an
     unrelated external cancellation. Explicitly proves all five contract
     points: CancelledError escapes; it is not converted to TimeoutError or
@@ -120,84 +115,80 @@ async def test_download_result_external_cancellation_is_not_a_timeout(tmp_path):
     # Disabled deadline: isolates external cancellation from the deadline
     # contract covered by test_download_result_deadline_cuts_off_a_slow_peer
     # -- these are different contracts and must not be conflated.
-    os.environ["PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT"] = "0"
-    try:
-        transport = httpx.MockTransport(hanging_handler)
-        raw_dir = tmp_path / "raw"
-        raw_dir.mkdir()
-        client_obj = DoclingRawClient()
-        client = httpx.AsyncClient(transport=transport)
-        real_stream = client.stream
+    monkeypatch.setenv("PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT", "0")
+    transport = httpx.MockTransport(hanging_handler)
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    client_obj = DoclingRawClient()
+    client = httpx.AsyncClient(transport=transport)
+    real_stream = client.stream
 
-        class _CapturingStreamCM:
-            """Wraps httpx's stream context manager to capture the entered
-            response. A plain instance-attribute override of __aenter__ on
-            the real context manager wouldn't be honoured by `async with`,
-            which looks up dunder methods on the type, not the instance."""
+    class _CapturingStreamCM:
+        """Wraps httpx's stream context manager to capture the entered
+        response. A plain instance-attribute override of __aenter__ on
+        the real context manager wouldn't be honoured by `async with`,
+        which looks up dunder methods on the type, not the instance."""
 
-            def __init__(self, inner):
-                self._inner = inner
+        def __init__(self, inner):
+            self._inner = inner
 
-            async def __aenter__(self):
-                response = await self._inner.__aenter__()
-                captured["response"] = response
-                return response
+        async def __aenter__(self):
+            response = await self._inner.__aenter__()
+            captured["response"] = response
+            return response
 
-            async def __aexit__(self, *exc):
-                return await self._inner.__aexit__(*exc)
+        async def __aexit__(self, *exc):
+            return await self._inner.__aexit__(*exc)
 
-        def _spy_stream(*args, **kwargs):
-            return _CapturingStreamCM(real_stream(*args, **kwargs))
+    def _spy_stream(*args, **kwargs):
+        return _CapturingStreamCM(real_stream(*args, **kwargs))
 
-        client.stream = _spy_stream
+    client.stream = _spy_stream
 
-        async def run() -> None:
-            async with client:
-                await client_obj._download_result_into(
-                    client, "task-1", raw_dir, "demo.pdf"
-                )
+    async def run() -> None:
+        async with client:
+            await client_obj._download_result_into(
+                client, "task-1", raw_dir, "demo.pdf"
+            )
 
-        task = asyncio.create_task(run())
-        await asyncio.sleep(0.05)  # let it receive headers + first chunk, then stall
-        task.cancel()
+    task = asyncio.create_task(run())
+    await asyncio.sleep(0.05)  # let it receive headers + first chunk, then stall
+    task.cancel()
 
-        with pytest.raises(asyncio.CancelledError) as exc_info:
-            await task
+    with pytest.raises(asyncio.CancelledError) as exc_info:
+        await task
 
-        # 1. CancelledError specifically escapes.
-        assert exc_info.type is asyncio.CancelledError
+    # 1. CancelledError specifically escapes.
+    assert exc_info.type is asyncio.CancelledError
 
-        # 2. Not converted to TimeoutError or our deadline's RuntimeError:
-        # if _download_result_into's `except TimeoutError` had mis-caught
-        # this cancellation, pytest.raises(CancelledError) above would
-        # already have failed with a type mismatch -- this is the proof.
+    # 2. Not converted to TimeoutError or our deadline's RuntimeError:
+    # if _download_result_into's `except TimeoutError` had mis-caught
+    # this cancellation, pytest.raises(CancelledError) above would
+    # already have failed with a type mismatch -- this is the proof.
 
-        # 3. No archive content extracted.
-        assert not (raw_dir / "content_list.json").exists(), (
-            "expected no extraction -- the body is only validated and "
-            "extracted after being fully consumed, which never happened"
-        )
+    # 3. No archive content extracted.
+    assert not (raw_dir / "content_list.json").exists(), (
+        "expected no extraction -- the body is only validated and "
+        "extracted after being fully consumed, which never happened"
+    )
 
-        # 4. The response stream closed.
-        response = captured.get("response")
-        assert response is not None, "expected the stream to have been entered"
-        assert response.is_closed, (
-            "expected the response stream's async-with block to close it "
-            "on cancellation"
-        )
+    # 4. The response stream closed.
+    response = captured.get("response")
+    assert response is not None, "expected the stream to have been entered"
+    assert response.is_closed, (
+        "expected the response stream's async-with block to close it on cancellation"
+    )
 
-        # 5. The client context closed.
-        assert client.is_closed, (
-            "expected the client's async-with block to close it on "
-            "cancellation, same as any other unwound exception"
-        )
-    finally:
-        os.environ.pop("PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT", None)
+    # 5. The client context closed.
+    assert client.is_closed, (
+        "expected the client's async-with block to close it on "
+        "cancellation, same as any other unwound exception"
+    )
 
 
 @pytest.mark.asyncio
 async def test_download_result_rejects_oversized_response_before_full_buffer(
-    tmp_path,
+    tmp_path, monkeypatch
 ):
     oversized_zip = _small_valid_zip() + b"\x00" * 10_000
 
@@ -206,25 +197,22 @@ async def test_download_result_rejects_oversized_response_before_full_buffer(
             200, content=oversized_zip, headers={"content-type": "application/zip"}
         )
 
-    os.environ["PARSER_RESULT_BUNDLE_DOWNLOAD_MAX_BYTES"] = "100"
-    try:
-        transport = httpx.MockTransport(handler)
-        raw_dir = tmp_path / "raw"
-        raw_dir.mkdir()
-        client_obj = DoclingRawClient()
+    monkeypatch.setenv("PARSER_RESULT_BUNDLE_DOWNLOAD_MAX_BYTES", "100")
+    transport = httpx.MockTransport(handler)
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    client_obj = DoclingRawClient()
 
-        async with httpx.AsyncClient(transport=transport) as client:
-            with pytest.raises(RuntimeError, match="exceeds 100 bytes"):
-                await client_obj._download_result_into(
-                    client, "task-1", raw_dir, "demo.pdf"
-                )
-    finally:
-        os.environ.pop("PARSER_RESULT_BUNDLE_DOWNLOAD_MAX_BYTES", None)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(RuntimeError, match="exceeds 100 bytes"):
+            await client_obj._download_result_into(
+                client, "task-1", raw_dir, "demo.pdf"
+            )
 
 
 @pytest.mark.asyncio
 async def test_download_result_wire_cap_is_independent_of_uncompressed_cap(
-    tmp_path,
+    tmp_path, monkeypatch
 ):
     """PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES (uncompressed, checked by
     safe_extract_zip against the zip's declared size) and
@@ -241,25 +229,22 @@ async def test_download_result_wire_cap_is_independent_of_uncompressed_cap(
             200, content=small_zip, headers={"content-type": "application/zip"}
         )
 
-    os.environ["PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES"] = "1"
-    try:
-        transport = httpx.MockTransport(handler)
-        raw_dir = tmp_path / "raw"
-        raw_dir.mkdir()
-        client_obj = DoclingRawClient()
+    monkeypatch.setenv("PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES", "1")
+    transport = httpx.MockTransport(handler)
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    client_obj = DoclingRawClient()
 
-        async with httpx.AsyncClient(transport=transport) as client:
-            with pytest.raises(RuntimeError, match="uncompressed size"):
-                await client_obj._download_result_into(
-                    client, "task-1", raw_dir, "demo.pdf"
-                )
-    finally:
-        os.environ.pop("PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES", None)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(RuntimeError, match="uncompressed size"):
+            await client_obj._download_result_into(
+                client, "task-1", raw_dir, "demo.pdf"
+            )
 
 
 @pytest.mark.asyncio
 async def test_download_result_declared_size_lie_still_caught_when_raw_is_small(
-    tmp_path,
+    tmp_path, monkeypatch
 ):
     """Defense-in-depth: a small-on-the-wire zip that lies about its own
     declared uncompressed size must still be caught by safe_extract_zip's
@@ -276,20 +261,17 @@ async def test_download_result_declared_size_lie_still_caught_when_raw_is_small(
             200, content=lying_zip, headers={"content-type": "application/zip"}
         )
 
-    os.environ["PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES"] = str(1024 * 1024)
-    try:
-        transport = httpx.MockTransport(handler)
-        raw_dir = tmp_path / "raw"
-        raw_dir.mkdir()
-        client_obj = DoclingRawClient()
+    monkeypatch.setenv("PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES", str(1024 * 1024))
+    transport = httpx.MockTransport(handler)
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    client_obj = DoclingRawClient()
 
-        async with httpx.AsyncClient(transport=transport) as client:
-            with pytest.raises(RuntimeError, match="uncompressed size"):
-                await client_obj._download_result_into(
-                    client, "task-1", raw_dir, "demo.pdf"
-                )
-    finally:
-        os.environ.pop("PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES", None)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(RuntimeError, match="uncompressed size"):
+            await client_obj._download_result_into(
+                client, "task-1", raw_dir, "demo.pdf"
+            )
 
 
 class _GenuineStream(httpx.AsyncByteStream):
