@@ -101,9 +101,7 @@ class TestJinaEmbeddingDimGuard:
 
 class TestGeminiEmbeddingDimGuard:
     def test_custom_model_requires_explicit_dim(self):
-        with pytest.raises(
-            ValueError, match=r"EMBEDDING_DIM.*text-embedding-004"
-        ):
+        with pytest.raises(ValueError, match=r"EMBEDDING_DIM.*text-embedding-004"):
             _create_embedding_function(
                 binding="gemini",
                 model="text-embedding-004",
@@ -132,9 +130,7 @@ class TestGeminiEmbeddingDimGuard:
 
 class TestBedrockEmbeddingDimGuard:
     def test_custom_model_requires_explicit_dim(self):
-        with pytest.raises(
-            ValueError, match=r"EMBEDDING_DIM.*cohere.embed-english-v3"
-        ):
+        with pytest.raises(ValueError, match=r"EMBEDDING_DIM.*cohere.embed-english-v3"):
             _create_embedding_function(
                 binding="bedrock",
                 model="cohere.embed-english-v3",
@@ -192,9 +188,7 @@ class TestVoyageAIEmbeddingDimGuard:
 
 class TestAzureOpenAIEmbeddingDimGuard:
     def test_any_model_requires_explicit_dim(self):
-        with pytest.raises(
-            ValueError, match=r"EMBEDDING_DIM.*Azure OpenAI"
-        ):
+        with pytest.raises(ValueError, match=r"EMBEDDING_DIM.*Azure OpenAI"):
             _create_embedding_function(
                 binding="azure_openai",
                 model="my-custom-embedding-deployment",
@@ -214,9 +208,7 @@ class TestAzureOpenAIEmbeddingDimGuard:
         with patch.dict(
             "os.environ", {"AZURE_EMBEDDING_DEPLOYMENT": "text-embedding-3-large"}
         ):
-            with pytest.raises(
-                ValueError, match=r"EMBEDDING_DIM.*Azure OpenAI"
-            ):
+            with pytest.raises(ValueError, match=r"EMBEDDING_DIM.*Azure OpenAI"):
                 _create_embedding_function(
                     binding="azure_openai",
                     model=None,
