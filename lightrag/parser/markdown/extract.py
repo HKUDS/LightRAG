@@ -208,16 +208,12 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
     # The angle-bracket and bare-source alternatives inspect tails in a
     # different order. Title handling makes two non-whitespace queries per
     # alternative, so each phase needs its own monotonic cache as well.
-    angle_tail_non_whitespace = _ForwardFinder(
-        line, lambda char: not char.isspace()
-    )
+    angle_tail_non_whitespace = _ForwardFinder(line, lambda char: not char.isspace())
     angle_after_title_non_whitespace = _ForwardFinder(
         line, lambda char: not char.isspace()
     )
     angle_quote = _ForwardFinder(line, lambda char: char == '"')
-    bare_tail_non_whitespace = _ForwardFinder(
-        line, lambda char: not char.isspace()
-    )
+    bare_tail_non_whitespace = _ForwardFinder(line, lambda char: not char.isspace())
     bare_after_title_non_whitespace = _ForwardFinder(
         line, lambda char: not char.isspace()
     )
