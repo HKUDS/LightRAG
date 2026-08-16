@@ -37,7 +37,10 @@
     "cancel": "Hủy",
     "save": "Lưu",
     "saving": "Đang lưu...",
-    "saveFailed": "Lưu thất bại"
+    "saveFailed": "Lưu thất bại",
+    "errorBoundaryTitle": "Đã xảy ra lỗi",
+    "errorBoundaryDescription": "Không thể hiển thị bảng này. Hãy thử lại hoặc chuyển sang tab khác.",
+    "errorBoundaryRetry": "Thử lại"
   },
   "documentPanel": {
     "clearDocuments": {

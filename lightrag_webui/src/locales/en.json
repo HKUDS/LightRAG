@@ -37,7 +37,10 @@
     "cancel": "Cancel",
     "save": "Save",
     "saving": "Saving...",
-    "saveFailed": "Save failed"
+    "saveFailed": "Save failed",
+    "errorBoundaryTitle": "Something went wrong",
+    "errorBoundaryDescription": "This panel failed to render. Try again, or switch to another tab.",
+    "errorBoundaryRetry": "Try again"
   },
   "documentPanel": {
     "clearDocuments": {
