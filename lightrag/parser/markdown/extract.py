@@ -154,12 +154,12 @@ def _is_pipe_table_delimiter(header_line: str, delim_line: str) -> bool:
 
 
 class _ForwardFinder:
-    """Find one kind of character forward without rescanning prior input.
+    """Cache a forward search over one monotonic query stream.
 
-    Image candidates are considered left-to-right, so every query made through
-    one finder is monotonic. Keeping the last answer lets malformed candidates
-    share the scan that reached their common delimiter instead of each scanning
-    the rest of a long line again.
+    Each finder belongs to one parser phase whose query starts advance
+    left-to-right. Keeping its last answer lets malformed candidates share the
+    scan that reached their common delimiter instead of each scanning the rest
+    of a long line again.
     """
 
     def __init__(self, line: str, predicate: Callable[[str], bool]) -> None:
@@ -190,10 +190,14 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
     either an angle-bracketed or whitespace-free source.  A global regular
     expression replacement tried the complete expression at every ``![``.
     Malformed input with many candidate prefixes consequently rescanned the
-    same suffix quadratically.  This scanner visits candidates left-to-right
-    and shares each forward delimiter search, making its work linear in the
-    line length while retaining the supported grammar.
+    same suffix quadratically. This scanner visits candidates left-to-right and
+    keeps every cached forward search in its own monotonic parser phase,
+    making its work linear in the line length while retaining the supported
+    grammar.
     """
+
+    if "![" not in line:
+        return line
 
     close_bracket = _ForwardFinder(line, lambda char: char == "]")
     close_paren = _ForwardFinder(line, lambda char: char == ")")
@@ -201,22 +205,34 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
     whitespace = _ForwardFinder(line, str.isspace)
     source_non_whitespace = _ForwardFinder(line, lambda char: not char.isspace())
 
-    # The angle-bracket and bare-source alternatives can inspect their tails in
-    # a different order.  Keep their caches separate so each remains monotonic.
-    angle_non_whitespace = _ForwardFinder(line, lambda char: not char.isspace())
+    # The angle-bracket and bare-source alternatives inspect tails in a
+    # different order. Title handling makes two non-whitespace queries per
+    # alternative, so each phase needs its own monotonic cache as well.
+    angle_tail_non_whitespace = _ForwardFinder(
+        line, lambda char: not char.isspace()
+    )
+    angle_after_title_non_whitespace = _ForwardFinder(
+        line, lambda char: not char.isspace()
+    )
     angle_quote = _ForwardFinder(line, lambda char: char == '"')
-    bare_non_whitespace = _ForwardFinder(line, lambda char: not char.isspace())
+    bare_tail_non_whitespace = _ForwardFinder(
+        line, lambda char: not char.isspace()
+    )
+    bare_after_title_non_whitespace = _ForwardFinder(
+        line, lambda char: not char.isspace()
+    )
     bare_quote = _ForwardFinder(line, lambda char: char == '"')
 
     def _tail_end(
         source_end: int,
         *,
-        non_whitespace: _ForwardFinder,
+        tail_non_whitespace: _ForwardFinder,
+        after_title_non_whitespace: _ForwardFinder,
         quote: _ForwardFinder,
     ) -> int | None:
         """Return the end of an optional title plus the required ``)``."""
 
-        next_char = non_whitespace.find(source_end)
+        next_char = tail_non_whitespace.find(source_end)
         if next_char is None:
             return None
         if line[next_char] == ")":
@@ -229,7 +245,7 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
         title_end = quote.find(next_char + 1)
         if title_end is None:
             return None
-        closing_paren = non_whitespace.find(title_end + 1)
+        closing_paren = after_title_non_whitespace.find(title_end + 1)
         if closing_paren is not None and line[closing_paren] == ")":
             return closing_paren + 1
         return None
@@ -239,7 +255,7 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
         if alt_end is None or alt_end + 1 >= len(line) or line[alt_end + 1] != "(":
             return None
         source_start = source_non_whitespace.find(alt_end + 2)
-        if source_start is None or source_start >= len(line):
+        if source_start is None:
             return None
 
         # Preserve the original alternation order: a valid angle-bracketed
@@ -249,7 +265,8 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
             if angle_end is not None:
                 end = _tail_end(
                     angle_end + 1,
-                    non_whitespace=angle_non_whitespace,
+                    tail_non_whitespace=angle_tail_non_whitespace,
+                    after_title_non_whitespace=angle_after_title_non_whitespace,
                     quote=angle_quote,
                 )
                 if end is not None:
@@ -265,7 +282,8 @@ def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
             return None
         end = _tail_end(
             source_end,
-            non_whitespace=bare_non_whitespace,
+            tail_non_whitespace=bare_tail_non_whitespace,
+            after_title_non_whitespace=bare_after_title_non_whitespace,
             quote=bare_quote,
         )
         if end is not None:

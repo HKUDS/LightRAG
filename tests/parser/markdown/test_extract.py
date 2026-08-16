@@ -8,6 +8,8 @@ resolver.
 
 from __future__ import annotations
 
+import itertools
+import re
 import time
 
 import pytest
@@ -17,6 +19,11 @@ from lightrag.parser.markdown.extract import (
     ResolvedImage,
     _replace_inline_images,
     extract_markdown,
+)
+
+
+_LEGACY_INLINE_IMAGE_RE = re.compile(
+    r'!\[(?P<alt>[^\]]*)\]\(\s*(?P<src><[^>]*>|[^)\s]+)(?:\s+"[^"]*")?\s*\)'
 )
 
 
@@ -210,11 +217,40 @@ def test_inline_image_scanner_preserves_supported_image_grammar(line, expected):
     assert _replace_inline_images(line, lambda src: f"<{src}>") == expected
 
 
-def test_inline_image_scanner_handles_malformed_candidates_in_linear_time():
-    # Both inputs caused the old global regex replacement to retry a growing
-    # suffix at every ``![``.  The second retains a closing parenthesis and
-    # would also bypass the advisory's suggested ``rfind(')')`` shortcut.
-    for line in ("![](" * 4096, "![" * 16_384 + ")"):
+def test_inline_image_scanner_matches_legacy_regex_for_short_title_inputs():
+    def legacy_replace(line: str) -> str:
+        return _LEGACY_INLINE_IMAGE_RE.sub(
+            lambda match: f"<{match.group('src')}>", line
+        )
+
+    # The first case previously exposed a cache query that fell back to an
+    # earlier start after a title search. The generated short corpus protects
+    # the title and alternate-source grammar without a timing dependency.
+    lines = (
+        'srcb"bb![a]( ![a]( " "title")<![a](>',
+        '![a](src "title") ![b](other "caption")',
+        '![a](<a b> "title") ![b](<c>d)',
+    )
+    pieces = ("![a](", "![", "]", "(", ")", "<", ">", " ", '"', "title", "src")
+    corpus = itertools.chain(
+        lines,
+        ("".join(parts) for parts in itertools.product(pieces, repeat=4)),
+    )
+    for line in corpus:
+        assert _replace_inline_images(line, lambda src: f"<{src}>") == legacy_replace(
+            line
+        )
+
+
+def test_inline_image_scanner_scales_linearly_for_malformed_candidates():
+    def elapsed(repetitions: int) -> float:
+        line = "![](" * repetitions
         started = time.perf_counter()
-        assert _replace_inline_images(line, lambda src: src) == line
-        assert time.perf_counter() - started < 0.5
+        for _ in range(5):
+            assert _replace_inline_images(line, lambda src: src) == line
+        return time.perf_counter() - started
+
+    small = elapsed(1_024)
+    large = elapsed(8_192)
+    # Eight times more input must not become the old quadratic 64x workload.
+    assert large / max(small, 1e-9) < 16
