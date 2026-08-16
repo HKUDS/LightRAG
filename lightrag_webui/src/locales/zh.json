@@ -37,7 +37,10 @@
     "cancel": "取消",
     "save": "保存",
     "saving": "保存中...",
-    "saveFailed": "保存失败"
+    "saveFailed": "保存失败",
+    "errorBoundaryTitle": "出错了",
+    "errorBoundaryDescription": "此面板渲染失败。请重试，或切换到其他标签页。",
+    "errorBoundaryRetry": "重试"
   },
   "documentPanel": {
     "clearDocuments": {

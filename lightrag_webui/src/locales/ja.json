@@ -37,7 +37,10 @@
     "cancel": "キャンセル",
     "save": "保存",
     "saving": "保存中...",
-    "saveFailed": "保存に失敗しました"
+    "saveFailed": "保存に失敗しました",
+    "errorBoundaryTitle": "問題が発生しました",
+    "errorBoundaryDescription": "このパネルを表示できませんでした。もう一度試すか、別のタブに切り替えてください。",
+    "errorBoundaryRetry": "再試行"
   },
   "documentPanel": {
     "clearDocuments": {

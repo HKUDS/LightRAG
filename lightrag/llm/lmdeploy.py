@@ -142,7 +142,6 @@ async def lmdeploy_model_if_cache(
             f"v0.6.0, but currently using lmdeloy {lmdeploy.__version__}"
         )
     else:
-        do_sample = True
         gen_params.update(do_sample=do_sample)
 
     lmdeploy_pipe = initialize_lmdeploy_pipeline(

@@ -32,6 +32,7 @@ structures are left as verbatim text rather than misrecognised.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -59,11 +60,6 @@ _DELIMITER_ROW_RE = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$")
 # A single delimiter cell (after splitting on ``|``): ``---`` with optional
 # ``:`` alignment markers, nothing else.
 _DELIMITER_CELL_RE = re.compile(r"^:?-+:?$")
-# Inline image: ``![alt](src "optional title")``. ``src`` may be wrapped in
-# angle brackets. base64 data URLs and bare URLs/paths (no spaces, no ``)``).
-_IMAGE_RE = re.compile(
-    r'!\[(?P<alt>[^\]]*)\]\(\s*(?P<src><[^>]*>|[^)\s]+)(?:\s+"[^"]*")?\s*\)'
-)
 
 
 def table_marker(ref: str) -> str:
@@ -157,6 +153,159 @@ def _is_pipe_table_delimiter(header_line: str, delim_line: str) -> bool:
     return len(delim_cells) == len(_split_pipe_row(header_line))
 
 
+class _ForwardFinder:
+    """Cache a forward search over one monotonic query stream.
+
+    Each finder belongs to one parser phase whose query starts advance
+    left-to-right. Keeping its last answer lets malformed candidates share the
+    scan that reached their common delimiter instead of each scanning the rest
+    of a long line again.
+    """
+
+    def __init__(self, line: str, predicate: Callable[[str], bool]) -> None:
+        self._line = line
+        self._predicate = predicate
+        self._match: int | None = None
+        self._exhausted = False
+
+    def find(self, start: int) -> int | None:
+        if self._match is not None and self._match >= start:
+            return self._match
+        if self._exhausted:
+            return None
+
+        for index in range(start, len(self._line)):
+            if self._predicate(self._line[index]):
+                self._match = index
+                return index
+
+        self._exhausted = True
+        return None
+
+
+def _replace_inline_images(line: str, replace: Callable[[str], str]) -> str:
+    """Replace supported inline images without retrying a regex at each ``![``.
+
+    The native Markdown subset accepts ``![alt](src "optional title")`` with
+    either an angle-bracketed or whitespace-free source.  A global regular
+    expression replacement tried the complete expression at every ``![``.
+    Malformed input with many candidate prefixes consequently rescanned the
+    same suffix quadratically. This scanner visits candidates left-to-right and
+    keeps every cached forward search in its own monotonic parser phase,
+    making its work linear in the line length while retaining the supported
+    grammar.
+    """
+
+    if "![" not in line:
+        return line
+
+    close_bracket = _ForwardFinder(line, lambda char: char == "]")
+    close_paren = _ForwardFinder(line, lambda char: char == ")")
+    close_angle = _ForwardFinder(line, lambda char: char == ">")
+    whitespace = _ForwardFinder(line, str.isspace)
+    source_non_whitespace = _ForwardFinder(line, lambda char: not char.isspace())
+
+    # The angle-bracket and bare-source alternatives inspect tails in a
+    # different order. Title handling makes two non-whitespace queries per
+    # alternative, so each phase needs its own monotonic cache as well.
+    angle_tail_non_whitespace = _ForwardFinder(line, lambda char: not char.isspace())
+    angle_after_title_non_whitespace = _ForwardFinder(
+        line, lambda char: not char.isspace()
+    )
+    angle_quote = _ForwardFinder(line, lambda char: char == '"')
+    bare_tail_non_whitespace = _ForwardFinder(line, lambda char: not char.isspace())
+    bare_after_title_non_whitespace = _ForwardFinder(
+        line, lambda char: not char.isspace()
+    )
+    bare_quote = _ForwardFinder(line, lambda char: char == '"')
+
+    def _tail_end(
+        source_end: int,
+        *,
+        tail_non_whitespace: _ForwardFinder,
+        after_title_non_whitespace: _ForwardFinder,
+        quote: _ForwardFinder,
+    ) -> int | None:
+        """Return the end of an optional title plus the required ``)``."""
+
+        next_char = tail_non_whitespace.find(source_end)
+        if next_char is None:
+            return None
+        if line[next_char] == ")":
+            return next_char + 1
+
+        # The title is optional, but when present it needs at least one
+        # whitespace character before its opening quote.
+        if next_char == source_end or line[next_char] != '"':
+            return None
+        title_end = quote.find(next_char + 1)
+        if title_end is None:
+            return None
+        closing_paren = after_title_non_whitespace.find(title_end + 1)
+        if closing_paren is not None and line[closing_paren] == ")":
+            return closing_paren + 1
+        return None
+
+    def _match_end(start: int) -> tuple[int, str] | None:
+        alt_end = close_bracket.find(start + 2)
+        if alt_end is None or alt_end + 1 >= len(line) or line[alt_end + 1] != "(":
+            return None
+        source_start = source_non_whitespace.find(alt_end + 2)
+        if source_start is None:
+            return None
+
+        # Preserve the original alternation order: a valid angle-bracketed
+        # source wins over the bare-source fallback.
+        if line[source_start] == "<":
+            angle_end = close_angle.find(source_start + 1)
+            if angle_end is not None:
+                end = _tail_end(
+                    angle_end + 1,
+                    tail_non_whitespace=angle_tail_non_whitespace,
+                    after_title_non_whitespace=angle_after_title_non_whitespace,
+                    quote=angle_quote,
+                )
+                if end is not None:
+                    return end, line[source_start : angle_end + 1]
+
+        whitespace_end = whitespace.find(source_start)
+        paren_end = close_paren.find(source_start)
+        source_end = min(
+            len(line) if whitespace_end is None else whitespace_end,
+            len(line) if paren_end is None else paren_end,
+        )
+        if source_end == source_start:
+            return None
+        end = _tail_end(
+            source_end,
+            tail_non_whitespace=bare_tail_non_whitespace,
+            after_title_non_whitespace=bare_after_title_non_whitespace,
+            quote=bare_quote,
+        )
+        if end is not None:
+            return end, line[source_start:source_end]
+        return None
+
+    parts: list[str] = []
+    position = 0
+    while True:
+        start = line.find("![", position)
+        if start < 0:
+            parts.append(line[position:])
+            return "".join(parts)
+        matched = _match_end(start)
+        if matched is None:
+            # No match begins at this prefix.  Advance only past ``![`` so a
+            # nested, valid image remains visible to the next iteration.
+            parts.append(line[position : start + 2])
+            position = start + 2
+            continue
+        end, src = matched
+        parts.append(line[position:start])
+        parts.append(replace(src))
+        position = end
+
+
 def extract_markdown(
     text: str,
     *,
@@ -208,8 +357,8 @@ def extract_markdown(
         counters[kind] += 1
         return f"{kind}{counters[kind]}"
 
-    def _resolve_image(match: re.Match[str]) -> str:
-        src = match.group("src").strip()
+    def _resolve_image(src: str) -> str:
+        src = src.strip()
         if src.startswith("<") and src.endswith(">"):
             src = src[1:-1].strip()
         resolved = image_resolver.resolve(src)
@@ -247,7 +396,7 @@ def extract_markdown(
     def _emit_inline(line: str) -> None:
         nonlocal has_block_payload
         before = len(out.drawings)
-        new_line = _IMAGE_RE.sub(_resolve_image, line)
+        new_line = _replace_inline_images(line, _resolve_image)
         if len(out.drawings) != before:
             has_block_payload = True
         cur_lines.append(new_line)
