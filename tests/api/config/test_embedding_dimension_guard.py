@@ -209,6 +209,20 @@ class TestAzureOpenAIEmbeddingDimGuard:
         )
         assert func.embedding_dim == 1536
 
+    def test_env_deployment_without_model_requires_explicit_dim(self):
+        """Regression: AZURE_EMBEDDING_DEPLOYMENT set but EMBEDDING_MODEL unset."""
+        with patch.dict(
+            "os.environ", {"AZURE_EMBEDDING_DEPLOYMENT": "text-embedding-3-large"}
+        ):
+            with pytest.raises(
+                ValueError, match=r"EMBEDDING_DIM.*Azure OpenAI"
+            ):
+                _create_embedding_function(
+                    binding="azure_openai",
+                    model=None,
+                    embedding_dim=None,
+                )
+
 
 # --- lollms (no guard — ignores model parameter) ---
 

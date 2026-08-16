@@ -740,16 +740,25 @@ def create_optimized_embedding_function(
 
     # Azure OpenAI uses deployment names that never match a universal default,
     # so any configured model requires an explicit EMBEDDING_DIM.
+    # When model is None, azure_openai_embed resolves AZURE_EMBEDDING_DEPLOYMENT
+    # from the environment and uses it as the effective deployment name.
+    azure_effective_model = model or (
+        os.environ.get("AZURE_EMBEDDING_DEPLOYMENT")
+        if binding == "azure_openai"
+        else None
+    )
     if (
         binding == "azure_openai"
-        and model
+        and azure_effective_model
         and args.embedding_dim is None
         and provider_func is not None
     ):
         raise ValueError(
             "EMBEDDING_DIM must be set when using Azure OpenAI with a "
-            f"configured deployment ({model!r}); Azure deployment names "
-            f"require an explicit dimension"
+            f"configured deployment ({azure_effective_model!r}); Azure deployment "
+            f"names require an explicit dimension. Note: if EMBEDDING_MODEL is "
+            f"unset, the AZURE_EMBEDDING_DEPLOYMENT environment variable is used "
+            f"as the effective deployment name"
         )
 
     # Step 2: Apply priority (user config > provider default)
