@@ -38,6 +38,15 @@ from the authoritative graph/KV sources. The consistency check is not enough
 for this case because it only detects missing graph → VDB records, not vectors
 that exist but were embedded with a previous model or dimension.
 
+The tool also completes a graph-only backfill performed with
+`NoopVectorDBStorage`. Stop every writer, preserve the same working directory,
+workspace, graph storage, and KV storage, switch to the intended persistent
+vector backend, configure the production embedding model and dimension, and
+select **Rebuild ALL vector storages**. Create a new `LightRAG` instance or
+restart the process after changing the vector backend. Do not start the server
+until the rebuild succeeds; there is currently no persisted vector-index
+readiness marker.
+
 ## Usage
 
 ```bash
@@ -105,6 +114,10 @@ Menu options:
 
 The core rebuild/check functions are plain async functions that accept your
 own initialized storage instances:
+
+Rebuild targets must persist a queryable vector index. Passing a graph-only
+backend such as `NoopVectorDBStorage` raises before source records are read or
+the target is dropped; configure a persistent vector backend first.
 
 ```python
 from lightrag.tools.rebuild_vdb import (
