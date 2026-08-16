@@ -8,9 +8,14 @@ resolver.
 
 from __future__ import annotations
 
+import time
+
+import pytest
+
 from lightrag.parser.markdown.extract import (
     PREFACE_HEADING,
     ResolvedImage,
+    _replace_inline_images,
     extract_markdown,
 )
 
@@ -190,3 +195,26 @@ def test_reference_style_image_not_recognized():
     # ``![alt][id]`` reference-style is out of the supported subset.
     ex = _extract("![alt][id]\n\n[id]: real.png")
     assert not ex.drawings
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("before ![alt](image.png) after", "before <image.png> after"),
+        ('![alt](<a b.png> "caption")', "<<a b.png>>"),
+        ("![](<a>suffix)", "<<a>suffix>"),
+        ("![broken ![nested](ok.png)", "<ok.png>"),
+    ],
+)
+def test_inline_image_scanner_preserves_supported_image_grammar(line, expected):
+    assert _replace_inline_images(line, lambda src: f"<{src}>") == expected
+
+
+def test_inline_image_scanner_handles_malformed_candidates_in_linear_time():
+    # Both inputs caused the old global regex replacement to retry a growing
+    # suffix at every ``![``.  The second retains a closing parenthesis and
+    # would also bypass the advisory's suggested ``rfind(')')`` shortcut.
+    for line in ("![](" * 4096, "![" * 16_384 + ")"):
+        started = time.perf_counter()
+        assert _replace_inline_images(line, lambda src: src) == line
+        assert time.perf_counter() - started < 0.5
