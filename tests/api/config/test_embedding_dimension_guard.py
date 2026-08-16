@@ -215,6 +215,63 @@ class TestAzureOpenAIEmbeddingDimGuard:
                     embedding_dim=None,
                 )
 
+    def test_message_names_the_deployment_that_wins_at_runtime(self):
+        """azure_openai_embed resolves AZURE_EMBEDDING_DEPLOYMENT *before* the
+        configured model, so the guard must name the deployment, not the model."""
+        with patch.dict("os.environ", {"AZURE_EMBEDDING_DEPLOYMENT": "env-deployment"}):
+            with pytest.raises(ValueError) as excinfo:
+                _create_embedding_function(
+                    binding="azure_openai",
+                    model="model-deployment",
+                    embedding_dim=None,
+                )
+        assert "env-deployment" in str(excinfo.value)
+        assert "model-deployment" not in str(excinfo.value)
+
+
+# --- Non-positive EMBEDDING_DIM must never satisfy the guard ---
+
+
+class TestNonPositiveEmbeddingDim:
+    """EMBEDDING_DIM=0 is not "a dimension is configured".
+
+    The effective dimension is resolved with a truthiness test, so 0 silently
+    falls back to the provider default. The guard must treat it as unset, and
+    the config layer must reject it outright.
+    """
+
+    def test_zero_dim_does_not_satisfy_the_custom_model_guard(self):
+        with pytest.raises(ValueError, match=r"EMBEDDING_DIM.*text-embedding-3-large"):
+            _create_embedding_function(
+                binding="openai",
+                model="text-embedding-3-large",
+                embedding_dim=0,
+            )
+
+    def test_zero_dim_does_not_satisfy_the_azure_guard(self):
+        with pytest.raises(ValueError, match=r"EMBEDDING_DIM.*Azure OpenAI"):
+            _create_embedding_function(
+                binding="azure_openai",
+                model="my-custom-embedding-deployment",
+                embedding_dim=0,
+            )
+
+    @pytest.mark.parametrize("value", ["0", "-1"])
+    def test_config_layer_rejects_non_positive_dim(self, monkeypatch, value):
+        monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+        monkeypatch.setenv("EMBEDDING_DIM", value)
+        from lightrag.api.config import parse_args
+
+        with pytest.raises(SystemExit, match=r"EMBEDDING_DIM must be a positive"):
+            parse_args()
+
+    def test_config_layer_accepts_positive_dim(self, monkeypatch):
+        monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+        monkeypatch.setenv("EMBEDDING_DIM", "1024")
+        from lightrag.api.config import parse_args
+
+        assert parse_args().embedding_dim == 1024
+
 
 # --- lollms (no guard — ignores model parameter) ---
 

@@ -719,10 +719,13 @@ def create_optimized_embedding_function(
     _BINDINGS_WITH_DIM_GUARD = frozenset(
         ["ollama", "openai", "jina", "gemini", "bedrock", "voyageai"]
     )
+    # `not args.embedding_dim` (rather than `is None`) keeps the guard aligned
+    # with the truthiness-based dimension resolution below: a 0 would otherwise
+    # pass the guard and then silently resolve to the provider default.
     if (
         binding in _BINDINGS_WITH_DIM_GUARD
         and model
-        and args.embedding_dim is None
+        and not args.embedding_dim
         and provider_func is not None
     ):
         default_model = getattr(provider_func, "model_name", None)
@@ -740,25 +743,25 @@ def create_optimized_embedding_function(
 
     # Azure OpenAI uses deployment names that never match a universal default,
     # so any configured model requires an explicit EMBEDDING_DIM.
-    # When model is None, azure_openai_embed resolves AZURE_EMBEDDING_DEPLOYMENT
-    # from the environment and uses it as the effective deployment name.
-    azure_effective_model = model or (
-        os.environ.get("AZURE_EMBEDDING_DEPLOYMENT")
+    # AZURE_EMBEDDING_DEPLOYMENT wins over the configured model at runtime
+    # (see azure_openai_embed: `os.getenv("AZURE_EMBEDDING_DEPLOYMENT") or model`),
+    # so the error message must resolve it in the same order.
+    azure_effective_model = (
+        (os.environ.get("AZURE_EMBEDDING_DEPLOYMENT") or model)
         if binding == "azure_openai"
         else None
     )
     if (
         binding == "azure_openai"
         and azure_effective_model
-        and args.embedding_dim is None
+        and not args.embedding_dim
         and provider_func is not None
     ):
         raise ValueError(
             "EMBEDDING_DIM must be set when using Azure OpenAI with a "
             f"configured deployment ({azure_effective_model!r}); Azure deployment "
-            f"names require an explicit dimension. Note: if EMBEDDING_MODEL is "
-            f"unset, the AZURE_EMBEDDING_DEPLOYMENT environment variable is used "
-            f"as the effective deployment name"
+            f"names require an explicit dimension. Note: AZURE_EMBEDDING_DEPLOYMENT "
+            f"takes precedence over EMBEDDING_MODEL as the effective deployment name"
         )
 
     # Step 2: Apply priority (user config > provider default)
