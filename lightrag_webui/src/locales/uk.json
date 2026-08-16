@@ -37,7 +37,10 @@
     "cancel": "Скасувати",
     "save": "Зберегти",
     "saving": "Збереження...",
-    "saveFailed": "Збереження не вдалося"
+    "saveFailed": "Збереження не вдалося",
+    "errorBoundaryTitle": "Щось пішло не так",
+    "errorBoundaryDescription": "Не вдалося відобразити цю панель. Повторіть спробу або перейдіть на іншу вкладку.",
+    "errorBoundaryRetry": "Повторити"
   },
   "documentPanel": {
     "clearDocuments": {

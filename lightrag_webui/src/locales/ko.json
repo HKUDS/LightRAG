@@ -37,7 +37,10 @@
     "cancel": "취소",
     "save": "저장",
     "saving": "저장 중...",
-    "saveFailed": "저장 실패"
+    "saveFailed": "저장 실패",
+    "errorBoundaryTitle": "문제가 발생했습니다",
+    "errorBoundaryDescription": "이 패널을 표시하지 못했습니다. 다시 시도하거나 다른 탭으로 전환하세요.",
+    "errorBoundaryRetry": "다시 시도"
   },
   "documentPanel": {
     "clearDocuments": {

@@ -37,7 +37,10 @@
     "cancel": "Annuler",
     "save": "Sauvegarder",
     "saving": "Sauvegarde en cours...",
-    "saveFailed": "Échec de la sauvegarde"
+    "saveFailed": "Échec de la sauvegarde",
+    "errorBoundaryTitle": "Une erreur s'est produite",
+    "errorBoundaryDescription": "Ce panneau n'a pas pu s'afficher. Réessayez ou passez à un autre onglet.",
+    "errorBoundaryRetry": "Réessayer"
   },
   "documentPanel": {
     "clearDocuments": {

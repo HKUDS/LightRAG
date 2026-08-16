@@ -17,6 +17,7 @@ import RetrievalView from '@/features/RetrievalView'
 import ApiSite from '@/features/ApiSite'
 
 import { Tabs, TabsContent } from '@/components/ui/Tabs'
+import ErrorBoundary from '@/components/ErrorBoundary'
 
 function App() {
   const message = useBackendState.use.message()
@@ -207,16 +208,24 @@ function App() {
               <SiteHeader />
               <div className="relative grow">
                 <TabsContent value="documents" className="absolute top-0 right-0 bottom-0 left-0 overflow-auto">
-                  <DocumentManager />
+                  <ErrorBoundary>
+                    <DocumentManager />
+                  </ErrorBoundary>
                 </TabsContent>
                 <TabsContent value="knowledge-graph" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
-                  <GraphViewer />
+                  <ErrorBoundary>
+                    <GraphViewer />
+                  </ErrorBoundary>
                 </TabsContent>
                 <TabsContent value="retrieval" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
-                  <RetrievalView />
+                  <ErrorBoundary>
+                    <RetrievalView />
+                  </ErrorBoundary>
                 </TabsContent>
                 <TabsContent value="api" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
-                  <ApiSite />
+                  <ErrorBoundary>
+                    <ApiSite />
+                  </ErrorBoundary>
                 </TabsContent>
               </div>
             </Tabs>

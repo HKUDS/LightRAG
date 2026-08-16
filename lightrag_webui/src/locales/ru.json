@@ -37,7 +37,10 @@
     "cancel": "Отмена",
     "save": "Сохранить",
     "saving": "Сохранение...",
-    "saveFailed": "Ошибка сохранения"
+    "saveFailed": "Ошибка сохранения",
+    "errorBoundaryTitle": "Что-то пошло не так",
+    "errorBoundaryDescription": "Не удалось отобразить эту панель. Повторите попытку или перейдите на другую вкладку.",
+    "errorBoundaryRetry": "Повторить"
   },
   "documentPanel": {
     "clearDocuments": {

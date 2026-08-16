@@ -37,7 +37,10 @@
     "cancel": "إلغاء",
     "save": "حفظ",
     "saving": "جارٍ الحفظ...",
-    "saveFailed": "فشل الحفظ"
+    "saveFailed": "فشل الحفظ",
+    "errorBoundaryTitle": "حدث خطأ ما",
+    "errorBoundaryDescription": "فشل عرض هذه اللوحة. حاول مرة أخرى أو انتقل إلى علامة تبويب أخرى.",
+    "errorBoundaryRetry": "إعادة المحاولة"
   },
   "documentPanel": {
     "clearDocuments": {

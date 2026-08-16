@@ -37,7 +37,10 @@
     "cancel": "取消",
     "save": "儲存",
     "saving": "儲存中...",
-    "saveFailed": "儲存失敗"
+    "saveFailed": "儲存失敗",
+    "errorBoundaryTitle": "發生錯誤",
+    "errorBoundaryDescription": "此面板無法顯示。請重試，或切換到其他分頁。",
+    "errorBoundaryRetry": "重試"
   },
   "documentPanel": {
     "clearDocuments": {

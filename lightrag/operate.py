@@ -647,6 +647,62 @@ async def _summarize_descriptions(
     return summary
 
 
+# JavaScript Object.prototype member names. When such a value is stored as an
+# entity_type it crashes the WebUI knowledge-graph view: the type-color resolver
+# indexes a plain object with it and the Legend later calls a string method on
+# the resulting non-string map key (see graphColor.ts in the WebUI).
+# They are never valid entity types, so reject them at the extraction source.
+_RESERVED_ENTITY_TYPES = frozenset({"__proto__", "constructor", "prototype"})
+
+
+def _normalize_and_validate_entity_type(entity_type: str, context: str) -> str | None:
+    """Validate and normalize a sanitized entity_type extracted from an LLM.
+
+    Shared by the text (delimited-record) and JSON extraction paths so both
+    reject the same values. Expects ``entity_type`` to have already been passed
+    through ``sanitize_and_normalize_extracted_text``.
+
+    Returns the cleaned, space-stripped, lowercased type, or ``None`` when the
+    entity must be dropped:
+    - empty, or containing a structural delimiter character;
+    - all-empty after a comma split;
+    - a reserved JavaScript prototype member name (see ``_RESERVED_ENTITY_TYPES``).
+
+    ``context`` is a short caller-supplied descriptor included in warning logs.
+    """
+    if not entity_type.strip() or any(
+        char in entity_type for char in ["'", "(", ")", "<", ">", "|", "/", "\\"]
+    ):
+        logger.warning(f"Entity extraction error: invalid entity type in {context}")
+        return None
+
+    # Handle comma-separated entity types by finding the first non-empty token
+    if "," in entity_type:
+        original = entity_type
+        tokens = [t.strip() for t in entity_type.split(",")]
+        non_empty = [t for t in tokens if t]
+        if not non_empty:
+            logger.warning(
+                f"Entity extraction error: all tokens empty after comma-split in {context}: '{original}'"
+            )
+            return None
+        entity_type = non_empty[0]
+        logger.warning(
+            f"Entity type contains comma, taking first non-empty token in {context}: '{original}' -> '{entity_type}'"
+        )
+
+    # Remove spaces and convert to lowercase
+    entity_type = entity_type.replace(" ", "").lower()
+
+    if entity_type in _RESERVED_ENTITY_TYPES:
+        logger.warning(
+            f"Entity extraction error: reserved entity type '{entity_type}' rejected in {context}"
+        )
+        return None
+
+    return entity_type
+
+
 def _handle_single_entity_extraction(
     record_attributes: list[str],
     chunk_key: str,
@@ -675,32 +731,11 @@ def _handle_single_entity_extraction(
         entity_type = sanitize_and_normalize_extracted_text(
             record_attributes[2], remove_inner_quotes=True
         )
-
-        if not entity_type.strip() or any(
-            char in entity_type for char in ["'", "(", ")", "<", ">", "|", "/", "\\"]
-        ):
-            logger.warning(
-                f"Entity extraction error: invalid entity type in: {record_attributes}"
-            )
+        entity_type = _normalize_and_validate_entity_type(
+            entity_type, f"record {record_attributes}"
+        )
+        if entity_type is None:
             return None
-
-        # Handle comma-separated entity types by finding the first non-empty token
-        if "," in entity_type:
-            original = entity_type
-            tokens = [t.strip() for t in entity_type.split(",")]
-            non_empty = [t for t in tokens if t]
-            if not non_empty:
-                logger.warning(
-                    f"Entity extraction error: all tokens empty after comma-split: '{original}'"
-                )
-                return None
-            entity_type = non_empty[0]
-            logger.warning(
-                f"Entity type contains comma, taking first non-empty token: '{original}' -> '{entity_type}'"
-            )
-
-        # Remove spaces and convert to lowercase
-        entity_type = entity_type.replace(" ", "").lower()
 
         # Process entity description with same cleaning pipeline
         entity_description = sanitize_and_normalize_extracted_text(record_attributes[3])
@@ -934,16 +969,11 @@ async def _process_json_extraction_result(
             entity_type = sanitize_and_normalize_extracted_text(
                 str(entity_data.get("type", "")), remove_inner_quotes=True
             )
-            if not entity_type.strip() or any(
-                char in entity_type
-                for char in ["'", "(", ")", "<", ">", "|", "/", "\\"]
-            ):
-                logger.warning(
-                    f"{chunk_key}: Invalid entity type '{entity_type}' for entity '{entity_name}'"
-                )
+            entity_type = _normalize_and_validate_entity_type(
+                entity_type, f"{chunk_key}: entity '{entity_name}'"
+            )
+            if entity_type is None:
                 continue
-
-            entity_type = entity_type.replace(" ", "").lower()
 
             entity_description = sanitize_and_normalize_extracted_text(
                 str(entity_data.get("description", ""))
