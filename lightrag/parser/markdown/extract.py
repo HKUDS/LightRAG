@@ -60,6 +60,8 @@ _DELIMITER_ROW_RE = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$")
 # A single delimiter cell (after splitting on ``|``): ``---`` with optional
 # ``:`` alignment markers, nothing else.
 _DELIMITER_CELL_RE = re.compile(r"^:?-+:?$")
+
+
 def table_marker(ref: str) -> str:
     return _TABLE_MARKER.format(ref=ref)
 
