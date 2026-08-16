@@ -1002,7 +1002,9 @@ class DocProcessingStatus:
     Always a hint-stripped basename (e.g. ``abc.docx``) or the literal
     ``"unknown_source"`` sentinel; never carries directory components or
     parser ``[hint]`` segments. UI display, filename-based dedup, and
-    citation paths all share this value.
+    citation paths all share this value. Duplicate-attempt rows deliberately
+    reuse the primary document's basename, so this field is not a unique key
+    and does not by itself prove ownership of a physical source file.
     """
     status: DocStatus
     """Current processing status"""
@@ -1738,6 +1740,7 @@ class DeletionResult:
     message: str
     status_code: int = 200
     file_path: str | None = None
+    """Canonical source basename; another status row may reference it too."""
 
 
 # Unified Query Result Data Structures for Reference List Support

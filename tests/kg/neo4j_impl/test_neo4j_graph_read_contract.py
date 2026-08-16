@@ -116,3 +116,41 @@ async def test_get_node_edges_returns_connected_pairs():
         ("Alpha", "Beta"),
         ("Alpha", "Gamma"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_edges_batch_skips_query_for_empty_input():
+    storage, calls = _make_storage([])
+
+    assert await storage.get_edges_batch([]) == {}
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_get_edges_batch_omits_missing_edges():
+    """A failed MATCH emits no row for the missing pair."""
+    storage, calls = _make_storage([])
+
+    assert await storage.get_edges_batch([{"src": "A", "tgt": "B"}]) == {}
+
+    query, params = calls[0]
+    assert "-[r:DIRECTED]-" in query
+    assert params == {"pairs": [{"src": "A", "tgt": "B"}]}
+
+
+@pytest.mark.asyncio
+async def test_get_edges_batch_returns_existing_edge_with_defaults():
+    stored_properties = {"weight": 2.0, "description": "A to B"}
+    storage, _ = _make_storage(
+        [{"src_id": "A", "tgt_id": "B", "edges": [stored_properties]}]
+    )
+
+    assert await storage.get_edges_batch([{"src": "A", "tgt": "B"}]) == {
+        ("A", "B"): {
+            "weight": 2.0,
+            "source_id": None,
+            "description": "A to B",
+            "keywords": None,
+        }
+    }
+    assert stored_properties == {"weight": 2.0, "description": "A to B"}

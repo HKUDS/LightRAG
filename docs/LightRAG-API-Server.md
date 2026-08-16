@@ -424,7 +424,7 @@ Before exposing this deployment, configure authentication, API keys, and SSL in 
 Important rules before processing production data:
 
 - Choose the embedding model, embedding dimension, and asymmetric embedding settings before the first upload. Changing them later requires clearing the affected workspace/vector data and re-indexing documents.
-- Choose storage backends before the first upload. Direct migration between storage implementations is not supported.
+- Choose storage backends before the first upload. Direct migration between storage implementations is not supported, with one exception: an already-extracted graph can be moved from `PGGraphStorage` to `PGTableGraphStorage` without re-indexing — see *Graph Migration From Apache AGE To PostgreSQL Tables* below.
 - Changing `LIGHTRAG_PARSER` affects only newly uploaded files. Delete and upload an existing document again if you want it processed by a different parser route.
 
 ### Nginx Reverse Proxy Configuration
@@ -899,7 +899,7 @@ For production deployments, PostgreSQL, MongoDB, or OpenSearch can provide all f
 * **No extension to install.** `PGGraphStorage` requires the Apache AGE extension, which most managed PostgreSQL services (Amazon RDS, Cloud SQL, Supabase, Neon) do not offer — so the graph layer frequently could not run on the same database as the other three storage types. `PGTableGraphStorage` runs on any stock PostgreSQL 14+ and creates the tables it needs during `initialize()`. For a Docker deployment this means the official `pgvector/pgvector:pg18` image is sufficient; the AGE-bundled `gzdaniel/postgres-for-rag:pg18-age-pgvector` image is only needed by `PGGraphStorage`.
 * **Substantially faster.** Queries are plain indexed SQL rather than Cypher over `agtype`, and `get_knowledge_graph` uses a frontier-capped BFS bounded by `max_nodes`. From the measurements published with [PR #3103](https://github.com/HKUDS/LightRAG/pull/3103) (PostgreSQL 18, an 8k-node / ~40k-edge graph, both backends `VACUUM ANALYZE`d before measuring): `get_knowledge_graph` p50 **39 ms vs 1,099 ms (~28×)**, bulk graph load **3.0 s vs 434 s**, mixed-workload throughput **1,431 vs 73 RPS**.
 
-Both implementations read the same `POSTGRES_*` environment variables, but they store the graph in different places — `PGTableGraphStorage` in its own `lightrag_graph_nodes` / `lightrag_graph_edges` tables, `PGGraphStorage` inside an AGE graph. Switching an existing deployment is therefore not an in-place migration: the previously extracted graph will not be visible and the documents have to be re-indexed (the LLM cache can be carried over — see *LLM Cache Migration Between Storage Types* below). `PGGraphStorage` remains supported for deployments already running on AGE.
+Both implementations read the same `POSTGRES_*` environment variables, but they store the graph in different places — `PGTableGraphStorage` in its own `lightrag_graph_nodes` / `lightrag_graph_edges` tables, `PGGraphStorage` inside an AGE graph. Switching an existing deployment is therefore not an in-place change: after switching, the previously extracted graph is simply not visible to the new backend. Either re-index the documents, or move the existing graph across with the offline migration tool described in *Graph Migration From Apache AGE To PostgreSQL Tables* below (the LLM cache can be carried over separately — see *LLM Cache Migration Between Storage Types*). `PGGraphStorage` remains supported for deployments already running on AGE.
 
 The environment variables required at startup for each storage implementation are listed below. Implementations not listed require no additional configuration and rely only on file persistence under WORKING_DIR.
 
@@ -929,13 +929,25 @@ LIGHTRAG_GRAPH_STORAGE=PGTableGraphStorage
 LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 ```
 
-You cannot change storage implementation selection after adding documents to LightRAG. Data migration from one storage implementation to another is not supported yet. For further information, please read the sample `.env.example` file.
+You cannot change storage implementation selection after adding documents to LightRAG. Data migration from one storage implementation to another is not supported yet, except for the graph moving from `PGGraphStorage` to `PGTableGraphStorage` (see *Graph Migration From Apache AGE To PostgreSQL Tables* below) and the LLM cache (see *LLM Cache Migration Between Storage Types* below). For further information, please read the sample `.env.example` file.
 
 > The [dev-lancedb](https://github.com/HKUDS/LightRAG/tree/dev-lancedb) development branch provides community-contributed LanceDB storage implementations for all four storage types: key-value (KV), vector, graph, and document status. The [dev-nebula-graph](https://github.com/HKUDS/LightRAG/tree/dev-nebula-graph) development branch provides a community-contributed Nebula graph storage implementation. Developers who need these storage options are welcome to try them and help improve them.
 
 ### LLM Cache Migration Between Storage Types
 
 When switching the storage implementation in LightRAG, the LLM cache can be migrated from the existing storage to the new one. Subsequently, when re-uploading files to the new storage, the pre-existing LLM cache will significantly accelerate file processing. For detailed instructions on using the LLM cache migration tool, please refer to [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)
+
+### Graph Migration From Apache AGE To PostgreSQL Tables
+
+Deployments already running `PGGraphStorage` can move their extracted graph to `PGTableGraphStorage` without re-processing the source documents. An offline tool copies the graph through the public storage API:
+
+```bash
+# Stop every LightRAG writer first. Dry run by default — migrates nothing.
+python -m lightrag.tools.migrate_graph_storage
+python -m lightrag.tools.migrate_graph_storage --apply
+```
+
+Only the graph moves; vector and KV data are untouched and stay valid, because the migrated graph keeps the same entity and relation identities. The tool requires an empty target graph slice and refuses, before writing anything, on every construct it can see that would not survive the move — a node without a usable identity, a duplicate node id, a reciprocal edge pair, or a value PostgreSQL `jsonb` cannot store. If a write fails it removes exactly what that run wrote. One limit worth knowing: Apache AGE enumerates edges with `SELECT DISTINCT`, so two byte-identical relationships between the same pair arrive as one row and the tool cannot see that the graph's degree will change. Re-indexing remains the general guidance for changing storage backends — this is an advanced path for one specific pair. For preconditions, the report format, and the failure handling, refer to [README_MIGRATE_GRAPH_STORAGE.md](../lightrag/tools/README_MIGRATE_GRAPH_STORAGE.md)
 
 ### LightRAG API Server Command Line Options
 

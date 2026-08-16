@@ -70,8 +70,8 @@ from lightrag.constants import (
     PARSER_ENGINE_NATIVE,
 )
 from lightrag.parser.external._common import raw_dir_for_parsed_dir
-from lightrag.parser.llm_bridge import (
-    LLMBridgeCancelled,
+from lightrag.parser.exceptions import (
+    ParseCancelled,
     first_cancellation,
     normalize_cancel_events,
 )
@@ -1407,7 +1407,7 @@ class _MarkdownImageResolver:
             return self._budget_degraded(src, ext_hint, exc)
         try:
             data, ext = self._download(src)
-        except LLMBridgeCancelled:
+        except ParseCancelled:
             # Cancellation is NOT a download failure. It derives from
             # RuntimeError, so without this clause the blanket handler below
             # would degrade it to an external link and carry on fetching the
