@@ -67,7 +67,7 @@ Notes:
 
 | **Parameter** | **Type** | **Explanation** | **Default** |
 | -------------- | ---------- | ----------------- | ------------- |
-| **working_dir** | `str` | Directory where the cache will be stored | `lightrag_cache+timestamp` |
+| **working_dir** | `str` | Directory where the cache will be stored | `./rag_storage` |
 | **workspace** | str | Workspace name for data isolation between different LightRAG Instances | |
 | **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage`,`OpenSearchKVStorage` | `JsonKVStorage` |
 | **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage`,`OpenSearchVectorDBStorage` | `NanoVectorDBStorage` |
@@ -85,7 +85,7 @@ Notes:
 | **embedding_batch_num** | `int` | Maximum batch size for embedding processes (multiple texts sent per batch) | `32` |
 | **embedding_func_max_async** | `int` | Maximum number of concurrent asynchronous embedding processes | `16` |
 | **llm_model_func** | `callable` | Function for LLM generation | `gpt_4o_mini_complete` |
-| **llm_model_name** | `str` | LLM model name for generation | `meta-llama/Llama-3.2-1B-Instruct` |
+| **llm_model_name** | `str` | LLM model name for generation | `gpt-4o-mini` |
 | **summary_context_size** | `int` | Maximum tokens send to LLM to generate summaries for entity relation merging | `10000`（configured by env var SUMMARY_CONTEXT_SIZE) |
 | **summary_max_tokens** | `int` | Maximum token size for entity/relation description | `500`（configured by env var SUMMARY_MAX_TOKENS) |
 | **llm_model_max_async** | `int` | Maximum number of concurrent asynchronous LLM processes | `4`（default value changed by env var MAX_ASYNC_LLM; MAX_ASYNC is still accepted as a deprecated alias) |
@@ -239,7 +239,7 @@ Use `QueryParam` to control the behavior of your query:
 class QueryParam:
     """Configuration parameters for query execution in LightRAG."""
 
-    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "global"
+    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "mix"
     """Specifies the retrieval mode:
     - "local": Focuses on context-dependent information.
     - "global": Utilizes global knowledge.
@@ -472,9 +472,9 @@ async def initialize_rag():
 
 **Further reading:**
 - [LlamaIndex Documentation](https://developers.llamaindex.ai/python/framework/)
-- [Direct OpenAI Example](examples/unofficial-sample/lightrag_llamaindex_direct_demo.py)
-- [LiteLLM Proxy Example](examples/unofficial-sample/lightrag_llamaindex_litellm_demo.py)
-- [LiteLLM Proxy with Opik Example](examples/unofficial-sample/lightrag_llamaindex_litellm_opik_demo.py)
+- [Direct OpenAI Example](../examples/unofficial-sample/lightrag_llamaindex_direct_demo.py)
+- [LiteLLM Proxy Example](../examples/unofficial-sample/lightrag_llamaindex_litellm_demo.py)
+- [LiteLLM Proxy with Opik Example](../examples/unofficial-sample/lightrag_llamaindex_litellm_opik_demo.py)
 
 #### Using Azure OpenAI Models
 
@@ -670,6 +670,7 @@ OpenSearchGraphStorage   OpenSearch
 
 **VECTOR_STORAGE**
 ```
+NoopVectorDBStorage         Disabled (graph-only ingestion)
 NanoVectorDBStorage         NanoVector (default)
 PGVectorStorage             Postgres
 MilvusVectorDBStorage       Milvus
@@ -678,6 +679,79 @@ QdrantVectorDBStorage       Qdrant
 MongoVectorDBStorage        MongoDB
 OpenSearchVectorDBStorage   OpenSearch
 ```
+
+#### Graph-only ingestion
+
+`NoopVectorDBStorage` is intended for an initial or offline corpus backfill
+where the graph and KV stores are authoritative and vector indexes can be
+materialized once from the final state. It avoids embedding and persisting
+intermediate entity, relationship, and chunk revisions during ingestion.
+
+Do not use this workflow when newly inserted documents must become queryable
+immediately. Normal incremental ingestion should use the intended persistent
+vector backend from the beginning.
+
+Configure the backfill process with the no-op backend. `embedding_func=None` is
+supported when no other configured component requires embeddings:
+
+```python
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=llm_model_func,
+    embedding_func=None,
+    vector_storage="NoopVectorDBStorage",
+)
+```
+
+The backend accepts vector mutations without calling the embedding function or
+persisting vectors. Graph, full-document, text-chunk, LLM-cache, document-status,
+and graph-recovery writes continue normally.
+
+While `NoopVectorDBStorage` is active, only `bypass` queries are available.
+`local`, `global`, `hybrid`, `mix`, and `naive` modes require vector indexes and
+raise an error that points to `lightrag-rebuild-vdb`.
+
+If the semantic-vector (`V`) chunker is selected while `embedding_func=None`,
+it logs a warning and falls back to recursive-character chunking. Configure an
+embedding function during ingestion if semantic-vector chunk boundaries are
+required; this is separate from whether vectors are persisted.
+
+##### Switching to persistent vectors
+
+After the backfill, stop the server and all ingestion writers. Keep
+`WORKING_DIR`, `WORKSPACE`, graph storage, KV storage, and their connection
+settings unchanged. For example, switch from Noop to NanoVector with an OpenAI
+embedding model while pointing to the same graph and KV sources:
+
+```bash
+export WORKING_DIR=/data/lightrag/rag_storage
+export WORKSPACE=project_a
+export LIGHTRAG_GRAPH_STORAGE=NetworkXStorage
+export LIGHTRAG_KV_STORAGE=JsonKVStorage
+export LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage
+export EMBEDDING_BINDING=openai
+export EMBEDDING_MODEL=text-embedding-3-small
+export EMBEDDING_DIM=1536
+
+lightrag-rebuild-vdb  # Select "Rebuild ALL vector storages"
+```
+
+Replace all example values with the backfill's actual storage settings and the
+production embedding model, dimension, host, and credentials. Backend-specific
+connection variables must remain available. If the same `.env` already contains
+these values, only the vector and embedding entries need to change. Run this in
+a new process or after a restart, then keep the persistent configuration for
+later queries and incremental ingestion.
+
+Rebuild cost and memory grow with the final graph and chunk data. If rebuilding
+fails or is interrupted, keep writers stopped and rerun it with the same
+configuration; the graph and KV sources remain unchanged. Start the server only
+after the tool reports a successful rebuild, for example with
+`lightrag-server`, because LightRAG has no persisted vector-index readiness
+marker.
+
+See `lightrag/tools/README_REBUILD_VDB.md` for rebuild options and operational
+details.
 
 **DOC_STATUS_STORAGE**
 ```
@@ -937,7 +1011,7 @@ The `workspace` parameter ensures data isolation between different LightRAG inst
 
 Storage-specific workspace environment variables override the common `WORKSPACE` variable: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `OPENSEARCH_WORKSPACE`.
 
-For a practical demonstration of managing multiple isolated knowledge bases, see [Workspace Demo](examples/lightrag_gemini_workspace_demo.py).
+For a practical demonstration of managing multiple isolated knowledge bases, see [Workspace Demo](../examples/lightrag_gemini_workspace_demo.py).
 
 
 ## Insert

@@ -424,7 +424,7 @@ docker compose -f docker-compose.final.yml up -d
 处理生产数据前请注意：
 
 - 首次上传前确定 Embedding 模型、向量维度和非对称嵌入设置。之后修改这些配置需要清空对应 workspace/向量数据并重新索引文档。
-- 首次上传前确定存储后端。当前不支持在不同存储实现之间直接迁移。
+- 首次上传前确定存储后端。当前不支持在不同存储实现之间直接迁移，但有一个例外：已抽取的图可以从 `PGGraphStorage` 迁移到 `PGTableGraphStorage` 而无需重新索引 —— 参见下文*从 Apache AGE 迁移图数据到 PostgreSQL 表*。
 - 修改 `LIGHTRAG_PARSER` 只影响新上传文件。如需让已有文档使用新的解析路由，请删除后重新上传。
 
 ### Nginx 反向代理配置
@@ -729,7 +729,7 @@ API 服务器可以通过两种方式配置（优先级从高到低）：
 * 命令行参数
 * 环境变量或 .env 文件
 
-大多数配置都有默认设置，详细信息请查看示例文件：`.env.example`。存储配置也应通过环境变量或 `.env` 文件设置。
+大多数配置都有默认设置，详细信息请查看示例文件：`env.example`。存储配置也应通过环境变量或 `.env` 文件设置。
 
 ### 支持的 LLM 和嵌入后端
 
@@ -899,7 +899,7 @@ LightRAG 使用 4 种类型的存储用于不同目的：
 * **无需安装扩展。** `PGGraphStorage` 依赖 Apache AGE 扩展，而多数托管 PostgreSQL 服务（Amazon RDS、Cloud SQL、Supabase、Neon）并不提供该扩展，导致图存储往往无法与其余三类存储共用同一个数据库。`PGTableGraphStorage` 可运行在任意原生 PostgreSQL 14 及以上版本，所需的表在 `initialize()` 阶段自动创建。在 Docker 部署中，这也意味着使用官方镜像 `pgvector/pgvector:pg18` 即可；内置 AGE 的 `gzdaniel/postgres-for-rag:pg18-age-pgvector` 镜像仅 `PGGraphStorage` 需要。
 * **性能大幅提升。** 查询是带索引的普通 SQL，而非基于 `agtype` 的 Cypher；`get_knowledge_graph` 采用受 `max_nodes` 约束的前沿限幅 BFS。根据 [PR #3103](https://github.com/HKUDS/LightRAG/pull/3103) 随附的实测数据（PostgreSQL 18，8k 节点 / 约 40k 边的图，两个后端在测量前均已执行 `VACUUM ANALYZE`）：`get_knowledge_graph` p50 为 **39 ms 对 1,099 ms（约 28 倍）**，图数据批量装载 **3.0 s 对 434 s**，混合负载吞吐 **1,431 对 73 RPS**。
 
-两种实现读取相同的 `POSTGRES_*` 环境变量，但图数据的存放位置不同 —— `PGTableGraphStorage` 使用自己的 `lightrag_graph_nodes` / `lightrag_graph_edges` 表，`PGGraphStorage` 则存放在 AGE 图内部。因此对已有部署而言，切换实现并不是原地迁移：此前抽取的图将不可见，文档需要重新索引（LLM 缓存可以沿用，参见下文*在不同存储类型之间迁移LLM缓存*）。对于已经运行在 AGE 上的部署，`PGGraphStorage` 仍继续支持。
+两种实现读取相同的 `POSTGRES_*` 环境变量，但图数据的存放位置不同 —— `PGTableGraphStorage` 使用自己的 `lightrag_graph_nodes` / `lightrag_graph_edges` 表，`PGGraphStorage` 则存放在 AGE 图内部。因此对已有部署而言，切换实现并不是原地变更：切换之后，此前抽取的图对新后端不可见。此时可以选择重新索引文档，或使用下文*从 Apache AGE 迁移图数据到 PostgreSQL 表*所述的离线迁移工具把已有的图搬过去（LLM 缓存可以单独沿用，参见*在不同存储类型之间迁移LLM缓存*）。对于已经运行在 AGE 上的部署，`PGGraphStorage` 仍继续支持。
 
 各存储实现启动时必须配置的环境变量如下（未列出的实现无需额外配置，仅依赖 WORKING_DIR 下的文件持久化）：
 
@@ -929,13 +929,25 @@ LIGHTRAG_GRAPH_STORAGE=PGTableGraphStorage
 LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 ```
 
-在向 LightRAG 添加文档后，您不能更改存储实现选择。目前尚不支持从一个存储实现迁移到另一个存储实现。更多配置信息请阅读示例 `.env.example` 文件。
+在向 LightRAG 添加文档后，您不能更改存储实现选择。目前尚不支持从一个存储实现迁移到另一个存储实现，但图数据从 `PGGraphStorage` 迁移到 `PGTableGraphStorage`（参见下文*从 Apache AGE 迁移图数据到 PostgreSQL 表*）以及 LLM 缓存迁移（参见下文*在不同存储类型之间迁移LLM缓存*）除外。更多配置信息请阅读示例 `env.example` 文件。
 
 > 开发分支 [dev-lancedb](https://github.com/HKUDS/LightRAG/tree/dev-lancedb) 提供了由社区贡献的 LanceDB 存储实现，支持键值（KV）、向量、图及文档状态四类存储。开发分支 [dev-nebula-graph](https://github.com/HKUDS/LightRAG/tree/dev-nebula-graph) 则提供了社区贡献的 Nebula 图存储实现。欢迎有需求的开发者试用并持续完善上述两项存储方案。
 
 ### 在不同存储类型之间迁移LLM缓存
 
 当LightRAG更换存储实现方式的时候，可以LLM缓存从就的存储迁移到新的存储。先以后在新的存储上重新上传文件时，将利用利用原有存储的LLM缓存大幅度加快文件处理的速度。LLM缓存迁移工具的使用方法请参考 [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)
+
+### 从 Apache AGE 迁移图数据到 PostgreSQL 表
+
+已经运行 `PGGraphStorage` 的部署，可以把已抽取的图迁移到 `PGTableGraphStorage`，无需重新处理源文档。该离线工具通过公共存储 API 复制图数据：
+
+```bash
+# 请先停止所有 LightRAG 写入进程。默认为 dry run —— 不迁移任何图数据。
+python -m lightrag.tools.migrate_graph_storage
+python -m lightrag.tools.migrate_graph_storage --apply
+```
+
+只有图数据被迁移；向量与 KV 数据不受影响且继续有效，因为迁移后的图保持相同的实体与关系标识。该工具要求目标图分片为空，并且在写入任何数据之前，会拒绝所有它能观察到、且无法完整迁移的结构——缺少可用标识的节点、重复的节点 ID、互为反向的边对，以及 PostgreSQL `jsonb` 无法存储的取值。若写入过程中失败，它只移除本次运行实际写入的内容。有一点限制需要知悉：Apache AGE 使用 `SELECT DISTINCT` 枚举边，因此同一对节点之间两条完全相同的关系只会返回一行，工具无法察觉图的度数将会改变。更换存储后端的通用建议仍然是重新索引 —— 本工具是针对这一特定组合的进阶路径。前置条件、报告格式与失败处理请参考 [README_MIGRATE_GRAPH_STORAGE.md](../lightrag/tools/README_MIGRATE_GRAPH_STORAGE.md)
 
 ### LightRAG API 服务器命令行选项
 

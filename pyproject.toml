@@ -82,6 +82,12 @@ api = [
     # API-specific dependencies
     "aiofiles",
     "ascii_colors",
+    # asyncio.timeout() (used directly on 3.11+) is Python 3.11+ only;
+    # requires-python allows 3.10, which needs this backport instead for
+    # the MinerU/Docling result-download wall-clock deadline. Marker keeps
+    # it out of 3.11+ installs entirely, where lightrag/parser/external/
+    # _common.py never imports it.
+    "async-timeout>=4.0.3; python_version < '3.11'",
     "distro",
     "fastapi>=0.108",  # 0.108 adds FastAPI.__call__ scope["root_path"] override; api_prefix relies on it
     "httpcore",

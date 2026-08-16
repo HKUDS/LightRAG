@@ -37,7 +37,10 @@
     "cancel": "Abbrechen",
     "save": "Speichern",
     "saving": "Speichern...",
-    "saveFailed": "Speichern fehlgeschlagen"
+    "saveFailed": "Speichern fehlgeschlagen",
+    "errorBoundaryTitle": "Etwas ist schiefgelaufen",
+    "errorBoundaryDescription": "Dieses Panel konnte nicht angezeigt werden. Versuchen Sie es erneut oder wechseln Sie zu einem anderen Tab.",
+    "errorBoundaryRetry": "Erneut versuchen"
   },
   "documentPanel": {
     "clearDocuments": {
