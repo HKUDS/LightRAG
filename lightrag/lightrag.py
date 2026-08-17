@@ -573,11 +573,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         char (``F``/``R``/``V``/``P``), the dispatcher routes to a
         chunker that follows the new file-chunker contract — see
         :mod:`lightrag.chunker` (``chunking_by_fixed_token`` for ``F``,
-        ``chunking_by_paragraph_semantic`` for ``P``; ``R``/``V`` are
-        not yet implemented and fall back to ``F``). **This
-        ``chunking_func`` is NOT called in that case** — it is a
-        legacy escape hatch and is intentionally bypassed when the user
-        opted into a specific strategy.
+        ``chunking_by_recursive_character`` for ``R``,
+        ``chunking_by_semantic_vector`` for ``V``, and
+        ``chunking_by_paragraph_semantic`` for ``P``). **This
+        ``chunking_func`` is NOT called in that case**. If it was replaced
+        with a custom callable, the dispatcher logs a warning that the
+        selected strategy is bypassing it.
 
       - If ``process_options`` does **not** name a chunking strategy
         (empty string, or only non-chunking flags such as ``i`` / ``t``
