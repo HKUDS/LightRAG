@@ -40,6 +40,7 @@ from lightrag.constants import (
 )
 from lightrag import pipeline_metrics
 from lightrag.exceptions import StorageCapabilityError, StorageRecordNotFoundError
+from lightrag.utils import derive_paper_html_url
 from lightrag.parser.routing import (
     canonicalize_parser_hinted_basename,
     default_chunker_config,
@@ -145,6 +146,12 @@ def build_chunks_dict_from_chunking_result(
     overwrite each other.
     """
     chunks: dict[str, dict[str, Any]] = {}
+
+    # Detect paper-lib HTML URL from sha256_ prefix in filename.
+    # Files named like "Title_sha256_abcdef1234.md" get an html_url field
+    # on every chunk so query results can link back to the original paper.
+    html_url = derive_paper_html_url(os.path.basename(file_path)) or None
+
     for dp in chunking_result:
         chunk_content = dp.get("content", "")
         if not chunk_content:
@@ -181,12 +188,15 @@ def build_chunks_dict_from_chunking_result(
                     seen.add(key)
                     seed_cache_list.append(key)
         stored_chunk = {k: v for k, v in dp.items() if k != "_source_span"}
-        chunks[chunk_key] = {
+        chunk_record: dict[str, Any] = {
             **stored_chunk,
             "full_doc_id": doc_id,
             "file_path": file_path,
             "llm_cache_list": seed_cache_list,
         }
+        if html_url is not None:
+            chunk_record["html_url"] = html_url
+        chunks[chunk_key] = chunk_record
     return chunks
 
 

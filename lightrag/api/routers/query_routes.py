@@ -1067,6 +1067,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                                     "description": {"type": "string"},
                                                     "source_id": {"type": "string"},
                                                     "file_path": {"type": "string"},
+                                                    "html_url": {"type": "string"},
                                                     "reference_id": {"type": "string"},
                                                 },
                                             },
@@ -1084,6 +1085,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                                     "weight": {"type": "number"},
                                                     "source_id": {"type": "string"},
                                                     "file_path": {"type": "string"},
+                                                    "html_url": {"type": "string"},
                                                     "reference_id": {"type": "string"},
                                                 },
                                             },
@@ -1096,6 +1098,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                                 "properties": {
                                                     "content": {"type": "string"},
                                                     "file_path": {"type": "string"},
+                                                    "html_url": {"type": "string"},
                                                     "chunk_id": {"type": "string"},
                                                     "reference_id": {"type": "string"},
                                                 },

@@ -5584,6 +5584,60 @@ def create_prefixed_exception(original_exception: Exception, prefix: str) -> Exc
         )
 
 
+_PAPER_SHA256_RE = re.compile(r"(sha256_[0-9a-f]{7,})")
+PAPER_LIB_HTML_URL_TEMPLATE = "https://paper-lib.huamedicine.com/papers/{paper_id}.html"
+
+# Uploaded filenames carry a TRUNCATED sha256 marker ("sha256_" + 13 hex
+# chars), but paper-lib URLs require the full 64-hex paper_id. An optional
+# short-id -> full-id lookup (loaded from paper_id_map.json in the working
+# dir, see register_paper_id_lookup) expands the marker when available.
+_paper_id_lookup: dict[str, str] = {}
+
+
+def register_paper_id_lookup(mapping: dict[str, str]) -> None:
+    """Register a truncated-sha256 -> full paper_id mapping.
+
+    Called once at server startup; derive_paper_html_url consults it to turn
+    short filename markers into valid full-length paper-lib URLs.
+    """
+    _paper_id_lookup.clear()
+    _paper_id_lookup.update(mapping)
+
+
+def derive_paper_html_url(file_path: str) -> str:
+    """Derive the paper-lib HTML URL from a sha256_ marker in a file path.
+
+    Files are named like "Title_sha256_abcdef1234.md"; every chunk/entity/
+    relation carrying such a file_path can link back to the original paper.
+    Returns "" when no marker is present.
+    """
+    if not file_path:
+        return ""
+    m = _PAPER_SHA256_RE.search(file_path)
+    if not m:
+        return ""
+    paper_id = _paper_id_lookup.get(m.group(1), m.group(1))
+    return PAPER_LIB_HTML_URL_TEMPLATE.format(paper_id=paper_id)
+
+
+def normalize_paper_html_url(url: str) -> str:
+    """Expand a truncated paper_id in an already-stored html_url via the lookup.
+
+    Chunks ingested before the lookup existed store short-form (broken) URLs;
+    this repairs them at query time without rewriting storage. URLs without a
+    marker, or with a full/unknown id, pass through unchanged.
+    """
+    if not url or not _paper_id_lookup:
+        return url
+    m = _PAPER_SHA256_RE.search(url)
+    if not m:
+        return url
+    full = _paper_id_lookup.get(m.group(1))
+    if not full or full == m.group(1):
+        return url
+    return url[: m.start()] + full + url[m.end() :]
+
+
 def convert_to_user_format(
     entities_context: list[dict],
     relations_context: list[dict],
@@ -5614,6 +5668,12 @@ def convert_to_user_format(
                     "description": original_entity.get("description", ""),
                     "source_id": original_entity.get("source_id", ""),
                     "file_path": original_entity.get("file_path", "unknown_source"),
+                    "html_url": normalize_paper_html_url(
+                        original_entity.get("html_url", "")
+                    )
+                    or derive_paper_html_url(
+                        original_entity.get("file_path", "")
+                    ),
                     "created_at": original_entity.get("created_at", ""),
                 }
             )
@@ -5626,6 +5686,8 @@ def convert_to_user_format(
                     "description": entity.get("description", ""),
                     "source_id": entity.get("source_id", ""),
                     "file_path": entity.get("file_path", "unknown_source"),
+                    "html_url": normalize_paper_html_url(entity.get("html_url", ""))
+                    or derive_paper_html_url(entity.get("file_path", "")),
                     "created_at": entity.get("created_at", ""),
                 }
             )
@@ -5653,6 +5715,12 @@ def convert_to_user_format(
                     "weight": original_relation.get("weight", 1.0),
                     "source_id": original_relation.get("source_id", ""),
                     "file_path": original_relation.get("file_path", "unknown_source"),
+                    "html_url": normalize_paper_html_url(
+                        original_relation.get("html_url", "")
+                    )
+                    or derive_paper_html_url(
+                        original_relation.get("file_path", "")
+                    ),
                     "created_at": original_relation.get("created_at", ""),
                 }
             )
@@ -5667,6 +5735,8 @@ def convert_to_user_format(
                     "weight": relation.get("weight", 1.0),
                     "source_id": relation.get("source_id", ""),
                     "file_path": relation.get("file_path", "unknown_source"),
+                    "html_url": normalize_paper_html_url(relation.get("html_url", ""))
+                    or derive_paper_html_url(relation.get("file_path", "")),
                     "created_at": relation.get("created_at", ""),
                 }
             )
@@ -5678,6 +5748,8 @@ def convert_to_user_format(
             "reference_id": chunk.get("reference_id", ""),
             "content": chunk.get("content", ""),
             "file_path": chunk.get("file_path", "unknown_source"),
+            "html_url": normalize_paper_html_url(chunk.get("html_url", ""))
+            or derive_paper_html_url(chunk.get("file_path", "")),
             "chunk_id": chunk.get("chunk_id", ""),
         }
         formatted_chunks.append(chunk_data)

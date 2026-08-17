@@ -71,7 +71,7 @@ from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.graph3d_routes import create_graph3d_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
 
-from lightrag.utils import logger, set_verbose_debug
+from lightrag.utils import logger, set_verbose_debug, register_paper_id_lookup
 from lightrag.kg.shared_storage import (
     get_namespace_data,
     get_default_workspace,
@@ -90,7 +90,7 @@ from lightrag.api.login_rate_limit import LoginRateLimiter
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
-load_dotenv(dotenv_path=".env", override=False)
+load_dotenv(dotenv_path=os.environ.get("DOTENV_PATH", ".env"), override=False)
 
 
 webui_title = os.getenv("WEBUI_TITLE")
@@ -2280,6 +2280,18 @@ def create_app(args):
     except Exception as e:
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
+
+    # Load truncated-sha256 -> full paper_id lookup so derived/stored
+    # paper-lib html_urls resolve to valid full-length URLs (see
+    # lightrag.utils.register_paper_id_lookup).
+    paper_id_map_path = Path(args.working_dir) / "paper_id_map.json"
+    if paper_id_map_path.is_file():
+        try:
+            with open(paper_id_map_path) as f:
+                register_paper_id_lookup(json.load(f))
+            logger.info(f"Loaded paper_id map from {paper_id_map_path}")
+        except Exception as e:
+            logger.warning(f"Failed to load {paper_id_map_path}: {e}")
 
     _log_role_provider_options(rag)
 
