@@ -61,6 +61,7 @@ def test_i18n_settings_keys_present():
         "lang.en",
         "theme.dark",
         "theme.light",
+        "btn.toggleTitle",
     ):
         assert key in data["en"], f"Missing key: {key}"
         assert key in data["zh"], f"Missing zh key: {key}"

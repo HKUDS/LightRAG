@@ -150,3 +150,14 @@ mode (reads as fog on a light background), and pulse/highlight colors lerp
 toward dark navy instead of white so activations stay visible. Choice
 persisted in `localStorage` (`graph3d_theme`); new i18n keys
 `settings.theme` / `theme.dark` / `theme.light` (en/zh).
+
+## 13. Title & QR visibility toggle ✅
+
+Add a settings-sidebar toggle to show/hide the top-bar title and the GK QR
+badge (`.top-bar .logo`). Persisted in `localStorage`.
+
+**Implemented**: `btn-toggle-title` in the View section; hides/shows the
+`.logo` block (title + QR); button dims to 50% opacity while hidden, same
+pattern as the other panel toggles; state persisted in `localStorage`
+(`graph3d_show_title`, default visible); new i18n key `btn.toggleTitle`
+(en/zh).
