@@ -2,7 +2,7 @@
 
 ## Overview
 
-This tool migrates LightRAG's LLM response cache between different KV storage implementations. It specifically migrates caches generated during file extraction (mode `default`), including entity extraction and summary caches.
+This tool migrates LightRAG's LLM response cache between different KV storage implementations. It specifically migrates caches generated during file extraction (mode `default`), including entity extraction, summary, and multimodal analysis caches.
 
 ## Supported Storage Types
 
@@ -17,6 +17,7 @@ This tool migrates LightRAG's LLM response cache between different KV storage im
 The tool migrates the following cache types:
 - `default:extract:*` - Entity and relationship extraction caches
 - `default:summary:*` - Entity and relationship summary caches
+- `default:analysis:*` - Multimodal image, table, and equation analysis caches
 
 **Note**: Query caches (modes like `mix`,`local`, `global`, etc.) are NOT migrated.
 
@@ -443,7 +444,7 @@ python -m lightrag.tools.migrate_llm_cache
    - This is enforced by the tool automatically excluding the source storage type from target selection
    - For same-storage migrations (e.g., database switches), use database-native tools instead
 2. **Only Default Mode Caches**
-   - Only migrates `default:extract:*` and `default:summary:*`
+   - Only migrates `default:extract:*`, `default:summary:*`, and `default:analysis:*`
    - Query caches are not included
 4. **Network Dependency**
    - Tool requires stable network connection for remote databases

@@ -1,0 +1,18 @@
+{
+  "blocks": [
+    {
+      "content": "An over-long single-line heading An over-long single-line heading An over-long single-line heading An over-long single-line heading An over-long single-line heading An over-long single-line heading An over-long single-line heading An over-long single-line heading An over-long single-line heading An over-long single-line heading\nFollowing body paragraph.",
+      "heading": "Preface/Uncategorized",
+      "level": 1,
+      "parent_headings": [],
+      "type": "text",
+      "uuid": null,
+      "uuid_end": null
+    }
+  ],
+  "metadata": {},
+  "warnings": {
+    "demoted_oversize_heading_count": 1,
+    "missing_paraid_count": 2
+  }
+}

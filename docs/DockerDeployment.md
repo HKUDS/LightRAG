@@ -113,6 +113,19 @@ data/
 └── inputs/         # Input documents
 ```
 
+### Container security (non-root)
+
+The official images run the server as a non-root user (`lightrag`, uid/gid `1000`) to satisfy CIS Docker Benchmark 4.1. The behavior is designed so existing deployments keep working on upgrade:
+
+- The container starts as root, takes ownership of the writable data directories, then drops to uid 1000 via `gosu`. This means **existing root-owned bind-mount / PVC data is adopted automatically** — no manual `chown` is needed when upgrading from an older image.
+- Ownership is fixed for `/app/data` **and** any custom locations you set via `WORKING_DIR`, `INPUT_DIR`, `PROMPT_DIR`, or `TIKTOKEN_CACHE_DIR`, so pointing data outside `/app/data` still works.
+- If you instead start the container with an explicit non-root user (Compose `user: "1000:1000"` or Kubernetes `runAsUser: 1000`), the startup `chown` is skipped — make sure the mounted directories are already owned by that uid.
+- `.env` is **not** chowned, so the host keeps ownership and you can edit it freely. It only needs to be *readable* by uid 1000, which the default `0644` permission satisfies. A `.env` mounted read-only as `0600`/`0400` owned by a different uid will fail to load (clear `PermissionError` at startup); make it readable by uid 1000, or supply configuration via environment variables instead (`env_file:` / `environment:`, or k8s `env` / `envFrom`).
+
+Passing server flags still works as before, e.g. `docker run ghcr.io/hkuds/lightrag:latest --port 9622`.
+
+> Note: the image starts as root and drops privileges at runtime (the pattern used by the official PostgreSQL/Redis images), so the *running process* is non-root while the image's configured `USER` is still root. Scanners that judge CIS 4.1 purely from the `USER` directive may still flag the image even though no server process runs as root.
+
 ### Optional: local vLLM embedding and reranker
 
 To run embedding and/or reranking locally with vLLM, run `make env-base` and answer `yes` when prompted to run the embedding model and rerank service locally via Docker.
@@ -237,11 +250,11 @@ This keeps generated host mounts under the same `./data` root used by the defaul
 
 ### PostgreSQL image
 
-The interactive setup defaults PostgreSQL to `gzdaniel/postgres-for-rag:pg18-age-pgvector`. This image bundles both Apache AGE and pgvector so the generated stack works with `PGGraphStorage` and `PGVectorStorage` without extra extension setup.
+The interactive setup defaults PostgreSQL to `gzdaniel/postgres-for-rag:pg18-age-pgvector`. This image bundles both Apache AGE and pgvector so the generated stack works with `PGGraphStorage` and `PGVectorStorage` without extra extension setup. The published tag is a multi-architecture manifest covering `linux/amd64` and `linux/arm64`.
 
 The image no longer ships fixed credentials; on first start it creates the user, password, and database from the `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` environment variables. The setup wizard prompts for these values (defaulting to `rag` / `rag` / `lightrag`) and injects them into the generated `docker-compose.final.yml`, so you can choose any user, password, and database name.
 
-**Important Note**: If PGGraphStorage is not required for vector storage, you may replace the upper docker image with the latest official pgvector image `pgvector/pgvector:pg18`. Please note that data file formats are incompatible across different PostgreSQL major versions; once this Docker image is deployed, it cannot be rolled back to a previous version.
+**Prefer the official pgvector image when you don't need AGE**: Apache AGE is required only by `PGGraphStorage`. The recommended PostgreSQL graph storage is `PGTableGraphStorage`, which keeps the entity-relation graph in ordinary indexed tables and needs no extension at all — so if graph storage is `PGTableGraphStorage` (or lives on another backend such as Neo4j entirely), replace the image above with the latest official pgvector image `pgvector/pgvector:pg18`. Only `PGGraphStorage` still requires the AGE-bundled image. Please note that data file formats are incompatible across different PostgreSQL major versions; once this Docker image is deployed, it cannot be rolled back to a previous version.
 
 #### Build the PostgreSQL image
 
@@ -289,6 +302,8 @@ docker compose up
 ### Offline deployment
 
 Software packages requiring `transformers`, `torch`, or `cuda` are not preinstalled in the docker images. Consequently, document extraction tools such as Docling, as well as local LLM models like Hugging Face and LMDeploy, cannot be used in an offline environment. These high-compute-resource-demanding services should not be integrated into LightRAG. Docling will be decoupled and deployed as a standalone service.
+
+The main image bundles everything the native docx parser's opt-in `smart_heading` engine parameter needs: the spaCy runtime plus the pinned `zh_core_web_sm` / `en_core_web_sm` 3.8.0 models are baked in at build time, so `smart_heading` works fully offline out of the box. The lite image ships the spaCy runtime (it comes with the `api` extra) but not the models — enabling `smart_heading` there requires installing them first (`lightrag-download-cache --spacy-install`, or see [OfflineDeployment.md](./OfflineDeployment.md) for air-gapped hosts).
 
 ## 📦 Build Docker Images
 

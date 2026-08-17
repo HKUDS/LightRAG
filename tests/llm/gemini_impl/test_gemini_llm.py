@@ -22,6 +22,10 @@ def _load_gemini_module(monkeypatch, request):
     fake_types = SimpleNamespace(
         GenerateContentConfig=FakeGenerateContentConfig,
         HttpOptions=FakeHttpOptions,
+        # gemini.py compares candidates[0].finish_reason against this enum on
+        # the non-streaming path (truncation marker); string sentinels stand in
+        # for the real google.genai enum members.
+        FinishReason=SimpleNamespace(MAX_TOKENS="MAX_TOKENS", STOP="STOP"),
     )
     fake_genai = SimpleNamespace(Client=lambda **kwargs: SimpleNamespace(kwargs=kwargs))
     fake_google_module = ModuleType("google")
@@ -76,7 +80,7 @@ def _load_gemini_module(monkeypatch, request):
     return importlib.import_module("lightrag.llm.gemini")
 
 
-def _make_fake_gemini_response(regular_text="", thought_text=""):
+def _make_fake_gemini_response(regular_text="", thought_text="", finish_reason=None):
     parts = []
     if thought_text:
         parts.append(SimpleNamespace(text=thought_text, thought=True))
@@ -85,7 +89,10 @@ def _make_fake_gemini_response(regular_text="", thought_text=""):
 
     return SimpleNamespace(
         candidates=[
-            SimpleNamespace(content=SimpleNamespace(parts=parts)),
+            SimpleNamespace(
+                content=SimpleNamespace(parts=parts),
+                finish_reason=finish_reason,
+            ),
         ],
         usage_metadata=SimpleNamespace(
             prompt_token_count=1,
@@ -231,3 +238,229 @@ async def test_gemini_streaming_structured_output_disables_cot(monkeypatch, requ
         chunks.append(chunk)
 
     assert "".join(chunks) == '{"answer":"ok"}'
+
+
+def _make_nonstreaming_client(fake_response):
+    async def _fake_generate_content(**kwargs):
+        return fake_response
+
+    return SimpleNamespace(
+        aio=SimpleNamespace(
+            models=SimpleNamespace(generate_content=_fake_generate_content)
+        )
+    )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_max_tokens_finish_reason_marks_result_truncated(
+    monkeypatch, request
+):
+    """MAX_TOKENS truncation is returned for salvage but flagged uncacheable."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    from lightrag.utils import is_truncated_response
+
+    raw_json = '{"entities":[{"name":"Ali'
+    fake_client = _make_nonstreaming_client(
+        _make_fake_gemini_response(regular_text=raw_json, finish_reason="MAX_TOKENS")
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    result = await gemini_module.gemini_complete_if_cache(
+        model="gemini-model",
+        prompt="Extract entities",
+        api_key="test-key",
+    )
+
+    assert result == raw_json
+    assert is_truncated_response(result) is True
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_stop_finish_reason_is_not_marked_truncated(monkeypatch, request):
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    from lightrag.utils import is_truncated_response
+
+    raw_json = '{"entities":[]}'
+    fake_client = _make_nonstreaming_client(
+        _make_fake_gemini_response(regular_text=raw_json, finish_reason="STOP")
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    result = await gemini_module.gemini_complete_if_cache(
+        model="gemini-model",
+        prompt="Extract entities",
+        api_key="test-key",
+    )
+
+    assert result == raw_json
+    assert is_truncated_response(result) is False
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_thinking_only_max_tokens_response_raises(monkeypatch, request):
+    """The #3597 shape on Gemini: the whole budget went to the thought trace.
+
+    ``final_text`` is non-empty at the pre-strip check (it is
+    ``<think>...</think>``), so only a check AFTER ``remove_think_tags`` sees
+    that nothing usable came back. It used to be returned as an empty —
+    truncation-flagged — success.
+    """
+    from lightrag.exceptions import EmptyTruncatedResponseError
+
+    gemini_module = _load_gemini_module(monkeypatch, request)
+
+    calls = {"n": 0}
+    fake_response = _make_fake_gemini_response(
+        thought_text="let me carefully consider the entities",
+        finish_reason="MAX_TOKENS",
+    )
+
+    async def _counting_generate_content(**kwargs):
+        calls["n"] += 1
+        return fake_response
+
+    fake_client = SimpleNamespace(
+        aio=SimpleNamespace(
+            models=SimpleNamespace(generate_content=_counting_generate_content)
+        )
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    # DECORATED call, deliberately: token-limit exhaustion is deterministic,
+    # so it must escape the retry predicate and fail after ONE request —
+    # retrying re-buys the same full-budget generation to fail identically
+    # (Codex review on PR #3607).
+    with pytest.raises(EmptyTruncatedResponseError) as excinfo:
+        await gemini_module.gemini_complete_if_cache(
+            model="gemini-model",
+            prompt="Extract entities",
+            api_key="test-key",
+            enable_cot=True,
+        )
+
+    assert calls["n"] == 1, "a deterministic token-limit failure must not retry"
+    message = str(excinfo.value)
+    assert "Received empty content from Gemini API" in message
+    assert "finish_reason=MAX_TOKENS" in message
+    assert "budget consumed by reasoning" in message
+    assert "GEMINI_LLM_MAX_OUTPUT_TOKENS" in message
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_no_content_at_all_names_the_token_limit(monkeypatch, request):
+    """The pre-existing empty-response raise now says WHY it was empty."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+
+    fake_client = _make_nonstreaming_client(
+        _make_fake_gemini_response(finish_reason="MAX_TOKENS")
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    from lightrag.exceptions import EmptyTruncatedResponseError
+
+    with pytest.raises(EmptyTruncatedResponseError) as excinfo:
+        await gemini_module.gemini_complete_if_cache(
+            model="gemini-model",
+            prompt="Extract entities",
+            api_key="test-key",
+        )
+
+    message = str(excinfo.value)
+    assert "finish_reason=MAX_TOKENS" in message
+    assert "candidates_token_count=2" in message
+    assert "GEMINI_LLM_MAX_OUTPUT_TOKENS" in message
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_non_length_empty_response_stays_retryable(monkeypatch, request):
+    """The split's other half: an empty response that ended normally is a
+    sampling artifact a fresh attempt can fix, so it must keep raising the
+    retryable type — NOT the fail-fast one."""
+    from lightrag.exceptions import EmptyTruncatedResponseError
+
+    gemini_module = _load_gemini_module(monkeypatch, request)
+
+    fake_client = _make_nonstreaming_client(
+        _make_fake_gemini_response(finish_reason="STOP")
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    # __wrapped__ to skip the retry loop's real backoff sleeps.
+    with pytest.raises(gemini_module.InvalidResponseError) as excinfo:
+        await gemini_module.gemini_complete_if_cache.__wrapped__(
+            model="gemini-model",
+            prompt="Extract entities",
+            api_key="test-key",
+        )
+
+    assert not isinstance(excinfo.value, EmptyTruncatedResponseError)
+    assert "model produced no output" in str(excinfo.value)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_thinking_only_stop_response_is_unchanged(monkeypatch, request):
+    """Scope: only the token-limit case escalates. A reasoning-only response
+    that ended normally still returns empty content, with a warning."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+
+    fake_client = _make_nonstreaming_client(
+        _make_fake_gemini_response(thought_text="thinking", finish_reason="STOP")
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    result = await gemini_module.gemini_complete_if_cache(
+        model="gemini-model",
+        prompt="Extract entities",
+        api_key="test-key",
+        enable_cot=True,
+    )
+
+    assert result == ""
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_counts_usage_before_the_empty_truncated_raise(
+    monkeypatch, request
+):
+    """Codex review (PR #3607): the thought-only MAX_TOKENS raise happened
+    before the token accounting, so the request that consumed its ENTIRE
+    output budget on reasoning was the one request missing from usage
+    reporting. Usage is now recorded before any validation raise, mirroring
+    the streaming path's finally."""
+    from lightrag.exceptions import EmptyTruncatedResponseError
+
+    gemini_module = _load_gemini_module(monkeypatch, request)
+
+    fake_client = _make_nonstreaming_client(
+        _make_fake_gemini_response(
+            thought_text="let me carefully consider the entities",
+            finish_reason="MAX_TOKENS",
+        )
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    tracked: list[dict] = []
+    tracker = SimpleNamespace(add_usage=tracked.append)
+
+    with pytest.raises(EmptyTruncatedResponseError):
+        await gemini_module.gemini_complete_if_cache(
+            model="gemini-model",
+            prompt="Extract entities",
+            api_key="test-key",
+            enable_cot=True,
+            token_tracker=tracker,
+        )
+
+    assert tracked == [
+        {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+    ], (
+        "the exhausted request's tokens vanished from usage accounting "
+        "because the raise preceded token_tracker.add_usage"
+    )

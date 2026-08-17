@@ -4,7 +4,7 @@ Public surface for the rest of the codebase. ``parse_mineru`` imports
 only from this facade so the inner module layout stays free to evolve.
 
 See ``docs/LightRAGSidecarFormat-zh.md`` for sidecar format and
-``docs/FileProcessingConfiguration-zh.md`` for cache lifecycle.
+``docs/FileProcessingPipeline.md`` for cache lifecycle.
 """
 
 from lightrag.parser.external.mineru.cache import (

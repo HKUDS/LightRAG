@@ -7,6 +7,8 @@ TestVectorStorageBatching to keep behaviour aligned across backends.
 
 import asyncio
 import os
+import uuid
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -92,6 +94,7 @@ def _make_storage(
     storage.workspace = workspace
     storage.namespace = namespace
     storage.effective_workspace = workspace
+    storage.model_suffix = "mock"
     storage.final_namespace = f"lightrag_vdb_{namespace}_mock"
     storage.meta_fields = meta_fields
     storage.embedding_func = embed_func
@@ -105,6 +108,9 @@ def _make_storage(
     storage._client = MagicMock()
     storage._client.upsert = MagicMock()
     storage._client.delete = MagicMock()
+    # drop() looks up a legacy collection to clear its workspace points;
+    # default to "no legacy collection" so unrelated tests are unaffected.
+    storage._client.collection_exists = MagicMock(return_value=False)
     storage._client.retrieve = MagicMock(return_value=[])
     storage._client.scroll = MagicMock(return_value=([], None))
 
@@ -198,6 +204,61 @@ async def test_get_vectors_by_ids_lazy_embed_then_reuse_in_flush():
     await s.index_done_callback()
     assert embed.call_count == 1
     s._client.upsert.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_vectors_by_ids_falls_back_to_requested_id_when_payload_id_missing():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, namespace="chunks", workspace="test_ws")
+
+    qdrant_id = compute_mdhash_id_for_qdrant("chunk-1", prefix=s.effective_workspace)
+    s._client.retrieve.return_value = [
+        SimpleNamespace(
+            id=qdrant_id,
+            payload={"content": "legacy chunk"},
+            vector=[0.1, 0.2, 0.3],
+        )
+    ]
+
+    assert await s.get_by_ids(["chunk-1"]) == [
+        {"content": "legacy chunk", "created_at": None}
+    ]
+    assert await s.get_vectors_by_ids(["chunk-1"]) == {"chunk-1": [0.1, 0.2, 0.3]}
+
+
+@pytest.mark.asyncio
+async def test_get_vectors_by_ids_fallback_normalizes_hyphenated_qdrant_id():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, namespace="chunks", workspace="test_ws")
+
+    qdrant_id = compute_mdhash_id_for_qdrant("chunk-1", prefix=s.effective_workspace)
+    s._client.retrieve.return_value = [
+        SimpleNamespace(
+            id=str(uuid.UUID(qdrant_id)),
+            payload={"content": "legacy chunk"},
+            vector=[0.1, 0.2, 0.3],
+        )
+    ]
+
+    assert await s.get_vectors_by_ids(["chunk-1"]) == {"chunk-1": [0.1, 0.2, 0.3]}
+
+
+@pytest.mark.asyncio
+async def test_get_by_ids_fallback_normalizes_hyphenated_qdrant_id():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, namespace="chunks", workspace="test_ws")
+
+    qdrant_id = compute_mdhash_id_for_qdrant("chunk-1", prefix=s.effective_workspace)
+    s._client.retrieve.return_value = [
+        SimpleNamespace(
+            id=str(uuid.UUID(qdrant_id)),
+            payload={"content": "legacy chunk"},
+        )
+    ]
+
+    assert await s.get_by_ids(["chunk-1"]) == [
+        {"content": "legacy chunk", "created_at": None}
+    ]
 
 
 @pytest.mark.asyncio
@@ -411,6 +472,92 @@ async def test_drop_clears_pending_buffers():
     assert s._pending_vector_deletes == set()
 
 
+@pytest.mark.asyncio
+async def test_drop_clears_workspace_points_from_workspace_tagged_legacy():
+    """drop() removes only this workspace's points from a workspace-tagged legacy
+    collection, so the next startup does not re-migrate the cleared data back."""
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed)
+    legacy_collection = f"lightrag_vdb_{s.namespace}"
+    s._client.collection_exists = MagicMock(
+        side_effect=lambda name: name == legacy_collection
+    )
+    # Legacy is workspace-tagged: workspace_id present in the payload schema.
+    legacy_info = MagicMock()
+    legacy_info.payload_schema = {"workspace_id": MagicMock()}
+    s._client.get_collection = MagicMock(return_value=legacy_info)
+
+    result = await s.drop()
+    assert result["status"] == "success"
+
+    deleted_collections = [
+        call.kwargs.get("collection_name") for call in s._client.delete.call_args_list
+    ]
+    # Both the active suffixed collection and the legacy collection are cleared
+    # via a workspace-filtered delete; the legacy collection itself is kept.
+    assert s.final_namespace in deleted_collections
+    assert legacy_collection in deleted_collections
+    s._client.delete_collection.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_drop_drops_untagged_legacy_collection():
+    """For an untagged (pre-isolation) legacy collection, setup_collection would
+    migrate ALL of its points back with no workspace filter, so a filtered delete
+    misses them. drop() must drop the whole legacy collection instead."""
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed)
+    legacy_collection = f"lightrag_vdb_{s.namespace}"
+    s._client.collection_exists = MagicMock(
+        side_effect=lambda name: name == legacy_collection
+    )
+    # Legacy is untagged: no workspace_id in schema and none in sampled payloads.
+    legacy_info = MagicMock()
+    legacy_info.payload_schema = {}
+    s._client.get_collection = MagicMock(return_value=legacy_info)
+    s._client.scroll = MagicMock(return_value=([], None))
+
+    result = await s.drop()
+    assert result["status"] == "success"
+
+    # The whole untagged legacy collection is dropped (not a filtered delete).
+    s._client.delete_collection.assert_called_once_with(
+        collection_name=legacy_collection
+    )
+    filtered_deletes = [
+        call.kwargs.get("collection_name") for call in s._client.delete.call_args_list
+    ]
+    assert legacy_collection not in filtered_deletes
+
+
+@pytest.mark.asyncio
+async def test_drop_reports_error_when_legacy_tagging_undetermined():
+    """If the legacy collection's workspace tagging cannot be determined (a
+    transient metadata error), drop() must NOT drop the whole collection (that
+    could delete other workspaces' migration source) AND must report an error:
+    leaving legacy untouched means the clear would not survive a restart, so the
+    caller must be able to retry instead of seeing a misleading success."""
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed)
+    legacy_collection = f"lightrag_vdb_{s.namespace}"
+    s._client.collection_exists = MagicMock(
+        side_effect=lambda name: name == legacy_collection
+    )
+    # Metadata lookup fails -> tagging undetermined.
+    s._client.get_collection = MagicMock(side_effect=RuntimeError("qdrant unavailable"))
+
+    result = await s.drop()
+    # The clear is reported as incomplete so it can be retried.
+    assert result["status"] == "error"
+
+    # Legacy is left untouched: neither a filtered delete nor a collection drop.
+    legacy_deletes = [
+        call.kwargs.get("collection_name") for call in s._client.delete.call_args_list
+    ]
+    assert legacy_collection not in legacy_deletes
+    s._client.delete_collection.assert_not_called()
+
+
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_drop_pending_index_ops_clears_buffers():
@@ -424,3 +571,17 @@ async def test_drop_pending_index_ops_clears_buffers():
     await s.drop_pending_index_ops()
     assert not s._pending_vector_docs
     assert not s._pending_vector_deletes
+
+
+@pytest.mark.asyncio
+async def test_finalize_closes_qdrant_client():
+    """finalize() must release the Qdrant client transport instead of leaving
+    it for GC — mirroring the close-on-release pattern of the other
+    server-backed storages."""
+    s = _make_storage(MockEmbeddingFunc())
+    client = s._client
+    assert client is not None
+
+    await s.finalize()
+
+    client.close.assert_called_once()

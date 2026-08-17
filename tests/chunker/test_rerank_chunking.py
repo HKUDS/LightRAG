@@ -11,11 +11,37 @@ from lightrag.rerank import (
     chunk_documents_for_rerank,
     aggregate_chunk_scores,
     cohere_rerank,
+    generic_rerank_api,
 )
 
 
 class TestChunkDocumentsForRerank:
     """Test suite for chunk_documents_for_rerank function"""
+
+    def test_zero_max_tokens_raises(self):
+        """max_tokens < 1 must raise, not hang in a zero-width chunk loop."""
+        with pytest.raises(ValueError, match="max_tokens"):
+            chunk_documents_for_rerank(["hello world longer text"], max_tokens=0)
+        with pytest.raises(ValueError, match="max_tokens"):
+            chunk_documents_for_rerank(["hello"], max_tokens=-1)
+        # Valid size still works
+        docs, idxs = chunk_documents_for_rerank(["short"], max_tokens=100)
+        assert docs == ["short"]
+        assert idxs == [0]
+
+    def test_max_tokens_one_terminates(self):
+        """max_tokens=1 is the boundary: overlap must clamp so the loop still terminates.
+
+        With the default overlap (32 >= 1) the clamp kicks in; the call must return a
+        bounded set of chunks all mapping back to the single input document rather than
+        hanging (this test would time out if the loop failed to advance).
+        """
+        docs, idxs = chunk_documents_for_rerank(
+            ["one two three four five"], max_tokens=1, overlap_tokens=32
+        )
+        assert len(docs) >= 1
+        assert len(docs) == len(idxs)
+        assert all(i == 0 for i in idxs)
 
     def test_no_chunking_needed_for_short_docs(self):
         """Documents shorter than max_tokens should not be chunked"""
@@ -199,6 +225,22 @@ class TestAggregateChunkScores:
         aggregated = aggregate_chunk_scores([], [], 3, aggregation="max")
         assert aggregated == []
 
+    def test_malformed_results_are_ignored(self):
+        """Mixed provider items must not prevent valid chunk score aggregation."""
+        aggregated = aggregate_chunk_scores(
+            [
+                None,
+                "invalid",
+                {"index": True, "relevance_score": 0.9},
+                {"index": 0, "relevance_score": "not-a-score"},
+                {"index": 0, "relevance_score": "0.8"},
+            ],
+            [0],
+            1,
+        )
+
+        assert aggregated == [{"index": 0, "relevance_score": 0.8}]
+
     def test_documents_with_no_scores(self):
         """Test when some documents have no chunks/scores"""
         chunk_results = [
@@ -232,6 +274,134 @@ class TestAggregateChunkScores:
 
         # Should fall back to max
         assert aggregated[0]["relevance_score"] == 0.8
+
+    def test_out_of_bounds_doc_index_ignored(self):
+        """Test that out-of-bounds original document indices in doc_indices do not raise KeyError."""
+        chunk_results = [
+            {"index": 0, "relevance_score": 0.9},
+            {"index": 1, "relevance_score": 0.8},
+        ]
+        doc_indices = [0, 5]
+        num_original_docs = 2
+
+        aggregated = aggregate_chunk_scores(
+            chunk_results, doc_indices, num_original_docs, aggregation="max"
+        )
+
+        assert len(aggregated) == 1
+        assert aggregated[0] == {"index": 0, "relevance_score": 0.9}
+
+
+class TestMalformedProviderResults:
+    """HTTP-boundary regressions for malformed rerank provider result items."""
+
+    @staticmethod
+    def _mock_session(response_json):
+        mock_response = Mock()
+        mock_response.status = 200
+        mock_response.json = AsyncMock(return_value=response_json)
+        mock_response.request_info = None
+        mock_response.history = None
+        mock_response.headers = {}
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = Mock()
+        mock_session.post = Mock(return_value=mock_response)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        return mock_session
+
+    @pytest.mark.asyncio
+    async def test_generic_rerank_discards_malformed_items(self):
+        """Valid results survive a mixed provider response without raising."""
+        mock_session = self._mock_session(
+            {
+                "results": [
+                    None,
+                    "invalid",
+                    {"index": 0},
+                    {"index": True, "relevance_score": 0.9},
+                    {"index": 3, "relevance_score": 0.9},
+                    {"index": 0, "relevance_score": 10**10000},
+                    {"index": 0, "relevance_score": True},
+                    {"index": 0, "relevance_score": "0.8"},
+                    {"index": 1, "relevance_score": 0.6},
+                ]
+            }
+        )
+
+        with (
+            patch("lightrag.rerank.aiohttp.ClientSession", return_value=mock_session),
+            patch("lightrag.rerank.logger.warning") as mock_warning,
+        ):
+            result = await generic_rerank_api(
+                query="test",
+                documents=["first", "second"],
+                model="test-model",
+                base_url="http://test.com/rerank",
+                api_key="test-key",
+            )
+
+        assert result == [
+            {"index": 0, "relevance_score": 0.8},
+            {"index": 1, "relevance_score": 0.6},
+        ]
+        mock_warning.assert_called_once()
+        assert mock_warning.call_args.args[0].startswith("Discarded")
+
+    @pytest.mark.asyncio
+    async def test_generic_rerank_returns_empty_for_all_invalid_items(self):
+        """An entirely malformed response preserves the established empty result."""
+        mock_session = self._mock_session(
+            {
+                "results": [
+                    None,
+                    {"index": -1, "relevance_score": 0.9},
+                    {"index": 0, "relevance_score": "NaN"},
+                ]
+            }
+        )
+
+        with patch("lightrag.rerank.aiohttp.ClientSession", return_value=mock_session):
+            result = await generic_rerank_api(
+                query="test",
+                documents=["only document"],
+                model="test-model",
+                base_url="http://test.com/rerank",
+                api_key="test-key",
+            )
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_generic_rerank_aggregates_valid_chunk_results(self):
+        """Malformed items do not block aggregation of valid chunk scores."""
+        mock_session = self._mock_session(
+            {
+                "results": [
+                    None,
+                    {"index": 0, "relevance_score": 0.8},
+                    {"index": 1, "relevance_score": 0.6},
+                ]
+            }
+        )
+
+        with patch("lightrag.rerank.aiohttp.ClientSession", return_value=mock_session):
+            result = await generic_rerank_api(
+                query="test",
+                documents=["first", "second"],
+                model="test-model",
+                base_url="http://test.com/rerank",
+                api_key="test-key",
+                enable_chunking=True,
+                max_tokens_per_doc=8,
+            )
+
+        assert result == [
+            {"index": 0, "relevance_score": 0.8},
+            {"index": 1, "relevance_score": 0.6},
+        ]
 
 
 @pytest.mark.offline

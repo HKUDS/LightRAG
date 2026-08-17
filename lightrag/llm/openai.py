@@ -28,10 +28,13 @@ from tenacity import (
 from lightrag.utils import (
     wrap_embedding_func_with_attrs,
     safe_unicode_decode,
+    empty_length_truncated_hint,
     logger,
+    TruncatedResponse,
 )
 
 from lightrag.api import __api_version__
+from lightrag.exceptions import EmptyTruncatedResponseError
 
 import numpy as np
 import base64
@@ -222,7 +225,9 @@ def create_openai_async_client(
         return AsyncOpenAI(**merged_configs)
 
 
-# TODO LengthFinishReasonError should not persist into LLM cache
+# Token-limit-truncated completions (finish_reason == "length") are returned
+# wrapped in TruncatedResponse so the cache layer skips persisting incomplete
+# output. See the "Note on truncated structured output" in the docstring below.
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -271,12 +276,13 @@ async def openai_complete_if_cache(
     - ``keyword_extraction`` is deprecated; prefer
       ``response_format={"type": "json_object"}`` instead.
 
-    Note on truncated structured output: when the OpenAI SDK raises
-    `LengthFinishReasonError`, callers may still receive partial raw JSON from
-    `completion.choices[0].message.content`. That payload should be treated as
-    best-effort recovery only. If the JSON was truncated or repaired after
-    truncation, it is safer not to persist it into the LLM cache because later
-    runs with a higher token budget could otherwise keep reusing incomplete data.
+    Note on truncated structured output: when a completion stops with
+    `finish_reason == "length"`, callers may still receive partial raw JSON from
+    `completion.choices[0].message.content`. That payload is returned unchanged
+    for best-effort recovery, but wrapped in `TruncatedResponse` (a `str`
+    subclass) so the cache layer can detect and skip persisting it. This
+    prevents later runs — even with a higher token budget — from reusing the
+    incomplete data. See `is_truncated_response` in `lightrag.utils`.
 
     Note on `reasoning_content`: This feature relies on a Deepseek Style `reasoning_content`
     in the API response, which may be provided by OpenAI-compatible endpoints that support
@@ -430,9 +436,10 @@ async def openai_complete_if_cache(
     try:
         # Single dispatch: create() covers the dict-based response_format
         # payloads used by this project. Typed/Pydantic helpers are rejected
-        # above. Length-truncation is detected via finish_reason below and the
-        # raw content is returned unchanged so upstream tolerant JSON parsing
-        # can still salvage it.
+        # above. Length-truncated responses with non-empty content are
+        # returned unchanged so upstream tolerant JSON parsing can still
+        # salvage them; finish_reason is only inspected when content is empty
+        # (see the empty-content diagnostics below).
         response = await openai_async_client.chat.completions.create(
             model=api_model, messages=messages, **kwargs
         )
@@ -509,6 +516,7 @@ async def openai_complete_if_cache(
             cot_active = False
             cot_started = False
             initial_content_seen = False
+            closing_via_generator_exit = False
 
             try:
                 iteration_started = True
@@ -604,6 +612,12 @@ async def openai_complete_if_cache(
                     logger.debug(f"Streaming token usage (from API): {token_counts}")
                 elif token_tracker:
                     logger.debug("No usage information available in streaming response")
+            except GeneratorExit:
+                # Consumer disconnect mid-COT: tell the finally block below to
+                # skip its yield, which would otherwise abort cleanup with
+                # "async generator ignored GeneratorExit".
+                closing_via_generator_exit = True
+                raise
             except Exception as e:
                 # Ensure COT is properly closed before handling exception
                 if enable_cot and cot_active:
@@ -638,8 +652,9 @@ async def openai_complete_if_cache(
                     )
                 raise
             finally:
-                # Final safety check for unclosed COT tags
-                if enable_cot and cot_active:
+                # Final safety check for unclosed COT tags, skipped while
+                # closing via GeneratorExit (see the except clause above).
+                if enable_cot and cot_active and not closing_via_generator_exit:
                     try:
                         yield "</think>"
                         cot_active = False
@@ -682,6 +697,21 @@ async def openai_complete_if_cache(
 
     else:
         try:
+            # Count usage BEFORE the validation raises below: the request
+            # consumed its budget whether or not the response is usable — a
+            # reasoning model that burned the whole output budget on its
+            # trace is exactly the case that raises, and omitting it would
+            # under-report by a full-budget generation.
+            if token_tracker and hasattr(response, "usage"):
+                token_counts = {
+                    "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
+                    "completion_tokens": getattr(
+                        response.usage, "completion_tokens", 0
+                    ),
+                    "total_tokens": getattr(response.usage, "total_tokens", 0),
+                }
+                token_tracker.add_usage(token_counts)
+
             if (
                 not response
                 or not response.choices
@@ -743,26 +773,76 @@ async def openai_complete_if_cache(
 
                 # Validate final content
                 if not final_content or final_content.strip() == "":
-                    logger.error("Received empty content from OpenAI API")
+                    # Distinguish the empty-content failure modes so the retry
+                    # ERROR lines (and the final RetryError) carry the root
+                    # cause: reasoning models swallowing output vs token-limit
+                    # truncation vs a genuinely empty response.
+                    finish_reason = getattr(response.choices[0], "finish_reason", None)
+                    usage = getattr(response, "usage", None)
+                    completion_tokens = getattr(usage, "completion_tokens", None)
+                    usage_details = getattr(usage, "completion_tokens_details", None)
+                    reasoning_tokens = getattr(usage_details, "reasoning_tokens", None)
+                    reasoning_len = (
+                        len(reasoning_content.strip()) if reasoning_content else 0
+                    )
+                    diagnostics = (
+                        f"finish_reason={finish_reason if finish_reason is not None else 'n/a'}, "
+                        f"completion_tokens={completion_tokens if completion_tokens is not None else 'n/a'}, "
+                        f"reasoning_tokens={reasoning_tokens if reasoning_tokens is not None else 'n/a'}, "
+                        f"reasoning_content_len={reasoning_len}"
+                    )
+                    if finish_reason == "length":
+                        hint = empty_length_truncated_hint(
+                            "consider raising max_tokens or disabling thinking mode",
+                            reasoning_consumed_budget=bool(reasoning_len),
+                        )
+                    elif reasoning_len:
+                        hint = (
+                            "model returned reasoning-only output "
+                            "(reasoning_content is discarded on this path); "
+                            "consider disabling thinking mode for this role"
+                        )
+                    else:
+                        hint = "model produced no output"
+                    error_message = (
+                        f"Received empty content from OpenAI API "
+                        f"({diagnostics}): {hint}"
+                    )
+                    logger.error(error_message)
                     try:
                         await openai_async_client.close()
                     except Exception as close_error:
                         logger.warning(f"Failed to close OpenAI client: {close_error}")
-                    raise InvalidResponseError("Received empty content from OpenAI API")
+                    # The hint rides along into the exception (and therefore
+                    # into doc_status.error_msg) rather than living only in the
+                    # server log: the operator reading the failed document is
+                    # the one who has to turn the knob.
+                    #
+                    # The TYPE selects the retry policy: token-limit exhaustion
+                    # is deterministic for a given prompt and output budget, so
+                    # it raises EmptyTruncatedResponseError — absent from the
+                    # retry predicate — and fails after one request instead of
+                    # buying two more full-budget generations plus backoff.
+                    # The other empty modes stay retryable: those are sampling
+                    # artifacts a fresh attempt can genuinely fix.
+                    if finish_reason == "length":
+                        raise EmptyTruncatedResponseError(error_message)
+                    raise InvalidResponseError(error_message)
 
             # Apply Unicode decoding to final content if needed
             if r"\u" in final_content:
                 final_content = safe_unicode_decode(final_content.encode("utf-8"))
 
-            if token_tracker and hasattr(response, "usage"):
-                token_counts = {
-                    "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
-                    "completion_tokens": getattr(
-                        response.usage, "completion_tokens", 0
-                    ),
-                    "total_tokens": getattr(response.usage, "total_tokens", 0),
-                }
-                token_tracker.add_usage(token_counts)
+            # Flag token-limit truncation so the cache layer skips persisting
+            # partial output. The content is still returned unchanged for
+            # best-effort salvage (e.g. tolerant JSON parsing); TruncatedResponse
+            # is a str subclass, so downstream processing is unaffected.
+            if getattr(response.choices[0], "finish_reason", None) == "length":
+                logger.warning(
+                    "OpenAI response truncated by token limit "
+                    f"(finish_reason=length, content_len={len(final_content)}), returning partial content"
+                )
+                final_content = TruncatedResponse(final_content)
 
             logger.debug(f"Response content len: {len(final_content)}")
             verbose_debug(f"Response: {response}")

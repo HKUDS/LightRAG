@@ -217,6 +217,23 @@ def test_cli_rejects_suffix_engine_mismatch(
     assert "docx" in err  # supported suffix list mentions docx
 
 
+def test_cli_legacy_engine_prints_raw_summary(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # legacy is registry-selectable and emits plain content with no sidecar
+    # (blocks_path=""). The CLI must summarize the content instead of trying
+    # to open a non-existent blocks file.
+    source = tmp_path / "notes.txt"
+    source.write_text("hello world\nsecond line\n", encoding="utf-8")
+
+    rc = main([str(source), "--engine", "legacy"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "engine     : legacy" in out
+    assert "format     : raw" in out
+    assert "hello world" in out
+
+
 def test_cli_direct_script_native_does_not_shadow_python_docx(
     tmp_path: Path,
 ) -> None:

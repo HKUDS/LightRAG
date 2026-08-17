@@ -146,21 +146,21 @@ def test_expand_block_assigns_first_and_last_roles_to_glued_blocks():
     roles = [b["table_chunk_role"] for b in out]
     assert roles[0] == "first", f"expected leading block role=first, got {roles}"
     assert roles[-1] == "last", f"expected trailing block role=last, got {roles}"
-    assert all(
-        r == "middle" for r in roles[1:-1]
-    ), f"expected middle slices between first/last, got {roles}"
+    assert all(r == "middle" for r in roles[1:-1]), (
+        f"expected middle slices between first/last, got {roles}"
+    )
 
     # Boundary glue still works: leading text sits inside the first block,
     # trailing text sits inside the last block.
-    assert any(
-        p["text"] == "lead paragraph" for p in out[0]["paragraphs"]
-    ), "leading paragraph must glue with the first table slice"
-    assert any(
-        p["text"] == "trailing paragraph" for p in out[-1]["paragraphs"]
-    ), "trailing paragraph must glue with the last table slice"
-    assert all(
-        "表格片段" not in b["heading"] for b in out
-    ), "TableRowSplit should not expose legacy table-fragment heading suffixes"
+    assert any(p["text"] == "lead paragraph" for p in out[0]["paragraphs"]), (
+        "leading paragraph must glue with the first table slice"
+    )
+    assert any(p["text"] == "trailing paragraph" for p in out[-1]["paragraphs"]), (
+        "trailing paragraph must glue with the last table slice"
+    )
+    assert all("表格片段" not in b["heading"] for b in out), (
+        "TableRowSplit should not expose legacy table-fragment heading suffixes"
+    )
 
 
 @pytest.mark.offline
@@ -205,9 +205,9 @@ def test_expand_block_two_oversized_tables_separates_last_and_first_roles():
     # The transition: there must be a "last" immediately followed by a
     # "first" somewhere in the middle of the role sequence.
     transitions = list(zip(roles, roles[1:]))
-    assert (
-        ("last", "first") in transitions
-    ), f"expected a last->first boundary between the two split tables, got {roles}"
+    assert ("last", "first") in transitions, (
+        f"expected a last->first boundary between the two split tables, got {roles}"
+    )
 
 
 @pytest.mark.offline
@@ -660,9 +660,9 @@ def test_expand_block_single_row_table_no_longer_left_intact():
     assert len(out) >= 2
     # First/last role protection still fires when the table was reduced.
     roles = [b["table_chunk_role"] for b in out]
-    assert (
-        "first" in roles or "last" in roles
-    ), f"expected first/last role assignment after table split, got {roles}"
+    assert "first" in roles or "last" in roles, (
+        f"expected first/last role assignment after table split, got {roles}"
+    )
 
 
 @pytest.mark.offline
@@ -698,9 +698,9 @@ def test_split_long_block_table_dominant_no_anchor_keeps_some_table_markup():
     # At least one sub-block keeps an unbroken <table> fragment somewhere
     # in its content (proof that row-boundary preservation kicked in).
     contents = [b["content"] for b in sub_blocks]
-    assert any(
-        ("<table " in c and "</table>" in c) for c in contents
-    ), "expected at least one sub-block to retain a legal <table> fragment"
+    assert any(("<table " in c and "</table>" in c) for c in contents), (
+        "expected at least one sub-block to retain a legal <table> fragment"
+    )
 
 
 @pytest.mark.offline
@@ -929,8 +929,7 @@ def test_full_pipeline_injects_html_thead_into_split_html_table(tmp_path):
     whose tables.json carries a raw <thead> header has that header re-injected
     (verbatim, spans preserved) into every non-first table chunk."""
     html_header = (
-        '<thead><tr><th rowspan="2">Metric</th>'
-        '<th colspan="2">Group</th></tr></thead>'
+        '<thead><tr><th rowspan="2">Metric</th><th colspan="2">Group</th></tr></thead>'
     )
     head_row = '<tr><th rowspan="2">Metric</th><th colspan="2">Group</th></tr>'
     data_rows = "".join(f"<tr><td>{'d' * 160}{i}</td></tr>" for i in range(6))

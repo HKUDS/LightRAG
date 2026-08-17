@@ -1,6 +1,13 @@
 const DEFAULT_NODE_COLOR = '#5D6D7E'
 
-const TYPE_SYNONYMS: Record<string, string> = {
+// Null-prototype maps: keys come from extracted entity types, so they can
+// collide with Object.prototype members. On a plain object literal,
+// `TYPE_SYNONYMS['__proto__']` returns the inherited Object.prototype (an
+// object) and `['constructor']` returns the Object function instead of
+// undefined; those non-string values then flow into the type→color Map as
+// keys and crash the Legend (`key.toLowerCase()`). A null-prototype object has
+// no inherited members, so any unknown key reads as undefined.
+const TYPE_SYNONYMS: Record<string, string> = Object.assign(Object.create(null), {
   unknown: 'unknown',
   未知: 'unknown',
 
@@ -140,9 +147,9 @@ const TYPE_SYNONYMS: Record<string, string> = {
   地址: 'location',
   地理: 'location',
   地域: 'location'
-}
+})
 
-const NODE_TYPE_COLORS: Record<string, string> = {
+const NODE_TYPE_COLORS: Record<string, string> = Object.assign(Object.create(null), {
   person: '#4169E1',
   creature: '#bd7ebe',
   organization: '#00cc00',
@@ -156,7 +163,7 @@ const NODE_TYPE_COLORS: Record<string, string> = {
   naturalobject: '#b2e061',
   other: '#f4d371',
   unknown: '#b0b0b0'
-}
+})
 
 const EXTENDED_COLORS = [
   '#84a3e1',
@@ -181,11 +188,17 @@ interface ResolveNodeColorResult {
 }
 
 export const resolveNodeColor = (
-  nodeType: string | undefined,
+  nodeType: unknown,
   currentMap: Map<string, string> | undefined
 ): ResolveNodeColorResult => {
   const typeColorMap = currentMap ?? new Map<string, string>()
-  const normalizedType = nodeType ? nodeType.toLowerCase() : 'unknown'
+  // entity_type is untrusted graph data. ainsert_custom_kg() writes the
+  // caller-supplied value straight onto the node without type validation, so
+  // /graphs can serve an object, array, number or boolean here. Guard against
+  // any non-string before calling a string method on it, and fall back to
+  // 'unknown' for empty/non-string values.
+  const normalizedType =
+    typeof nodeType === 'string' && nodeType ? nodeType.toLowerCase() : 'unknown'
   const standardType = TYPE_SYNONYMS[normalizedType]
   const cacheKey = standardType || normalizedType
 

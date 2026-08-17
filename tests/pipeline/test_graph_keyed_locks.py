@@ -8,10 +8,12 @@ exclude any concurrent edge write that names the same entity in
 `sorted([src, tgt])` — no need to enumerate incident edges here.
 
 These tests pin:
-- `aedit_entity` locks {old, new} on rename, {entity_name} otherwise.
+- `aedit_entity` locks exact and canonical source/target candidates.
+- `amerge_entities` locks exact and canonical source/target candidates.
 - `adelete_by_entity` locks {entity_name}.
-- `ainsert_custom_kg` locks every entity name plus every relationship
-  endpoint that the batch will write, sharing the doc-ingest namespace.
+- `ainsert_custom_kg` locks every normalized entity name plus every normalized
+  relationship endpoint that the batch will write, sharing the doc-ingest
+  namespace.
 - An empty `ainsert_custom_kg` batch skips the lock entirely.
 """
 
@@ -20,10 +22,33 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
+
+pytestmark = pytest.mark.offline
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def single_process_shared_data():
+    """Initialize the single-process shared_storage singleton.
+
+    ``LightRAG.ainsert_custom_kg`` calls ``_raise_if_recovery_required``,
+    which reads the ``pipeline_status`` namespace via ``get_namespace_data``.
+    That call raises ``ValueError`` if ``initialize_share_data()`` was never
+    called at all (as it never is running this file standalone), but is a
+    documented no-op — via a caught ``PipelineNotInitializedError`` — when
+    shared data is initialized yet ``pipeline_status`` itself was not. So we
+    only need ``initialize_share_data()`` here, not
+    ``initialize_pipeline_status()``. Mirrors the fixture in
+    ``tests/kg/test_shared_storage_rpc_counts.py``.
+    """
+    finalize_share_data()
+    initialize_share_data(1)
+    yield
+    finalize_share_data()
 
 
 def _make_keyed_lock_spy():
@@ -171,6 +196,34 @@ async def test_aedit_entity_non_rename_locks_single_entity_name():
     graph.get_node_edges.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_aedit_entity_locks_exact_and_normalized_name_candidates():
+    """Normalization resolution stays inside the complete candidate lock set."""
+    from lightrag import utils_graph
+
+    spy, captured = _make_keyed_lock_spy()
+    graph = _make_graph_mock(existing_entity="A公司")
+    entities_vdb = _make_vdb_mock(workspace="ws1")
+    relationships_vdb = _make_vdb_mock(workspace="ws1")
+
+    graph.upsert_node.side_effect = RuntimeError("stop after lock acquisition")
+
+    with patch.object(utils_graph, "get_storage_keyed_lock", spy):
+        with pytest.raises(RuntimeError, match="stop after lock acquisition"):
+            await utils_graph.aedit_entity(
+                chunk_entity_relation_graph=graph,
+                entities_vdb=entities_vdb,
+                relationships_vdb=relationships_vdb,
+                entity_name="“Ａ 公 司”",
+                updated_data={"entity_name": "“Ｂ 公 司”", "description": "renamed"},
+                allow_rename=True,
+            )
+
+    assert len(captured) == 1
+    assert captured[0]["keys"] == ["A公司", "B公司", "“Ａ 公 司”", "“Ｂ 公 司”"]
+    assert captured[0]["namespace"] == "ws1:GraphDB"
+
+
 # ---------------------------------------------------------------------------
 # adelete_by_entity
 # ---------------------------------------------------------------------------
@@ -235,11 +288,41 @@ class _LockCaptured(RuntimeError):
 
 
 @pytest.mark.asyncio
-async def test_ainsert_custom_kg_locks_every_entity_and_endpoint():
+async def test_amerge_entities_locks_exact_and_normalized_name_candidates():
+    """Merge resolution stays inside the complete exact/canonical lock set."""
+    from lightrag import utils_graph
+
+    graph = _make_graph_mock(existing_entity="A公司")
+    entities_vdb = _make_vdb_mock(workspace="ws1")
+    relationships_vdb = _make_vdb_mock(workspace="ws1")
+    lock_spy = _AbortOnEnterLock()
+
+    with patch.object(utils_graph, "get_storage_keyed_lock", lock_spy):
+        with pytest.raises(_LockCaptured):
+            await utils_graph.amerge_entities(
+                chunk_entity_relation_graph=graph,
+                entities_vdb=entities_vdb,
+                relationships_vdb=relationships_vdb,
+                source_entities=["“Ａ 公 司”"],
+                target_entity="“Ｔ 目 标”",
+            )
+
+    assert lock_spy.captured == [
+        {
+            "keys": ["A公司", "T目标", "“Ａ 公 司”", "“Ｔ 目 标”"],
+            "namespace": "ws1:GraphDB",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ainsert_custom_kg_locks_every_entity_and_endpoint(
+    single_process_shared_data,
+):
     """ainsert_custom_kg must hold a single coarse-grained keyed lock whose
-    key set covers every entity name plus every relationship endpoint in the
-    batch — sharing the doc-ingest namespace so concurrent callers on
-    overlapping entities serialise instead of racing.
+    key set covers every normalized entity name plus every normalized
+    relationship endpoint in the batch — sharing the doc-ingest namespace so
+    concurrent callers on overlapping entities serialise instead of racing.
     """
     from lightrag import lightrag as lightrag_module
     from lightrag.lightrag import LightRAG
@@ -261,14 +344,14 @@ async def test_ainsert_custom_kg_locks_every_entity_and_endpoint():
         "chunks": [],
         "entities": [
             {
-                "entity_name": "Alice",
+                "entity_name": "Ａｌｉｃｅ",
                 "entity_type": "PERSON",
                 "description": "x",
                 "source_id": "chunk-1",
                 "file_path": "f",
             },
             {
-                "entity_name": "Bob",
+                "entity_name": "“Ｂｏｂ”",
                 "entity_type": "PERSON",
                 "description": "y",
                 "source_id": "chunk-1",
@@ -277,8 +360,8 @@ async def test_ainsert_custom_kg_locks_every_entity_and_endpoint():
         ],
         "relationships": [
             {
-                "src_id": "Alice",
-                "tgt_id": "Bob",
+                "src_id": "Ａｌｉｃｅ",
+                "tgt_id": "“Ｂｏｂ”",
                 "description": "knows",
                 "keywords": "k",
                 "weight": 1.0,
@@ -286,8 +369,8 @@ async def test_ainsert_custom_kg_locks_every_entity_and_endpoint():
                 "file_path": "f",
             },
             {
-                "src_id": "Bob",
-                "tgt_id": "Carol",
+                "src_id": "Ｂｏｂ",
+                "tgt_id": "Ｃａｒｏｌ",
                 "description": "knows",
                 "keywords": "k",
                 "weight": 1.0,
@@ -308,13 +391,15 @@ async def test_ainsert_custom_kg_locks_every_entity_and_endpoint():
     # mutually exclude across paths.
     assert call["namespace"] == "ws1:GraphDB"
 
-    # Union of entity names ({Alice, Bob}) and every relationship endpoint
-    # ({Alice, Bob, Carol}), sorted.
+    # The raw full-width/quoted spellings are normalized before the union is
+    # locked, so keys collide with the extraction pipeline's canonical names.
     assert call["keys"] == ["Alice", "Bob", "Carol"]
 
 
 @pytest.mark.asyncio
-async def test_ainsert_custom_kg_empty_batch_skips_keyed_lock():
+async def test_ainsert_custom_kg_empty_batch_skips_keyed_lock(
+    single_process_shared_data,
+):
     """A custom_kg with no entities or relationships has nothing for the
     business-layer keyed lock to serialise on — no lock is acquired and the
     chunk-only path still completes."""

@@ -17,6 +17,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { useSettingsStore } from '@/stores/settings'
 import { useTranslation } from 'react-i18next'
 import { RotateCcw } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
 const ResetButton = ({ onClick, title }: { onClick: () => void; title: string }) => (
   <TooltipProvider>
@@ -70,6 +71,11 @@ export default function QuerySettings() {
   const handleReset = useCallback((key: keyof typeof defaultValues) => {
     handleChange(key, defaultValues[key])
   }, [handleChange, defaultValues])
+
+  // Mix offers the best retrieval coverage; Bypass intentionally skips retrieval.
+  // Warn only for the narrower-coverage modes (hybrid/naive/local/global).
+  const showQualityWarning =
+    querySettings.mode !== 'mix' && querySettings.mode !== 'bypass'
 
   return (
     <Card className="flex shrink-0 flex-col w-[280px]">
@@ -129,17 +135,21 @@ export default function QuerySettings() {
                 >
                   <SelectTrigger
                     id="query_mode_select"
-                    className="hover:bg-primary/5 h-9 cursor-pointer focus:ring-0 focus:ring-offset-0 focus:outline-0 active:right-0 flex-1 text-left [&>span]:break-all [&>span]:line-clamp-1"
+                    className={cn(
+                      'hover:bg-primary/5 h-9 cursor-pointer focus:ring-0 focus:ring-offset-0 focus:outline-0 active:right-0 flex-1 text-left [&>span]:break-all [&>span]:line-clamp-1',
+                      showQualityWarning &&
+                        'border-red-400 bg-red-100 text-red-700 hover:bg-red-100 dark:border-red-600 dark:bg-red-900/30 dark:text-red-300 dark:hover:bg-red-900/30'
+                    )}
                   >
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectGroup>
+                      <SelectItem value="mix">{t('retrievePanel.querySettings.queryModeOptions.mix')}</SelectItem>
+                      <SelectItem value="hybrid">{t('retrievePanel.querySettings.queryModeOptions.hybrid')}</SelectItem>
                       <SelectItem value="naive">{t('retrievePanel.querySettings.queryModeOptions.naive')}</SelectItem>
                       <SelectItem value="local">{t('retrievePanel.querySettings.queryModeOptions.local')}</SelectItem>
                       <SelectItem value="global">{t('retrievePanel.querySettings.queryModeOptions.global')}</SelectItem>
-                      <SelectItem value="hybrid">{t('retrievePanel.querySettings.queryModeOptions.hybrid')}</SelectItem>
-                      <SelectItem value="mix">{t('retrievePanel.querySettings.queryModeOptions.mix')}</SelectItem>
                       <SelectItem value="bypass">{t('retrievePanel.querySettings.queryModeOptions.bypass')}</SelectItem>
                     </SelectGroup>
                   </SelectContent>
@@ -149,6 +159,11 @@ export default function QuerySettings() {
                   title="Reset to default (Mix)"
                 />
               </div>
+              {showQualityWarning && (
+                <p className="ml-1 text-red-600 dark:text-red-400">
+                  {t('retrievePanel.querySettings.queryModeWarning')}
+                </p>
+              )}
             </>
 
             {/* Top K */}

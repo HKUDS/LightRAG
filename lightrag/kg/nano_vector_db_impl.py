@@ -11,6 +11,7 @@ from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.utils import (
     logger,
     compute_mdhash_id,
+    validate_workspace,
 )
 
 from lightrag.base import BaseVectorStorage
@@ -150,6 +151,8 @@ class NanoVectorDBStorage(BaseVectorStorage):
     """
 
     def __post_init__(self):
+        # Reject path traversal before using workspace in a file path
+        validate_workspace(self.workspace)
         self._validate_embedding_func()
         # Initialize basic attributes
         self._client = None

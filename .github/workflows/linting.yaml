@@ -2,9 +2,9 @@ name: Linting and Formatting
 
 on:
     push:
-        branches: [ main, dev ]
+        branches: [ main, dev, 'dev-*' ]
     pull_request:
-        branches: [ main, dev ]
+        branches: [ main, dev, 'dev-*' ]
         types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
@@ -18,10 +18,10 @@ jobs:
 
         steps:
             - name: Checkout code
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
 
             - name: Set up Python
-              uses: actions/setup-python@v6
+              uses: actions/setup-python@v7
               with:
                 python-version: '3.x'
 

@@ -33,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -196,13 +197,47 @@ class MinerUParserOptions:
     local_end_page_id: int
 
     @classmethod
-    def from_env(cls, *, api_mode: str | None = None) -> "MinerUParserOptions":
+    def from_env(
+        cls,
+        *,
+        api_mode: str | None = None,
+        overrides: "Mapping[str, Any] | None" = None,
+    ) -> "MinerUParserOptions":
+        """Build the effective options from env, with optional per-file overrides.
+
+        ``overrides`` carries decoded per-file engine params (``page_range`` →
+        ``page_ranges``, ``language``, ``local_parse_method``).  They feed both
+        the live request and the cache signature, so an overridden document gets
+        its own bundle.
+        """
+        overrides = overrides or {}
         mode = (
             _normalize_api_mode(api_mode)
             if api_mode is not None
             else _current_api_mode()
         )
-        page_ranges = os.getenv("MINERU_PAGE_RANGES", "").strip()
+        page_ranges = str(
+            overrides.get("page_range", os.getenv("MINERU_PAGE_RANGES", ""))
+        ).strip()
+        language = (
+            str(
+                overrides.get(
+                    "language", os.getenv("MINERU_LANGUAGE", DEFAULT_MINERU_LANGUAGE)
+                )
+            ).strip()
+            or DEFAULT_MINERU_LANGUAGE
+        )
+        local_parse_method = (
+            str(
+                overrides.get(
+                    "local_parse_method",
+                    os.getenv(
+                        "MINERU_LOCAL_PARSE_METHOD", DEFAULT_MINERU_LOCAL_PARSE_METHOD
+                    ),
+                )
+            ).strip()
+            or DEFAULT_MINERU_LOCAL_PARSE_METHOD
+        )
         local_start = _env_int(
             "MINERU_LOCAL_START_PAGE_ID", DEFAULT_MINERU_LOCAL_START_PAGE_ID
         )
@@ -217,10 +252,7 @@ class MinerUParserOptions:
                 os.getenv("MINERU_MODEL_VERSION", DEFAULT_MINERU_MODEL_VERSION).strip()
                 or DEFAULT_MINERU_MODEL_VERSION
             ),
-            language=(
-                os.getenv("MINERU_LANGUAGE", DEFAULT_MINERU_LANGUAGE).strip()
-                or DEFAULT_MINERU_LANGUAGE
-            ),
+            language=language,
             enable_table=_env_bool("MINERU_ENABLE_TABLE", DEFAULT_MINERU_ENABLE_TABLE),
             enable_formula=_env_bool(
                 "MINERU_ENABLE_FORMULA", DEFAULT_MINERU_ENABLE_FORMULA
@@ -231,12 +263,7 @@ class MinerUParserOptions:
                 os.getenv("MINERU_LOCAL_BACKEND", DEFAULT_MINERU_LOCAL_BACKEND).strip()
                 or DEFAULT_MINERU_LOCAL_BACKEND
             ),
-            local_parse_method=(
-                os.getenv(
-                    "MINERU_LOCAL_PARSE_METHOD", DEFAULT_MINERU_LOCAL_PARSE_METHOD
-                ).strip()
-                or DEFAULT_MINERU_LOCAL_PARSE_METHOD
-            ),
+            local_parse_method=local_parse_method,
             local_image_analysis=_env_bool(
                 "MINERU_LOCAL_IMAGE_ANALYSIS", DEFAULT_MINERU_LOCAL_IMAGE_ANALYSIS
             ),
@@ -297,11 +324,18 @@ def mineru_options_signature(
     return "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def current_mineru_options_signature() -> str:
-    return MinerUParserOptions.from_env().signature()
+def current_mineru_options_signature(
+    overrides: "Mapping[str, Any] | None" = None,
+) -> str:
+    return MinerUParserOptions.from_env(overrides=overrides).signature()
 
 
-def is_bundle_valid(raw_dir: Path, source_file: Path) -> bool:
+def is_bundle_valid(
+    raw_dir: Path,
+    source_file: Path,
+    *,
+    overrides: "Mapping[str, Any] | None" = None,
+) -> bool:
     """Return True iff the bundle is intact and matches the current source.
 
     See module docstring for the full policy. Returns False on any of:
@@ -338,7 +372,7 @@ def is_bundle_valid(raw_dir: Path, source_file: Path) -> bool:
     # changes such as MINERU_LOCAL_BACKEND cannot silently reuse stale output.
     if not manifest.options_signature:
         return False
-    if current_mineru_options_signature() != manifest.options_signature:
+    if current_mineru_options_signature(overrides) != manifest.options_signature:
         return False
 
     # 5. Engine version (only when current env exposes one AND manifest had one)

@@ -1,0 +1,63 @@
+name: PostgreSQL Smoke Tests
+
+on:
+  push:
+    branches: [ main, dev, 'dev-*' ]
+  pull_request:
+    branches: [ main, dev, 'dev-*' ]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  pg-smoke:
+    name: PGTable Smoke Tests (PostgreSQL ${{ matrix.pg }})
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        pg: ['18']
+      fail-fast: false
+
+    services:
+      postgres:
+        image: postgres:${{ matrix.pg }}
+        env:
+          POSTGRES_USER: lightrag
+          POSTGRES_PASSWORD: lightrag_smoke
+          POSTGRES_DB: lightrag_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lightrag -d lightrag_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: lightrag
+      POSTGRES_PASSWORD: lightrag_smoke
+      POSTGRES_DATABASE: lightrag_test
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system -e ".[api]"
+          uv pip install --system pytest pytest-asyncio asyncpg
+
+      - name: Run pg_smoke tests
+        run: |
+          pytest tests/kg/pgtable_impl/test_pgtable_smoke.py -m pg_smoke --run-integration -v --tb=short

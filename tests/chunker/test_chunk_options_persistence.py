@@ -216,9 +216,9 @@ def test_caller_supplied_chunk_options_reach_chunker(tmp_path, monkeypatch):
 
     asyncio.run(_run())
 
-    assert (
-        captured.get("chunk_token_size") == 100
-    ), f"R chunker must receive caller-supplied chunk_token_size; got {captured!r}"
+    assert captured.get("chunk_token_size") == 100, (
+        f"R chunker must receive caller-supplied chunk_token_size; got {captured!r}"
+    )
     assert captured["kwargs"]["separators"] == ["|", ""]
     assert captured["kwargs"]["chunk_overlap_token_size"] == 0
 
@@ -1073,9 +1073,9 @@ def test_addon_params_strategy_wins_over_strategy_env(tmp_path, monkeypatch):
 
     row = asyncio.run(_run())
     chunk_opts = row["chunk_options"]
-    assert (
-        chunk_opts["recursive_character"]["chunk_overlap_token_size"] == 999
-    ), "addon_params explicit value must beat strategy-specific env."
+    assert chunk_opts["recursive_character"]["chunk_overlap_token_size"] == 999, (
+        "addon_params explicit value must beat strategy-specific env."
+    )
 
 
 @pytest.mark.offline
@@ -1131,6 +1131,204 @@ def test_runtime_addon_params_mutation_affects_subsequent_enqueue(tmp_path):
         "##",
         "\n",
     ]
+
+
+@pytest.mark.offline
+def test_runtime_chunker_config_is_corrected_once_and_cached(tmp_path, monkeypatch):
+    """Top-level replacement warns immediately; nested mutation warns once at enqueue.
+
+    Nested ``addon_params`` dicts intentionally remain mutable for compatibility,
+    so snapshot construction is the first observable boundary after that style of
+    update. It must replace the bad live value as well as return a safe snapshot.
+    """
+    import lightrag.chunker.recursive_character as recursive_character
+
+    from lightrag.parser.routing import resolve_chunk_options
+
+    rag = _new_rag(tmp_path)
+    too_many = [f"runtime-cache-{index}" for index in range(70)]
+    warnings: list[str] = []
+    monkeypatch.setattr(recursive_character.logger, "warning", warnings.append)
+
+    rag.addon_params["chunker"] = {"recursive_character": {"separators": too_many}}
+
+    assert (
+        rag.addon_params["chunker"]["recursive_character"]["separators"]
+        == too_many[:64]
+    )
+    assert (
+        sum(
+            "[addon_params['chunker']] separator cascade" in message
+            for message in warnings
+        )
+        == 1
+    )
+
+    warnings.clear()
+    all_overlong = ["x" * 257] * 3
+    rag.addon_params["chunker"]["recursive_character"]["separators"] = all_overlong
+
+    first = resolve_chunk_options(rag.addon_params, process_options="R")
+    second = resolve_chunk_options(rag.addon_params, process_options="R")
+
+    assert first["recursive_character"]["separators"] == []
+    assert second["recursive_character"]["separators"] == []
+    assert rag.addon_params["chunker"]["recursive_character"]["separators"] == []
+    assert (
+        sum("[addon_params['chunker']] dropped" in message for message in warnings) == 1
+    )
+
+
+@pytest.mark.offline
+def test_correction_keeps_the_nested_dict_a_caller_still_holds(tmp_path):
+    """A correction must not detach the sub-dict the documented idiom hands out.
+
+    ``default_addon_params`` advertises
+    ``rag.addon_params["chunker"]["recursive_character"][...] = ...`` as the way
+    to retune the chunker at runtime, which means callers legitimately keep a
+    reference to that nested dict. Replacing it during a correction leaves the
+    caller writing into an orphan: every later retune is silently discarded.
+    """
+    from lightrag.parser.routing import resolve_chunk_options
+
+    rag = _new_rag(tmp_path)
+    recursive = rag.addon_params["chunker"]["recursive_character"]
+
+    recursive["separators"] = [f"identity-{index}" for index in range(70)]
+    resolve_chunk_options(rag.addon_params, process_options="R")
+
+    live = rag.addon_params["chunker"]["recursive_character"]
+    assert live is recursive
+    assert len(recursive["separators"]) == 64
+
+    # The reference must still steer subsequent documents.
+    recursive["separators"] = ["|"]
+    snapshot = resolve_chunk_options(rag.addon_params, process_options="R")
+    assert snapshot["recursive_character"]["separators"] == ["|"]
+
+
+@pytest.mark.offline
+def test_top_level_replacement_also_keeps_the_supplied_nested_dict(tmp_path):
+    """Same guarantee for the assignment path, which corrects in place too."""
+    rag = _new_rag(tmp_path)
+    recursive = {"separators": [f"assigned-{index}" for index in range(70)]}
+
+    rag.addon_params["chunker"] = {"recursive_character": recursive}
+
+    assert rag.addon_params["chunker"]["recursive_character"] is recursive
+    assert len(recursive["separators"]) == 64
+
+
+@pytest.mark.offline
+def test_building_a_snapshot_does_not_invalidate_the_prompt_profile_cache(tmp_path):
+    """``resolve_chunk_options`` corrects in place, so it must not mark dirty.
+
+    Going through ``ObservableAddonParams.__setitem__`` would fire the change
+    callback and force ``_refresh_addon_params_cache`` — re-resolving the entity
+    extraction prompt profile (which can read a file) — on an enqueue that only
+    ever needed to bound a list.
+    """
+    from lightrag.parser.routing import resolve_chunk_options
+
+    rag = _new_rag(tmp_path)
+    rag.addon_params["chunker"]["recursive_character"]["separators"] = [
+        f"dirty-{index}" for index in range(70)
+    ]
+    rag._addon_params_dirty = False
+
+    resolve_chunk_options(rag.addon_params, process_options="R")
+
+    assert rag._addon_params_dirty is False
+
+
+@pytest.mark.offline
+def test_a_string_separators_value_is_dropped_not_split_into_characters(
+    tmp_path, monkeypatch
+):
+    """A ``str`` satisfies ``Sequence[str]`` — bounding it would corrupt config.
+
+    Iterating a 300-character string yields 300 one-character "separators",
+    which the bound then truncates to 64. Persisting that back into
+    ``addon_params`` would destroy the operator's original value, replace it
+    with something that looks legitimate, and report it as a 300-entry cascade.
+    """
+    import lightrag.chunker.recursive_character as recursive_character
+
+    from lightrag.parser.routing import resolve_chunk_options
+
+    rag = _new_rag(tmp_path)
+    warnings: list[str] = []
+    monkeypatch.setattr(recursive_character.logger, "warning", warnings.append)
+
+    rag.addon_params["chunker"] = {"recursive_character": {"separators": "x" * 300}}
+
+    recursive = rag.addon_params["chunker"]["recursive_character"]
+    assert "separators" not in recursive
+    assert sum("must be a list of strings, got str" in m for m in warnings) == 1
+
+    # And the snapshot takes the documented ``separators=None`` path rather than
+    # carrying 64 single characters.
+    snapshot = resolve_chunk_options(rag.addon_params, process_options="R")
+    assert "separators" not in snapshot["recursive_character"]
+
+    warnings.clear()
+    resolve_chunk_options(rag.addon_params, process_options="R")
+    assert warnings == []
+
+
+@pytest.mark.offline
+def test_constructor_supplied_chunker_is_bounded_without_mutating_the_caller(
+    tmp_path, monkeypatch
+):
+    """``LightRAG(addon_params=...)`` is a configuration ingress point too.
+
+    It corrects by copying: the caller's mapping is an argument, not the
+    instance's live configuration, so mutating it would be a surprise.
+    """
+    import lightrag.chunker.recursive_character as recursive_character
+
+    warnings: list[str] = []
+    monkeypatch.setattr(recursive_character.logger, "warning", warnings.append)
+
+    too_many = [f"ctor-{index}" for index in range(70)]
+    supplied = {"chunker": {"recursive_character": {"separators": list(too_many)}}}
+
+    rag = _new_rag(tmp_path, addon_params=supplied)
+
+    assert (
+        rag.addon_params["chunker"]["recursive_character"]["separators"]
+        == too_many[:64]
+    )
+    assert supplied["chunker"]["recursive_character"]["separators"] == too_many
+    assert (
+        sum(
+            "[addon_params['chunker']] separator cascade" in message
+            for message in warnings
+        )
+        == 1
+    )
+
+
+@pytest.mark.offline
+def test_a_plain_mapping_is_not_corrected_but_is_still_bounded_downstream():
+    """Only live ``ObservableAddonParams`` gets the ingress correction.
+
+    A plain mapping has no owner to cache the fix into, so warning about it
+    would be the per-call amplification this design removes. The snapshot keeps
+    the raw value and the chunker's silent backstop bounds it at execution.
+    """
+    from lightrag.chunker.recursive_character import normalize_r_separators
+    from lightrag.parser.routing import resolve_chunk_options
+
+    too_many = [f"plain-{index}" for index in range(70)]
+    plain = {"chunker": {"recursive_character": {"separators": list(too_many)}}}
+
+    snapshot = resolve_chunk_options(plain, process_options="R")
+
+    assert snapshot["recursive_character"]["separators"] == too_many
+    assert (
+        len(normalize_r_separators(snapshot["recursive_character"]["separators"])) == 64
+    )
 
 
 @pytest.mark.offline
@@ -1552,3 +1750,118 @@ def test_partial_chunker_config_no_size_env_leaves_slot_absent(tmp_path, monkeyp
     chunker = rag.addon_params["chunker"]
     assert "chunk_token_size" not in chunker["recursive_character"]
     assert "chunk_token_size" not in chunker["fixed_token"]
+
+
+# --------------------------------------------------------------------------- #
+# drop_references: switch is snapshotted (+ recorded in chunk_opts metadata);
+# detection knobs (tail/headings) are NOT snapshotted (read live by chunker).
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.offline
+def test_drop_references_env_snapshotted_but_knobs_not(tmp_path, monkeypatch):
+    """``CHUNK_P_DROP_REFERENCES`` flows into the persisted snapshot and reaches
+    the chunker even on a partial ``addon_params`` (runtime-mutation path that
+    bypasses ``_apply_chunk_size_overlay``).  The detection knobs
+    ``CHUNK_P_REFERENCES_TAIL_N`` / ``CHUNK_P_REFERENCES_HEADINGS`` must NOT be
+    snapshotted — the chunker reads them live."""
+    monkeypatch.setenv("CHUNK_P_DROP_REFERENCES", "true")
+    monkeypatch.setenv("CHUNK_P_REFERENCES_TAIL_N", "3")
+    monkeypatch.setenv("CHUNK_P_REFERENCES_HEADINGS", "Foo|Bar")
+
+    import lightrag.chunker as chunker_pkg
+
+    captured: dict = {}
+
+    def _p_spy(tokenizer, content, chunk_token_size, *, blocks_path=None, **kwargs):
+        captured.update(kwargs)
+        return [{"tokens": 5, "content": "stub", "chunk_order_index": 0}]
+
+    monkeypatch.setattr(chunker_pkg, "chunking_by_paragraph_semantic", _p_spy)
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            # Runtime mutation bypasses _apply_chunk_size_overlay, so this
+            # exercises the slim_chunk_options chokepoint.
+            rag.addon_params["chunker"] = {"paragraph_semantic": {}}
+            await rag.apipeline_enqueue_documents(
+                "drop references body",
+                ids=["doc-drop-rf"],
+                file_paths="ctor.[native-P].txt",
+                track_id="track-p-drop-rf",
+                process_options="P",
+            )
+            row = await rag.full_docs.get_by_id("doc-drop-rf")
+            await rag.apipeline_process_enqueue_documents()
+        finally:
+            await rag.finalize_storages()
+        return row
+
+    row = asyncio.run(_run())
+    assert row is not None
+    p_opts = row["chunk_options"]["paragraph_semantic"]
+    # Switch is snapshotted ...
+    assert p_opts.get("drop_references") is True
+    # ... but the detection knobs are NOT.
+    assert "references_tail_n" not in p_opts
+    assert "references_headings" not in p_opts
+    # The switch reaches the chunker; the knobs do not (chunker reads env).
+    assert captured.get("drop_references") is True
+    assert "references_tail_n" not in captured
+    assert "references_headings" not in captured
+
+
+@pytest.mark.offline
+def test_explicit_drop_references_false_overrides_env_true(tmp_path, monkeypatch):
+    """An explicit ``drop_references=False`` in a caller-supplied
+    ``chunk_options`` wins over ``CHUNK_P_DROP_REFERENCES=true`` (setdefault
+    in ``slim_chunk_options`` never clobbers a present value)."""
+    monkeypatch.setenv("CHUNK_P_DROP_REFERENCES", "true")
+
+    import lightrag.chunker as chunker_pkg
+    from lightrag.parser.routing import resolve_chunk_options
+
+    captured: dict = {}
+
+    def _p_spy(tokenizer, content, chunk_token_size, *, blocks_path=None, **kwargs):
+        captured.update(kwargs)
+        return [{"tokens": 5, "content": "stub", "chunk_order_index": 0}]
+
+    monkeypatch.setattr(chunker_pkg, "chunking_by_paragraph_semantic", _p_spy)
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            opts = resolve_chunk_options(rag.addon_params, process_options="P")
+            # Env put drop_references=True here; explicit override to False.
+            assert opts["paragraph_semantic"]["drop_references"] is True
+            opts["paragraph_semantic"]["drop_references"] = False
+            await rag.apipeline_enqueue_documents(
+                "explicit override body",
+                file_paths="ctor.[native-P].txt",
+                track_id="track-p-drop-rf-false",
+                process_options="P",
+                chunk_options=opts,
+            )
+            await rag.apipeline_process_enqueue_documents()
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+    assert captured.get("drop_references") is False
+
+
+@pytest.mark.offline
+def test_chunk_opts_metadata_records_only_drop_rf():
+    """``_format_chunking_params`` renders ``drop_references`` under the short
+    ``drop_rf`` alias (what lands in ``doc_status.metadata['chunk_opts']``) and
+    never the env-only detection knobs."""
+    from lightrag.pipeline import _format_chunking_params
+
+    line = _format_chunking_params(2000, {"drop_references": True})
+    assert "drop_rf=True" in line
+    assert "drop_references" not in line  # aliased, not the verbose name
+    assert "rf_tail" not in line and "rf_heads" not in line

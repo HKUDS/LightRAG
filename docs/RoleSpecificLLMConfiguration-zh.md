@@ -26,7 +26,7 @@ LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
 
 # 所有 LLM 请求的默认超时时间
-LLM_TIMEOUT=180
+LLM_TIMEOUT=240
 
 # 所有 LLM 调用的默认最大并发数(MAX_ASYNC 作为兼容旧名仍可用)
 MAX_ASYNC_LLM=4
@@ -244,7 +244,7 @@ LLM_BINDING=openai
 LLM_MODEL=gpt-5-mini
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_extract_openai_api_key
-LLM_TIMEOUT=180
+LLM_TIMEOUT=240
 MAX_ASYNC_LLM=4
 
 ###########################################################################
@@ -293,7 +293,7 @@ KEYWORD_OPENAI_LLM_MAX_TOKENS=2048
 # Optional for Qwen-style models served by vLLM when you want to disable thinking.
 KEYWORD_OPENAI_LLM_EXTRA_BODY='{"chat_template_kwargs": {"enable_thinking": false}}'
 KEYWORD_MAX_ASYNC_LLM=4
-KEYWORD_LLM_TIMEOUT=180
+KEYWORD_LLM_TIMEOUT=60
 ```
 
 这个模式不是跨 provider，因为三个角色的 binding 都是 `openai`。LightRAG 会分别把每个角色的 `*_LLM_BINDING_HOST` 和 `*_LLM_BINDING_API_KEY` 传给 OpenAI-compatible client。
@@ -374,3 +374,4 @@ QUERY_BEDROCK_LLM_TEMPERATURE=0.2
 - Gemini Vertex AI 模式由进程级 Google 环境变量控制，不能在同一个 LightRAG 进程里让某些角色使用 Vertex AI、另一些角色使用 AI Studio API key。
 - `LLM_BINDING_HOST` 在 Docker/Compose 中通常需要使用容器可访问地址，例如 `host.docker.internal`，角色级 host 也遵循相同原则。
 - 修改 `.env` 后请重启 LightRAG Server。部分 IDE 终端会预加载 `.env`，建议打开新的终端会话确认环境变量生效。
+- 支持思考模式的 Ollama 模型在提取阶段可能因为隐藏推理耗尽了全部生成预算、在给出任何输出前就用完额度，导致实体/关系静默返回为空（issue #3597）。遇到这种情况可设置 `EXTRACT_OLLAMA_LLM_THINK=false`（如果关键词提取也受影响，同样设置 `KEYWORD_OLLAMA_LLM_THINK=false`）。除 `true`/`false` 外，该选项还接受推理档位（`low`/`medium`/`high`，需要 Ollama 服务端支持档位）。完全不设置表示跟随模型自身默认；留空（`OLLAMA_LLM_THINK=`）等同于 `false`，不等同于未设置。

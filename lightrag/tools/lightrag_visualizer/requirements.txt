@@ -1,8 +1,0 @@
-imgui_bundle
-moderngl
-networkx
-numpy
-pyglm
-python-louvain
-scipy
-tk

@@ -390,8 +390,8 @@ def test_query_modes() -> None:
     - /local: Local retrieval mode, searches only in highly relevant documents
     - /global: Global retrieval mode, searches across all documents
     - /naive: Naive mode, does not use any optimization strategies
-    - /hybrid: Hybrid mode (default), combines multiple strategies
-    - /mix: Mix mode
+    - /hybrid: Hybrid mode, combines multiple strategies
+    - /mix: Mix mode (default)
 
     Each mode will return responses in the same format, but with different retrieval strategies.
     """

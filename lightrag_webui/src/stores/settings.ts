@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { createSelectors } from '@/lib/utils'
-import { defaultQueryLabel } from '@/lib/constants'
+import { defaultQueryLabel, suggestedUserPrompts } from '@/lib/constants'
 import { Message, QueryRequest } from '@/api/lightrag'
 
 type Theme = 'dark' | 'light' | 'system'
@@ -48,9 +48,6 @@ interface SettingsState {
 
   backendMaxGraphNodes: number | null
   setBackendMaxGraphNodes: (maxNodes: number | null) => void
-
-  graphLayoutMaxIterations: number
-  setGraphLayoutMaxIterations: (iterations: number) => void
 
   // Retrieval settings
   queryLabel: string
@@ -106,7 +103,6 @@ const useSettingsStoreBase = create<SettingsState>()(
       graphQueryMaxDepth: 3,
       graphMaxNodes: 1000,
       backendMaxGraphNodes: null,
-      graphLayoutMaxIterations: 15,
 
       queryLabel: defaultQueryLabel,
 
@@ -119,10 +115,10 @@ const useSettingsStoreBase = create<SettingsState>()(
       documentsPageSize: 10,
 
       retrievalHistory: [],
-      userPromptHistory: [],
+      userPromptHistory: [...suggestedUserPrompts],
 
       querySettings: {
-        mode: 'global',
+        mode: 'mix',
         top_k: 40,
         chunk_top_k: 20,
         max_entity_tokens: 6000,
@@ -141,11 +137,6 @@ const useSettingsStoreBase = create<SettingsState>()(
       setLanguage: (language: Language) => {
         set({ language })
       },
-
-      setGraphLayoutMaxIterations: (iterations: number) =>
-        set({
-          graphLayoutMaxIterations: iterations
-        }),
 
       setQueryLabel: (queryLabel: string) =>
         set({
@@ -238,7 +229,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 19,
+      version: 20,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -275,7 +266,6 @@ const useSettingsStoreBase = create<SettingsState>()(
         }
         if (version < 7) {
           state.graphQueryMaxDepth = 3
-          state.graphLayoutMaxIterations = 15
         }
         if (version < 8) {
           state.graphMinDegree = 0
@@ -340,6 +330,17 @@ const useSettingsStoreBase = create<SettingsState>()(
           if (state.querySettings) {
             delete state.querySettings.response_type
           }
+        }
+        if (version < 20) {
+          // One-time injection of system-suggested prompts; append after any existing
+          // history so user's own prompts keep priority. Skip any prompt already
+          // present to avoid duplicate dropdown entries (matches the de-duping in
+          // addUserPromptToHistory). version monotonicity makes this run at most once.
+          const existing = state.userPromptHistory ?? []
+          state.userPromptHistory = [
+            ...existing,
+            ...suggestedUserPrompts.filter((p: string) => !existing.includes(p))
+          ]
         }
         return state
       }

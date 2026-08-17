@@ -164,14 +164,28 @@ async def anthropic_complete_if_cache(
         if system_prompt:
             create_params["system"] = system_prompt
         response = await anthropic_async_client.messages.create(**create_params)
+    except APITimeoutError as e:
+        # APITimeoutError subclasses APIConnectionError, so it must come first
+        # or it would be swallowed by the broader handler below.
+        logger.error(f"Anthropic API Timeout Error: {e}")
+        try:
+            await anthropic_async_client.close()
+        except Exception as close_error:
+            logger.warning(f"Failed to close Anthropic client: {close_error}")
+        raise
     except APIConnectionError as e:
         logger.error(f"Anthropic API Connection Error: {e}")
+        try:
+            await anthropic_async_client.close()
+        except Exception as close_error:
+            logger.warning(f"Failed to close Anthropic client: {close_error}")
         raise
     except RateLimitError as e:
         logger.error(f"Anthropic API Rate Limit Error: {e}")
-        raise
-    except APITimeoutError as e:
-        logger.error(f"Anthropic API Timeout Error: {e}")
+        try:
+            await anthropic_async_client.close()
+        except Exception as close_error:
+            logger.warning(f"Failed to close Anthropic client: {close_error}")
         raise
     except Exception as e:
         body = getattr(e, "body", None)
@@ -188,10 +202,30 @@ async def anthropic_complete_if_cache(
         logger.error(
             f"Anthropic API Call Failed,\nModel: {model},\nParams: {kwargs}, Got: {e}{extra}"
         )
+        try:
+            await anthropic_async_client.close()
+        except Exception as close_error:
+            logger.warning(f"Failed to close Anthropic client: {close_error}")
+        raise
+    except BaseException:
+        # CancelledError (and other BaseExceptions) aren't caught above, yet a
+        # cancellation while awaiting create() — before we hold the response or
+        # stream — would otherwise leak the client. Close it, then re-raise the
+        # cancellation untouched (cooperative cancellation).
+        try:
+            await anthropic_async_client.close()
+        except Exception as close_error:
+            logger.warning(f"Failed to close Anthropic client: {close_error}")
         raise
 
     if not stream:
-        return response.content[0].text
+        try:
+            return response.content[0].text
+        finally:
+            try:
+                await anthropic_async_client.close()
+            except Exception as close_error:
+                logger.warning(f"Failed to close Anthropic client: {close_error}")
 
     async def stream_response():
         try:
@@ -211,6 +245,26 @@ async def anthropic_complete_if_cache(
         except Exception as e:
             logger.error(f"Error in stream response: {str(e)}")
             raise
+        finally:
+            # Release the streaming response and the client. The generator owns
+            # the client lifetime, so the caller never closes it; finally also
+            # runs on GeneratorExit (early break) which the except clause above
+            # cannot catch. AsyncStream exposes close() (not aclose()).
+            #
+            # The client close lives in an outer finally so it still runs if
+            # response.close() is interrupted by CancelledError (a BaseException,
+            # not caught by `except Exception`) — otherwise task cancellation /
+            # client disconnect during stream teardown would leak the client.
+            try:
+                try:
+                    await response.close()
+                except Exception as close_error:
+                    logger.warning(f"Failed to close Anthropic stream: {close_error}")
+            finally:
+                try:
+                    await anthropic_async_client.close()
+                except Exception as close_error:
+                    logger.warning(f"Failed to close Anthropic client: {close_error}")
 
     return stream_response()
 

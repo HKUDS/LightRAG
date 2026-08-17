@@ -14,7 +14,7 @@ from ..base import BaseVectorStorage
 from ..constants import DEFAULT_QUERY_PRIORITY
 from ..exceptions import DataMigrationError
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
-from ..utils import _cooperative_yield, compute_mdhash_id, logger
+from ..utils import _cooperative_yield, compute_mdhash_id, logger, validate_workspace
 
 if not pm.is_installed("qdrant-client"):
     pm.install("qdrant-client")
@@ -72,6 +72,13 @@ def compute_mdhash_id_for_qdrant(
         raise ValueError("Invalid style. Choose from 'simple', 'hyphenated', or 'urn'.")
 
 
+def _normalize_qdrant_point_id(point_id: Any) -> str:
+    try:
+        return uuid.UUID(str(point_id)).hex
+    except (ValueError, AttributeError, TypeError):
+        return str(point_id)
+
+
 def workspace_filter_condition(workspace: str) -> models.FieldCondition:
     """
     Create a workspace filter condition for Qdrant queries.
@@ -124,6 +131,46 @@ def _find_legacy_collection(
             return candidate
 
     return None
+
+
+def _legacy_collection_has_workspace_field(
+    client: QdrantClient, collection_name: str
+) -> bool | None:
+    """Return whether the legacy collection tags its points with workspace_id.
+
+    Mirrors the detection in ``setup_collection``: trust the payload schema for
+    indexed fields, otherwise sample a few points (payload_schema only reflects
+    INDEXED fields).
+
+    Returns:
+        ``True``  - workspace_id present (workspace-tagged legacy).
+        ``False`` - confidently absent (untagged, pre-isolation legacy):
+                    ``setup_collection`` migrates ALL of it with no workspace
+                    filter, so the whole collection is the migration source.
+        ``None``  - tagging could not be determined (metadata / scroll error).
+                    Callers MUST NOT treat this as untagged: dropping an
+                    actually-tagged, shared legacy collection would delete other
+                    workspaces' migration source.
+    """
+    try:
+        legacy_info = client.get_collection(collection_name)
+        if WORKSPACE_ID_FIELD in (legacy_info.payload_schema or {}):
+            return True
+        sample_points, _ = client.scroll(
+            collection_name=collection_name,
+            limit=10,
+            with_payload=True,
+            with_vectors=False,
+        )
+    except Exception as e:
+        logger.warning(
+            f"Qdrant: could not determine workspace tagging of legacy collection "
+            f"'{collection_name}': {e}"
+        )
+        return None
+    return any(
+        point.payload and WORKSPACE_ID_FIELD in point.payload for point in sample_points
+    )
 
 
 @final
@@ -428,6 +475,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             )
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         self._validate_embedding_func()
         # Check for QDRANT_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all Qdrant storage instances
@@ -1118,7 +1166,11 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     if CREATED_AT_FIELD not in payload:
                         payload[CREATED_AT_FIELD] = None
 
-                    qdrant_point_id = str(point.id) if point.id is not None else ""
+                    qdrant_point_id = (
+                        _normalize_qdrant_point_id(point.id)
+                        if point.id is not None
+                        else ""
+                    )
                     if qdrant_point_id:
                         payload_by_qdrant_id[qdrant_point_id] = payload
 
@@ -1218,10 +1270,11 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             return result
 
         try:
-            qdrant_ids = [
-                compute_mdhash_id_for_qdrant(id, prefix=self.effective_workspace)
+            qdrant_id_to_requested_id = {
+                compute_mdhash_id_for_qdrant(id, prefix=self.effective_workspace): id
                 for id in remaining
-            ]
+            }
+            qdrant_ids = list(qdrant_id_to_requested_id)
             results = self._client.retrieve(
                 collection_name=self.final_namespace,
                 ids=qdrant_ids,
@@ -1230,13 +1283,19 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             )
 
             for point in results:
-                if point and point.vector is not None and point.payload:
-                    original_id = point.payload.get(ID_FIELD)
-                    if original_id:
-                        vector_data = point.vector
-                        if isinstance(vector_data, np.ndarray):
-                            vector_data = vector_data.tolist()
-                        result[original_id] = vector_data
+                if point and point.vector is not None:
+                    payload = point.payload or {}
+                    original_id = payload.get(ID_FIELD)
+                    if not original_id and point.id is not None:
+                        original_id = qdrant_id_to_requested_id.get(
+                            _normalize_qdrant_point_id(point.id)
+                        )
+                    if not original_id:
+                        continue
+                    vector_data = point.vector
+                    if isinstance(vector_data, np.ndarray):
+                        vector_data = vector_data.tolist()
+                    result[str(original_id)] = vector_data
 
             return result
         except Exception as e:
@@ -1244,12 +1303,13 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             return result
 
     async def finalize(self):
-        """Flush pending vector ops; surface unflushed data as RuntimeError.
+        """Flush pending vector ops, then release the Qdrant client.
 
-        Qdrant has no client connection that needs explicit release here
-        (the QdrantClient is held by the storage instance and torn down
-        on GC), but we still need to fail loudly when a transient bulk
-        error left writes buffered. ``_flush_pending_vector_ops`` is
+        The QdrantClient owns an HTTP/gRPC transport that should be closed
+        explicitly rather than left for GC — matching the close-on-release
+        pattern used by the other server-backed storages (Neo4j / Postgres /
+        Mongo / OpenSearch / Milvus). We still fail loudly when a transient
+        bulk error left writes buffered. ``_flush_pending_vector_ops`` is
         all-or-nothing: it either clears both buffers or raises with
         them intact, but we still defensively check both buffers after a
         successful flush in case a future refactor breaks that invariant.
@@ -1259,6 +1319,17 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             await self._flush_pending_vector_ops()
         except Exception as e:
             flush_error = e
+
+        # Release the client after the flush so the flush can still use it.
+        # The transport is freed on every exit path, matching the
+        # close-on-release pattern of the other server-backed storages.
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception as close_error:
+                logger.warning(
+                    f"[{self.workspace}] Failed to close Qdrant client: {close_error}"
+                )
 
         async with self._flush_lock:
             pending_docs = len(self._pending_vector_docs)
@@ -1287,6 +1358,17 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         collection are untouched). The collection itself and its vector
         index are NOT recreated — they were provisioned at
         ``initialize()`` and remain in place.
+
+        The same workspace-scoped delete is also issued against the kept
+        legacy collection (the un-suffixed collection that the model-suffix
+        migration leaves behind as a backup), when one is found. The
+        legacy->suffixed migration only runs while the suffixed collection
+        has no points for the workspace; if a deliberate clear left this
+        workspace's data behind in legacy, the next startup would migrate
+        it back into the freshly-emptied suffixed collection (resurrection).
+        Only this workspace's legacy points are removed, so other
+        workspaces' legacy data and their pending one-time migration stay
+        intact.
 
         MUST only be called when ``pipeline_status`` is idle (see the
         Pipeline concurrency contract in ``AGENTS.md``); the only
@@ -1321,15 +1403,66 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 self._pending_vector_deletes.clear()
 
                 # Delete all points for the current workspace
+                workspace_selector = models.FilterSelector(
+                    filter=models.Filter(
+                        must=[workspace_filter_condition(self.effective_workspace)]
+                    )
+                )
                 self._client.delete(
                     collection_name=self.final_namespace,
-                    points_selector=models.FilterSelector(
-                        filter=models.Filter(
-                            must=[workspace_filter_condition(self.effective_workspace)]
-                        )
-                    ),
+                    points_selector=workspace_selector,
                     wait=True,
                 )
+
+                # Also clear this workspace's data from the kept legacy
+                # collection so the next startup does not re-migrate the
+                # just-cleared data back into the suffixed collection.
+                legacy_collection = _find_legacy_collection(
+                    self._client,
+                    self.namespace,
+                    self.effective_workspace,
+                    self.model_suffix,
+                )
+                if legacy_collection and legacy_collection != self.final_namespace:
+                    legacy_has_workspace = _legacy_collection_has_workspace_field(
+                        self._client, legacy_collection
+                    )
+                    if legacy_has_workspace is None:
+                        # Tagging undetermined (transient metadata / scroll error):
+                        # do NOT drop the collection (it may be an actually-tagged,
+                        # shared legacy and we'd delete other workspaces' migration
+                        # source). But the legacy data is left untouched, so the
+                        # next startup would re-migrate this workspace's cleared
+                        # points back — the clear is NOT durable. Abort with an
+                        # error so the caller can retry instead of reporting a
+                        # success that does not survive a restart.
+                        raise RuntimeError(
+                            f"Could not determine workspace tagging of legacy "
+                            f"collection '{legacy_collection}'; aborting clear of "
+                            f"'{self.namespace}' to avoid leaving stale legacy data "
+                            f"that would resurrect on restart. Retry once Qdrant "
+                            f"metadata is reachable."
+                        )
+                    elif legacy_has_workspace:
+                        # Workspace-tagged legacy: remove only this workspace's points.
+                        self._client.delete(
+                            collection_name=legacy_collection,
+                            points_selector=workspace_selector,
+                            wait=True,
+                        )
+                    else:
+                        # Untagged (pre-isolation) legacy: setup_collection migrates
+                        # ALL of its points into this workspace with no workspace
+                        # filter, so a workspace-filtered delete would miss them.
+                        # Drop the whole legacy collection to remove the migration
+                        # source.
+                        self._client.delete_collection(
+                            collection_name=legacy_collection
+                        )
+                        logger.info(
+                            f"[{self.workspace}] Dropped untagged legacy Qdrant collection "
+                            f"'{legacy_collection}' on workspace clear"
+                        )
 
             logger.info(
                 f"[{self.workspace}] Process {os.getpid()} dropped workspace data from Qdrant collection {self.namespace}"

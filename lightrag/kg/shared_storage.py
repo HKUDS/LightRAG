@@ -1,15 +1,60 @@
 import os
 import sys
 import asyncio
-import multiprocessing as mp
+import random
+import threading
+import uuid
 from multiprocessing.synchronize import Lock as ProcessLock
-from multiprocessing import Manager
+from multiprocessing.managers import BaseProxy, SyncManager
 import time
 import logging
+from dataclasses import dataclass
+from enum import Enum
 from contextvars import ContextVar
-from typing import Any, Dict, List, Optional, Union, TypeVar, Generic
+from typing import (
+    Any,
+    Dict,
+    Generic,
+    List,
+    Mapping,
+    NamedTuple,
+    Optional,
+    TypeVar,
+    Union,
+)
 
-from lightrag.exceptions import PipelineNotInitializedError
+try:
+    import psutil
+except ImportError:  # minimal core install (psutil ships with the api extra)
+    psutil = None
+
+from lightrag.constants import (
+    DEFAULT_GLOBAL_SLOT_HEARTBEAT_TTL,
+    DEFAULT_GLOBAL_SLOT_SUSPECT_GRACE,
+    DEFAULT_GLOBAL_SLOT_WAITER_STALE_TTL,
+    DEFAULT_QUEUE_STATS_STALE_TTL,
+    PIPELINE_HISTORY_MAX_MESSAGES,
+    PIPELINE_HISTORY_MESSAGE_MAX_BYTES,
+)
+from lightrag import pipeline_metrics
+from lightrag.exceptions import (
+    PipelineBackpressureError,
+    PipelineNotInitializedError,
+)
+from lightrag.kg.pipeline_ingress import (
+    AsyncioPipelineIngress,
+    ManagerPipelineIngress,
+    ManualRetryPublishResult,
+    PipelineIngressHub,
+    PipelineIngressMessage,
+    _PipelineIngressHubProxy,
+)
+from lightrag.kg.scan_job_store import (
+    AsyncioScanJobStore,
+    ManagerScanJobStore,
+    ScanJobStoreHub,
+    _ScanJobStoreHubProxy,
+)
 
 DEBUG_LOCKS = False
 
@@ -58,21 +103,14 @@ _is_multiprocess = None
 _workers = None
 _manager = None
 
-# Global singleton data for multi-process keyed locks
-_lock_registry: Optional[Dict[str, mp.synchronize.Lock]] = None
-_lock_registry_count: Optional[Dict[str, int]] = None
-_lock_cleanup_data: Optional[Dict[str, time.time]] = None
-_registry_guard = None
-# Timeout for keyed locks in seconds (Default 300)
-CLEANUP_KEYED_LOCKS_AFTER_SECONDS = 300
-# Cleanup pending list threshold for triggering cleanup (Default 500)
-CLEANUP_THRESHOLD = 500
-# Minimum interval between cleanup operations in seconds (Default 30)
-MIN_CLEANUP_INTERVAL_SECONDS = 30
-# Track the earliest cleanup time for efficient cleanup triggering (multiprocess locks only)
-_earliest_mp_cleanup_time: Optional[float] = None
-# Track the last cleanup time to enforce minimum interval (multiprocess locks only)
-_last_mp_cleanup_time: Optional[float] = None
+# Server-side holder table for multi-process keyed locks (a _HolderTableProxy
+# in every worker, the KeyedHolderTable instance lives in the Manager server
+# process). The holder record IS the lock; one RPC per acquire/release. None in
+# single-process mode.
+_keyed_holder_table = None
+# Keyed-lock lease poll backoff bounds (seconds).
+_KEYED_LEASE_POLL_BASE = 0.02
+_KEYED_LEASE_POLL_MAX = 0.5
 
 _initialized = None
 
@@ -94,6 +132,77 @@ _storage_keyed_lock: Optional["KeyedUnifiedLock"] = None
 _async_locks: Optional[Dict[str, asyncio.Lock]] = None
 
 _debug_n_locks_acquired: int = 0
+
+# --- Cross-worker global concurrency gate + queue stats aggregation ---
+#
+# Read-only configuration set once by the FIRST initialize_share_data() call
+# (the gunicorn master, before fork — workers inherit it as a module global).
+# Later no-arg calls (e.g. LightRAG.__post_init__) hit the `_initialized`
+# guard and never overwrite it.
+_global_concurrency_limits: Optional[Dict[str, int]] = None
+
+# Separator between the queue name and the per-pid suffix in queue-stats
+# namespace keys. \x1f (ASCII unit separator) cannot appear in queue names.
+# (Concurrency gate state needs no separator: one key per group.)
+KEY_SEP = "\x1f"
+
+_CONCURRENCY_LEASE_NAMESPACE = "concurrency_leases"
+_QUEUE_STATS_NAMESPACE = "queue_stats"
+
+# Manual retry protocol phases (LR2 §6.1). Stored as PLAIN STRINGS in
+# ``pipeline_status["manual_phase"]`` — never enum members — so a Manager
+# ``DictProxy`` round-trip and any ``str(...)`` interpolation stay byte-stable
+# (cf. the Phase 2 enum-status bug where ``str(DocStatus.PENDING)`` yielded
+# "DocStatus.PENDING").
+MANUAL_PHASE_IDLE = "idle"
+MANUAL_PHASE_DRAIN_TO_IDLE = "drain_to_idle"
+MANUAL_PHASE_EXCLUSIVE_RESET = "exclusive_reset"
+
+# Heartbeat / staleness parameters (module-level so tests can monkeypatch).
+_heartbeat_ttl: float = DEFAULT_GLOBAL_SLOT_HEARTBEAT_TTL
+_suspect_grace: float = DEFAULT_GLOBAL_SLOT_SUSPECT_GRACE
+_queue_stats_stale_ttl: float = DEFAULT_QUEUE_STATS_STALE_TTL
+_waiter_stale_ttl: float = DEFAULT_GLOBAL_SLOT_WAITER_STALE_TTL
+
+# Per-process cached namespace references (avoid the internal lock on every
+# publish). Reset by initialize_share_data()/finalize_share_data().
+_lease_ns_cache: Optional[Dict[str, Any]] = None
+_queue_stats_ns_cache: Optional[Dict[str, Any]] = None
+
+# Per-process cache of get_namespace_data() results, keyed by final namespace.
+# The underlying shared dict for a namespace is created once and never removed
+# at runtime (the only clear is in finalize_share_data), so a hot-path hit can
+# safely skip the internal lock and the __contains__/__getitem__ RPCs. Reset by
+# initialize_share_data()/finalize_share_data() to preserve workspace isolation.
+_namespace_data_cache: Optional[Dict[str, Any]] = None
+
+# Workspace pipeline ingress registry (see lightrag.kg.pipeline_ingress).
+# Deliberately OUTSIDE pipeline_status: the status dict is serialized into API
+# responses, an ingress object must never be. Two layers:
+#   * _pipeline_ingress_local — per-process cache, final namespace -> ingress
+#     (an AsyncioPipelineIngress single-process, a ManagerPipelineIngress view
+#     multiprocess).
+#   * _pipeline_ingress_hub — multiprocess only: the ONE hub proxy (created
+#     pre-fork like _keyed_holder_table; the server-side hub owns every
+#     workspace mailbox keyed by namespace string). Resolution is a plain
+#     namespace binding — no client-held locks, no per-workspace proxies, so
+#     a SIGKILLed client can neither strand creation nor split-brain a
+#     workspace.
+# Ownership: a mailbox belongs to the workspace, not to any LightRAG instance —
+# LightRAG.finalize_storages() must NOT touch it; only finalize_share_data(),
+# an explicit workspace teardown, or test cleanup may drop it.
+_pipeline_ingress_local: Optional[Dict[str, Any]] = None
+_pipeline_ingress_hub: Optional[Any] = None
+
+# Scan job store: SAME topology as the ingress (per-process cache of
+# per-workspace views + one multiprocess-only server-side hub). A scan job
+# record belongs to the workspace, not to any LightRAG instance.
+_scan_job_store_local: Optional[Dict[str, Any]] = None
+_scan_job_store_hub: Optional[Any] = None
+
+# Rate limiting for acquire-failure warnings (fail-closed path).
+_ACQUIRE_FAILURE_LOG_INTERVAL = 30.0
+_last_acquire_failure_log: float = 0.0
 
 
 def get_final_namespace(namespace: str, workspace: str | None = None):
@@ -144,6 +253,7 @@ class UnifiedLock(Generic[T]):
         name: str = "unnamed",
         enable_logging: bool = True,
         async_lock: Optional[asyncio.Lock] = None,
+        mp_is_lease: bool = False,
     ):
         self._lock = lock
         self._is_async = is_async
@@ -151,12 +261,44 @@ class UnifiedLock(Generic[T]):
         self._name = name  # for debug only
         self._enable_logging = enable_logging  # for debug only
         self._async_lock = async_lock  # auxiliary lock for coroutine synchronization
+        # When True, ``_lock`` is a _KeyedLeaseLock whose acquire() is an async
+        # holder-record poll (dead-only reclaim) rather than a blocking
+        # manager.Lock() acquire offloaded to an executor thread.
+        self._mp_is_lease = mp_is_lease
+
+    async def _acquire_mp_lock_in_executor(self) -> None:
+        """Acquire the multiprocess lock without blocking the event loop.
+
+        Cancellation safety: if this coroutine is cancelled while the
+        executor thread is still blocked inside ``acquire()``, the thread
+        cannot be interrupted and WILL take the lock eventually — with no
+        owner left to release it, every process would deadlock. The shield +
+        done-callback below returns such an orphaned acquisition immediately.
+        """
+        loop = asyncio.get_running_loop()
+        acquire_future = loop.run_in_executor(None, self._lock.acquire)
+        try:
+            await asyncio.shield(acquire_future)
+        except asyncio.CancelledError:
+
+            def _release_orphaned_acquire(f) -> None:
+                if f.cancelled() or f.exception() is not None:
+                    return
+                try:
+                    self._lock.release()
+                except Exception:
+                    pass
+
+            acquire_future.add_done_callback(_release_orphaned_acquire)
+            raise
 
     async def __aenter__(self) -> "UnifiedLock[T]":
+        async_gate_acquired = False
         try:
             # If in multiprocess mode and async lock exists, acquire it first
             if not self._is_async and self._async_lock is not None:
                 await self._async_lock.acquire()
+                async_gate_acquired = True
                 direct_log(
                     f"== Lock == Process {self._pid}: Acquired async lock '{self._name}",
                     level="DEBUG",
@@ -168,8 +310,20 @@ class UnifiedLock(Generic[T]):
             # to get_internal_lock() and get_data_init_lock() functions
             if self._is_async:
                 await self._lock.acquire()
+            elif self._mp_is_lease:
+                # Holder-record lease: an async poll that reclaims a confirmed-
+                # dead owner's lease and never blocks the event loop (no executor
+                # thread). The async gate above already caps this process to one
+                # poller per key.
+                await self._lock.acquire()
             else:
-                self._lock.acquire()
+                # A Manager lock proxy blocks the calling thread until every
+                # other PROCESS ahead of us releases — unbounded. Offload to
+                # the default executor so this process's event loop keeps
+                # serving while we wait (the async gate above already
+                # serializes this process's coroutines, so at most one
+                # executor thread per lock key is ever parked here).
+                await self._acquire_mp_lock_in_executor()
 
             direct_log(
                 f"== Lock == Process {self._pid}: Acquired lock {self._name} (async={self._is_async})",
@@ -177,13 +331,23 @@ class UnifiedLock(Generic[T]):
                 enable_output=self._enable_logging,
             )
             return self
+        except asyncio.CancelledError:
+            # Cancellation can arrive while awaiting the executor-offloaded
+            # mp acquire (any orphaned acquisition is returned inside
+            # _acquire_mp_lock_in_executor). Roll back the per-process gate
+            # we already hold so this process's other coroutines never
+            # deadlock on it.
+            if async_gate_acquired:
+                self._async_lock.release()
+            direct_log(
+                f"== Lock == Process {self._pid}: Lock acquisition cancelled '{self._name}'",
+                level="WARNING",
+                enable_output=self._enable_logging,
+            )
+            raise
         except Exception as e:
             # If main lock acquisition fails, release the async lock if it was acquired
-            if (
-                not self._is_async
-                and self._async_lock is not None
-                and self._async_lock.locked()
-            ):
+            if async_gate_acquired:
                 self._async_lock.release()
 
             direct_log(
@@ -259,7 +423,7 @@ class UnifiedLock(Generic[T]):
     def __enter__(self) -> "UnifiedLock[T]":
         """For backward compatibility"""
         try:
-            if self._is_async:
+            if self._is_async or self._mp_is_lease:
                 raise RuntimeError("Use 'async with' for shared_storage lock")
 
             # Acquire the main lock
@@ -321,217 +485,467 @@ def _get_combined_key(factory_name: str, key: str) -> str:
     return f"{factory_name}:{key}"
 
 
-def _perform_lock_cleanup(
-    lock_type: str,
-    cleanup_data: Dict[str, float],
-    lock_registry: Optional[Dict[str, Any]],
-    lock_count: Optional[Dict[str, int]],
-    earliest_cleanup_time: Optional[float],
-    last_cleanup_time: Optional[float],
-    current_time: float,
-    threshold_check: bool = True,
-) -> tuple[int, Optional[float], Optional[float]]:
+# ============================================================================
+# Process identity and liveness helpers
+# ============================================================================
+
+_MY_START_ID_CACHE: Optional[str] = None
+_MY_START_ID_PID: Optional[int] = None
+
+# Retries for the non-Linux sandwich sampling in _start_delta (each retry is
+# one anchor/owner/anchor read triple; a mismatch between the two anchor reads
+# means a clock adjustment crossed the sampling window).
+_START_DELTA_RETRIES = 3
+# Defensive slack for the non-Linux start-delta comparison (seconds). A clean
+# sample of the same process reproduces bit-for-bit (delta of two
+# kernel-stored values), so the theoretical tolerance is 0; 1.0s only absorbs
+# unknown platform timestamp resolution/conversion noise, at the cost of a
+# liveness (never a mutual-exclusion) window: a PID reuser whose start time is
+# within 1s of the dead owner's goes undetected until the PID itself dies.
+_NON_LINUX_START_DELTA_TOLERANCE = 1.0
+
+
+def _pid_alive(pid: int) -> bool:
+    """Best-effort liveness probe; errs on the side of 'alive'.
+
+    With psutil available, a zombie is reported DEAD: a zombie executes no
+    code and cannot be using a lock or reservation, while ``os.kill(pid, 0)``
+    would report it alive — wedging a keyed lock until the wedged parent
+    finally reaps the killed holder. Without psutil (minimal core install)
+    the historical ``os.kill`` behavior is preserved (zombies count as alive).
     """
-    Generic lock cleanup function to unify cleanup logic for both multiprocess and async locks.
-
-    Args:
-        lock_type: Lock type identifier ("mp" or "async")
-        cleanup_data: Cleanup data dictionary
-        lock_registry: Lock registry dictionary (can be None for async locks)
-        lock_count: Lock count dictionary (can be None for async locks)
-        earliest_cleanup_time: Earliest cleanup time
-        last_cleanup_time: Last cleanup time
-        current_time: Current time
-        threshold_check: Whether to check threshold condition (default True, set to False in cleanup_expired_locks)
-
-    Returns:
-        tuple: (cleaned_count, new_earliest_time, new_last_cleanup_time)
-    """
-    if len(cleanup_data) == 0:
-        return 0, earliest_cleanup_time, last_cleanup_time
-
-    # If threshold check is needed and threshold not reached, return directly
-    if threshold_check and len(cleanup_data) < CLEANUP_THRESHOLD:
-        return 0, earliest_cleanup_time, last_cleanup_time
-
-    # Time rollback detection
-    if last_cleanup_time is not None and current_time < last_cleanup_time:
-        direct_log(
-            f"== {lock_type} Lock == Time rollback detected, resetting cleanup time",
-            level="WARNING",
-            enable_output=False,
-        )
-        last_cleanup_time = None
-
-    # Check cleanup conditions
-    has_expired_locks = (
-        earliest_cleanup_time is not None
-        and current_time - earliest_cleanup_time > CLEANUP_KEYED_LOCKS_AFTER_SECONDS
-    )
-
-    interval_satisfied = (
-        last_cleanup_time is None
-        or current_time - last_cleanup_time > MIN_CLEANUP_INTERVAL_SECONDS
-    )
-
-    if not (has_expired_locks and interval_satisfied):
-        return 0, earliest_cleanup_time, last_cleanup_time
-
+    if pid == os.getpid():
+        return True
+    if psutil is None:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            # PermissionError and friends: the process exists (or we cannot
+            # tell) — treat as alive so we never reclaim a live owner's lease.
+            return True
+        return True
     try:
-        cleaned_count = 0
-        new_earliest_time = None
-
-        # Calculate total count before cleanup
-        total_cleanup_len = len(cleanup_data)
-
-        # Perform cleanup operation
-        for cleanup_key, cleanup_time in list(cleanup_data.items()):
-            if current_time - cleanup_time > CLEANUP_KEYED_LOCKS_AFTER_SECONDS:
-                # Remove from cleanup data
-                cleanup_data.pop(cleanup_key, None)
-
-                # Remove from lock registry if exists
-                if lock_registry is not None:
-                    lock_registry.pop(cleanup_key, None)
-                if lock_count is not None:
-                    lock_count.pop(cleanup_key, None)
-
-                cleaned_count += 1
-            else:
-                # Track the earliest time among remaining locks
-                if new_earliest_time is None or cleanup_time < new_earliest_time:
-                    new_earliest_time = cleanup_time
-
-        # Update state only after successful cleanup
-        if cleaned_count > 0:
-            new_last_cleanup_time = current_time
-
-            # Log cleanup results
-            next_cleanup_in = max(
-                (new_earliest_time + CLEANUP_KEYED_LOCKS_AFTER_SECONDS - current_time)
-                if new_earliest_time
-                else float("inf"),
-                MIN_CLEANUP_INTERVAL_SECONDS,
-            )
-
-            if lock_type == "async":
-                direct_log(
-                    f"== {lock_type} Lock == Cleaned up {cleaned_count}/{total_cleanup_len} expired {lock_type} locks, "
-                    f"next cleanup in {next_cleanup_in:.1f}s",
-                    enable_output=False,
-                    level="INFO",
-                )
-            else:
-                direct_log(
-                    f"== {lock_type} Lock == Cleaned up {cleaned_count}/{total_cleanup_len} expired locks, "
-                    f"next cleanup in {next_cleanup_in:.1f}s",
-                    enable_output=False,
-                    level="INFO",
-                )
-
-            return cleaned_count, new_earliest_time, new_last_cleanup_time
-        else:
-            return 0, earliest_cleanup_time, last_cleanup_time
-
-    except Exception as e:
-        direct_log(
-            f"== {lock_type} Lock == Cleanup failed: {e}",
-            level="ERROR",
-            enable_output=True,
-        )
-        return 0, earliest_cleanup_time, last_cleanup_time
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        # ZombieProcess is a NoSuchProcess subclass — either way, dead.
+        return False
+    except psutil.Error:
+        # AccessDenied and friends: uncertain → alive, never reclaim a live owner.
+        return True
 
 
-def _get_or_create_shared_raw_mp_lock(
-    factory_name: str, key: str
-) -> Optional[mp.synchronize.Lock]:
-    """Return the *singleton* manager.Lock() proxy for keyed lock, creating if needed."""
-    if not _is_multiprocess:
+def _read_proc_starttime(pid: int) -> Optional[str]:
+    """Return a stable per-process start token (field 22 of ``/proc/<pid>/stat``)
+    used to detect PID reuse, or ``None`` when unavailable (non-Linux, the
+    process is gone, or the stat file is unreadable).
+
+    A live PID whose start time differs from a previously recorded token is a
+    DIFFERENT process that reused the PID. ``None`` means "cannot tell" — callers
+    must treat that as *not reused* so a live owner is never reclaimed.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            data = fh.read()
+    except (FileNotFoundError, ProcessLookupError):
+        return None  # process is gone (liveness is decided by _pid_alive)
+    except OSError:
+        return None  # unreadable → unknown, make no reuse claim
+    try:
+        # comm (field 2) is wrapped in parentheses and may itself contain spaces
+        # or ')' — everything after the LAST ')' is the space-separated tail
+        # starting at field 3 (state). starttime is field 22 → tail index 19.
+        rparen = data.rindex(b")")
+        tail = data[rparen + 1 :].split()
+        return tail[19].decode("ascii")
+    except (ValueError, IndexError):
         return None
 
-    with _registry_guard:
-        combined_key = _get_combined_key(factory_name, key)
-        raw = _lock_registry.get(combined_key)
-        count = _lock_registry_count.get(combined_key)
-        if raw is None:
-            raw = _manager.Lock()
-            _lock_registry[combined_key] = raw
-            count = 0
-        else:
-            if count is None:
-                raise RuntimeError(
-                    f"Shared-Data lock registry for {factory_name} is corrupted for key {key}"
-                )
-            if (
-                count == 0 and combined_key in _lock_cleanup_data
-            ):  # Reusing an key waiting for cleanup, remove it from cleanup list
-                _lock_cleanup_data.pop(combined_key)
-        count += 1
-        _lock_registry_count[combined_key] = count
-        return raw
+
+def _my_start_id() -> Optional[str]:
+    """This process's start token (see :func:`_read_proc_starttime`), cached
+    per PID. ``None`` on non-Linux / when ``/proc`` is unavailable, in which
+    case PID-reuse detection is disabled (dead-only reclaim still works via
+    :func:`_pid_alive`).
+
+    The cache MUST be PID-aware: a plain "already computed" flag would be
+    inherited across ``fork``, making a worker publish reservation records
+    carrying its own PID but the master's start id — readers comparing against
+    the worker's real start time would then misjudge a LIVE worker as PID
+    reuse.
+    """
+    global _MY_START_ID_CACHE, _MY_START_ID_PID
+    pid = os.getpid()
+    if _MY_START_ID_PID != pid:  # first call, or PID changed after fork
+        _MY_START_ID_CACHE = _read_proc_starttime(pid)
+        _MY_START_ID_PID = pid
+    return _MY_START_ID_CACHE
 
 
-def _release_shared_raw_mp_lock(factory_name: str, key: str):
-    """Release the *singleton* manager.Lock() proxy for *key*."""
-    if not _is_multiprocess:
-        return
+def _owner_identity_unprobeable(rec: Optional[Mapping[str, Any]]) -> bool:
+    """Can this owner record NEVER be resolved to alive-or-dead?
 
-    global _earliest_mp_cleanup_time, _last_mp_cleanup_time
+    Only ONE condition qualifies: no recorded PID, so there is nothing to probe
+    however often the reclaim runs. LR2 §6.1 wants exactly that state to fence
+    the workspace with ``recovery_required`` (upload/manual/scan → 503) instead
+    of leaving a freeze held forever by an owner nobody can adjudicate and no
+    documented way out but restarting the service.
 
-    with _registry_guard:
-        combined_key = _get_combined_key(factory_name, key)
-        raw = _lock_registry.get(combined_key)
-        count = _lock_registry_count.get(combined_key)
-        if raw is None and count is None:
+    Two neighbouring states are deliberately NOT undecidable, because treating
+    them as such would fence live or reclaimable workspaces:
+
+    * **a missing ``process_start_id``** — death is still provable from the PID
+      alone (:func:`_pid_alive`); what is lost is only PID-*reuse* detection. A
+      dead owner here must still be reclaimed, so this predicate is evaluated
+      AFTER the confirmed-dead check.
+    * **an unreadable ``/proc`` entry for a PID that was just alive** — the
+      process exited between the two probes. :func:`_process_alive` answers ALIVE
+      and the next pass confirms the death; fencing on that benign race would
+      turn every ordinary worker exit into an operator ticket.
+
+    Reachability note: :func:`make_owner_record` always stamps ``os.getpid()``,
+    and the reclaim layer is gated to Linux multi-worker where ``/proc`` answers,
+    so in a healthy deployment this predicate is false. It exists so a
+    hand-written, truncated or foreign-writer record fences rather than pinning a
+    freeze that nothing can ever clear.
+    """
+    if not isinstance(rec, Mapping):
+        return False
+    return rec.get("pid") is None
+
+
+def _process_alive(pid: Optional[int], start_id: Optional[str]) -> bool:
+    """Dead-only liveness for lock / reservation owners.
+
+    Returns ``False`` ONLY when the owner is *confirmed* dead: the PID is gone,
+    or the PID is alive but its start time differs from ``start_id`` (PID reuse =
+    a different process now holds that PID). Every uncertainty — no recorded
+    identity, no permission to probe, non-Linux, unreadable ``/proc`` — is
+    treated as ALIVE, so a live (merely slow) owner is never reclaimed. Used by
+    the pipeline-reservation dead-owner reclaim layer (the keyed lock's reclaim
+    runs inside the Manager server via :func:`_holder_dead`).
+    """
+    if pid is None:
+        return True  # no owner identity recorded → cannot declare dead
+    if pid == os.getpid():
+        # Our own PID. Genuinely us only if the recorded start id matches ours:
+        # a record carrying our PID but a DIFFERENT start id was written by a
+        # dead predecessor whose PID the OS reused for us — that owner is dead,
+        # so we must NOT treat the lease as "still alive (me)" or it would never
+        # be reclaimed. If either start id is unknown (non-Linux / no /proc), we
+        # cannot confirm reuse and conservatively report alive.
+        mine = _my_start_id()
+        if start_id is not None and mine is not None and start_id != mine:
+            return False
+        return True
+    if not _pid_alive(pid):
+        return False
+    if start_id is not None:
+        current = _read_proc_starttime(pid)
+        if current is not None and current != start_id:
+            return False  # PID reused by a different process
+    return True
+
+
+def _read_create_time(pid: int) -> Optional[float]:
+    """psutil wall-clock ``create_time()`` for ``pid`` (seconds), or ``None``
+    when psutil is missing or the process cannot be read. Never used as an
+    identity on its own — only inside :func:`_start_delta` paired samples,
+    where clock-adjustment pollution is common-mode and cancels out."""
+    if psutil is None:
+        return None
+    try:
+        return psutil.Process(pid).create_time()
+    except psutil.Error:
+        return None
+
+
+def _start_delta(pid: Optional[int]) -> Optional[Union[int, float]]:
+    """Clock-adjustment-safe process identity for the keyed-lock holder table:
+    the difference between ``pid``'s start time and THIS process's start time.
+
+    Only ever called inside the Manager server process (grant-time stamp and
+    reclaim-time recompute), so the anchor is always the server itself and both
+    values come from the same platform track:
+
+    * Linux: integer ``/proc/<pid>/stat`` start ticks — monotonic since boot
+      and immune to wall-clock steps, so the plain difference needs no
+      tolerance and no sampling protection. Always preferred, even when psutil
+      is installed.
+    * elsewhere (psutil available): paired ``create_time()`` reads. A step of
+      the wall clock pollutes both reads identically ONLY if nothing moves the
+      clock between them, so the owner read is sandwiched between two anchor
+      reads — any anchor mismatch means an adjustment crossed the window and
+      the sample is retried, then conservatively discarded (``None`` = make no
+      reuse claim). Anchor reads are never cached: a cached anchor and a later
+      owner read are not same-instant, so pollution would no longer be
+      common-mode.
+
+    ``None`` (process gone, no psutil, or a persistently unstable window)
+    means "no identity"; callers must not judge PID reuse from it.
+    """
+    if pid is None:
+        return None
+    if sys.platform.startswith("linux"):
+        own = _read_proc_starttime(os.getpid())
+        target = _read_proc_starttime(pid)
+        if own is None or target is None:
+            return None
+        try:
+            return int(target) - int(own)
+        except ValueError:
+            return None
+    for _ in range(_START_DELTA_RETRIES):
+        a0 = _read_create_time(os.getpid())
+        d = _read_create_time(pid)
+        a1 = _read_create_time(os.getpid())
+        if a0 is None or d is None or a1 is None:
+            return None
+        if a1 == a0:  # same-process reads reproduce bit-for-bit; any
+            return d - a0  # difference = the clock moved inside the window
+    return None
+
+
+def _holder_dead(record: Mapping[str, Any]) -> bool:
+    """Server-side deadness check for a keyed-lock holder record.
+
+    Returns True ONLY for a *confirmed dead* owner: the PID is gone/zombie, or
+    the PID is alive but its recomputed ``start_delta`` proves it is a
+    different process that reused the PID. Every uncertainty (no identity,
+    polluted sample, no psutil off-Linux) is treated as alive so a live owner
+    is never reclaimed. Comparison per platform track:
+
+    * Linux: integer tick delta — ANY difference is a different process.
+    * elsewhere: one-sided ``d1 > d0 + tolerance``. Same boot and no backwards
+      clock step ⇒ a replacement starts later, so its delta only grows. Known
+      (deliberate) gap: after a LARGE backwards clock adjustment a reuser's
+      stored create_time can be smaller and goes undetected — a liveness
+      limitation (lock stays unreclaimable until the PID dies), never a
+      double-hold. An ``abs()`` criterion would close it but opens a
+      double-hold window if a delta ever shrinks for a live process, so it
+      stays out until empirically validated cross-platform.
+    """
+    pid = record.get("owner_pid")
+    if pid is None:
+        return False  # no identity → never declare dead
+    if not _pid_alive(pid):
+        return True  # PID gone or zombie → confirmed dead
+    d0 = record.get("start_delta")
+    if d0 is None:
+        return False  # no stamped identity → reuse undetectable, stay alive
+    d1 = _start_delta(pid)
+    if d1 is None:
+        return False  # polluted/uncertain sample never declares dead
+    if sys.platform.startswith("linux"):
+        return d1 != d0  # integer ticks: any difference = different process
+    return d1 > d0 + _NON_LINUX_START_DELTA_TOLERANCE
+
+
+# ============================================================================
+# Server-side atomic holder table for multi-process keyed locks
+# ============================================================================
+
+
+class KeyedHolderTable:
+    """Holder table for the multi-process keyed locks; the instance lives in
+    the Manager SERVER process, workers only hold a :class:`_HolderTableProxy`.
+
+    The holder record IS the lock: a key maps to
+    ``{owner_pid, lease_id, start_delta}`` while held (``owner_pid`` and
+    ``lease_id`` come from the client; ``start_delta`` is stamped by the
+    server at grant time, see :func:`_start_delta`). Each method is exactly
+    one Manager RPC and is atomic server-side, replacing the previous
+    client-held ``manager.RLock()`` guard around multiple dict RPCs — which
+    both cost ~23 RPCs per acquire/release cycle and deadlocked every process
+    forever when a guard holder was SIGKILLed (the server-side threading lock
+    behind a manager RLock is never released for a dead client). The
+    ``threading.Lock`` here is released by ``with`` before each method
+    returns and never spans an RPC boundary, and the server does not die with
+    any client, so client death cannot strand it.
+
+    Liveness helpers (:func:`_pid_alive`, :func:`_start_delta`,
+    :func:`_holder_dead`) are module-level functions of this same module and
+    resolve normally inside the server process; they are host-local probes and
+    the server runs on the same host as the workers.
+    """
+
+    def __init__(self) -> None:
+        self._holders: Dict[str, Dict[str, Any]] = {}
+        self._lock = threading.Lock()
+
+    def try_acquire(self, key: str, record: Dict[str, Any]) -> bool:
+        """One-shot claim of ``key`` for ``record``; True iff granted.
+
+        Never blocks waiting for the lock's release — contenders poll with
+        backoff client-side. ``start_delta`` sampling (a process start-time
+        query) happens only on grant paths: a poll rejected by a live holder
+        stamps nothing.
+        """
+        with self._lock:
+            cur = self._holders.get(key)
+            snap = dict(cur) if cur is not None else None
+        if snap is None:
+            # Empty slot: sample OUTSIDE the lock, then re-check-and-set.
+            candidate = {**record, "start_delta": _start_delta(record.get("owner_pid"))}
+            with self._lock:
+                cur = self._holders.get(key)
+                if cur is None:  # slot still empty → granted
+                    self._holders[key] = candidate
+                    return True
+                return False  # beaten during sampling → caller backs off
+        # Liveness probe outside the lock (system calls may be slow and must
+        # not stall RPCs for other keys).
+        if not _holder_dead(snap):
+            return False  # live holder → caller backs off and retries
+        candidate = {**record, "start_delta": _start_delta(record.get("owner_pid"))}
+        with self._lock:
+            # Dead holder: reclaim ONLY the exact record we probed (lease_id
+            # CAS) — if the slot changed while probing (released / reclaimed /
+            # taken over) the caller backs off; an empty slot is claimed by the
+            # next round's fast path.
+            cur = self._holders.get(key)
+            if cur is not None and cur.get("lease_id") == snap.get("lease_id"):
+                self._holders[key] = candidate
+                return True
+            return False
+
+    def release(self, key: str, lease_id: str) -> bool:
+        """Owner-checked release: pop ``key`` iff it still carries ``lease_id``."""
+        with self._lock:
+            cur = self._holders.get(key)
+            if cur is not None and cur.get("lease_id") == lease_id:
+                del self._holders[key]
+                return True
+            return False
+
+    def holder_count(self) -> int:
+        """Number of currently held keys (one int over the wire — /health must
+        not copy/serialize the whole table just to count it)."""
+        with self._lock:
+            return len(self._holders)
+
+    def holders_snapshot(self) -> Dict[str, Dict[str, Any]]:
+        """Copy of the table for diagnostics / test introspection."""
+        with self._lock:
+            return {k: dict(v) for k, v in self._holders.items()}
+
+
+class _HolderTableProxy(BaseProxy):
+    """Explicit proxy for :class:`KeyedHolderTable`.
+
+    ``BaseProxy`` has no dynamic ``__getattr__`` — declaring ``_exposed_``
+    alone would NOT make the methods callable, so each one gets an explicit
+    ``_callmethod`` wrapper (deterministic, unlike AutoProxy).
+    """
+
+    _exposed_ = ("try_acquire", "release", "holder_count", "holders_snapshot")
+
+    def try_acquire(self, key: str, record: Dict[str, Any]) -> bool:
+        return self._callmethod("try_acquire", (key, record))
+
+    def release(self, key: str, lease_id: str) -> bool:
+        return self._callmethod("release", (key, lease_id))
+
+    def holder_count(self) -> int:
+        return self._callmethod("holder_count")
+
+    def holders_snapshot(self) -> Dict[str, Dict[str, Any]]:
+        return self._callmethod("holders_snapshot")
+
+
+class _LightRAGManager(SyncManager):
+    """SyncManager plus the LightRAG-specific server-side types."""
+
+
+# Module level so the server process can import the class under both fork and
+# spawn start methods.
+_LightRAGManager.register(
+    "KeyedHolderTable", KeyedHolderTable, proxytype=_HolderTableProxy
+)
+_LightRAGManager.register(
+    "PipelineIngressHub",
+    PipelineIngressHub,
+    proxytype=_PipelineIngressHubProxy,
+)
+_LightRAGManager.register(
+    "ScanJobStoreHub",
+    ScanJobStoreHub,
+    proxytype=_ScanJobStoreHubProxy,
+)
+
+
+def _keyed_lease_backoff(attempt: int) -> float:
+    """Exponential backoff with jitter for the keyed-lock lease poll.
+
+    The per-process async gate already caps concurrent pollers to one per process
+    per key, so this only spaces out *cross-process* contention; jitter avoids a
+    thundering herd when a lease is released."""
+    base = min(_KEYED_LEASE_POLL_MAX, _KEYED_LEASE_POLL_BASE * (2 ** min(attempt, 5)))
+    return base * (0.5 + random.random() * 0.5)
+
+
+class _KeyedLeaseLock:
+    """Multiprocess keyed lock driving the server-side holder table.
+
+    A per-process, per-acquire, 0-RPC-to-construct object: acquiring asks
+    :class:`KeyedHolderTable` (one ``try_acquire`` RPC per attempt, one RPC
+    total when uncontended) to install ``{owner_pid, lease_id}``; the server
+    stamps the clock-safe process identity (``start_delta``) at grant time, so
+    the lock path is structurally independent of any client-side identity
+    cache (:func:`_my_start_id` and its fork pitfalls). Releasing is one
+    owner-checked ``release`` RPC.
+
+    A holder whose owner is *confirmed dead* (PID gone/zombie, or PID reused —
+    see :func:`_holder_dead`) is reclaimed atomically inside the server by the
+    next ``try_acquire``; a SIGKILLed holder can never deadlock other workers.
+    Dead-only: a live (merely slow) owner is never preempted, so no fencing
+    token is needed.
+    """
+
+    __slots__ = ("_combined_key", "_lease_id")
+
+    def __init__(self, combined_key: str) -> None:
+        self._combined_key = combined_key
+        self._lease_id: Optional[str] = None
+
+    async def acquire(self) -> None:
+        record = {"owner_pid": os.getpid(), "lease_id": uuid.uuid4().hex}
+        attempt = 0
+        while True:
+            if _keyed_holder_table.try_acquire(self._combined_key, record):
+                self._lease_id = record["lease_id"]
+                return
+            # Slot held by a live owner (or lost a race) → back off. This is
+            # the only cancellation point; no lease is held here, so a cancel
+            # simply abandons the wait.
+            await asyncio.sleep(_keyed_lease_backoff(attempt))
+            attempt += 1
+
+    def release(self) -> None:
+        lease_id = self._lease_id
+        if lease_id is None:
             return
-        elif raw is None or count is None:
-            raise RuntimeError(
-                f"Shared-Data lock registry for {factory_name} is corrupted for key {key}"
-            )
-
-        count -= 1
-        if count < 0:
-            raise RuntimeError(
-                f"Attempting to release lock for {key} more times than it was acquired"
-            )
-
-        _lock_registry_count[combined_key] = count
-
-        current_time = time.time()
-        if count == 0:
-            _lock_cleanup_data[combined_key] = current_time
-
-            # Update earliest multiprocess cleanup time (only when earlier)
-            if (
-                _earliest_mp_cleanup_time is None
-                or current_time < _earliest_mp_cleanup_time
-            ):
-                _earliest_mp_cleanup_time = current_time
-
-        # Use generic cleanup function
-        cleaned_count, new_earliest_time, new_last_cleanup_time = _perform_lock_cleanup(
-            lock_type="mp",
-            cleanup_data=_lock_cleanup_data,
-            lock_registry=_lock_registry,
-            lock_count=_lock_registry_count,
-            earliest_cleanup_time=_earliest_mp_cleanup_time,
-            last_cleanup_time=_last_mp_cleanup_time,
-            current_time=current_time,
-            threshold_check=True,
-        )
-
-        # Update global state if cleanup was performed
-        if cleaned_count > 0:
-            _earliest_mp_cleanup_time = new_earliest_time
-            _last_mp_cleanup_time = new_last_cleanup_time
+        self._lease_id = None
+        _keyed_holder_table.release(self._combined_key, lease_id)
 
 
 class KeyedUnifiedLock:
     """
     Manager for unified keyed locks, supporting both single and multi-process
 
-    • Keeps only a table of async keyed locks locally
-    • Fetches the multi-process keyed lock on every acquire
+    • Keeps only a table of async keyed locks locally, alive exactly while
+      referenced: an entry exists ⟺ its refcount ≥ 1 (some coroutine holds or
+      awaits it) and is dropped on the release that takes the count to 0 — no
+      idle cache, no deferred cleanup. Same-key coroutines MUST share one
+      ``asyncio.Lock`` while any of them is active (that is the mutual
+      exclusion in single-process mode and the per-process RPC-poll gate in
+      multiprocess mode); recreating the lock for a later, non-overlapping
+      acquisition is safe and costs only the object allocation.
+    • In multiprocess mode, builds a fresh per-acquire ``_KeyedLeaseLock``
+      driving the server-side holder table (no shared lock objects to manage)
     • Builds a fresh `UnifiedLock` each time, so `enable_logging`
       (or future options) can vary per call.
     • Supports dynamic namespaces specified at lock usage time
@@ -543,18 +957,6 @@ class KeyedUnifiedLock:
         self._async_lock_count: Dict[
             str, int
         ] = {}  # local keyed locks referenced count
-        self._async_lock_cleanup_data: Dict[
-            str, time.time
-        ] = {}  # local keyed locks timeout
-        self._mp_locks: Dict[
-            str, mp.synchronize.Lock
-        ] = {}  # multi-process lock proxies
-        self._earliest_async_cleanup_time: Optional[float] = (
-            None  # track earliest async cleanup time
-        )
-        self._last_async_cleanup_time: Optional[float] = (
-            None  # track last async cleanup time for minimum interval
-        )
 
     def __call__(
         self, namespace: str, keys: list[str], *, enable_logging: Optional[bool] = None
@@ -575,49 +977,51 @@ class KeyedUnifiedLock:
         )
 
     def _get_or_create_async_lock(self, combined_key: str) -> asyncio.Lock:
+        """Take a reference on the per-process async lock for ``combined_key``.
+
+        Runs synchronously on the event loop, so lookup + refcount increment
+        is atomic with respect to other coroutines.
+        """
         async_lock = self._async_lock.get(combined_key)
-        count = self._async_lock_count.get(combined_key, 0)
         if async_lock is None:
             async_lock = asyncio.Lock()
             self._async_lock[combined_key] = async_lock
-        elif count == 0 and combined_key in self._async_lock_cleanup_data:
-            self._async_lock_cleanup_data.pop(combined_key)
-        count += 1
-        self._async_lock_count[combined_key] = count
+        self._async_lock_count[combined_key] = (
+            self._async_lock_count.get(combined_key, 0) + 1
+        )
         return async_lock
 
     def _release_async_lock(self, combined_key: str):
-        count = self._async_lock_count.get(combined_key, 0)
+        """Drop one reference; delete the entry when the count reaches 0.
+
+        count == 0 means no holder AND no waiter (every waiter increments
+        before awaiting, and a cancelled waiter's rollback releases its
+        reference), so the entry can be dropped immediately. An unmatched
+        release is a caller bug: logged, never applied, so it can neither
+        underflow the count nor resurrect a deleted entry.
+        """
+        count = self._async_lock_count.get(combined_key)
+        if count is None:
+            direct_log(
+                f"== Lock == Process {os.getpid()}: release without matching "
+                f"acquire for async keyed lock '{combined_key}'",
+                level="ERROR",
+                enable_output=True,
+            )
+            return
         count -= 1
-
-        current_time = time.time()
-        if count == 0:
-            self._async_lock_cleanup_data[combined_key] = current_time
-
-            # Update earliest async cleanup time (only when earlier)
-            if (
-                self._earliest_async_cleanup_time is None
-                or current_time < self._earliest_async_cleanup_time
-            ):
-                self._earliest_async_cleanup_time = current_time
-        self._async_lock_count[combined_key] = count
-
-        # Use generic cleanup function
-        cleaned_count, new_earliest_time, new_last_cleanup_time = _perform_lock_cleanup(
-            lock_type="async",
-            cleanup_data=self._async_lock_cleanup_data,
-            lock_registry=self._async_lock,
-            lock_count=self._async_lock_count,
-            earliest_cleanup_time=self._earliest_async_cleanup_time,
-            last_cleanup_time=self._last_async_cleanup_time,
-            current_time=current_time,
-            threshold_check=True,
-        )
-
-        # Update instance state if cleanup was performed
-        if cleaned_count > 0:
-            self._earliest_async_cleanup_time = new_earliest_time
-            self._last_async_cleanup_time = new_last_cleanup_time
+        if count <= 0:
+            if count < 0:
+                direct_log(
+                    f"== Lock == Process {os.getpid()}: async keyed lock "
+                    f"'{combined_key}' over-released (count {count})",
+                    level="ERROR",
+                    enable_output=True,
+                )
+            self._async_lock_count.pop(combined_key, None)
+            self._async_lock.pop(combined_key, None)
+        else:
+            self._async_lock_count[combined_key] = count
 
     def _get_lock_for_key(
         self, namespace: str, key: str, enable_logging: bool = False
@@ -629,24 +1033,22 @@ class KeyedUnifiedLock:
         # Is synchronous, so no need to acquire a lock
         async_lock = self._get_or_create_async_lock(combined_key)
 
-        # 3. fetch the shared raw lock
-        raw_lock = _get_or_create_shared_raw_mp_lock(namespace, key)
-        is_multiprocess = raw_lock is not None
-        if not is_multiprocess:
-            raw_lock = async_lock
-
-        # 4. build a *fresh* UnifiedLock with the chosen logging flag
-        if is_multiprocess:
+        # 3. build a *fresh* UnifiedLock with the chosen logging flag. In
+        # multiprocess mode the raw lock is a fresh per-acquire lease object
+        # (each acquisition owns its own lease_id); all shared state lives in
+        # the server-side holder table, so nothing is fetched or registered.
+        if _is_multiprocess:
             return UnifiedLock(
-                lock=raw_lock,
-                is_async=False,  # manager.Lock is synchronous
+                lock=_KeyedLeaseLock(combined_key),
+                is_async=False,  # holder-lease acquire is driven explicitly
                 name=combined_key,
                 enable_logging=enable_logging,
                 async_lock=async_lock,  # prevents event‑loop blocking
+                mp_is_lease=True,  # lock is a _KeyedLeaseLock (async poll)
             )
         else:
             return UnifiedLock(
-                lock=raw_lock,
+                lock=async_lock,
                 is_async=True,
                 name=combined_key,
                 enable_logging=enable_logging,
@@ -656,134 +1058,38 @@ class KeyedUnifiedLock:
     def _release_lock_for_key(self, namespace: str, key: str):
         combined_key = _get_combined_key(namespace, key)
         self._release_async_lock(combined_key)
-        _release_shared_raw_mp_lock(namespace, key)
-
-    def cleanup_expired_locks(self) -> Dict[str, Any]:
-        """
-        Cleanup expired locks for both async and multiprocess locks following the same
-        conditions as _release_shared_raw_mp_lock and _release_async_lock functions.
-
-        Only performs cleanup when both has_expired_locks and interval_satisfied conditions are met
-        to avoid too frequent cleanup operations.
-
-        Since async and multiprocess locks work together, this method cleans up
-        both types of expired locks and returns comprehensive statistics.
-
-        Returns:
-            Dict containing cleanup statistics and current status:
-            {
-                "process_id": 12345,
-                "cleanup_performed": {
-                    "mp_cleaned": 5,
-                    "async_cleaned": 3
-                },
-                "current_status": {
-                    "total_mp_locks": 10,
-                    "pending_mp_cleanup": 2,
-                    "total_async_locks": 8,
-                    "pending_async_cleanup": 1
-                }
-            }
-        """
-        global _lock_registry, _lock_registry_count, _lock_cleanup_data
-        global _registry_guard, _earliest_mp_cleanup_time, _last_mp_cleanup_time
-
-        cleanup_stats = {"mp_cleaned": 0, "async_cleaned": 0}
-
-        current_time = time.time()
-
-        # 1. Cleanup multiprocess locks using generic function
-        if (
-            _is_multiprocess
-            and _lock_registry is not None
-            and _registry_guard is not None
-        ):
-            try:
-                with _registry_guard:
-                    if _lock_cleanup_data is not None:
-                        # Use generic cleanup function without threshold check
-                        cleaned_count, new_earliest_time, new_last_cleanup_time = (
-                            _perform_lock_cleanup(
-                                lock_type="mp",
-                                cleanup_data=_lock_cleanup_data,
-                                lock_registry=_lock_registry,
-                                lock_count=_lock_registry_count,
-                                earliest_cleanup_time=_earliest_mp_cleanup_time,
-                                last_cleanup_time=_last_mp_cleanup_time,
-                                current_time=current_time,
-                                threshold_check=False,  # Force cleanup in cleanup_expired_locks
-                            )
-                        )
-
-                        # Update global state if cleanup was performed
-                        if cleaned_count > 0:
-                            _earliest_mp_cleanup_time = new_earliest_time
-                            _last_mp_cleanup_time = new_last_cleanup_time
-                            cleanup_stats["mp_cleaned"] = cleaned_count
-
-            except Exception as e:
-                direct_log(
-                    f"Error during multiprocess lock cleanup: {e}",
-                    level="ERROR",
-                    enable_output=True,
-                )
-
-        # 2. Cleanup async locks using generic function
-        try:
-            # Use generic cleanup function without threshold check
-            cleaned_count, new_earliest_time, new_last_cleanup_time = (
-                _perform_lock_cleanup(
-                    lock_type="async",
-                    cleanup_data=self._async_lock_cleanup_data,
-                    lock_registry=self._async_lock,
-                    lock_count=self._async_lock_count,
-                    earliest_cleanup_time=self._earliest_async_cleanup_time,
-                    last_cleanup_time=self._last_async_cleanup_time,
-                    current_time=current_time,
-                    threshold_check=False,  # Force cleanup in cleanup_expired_locks
-                )
-            )
-
-            # Update instance state if cleanup was performed
-            if cleaned_count > 0:
-                self._earliest_async_cleanup_time = new_earliest_time
-                self._last_async_cleanup_time = new_last_cleanup_time
-                cleanup_stats["async_cleaned"] = cleaned_count
-
-        except Exception as e:
-            direct_log(
-                f"Error during async lock cleanup: {e}",
-                level="ERROR",
-                enable_output=True,
-            )
-
-        # 3. Get current status after cleanup
-        current_status = self.get_lock_status()
-
-        return {
-            "process_id": os.getpid(),
-            "cleanup_performed": cleanup_stats,
-            "current_status": current_status,
-        }
 
     def get_lock_status(self) -> Dict[str, int]:
         """
-        Get current status of both async and multiprocess locks.
+        Get current status of both async and multiprocess keyed locks.
 
-        Returns comprehensive lock counts for both types of locks since
-        they work together in the keyed lock system.
+        SEMANTIC NOTE — the two counts are instantaneous but differ in both
+        scope and criterion:
+
+        * ``total_mp_locks``: keys currently HELD in the server-side holder
+          table (one ``holder_count()`` RPC returning an int) — GLOBAL across
+          all workers, waiters not included.
+        * ``total_async_locks``: keys with at least one active local
+          reference (held OR awaited by a coroutine) — per THIS worker
+          process only. It previously counted cached entries including ones
+          idle for up to 300s awaiting cleanup; entries are now dropped on
+          the release that takes their refcount to 0, so an idle process
+          reports ~0 and a persistently non-zero value means a key is being
+          continuously held or waited on. Same key, new value semantics.
+
+        ``pending_mp_cleanup`` and ``pending_async_cleanup`` are always 0
+        (neither side has a deferred cleanup queue anymore); the keys are
+        preserved for response-schema compatibility.
 
         Returns:
             Dict containing lock counts:
             {
                 "total_mp_locks": 10,
-                "pending_mp_cleanup": 2,
+                "pending_mp_cleanup": 0,
                 "total_async_locks": 8,
-                "pending_async_cleanup": 1
+                "pending_async_cleanup": 0
             }
         """
-        global _lock_registry_count, _lock_cleanup_data, _registry_guard
-
         status = {
             "total_mp_locks": 0,
             "pending_mp_cleanup": 0,
@@ -792,17 +1098,12 @@ class KeyedUnifiedLock:
         }
 
         try:
-            # Count multiprocess locks
-            if _is_multiprocess and _lock_registry_count is not None:
-                if _registry_guard is not None:
-                    with _registry_guard:
-                        status["total_mp_locks"] = len(_lock_registry_count)
-                        if _lock_cleanup_data is not None:
-                            status["pending_mp_cleanup"] = len(_lock_cleanup_data)
+            # Count multiprocess locks (currently held keys, server-side count)
+            if _is_multiprocess and _keyed_holder_table is not None:
+                status["total_mp_locks"] = _keyed_holder_table.holder_count()
 
-            # Count async locks
+            # Count async locks (locally held or awaited keys)
             status["total_async_locks"] = len(self._async_lock_count)
-            status["pending_async_cleanup"] = len(self._async_lock_cleanup_data)
 
         except Exception as e:
             direct_log(
@@ -980,6 +1281,16 @@ class _KeyedLockContext:
         if self._ul is None:
             return
 
+        # Snapshot the acquired-lock entries and clear ``self._ul`` BEFORE
+        # starting the release task. The release runs on a shielded task that
+        # may complete AFTER this coroutine is (re-)cancelled; if the closure
+        # below read ``self._ul`` at that later point it would find ``None``
+        # (cleared here) and skip releasing the underlying locks, deadlocking
+        # every future acquirer. Iterating a stable snapshot keeps the deferred
+        # release correct.
+        entries = list(self._ul)
+        self._ul = None
+
         async def release_all_locks():
             """Release all locks with comprehensive error handling, protected from cancellation"""
 
@@ -1032,8 +1343,9 @@ class _KeyedLockContext:
             all_errors = []
 
             # Release locks in reverse order
-            # This entire loop is protected by the outer shield
-            for entry in reversed(self._ul):
+            # This entire loop is protected by the outer shield.
+            # Iterate the stable snapshot, not self._ul (already cleared above).
+            for entry in reversed(entries):
                 try:
                     errors = await release_single_entry(entry, exc_type, exc, tb)
                     for error_type, error in errors:
@@ -1048,20 +1360,44 @@ class _KeyedLockContext:
 
             return all_errors
 
-        # CRITICAL: Protect the entire release process with shield
-        # This ensures that even if cancellation occurs, all locks are released
-        try:
-            all_errors = await asyncio.shield(release_all_locks())
-        except Exception as e:
-            direct_log(
-                f"Critical error during __aexit__ cleanup: {e}",
-                level="ERROR",
-                enable_output=True,
-            )
-            all_errors = []
-        finally:
-            # Always clear the lock list, even if shield was cancelled
-            self._ul = None
+        # CRITICAL: run the release on a FIXED task and wait for THAT SAME task
+        # to finish, resisting (repeated) cancellation. A single
+        # ``await asyncio.shield(release_all_locks())`` would, on re-cancellation,
+        # return before the shielded release actually completes, leaving the
+        # underlying keyed lock held forever. The loop below only returns once the
+        # release task is done, so __aexit__ never returns while a lock is still
+        # held. Any cancellation observed while waiting is deferred and re-raised
+        # only after the release has completed.
+        release_task = asyncio.ensure_future(release_all_locks())
+        pending_cancel = None
+        while not release_task.done():
+            try:
+                await asyncio.shield(release_task)
+            except asyncio.CancelledError as exc:
+                if release_task.cancelled():
+                    # The release task itself was directly cancelled — it cannot
+                    # have finished releasing; do not pretend it did.
+                    raise
+                # External cancellation of THIS coroutine: record it (even if the
+                # task just became done, so it is never swallowed) and keep waiting.
+                pending_cancel = pending_cancel or exc
+
+        all_errors = []
+        if not release_task.cancelled():
+            task_exc = release_task.exception()
+            if task_exc is not None:
+                direct_log(
+                    f"Critical error during __aexit__ cleanup: {task_exc}",
+                    level="ERROR",
+                    enable_output=True,
+                )
+            else:
+                all_errors = release_task.result()
+
+        # Locks are now definitively released; propagate a deferred cancellation
+        # before anything else.
+        if pending_cancel is not None:
+            raise pending_cancel
 
         # If there were release errors and no other exception, raise the first release error
         if all_errors and exc_type is None:
@@ -1120,41 +1456,52 @@ def get_data_init_lock(enable_logging: bool = False) -> UnifiedLock:
 
 def cleanup_keyed_lock() -> Dict[str, Any]:
     """
-    Force cleanup of expired keyed locks and return comprehensive status information.
+    Report keyed-lock status; kept as a status shell for schema compatibility.
 
-    This function actively cleans up expired locks for both async and multiprocess locks,
-    then returns detailed statistics about the cleanup operation and current lock status.
+    There is nothing left to clean on either side: multiprocess locks live in
+    the server-side holder table only while HELD, and async locks are dropped
+    on the release that takes their refcount to 0. The ``cleanup_performed``
+    counters (``mp_cleaned`` / ``async_cleaned``) are preserved for
+    response-schema compatibility and are always 0.
 
     Returns:
-        Same as cleanup_expired_locks in KeyedUnifiedLock
+        {
+            "process_id": <pid of the answering worker>,
+            "cleanup_performed": {"mp_cleaned": 0, "async_cleaned": 0},
+            "current_status": <get_lock_status() dict>
+        }
     """
     global _storage_keyed_lock
 
-    # Check if shared storage is initialized
     if not _initialized or _storage_keyed_lock is None:
-        return {
-            "process_id": os.getpid(),
-            "cleanup_performed": {"mp_cleaned": 0, "async_cleaned": 0},
-            "current_status": {
-                "total_mp_locks": 0,
-                "pending_mp_cleanup": 0,
-                "total_async_locks": 0,
-                "pending_async_cleanup": 0,
-            },
+        current_status = {
+            "total_mp_locks": 0,
+            "pending_mp_cleanup": 0,
+            "total_async_locks": 0,
+            "pending_async_cleanup": 0,
         }
+    else:
+        current_status = _storage_keyed_lock.get_lock_status()
 
-    return _storage_keyed_lock.cleanup_expired_locks()
+    return {
+        "process_id": os.getpid(),
+        "cleanup_performed": {"mp_cleaned": 0, "async_cleaned": 0},
+        "current_status": current_status,
+    }
 
 
 def get_keyed_lock_status() -> Dict[str, Any]:
     """
-    Get current status of keyed locks without performing cleanup.
+    Get current status of keyed locks.
 
-    This function provides a read-only view of the current lock counts
-    for both multiprocess and async locks, including pending cleanup counts.
+    Read-only view of the instantaneous lock counts: global holders
+    (``total_mp_locks``) and this worker's locally held-or-awaited keys
+    (``total_async_locks``) — see ``KeyedUnifiedLock.get_lock_status`` for the
+    scope/criterion distinction. The ``pending_*_cleanup`` keys are always 0
+    (schema compatibility).
 
     Returns:
-        Same as get_lock_status in KeyedUnifiedLock
+        Same as get_lock_status in KeyedUnifiedLock, plus ``process_id``
     """
     global _storage_keyed_lock
 
@@ -1173,7 +1520,10 @@ def get_keyed_lock_status() -> Dict[str, Any]:
     return status
 
 
-def initialize_share_data(workers: int = 1):
+def initialize_share_data(
+    workers: int = 1,
+    global_concurrency_limits: Optional[Mapping[str, int]] = None,
+):
     """
     Initialize shared storage data for single or multi-process mode.
 
@@ -1190,15 +1540,17 @@ def initialize_share_data(workers: int = 1):
     Args:
         workers (int): Number of worker processes. If 1, single-process mode is used.
                       If > 1, multi-process mode with shared memory is used.
+        global_concurrency_limits: Optional mapping of concurrency group name
+                      (e.g. "llm:extract", "embedding", "rerank") to the
+                      cross-worker global max concurrency for that group.
+                      Read-only after initialization; later calls (which hit
+                      the already-initialized guard) never overwrite it.
     """
     global \
         _manager, \
         _workers, \
         _is_multiprocess, \
-        _lock_registry, \
-        _lock_registry_count, \
-        _lock_cleanup_data, \
-        _registry_guard, \
+        _keyed_holder_table, \
         _internal_lock, \
         _data_init_lock, \
         _shared_dicts, \
@@ -1207,8 +1559,14 @@ def initialize_share_data(workers: int = 1):
         _update_flags, \
         _async_locks, \
         _storage_keyed_lock, \
-        _earliest_mp_cleanup_time, \
-        _last_mp_cleanup_time
+        _global_concurrency_limits, \
+        _lease_ns_cache, \
+        _queue_stats_ns_cache, \
+        _namespace_data_cache, \
+        _pipeline_ingress_local, \
+        _pipeline_ingress_hub, \
+        _scan_job_store_local, \
+        _scan_job_store_hub
 
     # Check if already initialized
     if _initialized:
@@ -1218,19 +1576,47 @@ def initialize_share_data(workers: int = 1):
         return
 
     _workers = workers
+    _global_concurrency_limits = (
+        {
+            str(group): int(limit)
+            for group, limit in global_concurrency_limits.items()
+            if limit is not None and int(limit) > 0
+        }
+        if global_concurrency_limits
+        else {}
+    )
+    _lease_ns_cache = None
+    _queue_stats_ns_cache = None
+    _namespace_data_cache = {}
+    _pipeline_ingress_local = {}
+    _scan_job_store_local = {}
+    if _global_concurrency_limits:
+        direct_log(
+            f"Process {os.getpid()} Global concurrency limits: {_global_concurrency_limits}",
+            level="INFO",
+        )
 
     if workers > 1:
         _is_multiprocess = True
-        _manager = Manager()
-        _lock_registry = _manager.dict()
-        _lock_registry_count = _manager.dict()
-        _lock_cleanup_data = _manager.dict()
-        _registry_guard = _manager.RLock()
+        _manager = _LightRAGManager()
+        _manager.start()
+        # Server-side atomic holder table: the keyed-lock check-and-set runs
+        # inside the Manager server, so the keyed path holds no manager
+        # Lock/RLock a dying client could strand.
+        _keyed_holder_table = _manager.KeyedHolderTable()
         _internal_lock = _manager.Lock()
         _data_init_lock = _manager.Lock()
         _shared_dicts = _manager.dict()
         _init_flags = _manager.dict()
         _update_flags = _manager.dict()
+        # Server-side hub owning every workspace's ingress mailbox (same
+        # pre-fork topology as _keyed_holder_table): workers inherit this one
+        # proxy and bind namespaces to it — no per-workspace proxy creation,
+        # no client-held creation lock.
+        _pipeline_ingress_hub = _manager.PipelineIngressHub()
+        # Server-side hub owning every workspace's scan job store (same pre-fork
+        # topology): workers inherit this one proxy and bind namespaces to it.
+        _scan_job_store_hub = _manager.ScanJobStoreHub()
 
         _storage_keyed_lock = KeyedUnifiedLock()
 
@@ -1248,17 +1634,16 @@ def initialize_share_data(workers: int = 1):
         _is_multiprocess = False
         _internal_lock = asyncio.Lock()
         _data_init_lock = asyncio.Lock()
+        _keyed_holder_table = None  # multiprocess-only; unused single-process
         _shared_dicts = {}
         _init_flags = {}
         _update_flags = {}
+        _pipeline_ingress_hub = None  # multiprocess-only server-side hub
+        _scan_job_store_hub = None  # multiprocess-only server-side hub
         _async_locks = None  # No need for async locks in single process mode
 
         _storage_keyed_lock = KeyedUnifiedLock()
         direct_log(f"Process {os.getpid()} Shared-Data created for Single Process")
-
-    # Initialize multiprocess cleanup times
-    _earliest_mp_cleanup_time = None
-    _last_mp_cleanup_time = None
 
     # Mark as initialized
     _initialized = True
@@ -1287,7 +1672,6 @@ async def initialize_pipeline_status(workspace: str | None = None):
         history_messages = _manager.list() if _is_multiprocess else []
         pipeline_namespace.update(
             {
-                "autoscanned": False,  # Auto-scan started
                 "busy": False,  # Control concurrent processes
                 # Destructive subset of ``busy``: clear / delete jobs that
                 # DROP storages or remove input files.  Concurrent enqueue
@@ -1295,7 +1679,7 @@ async def initialize_pipeline_status(workspace: str | None = None):
                 # accepted document, so reservation and the enqueue
                 # last-line guard reject when this is True.  ``busy`` on
                 # its own (the processing loop) remains compatible with
-                # concurrent enqueue via request_pending.
+                # concurrent enqueue via the pipeline ingress mailbox.
                 "destructive_busy": False,
                 "scanning": False,  # /documents/scan task running (whole lifecycle)
                 # Exclusive subset of ``scanning``: only True during the
@@ -1319,9 +1703,45 @@ async def initialize_pipeline_status(workspace: str | None = None):
                 "docs": 0,  # Total number of documents to be indexed
                 "batchs": 0,  # Number of batches for processing documents
                 "cur_batch": 0,  # Current processing batch
-                "request_pending": False,  # Flag for pending request for processing
                 "latest_message": "",  # Latest message from pipeline processing
                 "history_messages": history_messages,  # 使用共享列表对象
+                # ---- reservation owner tokens (cancellation-safe release) ----
+                # ``busy``/``scanning`` are held by exactly one task at a time.
+                # The owner records which task holds the slot so a release can be
+                # owner-checked (never clobber a new owner) and — once the
+                # dead-process recovery layer lands — a dead owner can be
+                # reclaimed. ``busy_owner`` covers busy + destructive_busy;
+                # ``scanning_owner`` covers scanning + scanning_exclusive.
+                # ``pending_enqueue_tokens`` is a {token: metadata} set whose
+                # length is mirrored in ``pending_enqueues`` (concurrent enqueues
+                # are permitted, so it is a set, not a single owner).
+                "busy_owner": None,
+                "scanning_owner": None,
+                "pending_enqueue_tokens": {},
+                # ---- manual retry coordination (LR2 §6.1) ----
+                # Runtime-only state for the freeze → DRAIN_TO_IDLE →
+                # EXCLUSIVE_RESET manual-retry protocol.  NEVER written to
+                # doc_status and NEVER surviving a Manager/whole-process restart
+                # (a restart resets them to idle; recovery is driven only by the
+                # persistent doc_status: PENDING resumes via AUTO, FAILED waits
+                # for the next explicit manual request).
+                #
+                # ``manual_freeze_requested`` rejects NEW enqueue reservations
+                # (upload/text/SDK direct enqueue) but lets already-reserved
+                # requests finish; ``manual_resetting`` marks the exclusive
+                # FAILED→PENDING phase (no worker runs); ``manual_phase`` is one
+                # of MANUAL_PHASE_{IDLE,DRAIN_TO_IDLE,EXCLUSIVE_RESET}.  The
+                # freeze/reset flags and ``manual_owner`` are ALWAYS written in
+                # a single atomic update: there is never a True flag with no
+                # owner (LR2 §6.1).  ``manual_owner`` is the busy processing run
+                # that holds the freeze — {request_id, owner_token, pid,
+                # process_start_id} — so a dead busy owner clears the manual
+                # state too (see _dead_reservation_updates).
+                "manual_freeze_requested": False,
+                "manual_freeze_started_at": None,
+                "manual_resetting": False,
+                "manual_phase": MANUAL_PHASE_IDLE,
+                "manual_owner": None,
             }
         )
 
@@ -1329,6 +1749,1782 @@ async def initialize_pipeline_status(workspace: str | None = None):
         direct_log(
             f"Process {os.getpid()} Pipeline namespace '{final_namespace}' initialized"
         )
+
+
+def _ensure_ingress_on_current_loop(ingress: Any, final_namespace: str) -> None:
+    """Bind a single-process ingress to the caller's loop, LightRAG-style.
+
+    Follows the sync-wrapper convention (see ``lightrag.py``: an object built
+    under one ``asyncio.run()`` keeps working from later loops once the first
+    loop closed): an ingress whose owning loop is CLOSED is migrated in place
+    to the current loop with all state preserved.  Only genuine cross-loop
+    sharing — the owning loop still running elsewhere — fast-fails, because
+    plain asyncio primitives would corrupt waits silently.  Multiprocess hub
+    views are loop-agnostic (no ``owning_loop`` attribute).
+    """
+    owning_loop = getattr(ingress, "owning_loop", None)
+    if owning_loop is None or owning_loop is asyncio.get_running_loop():
+        return
+    if owning_loop.is_closed():
+        ingress.rebind_to_current_loop()
+        return
+    # A stopped-but-not-closed foreign loop is also rejected: it cannot be
+    # distinguished from one that will resume, and migrating out from under a
+    # resumable loop would corrupt its waiters. asyncio.run() always closes
+    # its loop, so the standard LightRAG sync-wrapper flow never hits this.
+    raise RuntimeError(
+        f"pipeline ingress '{final_namespace}' belongs to another event "
+        "loop that has not been closed; single-process ingress objects "
+        "cannot be shared across live loops (create the LightRAG instances "
+        "for one workspace on the same loop, or run multi-worker mode)"
+    )
+
+
+async def get_pipeline_ingress(workspace: str | None = None):
+    """Get (or lazily create) the ingress view for ``workspace``.
+
+    Same-workspace callers always reach the SAME state: single-process a
+    per-process :class:`AsyncioPipelineIngress` (migrated between loops per
+    the sync-wrapper convention), multiprocess a
+    :class:`ManagerPipelineIngress` view binding the namespace to the one
+    server-side hub.  No client-held lock anywhere: single-process the
+    check-and-insert below has no await (atomic on the loop; ``setdefault``
+    guards hypothetical multi-loop threads), multiprocess the hub creates the
+    mailbox atomically inside one server-side dispatch — a client SIGKILLed
+    at any point can neither strand creation nor race a duplicate.
+
+    SUSPENSION-FREE BY CONTRACT: despite being ``async`` (call-site
+    uniformity), this function must never contain a real ``await`` — the
+    custom-chunks and batch-delete exit paths resolve the ingress inside
+    slot-releasing ``finally`` blocks BEFORE their cancellation-resistant
+    release, where a suspension point would let a pending re-cancellation
+    skip the release and wedge ``busy``/``destructive_busy``.
+    """
+    if _pipeline_ingress_local is None:
+        direct_log(
+            f"Error: Try to get pipeline ingress before initialization, pid={os.getpid()}",
+            level="ERROR",
+        )
+        raise ValueError("Shared dictionaries not initialized")
+
+    final_namespace = get_final_namespace("pipeline_ingress", workspace)
+
+    ingress = _pipeline_ingress_local.get(final_namespace)
+    if ingress is None:
+        if _is_multiprocess and _pipeline_ingress_hub is not None:
+            created: Any = ManagerPipelineIngress(
+                _pipeline_ingress_hub, final_namespace
+            )
+        else:
+            created = AsyncioPipelineIngress()
+        ingress = _pipeline_ingress_local.setdefault(final_namespace, created)
+        if ingress is created:
+            direct_log(
+                f"Process {os.getpid()} Pipeline ingress '{final_namespace}' resolved"
+            )
+    _ensure_ingress_on_current_loop(ingress, final_namespace)
+    return ingress
+
+
+async def initialize_pipeline_ingress(workspace: str | None = None) -> None:
+    """Ensure the workspace ingress exists (idempotent)."""
+    await get_pipeline_ingress(workspace)
+
+
+async def finalize_pipeline_ingress(workspace: str | None = None) -> None:
+    """Drop the workspace ingress from THIS process's registry.
+
+    Teardown/tests ONLY.  The ingress is shared by every LightRAG instance of
+    the workspace, so ``LightRAG.finalize_storages()`` must never call this —
+    a surviving instance would lose sticky manual requests and in-flight
+    notifications.  Idempotent.
+
+    Single-process, this fully drops the instance (a later
+    :func:`get_pipeline_ingress` builds a fresh, empty one).  Multiprocess,
+    only the local namespace view is dropped — the server-side mailbox keeps
+    its state inside the hub (workspace identity is the namespace string, so
+    re-resolution reaches the same mailbox) and is reclaimed only by
+    :func:`finalize_share_data`; a destructive workspace wipe empties it via
+    ``ingress.clear()`` instead.
+    """
+    if _pipeline_ingress_local is None:
+        return
+    final_namespace = get_final_namespace("pipeline_ingress", workspace)
+    _pipeline_ingress_local.pop(final_namespace, None)
+
+
+def get_scan_job_store(workspace: str | None = None):
+    """Get (or lazily create) the scan job store view for ``workspace``.
+
+    Same topology as :func:`get_pipeline_ingress` but LOOP-AGNOSTIC (the store
+    is a plain ``threading.Lock``-guarded object with no asyncio primitives and
+    no blocking waits, so it needs no loop-migration): single-process a
+    per-process :class:`AsyncioScanJobStore`, multiprocess a
+    :class:`ManagerScanJobStore` view binding the namespace to the one
+    server-side hub. Synchronous by design (no RPC needs an event loop)."""
+    if _scan_job_store_local is None:
+        raise ValueError("Shared dictionaries not initialized")
+
+    final_namespace = get_final_namespace("scan_job_store", workspace)
+    store = _scan_job_store_local.get(final_namespace)
+    if store is None:
+        if _is_multiprocess and _scan_job_store_hub is not None:
+            created: Any = ManagerScanJobStore(_scan_job_store_hub, final_namespace)
+        else:
+            created = AsyncioScanJobStore(final_namespace)
+        store = _scan_job_store_local.setdefault(final_namespace, created)
+    return store
+
+
+def finalize_scan_job_store(workspace: str | None = None) -> None:
+    """Drop the workspace scan job store from THIS process's registry.
+
+    Teardown/tests ONLY (like :func:`finalize_pipeline_ingress`). Single-process
+    fully drops the instance; multiprocess drops only the local view — the
+    server-side store persists in the hub until :func:`finalize_share_data` or a
+    destructive workspace wipe (``store.clear()``). Idempotent."""
+    if _scan_job_store_local is None:
+        return
+    final_namespace = get_final_namespace("scan_job_store", workspace)
+    _scan_job_store_local.pop(final_namespace, None)
+
+
+def _debug_log_failure(message: str, exc: Exception) -> None:
+    """Record a swallowed pipeline-status log-write failure without ever raising.
+
+    The never-raise contract of :class:`PipelineStatusLogger` extends to its
+    own diagnostics: if even the logging call fails (e.g. a broken handler), we
+    must not let it propagate and mask the caller's real exception.
+    """
+    try:
+        logging.getLogger("lightrag").debug("pipeline status log: %s: %r", message, exc)
+    except Exception:
+        pass
+
+
+_UNRESOLVED = object()
+"""Sentinel for :class:`PipelineStatusLogger`'s unfetched history cache.
+
+``None`` cannot serve as the sentinel: a ``.get()`` that *returned* None
+(missing key / late init) must NOT be cached, so the next write retries.
+"""
+
+
+# ---------------------------------------------------------------------------
+# Bounded pipeline status history (LR2 §10.3)
+# ---------------------------------------------------------------------------
+#
+# Every history write in the repo funnels through ``append_pipeline_history``
+# (or :class:`PipelineStatusLogger`, which shares the helpers below). Two bounds
+# are enforced together because either alone is insufficient: a message count
+# without a size cap still lets one ``traceback.format_exc()`` line dominate the
+# log, and a size cap without a count is unbounded by definition.
+
+# How many appends may pass before the capacity check is taken. The check itself
+# is a ``len()`` — one Manager RPC in multiprocess mode — and the hot extraction
+# path logs thousands of lines per document, so checking every time would add
+# 50% to the per-line RPC budget that PipelineStatusLogger exists to hold at 2.
+# Amortizing it makes the real bound ``capacity + interval × concurrently
+# written histories`` (2.5% overshoot per writer), which is still a fixed bound.
+_HISTORY_TRIM_CHECK_INTERVAL = 128
+
+# Process-local, deliberately not synchronized: this is a heuristic for *when* to
+# check, never a correctness input. A racing double-check just runs the trim
+# twice, and the trim is idempotent (it always leaves the newest `capacity`).
+_history_appends_since_trim = 0
+
+
+def clamp_pipeline_history_message(message: Any) -> Any:
+    """Cut one history line to ``PIPELINE_HISTORY_MESSAGE_MAX_BYTES`` UTF-8 bytes.
+
+    Truncation keeps the HEAD plus a marker naming the original size: status
+    lines put the identifying part first (stage, counter, doc id, file path), and
+    an operator who sees "48213 bytes" knows to look in the server log for the
+    full text — which every one of these call sites has already written there.
+
+    Never raises (part of the status-write contract): an unexpected object is
+    returned untouched rather than failing the operation being logged.
+    """
+    try:
+        if not isinstance(message, str):
+            message = str(message)
+        raw = message.encode("utf-8")
+        if len(raw) <= PIPELINE_HISTORY_MESSAGE_MAX_BYTES:
+            return message
+        marker = f"…[truncated, {len(raw)} bytes]"
+        budget = max(
+            0, PIPELINE_HISTORY_MESSAGE_MAX_BYTES - len(marker.encode("utf-8"))
+        )
+        # Slice the BYTES and drop the partial trailing character (the whole
+        # point of errors="ignore" here); slicing characters instead would
+        # overshoot the byte budget by up to 3x on CJK text.
+        return raw[:budget].decode("utf-8", errors="ignore") + marker
+    except Exception as exc:
+        _debug_log_failure("history message clamp skipped", exc)
+        return message
+
+
+def _maybe_trim_pipeline_history(history, appended: int = 1) -> None:
+    """Enforce the ring capacity on an already-resolved history handle.
+
+    ``appended`` counts MESSAGES, not calls: a group write advances the counter by
+    its own length, so the overshoot stays ``interval`` regardless of how large a
+    group a call site passes.
+
+    Lock-free on purpose. The trim is a read-modify-write, but its only possible
+    race outcome is running twice, and ``del history[:overflow]`` never removes a
+    message newer than the retained window — so no reader can observe anything a
+    single-threaded trim would not also have produced. Coordination state still
+    requires ``pipeline_status_lock``; this is status log housekeeping.
+    """
+    global _history_appends_since_trim
+    _history_appends_since_trim += appended
+    if _history_appends_since_trim < _HISTORY_TRIM_CHECK_INTERVAL:
+        return
+    _history_appends_since_trim = 0
+    try:
+        overflow = len(history) - PIPELINE_HISTORY_MAX_MESSAGES
+        if overflow > 0:
+            # In place, and by slice: `history` is the shared Manager ListProxy
+            # that every worker appends to and PipelineStatusLogger caches, so
+            # rebinding it would orphan both. One `del` is one server-side RPC;
+            # popping in a loop would be `overflow` of them.
+            del history[:overflow]
+    except Exception as exc:
+        _debug_log_failure("history trim skipped", exc)
+
+
+def append_pipeline_history(pipeline_status, *messages) -> None:
+    """The single funnel for pipeline status history writes (LR2 §10.3).
+
+    Replaces the raw ``history_messages`` append at every call site — a repo-wide
+    test fails if one is re-introduced, because a single unfunnelled writer is an
+    unbounded leak that nothing else would notice.
+
+    Deliberately does NOT touch ``latest_message``: the call sites that set it do
+    so alongside other coordination fields in one ``update()``, and folding that
+    in would turn a mechanical, reviewable substitution into a behaviour change.
+
+    Same never-raise contract as :class:`PipelineStatusLogger`, for the same
+    reason — the call sites are shaped ``except ...: log(...); raise`` and a
+    raising status write would mask the real exception. A missing/None
+    ``history_messages`` is skipped rather than raising KeyError.
+    """
+    if pipeline_status is None or not messages:
+        return
+    try:
+        history = pipeline_status.get("history_messages")
+    except Exception as exc:
+        _debug_log_failure("history fetch skipped", exc)
+        return
+    if history is None:
+        return
+    try:
+        # One `extend` per group: N appends would be N RPCs, and a group written
+        # by one call site belongs together in the log.
+        history.extend([clamp_pipeline_history_message(m) for m in messages])
+    except Exception as exc:
+        _debug_log_failure("history append skipped", exc)
+        return
+    _maybe_trim_pipeline_history(history, len(messages))
+
+
+class PipelineStatusLogger:
+    """Operation-scoped, lock-free pipeline status logger with a cached history list.
+
+    Writes ``latest_message`` and appends to ``history_messages`` WITHOUT
+    taking ``pipeline_status_lock``. The first history write fetches
+    ``pipeline_status["history_messages"]`` once and caches the returned list
+    handle; every later message is a single ``extend`` on that handle. In
+    multiprocess mode this keeps the steady-state explicit proxy operations
+    per log line at 2 (``latest_message`` setitem + history ``extend``), and
+    reusing the cached nested ListProxy also avoids the per-message proxy
+    reconstruction and reference-management traffic that a repeated
+    ``DictProxy.get`` incurs.
+
+    Scope / lifecycle:
+    - One instance per pipeline *operation* (e.g. one ``extract_entities`` or
+      ``merge_nodes_and_edges`` call), shared by that operation's child tasks.
+    - MUST NOT be reused across ``finalize_share_data()``: after manager
+      shutdown both the cached proxy and the status dict are dead, and every
+      write degrades to a debug-logged no-op. Never store one at module level,
+      and never ship one to another process except by fork inheritance.
+    - Depends on the repo invariant that ``history_messages`` is only ever
+      reset IN PLACE (``del h[:]`` / ``h[:] = [...]``) and never replaced with
+      a new list object; a replacement would leave this logger appending to
+      the orphaned list for the rest of the operation.
+    - Shares the LR2 §10.3 bounds with :func:`append_pipeline_history`: each
+      message is clamped by :func:`clamp_pipeline_history_message` and the ring
+      capacity is enforced by :func:`_maybe_trim_pipeline_history`. This is the
+      hot path (thousands of lines per document), which is exactly why the
+      capacity check there is amortized rather than taken per line.
+
+    Why lock-free is safe: this is for pure status logging ONLY, never for
+    coordination state (``busy`` / ``cancellation_*`` /
+    reservation owner tokens / ``cur_batch``), which stays
+    in ``async with pipeline_status_lock`` read-modify-write blocks. Each of
+    ``dict.__setitem__`` and ``list.extend`` is a single indivisible operation
+    on the backing dict/list under the Manager server's CPython GIL (for plain
+    str/tuple args), and ``extend`` (not a per-message ``append`` loop)
+    appends a multi-message group atomically in one round-trip. Dropping the
+    lock only makes the human-facing status log eventually consistent
+    (``latest_message`` may lag the history tail, and concurrent writers may
+    interleave) — no coordination invariant depends on it.
+
+    Never-raise contract (call sites are shaped
+    ``except ...: log(...); raise e`` — a raising status write would mask the
+    real exception): ``pipeline_status is None`` or empty ``messages`` → no-op;
+    latest / history / diagnostics are each guarded independently.
+
+    Two deliberate behavioral deltas vs the pre-helper locked call sites
+    (pinned by tests): (1) logging no longer requires ``pipeline_status_lock``
+    to be provided; (2) a missing/None ``history_messages`` is silently
+    skipped instead of raising KeyError.
+
+    Cache recovery: a failed or None ``.get()`` is not cached and is retried
+    on the next write; a failed ``extend`` drops the cache so the next write
+    re-fetches a fresh handle. Messages of the FAILED call are never retried —
+    the write may have half-committed and a retry could duplicate them.
+    """
+
+    __slots__ = ("_pipeline_status", "_history")
+
+    def __init__(self, pipeline_status) -> None:
+        # Construction is deliberately proxy-free (no Manager round-trip), so
+        # building a logger for a pipeline_status=None caller costs nothing.
+        self._pipeline_status = pipeline_status
+        self._history = _UNRESOLVED
+
+    def log(self, *messages) -> None:
+        """Best-effort: set ``latest_message`` to the last message, then append
+        the whole group to history with one ``extend``."""
+        if self._pipeline_status is None or not messages:
+            return
+        # Clamp once, up front: `latest_message` is a single slot but it is read
+        # back on every status poll, so an unclamped 48 KB line would be shipped
+        # to the UI for as long as it stays the latest.
+        messages = tuple(clamp_pipeline_history_message(m) for m in messages)
+        try:
+            self._pipeline_status["latest_message"] = messages[-1]
+        except Exception as exc:
+            _debug_log_failure("latest_message write skipped", exc)
+        history = self._history
+        if history is _UNRESOLVED:
+            try:
+                history = self._pipeline_status.get("history_messages")
+            except Exception as exc:
+                _debug_log_failure("history fetch skipped", exc)
+                return
+            if history is None:
+                # Missing/late-initialized key: nothing is cached, so the
+                # next call retries the fetch.
+                return
+            self._history = history
+        try:
+            history.extend(messages)
+        except Exception as exc:
+            # Drop the cache (stale/dead handle) so the next call re-fetches.
+            # Do NOT retry these messages: the extend may have half-committed.
+            self._history = _UNRESOLVED
+            _debug_log_failure("history append skipped", exc)
+            return
+        _maybe_trim_pipeline_history(history, len(messages))
+
+
+# ============================================================================
+# Pipeline reservation primitives (cancellation-safe owner-token release)
+# ============================================================================
+#
+# The pipeline serialises document processing, scans and destructive ops through
+# single-holder ``busy``/``scanning`` reservations plus a concurrent
+# ``pending_enqueue_tokens`` set. These helpers make acquiring and releasing a
+# reservation safe under asyncio cancellation:
+#
+# * the owner is recorded together with the flags in a SINGLE ``status.update``
+#   (one Manager RPC, applied atomically server-side), so a cancellation can
+#   never leave a flag set with no matching owner;
+# * release/finalize is owner-checked and runs to completion even under repeated
+#   cancellation via ``run_to_completion``, so a slot is never wedged and a stale
+#   task never clobbers a new owner.
+#
+# On top of cancellation safety, the dead-process recovery layer reclaims a
+# reservation whose owning worker was SIGKILLed: owners are recorded as
+# ``{token, pid, process_start_id, kind}`` and ``reconcile_dead_pipeline_reservations``
+# (called under the lock, before conflict checks) clears a CONFIRMED-dead owner's
+# slot — re-running processing/scan, fencing custom_chunks/delete/clear with
+# ``recovery_required``. Gated to Linux multi-worker (single-process dies with
+# its state; see ``_reservation_recovery_enabled``).
+
+
+# pipeline_status fields that are internal bookkeeping for reservation ownership
+# / dead-process recovery — never surfaced on the /pipeline_status response.
+_INTERNAL_PIPELINE_STATUS_FIELDS = (
+    "busy_owner",
+    "scanning_owner",
+    "pending_enqueue_tokens",
+    "operation_record",
+    "recovery_required",
+    "scan_deferred_processing",
+    # ``manual_owner`` carries a pid / process_start_id / owner token — internal
+    # coordination identity, never surfaced on /pipeline_status. The
+    # manual_freeze_requested / manual_resetting / manual_phase booleans+string
+    # are also hidden here in Phase 3; Phase 6 adds a curated observability view.
+    "manual_owner",
+    "manual_freeze_requested",
+    "manual_freeze_started_at",
+    "manual_resetting",
+    "manual_phase",
+)
+
+# Owner ``kind`` values whose work is safely RE-RUNNABLE after a dead-owner
+# reclaim (in-flight docs sit in doc_status and are reset to PENDING / retried).
+# Every other kind (custom_chunks / delete / clear) may have half-committed and
+# is fenced with ``recovery_required`` instead of being cleared for re-run.
+_RERUNNABLE_RESERVATION_KINDS = frozenset({"processing", "scan"})
+
+
+def _reservation_recovery_enabled() -> bool:
+    """Dead-process reservation reclaim is Linux-multiworker only.
+
+    Single-process Uvicorn dies with its pipeline_status (no cross-process
+    orphan); Windows has no Gunicorn multi-worker. Exposed as a function so tests
+    can force it on to exercise the reclaim logic off-Linux.
+    """
+    return bool(_is_multiprocess) and sys.platform.startswith("linux")
+
+
+def pipeline_recovery_blocked_message(pipeline_status: Dict[str, Any]) -> str:
+    """Human-readable refusal for a mutation attempted while ``recovery_required``
+    is set. Returns a generic message if the pipeline is not fenced.
+
+    The fence has more than one cause, and rendering them all as "a worker died"
+    would send an operator looking for a crash that never happened. A record
+    carrying an explicit ``message`` (a stalled manual drain, an owner whose
+    liveness can never be adjudicated) supplies its own wording; the original
+    dead-owner cause keeps the derived one.
+    """
+    rec = pipeline_status.get("recovery_required")
+    if not isinstance(rec, dict):
+        return "Pipeline is not fenced for recovery."
+    explicit = rec.get("message")
+    if isinstance(explicit, str) and explicit:
+        return (
+            f"Pipeline is fenced pending recovery: {explicit} All mutations are "
+            "refused until the workspace is recovered or force-reset."
+        )
+    op = rec.get("operation_record") or {}
+    target = op.get("doc_id") or op.get("scope") or ""
+    target = f" (target: {target})" if target else ""
+    return (
+        f"Pipeline is fenced pending recovery: a worker died mid "
+        f"'{rec.get('kind')}'{target}, which may have left storage in a "
+        "partially-committed state. All mutations are refused until the "
+        "workspace is recovered or force-reset."
+    )
+
+
+def describe_recovery_fence(pipeline_status: Mapping[str, Any]) -> Dict[str, Any]:
+    """Read-only, API-safe projection of the ``recovery_required`` fence.
+
+    The raw fence record is in :data:`_INTERNAL_PIPELINE_STATUS_FIELDS` and is
+    stripped from every response, for a good reason: it embeds an
+    ``operation_record`` and is written next to owner records carrying PIDs and
+    reservation tokens, which authorize releasing a reservation. But stripping it
+    left an operator with no read-only way to see THAT the workspace is fenced,
+    why, or which documents to look at — only a 503 on every write and a log line
+    they may not have kept.
+
+    So this returns the three things they need and nothing more:
+    ``recovery_required`` (bool), ``recovery_kind`` (the coarse cause) and
+    ``recovery_message`` (the same human-readable text the refusals carry, which
+    includes the bounded blocker sample for a stalled drain). No PID, no token, no
+    raw ``operation_record``.
+    """
+    rec = pipeline_status.get("recovery_required")
+    if not isinstance(rec, dict) or not rec:
+        return {
+            "recovery_required": False,
+            "recovery_kind": None,
+            "recovery_message": None,
+        }
+    kind = rec.get("kind")
+    return {
+        "recovery_required": True,
+        "recovery_kind": str(kind) if kind is not None else None,
+        "recovery_message": pipeline_recovery_blocked_message(
+            {"recovery_required": rec}
+        ),
+    }
+
+
+def make_owner_record(token: str, kind: str) -> Dict[str, Any]:
+    """Build a reservation owner record: the cancellation-safety token plus the
+    process identity used to detect a dead owner (see :func:`_process_alive`) and
+    the ``kind`` that decides recovery semantics.
+
+    ``kind`` is the reservation-holding operation, one of:
+
+    * ``processing`` / ``scan`` — re-runnable: in-flight docs sit in doc_status
+      and are reset to PENDING / retried, so a dead owner's slot is simply
+      cleared (see :data:`_RERUNNABLE_RESERVATION_KINDS`).
+    * ``custom_chunks`` / ``delete`` / ``clear`` — destructive and may have
+      half-committed, so a dead owner fences the workspace with
+      ``recovery_required`` instead of being cleared for re-run.
+    """
+    return {
+        "token": token,
+        "pid": os.getpid(),
+        "process_start_id": _my_start_id(),
+        "kind": kind,
+    }
+
+
+def make_manual_owner_record(request_id: str, token: str) -> Dict[str, Any]:
+    """Build the manual-retry freeze owner record (LR2 §6.1):
+    ``{request_id, owner_token, pid, process_start_id}``.
+
+    The freeze/drain/reset is driven BY the busy processing run, so the process
+    identity reuses :func:`make_owner_record` (same pid / process_start_id as the
+    busy owner) — a dead busy owner is therefore a dead manual owner. Kept in the
+    shared coordination layer so process identity is only ever captured here."""
+    owner = make_owner_record(token, "manual")
+    return {
+        "request_id": request_id,
+        "owner_token": owner["token"],
+        "pid": owner["pid"],
+        "process_start_id": owner["process_start_id"],
+    }
+
+
+def _dead_reservation_updates(
+    pipeline_status: Mapping[str, Any],
+    owner_key: str,
+    flags: tuple,
+    rec: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Reclaim a single-holder reservation whose owner is confirmed dead.
+
+    processing / scan → clear flags + owner (the work is re-runnable). Everything
+    else (custom_chunks / delete / clear) may have half-committed, so clear the
+    flags + owner but raise ``recovery_required`` to fence the workspace against
+    all further mutations until an explicit recovery / force-reset. All writes go
+    in a SINGLE ``status.update`` so a crash mid-recovery cannot tear them apart.
+    """
+    updates: Dict[str, Any] = {owner_key: None}
+    for flag in flags:
+        updates[flag] = False
+    # The manual-retry freeze/reset is driven BY the busy processing run
+    # (manual_owner shares its pid/process_start_id). A dead busy owner cannot
+    # legitimately still hold a freeze, so clear the whole manual state in the
+    # SAME atomic update — never leave a True freeze flag with no live owner
+    # (LR2 §6.1). The sticky manual request itself survives in the ingress
+    # mailbox and is re-run from scratch (idempotent drain→reset) by the next
+    # owner. ``processing`` is re-runnable, so busy is simply cleared here.
+    if owner_key == "busy_owner":
+        updates.update(
+            {
+                "manual_freeze_requested": False,
+                "manual_freeze_started_at": None,
+                "manual_resetting": False,
+                "manual_phase": MANUAL_PHASE_IDLE,
+                "manual_owner": None,
+            }
+        )
+    if rec.get("kind") not in _RERUNNABLE_RESERVATION_KINDS:
+        updates["recovery_required"] = {
+            "kind": rec.get("kind"),
+            "owner_key": owner_key,
+            # snapshot of what the dead owner was doing (doc_id / scope), if any
+            "operation_record": pipeline_status.get("operation_record"),
+        }
+    return updates
+
+
+def _dead_pipeline_reservation_updates(
+    status_snapshot: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Compute dead-owner recovery updates from one local status snapshot.
+
+    No-op unless Linux multi-worker (:func:`_reservation_recovery_enabled`).
+    The input MUST be a plain local snapshot, not a Manager ``DictProxy``: all
+    field reads stay local so a reconciliation decision costs one proxy ``copy``
+    at its caller instead of one RPC per ``get``. Only confirmed-dead owners are
+    reclaimed; a live-but-slow owner is never preempted.
+
+    An owner whose liveness can NEVER be adjudicated (no PID / no
+    ``process_start_id`` — see :func:`_owner_identity_undecidable`) is neither
+    reclaimed nor ignored: LR2 §6.1 requires it to fence the workspace with
+    ``recovery_required`` while leaving every flag it holds in place, so the
+    freeze is never risked on a guess and the operator gets a 503 plus the
+    documented ``/documents/recovery/force_reset`` exit instead of a 409 that
+    can only be cleared by restarting the service.
+    """
+    if not _reservation_recovery_enabled():
+        return {}
+
+    snapshot = dict(status_snapshot)
+    updates: Dict[str, Any] = {}
+    # busy_owner covers busy + destructive_busy; scanning_owner covers
+    # scanning + scanning_exclusive.
+    for owner_key, flags in (
+        ("busy_owner", ("busy", "destructive_busy")),
+        ("scanning_owner", ("scanning", "scanning_exclusive")),
+    ):
+        rec = snapshot.get(owner_key)
+        if not isinstance(rec, dict):
+            continue
+        if not any(snapshot.get(flag) for flag in flags):
+            continue
+        if _process_alive(rec.get("pid"), rec.get("process_start_id")):
+            # Alive, or not confirmed dead. Distinguish the transient uncertainty
+            # (re-probed and settled on a later pass) from a record that can
+            # NEVER be adjudicated: the latter would otherwise hold its flags —
+            # a manual freeze included — until the service is restarted, with no
+            # 503 and no documented exit. Checked AFTER the dead branch so a
+            # provable death is always a reclaim, never a fence.
+            if _owner_identity_unprobeable(rec) and not snapshot.get(
+                "recovery_required"
+            ):
+                fence = {
+                    "kind": rec.get("kind") or owner_key,
+                    "owner_key": owner_key,
+                    "operation_record": snapshot.get("operation_record"),
+                    "message": (
+                        f"the '{owner_key}' holder records no process identity, so "
+                        "it can never be confirmed alive or dead; its reservation "
+                        "is left untouched rather than reclaimed on a guess."
+                    ),
+                }
+                snapshot["recovery_required"] = fence
+                updates["recovery_required"] = fence
+            continue
+        owner_updates = _dead_reservation_updates(snapshot, owner_key, flags, rec)
+        snapshot.update(owner_updates)
+        updates.update(owner_updates)
+
+    # pending_enqueues: {token: {pid, process_start_id}} — drop confirmed-dead
+    # tokens (an enqueue is re-runnable: its doc sits in doc_status). Always
+    # recalibrate the mirrored count, covering a crash between "dropped token"
+    # and "updated count".
+    tokens = dict(snapshot.get("pending_enqueue_tokens", {}))
+    alive = {
+        token: meta
+        for token, meta in tokens.items()
+        if _process_alive((meta or {}).get("pid"), (meta or {}).get("process_start_id"))
+    }
+    if len(alive) != len(tokens) or snapshot.get("pending_enqueues") != len(alive):
+        updates.update(
+            {"pending_enqueue_tokens": alive, "pending_enqueues": len(alive)}
+        )
+
+    return updates
+
+
+def _pipeline_status_snapshot(
+    pipeline_status: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Return one local snapshot of a dict or Manager ``DictProxy``.
+
+    ``DictProxy.copy()`` is one Manager RPC. ``dict(proxy)`` may use the mapping
+    protocol and fetch values individually, so all reservation/status paths use
+    this helper before reading more than one field.
+    """
+    return pipeline_status.copy()
+
+
+def reconcile_dead_pipeline_reservations(
+    pipeline_status: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Reclaim dead reservations with one snapshot and at most one update.
+
+    Call only while holding ``pipeline_status_lock``. Production acquire and
+    mutation paths should use the reservation helpers below, which combine these
+    recovery updates with their own state transition. This wrapper remains for
+    focused recovery tests and compatibility with existing internal callers.
+    """
+    snapshot = _pipeline_status_snapshot(pipeline_status)
+    updates = _dead_pipeline_reservation_updates(snapshot)
+    if updates:
+        pipeline_status.update(updates)
+    return updates
+
+
+async def reap_dead_reservations_locked(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+) -> None:
+    """Reap confirmed-dead reservation tokens under ``pipeline_status_lock``.
+
+    A liveness escape hatch for a caller that is NOT taking a reservation (so it
+    cannot use the acquire helpers, which reconcile as a side effect) but must
+    not stall on a phantom count — specifically the manual DRAIN_TO_IDLE wait,
+    where the freeze blocks the uploads whose acquire would otherwise reap a
+    worker SIGKILLed mid-enqueue. No-op off Linux multi-worker
+    (:func:`_reservation_recovery_enabled`). Keeps
+    ``reconcile_dead_pipeline_reservations`` shared-storage-private."""
+    async with pipeline_status_lock:
+        reconcile_dead_pipeline_reservations(pipeline_status)
+
+
+async def fence_workspace_for_recovery(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+    *,
+    kind: str,
+    message: str,
+    operation_record: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Set ``recovery_required`` so every later mutation is refused with 503.
+
+    The self-fencing counterpart of the dead-owner reclaim: a running owner that
+    discovers it cannot make progress fences the workspace itself rather than
+    spinning (LR2 §7.2). Deliberately NOT owner-checked and deliberately
+    idempotent-by-first-writer: the fence outlives whichever reservation observed
+    the problem — the caller's own ``finally`` releases that reservation straight
+    afterwards — and an existing fence (e.g. a dead-owner one) is more specific
+    than a later generic one, so the first cause is the one kept.
+
+    Runs to completion under cancellation: a fence that a cancel could skip would
+    hand the next run the same spin.
+    """
+
+    async def _run() -> None:
+        async with pipeline_status_lock:
+            if pipeline_status.get("recovery_required"):
+                return
+            pipeline_status["recovery_required"] = {
+                "kind": kind,
+                "owner_key": "busy_owner",
+                "operation_record": operation_record,
+                "message": message,
+            }
+
+    await run_to_completion(_run)
+
+
+class PipelineReservationConflict(str, Enum):
+    """Structured reason why a pipeline reservation was refused."""
+
+    BUSY = "busy"
+    SCANNING = "scanning"
+    PENDING_ENQUEUE = "pending_enqueue"
+    DESTRUCTIVE = "destructive"
+    RECOVERY_REQUIRED = "recovery_required"
+    # A manual retry has frozen new enqueues while it drains the pipeline to
+    # idle and exclusively resets FAILED→PENDING (LR2 §6.1/§7.2). Maps to HTTP
+    # 409 like every non-recovery conflict — the freeze is a bounded window,
+    # not a fenced workspace.
+    MANUAL_FREEZE = "manual_freeze"
+
+
+@dataclass(frozen=True)
+class PipelineReservationResult:
+    """Result of an atomic reservation or mutation-fence decision."""
+
+    acquired: bool
+    conflict: Optional[PipelineReservationConflict] = None
+    message: Optional[str] = None
+    snapshot: Optional[Dict[str, Any]] = None
+    fence: Optional[str] = None
+    """The ``pipeline_status`` flag that refused, when one specific flag did.
+
+    Finer-grained than ``conflict``, which folds ``scanning`` and
+    ``scanning_exclusive`` into one member: a caller telling an operator WHICH
+    fence to wait on needs the flag, and a caller choosing an HTTP status needs
+    the member. Both are carried so neither has to be reconstructed from the
+    message."""
+
+
+def _recovery_required_result(
+    snapshot: Dict[str, Any],
+) -> PipelineReservationResult:
+    return PipelineReservationResult(
+        acquired=False,
+        conflict=PipelineReservationConflict.RECOVERY_REQUIRED,
+        message=pipeline_recovery_blocked_message(snapshot),
+        snapshot=snapshot,
+        # The fence IS a pipeline_status field, so ``fence`` is populated here for
+        # the same reason as on every flag refusal: the structured contract says
+        # it names the field that refused, and leaving it None here would make
+        # exactly one refusal shape lie about itself.
+        fence="recovery_required",
+    )
+
+
+def _conflict_for_status_flag(flag_key: str) -> PipelineReservationConflict:
+    if flag_key == "manual_freeze_requested":
+        # One chokepoint for every ingress path (enqueue reservation, last-line
+        # guard, scan fence), so the count cannot drift between them.
+        pipeline_metrics.increment(pipeline_metrics.FREEZE_REJECTS)
+    try:
+        return {
+            "busy": PipelineReservationConflict.BUSY,
+            "scanning": PipelineReservationConflict.SCANNING,
+            "scanning_exclusive": PipelineReservationConflict.SCANNING,
+            "pending_enqueues": PipelineReservationConflict.PENDING_ENQUEUE,
+            "destructive_busy": PipelineReservationConflict.DESTRUCTIVE,
+            "manual_freeze_requested": PipelineReservationConflict.MANUAL_FREEZE,
+        }[flag_key]
+    except KeyError:
+        # Fail-fast on an unmapped reject_when flag: a silent BUSY fallback would
+        # mislabel the conflict (and its HTTP status) and hide the typo.
+        raise ValueError(
+            f"No reservation conflict mapping for status flag {flag_key!r}; add it "
+            "to _conflict_for_status_flag when introducing a new reject_when flag."
+        ) from None
+
+
+def _prepare_pipeline_reservation_decision(
+    pipeline_status: Dict[str, Any],
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Take one proxy snapshot and locally apply computed recovery updates."""
+    snapshot = _pipeline_status_snapshot(pipeline_status)
+    recovery_updates = _dead_pipeline_reservation_updates(snapshot)
+    snapshot.update(recovery_updates)
+    return snapshot, recovery_updates
+
+
+def _commit_pipeline_reservation_updates(
+    pipeline_status: Dict[str, Any],
+    recovery_updates: Mapping[str, Any],
+    operation_updates: Optional[Mapping[str, Any]] = None,
+) -> None:
+    """Commit recovery plus operation changes in at most one proxy update."""
+    updates = dict(recovery_updates)
+    if operation_updates:
+        updates.update(operation_updates)
+    if updates:
+        pipeline_status.update(updates)
+
+
+async def run_to_completion(factory, *, max_restarts: int = 3):
+    """Await ``factory()`` to completion even if THIS coroutine is (repeatedly)
+    cancelled while waiting.
+
+    Cancellations of the caller are deferred until the work finishes, then the
+    first one is re-raised. If the work task is itself directly cancelled (e.g. a
+    shutdown that cancels every task) it is restarted a bounded number of times —
+    used only for idempotent releases, so the release still completes.
+    """
+    pending_cancel = None
+    restarts = 0
+    task = asyncio.ensure_future(factory())
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError as exc:
+            if task.cancelled():
+                # The work task itself was cancelled (e.g. a shutdown that
+                # cancels every task). Restart the idempotent work so the
+                # release still completes; do NOT treat this as a caller cancel.
+                if restarts >= max_restarts:
+                    raise
+                restarts += 1
+                task = asyncio.ensure_future(factory())
+                continue
+            # This coroutine was cancelled while the work is still running:
+            # record it (even if the task became done in the same step, so it is
+            # never swallowed) and keep waiting for the work to complete.
+            pending_cancel = pending_cancel or exc
+    if pending_cancel is not None:
+        raise pending_cancel
+    return result
+
+
+def _reservation_owner_token(record: Any) -> Any:
+    """Extract the token from an owner record (a bare token or a dict)."""
+    if isinstance(record, dict):
+        return record.get("token")
+    return record
+
+
+async def acquire_reservation(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+    *,
+    owner_key: str,
+    owner: Any = None,
+    owner_kind: Optional[str] = None,
+    flags: Dict[str, Any],
+    reject_when,
+    pipeline_ingress: Any = None,
+    refuse_when_manual_pending: bool = False,
+) -> PipelineReservationResult:
+    """Atomically take a single-holder reservation.
+
+    ``reject_when`` is a sequence of ``(flag_key, reason)``. The structured
+    result reports either the matching conflict or a mandatory recovery fence.
+    Otherwise ``flags`` and ``pipeline_status[owner_key] = owner`` are written in
+    one update together with any dead-owner cleanup. ``owner`` may be a bare
+    token or an owner record dict; ``owner_kind`` converts a token into a process
+    identity record inside this shared coordination layer.
+
+    ``refuse_when_manual_pending`` (``/scan`` only, LR2 §8.1) additionally
+    refuses while ANY un-ACKed sticky manual retry request sits in the mailbox:
+    a scan is itself a manual retry (it publishes its own intent and runs the
+    exclusive FAILED reset under ``scanning_exclusive``), so granting it while an
+    earlier request is queued would both jump the manual FIFO and deadlock that
+    request's run — the scan fence refuses every processing reservation. The peek
+    happens in the SAME critical section as the flag checks (one mailbox call, no
+    storage query, exactly like the auto-rescan arm in
+    :func:`acquire_processing_reservation`), so a request published concurrently
+    is either seen here or lands after the fence is up. ``pipeline_ingress`` MUST
+    be resolved by the caller beforehand — never lazily under the lock.
+
+    The caller MUST have entered its ``try`` before calling this so a cancel at
+    the lock exit still runs the ``finally`` that releases ``owner`` by token.
+    """
+    if owner_kind is not None:
+        owner = make_owner_record(str(owner), owner_kind)
+    if refuse_when_manual_pending and pipeline_ingress is None:
+        raise ValueError(
+            "refuse_when_manual_pending requires a pre-resolved pipeline_ingress"
+        )
+    async with pipeline_status_lock:
+        snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
+            pipeline_status
+        )
+        if snapshot.get("recovery_required"):
+            _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+            return _recovery_required_result(snapshot)
+        for flag_key, reason in reject_when:
+            if snapshot.get(flag_key):
+                _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+                return PipelineReservationResult(
+                    acquired=False,
+                    conflict=_conflict_for_status_flag(flag_key),
+                    message=reason,
+                    snapshot=snapshot,
+                    fence=flag_key,
+                )
+        if refuse_when_manual_pending:
+            # Cheapest checks first: the flags above catch a manual retry that is
+            # already draining (it holds ``busy``); this catches one still queued.
+            pending_manual = pipeline_ingress.peek_next_manual_retry()
+            if pending_manual is not None:
+                _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+                return PipelineReservationResult(
+                    acquired=False,
+                    conflict=PipelineReservationConflict.MANUAL_FREEZE,
+                    message=(
+                        "An earlier manual retry request "
+                        f"({pending_manual.request_id[:8]}) is still queued. A scan "
+                        "must not jump the manual retry FIFO — retry once it has "
+                        "been served."
+                    ),
+                    snapshot=snapshot,
+                )
+        updates = dict(flags)
+        updates[owner_key] = owner
+        snapshot.update(updates)
+        _commit_pipeline_reservation_updates(pipeline_status, recovery_updates, updates)
+    return PipelineReservationResult(acquired=True, snapshot=snapshot)
+
+
+def _reservation_weight(metadata: Any) -> int:
+    """Documents an in-flight reservation intends to write (0 when unweighted)."""
+    if not isinstance(metadata, Mapping):
+        return 0
+    weight = metadata.get("weight")
+    return weight if isinstance(weight, int) and weight > 0 else 0
+
+
+async def acquire_enqueue_reservation(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+    *,
+    token: str,
+    reject_when,
+    weight: int = 0,
+    capacity: int = 0,
+    active_count: Optional[int] = None,
+) -> PipelineReservationResult:
+    """Take (or re-weight) one of the concurrent pending-enqueue reservations.
+
+    ``pending_enqueue_tokens`` is a ``{token: metadata}`` set; several enqueues
+    may hold slots at once. Adds ``token`` and mirrors the count into
+    ``pending_enqueues`` in a single atomic update.
+
+    ``weight`` records how many documents this reservation intends to write, and
+    with ``capacity > 0`` the same critical section enforces the admission rule
+    (LR2 §9.1)::
+
+        active_count + Σ(other tokens' weights) + weight <= capacity
+
+    Registering an existing token again is how a reservation is *re-weighted*
+    (e.g. ``/texts`` learning its real document count after body parse, or the
+    enqueue guard narrowing a coarse pre-body reservation down to the deduped
+    count): the token's own previous weight is excluded from the sum, so a
+    re-weight can never double-count itself.
+
+    Refusal semantics are deliberately different per cause:
+
+    * mutual exclusion (``reject_when`` flags) → a refusal *result* (→ 409),
+      evaluated BEFORE capacity, so a manual freeze refuses regardless of how
+      much room there is — but **only for a NEW reservation**. A re-weight of a
+      token that is already registered is exempt, because holding a
+      pending-enqueue reservation is itself the protection against every ingress
+      fence (LR2 §9.2 "冻结前被准入的请求跑完"):
+
+      - ``scanning``/``scanning_exclusive`` and ``destructive_busy`` cannot even
+        be raised while it is held — both of those acquires list
+        ``pending_enqueues`` in their own ``reject_when``, in the same critical
+        section as their flag write;
+      - ``manual_freeze_requested`` may be raised, and DRAIN_TO_IDLE is then
+        contractually required to WAIT for ``pending_enqueues`` to reach zero.
+
+      Refusing a re-weight would turn that "wait for it" into "drop its work".
+      The new/existing decision is read from THIS snapshot rather than taken on
+      the caller's word: a caller that merely passes a token string cannot talk
+      its way past a fence.
+    * no capacity → :class:`~lightrag.exceptions.PipelineBackpressureError`
+      (→ 429) carrying the numbers the client needs.
+
+    ``capacity > 0`` requires ``active_count``: the caller must have taken a
+    strict count under its serialisation lock. Passing ``None`` is a programming
+    error, not a licence to assume there is room.
+    """
+    if capacity > 0 and active_count is None:
+        raise ValueError(
+            "acquire_enqueue_reservation requires active_count when capacity "
+            "is enforced; admission must never guess the active count"
+        )
+    async with pipeline_status_lock:
+        snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
+            pipeline_status
+        )
+        if snapshot.get("recovery_required"):
+            _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+            return _recovery_required_result(snapshot)
+        tokens = dict(snapshot.get("pending_enqueue_tokens", {}))
+        # The fences gate NEW reservations only; a re-weight of a token this
+        # snapshot already knows is exempt (see the docstring).
+        if token not in tokens:
+            for flag_key, reason in reject_when:
+                if snapshot.get(flag_key):
+                    _commit_pipeline_reservation_updates(
+                        pipeline_status, recovery_updates
+                    )
+                    return PipelineReservationResult(
+                        acquired=False,
+                        conflict=_conflict_for_status_flag(flag_key),
+                        message=reason,
+                        snapshot=snapshot,
+                        fence=flag_key,
+                    )
+        if capacity > 0:
+            reserved_elsewhere = sum(
+                _reservation_weight(meta)
+                for other, meta in tokens.items()
+                if other != token
+            )
+            current = active_count + reserved_elsewhere
+            if current + weight > capacity:
+                # Commit the reconciliation writes we already computed, then
+                # refuse: the reaper's work must not be lost just because this
+                # request bounced.
+                _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+                raise PipelineBackpressureError(
+                    current=current,
+                    requested=weight,
+                    capacity=capacity,
+                )
+        tokens[token] = {
+            "pid": os.getpid(),
+            "process_start_id": _my_start_id(),
+            "weight": weight,
+        }
+        updates = {
+            "pending_enqueue_tokens": tokens,
+            "pending_enqueues": len(tokens),
+        }
+        snapshot.update(updates)
+        _commit_pipeline_reservation_updates(pipeline_status, recovery_updates, updates)
+    return PipelineReservationResult(acquired=True, snapshot=snapshot)
+
+
+async def check_pipeline_status_mutation(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+    *,
+    reject_when=(),
+    exempt_if_reserved: Optional[str] = None,
+) -> PipelineReservationResult:
+    """Reconcile and evaluate a mutation fence without taking a reservation.
+
+    The recovery fence is mandatory. Optional status conflicts are evaluated
+    from the same local snapshot, and recovery writes use at most one update.
+
+    ``exempt_if_reserved`` is a pending-enqueue token: when this snapshot shows
+    it REGISTERED in ``pending_enqueue_tokens``, the optional ``reject_when``
+    fences are skipped, for the same reason a re-weight is exempt in
+    :func:`acquire_enqueue_reservation` — the holder was admitted before the
+    fence, and every ingress fence either cannot be raised while a reservation
+    is held or must wait for it (LR2 §9.2). Refusing here instead would DROP the
+    work of a request the protocol promised to let finish, and the client has
+    usually already been told it was accepted. Registration is verified from the
+    snapshot, never taken on the caller's word.
+    """
+    async with pipeline_status_lock:
+        snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
+            pipeline_status
+        )
+        if snapshot.get("recovery_required"):
+            _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+            return _recovery_required_result(snapshot)
+        if exempt_if_reserved is not None and exempt_if_reserved in (
+            snapshot.get("pending_enqueue_tokens") or {}
+        ):
+            reject_when = ()
+        for flag_key, reason in reject_when:
+            if snapshot.get(flag_key):
+                _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+                return PipelineReservationResult(
+                    acquired=False,
+                    conflict=_conflict_for_status_flag(flag_key),
+                    message=reason,
+                    snapshot=snapshot,
+                    fence=flag_key,
+                )
+        _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+        return PipelineReservationResult(acquired=True, snapshot=snapshot)
+
+
+async def acquire_processing_reservation(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+    *,
+    token: str,
+    already_held: bool,
+    pipeline_ingress,
+    flags: Mapping[str, Any],
+    scan_reset_owner_token: Optional[str] = None,
+) -> PipelineReservationResult:
+    """Acquire/take over the single processing slot from one proxy snapshot.
+
+    Refuses the slot (without taking it) while a scan holds ``scanning_exclusive``
+    — its classification phase mutates doc_status — and reduces a competing
+    ``busy`` holder to an auto-rescan arm on ``pipeline_ingress``, inside the
+    same critical section as the refusal decision: arming after returning BUSY
+    would let the current holder release between the two and never see the
+    signal. A handed-off run (``already_held``) is exempt from both: it already
+    owns the slot. The caller may owner-check release unconditionally because
+    the token is stamped atomically with ``busy``.
+
+    ``scan_reset_owner_token`` identifies the ONE caller that legitimately takes
+    ``busy`` while ``scanning_exclusive`` is held: the scan's own exclusive
+    FAILED→PENDING reset, which runs BEFORE the scan discovers any file (LR2
+    §8.1) and needs ``busy`` so it can reuse the owner-checked manual reset
+    helpers. It is exempted only when it matches the live ``scanning_owner``
+    token, and — unlike a queue drive — it does NOT clear
+    ``scan_deferred_processing``: the reset starts no worker and drains no queue,
+    so a request the scan fence turned away must stay deferred for the scan's
+    post-classification drive.
+
+    ``pipeline_ingress`` MUST be resolved by the caller before this call — a
+    lazy resolve while ``pipeline_status_lock`` is held would nest a Manager
+    lookup inside the critical section. ``request_auto_rescan`` is a single
+    RPC; a failure propagates so the refused caller learns its wake-up signal
+    was NOT committed (the docs stay PENDING for the next initial scan).
+    """
+    async with pipeline_status_lock:
+        snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
+            pipeline_status
+        )
+        if snapshot.get("recovery_required"):
+            _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+            return _recovery_required_result(snapshot)
+        # The scan that OWNS the exclusive fence is not fenced by it (see the
+        # docstring): match on the live owner token, never on its mere presence —
+        # a legacy/test path can set ``scanning_exclusive`` with no owner at all,
+        # and a ``None`` token must not silently match that.
+        owns_scan_fence = scan_reset_owner_token is not None and (
+            _reservation_owner_token(snapshot.get("scanning_owner"))
+            == scan_reset_owner_token
+        )
+        # A scan's classification phase (``scanning_exclusive``) mutates
+        # doc_status; a new processor must not read/process concurrently or it
+        # races those rewrites. A handed-off run (``already_held``) took the slot
+        # before scanning could start, so it is exempt. Plain ``scanning`` (the
+        # scan's own post-classification queue drive) is NOT fenced here: the scan
+        # releases ``scanning_exclusive`` before it drives processing.
+        if (
+            not already_held
+            and not owns_scan_fence
+            and snapshot.get("scanning_exclusive")
+        ):
+            # Record the turned-away request so the scan drives the queue once it
+            # releases scanning_exclusive (run_scanning_process finally): an SDK
+            # insert's PENDING doc may have no scan-visible file and no other
+            # trigger. Cleared below when any processing run takes the slot.
+            updates = {"scan_deferred_processing": True}
+            snapshot.update(updates)
+            _commit_pipeline_reservation_updates(
+                pipeline_status, recovery_updates, updates
+            )
+            return PipelineReservationResult(
+                acquired=False,
+                conflict=PipelineReservationConflict.SCANNING,
+                message=(
+                    "Document scan is classifying files; processing resumes after "
+                    "the classification phase finishes."
+                ),
+                snapshot=snapshot,
+            )
+        if not already_held and snapshot.get("busy"):
+            # Commit any recovery changes first (idempotent — recomputed by
+            # the next acquire if the arm below raises), then arm the
+            # auto-rescan flag so the busy holder's quiescence decision picks
+            # this request up. Same critical section as the refusal: the
+            # holder's release runs under this very lock, so the arm either
+            # lands before its decision (seen) or the holder already released
+            # (busy=False — this acquire would have succeeded instead).
+            _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+            pipeline_ingress.request_auto_rescan()
+            pipeline_metrics.increment(pipeline_metrics.AUTO_RESCAN_REARMS)
+            return PipelineReservationResult(
+                acquired=False,
+                conflict=PipelineReservationConflict.BUSY,
+                message="Another process is already processing the document queue.",
+                snapshot=snapshot,
+            )
+
+        updates = dict(flags)
+        updates.update(
+            {
+                "busy": True,
+                "busy_owner": make_owner_record(token, "processing"),
+            }
+        )
+        if not owns_scan_fence:
+            # This run drains the queue, satisfying any request the
+            # scanning_exclusive fence deferred earlier — clear the flag so the
+            # scan's post-release drive stays a no-op. The scan's own exclusive
+            # reset drains nothing, so it leaves the flag for that drive.
+            updates["scan_deferred_processing"] = False
+        snapshot.update(updates)
+        _commit_pipeline_reservation_updates(pipeline_status, recovery_updates, updates)
+        # history_messages is a ListProxy and must remain the same shared object.
+        del snapshot["history_messages"][:]
+        return PipelineReservationResult(acquired=True, snapshot=snapshot)
+
+
+async def transition_scanning_reservation(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+    *,
+    token: str,
+) -> bool:
+    """Owner-checked transition from scan classification to processing.
+
+    The transition is cancellation-resistant and performs one snapshot plus at
+    most one update. It deliberately does not reconcile other reservations: the
+    live scan owner is only narrowing its own reservation.
+    """
+
+    async def _run() -> bool:
+        async with pipeline_status_lock:
+            snapshot = _pipeline_status_snapshot(pipeline_status)
+            if _reservation_owner_token(snapshot.get("scanning_owner")) != token:
+                return False
+            if not snapshot.get("scanning_exclusive"):
+                return True
+            pipeline_status.update({"scanning_exclusive": False})
+            return True
+
+    return await run_to_completion(_run)
+
+
+async def has_scan_deferred_processing(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+) -> bool:
+    """Report whether a scan's ``scanning_exclusive`` fence deferred a processing
+    request that no run has since picked up.
+
+    Read-only ON PURPOSE — it does NOT clear the flag. ``scan_deferred_processing``
+    is set when the fence turns a request away and cleared atomically by
+    ``acquire_processing_reservation`` only when a run actually takes the ``busy``
+    slot. ``run_scanning_process`` checks this after releasing its reservation and
+    drives the queue once when True; the drive's own acquire then clears it.
+
+    Clearing HERE would reopen a cancellation race: the ``pipeline_status_lock``
+    exit awaits, so a ``CancelledError`` delivered AFTER the clear but BEFORE the
+    queue drive would lose both the request and the flag, stranding the PENDING
+    doc. Leaving the clear to the acquire means a cancelled or failed drive keeps
+    the flag set for the next scan — the handoff is only ``done`` once a run owns
+    the slot.
+    """
+    async with pipeline_status_lock:
+        snapshot = _pipeline_status_snapshot(pipeline_status)
+        return bool(snapshot.get("scan_deferred_processing"))
+
+
+async def with_reservation_lock(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+    *,
+    owner_key: str,
+    token: Any,
+    action,
+):
+    """Run ``action(status)`` under ``pipeline_status_lock``, but only while we
+    still own the reservation (the token stored at ``status[owner_key]`` equals
+    ``token``); otherwise no-op and return ``None``.
+
+    ``action`` is SYNCHRONOUS (no await) and must apply all correctness-critical
+    mutations (owner, busy/scanning flags, cancellation flags,
+    operation_record, recovery state) via a SINGLE ``status.update`` so a crash
+    cannot tear them apart. ``history_messages`` (a Manager list) must be mutated
+    in place, not replaced. Runs to completion even under repeated cancellation
+    (via ``run_to_completion``), so a release can never be interrupted into
+    leaving the slot wedged.
+    """
+
+    async def _run():
+        async with pipeline_status_lock:
+            snapshot = _pipeline_status_snapshot(pipeline_status)
+            if _reservation_owner_token(snapshot.get(owner_key)) != token:
+                return None
+            return action(pipeline_status)
+
+    return await run_to_completion(_run)
+
+
+async def with_token_set_reservation_lock(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+    *,
+    tokens_key: str,
+    token: str,
+    action=None,
+):
+    """Release one token from a token-set reservation (e.g. pending enqueues).
+
+    Under the lock: if ``token`` is in the set, remove it, rewrite the set and
+    mirror the count in a single atomic update, then run the optional
+    ``action(status)``. If the token is absent, no-op (idempotent — an endpoint
+    and its background task may both release). Runs to completion under
+    cancellation.
+    """
+
+    async def _run():
+        async with pipeline_status_lock:
+            snapshot = _pipeline_status_snapshot(pipeline_status)
+            tokens = dict(snapshot.get(tokens_key, {}))
+            if token not in tokens:
+                return None
+            del tokens[token]
+            pipeline_status.update(
+                {tokens_key: tokens, "pending_enqueues": len(tokens)}
+            )
+            return action(pipeline_status) if action else None
+
+    return await run_to_completion(_run)
+
+
+async def release_owned_reservation(
+    workspace: Optional[str],
+    *,
+    owner_key: str,
+    token: Any,
+    action,
+):
+    """Cancellation-safe, self-fetching form of :func:`with_reservation_lock`.
+
+    Fetches ``pipeline_status`` + its lock AND runs the owner-checked release
+    entirely inside ``run_to_completion``, so a cancellation delivered during the
+    namespace fetch or the lock acquire/exit is retried/completed rather than
+    leaking the reservation. Use this from release helpers that do not already
+    hold the status (e.g. background-task releases running during shutdown),
+    where the plain ``with_reservation_lock`` would leave the pre-fetch
+    unprotected.
+
+    No-op (returns ``None``) when ``pipeline_status`` was never initialised for
+    ``workspace`` or a later holder owns the slot. ``action`` must be idempotent
+    (it may re-run if the work task is directly cancelled and restarted).
+    """
+
+    async def _run():
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=workspace
+            )
+        except PipelineNotInitializedError:
+            return None
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=workspace
+        )
+        async with pipeline_status_lock:
+            snapshot = _pipeline_status_snapshot(pipeline_status)
+            if _reservation_owner_token(snapshot.get(owner_key)) != token:
+                return None
+            return action(pipeline_status)
+
+    return await run_to_completion(_run)
+
+
+async def release_token_set_reservation(
+    workspace: Optional[str],
+    *,
+    tokens_key: str,
+    token: str,
+    action=None,
+):
+    """Cancellation-safe, self-fetching form of
+    :func:`with_token_set_reservation_lock`.
+
+    Fetches ``pipeline_status`` + its lock AND removes ``token`` from the
+    ``tokens_key`` set entirely inside ``run_to_completion``. Idempotent (a no-op
+    if the token is absent or the workspace is uninitialised), so an endpoint and
+    its background task may both release, and a restart after a direct task
+    cancellation is safe.
+    """
+
+    async def _run():
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=workspace
+            )
+        except PipelineNotInitializedError:
+            return None
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=workspace
+        )
+        async with pipeline_status_lock:
+            snapshot = _pipeline_status_snapshot(pipeline_status)
+            tokens = dict(snapshot.get(tokens_key, {}))
+            if token not in tokens:
+                return None
+            del tokens[token]
+            pipeline_status.update(
+                {tokens_key: tokens, "pending_enqueues": len(tokens)}
+            )
+            return action(pipeline_status) if action else None
+
+    return await run_to_completion(_run)
+
+
+# ============================================================================
+# Managed reservation-holding background tasks
+# ============================================================================
+#
+# Scans / deletes / enqueues reserve a slot in the request handler, then run the
+# actual work in the background. Starlette ``BackgroundTasks`` run only AFTER the
+# response body is sent and are not tracked, so a request cancelled mid-send
+# would drop the callback and strand the reservation. Instead we start a real
+# ``asyncio`` task, track it for shutdown, and hand ownership over via a start
+# barrier so a cancellation before takeover releases the slot instead of leaking
+# it or letting the child run unreserved.
+
+
+async def _join_resistant(task) -> Optional[asyncio.CancelledError]:
+    """Join ``task`` resisting (repeated) cancellation.
+
+    Returns a caller cancellation observed while waiting (or ``None``); NEVER
+    propagates the task's own exception or cancellation, so a caller can always
+    run its cleanup (e.g. a backstop release) after the join.
+    """
+    pending_cancel = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            if task.cancelled():
+                break  # the task itself is done+cancelled
+            pending_cancel = pending_cancel or exc
+        except Exception:
+            break  # task finished with an exception; retrieved below
+    if not task.cancelled():
+        task.exception()  # retrieve to avoid "never retrieved" warnings
+    return pending_cancel
+
+
+async def start_reserved_background_task(
+    background_tasks: set, *, work, backstop_release
+):
+    """Start a background task that already holds a reservation and hand ownership
+    to it safely.
+
+    ``work(started: asyncio.Event)`` MUST call ``started.set()`` as the first
+    statement inside its own ``try`` and release the reservation in its
+    ``finally``. ``backstop_release()`` is an owner-checked, idempotent release
+    used only if the child never takes over.
+
+    Returns the running task once the child has taken over (``started`` set). If
+    this coroutine is cancelled before takeover, or the child ends before
+    signalling, the child is cancelled and joined, ``backstop_release`` runs
+    (a no-op if the child already released), and the original cancellation — or a
+    startup failure — is raised. The child therefore never runs unreserved and
+    the reservation is never stranded.
+    """
+    started = asyncio.Event()
+    task = asyncio.ensure_future(work(started))
+    background_tasks.add(task)
+
+    def _done(t):
+        background_tasks.discard(t)
+        if not t.cancelled():
+            exc = t.exception()
+            if exc is not None:
+                direct_log(
+                    f"Reserved background task failed: {exc}",
+                    level="ERROR",
+                    enable_output=True,
+                )
+
+    task.add_done_callback(_done)
+
+    waiter = asyncio.ensure_future(started.wait())
+    caller_cancel = None
+    try:
+        await asyncio.wait({waiter, task}, return_when=asyncio.FIRST_COMPLETED)
+    except asyncio.CancelledError as exc:
+        caller_cancel = exc
+    finally:
+        if not waiter.done():
+            waiter.cancel()
+
+    if started.is_set() and caller_cancel is None:
+        return task  # child took over; its finally owns the release
+
+    # Not taken over (child ended before signalling) or caller cancelled: tear
+    # down deterministically so the child never runs unreserved.
+    task.cancel()
+    join_cancel = await _join_resistant(task)
+    await backstop_release()
+    cancel = caller_cancel or join_cancel
+    if cancel is not None:
+        raise cancel
+    raise RuntimeError("reserved background task failed to start")
+
+
+class ManualIntentRefusal(NamedTuple):
+    """A refusal a ``commit`` implementation can return instead of a bare string.
+
+    ``capacity_exceeded`` is the one distinction the HTTP layer must not lose:
+    the manual channel being full is a "later" (429 + Retry-After), while every
+    other refusal — fence held, id already finalized — is a "not like this"
+    (503 / client error). See LR2 §10.1.
+    """
+
+    message: str
+    capacity_exceeded: bool = False
+
+
+class ManualIntentRefused(Exception):
+    """A manual-intent commit was refused by the pipeline fence.
+
+    Raised by :func:`start_committed_background_task` when ``commit`` returned
+    a refusal: the fence rejected the request BEFORE the sticky message was
+    published, so no side effect exists and the endpoint can surface the
+    message (e.g. as a 503) without any cleanup. ``capacity_exceeded`` marks the
+    one refusal that is worth retrying unchanged (429).
+    """
+
+    def __init__(self, message: str, *, capacity_exceeded: bool = False) -> None:
+        super().__init__(message)
+        self.capacity_exceeded = capacity_exceeded
+
+
+async def commit_manual_retry_request(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+    ingress,
+    request_id: str,
+    state: Dict[str, Any],
+) -> Optional[str]:
+    """Fence recheck + sticky manual-retry publish in ONE critical section.
+
+    The commit step of the two-state startup protocol for
+    ``/documents/reprocess_failed``: checking the fence and publishing in
+    separate critical sections would let a destructive clear take its
+    reservation in between — the request would then be accepted against
+    storages that are about to be dropped.  Refusals happen strictly BEFORE
+    the publish, so a refused call has zero side effects.
+
+    ``state["committed"] = True`` is set synchronously right after the
+    publish (no await in between): the startup helper keys its
+    cancel-behavior on it, and a cancellation landing in the lock's
+    ``__aexit__`` must already count as committed — the sticky request
+    exists and someone has to own driving it.
+
+    ``ingress`` must be resolved by the caller BEFORE this call — never
+    lazily while the pipeline status lock is held.
+
+    Returns ``None`` on success, or the human-readable refusal message.
+    """
+    message = PipelineIngressMessage(
+        kind="rescan", retry_failed=True, request_id=request_id
+    )
+    async with pipeline_status_lock:
+        snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
+            pipeline_status
+        )
+        if snapshot.get("recovery_required"):
+            _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+            return pipeline_recovery_blocked_message(snapshot)
+        if snapshot.get("destructive_busy"):
+            _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+            return (
+                "A clear/delete operation is dropping storages; a manual "
+                "retry accepted now would be wiped with them. Retry after "
+                "it finishes."
+            )
+        _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+        publish = ingress.request_manual_retry(request_id, message)
+        if publish is ManualRetryPublishResult.ALREADY_TERMINAL:
+            # The id is already terminal (ACKED / CANCELLED_BY_CLEAR): nothing
+            # was published and nothing is owned. Unreachable for the current
+            # callers (they mint a fresh uuid per request) but a future caller
+            # reusing ids must get a refusal, not a phantom commit.
+            return ManualIntentRefusal(
+                f"manual retry request id {request_id!r} was already "
+                "finalized; mint a new request id"
+            )
+        if publish is ManualRetryPublishResult.CAPACITY_EXCEEDED:
+            # Sticky channel full (LR2 §10.1): un-ACKed requests are waiting for
+            # exclusive resets that have not run yet. Retrying later works, so
+            # this is the one publish refusal the API answers with 429.
+            return ManualIntentRefusal(
+                "Too many manual retry requests are still waiting to be "
+                "served for this workspace. Retry once the queued requests "
+                "have been processed.",
+                capacity_exceeded=True,
+            )
+        state["committed"] = True
+        return None
+
+
+async def start_committed_background_task(
+    background_tasks: set, *, commit, work, backstop_release
+):
+    """Two-state commit/ownership startup for manual-intent endpoints.
+
+    ``start_reserved_background_task`` cancels its child on ANY caller
+    cancellation — even after takeover — which would orphan a just-published
+    sticky manual request (the intent exists, but the task that owns driving
+    it is dead).  This helper splits startup into two states instead:
+
+    ``NOT_COMMITTED`` → ``commit(state)`` runs first inside the child (fence
+    recheck + sticky publish in one ``pipeline_status_lock`` critical
+    section, setting ``state["committed"] = True`` synchronously after the
+    publish) → ``COMMITTED_AND_OWNED`` → ``work()``.
+
+    HARD REQUIREMENT on ``commit`` implementations: between the fence
+    decision and ``state["committed"] = True`` there must be NO await other
+    than acquiring the pipeline status lock itself — the cancel-behavior
+    below keys on that marker, and an await in that window would open a race
+    where a caller cancellation lands mid-commit with the publish already
+    visible but the marker unset (the intent would be torn down as if never
+    published).
+
+    Rules keyed on the commit state at caller-cancellation time:
+
+    * NOT_COMMITTED: cancel the child, join it, run ``backstop_release`` —
+      no manual request was published, nothing is owned, the original
+      cancellation propagates.
+    * COMMITTED_AND_OWNED: the child is NOT cancelled — it keeps running and
+      releases its own reservation; the caller's cancellation propagates so
+      the endpoint knows ownership transferred and must not release again.
+
+    A child that ends without committing either refused (``commit`` returned
+    a message → :class:`ManualIntentRefused`) or crashed pre-commit; both run
+    ``backstop_release`` (owner-checked, idempotent).  A child that crashes
+    AFTER committing but before ``work`` still gets its reservation released
+    via ``backstop_release`` — the sticky request itself stays for the next
+    run to consume, which is exactly the sticky contract.
+
+    Known boundary (documented, not solved here): if the server commits but
+    the HTTP response never reaches the client, a client retry mints a new
+    request_id and earns one more attempt — server-generated ids cannot be
+    idempotent across that gap; supply a client idempotency key if that
+    matters.
+    """
+    state: Dict[str, Any] = {"committed": False, "refusal": None}
+    started = asyncio.Event()
+
+    async def _child():
+        refusal = await commit(state)
+        if refusal is not None:
+            state["refusal"] = refusal
+            return
+        started.set()
+        await work()
+
+    task = asyncio.ensure_future(_child())
+    background_tasks.add(task)
+
+    def _done(t):
+        background_tasks.discard(t)
+        if not t.cancelled():
+            exc = t.exception()
+            if exc is not None:
+                direct_log(
+                    f"Committed background task failed: {exc}",
+                    level="ERROR",
+                    enable_output=True,
+                )
+
+    task.add_done_callback(_done)
+
+    waiter = asyncio.ensure_future(started.wait())
+    caller_cancel = None
+    try:
+        await asyncio.wait({waiter, task}, return_when=asyncio.FIRST_COMPLETED)
+    except asyncio.CancelledError as exc:
+        caller_cancel = exc
+    finally:
+        if not waiter.done():
+            waiter.cancel()
+
+    if caller_cancel is not None:
+        if state["committed"]:
+            # Ownership transferred: the child owns its reservation and the
+            # published intent. Never cancel it; the endpoint's finally must
+            # not release either.
+            raise caller_cancel
+        task.cancel()
+        join_cancel = await _join_resistant(task)
+        await backstop_release()
+        raise caller_cancel or join_cancel
+
+    if started.is_set():
+        return task  # child took over; its own finally owns the release
+
+    # Child ended before takeover: refusal, or a crash before/inside commit.
+    join_cancel = await _join_resistant(task)
+    await backstop_release()
+    if join_cancel is not None:
+        raise join_cancel
+    if state["refusal"] is not None:
+        refusal = state["refusal"]
+        if isinstance(refusal, ManualIntentRefusal):
+            raise ManualIntentRefused(
+                refusal.message, capacity_exceeded=refusal.capacity_exceeded
+            )
+        raise ManualIntentRefused(str(refusal))
+    raise RuntimeError("committed background task failed to start")
+
+
+async def drain_reserved_background_tasks(
+    background_tasks: set,
+) -> Optional[asyncio.CancelledError]:
+    """Cancel and join all tracked reserved background tasks (used at shutdown).
+
+    Resists repeated cancellation so every child's ``finally`` releases its
+    reservation before shared state is torn down. Returns a deferred caller
+    cancellation to re-raise AFTER the caller's own cleanup, or ``None``.
+    """
+    tasks = list(background_tasks)
+    for task in tasks:
+        task.cancel()
+    pending_cancel = None
+    for task in tasks:
+        observed = await _join_resistant(task)
+        pending_cancel = pending_cancel or observed
+    return pending_cancel
 
 
 async def get_update_flag(namespace: str, workspace: str | None = None):
@@ -1377,9 +3573,12 @@ async def set_all_update_flags(namespace: str, workspace: str | None = None):
     async with get_internal_lock():
         if final_namespace not in _update_flags:
             raise ValueError(f"Namespace {final_namespace} not found in update flags")
-        # Update flags for both modes
-        for i in range(len(_update_flags[final_namespace])):
-            _update_flags[final_namespace][i].value = True
+        # Snapshot the ListProxy handles once with a slice (one Manager RPC)
+        # instead of re-indexing the DictProxy+ListProxy on every iteration.
+        # Setting .value on each returned ValueProxy still writes through to
+        # the shared object; the internal lock excludes concurrent appends.
+        for flag in _update_flags[final_namespace][:]:
+            flag.value = True
 
 
 async def clear_all_update_flags(namespace: str, workspace: str | None = None):
@@ -1393,9 +3592,9 @@ async def clear_all_update_flags(namespace: str, workspace: str | None = None):
     async with get_internal_lock():
         if final_namespace not in _update_flags:
             raise ValueError(f"Namespace {final_namespace} not found in update flags")
-        # Update flags for both modes
-        for i in range(len(_update_flags[final_namespace])):
-            _update_flags[final_namespace][i].value = False
+        # See set_all_update_flags: one slice RPC to snapshot the flag handles.
+        for flag in _update_flags[final_namespace][:]:
+            flag.value = False
 
 
 async def get_all_update_flags_status(workspace: str | None = None) -> Dict[str, list]:
@@ -1428,12 +3627,12 @@ async def get_all_update_flags_status(workspace: str | None = None) -> Dict[str,
                 if workspace:
                     continue
 
+            # flags is a ListProxy in multiprocess mode; iterating it directly
+            # would cost one getitem RPC per element. Slice once to a local list
+            # of ValueProxy handles, then read each .value.
             worker_statuses = []
-            for flag in flags:
-                if _is_multiprocess:
-                    worker_statuses.append(flag.value)
-                else:
-                    worker_statuses.append(flag)
+            for flag in flags[:]:
+                worker_statuses.append(flag.value)
             result[namespace] = worker_statuses
 
     return result
@@ -1488,6 +3687,16 @@ async def get_namespace_data(
 
     final_namespace = get_final_namespace(namespace, workspace)
 
+    # Hot path: a namespace dict, once created, is a stable shared object for the
+    # life of the shared data, so a cached reference is safe to return without
+    # the internal lock or the __contains__/__getitem__ RPCs. The cache only ever
+    # holds already-created namespaces, so the PipelineNotInitializedError guard
+    # below (a miss) is unaffected.
+    if _namespace_data_cache is not None:
+        cached = _namespace_data_cache.get(final_namespace)
+        if cached is not None:
+            return cached
+
     async with get_internal_lock():
         if final_namespace not in _shared_dicts:
             # Special handling for pipeline_status namespace
@@ -1505,7 +3714,12 @@ async def get_namespace_data(
             else:
                 _shared_dicts[final_namespace] = {}
 
-    return _shared_dicts[final_namespace]
+        namespace_data = _shared_dicts[final_namespace]
+
+    if _namespace_data_cache is not None:
+        _namespace_data_cache[final_namespace] = namespace_data
+
+    return namespace_data
 
 
 class NamespaceLock:
@@ -1572,10 +3786,15 @@ class NamespaceLock:
         if ctx is None:
             raise RuntimeError("NamespaceLock exited without being entered")
 
-        result = await ctx.__aexit__(exc_type, exc_val, exc_tb)
-        # Clear this coroutine's context
-        self._ctx_var.set(None)
-        return result
+        # Clear the ContextVar in a finally so a cancellation delivered inside
+        # ctx.__aexit__ (which awaits an asyncio.shield) does not leave a stale
+        # context behind. Otherwise the SAME coroutine re-entering this lock in a
+        # finally would hit "already acquired" (RuntimeError, not CancelledError),
+        # and any cancel-safe release built on top could never run.
+        try:
+            return await ctx.__aexit__(exc_type, exc_val, exc_tb)
+        finally:
+            self._ctx_var.set(None)
 
 
 def get_namespace_lock(
@@ -1621,6 +3840,7 @@ def finalize_share_data():
     global \
         _manager, \
         _is_multiprocess, \
+        _keyed_holder_table, \
         _internal_lock, \
         _data_init_lock, \
         _shared_dicts, \
@@ -1628,7 +3848,15 @@ def finalize_share_data():
         _initialized, \
         _update_flags, \
         _async_locks, \
-        _default_workspace
+        _default_workspace, \
+        _global_concurrency_limits, \
+        _lease_ns_cache, \
+        _queue_stats_ns_cache, \
+        _namespace_data_cache, \
+        _pipeline_ingress_local, \
+        _pipeline_ingress_hub, \
+        _scan_job_store_local, \
+        _scan_job_store_hub
 
     # Check if already initialized
     if not _initialized:
@@ -1681,8 +3909,10 @@ def finalize_share_data():
                 f"Process {os.getpid()} Error shutting down Manager: {e}", level="ERROR"
             )
 
-    # Reset global variables
+    # Reset global variables (a stale holder-table proxy must never leak into
+    # the next initialize_share_data cycle — its server is gone)
     _manager = None
+    _keyed_holder_table = None
     _initialized = None
     _is_multiprocess = None
     _shared_dicts = None
@@ -1692,6 +3922,14 @@ def finalize_share_data():
     _update_flags = None
     _async_locks = None
     _default_workspace = None
+    _global_concurrency_limits = None
+    _lease_ns_cache = None
+    _queue_stats_ns_cache = None
+    _namespace_data_cache = None
+    _pipeline_ingress_local = None
+    _pipeline_ingress_hub = None
+    _scan_job_store_local = None
+    _scan_job_store_hub = None
 
     direct_log(f"Process {os.getpid()} storage data finalization complete")
 
@@ -1740,3 +3978,512 @@ def get_pipeline_status_lock(
     return get_namespace_lock(
         "pipeline_status", workspace=actual_workspace, enable_logging=enable_logging
     )
+
+
+# ---------------------------------------------------------------------------
+# Cross-worker global concurrency gate (lease + heartbeat semantics)
+# ---------------------------------------------------------------------------
+#
+# Each group's whole gate state lives under a SINGLE key of the
+# workspace-less "concurrency_leases" namespace::
+#
+#     ns[group] = {
+#         "leases":  {lease_id: {"pid": int, "updated_at": float,
+#                                ("suspect_since": float)}},
+#         "waiters": {str(pid): {"pid": int, "wait_start": float,
+#                                "last_poll": float}},
+#     }
+#
+# Whole-value replacement only — in multiprocess mode the namespace is a
+# Manager dict, so in-place mutation of a retrieved value would NOT persist
+# across processes. The single-key layout is deliberate: every proxy access
+# is one IPC round trip to the manager process, so an acquire attempt under
+# the group's keyed lock costs exactly one read (plus at most one write)
+# instead of scanning per-lease keys. Reaping, capacity counting and waiter
+# ranking all run on the local copy.
+#
+# Self-healing: holders refresh ``updated_at`` from their 5s health-check
+# heartbeat. A lease is reclaimed when its owner PID is dead (immediately)
+# or when its heartbeat expired AND the suspect grace elapsed (protects
+# live-but-momentarily-stalled owners from false reclamation). Long-running
+# tasks are never reclaimed as long as their owner keeps renewing.
+#
+# Best-effort cap, not a strict provider-side invariant: the lease table is
+# the admission source of truth, so the cap is exact while holders keep
+# renewing. A slot is reclaimed only when its owner PID is gone or its
+# heartbeat has expired beyond the suspect grace. That prevents permanent
+# capacity leaks after kill -9 / OOM and similar external termination, but
+# the provider may still be finishing the abandoned HTTP request until its
+# own timeout/connection close. During that window, a newly admitted caller
+# can overlap with the abandoned provider-side call. Long event-loop stalls
+# have the same shape after heartbeat TTL + suspect grace, though normal long
+# calls are protected by regular renewal. A reclaimed lease is never
+# resurrected (renew_global_slots refuses to re-insert a popped lease), which
+# keeps the internal gate self-healing.
+
+
+def is_share_data_initialized() -> bool:
+    """Return True once initialize_share_data() has run in this process."""
+    return bool(_initialized)
+
+
+def is_global_concurrency_limited(group: Optional[str]) -> bool:
+    """Synchronous, cacheable check: does ``group`` have a global limit?
+
+    Reads only the module-level read-only configuration — no IPC. Returns
+    False when shared data is not initialized, no limits were configured,
+    or the group has no positive limit.
+    """
+    if not group or not _global_concurrency_limits:
+        return False
+    limit = _global_concurrency_limits.get(group)
+    return limit is not None and limit > 0
+
+
+def get_global_concurrency_limit(group: Optional[str]) -> Optional[int]:
+    """Return the configured global limit for ``group`` (None if unlimited)."""
+    if not group or not _global_concurrency_limits:
+        return None
+    return _global_concurrency_limits.get(group)
+
+
+async def _get_lease_namespace() -> Dict[str, Any]:
+    global _lease_ns_cache
+    if _lease_ns_cache is None:
+        _lease_ns_cache = await get_namespace_data(
+            _CONCURRENCY_LEASE_NAMESPACE, workspace=""
+        )
+    return _lease_ns_cache
+
+
+async def _get_queue_stats_namespace() -> Dict[str, Any]:
+    global _queue_stats_ns_cache
+    if _queue_stats_ns_cache is None:
+        _queue_stats_ns_cache = await get_namespace_data(
+            _QUEUE_STATS_NAMESPACE, workspace=""
+        )
+    return _queue_stats_ns_cache
+
+
+def _empty_gate_state() -> Dict[str, Any]:
+    return {"leases": {}, "waiters": {}}
+
+
+def _load_gate_state(ns: Dict[str, Any], group: str) -> Dict[str, Any]:
+    """Return a local, independently mutable copy of a group's gate state.
+
+    Exactly one proxy read. The nested dicts are copied so that mutating the
+    result never aliases the stored value (a plain dict in single-process
+    mode) — callers mutate the copy and write it back whole.
+    """
+    raw = ns.get(group)
+    if raw is None:
+        return _empty_gate_state()
+    state = dict(raw)
+    state["leases"] = {
+        lease_id: dict(lease)
+        for lease_id, lease in dict(state.get("leases") or {}).items()
+    }
+    state["waiters"] = {
+        pid_key: dict(waiter)
+        for pid_key, waiter in dict(state.get("waiters") or {}).items()
+    }
+    return state
+
+
+def _reap_gate_state(state: Dict[str, Any], now: float) -> tuple[int, bool]:
+    """Reclaim dead/expired leases on a local state copy (no IPC).
+
+    Returns ``(live_lease_count, changed)``. Suspect handling: a lease whose
+    heartbeat expired while its PID is still alive is first marked with
+    ``suspect_since`` and reclaimed only after ``_suspect_grace`` elapses
+    without a renewal; a renewal (fresh ``updated_at``) clears the suspect
+    mark. Dead PIDs are reclaimed immediately. Suspect leases still count
+    toward capacity so the global limit is never exceeded.
+
+    Waiter records are reaped in the same pass: a process whose lease was
+    just reclaimed (timed out / died), whose PID is dead, or whose record
+    has not been refreshed within ``_waiter_stale_ttl`` must not keep
+    occupying the longest-waiter seat — a ghost favored waiter would push
+    every live waiter onto the deferred backoff and waste freed slots.
+    """
+    leases: Dict[str, Any] = state["leases"]
+    waiters: Dict[str, Any] = state["waiters"]
+    live = 0
+    changed = False
+    reclaimed_pids = set()
+    # Liveness is constant within this synchronous pass (no await, fixed
+    # ``now``), so memoize the probe: a PID holding many leases of this group
+    # is checked once instead of once per lease. NEVER cache across calls —
+    # PID reuse and staleness could reclaim a live owner's lease.
+    alive_cache: Dict[int, bool] = {}
+
+    def _alive(pid: int) -> bool:
+        cached = alive_cache.get(pid)
+        if cached is None:
+            cached = _pid_alive(pid)
+            alive_cache[pid] = cached
+        return cached
+
+    for lease_id in list(leases.keys()):
+        lease = leases[lease_id]
+        pid = lease.get("pid")
+        updated_at = lease.get("updated_at", 0.0)
+        if pid is None or not _alive(pid):
+            leases.pop(lease_id)
+            changed = True
+            if pid is not None:
+                reclaimed_pids.add(pid)
+            continue
+        if now - updated_at > _heartbeat_ttl:
+            suspect_since = lease.get("suspect_since")
+            if suspect_since is None:
+                lease["suspect_since"] = now
+                changed = True
+                live += 1
+            elif now - suspect_since > _suspect_grace:
+                leases.pop(lease_id)
+                reclaimed_pids.add(pid)
+                changed = True
+            else:
+                live += 1
+        else:
+            if "suspect_since" in lease:
+                lease.pop("suspect_since", None)
+                changed = True
+            live += 1
+
+    for pid_key in list(waiters.keys()):
+        waiter = waiters[pid_key]
+        pid = waiter.get("pid")
+        last_poll = waiter.get("last_poll", 0.0)
+        if (
+            pid is None
+            or pid in reclaimed_pids
+            or not _alive(pid)
+            or now - last_poll > _waiter_stale_ttl
+        ):
+            waiters.pop(pid_key)
+            changed = True
+    return live, changed
+
+
+def _log_acquire_failure(group: str, error: Exception) -> None:
+    global _last_acquire_failure_log
+    now = time.time()
+    if now - _last_acquire_failure_log >= _ACQUIRE_FAILURE_LOG_INTERVAL:
+        _last_acquire_failure_log = now
+        direct_log(
+            f"Process {os.getpid()} failed to acquire global slot for group "
+            f"'{group}' (fail-closed, task stays queued): {error}",
+            level="WARNING",
+        )
+
+
+def _is_longest_live_waiter(state: Dict[str, Any], pid: int, now: float) -> bool:
+    """Is ``pid`` the longest-waiting live poller in this gate state?
+
+    Operates on a local state copy after the reap pass has dropped
+    dead/stale waiter records — every remaining record belongs to a live,
+    actively polling process.
+    """
+    my_start = None
+    others_min = None
+    for waiter in state["waiters"].values():
+        wait_start = waiter.get("wait_start", now)
+        if waiter.get("pid") == pid:
+            my_start = wait_start
+        elif others_min is None or wait_start < others_min:
+            others_min = wait_start
+    if my_start is None:
+        return False
+    return others_min is None or my_start <= others_min
+
+
+async def _acquire_global_slot(
+    group: str, track_wait: bool
+) -> tuple[Optional[str], bool]:
+    """Shared implementation for the two acquire entry points.
+
+    Returns ``(lease_id, is_priority_waiter)``. When ``track_wait`` is set,
+    a failed attempt registers/refreshes this process's waiter record
+    (``wait_start`` set once per waiting episode, ``last_poll`` refreshed on
+    every attempt) and reports whether this process is the longest-waiting
+    live poller; a successful attempt always clears the record.
+
+    IPC budget under the keyed lock: one state read, plus one write only
+    when something changed (reap effects, waiter registration, or a new
+    lease) — a plain failed attempt on an unchanged gate writes nothing.
+    """
+    limit = get_global_concurrency_limit(group)
+    if limit is None or limit <= 0:
+        return None, False
+    try:
+        ns = await _get_lease_namespace()
+        async with get_storage_keyed_lock(
+            group, namespace=_CONCURRENCY_LEASE_NAMESPACE, enable_logging=False
+        ):
+            now = time.time()
+            state = _load_gate_state(ns, group)
+            in_use, changed = _reap_gate_state(state, now)
+            pid = os.getpid()
+            pid_key = str(pid)
+            if in_use >= limit:
+                if not track_wait:
+                    if changed:
+                        ns[group] = state
+                    return None, False
+                waiter = state["waiters"].get(pid_key) or {
+                    "pid": pid,
+                    "wait_start": now,
+                }
+                waiter["last_poll"] = now
+                state["waiters"][pid_key] = waiter
+                ns[group] = state
+                return None, _is_longest_live_waiter(state, pid, now)
+            lease_id = uuid.uuid4().hex
+            state["leases"][lease_id] = {"pid": pid, "updated_at": now}
+            # Got a slot: this process is no longer waiting. Resetting here
+            # (rather than keeping seniority) is what de-prioritizes a
+            # backlog-heavy process after each win, yielding approximate
+            # round-robin across processes under sustained contention.
+            state["waiters"].pop(pid_key, None)
+            ns[group] = state
+            return lease_id, True
+    except Exception as e:
+        _log_acquire_failure(group, e)
+        return None, False
+
+
+async def try_acquire_global_slot(group: str) -> Optional[str]:
+    """Try to claim one global concurrency slot for ``group`` (non-blocking).
+
+    Returns a lease id on success, or None when the group is at capacity.
+    Any shared-storage error is fail-closed: returns None (with a
+    rate-limited warning) so the caller keeps the task queued and retries —
+    capacity is never exceeded due to infrastructure errors.
+
+    This plain variant never registers waiter records — use
+    :func:`try_acquire_global_slot_tracked` from polling loops that want
+    longest-waiter fairness.
+    """
+    lease_id, _ = await _acquire_global_slot(group, track_wait=False)
+    return lease_id
+
+
+async def try_acquire_global_slot_tracked(group: str) -> tuple[Optional[str], bool]:
+    """Acquire variant for polling loops: ``(lease_id, is_priority_waiter)``.
+
+    On failure the caller's waiter record is registered/refreshed and the
+    second element reports whether this process is currently the
+    longest-waiting live poller of the group. Pollers should keep the
+    fastest poll interval when favored and back off (bounded) otherwise —
+    a soft FIFO across worker processes with no hard gate: any poller that
+    finds a free slot still takes it, so a sleeping favored waiter can
+    never leave capacity idle indefinitely. Fail-closed errors report
+    ``(None, False)``.
+    """
+    return await _acquire_global_slot(group, track_wait=True)
+
+
+async def clear_slot_waiter(group: str) -> None:
+    """Drop this process's waiter record for ``group`` (idempotent).
+
+    Called when a wrapper shuts down so a no-longer-polling process never
+    lingers in the longest-waiter seat; the stale TTL and the reap pass
+    cover crashes where this cleanup never runs.
+    """
+    if not _initialized:
+        return
+    ns = await _get_lease_namespace()
+    async with get_storage_keyed_lock(
+        group, namespace=_CONCURRENCY_LEASE_NAMESPACE, enable_logging=False
+    ):
+        state = _load_gate_state(ns, group)
+        if state["waiters"].pop(str(os.getpid()), None) is not None:
+            ns[group] = state
+
+
+async def global_slot_waiters(group: str) -> List[Dict[str, Any]]:
+    """Snapshot of processes actively polling for a slot of ``group``.
+
+    Returns ``[{"pid": ..., "waited": seconds}, ...]`` sorted by descending
+    wait time; stale records (not refreshed within the waiter TTL) are
+    skipped. Read-only and lock-free — intended for observability.
+    """
+    if not _initialized:
+        return []
+    ns = await _get_lease_namespace()
+    now = time.time()
+    state = _load_gate_state(ns, group)
+    waiters = []
+    for waiter in state["waiters"].values():
+        if now - waiter.get("last_poll", 0.0) > _waiter_stale_ttl:
+            continue
+        waiters.append(
+            {
+                "pid": waiter.get("pid"),
+                "waited": max(0.0, now - waiter.get("wait_start", now)),
+            }
+        )
+    return sorted(waiters, key=lambda w: -w["waited"])
+
+
+async def release_global_slot(group: str, lease_id: str) -> None:
+    """Release a previously acquired global slot (idempotent).
+
+    Raises on shared-storage errors — callers that must never propagate
+    (e.g. worker ``finally`` blocks) wrap this and queue the lease for a
+    later retry; the heartbeat TTL guarantees eventual reclamation anyway.
+    """
+    ns = await _get_lease_namespace()
+    async with get_storage_keyed_lock(
+        group, namespace=_CONCURRENCY_LEASE_NAMESPACE, enable_logging=False
+    ):
+        state = _load_gate_state(ns, group)
+        if state["leases"].pop(lease_id, None) is not None:
+            ns[group] = state
+
+
+async def renew_global_slots(group: str, lease_ids) -> None:
+    """Refresh the heartbeat of this process's held leases for ``group``.
+
+    A renewal rewrites the lease whole (clearing any ``suspect_since``
+    mark). Leases that have already been reclaimed are NOT resurrected —
+    re-inserting could exceed the configured limit; the suspect grace
+    exists precisely to make false reclamation unlikely.
+    """
+    lease_ids = list(lease_ids)
+    if not lease_ids:
+        return
+    ns = await _get_lease_namespace()
+    async with get_storage_keyed_lock(
+        group, namespace=_CONCURRENCY_LEASE_NAMESPACE, enable_logging=False
+    ):
+        now = time.time()
+        state = _load_gate_state(ns, group)
+        changed = False
+        for lease_id in lease_ids:
+            if lease_id in state["leases"]:
+                state["leases"][lease_id] = {"pid": os.getpid(), "updated_at": now}
+                changed = True
+        if changed:
+            ns[group] = state
+
+
+async def reconcile_global_slots(group: str) -> int:
+    """Run the lease reaper for ``group``; return surviving lease count."""
+    ns = await _get_lease_namespace()
+    async with get_storage_keyed_lock(
+        group, namespace=_CONCURRENCY_LEASE_NAMESPACE, enable_logging=False
+    ):
+        state = _load_gate_state(ns, group)
+        live, changed = _reap_gate_state(state, time.time())
+        if changed:
+            ns[group] = state
+        return live
+
+
+async def global_concurrency_in_use(group: str) -> int:
+    """Approximate count of currently held global slots for ``group``.
+
+    Lock-free single read — intended for observability.
+    """
+    ns = await _get_lease_namespace()
+    return len(_load_gate_state(ns, group)["leases"])
+
+
+# ---------------------------------------------------------------------------
+# Cross-worker queue stats (best-effort, debounced snapshots)
+# ---------------------------------------------------------------------------
+#
+# Each worker process publishes per-queue snapshots under
+# ``f"{queue_name}{KEY_SEP}{pid}"`` in the workspace-less "queue_stats"
+# namespace (whole-value replacement). The local closure counters remain
+# the source of truth; the shared area only needs to be "fresh enough"
+# (event-triggered publishes debounced by the caller + 5s heartbeat flush).
+
+# Flat counter fields summed across workers during aggregation. These are
+# the existing get_queue_stats() fields (schema compatibility for /health
+# and the webui) plus the new global_slot_waits / physical_queued counters.
+QUEUE_STATS_SUM_FIELDS = (
+    "queued",
+    "running",
+    "in_flight",
+    "worker_count",
+    "submitted_total",
+    "completed_total",
+    "failed_total",
+    "cancelled_total",
+    "rejected_total",
+    "global_slot_waits",
+    "physical_queued",
+)
+
+
+async def publish_queue_stats(queue_name: str, snapshot: Dict[str, Any]) -> None:
+    """Publish this process's snapshot for ``queue_name`` (whole replacement).
+
+    The snapshot must carry ``pid`` and ``updated_at`` (wall-clock time) so
+    aggregation can reap stale entries. Best-effort by contract: callers
+    must tolerate exceptions.
+    """
+    if not _initialized:
+        return
+    ns = await _get_queue_stats_namespace()
+    ns[f"{queue_name}{KEY_SEP}{os.getpid()}"] = dict(snapshot)
+
+
+async def unpublish_queue_stats(queue_name: str) -> None:
+    """Remove this process's snapshot for ``queue_name`` (idempotent)."""
+    if not _initialized:
+        return
+    ns = await _get_queue_stats_namespace()
+    ns.pop(f"{queue_name}{KEY_SEP}{os.getpid()}", None)
+
+
+async def aggregate_queue_stats(queue_name: str) -> Dict[str, Any]:
+    """Aggregate all workers' published snapshots for ``queue_name``.
+
+    Sums the flat counter fields across live snapshots and returns them
+    together with ``reporting_workers`` and the raw ``per_worker`` map.
+    Entries owned by dead PIDs or older than the stale TTL are reaped —
+    re-checked under the internal lock against the previously observed
+    ``updated_at`` so a snapshot republished concurrently is never deleted.
+    """
+    ns = await _get_queue_stats_namespace()
+    now = time.time()
+    prefix = f"{queue_name}{KEY_SEP}"
+    per_worker: Dict[str, Dict[str, Any]] = {}
+    stale: List[tuple] = []
+    for key in [k for k in ns.keys() if k.startswith(prefix)]:
+        raw = ns.get(key)
+        if raw is None:
+            continue
+        snap = dict(raw)
+        pid = snap.get("pid")
+        updated_at = snap.get("updated_at", 0.0)
+        if (pid is not None and not _pid_alive(pid)) or (
+            now - updated_at > _queue_stats_stale_ttl
+        ):
+            stale.append((key, updated_at))
+            continue
+        per_worker[str(pid)] = snap
+
+    if stale:
+        async with get_internal_lock():
+            for key, seen_updated_at in stale:
+                current = ns.get(key)
+                if current is None:
+                    continue
+                if dict(current).get("updated_at", 0.0) != seen_updated_at:
+                    continue  # republished since we looked — keep it
+                ns.pop(key, None)
+
+    aggregated: Dict[str, Any] = {
+        field: sum(int(snap.get(field, 0) or 0) for snap in per_worker.values())
+        for field in QUEUE_STATS_SUM_FIELDS
+    }
+    aggregated["reporting_workers"] = len(per_worker)
+    aggregated["per_worker"] = per_worker
+    return aggregated

@@ -18,10 +18,8 @@ import pytest
 
 from lightrag.parser.docx.parse_document import (
     DocxContentError,
-    MAX_BLOCK_CONTENT_TOKENS,
     MAX_HEADING_LENGTH,
     validate_heading_length,
-    validate_table_tokens,
 )
 
 
@@ -45,11 +43,3 @@ def test_validate_heading_length_does_not_raise_within_limit():
     # Exactly at the limit and below must pass through silently.
     validate_heading_length("x" * MAX_HEADING_LENGTH, "p2")
     validate_heading_length("short heading", "p3")
-
-
-def test_validate_table_tokens_raises_instead_of_exiting():
-    # estimate_tokens(json) > MAX_BLOCK_CONTENT_TOKENS for this payload.
-    oversized_table = "a" * (MAX_BLOCK_CONTENT_TOKENS * 8)
-    with pytest.raises(DocxContentError) as exc_info:
-        validate_table_tokens(oversized_table, "Some Heading")
-    assert "Table too large" in str(exc_info.value)

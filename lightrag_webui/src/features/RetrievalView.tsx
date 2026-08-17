@@ -2,18 +2,26 @@ import Textarea from '@/components/ui/Textarea'
 import Input from '@/components/ui/Input'
 import Button from '@/components/ui/Button'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { throttle } from '@/lib/utils'
 import { queryText, queryTextStream } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
 import { useDebounce } from '@/hooks/useDebounce'
 import QuerySettings from '@/components/retrieval/QuerySettings'
 import { ChatMessage, MessageWithError } from '@/components/retrieval/ChatMessage'
-import { EraserIcon, SendIcon, CopyIcon, SquareIcon } from 'lucide-react'
+import { ChevronDownIcon, EraserIcon, SendIcon, CopyIcon, SquareIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { copyToClipboard } from '@/utils/clipboard'
 import type { QueryMode } from '@/api/lightrag'
+
+// Distance from the bottom (px) within which a user's downward scroll re-enables
+// auto-follow. Wide enough to absorb streaming content growth between the user's
+// release of the scrollbar and the scroll event being processed.
+const NEAR_BOTTOM_PX = 100
+// Upward scrollTop deltas at (or within) this distance from the bottom are treated
+// as browser clamping after content shrinkage (e.g. a thinking block collapsing),
+// not as user intent to scroll up.
+const BOTTOM_CLAMP_EPSILON_PX = 2
 
 // Helper function to generate unique IDs with browser compatibility
 const generateUniqueId = () => {
@@ -139,11 +147,28 @@ export default function RetrievalView() {
   })
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  // Current retrieval pipeline step (e.g. "extracting_keywords") — shown to
+  // the user while the query is in flight so they see live progress.
+  const [queryProgress, setQueryProgress] = useState<string | null>(null)
   // Briefly disable the Stop button right after a query starts so a fast
   // double-click on Send (which morphs into Stop at the same position) can't
   // accidentally abort the query it just launched.
   const [stopDisabled, setStopDisabled] = useState(false)
   const stopCooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Live response timer: ticks every 100ms while a query is in flight so the
+  // user sees a running stopwatch. Cleared (and finalized) in the handleSubmit
+  // finally block / handleStop.
+  const responseTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const responseStartRef = useRef<number | null>(null)
+  // Authoritative server-side duration returned by the backend. When present,
+  // this overrides the client-side stopwatch estimate for the final display.
+  const serverResponseTimeRef = useRef<number | null>(null)
+  // Tracks whether the time-to-first-token has already been recorded for the
+  // current query so we only stamp it on the very first chunk.
+  const firstTokenRecordedRef = useRef(false)
+  // Tracks whether the current query uses streaming — TTFT is only meaningful
+  // for streaming responses (non-streaming returns the full response at once).
+  const isStreamingRef = useRef(false)
   const [inputError, setInputError] = useState('') // Error message for input
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null)
 
@@ -164,15 +189,28 @@ export default function RetrievalView() {
     })
   }, [])
 
-  // Scroll to bottom function - restored smooth scrolling with better handling
+  // Mirror of shouldFollowScrollRef that drives rendering (the jump-to-bottom
+  // button). The ref stays the synchronous source of truth for event handlers.
+  const [isFollowing, setIsFollowing] = useState(true)
+  const setFollowScroll = useCallback((value: boolean) => {
+    // Bail out early: the scroll handler runs un-throttled on every scroll event
+    if (shouldFollowScrollRef.current === value) return
+    shouldFollowScrollRef.current = value
+    setIsFollowing(value)
+  }, [])
+
+  // Scroll to bottom. Single choke point for all programmatic scrolling.
   const scrollToBottom = useCallback(() => {
-    // Set flag to indicate this is a programmatic scroll
-    programmaticScrollRef.current = true
-    // Use requestAnimationFrame for better performance
     requestAnimationFrame(() => {
-      if (messagesEndRef.current) {
-        // Use smooth scrolling for better user experience
-        messagesEndRef.current.scrollIntoView({ behavior: 'auto' })
+      // Re-check at execution time: queued scrolls (30ms chunk timeouts, debounced
+      // effects) must not fire after the user has detached from the bottom.
+      if (!shouldFollowScrollRef.current) return
+      const container = messagesContainerRef.current
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' })
+      if (container) {
+        // Absorb the programmatic displacement into the direction baseline so the
+        // scroll handler's delta only ever reflects user-initiated movement.
+        lastScrollTopRef.current = container.scrollTop
       }
     })
   }, [])
@@ -248,9 +286,7 @@ export default function RetrievalView() {
       setMessages([...prevMessages, userMessage, assistantMessage])
 
       // Reset scroll following state for new query
-      shouldFollowScrollRef.current = true
-      // Set flag to indicate we're receiving a response
-      isReceivingResponseRef.current = true
+      setFollowScroll(true)
 
       // Force scroll to bottom after messages are rendered
       setTimeout(() => {
@@ -275,8 +311,51 @@ export default function RetrievalView() {
         }
       }
 
+      // Read query settings up front — needed by both the timer setup and
+      // the query dispatch below. Reading here avoids a temporal-dead-zone
+      // reference and ensures a single consistent snapshot for this submit.
+      const state = useSettingsStore.getState()
+
+      // Start the live response timer — ticks every 100ms, stamping the
+      // elapsed seconds onto the assistant message so the UI shows a running
+      // stopwatch. Cleared in the finally block below.
+      responseStartRef.current = Date.now()
+      serverResponseTimeRef.current = null
+      firstTokenRecordedRef.current = false
+      isStreamingRef.current = state.querySettings.stream ?? false
+      assistantMessage.responseTime = 0
+      assistantMessage.firstTokenTime = null
+      if (responseTimerRef.current) clearInterval(responseTimerRef.current)
+      responseTimerRef.current = setInterval(() => {
+        const elapsed = (Date.now() - (responseStartRef.current ?? Date.now())) / 1000
+        const rounded = parseFloat(elapsed.toFixed(1))
+        assistantMessage.responseTime = rounded
+        setMessages((prev) => {
+          const newMessages = [...prev]
+          const lastMessage = newMessages[newMessages.length - 1]
+          if (lastMessage && lastMessage.id === assistantMessage.id) {
+            lastMessage.responseTime = rounded
+          }
+          return newMessages
+        })
+      }, 100)
+
       // Create a function to update the assistant's message
       const updateAssistantMessage = (chunk: string, isError?: boolean) => {
+        // Record time-to-first-token on the very first content chunk.
+        // Only meaningful for streaming — non-streaming returns the full
+        // response at once, so there is no "first token" to measure.
+        if (
+          !isError &&
+          !firstTokenRecordedRef.current &&
+          isStreamingRef.current &&
+          responseStartRef.current &&
+          chunk
+        ) {
+          firstTokenRecordedRef.current = true
+          const ttft = (Date.now() - responseStartRef.current) / 1000
+          assistantMessage.firstTokenTime = parseFloat(ttft.toFixed(1))
+        }
         assistantMessage.content += chunk
 
         // Start thinking timer on first sight of think tag
@@ -340,7 +419,9 @@ export default function RetrievalView() {
               isError: isError,
               mermaidRendered: assistantMessage.mermaidRendered,
               latexRendered: assistantMessage.latexRendered,
-              thinkingTime: assistantMessage.thinkingTime
+              thinkingTime: assistantMessage.thinkingTime,
+              responseTime: assistantMessage.responseTime,
+              firstTokenTime: assistantMessage.firstTokenTime
             })
           }
           return newMessages
@@ -355,8 +436,7 @@ export default function RetrievalView() {
         }
       }
 
-      // Prepare query parameters
-      const state = useSettingsStore.getState()
+      // state was already read above (before timer setup)
 
       // Add user prompt to history if it exists and is not empty
       if (state.querySettings.user_prompt && state.querySettings.user_prompt.trim()) {
@@ -376,6 +456,8 @@ export default function RetrievalView() {
         ...state.querySettings,
         query: actualQuery,
         response_type: 'Multiple Paragraphs',
+        // Request retrieval progress events for the live progress display.
+        include_progress: true,
         conversation_history: effectiveHistoryTurns > 0
           ? prevMessages
             .filter((m) => m.isError !== true)
@@ -389,9 +471,23 @@ export default function RetrievalView() {
         // Run query
         if (state.querySettings.stream) {
           let errorMessage = ''
-          await queryTextStream(queryParams, updateAssistantMessage, (error) => {
-            errorMessage += error
-          }, controller.signal)
+          await queryTextStream(
+            queryParams,
+            updateAssistantMessage,
+            (error) => {
+              errorMessage += error
+            },
+            controller.signal,
+            // Capture the authoritative server-side duration (emitted as the
+            // final NDJSON metadata line). The finally block uses this to
+            // override the client-side stopwatch estimate.
+            (seconds) => {
+              serverResponseTimeRef.current = seconds
+            },
+            (event) => {
+              setQueryProgress(event)
+            }
+          )
           if (errorMessage) {
             if (assistantMessage.content) {
               errorMessage = assistantMessage.content + '\n' + errorMessage
@@ -400,6 +496,9 @@ export default function RetrievalView() {
           }
         } else {
           const response = await queryText(queryParams, controller.signal)
+          if (typeof response.response_time === 'number') {
+            serverResponseTimeRef.current = response.response_time
+          }
           updateAssistantMessage(response.response)
         }
       } catch (err) {
@@ -418,8 +517,36 @@ export default function RetrievalView() {
         if (abortControllerRef.current === controller) {
           // Clear loading and add messages to state
           setIsLoading(false)
-          isReceivingResponseRef.current = false
+          setQueryProgress(null)
           abortControllerRef.current = null
+
+          // Stop the live response timer and stamp the final duration onto
+          // the assistant message (persisted in chat history). Prefer the
+          // authoritative server-side time when available; fall back to the
+          // client-side stopwatch estimate otherwise.
+          if (responseTimerRef.current) {
+            clearInterval(responseTimerRef.current)
+            responseTimerRef.current = null
+          }
+          const authoritativeTime = serverResponseTimeRef.current
+          if (authoritativeTime !== null) {
+            assistantMessage.responseTime = authoritativeTime
+          } else if (responseStartRef.current) {
+            const finalElapsed = (Date.now() - responseStartRef.current) / 1000
+            assistantMessage.responseTime = parseFloat(finalElapsed.toFixed(1))
+          }
+          responseStartRef.current = null
+          serverResponseTimeRef.current = null
+          firstTokenRecordedRef.current = false
+          // Sync the finalized time into the rendered message
+          setMessages((prev) => {
+            const newMessages = [...prev]
+            const lastMessage = newMessages[newMessages.length - 1]
+            if (lastMessage && lastMessage.id === assistantMessage.id) {
+              lastMessage.responseTime = assistantMessage.responseTime
+            }
+            return newMessages
+          })
 
           // Enhanced cleanup with error handling to prevent memory leaks
           try {
@@ -460,7 +587,7 @@ export default function RetrievalView() {
         }
       }
     },
-    [inputValue, isLoading, messages, setMessages, t, scrollToBottom]
+    [inputValue, isLoading, messages, setMessages, t, scrollToBottom, setFollowScroll]
   )
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -555,10 +682,10 @@ export default function RetrievalView() {
   const activeAssistantIdRef = useRef<string | null>(null)
   // Reference to track if user interaction is from the form area
   const isFormInteractionRef = useRef(false)
-  // Reference to track if scroll was triggered programmatically
-  const programmaticScrollRef = useRef(false)
-  // Reference to track if we're currently receiving a streaming response
-  const isReceivingResponseRef = useRef(false)
+  // Direction baseline for the scroll handler: last observed scrollTop.
+  // Programmatic scrolls fold their displacement into this baseline (see
+  // scrollToBottom), so deltas measured against it are user movement only.
+  const lastScrollTopRef = useRef(0)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
 
@@ -566,61 +693,98 @@ export default function RetrievalView() {
   useEffect(() => {
     // Component cleanup - reset timer state to prevent memory leaks
     return () => {
+      // Relinquish ownership before aborting so the request's deferred
+      // `finally` cannot update state after this component has unmounted.
+      const controller = abortControllerRef.current
+      abortControllerRef.current = null
+      controller?.abort()
+
+      if (responseTimerRef.current) {
+        clearInterval(responseTimerRef.current)
+        responseTimerRef.current = null
+      }
+      responseStartRef.current = null
+      serverResponseTimeRef.current = null
+      firstTokenRecordedRef.current = false
+      isStreamingRef.current = false
+      activeAssistantIdRef.current = null
+
       if (thinkingStartTime.current) {
-        thinkingStartTime.current = null;
+        thinkingStartTime.current = null
       }
       if (stopCooldownTimerRef.current) {
-        clearTimeout(stopCooldownTimerRef.current);
-        stopCooldownTimerRef.current = null;
+        clearTimeout(stopCooldownTimerRef.current)
+        stopCooldownTimerRef.current = null
       }
-    };
-  }, []);
+    }
+  }, [])
 
-  // Add event listeners to detect when user manually interacts with the container
+  // Add event listeners to detect when user manually interacts with the container.
+  // User intent is inferred from the direction of user-initiated movement only:
+  // scrolling up detaches from the bottom, scrolling down near the bottom re-attaches.
   useEffect(() => {
     const container = messagesContainerRef.current;
     if (!container) return;
 
-    // Handle significant mouse wheel events - only disable auto-scroll for deliberate scrolling
     const handleWheel = (e: WheelEvent) => {
-      // Only consider significant wheel movements (more than 10px)
-      if (Math.abs(e.deltaY) > 10 && !isFormInteractionRef.current) {
-        shouldFollowScrollRef.current = false;
+      if (isFormInteractionRef.current) return;
+      // The 10px debounce only makes sense for pixel-mode deltas (trackpad
+      // jitter). Line/page-mode events (e.g. Firefox wheel: deltaMode=1,
+      // deltaY=±3) are discrete, deliberate steps — a raw pixel threshold
+      // would swallow them; only ignore pure horizontal scrolling there.
+      const insignificant = e.deltaMode === WheelEvent.DOM_DELTA_PIXEL
+        ? Math.abs(e.deltaY) <= 10
+        : e.deltaY === 0;
+      if (insignificant) return;
+      if (e.deltaY < 0) {
+        // Scrolling up: the user wants to read back. Detach synchronously, before
+        // the resulting scroll event, so streaming auto-scrolls stop immediately.
+        setFollowScroll(false);
+      } else if (container.scrollHeight - container.scrollTop - container.clientHeight < NEAR_BOTTOM_PX) {
+        // Scrolling down at the bottom produces no scroll event (scrollTop cannot
+        // move), so this wheel gesture is the only signal to re-attach.
+        setFollowScroll(true);
       }
     };
 
-    // Handle scroll events - only disable auto-scroll if not programmatically triggered
-    // and if it's a significant scroll
-    const handleScroll = throttle(() => {
-      // If this is a programmatic scroll, don't disable auto-scroll
-      if (programmaticScrollRef.current) {
-        programmaticScrollRef.current = false;
-        return;
-      }
-
-      // Check if scrolled to bottom or very close to bottom
-      const container = messagesContainerRef.current;
-      if (container) {
-        const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 20;
-
-        // If at bottom, enable auto-scroll, otherwise disable it
-        if (isAtBottom) {
-          shouldFollowScrollRef.current = true;
-        } else if (!isFormInteractionRef.current && !isReceivingResponseRef.current) {
-          shouldFollowScrollRef.current = false;
+    // Sample direction synchronously on every raw scroll event. Deferring this
+    // (e.g. via throttle) would let a queued programmatic scroll overwrite the
+    // user's upward displacement before it is ever observed.
+    const handleScroll = () => {
+      const scrollTop = container.scrollTop;
+      const delta = scrollTop - lastScrollTopRef.current;
+      lastScrollTopRef.current = scrollTop;
+      const distance = container.scrollHeight - scrollTop - container.clientHeight;
+      if (delta < 0) {
+        // Upward user movement detaches — unless it is browser clamping after the
+        // content shrank (still at the bottom), which carries no user intent.
+        if (distance > BOTTOM_CLAMP_EPSILON_PX && !isFormInteractionRef.current) {
+          setFollowScroll(false);
         }
+      } else if (delta > 0 && distance < NEAR_BOTTOM_PX) {
+        // Downward user movement reaching the bottom region re-attaches. Covers
+        // scrollbar drags, touch flicks, PageDown/End — inputs wheel can't see.
+        setFollowScroll(true);
       }
-    }, 30);
+      // delta === 0 (programmatic displacement already absorbed into the
+      // baseline, or no movement): leave the follow state untouched.
+    };
 
-    // Add event listeners - only listen for wheel and scroll events
+    // Text selection starting inside the container detaches immediately, so
+    // auto-scroll cannot destroy an in-progress selection during streaming.
+    // Plain clicks never fire selectstart and keep the follow state.
+    const handleSelectStart = () => setFollowScroll(false);
+
     container.addEventListener('wheel', handleWheel as EventListener);
     container.addEventListener('scroll', handleScroll as EventListener);
+    container.addEventListener('selectstart', handleSelectStart);
 
     return () => {
       container.removeEventListener('wheel', handleWheel as EventListener);
       container.removeEventListener('scroll', handleScroll as EventListener);
+      container.removeEventListener('selectstart', handleSelectStart);
     };
-  }, []);
+  }, [setFollowScroll]);
 
   // Add event listeners to the form area to prevent disabling auto-scroll when interacting with form
   useEffect(() => {
@@ -656,6 +820,15 @@ export default function RetrievalView() {
 
 
   const clearMessages = useCallback(() => {
+    // Stop any running response timer so it doesn't keep ticking after clear.
+    if (responseTimerRef.current) {
+      clearInterval(responseTimerRef.current)
+      responseTimerRef.current = null
+    }
+    responseStartRef.current = null
+    serverResponseTimeRef.current = null
+    firstTokenRecordedRef.current = false
+    setQueryProgress(null)
     setMessages([])
     useSettingsStore.getState().setRetrievalHistory([])
   }, [setMessages])
@@ -678,6 +851,12 @@ export default function RetrievalView() {
     // aborted) and persist immediately so the terminated state is the
     // authoritative saved history.
     const activeId = activeAssistantIdRef.current
+    // Stamp the final response time onto the terminated message so the live
+    // stopwatch freezes at the moment the user stopped.
+    let stoppedResponseTime: number | null = null
+    if (responseStartRef.current) {
+      stoppedResponseTime = parseFloat(((Date.now() - responseStartRef.current) / 1000).toFixed(1))
+    }
     const finalizedMessages = messages.map((m) => {
       if (m.id !== activeId) return m
       // Terminated mid-thinking: finalize the COT block so the partial reasoning
@@ -688,7 +867,13 @@ export default function RetrievalView() {
       if (m.isThinking && thinkingTime === null && thinkingStartTime.current) {
         thinkingTime = parseFloat(((Date.now() - thinkingStartTime.current) / 1000).toFixed(2))
       }
-      return { ...m, isThinking: false, isAborted: true, thinkingTime }
+      return {
+        ...m,
+        isThinking: false,
+        isAborted: true,
+        thinkingTime,
+        responseTime: stoppedResponseTime ?? m.responseTime
+      }
     })
     setMessages(finalizedMessages)
     try {
@@ -703,26 +888,31 @@ export default function RetrievalView() {
     // eslint-disable-next-line react-hooks/immutability
     thinkingProcessed.current = false
 
+    // Stop the live response timer (the skipped finally won't clear it).
+    if (responseTimerRef.current) {
+      clearInterval(responseTimerRef.current)
+      responseTimerRef.current = null
+    }
+    responseStartRef.current = null
+    serverResponseTimeRef.current = null
+    firstTokenRecordedRef.current = false
+
     setIsLoading(false)
+    setQueryProgress(null)
     // Cancel any pending Stop-button cooldown and reset it for the next query.
     if (stopCooldownTimerRef.current) {
       clearTimeout(stopCooldownTimerRef.current)
       stopCooldownTimerRef.current = null
     }
     setStopDisabled(false)
-    // eslint-disable-next-line react-hooks/immutability
-    isReceivingResponseRef.current = false
   }, [messages, setMessages])
 
-  // Disable auto-scroll when the user clicks inside the messages container.
-  // The ref mutation pattern is intentional and matches how it's mutated elsewhere
-  // (wheel/scroll handlers in the effect above); the linter flags it here regardless.
-  const handleMessagesContainerClick = useCallback(() => {
-    if (shouldFollowScrollRef.current) {
-      // eslint-disable-next-line react-hooks/immutability
-      shouldFollowScrollRef.current = false;
-    }
-  }, [])
+  // Jump to the latest message and re-enable follow scroll (the floating
+  // arrow button shown while the user is detached from the bottom).
+  const handleJumpToBottom = useCallback(() => {
+    setFollowScroll(true)
+    scrollToBottom()
+  }, [setFollowScroll, scrollToBottom])
 
   // Handle copying message content with robust clipboard support
   const handleCopyMessage = useCallback(async (message: MessageWithError) => {
@@ -784,7 +974,6 @@ export default function RetrievalView() {
           <div
             ref={messagesContainerRef}
             className="bg-primary-foreground/60 absolute inset-0 flex flex-col overflow-auto rounded-lg border p-2"
-            onClick={handleMessagesContainerClick}
           >
             <div className="flex min-h-0 flex-1 flex-col gap-2">
               {messages.length === 0 ? (
@@ -792,7 +981,7 @@ export default function RetrievalView() {
                   {t('retrievePanel.retrieval.startPrompt')}
                 </div>
               ) : (
-                messages.map((message) => { // Remove unused idx
+                messages.map((message, idx) => { // Remove unused idx
                   // isComplete logic is now handled internally based on message.mermaidRendered
                   return (
                     <div
@@ -810,7 +999,20 @@ export default function RetrievalView() {
                           <CopyIcon className="size-4" />
                         </Button>
                       )}
-                      <ChatMessage message={message} isTabActive={isRetrievalTabActive} />
+                      <ChatMessage
+                        message={message}
+                        isTabActive={isRetrievalTabActive}
+                        activeProgress={
+                          idx === messages.length - 1 && message.role === 'assistant'
+                            ? queryProgress
+                            : null
+                        }
+                        isQuerying={
+                          idx === messages.length - 1 &&
+                          message.role === 'assistant' &&
+                          isLoading
+                        }
+                      />
                       {message.role === 'assistant' && (
                         <Button
                           onClick={() => handleCopyMessage(message)}
@@ -829,6 +1031,19 @@ export default function RetrievalView() {
               <div ref={messagesEndRef} className="pb-1" />
             </div>
           </div>
+          {!isFollowing && messages.length > 0 && (
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              aria-label={t('retrievePanel.retrieval.scrollToBottom')}
+              tooltip={t('retrievePanel.retrieval.scrollToBottom')}
+              className="bg-background/70 absolute bottom-4 left-1/2 z-10 size-8 -translate-x-1/2 rounded-full opacity-70 shadow-md backdrop-blur transition-opacity hover:opacity-100"
+              onClick={handleJumpToBottom}
+            >
+              <ChevronDownIcon className="size-4" />
+            </Button>
+          )}
         </div>
 
         <form

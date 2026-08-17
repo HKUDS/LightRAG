@@ -200,7 +200,7 @@ make env-security-check
 - If the stack uses Docker, recreate the LightRAG service with your compose file
 - If the stack runs on the host, restart `lightrag-server`
 
-For broader deployment guidance, see [DockerDeployment.md](/Users/ydh/mycode/ai/paper-RAG/docs/DockerDeployment.md).
+For broader deployment guidance, see [DockerDeployment.md](./DockerDeployment.md).
 
 ## Validate, Audit, And Backup
 
@@ -266,7 +266,7 @@ The base `docker-compose.yml` remains the general project compose file. The gene
 - If you need to fully rebuild wizard-managed compose services from the current bundled templates, use `make env-base-rewrite` or `make env-storage-rewrite`.
 - If you switch between host-oriented and Docker-oriented workflows, rerun the relevant setup step instead of trying to manually merge old settings.
 - If the generated stack includes local Milvus, make sure `MINIO_ACCESS_KEY_ID` and `MINIO_SECRET_ACCESS_KEY` are available before running `docker compose -f docker-compose.final.yml up -d`.
-- For Docker deployment details beyond the interactive wizard, see [DockerDeployment.md](/Users/ydh/mycode/ai/paper-RAG/docs/DockerDeployment.md).
+- For Docker deployment details beyond the interactive wizard, see [DockerDeployment.md](./DockerDeployment.md).
 
 ## Typical Command Sequences
 

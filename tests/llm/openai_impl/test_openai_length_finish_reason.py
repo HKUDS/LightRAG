@@ -1,12 +1,32 @@
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from lightrag.llm.openai import openai_complete_if_cache
+from lightrag.llm.openai import (
+    InvalidResponseError,
+    azure_openai_complete_if_cache,
+    openai_complete_if_cache,
+)
+from lightrag.utils import is_truncated_response
 
 
-def _make_completion(content: str, finish_reason: str = "stop"):
+def _make_completion(
+    content: str,
+    finish_reason: str = "stop",
+    reasoning_content: str = "",
+    reasoning_tokens: int | None = None,
+):
+    usage = SimpleNamespace(
+        prompt_tokens=10,
+        completion_tokens=20,
+        total_tokens=30,
+    )
+    if reasoning_tokens is not None:
+        usage.completion_tokens_details = SimpleNamespace(
+            reasoning_tokens=reasoning_tokens
+        )
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
@@ -14,15 +34,11 @@ def _make_completion(content: str, finish_reason: str = "stop"):
                 message=SimpleNamespace(
                     content=content,
                     parsed=None,
-                    reasoning_content="",
+                    reasoning_content=reasoning_content,
                 ),
             )
         ],
-        usage=SimpleNamespace(
-            prompt_tokens=10,
-            completion_tokens=20,
-            total_tokens=30,
-        ),
+        usage=usage,
     )
 
 
@@ -97,6 +113,82 @@ async def test_length_finish_reason_returns_raw_content():
     assert result == raw_json
     fake_client.chat.completions.create.assert_awaited_once()
     fake_client.close.assert_awaited_once()
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_length_finish_reason_marks_result_truncated():
+    """Truncated content is returned but flagged so the cache layer skips it.
+
+    The partial payload is still usable (str equality holds for salvage), but
+    ``is_truncated_response`` reports True so callers do not persist it.
+    """
+    raw_json = '{"entities":[{"name":"Alice","type":"Person"'
+    completion = _make_completion(raw_json, finish_reason="length")
+    fake_client = _make_fake_client(completion)
+
+    with patch(
+        "lightrag.llm.openai.create_openai_async_client",
+        return_value=fake_client,
+    ):
+        result = await openai_complete_if_cache(
+            model="test-model",
+            prompt="Extract entities",
+            response_format={"type": "json_object"},
+        )
+
+    assert result == raw_json
+    assert is_truncated_response(result) is True
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_stop_finish_reason_is_not_marked_truncated():
+    """A normally-completed response is not flagged and remains cacheable."""
+    raw_json = '{"entities":[],"relationships":[]}'
+    completion = _make_completion(raw_json, finish_reason="stop")
+    fake_client = _make_fake_client(completion)
+
+    with patch(
+        "lightrag.llm.openai.create_openai_async_client",
+        return_value=fake_client,
+    ):
+        result = await openai_complete_if_cache(
+            model="test-model",
+            prompt="Extract entities",
+            response_format={"type": "json_object"},
+        )
+
+    assert result == raw_json
+    assert is_truncated_response(result) is False
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_azure_length_finish_reason_marks_result_truncated():
+    """Azure shares the unified non-streaming path, so it emits the marker too.
+
+    ``azure_openai_complete_if_cache`` delegates to ``openai_complete_if_cache``
+    (with ``use_azure=True`` affecting only client construction). This test
+    pins that delegation: if Azure ever grows its own completion path, the
+    truncation marker must move with it.
+    """
+    raw_json = '{"entities":[{"name":"Alice","type":"Person"'
+    completion = _make_completion(raw_json, finish_reason="length")
+    fake_client = _make_fake_client(completion)
+
+    with patch(
+        "lightrag.llm.openai.create_openai_async_client",
+        return_value=fake_client,
+    ):
+        result = await azure_openai_complete_if_cache(
+            model="test-deployment",
+            prompt="Extract entities",
+            response_format={"type": "json_object"},
+        )
+
+    assert result == raw_json
+    assert is_truncated_response(result) is True
 
 
 @pytest.mark.offline
@@ -223,3 +315,135 @@ async def test_streaming_structured_output_disables_cot():
 
     assert "".join(chunks) == '{"answer":"ok"}'
     fake_client.close.assert_awaited_once()
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_empty_content_reasoning_only_diagnostics(caplog):
+    """Reasoning-only responses surface finish_reason/usage/reasoning clues.
+
+    Thinking models served behind OpenAI-compatible APIs (e.g. vLLM with a
+    reasoning parser) can return all output in ``reasoning_content`` with an
+    empty ``content``. The raised ``InvalidResponseError`` and the ERROR log
+    must identify that failure mode instead of a bare "empty content".
+    """
+    reasoning_text = "thinking about the diagram..."
+    completion = _make_completion(
+        "",
+        finish_reason="stop",
+        reasoning_content=reasoning_text,
+        reasoning_tokens=800,
+    )
+    fake_client = _make_fake_client(completion)
+
+    lightrag_logger = logging.getLogger("lightrag")
+    caplog.set_level(logging.ERROR, logger="lightrag")
+    original_propagate = lightrag_logger.propagate
+    lightrag_logger.propagate = True
+    try:
+        with patch(
+            "lightrag.llm.openai.create_openai_async_client",
+            return_value=fake_client,
+        ):
+            # Call the undecorated coroutine to exercise the handler exactly
+            # once (bypasses the tenacity retry loop and its waits).
+            with pytest.raises(InvalidResponseError) as excinfo:
+                await openai_complete_if_cache.__wrapped__(
+                    model="test-model",
+                    prompt="Describe the image",
+                    response_format={"type": "json_object"},
+                )
+    finally:
+        lightrag_logger.propagate = original_propagate
+
+    message = str(excinfo.value)
+    assert "finish_reason=stop" in message
+    assert "reasoning_tokens=800" in message
+    assert f"reasoning_content_len={len(reasoning_text)}" in message
+    assert "reasoning-only" in caplog.text
+    fake_client.close.assert_awaited()
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_empty_content_length_truncation_diagnostics(caplog):
+    """Token-limit truncation with no content is identified as such.
+
+    When thinking exhausts the completion budget before any content token is
+    emitted, the response has ``finish_reason="length"`` and empty content;
+    usage may lack ``completion_tokens_details`` entirely.
+    """
+    from lightrag.exceptions import EmptyTruncatedResponseError
+
+    completion = _make_completion("", finish_reason="length")
+    fake_client = _make_fake_client(completion)
+
+    lightrag_logger = logging.getLogger("lightrag")
+    caplog.set_level(logging.ERROR, logger="lightrag")
+    original_propagate = lightrag_logger.propagate
+    lightrag_logger.propagate = True
+    try:
+        with patch(
+            "lightrag.llm.openai.create_openai_async_client",
+            return_value=fake_client,
+        ):
+            # DECORATED call, deliberately: token-limit exhaustion is
+            # deterministic for a given prompt and output budget, so it must
+            # escape the retry predicate and fail after ONE request instead of
+            # re-buying two more full-budget generations plus backoff (Codex
+            # review on PR #3607, flagged on the Gemini twin of this check).
+            with pytest.raises(EmptyTruncatedResponseError) as excinfo:
+                await openai_complete_if_cache(
+                    model="test-model",
+                    prompt="Describe the image",
+                    response_format={"type": "json_object"},
+                )
+    finally:
+        lightrag_logger.propagate = original_propagate
+
+    assert fake_client.chat.completions.create.await_count == 1, (
+        "a deterministic token-limit failure must not retry"
+    )
+    message = str(excinfo.value)
+    assert "finish_reason=length" in message
+    assert "reasoning_tokens=n/a" in message
+    assert "reasoning_content_len=0" in message
+    assert "hit the token limit" in caplog.text
+    # The hint travels with the exception too, so the document's error_msg
+    # names the knob — same contract as the Ollama/Gemini/Bedrock bindings.
+    assert "hit the token limit" in message
+    assert "consider raising max_tokens" in message
+    fake_client.close.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_empty_content_length_raise_still_counts_usage():
+    """Codex review (PR #3607, flagged on the Gemini twin): the empty-content
+    raise happened before token accounting, so the request that consumed its
+    ENTIRE completion budget on reasoning was the one missing from usage
+    reporting. Usage is now recorded before any validation raise."""
+    from lightrag.exceptions import EmptyTruncatedResponseError
+
+    completion = _make_completion("", finish_reason="length")
+    fake_client = _make_fake_client(completion)
+
+    tracked: list[dict] = []
+    tracker = SimpleNamespace(add_usage=tracked.append)
+
+    with patch(
+        "lightrag.llm.openai.create_openai_async_client",
+        return_value=fake_client,
+    ):
+        with pytest.raises(EmptyTruncatedResponseError):
+            await openai_complete_if_cache(
+                model="test-model",
+                prompt="Describe the image",
+                token_tracker=tracker,
+            )
+
+    assert tracked == [
+        {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
+    ], (
+        "the exhausted request's tokens vanished from usage accounting "
+        "because the raise preceded token_tracker.add_usage"
+    )

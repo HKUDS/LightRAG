@@ -543,9 +543,9 @@ async def test_case1_empty_legacy_auto_cleanup(
         assert len(delete_calls) >= 1, "Empty legacy table should be auto-deleted"
         # Check if legacy table was dropped
         dropped_table = storage.legacy_table_name
-        assert any(
-            dropped_table in str(call) for call in delete_calls
-        ), f"Expected to drop empty legacy table '{dropped_table}'"
+        assert any(dropped_table in str(call) for call in delete_calls), (
+            f"Expected to drop empty legacy table '{dropped_table}'"
+        )
 
         print(
             f"✅ Case 1a: Empty legacy table '{dropped_table}' auto-deleted successfully"
@@ -752,9 +752,9 @@ async def test_case1_sequential_workspace_migration(
 
     print("✅ Step 1: Workspace A initialized")
     # Verify migration was executed via _run_with_retry (batch migration uses executemany)
-    assert (
-        len(migration_a_executed) > 0
-    ), "Migration should have been executed for workspace_a"
+    assert len(migration_a_executed) > 0, (
+        "Migration should have been executed for workspace_a"
+    )
     print(f"✅ Step 1: Migration executed {len(migration_a_executed)} batch(es)")
 
     # Step 2: Simulate workspace_b initialization (Case 3 - both exist, but legacy has B's data)
@@ -846,9 +846,9 @@ async def test_case1_sequential_workspace_migration(
 
     # Verify workspace_b migration happens when new table has no workspace_b data
     # but legacy table still has workspace_b data.
-    assert (
-        len(migration_b_executed) > 0
-    ), "Migration should have been executed for workspace_b"
+    assert len(migration_b_executed) > 0, (
+        "Migration should have been executed for workspace_b"
+    )
     print("✅ Step 2: Migration executed for workspace_b")
 
     print("\n🎉 Case 1c: Sequential workspace migration verification complete!")

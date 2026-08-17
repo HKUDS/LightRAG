@@ -66,11 +66,11 @@ P 策略的全部规则都服务于一个目标：**让块边界对齐文档原�
 
 ### 2.2 处理流水线总览
 
-上述规则串成一条以 `.blocks.jsonl` 为输入的流水线（`fixlevel=0` 模式，**每个 `type == "content"` 行被视为一个标题级基础块**）：
+上述规则串成一条以 `.blocks.jsonl` 为输入的流水线（**每个 `type == "content"` 行被视为一个标题级基础块**）：
 
 ```text
 DOCX / PDF / PPTX / …
-  ↓  native(docx, fixlevel=0) / mineru / docling parser —— 按标题输出基础块，不做 token 拆分
+  ↓  native(docx) / mineru / docling parser —— 按标题输出基础块，不做 token 拆分
 .blocks.jsonl + sidecar (.tables.json / .equations.json / .drawings.json / .blocks.assets/)
   ↓  TableRowSplit：超大表格按行边界切片并赋予 first/middle/last 角色      → §3.2
   ↓  HeaderRecovery：切分时把重复表头预扣预算后注入中段/末段切片      → §3.3.3
@@ -92,7 +92,7 @@ DOCX / PDF / PPTX / …
 
 三个能产出 sidecar 的引擎殊途同归地按标题切出基础块，各自得到 `heading` / `level` / `parent_headings`：
 
-- **native（docx，`fixlevel=0`）**：读取 `styles.xml`，按 `<w:basedOn>` 建立样式继承链回溯有效 `<w:outlineLvl>`；遍历 `document.xml` 段落沿继承链解析大纲级别，原始 outline level 0~8 映射为内部 `level` 1~9；维护 `current_heading_stack`，遇新标题清理不浅于当前 level 的旧标题并计算 `parent_headings`。
+- **native（docx）**：读取 `styles.xml`，按 `<w:basedOn>` 建立样式继承链回溯有效 `<w:outlineLvl>`；遍历 `document.xml` 段落沿继承链解析大纲级别，原始 outline level 0~8 映射为内部 `level` 1~9；维护 `current_heading_stack`，遇新标题清理不浅于当前 level 的旧标题并计算 `parent_headings`。
 - **mineru**：按条目的 `text_level > 0` 或 `label` 为 `title` / `section_header` 检测标题，用 heading_stack 维护父链。
 - **docling**：`label="title"` → level 1，`label="section_header"` → `item.level + 1`（默认 level 2），同样维护父链。
 
@@ -315,9 +315,14 @@ P chunker 直接读取 `.blocks.jsonl`，每个 content 行作为后续 TableRow
 | `.tables.json`（隐式） | 由 `blocks_path` 推导（`<base>.blocks.jsonl` → `<base>.tables.json`） | HeaderRecovery（§3.3.3）的表头数据源；缺失时静默跳过表头注入 |
 | `chunk_token_size` | `chunk_options.chunk_token_size` / `CHUNK_P_SIZE` | 目标硬上限 N，默认 `2000` |
 | `chunk_overlap_token_size` | `CHUNK_P_OVERLAP_SIZE` / `chunk_overlap_token_size` | 同一内容行内长正文 fallback 与表格桥接预算的上限，默认 `100` |
+| `drop_references` | hint `drop_references`（别名 `drop_rf`）/ `CHUNK_P_DROP_REFERENCES` | 是否在分块前丢弃匹配的参考文献块，默认 `False`；**入队冻结进 `chunk_options`，并记录到 `doc_status.metadata['chunk_opts']`**（开启时记为 `drop_rf=True`） |
+| `references_tail_n` | `CHUNK_P_REFERENCES_TAIL_N` | `0` 表示扫描全部内容块（默认）；正数表示只扫描文末最后 N 个内容块；**运行时实时读 env，不快照、不进 metadata** |
+| `references_headings` | `CHUNK_P_REFERENCES_HEADINGS`（竖线分隔） | 参考文献标题前缀，默认 `References\|Bibliography\|参考文献`；英文按单词边界、大小写不敏感匹配，`参考文献` 按前缀匹配；**运行时实时读 env，不快照、不进 metadata** |
 | `tokenizer` | LightRAG 已解析好的 tokenizer | 所有 token 计数与文本 overlap 截取的基准 |
 
 P 策略**不接收** `split_by_character` / `split_by_character_only`，因为正常路径由标题和段落结构驱动。
+
+**丢弃参考文献（`drop_references`）**：开启后，在 HeadingBlocks 之后、TableRowSplit/AnchorSplit/LevelMerge 之前，对从 `blocks.jsonl` 读出的有序内容块做过滤——`references_tail_n=0` 时扫描全部内容块，正数时只扫描文末最后 N 个内容块；扫描范围内 `heading` 命中参考文献前缀的块会被丢弃。只有开关 `drop_references` 可经 per-file hint 设定并冻结进快照/metadata；`references_tail_n` / `references_headings` 是纯 env 调参，由 chunker 每次运行时实时读取当前环境变量——改 env 即可即时影响已入队文档的重跑。若丢弃后没有任何含内容的块剩余，则放弃丢弃并告警，避免产出空文档。
 
 ### 4.2 `.blocks.jsonl` 约定
 
@@ -330,7 +335,7 @@ P 策略只处理 `type == "content"` 行。每个内容行通常包含：
 - `positions`：原始段落定位（用于追溯）。
 - `blockid`：该内容行的稳定标识（可选）。存在时会被带入最终 chunk 的 `sidecar` 字段，供多模态管线与文档删除按源 block 回溯；缺失时（raw / legacy 输入）输出不含 `sidecar`。
 
-parser 保证「一条标题下的正文作为一个基础块」（native 经 `fixlevel=0` 模式，mineru / docling 经各自 IR builder），不在解析阶段做 token 阈值拆分。表格保持完整插入到 `content` 中。
+parser 保证「一条标题下的正文作为一个基础块」（native 经按标题的结构化切分，mineru / docling 经各自 IR builder），不在解析阶段做 token 阈值拆分。表格保持完整插入到 `content` 中。
 
 ### 4.3 输出
 
@@ -376,7 +381,7 @@ parser 保证「一条标题下的正文作为一个基础块」（native 经 `f
 | `CHUNK_P_OVERLAP_SIZE` | 未设（沿用 `CHUNK_OVERLAP_SIZE`） | P 专用 overlap；只影响同一内容行内长正文 fallback 和表格桥接预算，**不**让表格行级切片互相重叠 |
 | `CHUNK_OVERLAP_SIZE` / `LightRAG(chunk_overlap_token_size=…)` | `100` | 未设 P 专用 overlap 时的全局兜底 |
 
-配置语法、优先级链、`addon_params["chunker"]` 运行时改值等详见 [FileProcessingConfiguration-zh.md](FileProcessingConfiguration-zh.md) §3。
+配置语法、优先级链、`addon_params["chunker"]` 运行时改值等详见 [FileProcessingPipeline-zh.md](./FileProcessingPipeline-zh.md)。
 
 `P` 是与引擎正交的 chunking 选项（`后缀:引擎-选项`），可与任何产出 sidecar 的引擎组合。启用 P 的典型 `LIGHTRAG_PARSER` 写法：
 

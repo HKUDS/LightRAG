@@ -937,11 +937,11 @@ set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
 REPO_ROOT="{case_dir}"
 
-{case['prompt_choice']}
+{case["prompt_choice"]}
 prompt_with_default() {{ printf '%s' "$2"; }}
 prompt_until_valid() {{ printf '%s' "$2"; }}
 prompt_secret_with_default() {{ printf '%s' "$2"; }}
-{case['prompt_secret']}
+{case["prompt_secret"]}
 confirm_default_no() {{
   case "$1" in
     "Run embedding model locally via Docker (vLLM)?") return 1 ;;

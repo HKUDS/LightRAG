@@ -23,7 +23,17 @@ from lightrag.constants import (
     FULL_DOCS_FORMAT_PENDING_PARSE,
     PARSED_DIR_NAME,
 )
+from lightrag.parser.base import ParseContext
+from lightrag.parser.registry import get_parser
 from lightrag.utils import Tokenizer, TokenizerInterface, compute_args_hash
+
+
+async def _parse_via_registry(rag, engine, doc_id, file_path, content_data):
+    """Drive a parser the way the pipeline worker does (registry dispatch)."""
+    result = await get_parser(engine).parse(
+        ParseContext(rag, doc_id, file_path, content_data)
+    )
+    return result.to_dict()
 
 
 def _block(content, *, heading="", level=0, parent=None, uuid="p1"):
@@ -59,6 +69,12 @@ class _MiniDocStatus:
         return None
 
     async def upsert(self, data):
+        return None
+
+    async def update_doc_status_fields(self, doc_id, fields, *, missing_ok=False):
+        # ``_persist_parsed_full_docs`` syncs content_hash through the targeted
+        # field update; ``missing_ok`` makes an absent row a no-op, which is what
+        # these parser tests want (they assert on full_docs only).
         return None
 
 
@@ -109,7 +125,7 @@ def test_native_lightrag_path_produces_stable_merged_text(tmp_path, monkeypatch)
             ),
         ]
 
-        def _stub_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
+        def _stub_extract(file_path, drawing_context=None, **kwargs):
             return [dict(b) for b in stable_blocks]
 
         monkeypatch.setattr(
@@ -122,8 +138,9 @@ def test_native_lightrag_path_produces_stable_merged_text(tmp_path, monkeypatch)
         # ---- First parse ----
         # parse_native archives the source after writing, so re-create it
         # before the second parse for a fair comparison.
-        result1 = await LightRAG.parse_native(
+        result1 = await _parse_via_registry(
             rag,
+            "native",
             "doc-stable",
             str(source_path),
             {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
@@ -143,8 +160,9 @@ def test_native_lightrag_path_produces_stable_merged_text(tmp_path, monkeypatch)
 
             shutil.rmtree(parsed_artifact_dir)
 
-        result2 = await LightRAG.parse_native(
+        result2 = await _parse_via_registry(
             rag,
+            "native",
             "doc-stable",
             str(source_path),
             {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
@@ -189,7 +207,7 @@ def test_native_lightrag_path_writes_blocks_jsonl_and_skips_meta_on_load(
         source_path = input_dir / "skipmeta.docx"
         source_path.write_bytes(b"fake")
 
-        def _stub_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
+        def _stub_extract(file_path, drawing_context=None, **kwargs):
             return [_block("the body")]
 
         monkeypatch.setattr(
@@ -198,8 +216,9 @@ def test_native_lightrag_path_writes_blocks_jsonl_and_skips_meta_on_load(
         )
 
         rag = _MiniRag(tmp_path / "work")
-        result = await LightRAG.parse_native(
+        result = await _parse_via_registry(
             rag,
+            "native",
             "doc-skip",
             str(source_path),
             {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
@@ -230,7 +249,7 @@ def test_native_lightrag_path_leaves_unknown_table_caption_empty(tmp_path, monke
         source_path = input_dir / "table.docx"
         source_path.write_bytes(b"fake")
 
-        def _stub_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
+        def _stub_extract(file_path, drawing_context=None, **kwargs):
             return [_block('before\n<table>[["A"]]</table>\nafter')]
 
         monkeypatch.setattr(
@@ -239,8 +258,9 @@ def test_native_lightrag_path_leaves_unknown_table_caption_empty(tmp_path, monke
         )
 
         rag = _MiniRag(tmp_path / "work")
-        result = await LightRAG.parse_native(
+        result = await _parse_via_registry(
             rag,
+            "native",
             "doc-table",
             str(source_path),
             {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
@@ -291,7 +311,7 @@ def test_analyze_entrypoint_backfills_surrounding_for_all_sidecars(
         source_path = input_dir / "all_modalities.docx"
         source_path.write_bytes(b"fake")
 
-        def _stub_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
+        def _stub_extract(file_path, drawing_context=None, **kwargs):
             assert drawing_context is not None
             assert drawing_context.export_dir_path is not None
             (drawing_context.export_dir_path / "pic.png").write_bytes(b"PNG")
@@ -311,8 +331,9 @@ def test_analyze_entrypoint_backfills_surrounding_for_all_sidecars(
         )
 
         rag = _MiniRag(tmp_path / "work")
-        result = await LightRAG.parse_native(
+        result = await _parse_via_registry(
             rag,
+            "native",
             "doc-mm",
             str(source_path),
             {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
@@ -366,7 +387,7 @@ def test_native_lightrag_path_writes_image_assets_to_blocks_assets_dir(
         source_path = input_dir / "with_pics.docx"
         source_path.write_bytes(b"fake")
 
-        def _stub_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
+        def _stub_extract(file_path, drawing_context=None, **kwargs):
             # The adapter already created the asset dir before calling us;
             # write the fake image bytes there as a side-effect, then return
             # a block whose content references that asset via <drawing .../>.
@@ -390,8 +411,9 @@ def test_native_lightrag_path_writes_image_assets_to_blocks_assets_dir(
         )
 
         rag = _MiniRag(tmp_path / "work")
-        result = await LightRAG.parse_native(
+        result = await _parse_via_registry(
             rag,
+            "native",
             "doc-pic",
             str(source_path),
             {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},

@@ -46,7 +46,7 @@ from lightrag.sidecar.placeholders import (
     table_body_for_rows,
 )
 from lightrag.table_markup import header_grid_to_thead_html
-from lightrag.utils import logger
+from lightrag.utils import logger, strip_control_characters
 
 
 # ---------------------------------------------------------------------------
@@ -87,12 +87,12 @@ def write_sidecar(
         block_drawing_path_style: How ``<drawing path="...">`` in
             ``blocks.jsonl`` resolves the asset path. ``"with_prefix"``
             (default) renders ``<base>.blocks.assets/<filename>`` — matches
-            the path stored in ``drawings.json``. ``"basename_only"``
-            renders just ``<filename>``; legacy native docx convention
-            (downstream consumers read the file path from ``drawings.json``,
-            not from this attribute, so the basename-only form is purely
-            cosmetic but kept for byte-equivalence with the original
-            adapter).
+            the path stored in ``drawings.json`` and the spec contract
+            (a non-empty ``path`` always points inside ``*.blocks.assets/``).
+            ``"basename_only"`` renders just ``<filename>``; a legacy
+            convention no in-tree adapter uses anymore — the parameter is
+            kept only for public-API compatibility, and new callers should
+            not pass it.
 
     Returns:
         Dict shaped like the pipeline's existing ``parsed_data`` payload:
@@ -188,7 +188,13 @@ def write_sidecar(
             block_drawing_path_style=block_drawing_path_style,
         )
 
-        rendered = rendered.strip()
+        # Strip C0 control/separator chars (incl. \x1c-\x1f FS/GS/RS/US) before
+        # whitespace-trimming so they cannot survive into blockid, blocks.jsonl
+        # content (the chunk source), merged_text/full_docs content, or
+        # document_hash. A block that is only control chars + whitespace then
+        # collapses to empty and is dropped below. No-op for clean input, so
+        # existing blockids/hashes are preserved.
+        rendered = strip_control_characters(rendered).strip()
         if not rendered:
             # Drop empty blocks entirely — neither blocks.jsonl entry nor
             # sidecar items (the items were tied to the placeholder; if it
@@ -276,6 +282,8 @@ def write_sidecar(
         }
         if block.table_header:
             row["table_header"] = block.table_header
+        if block.is_title_block:
+            row["is_title_block"] = True
         blocks_lines.append(json.dumps(row, ensure_ascii=False))
         merged_parts.append(rendered)
 
@@ -302,13 +310,22 @@ def write_sidecar(
         "equation_file": bool(equations),
         "drawing_file": bool(drawings),
         "asset_dir": asset_dir_present,
-        "split_option": dict(ir.split_option or {}),
-        "blocks": len(blocks_lines),
-        "doc_id": doc_id,
-        "parse_engine": engine,
-        "parse_time": parse_time,
-        "doc_title": ir.doc_title,
     }
+    # Engine-recorded metadata (e.g. engine_version); omitted entirely when the
+    # engine recorded nothing so the common native/markdown case doesn't carry a
+    # dead ``{}`` field. Inserted here to keep the meta key order stable.
+    split_option = dict(ir.split_option or {})
+    if split_option:
+        meta["split_option"] = split_option
+    meta.update(
+        {
+            "blocks": len(blocks_lines),
+            "doc_id": doc_id,
+            "parse_engine": engine,
+            "parse_time": parse_time,
+            "doc_title": ir.doc_title,
+        }
+    )
     if ir.bbox_attributes is not None:
         meta["bbox_attributes"] = dict(ir.bbox_attributes)
 
@@ -399,11 +416,20 @@ def _materialize_assets(
     for spec in assets:
         target_name = _allocate_unique_name(spec.suggested_name, used_names)
         target_path = assets_dir / target_name
+        try:
+            target_path.resolve().relative_to(assets_dir.resolve())
+        except ValueError:
+            logger.warning(
+                "[sidecar] unsafe asset target for ref=%s (%s); skipping",
+                spec.ref,
+                spec.suggested_name,
+            )
+            continue
         if isinstance(spec.source, (str, Path)):
             src_path = Path(spec.source)
             if not src_path.exists():
                 logger.warning(
-                    "[sidecar] asset source missing for ref=%s (%s); " "skipping copy",
+                    "[sidecar] asset source missing for ref=%s (%s); skipping copy",
                     spec.ref,
                     src_path,
                 )
@@ -418,7 +444,7 @@ def _materialize_assets(
             # missing.
             if not target_path.exists():
                 logger.warning(
-                    "[sidecar] asset ref=%s declared in place but %s " "is absent",
+                    "[sidecar] asset ref=%s declared in place but %s is absent",
                     spec.ref,
                     target_path,
                 )
@@ -438,6 +464,7 @@ def _materialize_assets(
 
 def _allocate_unique_name(suggested: str, used: set[str]) -> str:
     """Make ``suggested`` unique within ``used``: ``foo.png`` → ``foo-2.png``."""
+    suggested = _safe_asset_filename(suggested)
     if suggested not in used:
         return suggested
     stem = Path(suggested).stem
@@ -448,6 +475,13 @@ def _allocate_unique_name(suggested: str, used: set[str]) -> str:
         if cand not in used:
             return cand
         n += 1
+
+
+def _safe_asset_filename(suggested: str) -> str:
+    """Collapse parser-suggested asset names to a safe filename."""
+    name = Path(str(suggested).replace("\\", "/")).name
+    name = "".join(c for c in name.strip() if ord(c) >= 32 and c != "\x7f").strip(".")
+    return name or "asset"
 
 
 def _render_block_content(
@@ -488,17 +522,13 @@ def _render_block_content(
         if drawing is None:
             return ""
         im_id = drawing_id_by_key.get(key, "")
-        if drawing.path_override is not None:
-            # Verbatim external/linked reference — pass through unchanged.
-            path = drawing.path_override
+        filename = asset_paths.get(drawing.asset_ref, "")
+        if not filename:
+            path = ""
+        elif block_drawing_path_style == "basename_only":
+            path = filename
         else:
-            filename = asset_paths.get(drawing.asset_ref, "")
-            if not filename:
-                path = ""
-            elif block_drawing_path_style == "basename_only":
-                path = filename
-            else:
-                path = f"{asset_prefix}{filename}"
+            path = f"{asset_prefix}{filename}"
         return render_drawing_tag(
             im_id,
             drawing.fmt,
@@ -592,11 +622,8 @@ def _drawing_item_dict(
     asset_paths: dict[str, str],
     asset_prefix: str,
 ) -> dict[str, Any]:
-    if drawing.path_override is not None:
-        path = drawing.path_override
-    else:
-        filename = asset_paths.get(drawing.asset_ref, "")
-        path = f"{asset_prefix}{filename}" if filename else ""
+    filename = asset_paths.get(drawing.asset_ref, "")
+    path = f"{asset_prefix}{filename}" if filename else ""
     item: dict[str, Any] = {
         "id": drawing_id,
         "blockid": blockid,

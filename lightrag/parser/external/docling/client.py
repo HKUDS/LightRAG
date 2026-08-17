@@ -15,6 +15,19 @@ Pipeline constants (``pipeline``, ``target_type``, ``to_formats``,
 ``image_export_mode``) are intentionally **not** env-driven — the sidecar
 flow depends on them — and are recorded inside the manifest so a future
 code change automatically invalidates pre-existing caches.
+
+Some docling-serve deployments return a JSON ``ConvertDocumentResponse``
+envelope from the result endpoint even when the client requests a zip. When
+that happens, the client materializes the nested ``document.json_content``
+(the actual ``DoclingDocument``) as the main ``<stem>.json`` and writes
+``document.md_content`` beside it as ``<stem>.md``. The response envelope and
+its ``ExportDocumentResponse`` wrapper are not treated as document content. A
+JSON envelope whose own conversion ``status`` is not ``success`` is rejected
+rather than materialized, so a partial conversion never becomes a cache hit.
+Because the JSON path cannot deliver the ``artifacts/`` files that
+``image_export_mode=referenced`` produces, a ``json_content`` that references
+external images (rather than embedding them as ``data:`` URIs) is rejected too,
+so silent image loss can't hide behind a success manifest.
 """
 
 from __future__ import annotations
@@ -23,15 +36,21 @@ import asyncio
 import json
 import os
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from lightrag.parser.external._common import (
+    download_deadline_seconds,
+    download_max_bytes,
+    download_timeout,
     env_bool,
     env_int,
     raise_for_status_with_detail,
+    stream_capped_get,
 )
-from lightrag.parser.external._zip import safe_extract_zip
+from lightrag.parser.external._zip import result_bundle_limits, safe_extract_zip
 from lightrag.parser.external.docling.cache import (
     compute_options_signature,
     current_endpoint_signature,
@@ -88,14 +107,19 @@ class DoclingRawClient:
     the new values without holding a stale instance.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, overrides: "Mapping[str, Any] | None" = None) -> None:
+        self._overrides = overrides or {}
         self.endpoint = current_endpoint_signature()
         if not self.endpoint:
             raise ValueError("DOCLING_ENDPOINT is required")
         self.engine_version = os.getenv("DOCLING_ENGINE_VERSION", "").strip()
 
         self.do_ocr = env_bool("DOCLING_DO_OCR", True)
-        self.force_ocr = env_bool("DOCLING_FORCE_OCR", True)
+        self.force_ocr = (
+            bool(self._overrides["force_ocr"])
+            if "force_ocr" in self._overrides
+            else env_bool("DOCLING_FORCE_OCR", True)
+        )
         self.ocr_engine = os.getenv("DOCLING_OCR_ENGINE", "auto").strip() or "auto"
         self.ocr_preset = os.getenv("DOCLING_OCR_PRESET", "auto").strip() or "auto"
         self.ocr_lang_raw = os.getenv("DOCLING_OCR_LANG", "").strip()
@@ -151,16 +175,16 @@ class DoclingRawClient:
                 client, source_file_path, filename=effective_filename
             )
             await self._poll_until_done(client, task_id)
-            payload = await self._download_zip_bytes(client, task_id)
-
-        safe_extract_zip(payload, raw_dir)
+            await self._download_result_into(
+                client, task_id, raw_dir, effective_filename
+            )
         # Defensive: confirm the main JSON exists before anyone reads the
         # bundle. Look it up by the *uploaded* filename's stem — that's
         # what docling-serve uses to name the JSON inside the zip.
         select_main_json(raw_dir, Path(effective_filename))
 
         options_signature = compute_options_signature(
-            tunable_env=snapshot_tunable_env(),
+            tunable_env=snapshot_tunable_env(self._overrides),
             fixed_constants=FIXED_CONSTANTS,
         )
         return build_and_write_docling_manifest(
@@ -235,7 +259,8 @@ class DoclingRawClient:
         client: "httpx.AsyncClient",
         task_id: str,
     ) -> None:
-        url = f"{self.endpoint}{POLL_PATH.format(task_id=task_id)}"
+        encoded_task_id = quote(task_id, safe="")
+        url = f"{self.endpoint}{POLL_PATH.format(task_id=encoded_task_id)}"
         params = {"wait": self.poll_wait_seconds}
         for _ in range(self.max_poll_attempts):
             iteration_started = time.monotonic()
@@ -271,21 +296,56 @@ class DoclingRawClient:
 
         raise TimeoutError(f"Docling task {task_id} polling timeout")
 
-    async def _download_zip_bytes(
+    async def _download_result_into(
         self,
         client: "httpx.AsyncClient",
         task_id: str,
-    ) -> bytes:
-        url = f"{self.endpoint}{RESULT_PATH.format(task_id=task_id)}"
-        resp = await client.get(url)
-        raise_for_status_with_detail(resp, f"Docling result {task_id} download")
+        raw_dir: Path,
+        upload_filename: str,
+    ) -> None:
+        encoded_task_id = quote(task_id, safe="")
+        url = f"{self.endpoint}{RESULT_PATH.format(task_id=encoded_task_id)}"
+        max_entries, max_total_bytes = result_bundle_limits()
+        # Stream-capped, not client.get(): a plain get() fully buffers the
+        # response before returning regardless of size, so a compromised or
+        # misbehaving docling-serve deployment could hold an arbitrarily
+        # large body in memory before safe_extract_zip's checks below ever
+        # run. Streaming lets an oversized response be rejected mid-
+        # download. Wrapped in a wall-clock deadline too — the per-read
+        # httpx.Timeout(120.0, ...) set around this client only bounds a
+        # single socket operation, so a peer trickling one byte per
+        # interval can reset it indefinitely; the deadline bounds the
+        # whole download regardless of how it stalls.
+        try:
+            async with download_timeout(download_deadline_seconds()):
+                resp, body = await stream_capped_get(
+                    client,
+                    url,
+                    max_bytes=download_max_bytes(),
+                    operation=f"Docling result {task_id} download",
+                )
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError(
+                f"Docling result {task_id} download exceeded its wall-clock deadline"
+            ) from exc
+        raise_for_status_with_detail(
+            resp, f"Docling result {task_id} download", body=body
+        )
         ctype = resp.headers.get("content-type", "")
         if "zip" not in ctype.lower():
+            if _is_json_result(body, ctype):
+                _materialize_json_result(body, task_id, raw_dir, upload_filename)
+                return
             raise RuntimeError(
                 f"Docling result {task_id} returned non-zip content-type "
-                f"{ctype!r}; body prefix={resp.text[:400]!r}"
+                f"{ctype!r}; body prefix={body[:400]!r}"
             )
-        return resp.content
+        safe_extract_zip(
+            body,
+            raw_dir,
+            max_entries=max_entries,
+            max_total_bytes=max_total_bytes,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +371,139 @@ def _parse_ocr_lang(raw: str) -> list[str]:
     if isinstance(parsed, list):
         return [str(x).strip() for x in parsed if str(x).strip()]
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _is_json_result(body: bytes, content_type: str) -> bool:
+    ctype = content_type.lower()
+    if "json" in ctype:
+        return True
+    return body.lstrip().startswith((b"{", b"["))
+
+
+def _result_envelope_status(payload: Any) -> str:
+    """Conversion status carried by a JSON result envelope, lower-cased.
+
+    Mirrors ``_poll_until_done``'s field lookup (``task_status`` first, then
+    ``status``). Returns ``""`` when neither is present — e.g. a bare
+    ``DoclingDocument`` payload — so the caller can skip the status gate.
+    """
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("task_status") or payload.get("status") or "").lower()
+
+
+def _materialize_json_result(
+    body: bytes, task_id: str, raw_dir: Path, upload_filename: str
+) -> None:
+    try:
+        payload = json.loads(body) if body else {}
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "Docling result returned JSON content-type but the body is not valid JSON"
+        ) from exc
+
+    # A JSON ``ConvertDocumentResponse`` envelope carries its own conversion
+    # ``status``. ``_poll_until_done`` only checked the async *task* status, and
+    # the manifest is written after this returns — so honouring the envelope
+    # status here is what stops a ``partial_success`` / ``failure`` result from
+    # being cached as a successful bundle. (Bare DoclingDocument payloads have
+    # no status field; those skip the check.)
+    status = _result_envelope_status(payload)
+    if status and status not in SUCCESS_STATES:
+        raise RuntimeError(_format_failure(task_id, status, payload))
+
+    document, markdown = _extract_document_payload(payload)
+
+    # ``image_export_mode=referenced`` makes docling reference picture bytes by
+    # relative ``artifacts/...`` path. Those files ship inside the zip, never
+    # inside the JSON envelope — so the JSON path, which writes only
+    # ``<stem>.json`` (+ optional markdown), cannot deliver them. The IR builder
+    # would then silently drop every such picture yet the bundle would still be
+    # cached as a success. Fail loudly instead so image loss can't hide behind a
+    # cache hit. Embedded (``data:``) and remote (``http(s)://``) images carry
+    # their own bytes and are unaffected.
+    referenced = _referenced_image_uris(document)
+    if referenced:
+        sample = ", ".join(referenced[:5])
+        raise RuntimeError(
+            f"Docling JSON result references external image artifacts the JSON "
+            f"result path cannot deliver (only <stem>.json/<stem>.md are "
+            f"written): {sample}. Configure docling-serve to return a zip bundle "
+            f"or embed images as data URIs for this deployment."
+        )
+
+    stem = Path(upload_filename).stem
+    (raw_dir / f"{stem}.json").write_text(
+        json.dumps(document, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    if markdown is not None:
+        (raw_dir / f"{stem}.md").write_text(str(markdown), encoding="utf-8")
+
+
+def _extract_document_payload(payload: Any) -> tuple[dict[str, Any], Any | None]:
+    if not isinstance(payload, dict):
+        raise RuntimeError("Docling JSON result is not an object")
+
+    nested = payload.get("document")
+    if isinstance(nested, dict):
+        # ``ConvertDocumentResponse.document`` is an ``ExportDocumentResponse``
+        # wrapper (``filename`` / ``md_content`` / ``json_content`` / ...); the
+        # actual ``DoclingDocument`` lives under ``json_content``. Storing the
+        # wrapper as ``<stem>.json`` would leave the root without
+        # ``body`` / ``texts`` / ``tables``, and the IR builder would produce
+        # zero blocks. Extract ``json_content`` and keep ``md_content`` as the
+        # markdown twin.
+        json_content = nested.get("json_content")
+        if isinstance(json_content, dict):
+            return json_content, nested.get("md_content")
+        # Defensive: some deployments may place the ``DoclingDocument`` directly
+        # under ``document`` with no ``json_content`` wrapper.
+        if _looks_like_docling_document(nested):
+            return nested, nested.get("md_content")
+        keys = ", ".join(sorted(str(k) for k in nested)[:20])
+        raise RuntimeError(
+            f"Docling result 'document' has no DoclingDocument (json_content); "
+            f"keys=[{keys}]"
+        )
+
+    # No envelope: the endpoint returned the DoclingDocument at the top level.
+    if _looks_like_docling_document(payload):
+        return payload, payload.get("md_content")
+
+    keys = ", ".join(sorted(str(k) for k in payload.keys())[:20])
+    raise RuntimeError(
+        f"Docling JSON result missing document object; top-level keys=[{keys}]"
+    )
+
+
+def _looks_like_docling_document(payload: dict[str, Any]) -> bool:
+    return any(key in payload for key in ("schema_name", "body", "texts", "tables"))
+
+
+def _referenced_image_uris(document: dict[str, Any]) -> list[str]:
+    """Relative picture image URIs in a ``DoclingDocument`` — i.e. neither
+    ``data:`` nor ``http(s)://``. These name companion ``artifacts/`` files the
+    JSON result path never writes, so their presence means images would be lost.
+
+    Mirrors the IR builder's URI classification (``_build_ir_drawing``): only a
+    non-empty, non-data, non-remote ``image.uri`` needs a local file.
+    """
+    pictures = document.get("pictures")
+    if not isinstance(pictures, list):
+        return []
+    referenced: list[str] = []
+    for pic in pictures:
+        if not isinstance(pic, dict):
+            continue
+        image = pic.get("image")
+        if not isinstance(image, dict):
+            continue
+        uri = str(image.get("uri") or "")
+        if not uri or uri.startswith(("data:", "http://", "https://")):
+            continue
+        referenced.append(uri)
+    return referenced
 
 
 def _format_failure(task_id: str, status: str, payload: Any) -> str:

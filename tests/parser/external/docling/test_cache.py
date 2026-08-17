@@ -161,6 +161,20 @@ def test_is_bundle_valid_options_signature_change(
     assert is_bundle_valid(raw, source_file) is False
 
 
+def test_is_bundle_valid_legacy_bundle_misses_with_overrides(
+    tmp_path: Path, source_file: Path
+) -> None:
+    # A legacy bundle predating signature recording (empty options_signature)
+    # is leniently accepted with no overrides, but a per-file override
+    # (docling(force_ocr=...)) must force a miss — we cannot prove the bundle
+    # was produced with that override, and silently reusing it would drop the
+    # user's explicit param. Mirrors MinerU, which misses on any absent sig.
+    raw = _build_valid_bundle(tmp_path, source_file, options_signature="")
+    assert is_bundle_valid(raw, source_file) is True
+    assert is_bundle_valid(raw, source_file, overrides={"force_ocr": False}) is False
+    assert is_bundle_valid(raw, source_file, overrides={"force_ocr": True}) is False
+
+
 def test_is_bundle_valid_fixed_constants_code_change(
     tmp_path: Path, source_file: Path
 ) -> None:

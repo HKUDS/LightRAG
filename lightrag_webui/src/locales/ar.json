@@ -37,7 +37,10 @@
     "cancel": "إلغاء",
     "save": "حفظ",
     "saving": "جارٍ الحفظ...",
-    "saveFailed": "فشل الحفظ"
+    "saveFailed": "فشل الحفظ",
+    "errorBoundaryTitle": "حدث خطأ ما",
+    "errorBoundaryDescription": "فشل عرض هذه اللوحة. حاول مرة أخرى أو انتقل إلى علامة تبويب أخرى.",
+    "errorBoundaryRetry": "إعادة المحاولة"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -99,7 +102,7 @@
         "error": "فشل رفع بعض الملفات"
       },
       "generalError": "فشل الرفع\n{{error}}",
-      "fileTypes": "الأنواع المدعومة: TXT، MD، MDX، DOCX، PDF، PPTX، XLSX، RTF، ODT، EPUB، HTML، HTM، TEX، JSON، XML، YAML، YML، CSV، LOG، CONF، INI، PROPERTIES، SQL، BAT، SH، C، H، CPP، HPP، PY، JAVA، JS، TS، SWIFT، GO، RB، PHP، CSS، SCSS، LESS",
+      "fileTypes": "الأنواع المدعومة: {{types}}",
       "fileUploader": {
         "singleFileLimit": "لا يمكن رفع أكثر من ملف واحد في المرة الواحدة",
         "maxFilesLimit": "لا يمكن رفع أكثر من {{count}} ملفات",
@@ -139,18 +142,18 @@
       "filters": {
         "all": "الكل",
         "completed": "مكتمل",
-        "parse": "استخراج",
-        "analyze": "تحليل",
-        "process": "معالجة",
+        "parse": "تحليل ملف",
+        "analyze": "وسائط",
+        "process": "استخراج",
         "failed": "فشل"
       },
       "status": {
         "all": "الكل",
         "completed": "مكتمل",
         "preprocessed": "مُعالج مسبقًا",
-        "parsing": "جارٍ التحليل الأولي",
-        "analyzing": "جارٍ التحليل",
-        "processing": "قيد المعالجة",
+        "parsing": "تحليل ملف",
+        "analyzing": "وسائط",
+        "processing": "استخراج",
         "pending": "معلق",
         "failed": "فشل"
       },
@@ -177,7 +180,6 @@
     "pipelineStatus": {
       "title": "حالة خط الأنابيب",
       "busy": "خط الأنابيب مشغول",
-      "requestPending": "طلب معلق",
       "cancellationRequested": "طلب الإلغاء",
       "jobName": "اسم المهمة",
       "startTime": "وقت البدء",
@@ -201,6 +203,8 @@
   },
   "graphPanel": {
     "dataIsTruncated": "تم اقتصار بيانات الرسم البياني على الحد الأقصى للعقد",
+    "fetchRetriesExhausted": "فشل تحميل بيانات الرسم البياني. استخدم التحديث للمحاولة مرة أخرى.",
+    "graphBuildFailed": "فشل عرض بيانات الرسم البياني. استخدم التحديث لإعادة المحاولة.",
     "statusDialog": {
       "title": "إعدادات خادم LightRAG",
       "description": "عرض حالة النظام الحالية ومعلومات الاتصال"
@@ -249,13 +253,14 @@
         "showEdgeLabel": "إظهار تسمية الحافة",
         "hideUnselectedEdges": "إخفاء الحواف غير المحددة",
         "edgeEvents": "أحداث الحافة",
+        "edgeEventsDisabledHint": "معطّل للرسوم البيانية التي تحتوي على أكثر من {{count}} حافة",
         "maxQueryDepth": "أقصى عمق للاستعلام",
         "maxNodes": "الحد الأقصى للعقد",
-        "maxLayoutIterations": "أقصى تكرارات التخطيط",
         "resetToDefault": "إعادة التعيين إلى الافتراضي",
         "edgeSizeRange": "نطاق حجم الحافة",
         "depth": "D",
-        "max": "Max",
+        "node": "عقدة",
+        "edge": "حافة",
         "degree": "الدرجة",
         "apiKey": "مفتاح واجهة برمجة التطبيقات",
         "enterYourAPIkey": "أدخل مفتاح واجهة برمجة التطبيقات الخاص بك",
@@ -327,6 +332,7 @@
       "editPropertyDescription": "قم بتحرير قيمة الخاصية في منطقة النص أدناه.",
       "errors": {
         "duplicateName": "اسم العقدة موجود بالفعل",
+        "invalidEntityName": "أدخل اسم عقدة صالحًا",
         "updateFailed": "فشل تحديث العقدة",
         "tryAgainLater": "يرجى المحاولة مرة أخرى لاحقًا",
         "updateSuccessButMergeFailed": "تم تحديث الخصائص، لكن الدمج فشل: {{error}}",
@@ -407,10 +413,21 @@
       "copyManualInstruction": "يرجى تحديد ونسخ النص يدوياً",
       "thinking": "جاري التفكير...",
       "thinkingTime": "وقت التفكير {{time}} ثانية",
-      "thinkingInProgress": "التفكير قيد التقدم..."
+      "thinkingInProgress": "التفكير قيد التقدم...",
+      "responseTime": "زمن الاستجابة {{time}}ث",
+      "firstTokenTime": "أول رمز {{time}}ث",
+      "progress": {
+        "extracting_keywords": "استخراج الكلمات المفتاحية...",
+        "retrieving_entities": "استرجاع الكيانات...",
+        "retrieving_relations": "استرجاع العلاقات...",
+        "retrieving_chunks": "استرجاع أجزاء النص...",
+        "reranking": "إعادة ترتيب النتائج...",
+        "generating_response": "توليد الرد..."
+      }
     },
     "retrieval": {
       "startPrompt": "ابدأ الاسترجاع بكتابة استفسارك أدناه",
+      "scrollToBottom": "الانتقال إلى أحدث رسالة",
       "clear": "مسح",
       "send": "إرسال",
       "stop": "إيقاف",
@@ -425,6 +442,7 @@
       "parametersDescription": "تكوين معلمات الاستعلام الخاص بك",
       "queryMode": "وضع الاستعلام",
       "queryModeTooltip": "حدد استراتيجية الاسترجاع:\n• ساذج: استرجاع متجهي تقليدي لقطع النص\n• محلي: يركز على استرجاع الكيانات\n• عالمي: يركز على استرجاع العلاقات\n• مختلط: محلي+عالمي\n• مزيج: محلي+عالمي+ساذج\n• تجاوز: تخطي الاسترجاع، إرسال تاريخ المحادثة والسؤال الحالي إلى LLM",
+      "queryModeWarning": "قد يقلل من جودة الاسترجاع",
       "queryModeOptions": {
         "naive": "ساذج",
         "local": "محلي",

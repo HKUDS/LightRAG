@@ -37,7 +37,10 @@
     "cancel": "취소",
     "save": "저장",
     "saving": "저장 중...",
-    "saveFailed": "저장 실패"
+    "saveFailed": "저장 실패",
+    "errorBoundaryTitle": "문제가 발생했습니다",
+    "errorBoundaryDescription": "이 패널을 표시하지 못했습니다. 다시 시도하거나 다른 탭으로 전환하세요.",
+    "errorBoundaryRetry": "다시 시도"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -99,7 +102,7 @@
         "error": "일부 파일 업로드 실패"
       },
       "generalError": "업로드 실패\n{{error}}",
-      "fileTypes": "지원되는 유형: TXT, MD, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, H, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "지원되는 유형: {{types}}",
       "fileUploader": {
         "singleFileLimit": "한 번에 1개의 파일만 업로드할 수 있습니다",
         "maxFilesLimit": "{{count}}개 이상의 파일은 업로드할 수 없습니다",
@@ -139,9 +142,9 @@
       "filters": {
         "all": "전체",
         "completed": "완료",
-        "parse": "추출",
-        "analyze": "분석",
-        "process": "처리",
+        "parse": "파싱 중",
+        "analyze": "분석 중",
+        "process": "처리 중",
         "failed": "실패"
       },
       "status": {
@@ -177,7 +180,6 @@
     "pipelineStatus": {
       "title": "파이프라인 상태",
       "busy": "파이프라인 작업 중",
-      "requestPending": "요청 대기 중",
       "cancellationRequested": "취소 요청됨",
       "jobName": "작업 이름",
       "startTime": "시작 시간",
@@ -201,6 +203,8 @@
   },
   "graphPanel": {
     "dataIsTruncated": "그래프 데이터가 최대 노드 수로 제한되었습니다",
+    "fetchRetriesExhausted": "그래프 데이터를 불러오지 못했습니다. 새로고침하여 다시 시도하세요.",
+    "graphBuildFailed": "그래프 데이터를 렌더링하지 못했습니다. 새로고침하여 다시 시도하세요.",
     "statusDialog": {
       "title": "LightRAG 서버 설정",
       "description": "현재 시스템 상태 및 연결 정보 보기"
@@ -249,13 +253,14 @@
         "showEdgeLabel": "엣지 레이블 표시",
         "hideUnselectedEdges": "선택되지 않은 엣지 숨기기",
         "edgeEvents": "엣지 이벤트",
+        "edgeEventsDisabledHint": "엣지가 {{count}}개를 초과하는 그래프에서는 비활성화됩니다",
         "maxQueryDepth": "최대 쿼리 깊이",
         "maxNodes": "최대 노드",
-        "maxLayoutIterations": "최대 레이아웃 반복",
         "resetToDefault": "기본값으로 재설정",
         "edgeSizeRange": "엣지 크기 범위",
         "depth": "D",
-        "max": "최대",
+        "node": "노드",
+        "edge": "엣지",
         "degree": "차수",
         "apiKey": "API 키",
         "enterYourAPIkey": "API 키를 입력하세요",
@@ -327,6 +332,7 @@
       "editPropertyDescription": "아래 텍스트 영역에서 속성 값을 수정하세요.",
       "errors": {
         "duplicateName": "노드 이름이 이미 존재합니다",
+        "invalidEntityName": "올바른 노드 이름을 입력하세요",
         "updateFailed": "노드 업데이트 실패",
         "tryAgainLater": "나중에 다시 시도해주세요",
         "updateSuccessButMergeFailed": "속성이 업데이트되었으나 병합 실패: {{error}}",
@@ -407,10 +413,21 @@
       "copyManualInstruction": "텍스트를 직접 선택하여 복사하세요",
       "thinking": "생각 중...",
       "thinkingTime": "생각 소요 시간 {{time}}초",
-      "thinkingInProgress": "생각 진행 중..."
+      "thinkingInProgress": "생각 진행 중...",
+      "responseTime": "응답 시간 {{time}}초",
+      "firstTokenTime": "첫 토큰 {{time}}초",
+      "progress": {
+        "extracting_keywords": "키워드 추출 중...",
+        "retrieving_entities": "엔티티 검색 중...",
+        "retrieving_relations": "관계 검색 중...",
+        "retrieving_chunks": "텍스트 청크 검색 중...",
+        "reranking": "재랭킹 중...",
+        "generating_response": "응답 생성 중..."
+      }
     },
     "retrieval": {
       "startPrompt": "아래에 질문을 입력하여 검색을 시작하세요",
+      "scrollToBottom": "최신 메시지로 이동",
       "clear": "지우기",
       "send": "전송",
       "stop": "중지",
@@ -425,6 +442,7 @@
       "parametersDescription": "쿼리 매개변수를 구성하세요",
       "queryMode": "쿼리 모드",
       "queryModeTooltip": "검색 전략을 선택하세요:\n• Naive: 전통적인 텍스트 청크 벡터 검색\n• Local: 엔티티 검색에 집중\n• Global: 관계 검색에 집중\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: 검색 건너뛰기, 대화 기록과 현재 질문을 LLM에 전송",
+      "queryModeWarning": "검색 품질이 저하될 수 있습니다",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",

@@ -15,6 +15,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from lightrag.base import DocStatus
+
+from .fake_redis import FakeRedis
 from lightrag.namespace import NameSpace
 
 pytestmark = pytest.mark.offline
@@ -44,104 +46,11 @@ def _doc(status: str, file_path: str, content_hash: str | None = None) -> dict:
     return payload
 
 
-class _FakePipeline:
-    """Mimics redis.asyncio pipeline: commands are queued synchronously and
-    executed in batch via ``await execute()``."""
-
-    def __init__(self, store: dict[str, str]):
-        self._store = store
-        self._ops: list[tuple] = []
-
-    def get(self, key: str) -> None:
-        self._ops.append(("get", key))
-
-    def set(self, key: str, value: str) -> None:
-        self._ops.append(("set", key, value))
-
-    def exists(self, key: str) -> None:
-        self._ops.append(("exists", key))
-
-    def delete(self, key: str) -> None:
-        self._ops.append(("delete", key))
-
-    async def execute(self) -> list:
-        results = []
-        for op in self._ops:
-            kind = op[0]
-            if kind == "get":
-                results.append(self._store.get(op[1]))
-            elif kind == "set":
-                self._store[op[1]] = op[2]
-                results.append(True)
-            elif kind == "exists":
-                results.append(1 if op[1] in self._store else 0)
-            elif kind == "delete":
-                existed = op[1] in self._store
-                self._store.pop(op[1], None)
-                results.append(1 if existed else 0)
-        self._ops.clear()
-        return results
-
-
-class _FakeRedis:
-    """Tiny in-memory stand-in for the bits of ``redis.asyncio.Redis`` that
-    ``RedisDocStatusStorage`` actually calls."""
-
-    def __init__(self):
-        self.store: dict[str, str] = {}
-
-    async def ping(self):
-        return True
-
-    async def scan(self, *args, **kwargs):
-        # Signature: scan(cursor, match=..., count=...). args holds the cursor
-        # positional; we ignore it and return single-shot results (cursor=0)
-        # so callers stop looping.
-        _ = args
-        match = kwargs.get("match", "")
-        if match.endswith("*"):
-            prefix = match[:-1]
-            keys = [k for k in self.store if k.startswith(prefix)]
-        else:
-            keys = [k for k in self.store if k == match]
-        return 0, keys
-
-    def scan_iter(self, **kwargs):
-        # Used by is_empty(); returns an async iterator.
-        match = kwargs.get("match", "")
-        prefix = match[:-1] if match.endswith("*") else match
-        keys = [k for k in self.store if k.startswith(prefix)]
-
-        async def _aiter():
-            for k in keys:
-                yield k
-
-        return _aiter()
-
-    def pipeline(self):
-        return _FakePipeline(self.store)
-
-    async def get(self, key: str):
-        return self.store.get(key)
-
-    async def set(self, key: str, value: str):
-        self.store[key] = value
-        return True
-
-    async def delete(self, *keys: str) -> int:
-        count = 0
-        for k in keys:
-            if k in self.store:
-                self.store.pop(k)
-                count += 1
-        return count
-
-
 @pytest.fixture
 def redis_doc_status(monkeypatch):
     """Construct RedisDocStatusStorage with its Redis client replaced by a
     fake in-memory store. No network I/O occurs."""
-    fake = _FakeRedis()
+    fake = FakeRedis()
 
     # Stub out the connection pool factory so __post_init__ does not invoke
     # the real redis-py ConnectionPool.from_url (which is lazy but still
@@ -181,7 +90,11 @@ def _store_raw(storage, doc_id: str, payload: dict) -> None:
 
 
 async def test_get_doc_by_file_basename_returns_tuple_on_hit(redis_doc_status):
-    _store_raw(redis_doc_status, "doc-1", _doc(DocStatus.PROCESSED.value, "report.pdf"))
+    # Written via upsert: the basename primary index (Phase 1 sidecar) is the
+    # lookup's single source of truth and is maintained atomically by writes.
+    await redis_doc_status.upsert(
+        {"doc-1": _doc(DocStatus.PROCESSED.value, "report.pdf")}
+    )
 
     result = await redis_doc_status.get_doc_by_file_basename("report.pdf")
 
@@ -269,3 +182,131 @@ async def test_get_doc_by_content_hash_ignores_legacy_rows(redis_doc_status):
     assert result is not None
     doc_id, _ = result
     assert doc_id == "doc-new"
+
+
+async def test_get_doc_by_content_hash_exclude_doc_id_skips_self(redis_doc_status):
+    # LR2 Phase 2.5: exclude_doc_id skips that row in the SCAN pass so the
+    # duplicate check returns the OTHER holder, not the doc being processed.
+    _store_raw(
+        redis_doc_status,
+        "doc-a",
+        _doc(DocStatus.PROCESSED.value, "a.pdf", content_hash="dup"),
+    )
+    _store_raw(
+        redis_doc_status,
+        "doc-b",
+        _doc(DocStatus.PROCESSED.value, "b.pdf", content_hash="dup"),
+    )
+    _store_raw(
+        redis_doc_status,
+        "doc-solo",
+        _doc(DocStatus.PROCESSED.value, "s.pdf", content_hash="uniq"),
+    )
+    # Two docs hold "dup": excluding either deterministically yields the other.
+    result = await redis_doc_status.get_doc_by_content_hash(
+        "dup", exclude_doc_id="doc-a"
+    )
+    assert result is not None and result[0] == "doc-b"
+    result = await redis_doc_status.get_doc_by_content_hash(
+        "dup", exclude_doc_id="doc-b"
+    )
+    assert result is not None and result[0] == "doc-a"
+    # Excluding the sole holder of a hash yields None (no other match).
+    assert (
+        await redis_doc_status.get_doc_by_content_hash(
+            "uniq", exclude_doc_id="doc-solo"
+        )
+        is None
+    )
+
+
+async def test_get_doc_by_content_hash_returns_the_earliest_holder(redis_doc_status):
+    """SCAN order is arbitrary, so returning the first hit made the
+    original_doc_id recorded on a duplicate vary between runs over identical
+    data. The base contract asks for the EARLIEST by (created_at, id)."""
+    late = _doc(DocStatus.PROCESSED.value, "late.pdf", content_hash="dup")
+    late["created_at"] = "2026-05-05T00:00:00+00:00"
+    early = _doc(DocStatus.PROCESSED.value, "early.pdf", content_hash="dup")
+    early["created_at"] = "2024-01-01T00:00:00+00:00"
+    # The doc ids deliberately sort OPPOSITE to created_at, so any
+    # "return the first row the scan reaches" implementation picks doc-a and the
+    # assertion actually discriminates.
+    _store_raw(redis_doc_status, "doc-a", late)
+    _store_raw(redis_doc_status, "doc-z", early)
+
+    result = await redis_doc_status.get_doc_by_content_hash("dup")
+
+    assert result is not None
+    assert result[0] == "doc-z"
+
+
+async def test_get_doc_by_content_hash_propagates_transport_failure(redis_doc_status):
+    """Fix-proof: the SCAN error used to be swallowed into None, which the dedup
+    callers read as "no duplicate" — so a transport blip enqueued a duplicate
+    row and re-ingested its content."""
+    from redis.exceptions import RedisError
+
+    _store_raw(
+        redis_doc_status,
+        "doc-1",
+        _doc(DocStatus.PROCESSED.value, "a.pdf", content_hash="dup"),
+    )
+    redis_doc_status._redis.fail_next["scan"] = RedisError("boom")
+
+    with pytest.raises(RedisError):
+        await redis_doc_status.get_doc_by_content_hash("dup")
+
+
+async def test_get_doc_by_content_hash_refuses_to_skip_an_undecodable_row(
+    redis_doc_status,
+):
+    """An undecodable row might BE the holder, so its hash is unknown, not
+    absent — skipping it would report a confirmed miss on corrupt data."""
+    from lightrag.exceptions import StorageControlPlaneError
+
+    redis_doc_status._redis.store[f"{redis_doc_status.final_namespace}:doc-bad"] = (
+        "not-json{"
+    )
+
+    with pytest.raises(StorageControlPlaneError):
+        await redis_doc_status.get_doc_by_content_hash("dup")
+
+
+async def test_get_doc_by_content_hash_skips_pointer_rows_and_keeps_looking(
+    redis_doc_status,
+):
+    """Second half of ``exclude_doc_id`` (base contract): a row marked
+    ``is_duplicate`` naming the excluded id as its original is a record that the
+    content belongs to the asking document, not a holder — returning it would
+    close an is_duplicate cycle whose shared source has no primary left.
+
+    And skipping it must not stop the search: the genuine third holder below is
+    created LAST, so a fix that only re-asked while excluding the pointer would
+    still miss it.
+    """
+    pointer = _doc(DocStatus.FAILED.value, "b.pdf", content_hash="dup")
+    pointer["metadata"] = {"is_duplicate": True, "original_doc_id": "doc-asking"}
+    pointer["created_at"] = "2024-01-01T00:00:00+00:00"
+    _store_raw(redis_doc_status, "doc-pointer", pointer)
+
+    asking = _doc(DocStatus.PROCESSED.value, "a.pdf", content_hash="dup")
+    asking["created_at"] = "2024-02-01T00:00:00+00:00"
+    _store_raw(redis_doc_status, "doc-asking", asking)
+
+    third = _doc(DocStatus.PROCESSED.value, "c.pdf", content_hash="dup")
+    third["created_at"] = "2024-03-01T00:00:00+00:00"
+    _store_raw(redis_doc_status, "doc-third", third)
+
+    result = await redis_doc_status.get_doc_by_content_hash(
+        "dup", exclude_doc_id="doc-asking"
+    )
+    assert result is not None and result[0] == "doc-third"
+
+    # With no other holder, the pointer alone is not one: confirmed absence.
+    await redis_doc_status.delete(["doc-third"])
+    assert (
+        await redis_doc_status.get_doc_by_content_hash(
+            "dup", exclude_doc_id="doc-asking"
+        )
+        is None
+    )

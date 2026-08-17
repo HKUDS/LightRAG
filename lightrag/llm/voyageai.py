@@ -33,7 +33,10 @@ class VoyageAIError(Exception):
 
 
 @wrap_embedding_func_with_attrs(
-    embedding_dim=1024, max_token_size=32000, supports_asymmetric=True
+    embedding_dim=1024,
+    max_token_size=32000,
+    supports_asymmetric=True,
+    model_name="voyage-3",
 )
 @retry(
     stop=stop_after_attempt(3),

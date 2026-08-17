@@ -23,6 +23,12 @@ from lightrag.sidecar import (
     IRTable,
     write_sidecar,
 )
+from lightrag.sidecar import writer as _writer
+from lightrag.sidecar.writer import (
+    _allocate_unique_name,
+    _materialize_assets,
+    _safe_asset_filename,
+)
 
 
 def _load_jsonl(path: Path) -> tuple[dict, list[dict]]:
@@ -641,6 +647,141 @@ def test_writer_asset_name_collision_suffixed(tmp_path: Path) -> None:
     assert 'path="c.blocks.assets/img-2.png"' in body
 
 
+# --- Path-traversal boundary for sidecar asset materialization (PR #3316) ---
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "suggested, expected",
+    [
+        ("evil.png", "evil.png"),
+        ("../evil.png", "evil.png"),
+        ("../../etc/passwd", "passwd"),
+        ("..\\evil.png", "evil.png"),
+        ("dir\\sub\\evil.png", "evil.png"),
+        ("a/b/c/evil.png", "evil.png"),
+        ("/abs/evil.png", "evil.png"),
+        ("C:\\Windows\\evil.png", "evil.png"),
+        ("  spaced.png  ", "spaced.png"),
+    ],
+)
+def test_safe_asset_filename_collapses_to_basename(
+    suggested: str, expected: str
+) -> None:
+    """Parser-suggested names are reduced to a bare basename regardless of the
+    path separators they carry, so they can never steer the output path out of
+    the assets dir. ``\\`` is normalised first so Windows-style payloads on a
+    POSIX host still collapse rather than surviving as a single filename."""
+    assert _safe_asset_filename(suggested) == expected
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("suggested", ["", "   ", "..", "...", "/", "\\", "\x00\x1f"])
+def test_safe_asset_filename_falls_back_when_empty(suggested: str) -> None:
+    """Names that strip down to nothing (pure dots/separators/control chars)
+    yield the ``asset`` fallback rather than an empty or dot-only filename."""
+    assert _safe_asset_filename(suggested) == "asset"
+
+
+@pytest.mark.offline
+def test_safe_asset_filename_drops_control_chars() -> None:
+    """C0 control chars and DEL are stripped out of the basename so they can't
+    smuggle separators or break the on-disk name."""
+    assert _safe_asset_filename("ev\x00i\x7fl\x1f.png") == "evil.png"
+
+
+@pytest.mark.offline
+def test_allocate_unique_name_sanitises_before_suffixing() -> None:
+    """``_allocate_unique_name`` sanitises first, then applies collision
+    suffixes — a traversal payload and a plain basename that collapse to the
+    same name still get distinct, contained filenames."""
+    used: set[str] = set()
+    first = _allocate_unique_name("../evil.png", used)
+    used.add(first)
+    second = _allocate_unique_name("dir/evil.png", used)
+    assert first == "evil.png"
+    assert second == "evil-2.png"
+
+
+@pytest.mark.offline
+def test_materialize_assets_keeps_traversal_payload_inside_assets_dir(
+    tmp_path: Path,
+) -> None:
+    """End-to-end: a parser-controlled ``../`` asset name must not write bytes
+    outside the assets dir. The byte payload lands at the collapsed basename
+    inside ``assets_dir`` and the sibling traversal target stays absent."""
+    assets_dir = tmp_path / "doc.blocks.assets"
+    out = _materialize_assets(
+        [AssetSpec(ref="r1", suggested_name="../evil.png", source=b"\x89PNG")],
+        assets_dir,
+    )
+    assert out == {"r1": "evil.png"}
+    assert (assets_dir / "evil.png").read_bytes() == b"\x89PNG"
+    # The traversal target one level up must never be created.
+    assert not (tmp_path / "evil.png").exists()
+
+
+@pytest.mark.offline
+def test_writer_traversal_asset_name_stays_in_assets_dir(tmp_path: Path) -> None:
+    """Through the public ``write_sidecar`` path: a drawing whose asset uses a
+    traversal ``suggested_name`` is materialised inside ``*.blocks.assets/`` and
+    the rendered/drawing path is the contained basename, with nothing written
+    to the parent ``parsed`` dir."""
+    parsed = tmp_path / "trav.parsed"
+    ir = IRDoc(
+        document_name="trav.pdf",
+        document_format="pdf",
+        doc_title="trav",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="see {{IMG:i1}}",
+                drawings=[IRDrawing(placeholder_key="i1", asset_ref="img1", fmt="png")],
+            )
+        ],
+        assets=[
+            AssetSpec(ref="img1", suggested_name="../../evil.png", source=b"\x89PNG")
+        ],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-trav", engine="mineru")
+
+    assert (parsed / "trav.blocks.assets" / "evil.png").read_bytes() == b"\x89PNG"
+    assert not (tmp_path / "evil.png").exists()
+    assert not (parsed.parent / "evil.png").exists()
+
+    body = _load_jsonl(parsed / "trav.blocks.jsonl")[1][0]["content"]
+    assert 'path="trav.blocks.assets/evil.png"' in body
+    drawings = json.loads((parsed / "trav.drawings.json").read_text())["drawings"]
+    assert drawings["im-trav-0001"]["path"] == "trav.blocks.assets/evil.png"
+
+
+@pytest.mark.offline
+def test_materialize_assets_containment_check_skips_escaping_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Defense-in-depth: even if name sanitisation were bypassed and a target
+    resolved outside the assets dir, the ``relative_to`` containment guard skips
+    the write (no bytes escape) and the ref is dropped from the output map."""
+    assets_dir = tmp_path / "doc.blocks.assets"
+
+    # Force the allocator to hand back an escaping relative name, simulating a
+    # sanitisation gap so the second-layer containment check is exercised.
+    monkeypatch.setattr(_writer, "_allocate_unique_name", lambda *_: "../escape.png")
+
+    import logging
+
+    monkeypatch.setattr(_writer.logger, "propagate", True)
+    with caplog.at_level(logging.WARNING, logger=_writer.logger.name):
+        out = _materialize_assets(
+            [AssetSpec(ref="r1", suggested_name="ok.png", source=b"\x89PNG")],
+            assets_dir,
+        )
+
+    assert out == {}
+    assert not (tmp_path / "escape.png").exists()
+    assert "unsafe asset target" in caplog.text
+
+
 @pytest.mark.offline
 def test_writer_meta_has_required_spec_fields(tmp_path: Path) -> None:
     """Spec §3.1: meta line contains every required field at fixed names."""
@@ -723,3 +864,88 @@ def test_writer_blockid_formula_stable(tmp_path: Path) -> None:
     rows_a = _load_jsonl(parsed_a / "x.blocks.jsonl")[1]
     rows_b = _load_jsonl(parsed_b / "x.blocks.jsonl")[1]
     assert rows_a[0]["blockid"] == rows_b[0]["blockid"]
+
+
+@pytest.mark.offline
+def test_writer_strips_control_separators_from_block_content(
+    tmp_path: Path,
+) -> None:
+    """C0 control/separator chars (\\x1c-\\x1f FS/GS/RS/US, plus NUL/DEL) in a
+    block must not survive into blocks.jsonl content (the chunk source) or the
+    document_hash/merged_text. \\t/\\n inside the block are preserved."""
+    parsed = tmp_path / "ctrl.parsed"
+    ir = IRDoc(
+        document_name="ctrl.pdf",
+        document_format="pdf",
+        doc_title="ctrl",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="a\x1cb\x1dc\x1ed\x1fe\x00\x7f\tkeep\nline",
+                heading="H",
+                level=1,
+            )
+        ],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-ctrl", engine="mineru")
+
+    meta, rows = _load_jsonl(parsed / "ctrl.blocks.jsonl")
+    body = rows[0]["content"]
+    assert not any(c in body for c in "\x1c\x1d\x1e\x1f\x00\x7f")
+    # separators removed (no spurious split), whitespace controls kept.
+    assert body == "abcde\tkeep\nline"
+    # document_hash is derived from the cleaned merged_text.
+    assert meta["document_hash"].startswith("sha256:")
+
+
+@pytest.mark.offline
+def test_writer_blockid_unchanged_when_no_control_chars(tmp_path: Path) -> None:
+    """The control-char strip is a no-op for clean input: blockid/document_hash
+    for a control-char-free block stay identical to the pre-change baseline
+    (guards golden/byte-equivalence snapshots)."""
+    parsed_clean = tmp_path / "clean.parsed"
+    parsed_dirty = tmp_path / "dirty.parsed"
+    clean = IRDoc(
+        document_name="d.pdf",
+        document_format="pdf",
+        doc_title="d",
+        split_option={},
+        blocks=[IRBlock(content_template="hello world", heading="H", level=1)],
+    )
+    # Same logical content but with separators interspersed; after cleaning the
+    # rendered text collapses to the clean form, so blockid must match.
+    dirty = IRDoc(
+        document_name="d.pdf",
+        document_format="pdf",
+        doc_title="d",
+        split_option={},
+        blocks=[IRBlock(content_template="hello\x1f world\x1c", heading="H", level=1)],
+    )
+    write_sidecar(clean, parsed_dir=parsed_clean, doc_id="doc-x", engine="mineru")
+    write_sidecar(dirty, parsed_dir=parsed_dirty, doc_id="doc-x", engine="mineru")
+    meta_c, rows_c = _load_jsonl(parsed_clean / "d.blocks.jsonl")
+    meta_d, rows_d = _load_jsonl(parsed_dirty / "d.blocks.jsonl")
+    assert rows_c[0]["content"] == rows_d[0]["content"] == "hello world"
+    assert rows_c[0]["blockid"] == rows_d[0]["blockid"]
+    assert meta_c["document_hash"] == meta_d["document_hash"]
+
+
+@pytest.mark.offline
+def test_writer_drops_block_that_is_only_control_chars(tmp_path: Path) -> None:
+    """A block whose entire body is control chars + whitespace collapses to
+    empty after cleaning and is dropped (not emitted as a blank row)."""
+    parsed = tmp_path / "empty.parsed"
+    ir = IRDoc(
+        document_name="e.pdf",
+        document_format="pdf",
+        doc_title="e",
+        split_option={},
+        blocks=[
+            IRBlock(content_template="\x1c\x1d  \x1f\x1e", heading="H", level=1),
+            IRBlock(content_template="real body", heading="H2", level=1),
+        ],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-drop", engine="mineru")
+    _, rows = _load_jsonl(parsed / "e.blocks.jsonl")
+    assert len(rows) == 1
+    assert rows[0]["content"] == "real body"

@@ -310,6 +310,46 @@ def test_split_very_large_text():
 
 
 @pytest.mark.offline
+def test_overlap_greater_than_chunk_size_raises():
+    """Overlap larger than chunk size makes the stride negative, which yields an
+    empty range and silently drops the entire document. Fail closed instead."""
+    tokenizer = make_tokenizer()
+    content = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+    with pytest.raises(ValueError) as excinfo:
+        chunking_by_token_size(
+            tokenizer,
+            content,
+            chunk_token_size=50,
+            chunk_overlap_token_size=100,
+        )
+
+    message = str(excinfo.value)
+    assert "chunk_overlap_token_size (100)" in message
+    assert "chunk_token_size (50)" in message
+
+
+@pytest.mark.offline
+def test_overlap_equal_to_chunk_size_raises():
+    """Overlap equal to chunk size makes the stride zero, which otherwise raises
+    an opaque ``range() arg 3 must not be zero``. Raise a clear message instead."""
+    tokenizer = make_tokenizer()
+    content = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+    with pytest.raises(ValueError) as excinfo:
+        chunking_by_token_size(
+            tokenizer,
+            content,
+            chunk_token_size=10,
+            chunk_overlap_token_size=10,
+        )
+
+    message = str(excinfo.value)
+    assert "chunk_overlap_token_size (10)" in message
+    assert "chunk_token_size (10)" in message
+
+
+@pytest.mark.offline
 def test_empty_content():
     """Test chunking with empty content."""
     tokenizer = make_tokenizer()

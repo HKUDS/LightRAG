@@ -86,6 +86,9 @@ def _make_storage(
     # db.execute is used by delete_entity, delete_entity_relation, drop.
     db.execute = AsyncMock(return_value=None)
     db.query = AsyncMock(return_value=[])
+    # drop() probes the legacy table to clear its workspace rows; default to
+    # "no legacy table" so unrelated tests see a single workspace delete.
+    db.check_table_exists = AsyncMock(return_value=False)
     db.workspace = "test_ws"
 
     embedding = embed or CountingEmbed()
@@ -442,6 +445,28 @@ async def test_drop_clears_buffers_and_runs_delete():
     storage.db.execute.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_drop_also_clears_workspace_rows_from_legacy_table():
+    """drop() must also delete this workspace's rows from the kept legacy table,
+    so a later startup does not re-migrate the cleared rows back into the
+    suffixed table (resurrection)."""
+    storage = _make_storage()
+    # Legacy table exists (kept after migration); suffixed table != legacy.
+    storage.db.check_table_exists = AsyncMock(return_value=True)
+    assert storage.legacy_table_name.lower() != storage.table_name.lower()
+
+    result = await storage.drop()
+    assert result["status"] == "success"
+
+    deleted_tables = [
+        call.args[0] for call in storage.db.execute.await_args_list if call.args
+    ]
+    # Both the active suffixed table and the legacy table are cleared for the
+    # workspace.
+    assert any(storage.table_name in sql for sql in deleted_tables)
+    assert any(storage.legacy_table_name in sql for sql in deleted_tables)
+
+
 # ---------------------------------------------------------------------------
 # 13. Read-your-writes: get_by_id, get_by_ids, get_vectors_by_ids
 # ---------------------------------------------------------------------------
@@ -621,9 +646,9 @@ async def test_delete_entity_serializes_against_in_flight_flush():
     # Give the event loop a few turns to confirm delete_entity is blocked.
     for _ in range(5):
         await asyncio.sleep(0)
-    assert (
-        not delete_task.done()
-    ), "delete_entity should be waiting on _flush_lock while flush holds it"
+    assert not delete_task.done(), (
+        "delete_entity should be waiting on _flush_lock while flush holds it"
+    )
 
     # Unblock the flush; both should complete.
     embed.gate.set()

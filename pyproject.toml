@@ -25,7 +25,7 @@ dependencies = [
     "configparser",
     "google-api-core>=2.0.0,<3.0.0",
     "google-genai>=1.0.0,<3.0.0",
-    "json_repair",
+    "json_repair>=0.59.9,<1.0.0",
     "nano-vectordb",
     "networkx",
     "numpy>=1.24.0,<3.0.0",
@@ -38,7 +38,10 @@ dependencies = [
     "python-dotenv",
     "setuptools",
     "tenacity",
-    "tiktoken",
+    # 0.7.0 adds o200k_base, required by the default gpt-4o-mini, and is the
+    # oldest release whose encode_batch/decode_batch fan encode()/decode() of
+    # one Encoding across threads — the thread safety Tokenizer relies on.
+    "tiktoken>=0.7.0",
     "xlsxwriter>=3.1.0",
 ]
 
@@ -49,13 +52,14 @@ pytest = [
     "pytest-asyncio>=1.2.0",
     "pre-commit",
     "ruff",
+    "httpx2>=2.0.0",  # starlette>=1.3 testclient prefers httpx2 over httpx
 ]
 
 api = [
     # Core dependencies
     "aiohttp",
     "configparser",
-    "json_repair",
+    "json_repair>=0.59.9,<1.0.0",
     "nano-vectordb",
     "networkx",
     "numpy>=1.24.0,<3.0.0",
@@ -68,13 +72,22 @@ api = [
     "python-dotenv",
     "setuptools",
     "tenacity",
-    "tiktoken",
+    # 0.7.0 adds o200k_base, required by the default gpt-4o-mini, and is the
+    # oldest release whose encode_batch/decode_batch fan encode()/decode() of
+    # one Encoding across threads — the thread safety Tokenizer relies on.
+    "tiktoken>=0.7.0",
     "xlsxwriter>=3.1.0",
     "google-api-core>=2.0.0,<3.0.0",
     "google-genai>=1.0.0,<3.0.0",
     # API-specific dependencies
     "aiofiles",
     "ascii_colors",
+    # asyncio.timeout() (used directly on 3.11+) is Python 3.11+ only;
+    # requires-python allows 3.10, which needs this backport instead for
+    # the MinerU/Docling result-download wall-clock deadline. Marker keeps
+    # it out of 3.11+ installs entirely, where lightrag/parser/external/
+    # _common.py never imports it.
+    "async-timeout>=4.0.3; python_version < '3.11'",
     "distro",
     "fastapi>=0.108",  # 0.108 adds FastAPI.__call__ scope["root_path"] override; api_prefix relies on it
     "httpcore",
@@ -84,9 +97,12 @@ api = [
     "psutil",
     "PyJWT>=2.8.0,<3.0.0",
     "python-jose[cryptography]",
-    "python-multipart",
+    "cryptography>=48.0.1",        # security floor: GHSA-537c-gmf6-5ccf (via python-jose[cryptography])
+    "python-multipart>=0.0.30",    # security floor: CVE-2026-53539
+    "starlette>=1.3.1,<2",         # security floor: CVE-2026-54283 / CVE-2026-48818 (transitive via fastapi)
     "pytz",
     "uvicorn",
+    "uvicorn-worker",
     "gunicorn",
     # Document processing dependencies (required for API document upload functionality)
     "openpyxl>=3.0.0,<4.0.0",      # XLSX processing
@@ -94,17 +110,27 @@ api = [
     "pypdf>=6.1.0",                 # PDF processing
     "python-docx>=0.8.11,<2.0.0",  # DOCX processing
     "python-pptx>=0.6.21,<2.0.0",  # PPTX processing
+    "cairosvg>=2.5.0,<3.0.0",      # SVG->PNG rasterization for native markdown images
     "defusedxml>=0.7.0,<1.0.0",    # Safer XML parser used by parser/docx
     # Chunking strategies (process_options=R / V); lazy-imported by lightrag.chunker
     "langchain-text-splitters>=0.3,<2",
     "langchain-experimental>=0.3.2,<1",  # >=0.3.2: SemanticChunker gained min_chunk_size
+    # NLP runtime for the native docx smart_heading engine parameter
+    # (sentence/NER heuristics). Language models are separate wheels pinned in
+    # requirements-offline-smart-heading.txt and installed via
+    # `lightrag-download-cache --spacy-install`.
+    # Cap below 3.8.14: that release (the latest 3.8.x) shipped neither a cp314
+    # wheel nor an sdist, breaking `uv sync --frozen` on Python 3.14. 3.8.13 is
+    # the last release with full wheel + sdist coverage. Revisit when adopting
+    # spacy 4.x (still in dev as of this pin).
+    "spacy>=3.8,<3.8.14",
 ]
 
 # Offline deployment dependencies (layered design for flexibility)
 offline-storage = [
     # Storage backend dependencies
     "faiss-cpu>=1.7.0,<2.0.0",
-    "redis>=5.0.0,<9.0.0",
+    "redis>=5.0.1,<9.0.0",
     "neo4j>=5.0.0,<7.0.0",
     "pymilvus>=2.6.2,<4.0.0",
     "pymongo>=4.0.0,<5.0.0",
@@ -118,7 +144,7 @@ offline-llm = [
     # LLM provider dependencies
     "openai>=2.0.0,<3.0.0",
     "anthropic>=0.18.0,<1.0.0",
-    "ollama>=0.1.0,<1.0.0",
+    "ollama>=0.5.4,<1.0.0",
     "zhipuai>=2.0.0,<3.0.0",
     "aioboto3>=12.0.0,<16.0.0",
     "voyageai>=0.2.0,<1.0.0",
@@ -139,6 +165,7 @@ test = [
     "pytest-asyncio>=1.2.0",
     "pre-commit",
     "ruff",
+    "httpx2>=2.0.0",  # starlette>=1.3 testclient prefers httpx2 over httpx
 ]
 
 evaluation = [
@@ -158,6 +185,7 @@ lightrag-gunicorn = "lightrag.api.run_with_gunicorn:main"
 lightrag-hash-password = "lightrag.tools.hash_password:main"
 lightrag-download-cache = "lightrag.tools.download_cache:main"
 lightrag-clean-llmqc = "lightrag.tools.clean_llm_query_cache:main"
+lightrag-rebuild-vdb = "lightrag.tools.rebuild_vdb:main"
 
 [project.urls]
 Homepage = "https://github.com/HKUDS/LightRAG"
@@ -185,6 +213,13 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "offline: tests that run without any external service (default CI gate)",
+    "integration: tests requiring external services; skipped by default, opt in with --run-integration",
+    "requires_db: test needs a reachable database backend",
+    "requires_api: test needs a reachable external API endpoint",
+    "pg_smoke: integration tests that require a live PostgreSQL instance (POSTGRES_PASSWORD must be set)",
+]
 
 [tool.ruff]
 target-version = "py310"

@@ -26,7 +26,7 @@ LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
 
 # Default timeout for all LLM requests
-LLM_TIMEOUT=180
+LLM_TIMEOUT=240
 
 # Default maximum concurrency for all LLM calls (MAX_ASYNC is still accepted as a deprecated alias)
 MAX_ASYNC_LLM=4
@@ -244,7 +244,7 @@ LLM_BINDING=openai
 LLM_MODEL=gpt-5-mini
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_extract_openai_api_key
-LLM_TIMEOUT=180
+LLM_TIMEOUT=240
 MAX_ASYNC_LLM=4
 
 ###########################################################################
@@ -293,7 +293,7 @@ KEYWORD_OPENAI_LLM_MAX_TOKENS=2048
 # Optional for Qwen-style models served by vLLM when you want to disable thinking.
 KEYWORD_OPENAI_LLM_EXTRA_BODY='{"chat_template_kwargs": {"enable_thinking": false}}'
 KEYWORD_MAX_ASYNC_LLM=4
-KEYWORD_LLM_TIMEOUT=180
+KEYWORD_LLM_TIMEOUT=60
 ```
 
 This pattern is not cross-provider because all three roles use the `openai` binding. LightRAG passes each role's `*_LLM_BINDING_HOST` and `*_LLM_BINDING_API_KEY` to the OpenAI-compatible client separately.
@@ -374,3 +374,4 @@ Do not set `QUERY_LLM_BINDING_API_KEY`; Bedrock rejects that configuration.
 - Gemini Vertex AI mode is controlled by process-level Google environment variables. In the same LightRAG process, some roles cannot use Vertex AI while others use AI Studio API keys.
 - In Docker/Compose, `LLM_BINDING_HOST` usually needs to use a container-reachable address such as `host.docker.internal`; role-level hosts follow the same principle.
 - Restart LightRAG Server after modifying `.env`. Some IDE terminals preload `.env`, so opening a new terminal session is recommended to confirm that environment variables take effect.
+- A thinking-capable Ollama model can silently return empty entities/relations during extraction when its whole generation budget goes to hidden reasoning before any output (issue #3597). If that happens, set `EXTRACT_OLLAMA_LLM_THINK=false` (and `KEYWORD_OLLAMA_LLM_THINK=false` if keyword extraction is affected too). Besides `true`/`false`, this option accepts a reasoning level (`low`/`medium`/`high`, requires an Ollama server that supports levels). Leaving it unset follows the model's own default; an empty value (`OLLAMA_LLM_THINK=`) means `false`, not unset.

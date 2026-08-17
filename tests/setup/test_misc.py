@@ -1732,7 +1732,8 @@ security_check_env_file
         check=False,
     )
     assert result.returncode == 1
-    assert "No API protection is configured." in result.stdout
+    assert "No API protection is configured" in result.stdout
+    assert "HOST=0.0.0.0 is reachable from the network" in result.stdout
 
 
 def test_security_check_passes_for_authenticated_minimal_config(tmp_path: Path) -> None:
@@ -1763,6 +1764,75 @@ security_check_env_file
         check=False,
     )
     assert result.returncode == 0
+
+
+def test_security_check_no_auth_message_omits_host_for_loopback(
+    tmp_path: Path,
+) -> None:
+    """A loopback bind without auth is flagged, but not as network-reachable."""
+    write_text_lines(tmp_path / ".env", ["HOST=127.0.0.1"])
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+security_check_env_file
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "No API protection is configured." in result.stdout
+    assert "reachable from the network" not in result.stdout
+
+
+def _run_warn_if_exposed(env_assignments: str) -> subprocess.CompletedProcess[str]:
+    """Source setup.sh, seed ENV_VALUES, and run the exposure hint."""
+    return subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+{env_assignments}
+warn_if_network_exposed_without_auth
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_warn_if_exposed_flags_public_bind_without_auth() -> None:
+    """Non-loopback host with no auth should print a suggestion."""
+    result = _run_warn_if_exposed('ENV_VALUES[HOST]="0.0.0.0"')
+    assert "no authentication is configured" in result.stdout
+    assert "AUTH_ACCOUNTS" in result.stdout
+
+
+def test_warn_if_exposed_silent_for_loopback() -> None:
+    """A loopback bind needs no exposure suggestion."""
+    result = _run_warn_if_exposed('ENV_VALUES[HOST]="127.0.0.1"')
+    assert result.stdout.strip() == ""
+
+
+def test_warn_if_exposed_silent_when_auth_configured() -> None:
+    """A public bind with auth configured needs no exposure suggestion."""
+    result = _run_warn_if_exposed(
+        'ENV_VALUES[HOST]="0.0.0.0"\nENV_VALUES[LIGHTRAG_API_KEY]="some-key"'
+    )
+    assert result.stdout.strip() == ""
 
 
 def test_security_check_reports_predictable_auth_password_prefix(
@@ -1851,6 +1921,74 @@ security_check_env_file
     )
     assert result.returncode == 1
     assert "WHITELIST_PATHS exposes /api routes" in result.stdout
+
+
+def test_security_check_reports_api_key_only_with_catch_all_whitelist(
+    tmp_path: Path,
+) -> None:
+    """A catch-all WHITELIST_PATHS=/* exempts every route (incl. /api) and must be flagged.
+
+    Regression for GHSA-mmg5-8x8q-v934: '/*' strips to an empty prefix that
+    every path starts with, so the old substring check (entries beginning with
+    '/api') missed it and emitted no notice.
+    """
+    write_text_lines(
+        tmp_path / ".env",
+        ["LIGHTRAG_API_KEY=my-secret-key", "WHITELIST_PATHS=/*"],
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+security_check_env_file
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "WHITELIST_PATHS exposes /api routes" in result.stdout
+
+
+def test_security_check_passes_for_api_key_only_with_apiary_whitelist(
+    tmp_path: Path,
+) -> None:
+    """A /apiary/* whitelist exempts only /apiary, not /api/chat, and must NOT be flagged.
+
+    Guards the /api/ route boundary: the wildcard-prefix check must not treat
+    any prefix that merely begins with the substring "/api" as exposing the
+    Ollama routes, which would fail the audit on a safe whitelist.
+    """
+    write_text_lines(
+        tmp_path / ".env",
+        ["LIGHTRAG_API_KEY=my-secret-key", "WHITELIST_PATHS=/health,/apiary/*"],
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+security_check_env_file
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "No obvious security issues found" in result.stdout
 
 
 def test_security_check_passes_for_api_key_only_with_safe_whitelist(

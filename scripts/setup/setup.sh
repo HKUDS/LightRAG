@@ -240,6 +240,33 @@ log_step() {
   echo "${COLOR_BLUE}${COLOR_BOLD}$*${COLOR_RESET}"
 }
 
+# Return success when the given host binds to a loopback interface only.
+# An empty host means "use the server default" (0.0.0.0), i.e. not loopback.
+host_is_loopback() {
+  local host="${1:-}"
+  case "$host" in
+    localhost|127.0.0.1|::1|127.*) return 0 ;;
+  esac
+  return 1
+}
+
+# Print a suggestion (informational only — no logic change) when the server is
+# configured to bind to a non-loopback address without any authentication.
+warn_if_network_exposed_without_auth() {
+  local host="${ENV_VALUES[HOST]:-0.0.0.0}"
+
+  if host_is_loopback "$host"; then
+    return 0
+  fi
+  if [[ -n "${ENV_VALUES[AUTH_ACCOUNTS]:-}" || -n "${ENV_VALUES[LIGHTRAG_API_KEY]:-}" ]]; then
+    return 0
+  fi
+
+  log_warn "HOST=$host is reachable from the network but no authentication is configured."
+  echo "  Suggestion: set AUTH_ACCOUNTS (with TOKEN_SECRET) or LIGHTRAG_API_KEY before"
+  echo "  exposing the server, or bind to a loopback address (HOST=127.0.0.1)."
+}
+
 normalize_loopback_uri_for_compose() {
   local uri="$1"
 
@@ -2766,6 +2793,7 @@ env_server_flow() {
   echo ""
   log_step "Security configuration"
   collect_security_config "no" "no"
+  warn_if_network_exposed_without_auth
   echo ""
   log_step "SSL configuration"
   collect_ssl_config
@@ -3137,8 +3165,12 @@ security_check_env_file() {
   fi
 
   if [[ -z "$auth_accounts" && -z "$api_key" ]]; then
+    local no_auth_message="No API protection is configured."
+    if ! host_is_loopback "${ENV_VALUES[HOST]:-0.0.0.0}"; then
+      no_auth_message="No API protection is configured while HOST=${ENV_VALUES[HOST]:-0.0.0.0} is reachable from the network."
+    fi
     report_security_issue \
-      "No API protection is configured." \
+      "$no_auth_message" \
       "Set AUTH_ACCOUNTS and TOKEN_SECRET, add LIGHTRAG_API_KEY, or put the service behind a trusted reverse proxy."
     findings=$((findings + 1))
   fi

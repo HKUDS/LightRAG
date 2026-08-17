@@ -9,6 +9,7 @@ from lightrag.operate import (
     _handle_single_relationship_extraction,
 )
 from lightrag import utils_graph
+from lightrag.utils import VectorStorageConsistencyError
 
 
 class DummyGraphStorage:
@@ -315,3 +316,88 @@ async def test_merge_entities_preserves_file_path_in_vector_updates(monkeypatch)
         "alias.md",
         "canonical.md",
     }
+
+
+@pytest.mark.asyncio
+async def test_merge_response_is_built_from_graph_without_reading_vdb():
+    # The merge response is built from graph data only. Reading the vector
+    # store is redundant (the graph is authoritative) and previously leaked a
+    # non-JSON-serializable embedding (pgvector -> numpy) into the API
+    # response, causing a 500 on /graph/entity/edit with all-PostgreSQL.
+    graph = DummyMergeGraphStorage()
+    entities_vdb = DummyVectorStorage()
+    relationships_vdb = DummyVectorStorage()
+
+    vdb_reads = []
+    inner_get_by_id = entities_vdb.get_by_id
+
+    async def _tracked_get_by_id(id_):
+        vdb_reads.append(id_)
+        return await inner_get_by_id(id_)
+
+    entities_vdb.get_by_id = _tracked_get_by_id
+
+    result = await utils_graph._merge_entities_impl(
+        chunk_entity_relation_graph=graph,
+        entities_vdb=entities_vdb,
+        relationships_vdb=relationships_vdb,
+        source_entities=["Alias", "Canonical"],
+        target_entity="Canonical",
+    )
+
+    assert "graph_data" in result
+    assert "vector_data" not in result
+    # The response did not read the entity vector store.
+    assert vdb_reads == []
+
+
+@pytest.mark.asyncio
+async def test_aedit_entity_merge_propagates_consistency_error(monkeypatch):
+    """rename-with-merge must surface VectorStorageConsistencyError, not swallow it.
+
+    The graph is updated during the merge, then the (deferred) vector-store
+    flush fails. aedit_entity used to fold every merge exception into a
+    partial-success summary and return normally, so the /graph/entity/edit
+    route reported HTTP 200 "success" and hid the consistency failure that the
+    fail-loud merge path exists to surface. It must re-raise instead.
+    """
+    graph = DummyMergeGraphStorage()
+    entities_vdb = DummyVectorStorage()
+    relationships_vdb = DummyVectorStorage()
+
+    # Deferred-embedding flush failure: upsert buffers, index_done_callback raises.
+    async def _boom():
+        raise RuntimeError("embedder down")
+
+    relationships_vdb.index_done_callback = _boom
+
+    # Single-attempt VDB wrapper (no retry delays) + a no-op storage lock.
+    async def _single_attempt(operation, **kwargs):
+        await operation()
+
+    monkeypatch.setattr(
+        utils_graph, "safe_vdb_operation_with_exception", _single_attempt
+    )
+    monkeypatch.setattr(
+        utils_graph, "get_storage_keyed_lock", lambda *a, **k: DummyAsyncContext()
+    )
+
+    async def fake_get_entity_info(*args, **kwargs):
+        return {"entity_name": "Canonical"}
+
+    monkeypatch.setattr(utils_graph, "get_entity_info", fake_get_entity_info)
+
+    with pytest.raises(VectorStorageConsistencyError) as excinfo:
+        await utils_graph.aedit_entity(
+            chunk_entity_relation_graph=graph,
+            entities_vdb=entities_vdb,
+            relationships_vdb=relationships_vdb,
+            entity_name="Alias",
+            updated_data={"entity_name": "Canonical"},
+            allow_rename=True,
+            allow_merge=True,
+        )
+
+    assert "lightrag-rebuild-vdb" in str(excinfo.value)
+    # Fail-loud happened before source deletion: 'Alias' is still in the graph.
+    assert "Alias" in graph.nodes

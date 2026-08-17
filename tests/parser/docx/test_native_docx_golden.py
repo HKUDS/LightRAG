@@ -26,10 +26,12 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from _native_docx_fixtures import SCENARIOS, Scenario  # noqa: E402
+from lightrag.parser.base import ParseContext  # noqa: E402
 from lightrag.parser.debug import (  # noqa: E402
     FrozenDateTime,
     build_debug_rag,
 )
+from lightrag.parser.registry import get_parser  # noqa: E402
 
 GOLDEN_ROOT = HERE / "golden" / "native_docx"
 
@@ -71,7 +73,6 @@ def _run_new_path(
     def _stub_extract(
         file_path,
         *,
-        fixlevel=None,
         drawing_context=None,
         parse_warnings=None,
         parse_metadata=None,
@@ -96,13 +97,16 @@ def _run_new_path(
     ):
 
         async def _go() -> None:
-            await rag.parse_native(
-                scenario.doc_id,
-                str(source_path),
-                {
-                    "parse_format": FULL_DOCS_FORMAT_PENDING_PARSE,
-                    "content": "",
-                },
+            await get_parser("native").parse(
+                ParseContext(
+                    rag,
+                    scenario.doc_id,
+                    str(source_path),
+                    {
+                        "parse_format": FULL_DOCS_FORMAT_PENDING_PARSE,
+                        "content": "",
+                    },
+                )
             )
 
         asyncio.run(_go())
@@ -156,6 +160,6 @@ def test_native_docx_migration_is_byte_equivalent(
         produced_path = produced_files[rel]
         if _read_bytes(produced_path) != _read_bytes(expected_path):
             mismatches.append(str(rel))
-    assert (
-        not mismatches
-    ), f"byte mismatch in scenario {scenario.name!r} for files: {mismatches}"
+    assert not mismatches, (
+        f"byte mismatch in scenario {scenario.name!r} for files: {mismatches}"
+    )

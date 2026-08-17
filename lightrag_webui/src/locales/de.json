@@ -37,7 +37,10 @@
     "cancel": "Abbrechen",
     "save": "Speichern",
     "saving": "Speichern...",
-    "saveFailed": "Speichern fehlgeschlagen"
+    "saveFailed": "Speichern fehlgeschlagen",
+    "errorBoundaryTitle": "Etwas ist schiefgelaufen",
+    "errorBoundaryDescription": "Dieses Panel konnte nicht angezeigt werden. Versuchen Sie es erneut oder wechseln Sie zu einem anderen Tab.",
+    "errorBoundaryRetry": "Erneut versuchen"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -99,7 +102,7 @@
         "error": "Einige Dateien konnten nicht hochgeladen werden"
       },
       "generalError": "Upload fehlgeschlagen\n{{error}}",
-      "fileTypes": "Unterstützte Typen: TXT, MD, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "Unterstützte Typen: {{types}}",
       "fileUploader": {
         "singleFileLimit": "Es kann nicht mehr als 1 Datei gleichzeitig hochgeladen werden",
         "maxFilesLimit": "Es können nicht mehr als {{count}} Dateien hochgeladen werden",
@@ -138,21 +141,21 @@
       },
       "filters": {
         "all": "Alle",
-        "completed": "Abgeschlossen",
-        "parse": "Extraktion",
+        "completed": "Fertig",
+        "parse": "Parsing",
         "analyze": "Analyse",
-        "process": "Verarbeitung",
-        "failed": "Fehlgeschlagen"
+        "process": "Extraktion",
+        "failed": "Fehler"
       },
       "status": {
         "all": "Alle",
-        "completed": "Abgeschlossen",
+        "completed": "Fertig",
         "preprocessed": "Vorverarbeitet",
-        "parsing": "Wird geparst",
-        "analyzing": "Wird analysiert",
-        "processing": "Verarbeitung",
+        "parsing": "Parsing",
+        "analyzing": "Analyse",
+        "processing": "Extraktion",
         "pending": "Ausstehend",
-        "failed": "Fehlgeschlagen"
+        "failed": "Fehler"
       },
       "errors": {
         "loadFailed": "Dokumente konnten nicht geladen werden\n{{error}}",
@@ -177,7 +180,6 @@
     "pipelineStatus": {
       "title": "Pipeline-Status",
       "busy": "Pipeline beschäftigt",
-      "requestPending": "Anfrage ausstehend",
       "cancellationRequested": "Stornierung angefordert",
       "jobName": "Auftragsname",
       "startTime": "Startzeit",
@@ -201,6 +203,8 @@
   },
   "graphPanel": {
     "dataIsTruncated": "Graphdaten wurden auf maximale Knotenanzahl gekürzt",
+    "fetchRetriesExhausted": "Graphdaten konnten nicht geladen werden. Zum erneuten Versuch aktualisieren.",
+    "graphBuildFailed": "Graphdaten konnten nicht gerendert werden. Zum erneuten Versuch aktualisieren.",
     "statusDialog": {
       "title": "LightRAG Server-Einstellungen",
       "description": "Aktuellen Systemstatus und Verbindungsinformationen anzeigen"
@@ -249,13 +253,14 @@
         "showEdgeLabel": "Kantenbezeichnung anzeigen",
         "hideUnselectedEdges": "Nicht ausgewählte Kanten ausblenden",
         "edgeEvents": "Kanten-Ereignisse",
+        "edgeEventsDisabledHint": "Deaktiviert für Graphen mit mehr als {{count}} Kanten",
         "maxQueryDepth": "Maximale Abfragetiefe",
         "maxNodes": "Maximale Knotenanzahl",
-        "maxLayoutIterations": "Maximale Layout-Iterationen",
         "resetToDefault": "Auf Standard zurücksetzen",
         "edgeSizeRange": "Kantengrößenbereich",
         "depth": "T",
-        "max": "Max",
+        "node": "Knoten",
+        "edge": "Kante",
         "degree": "Grad",
         "apiKey": "API-Schlüssel",
         "enterYourAPIkey": "Geben Sie Ihren API-Schlüssel ein",
@@ -327,6 +332,7 @@
       "editPropertyDescription": "Bearbeiten Sie den Eigenschaftswert im Textbereich unten.",
       "errors": {
         "duplicateName": "Knotenname existiert bereits",
+        "invalidEntityName": "Geben Sie einen gültigen Knotennamen ein",
         "updateFailed": "Knoten konnte nicht aktualisiert werden",
         "tryAgainLater": "Bitte versuchen Sie es später erneut",
         "updateSuccessButMergeFailed": "Eigenschaften aktualisiert, aber Zusammenführung fehlgeschlagen: {{error}}",
@@ -407,10 +413,21 @@
       "copyManualInstruction": "Bitte wählen Sie den Text manuell aus und kopieren Sie ihn",
       "thinking": "Denken...",
       "thinkingTime": "Denkzeit {{time}}s",
-      "thinkingInProgress": "Denken läuft..."
+      "thinkingInProgress": "Denken läuft...",
+      "responseTime": "Antwortzeit {{time}}s",
+      "firstTokenTime": "Erstes Token {{time}}s",
+      "progress": {
+        "extracting_keywords": "Schlüsselwörter werden extrahiert...",
+        "retrieving_entities": "Entitäten werden abgerufen...",
+        "retrieving_relations": "Beziehungen werden abgerufen...",
+        "retrieving_chunks": "Textblöcke werden abgerufen...",
+        "reranking": "Ergebnisse werden neu bewertet...",
+        "generating_response": "Antwort wird generiert..."
+      }
     },
     "retrieval": {
       "startPrompt": "Starten Sie eine Abfrage, indem Sie Ihre Frage unten eingeben",
+      "scrollToBottom": "Zur neuesten Nachricht",
       "clear": "Löschen",
       "send": "Senden",
       "stop": "Stopp",
@@ -425,6 +442,7 @@
       "parametersDescription": "Konfigurieren Sie Ihre Abfrageparameter",
       "queryMode": "Abfragemodus",
       "queryModeTooltip": "Abfragestrategie auswählen:\n• Naive: Traditionelle Text-Chunk-Vektorabfrage\n• Local: Fokus auf Entitätsabfrage\n• Global: Fokus auf Beziehungsabfrage\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Abfrage überspringen, Konversationsverlauf und aktuelle Frage an LLM senden",
+      "queryModeWarning": "Kann die Abrufqualität verringern",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",

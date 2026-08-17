@@ -309,9 +309,9 @@ def test_paragraph_semantic_fallback_passes_configured_recursive_overlap(monkeyp
         chunk_overlap_token_size=37,
     )
 
-    assert (
-        captured.get("chunk_overlap_token_size") == 37
-    ), "P→R fallback must pass the configured chunk_overlap_token_size"
+    assert captured.get("chunk_overlap_token_size") == 37, (
+        "P→R fallback must pass the configured chunk_overlap_token_size"
+    )
     assert captured.get("chunk_token_size") == 500
 
 

@@ -92,8 +92,8 @@ def test_nano_save_failure_inside_save_restores_storage_file(tmp_path):
         with pytest.raises(RuntimeError, match="boom"):
             _save_atomic(client, target)
 
-    assert (
-        client.storage_file == target
-    ), "Inner save failure must still restore storage_file to the real path"
+    assert client.storage_file == target, (
+        "Inner save failure must still restore storage_file to the real path"
+    )
     leftovers = [p for p in os.listdir(tmp_path) if ".tmp." in p]
     assert leftovers == [], f"save failure must clean tmp, got {leftovers}"

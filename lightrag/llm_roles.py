@@ -114,6 +114,11 @@ class _RoleLLMMixin:
         "auth",
         "session",
     )
+    # Non-secret keys whose names collide with a secret marker substring
+    # (e.g. "thinking_token_budget" contains "token"). Matched globally at
+    # every nesting level during metadata scrubbing, not only inside
+    # ``provider_options``.
+    _SAFE_OPTION_KEYS = {"thinking_token_budget"}
 
     @staticmethod
     def _normalize_llm_role(role: str) -> str:
@@ -185,6 +190,7 @@ class _RoleLLMMixin:
             max_async,
             llm_timeout=timeout,
             queue_name=spec.queue_name,
+            concurrency_group=f"llm:{role_name}",
         )(
             partial(
                 raw_func,
@@ -442,6 +448,8 @@ class _RoleLLMMixin:
     @classmethod
     def _is_secret_key(cls, key: str) -> bool:
         lowered = key.lower()
+        if lowered in cls._SAFE_OPTION_KEYS:
+            return False
         return any(marker in lowered for marker in cls._SECRET_MARKERS)
 
     def _scrubbed_llm_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
@@ -535,7 +543,13 @@ class _RoleLLMMixin:
     ) -> dict[str, Any]:
         if func is None:
             return {"available": False}
-        get_stats = getattr(func, "get_queue_stats", None)
+        # Prefer the cross-worker aggregated view (sums every gunicorn
+        # worker's published snapshot; falls back to the local snapshot
+        # internally on any shared-storage failure, so "available" keeps
+        # meaning "this wrapper exists", never "aggregation succeeded").
+        get_stats = getattr(func, "get_aggregated_queue_stats", None)
+        if not callable(get_stats):
+            get_stats = getattr(func, "get_queue_stats", None)
         if not callable(get_stats):
             return {"available": False}
         stats = get_stats()

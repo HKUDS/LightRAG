@@ -358,12 +358,12 @@ async def test_upsert_full_docs_sql_protects_partial_writes():
         "process_options",
         "parse_engine",
     ):
-        assert (
-            f"coalesce( nullif(excluded.{col}, '')" in normalized
-        ), f"upsert_doc_full must guard {col} via COALESCE+NULLIF"
-        assert (
-            f"lightrag_doc_full.{col}" in normalized
-        ), f"upsert_doc_full must preserve existing {col} on partial write"
+        assert f"coalesce( nullif(excluded.{col}, '')" in normalized, (
+            f"upsert_doc_full must guard {col} via COALESCE+NULLIF"
+        )
+        assert f"lightrag_doc_full.{col}" in normalized, (
+            f"upsert_doc_full must preserve existing {col} on partial write"
+        )
 
     # chunk_options (JSONB) is guarded via CASE on NULL/empty-object literal
     assert "excluded.chunk_options is null" in normalized

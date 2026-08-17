@@ -23,15 +23,15 @@ jobs:
     # If you do not check out your code, Copilot will do this for you.
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
       - name: Cache pip packages
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-copilot-${{ hashFiles('**/pyproject.toml') }}
@@ -43,7 +43,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[api]"
-          pip install pytest pytest-asyncio httpx
+          pip install pytest pytest-asyncio httpx2
 
       - name: Create minimal frontend stub for Copilot agent
         run: |

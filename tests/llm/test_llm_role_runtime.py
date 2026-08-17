@@ -336,6 +336,7 @@ def test_role_llm_config_logs_once_on_init_with_metadata(
                         "provider_options": {
                             "temperature": 0.1,
                             "token": "nested-token",
+                            "thinking_token_budget": 2000,
                         },
                         "bedrock_aws_options": {
                             "region_name": "us-east-1",
@@ -352,6 +353,8 @@ def test_role_llm_config_logs_once_on_init_with_metadata(
     assert snapshot["host"] == "https://api.example.com/v1"
     assert snapshot["max_async"] == 7
     assert snapshot["timeout"] == 42
+    assert snapshot["metadata"]["provider_options"]["thinking_token_budget"] == 2000
+    assert "token" not in snapshot["metadata"]["provider_options"]
 
     headers = _role_config_headers(caplog)
     assert len(headers) == 1

@@ -1,4 +1,4 @@
-"""Shared debug LightRAG stand-in for the parse_* entry points.
+"""Shared debug LightRAG stand-in for registry-dispatched parsing.
 
 A minimal ``LightRAG`` stand-in plus a deterministic ``datetime`` shim,
 shared by the unified parser debug CLI (``lightrag/parser/cli.py``),
@@ -6,11 +6,12 @@ the golden-fixture regen script (``scripts/regen_native_docx_golden.py``),
 and the byte-equivalence golden tests
 (``tests/parser/docx/test_native_docx_golden.py``).
 
-All three engines (``native`` / ``mineru`` / ``docling``) read the same
-``self`` surface (``_persist_parsed_full_docs``, ``_resolve_source_file_for_parser``,
+Every engine is driven the same way — ``get_parser(engine).parse(
+ParseContext(rag, ...))`` — and ``ParseContext`` reads the same ``rag``
+surface (``_persist_parsed_full_docs``, ``_resolve_source_file_for_parser``,
 ``self.full_docs``, ``self.doc_status``), so a single stand-in covers every
-``parse_*`` method — when one of them grows a new dependency, extend
-this module rather than copy-pasting parallel stubs into each call site.
+engine — when a parser grows a new dependency, extend this module rather
+than copy-pasting parallel stubs into each call site.
 """
 
 from __future__ import annotations
@@ -36,7 +37,12 @@ class DebugFullDocs:
 
 
 class DebugDocStatus:
-    """No-op ``doc_status`` shim — the parse_* methods never read/write it."""
+    """No-op ``doc_status`` shim — the parse_* methods never read/write it.
+
+    ``update_doc_status_fields`` is the targeted-field write
+    ``_persist_parsed_full_docs`` uses to sync ``content_hash``; ``missing_ok``
+    is accepted because that caller passes it (a row that is already gone is
+    not an error there)."""
 
     async def get_by_id(self, doc_id: str) -> Any:
         return None
@@ -44,18 +50,27 @@ class DebugDocStatus:
     async def upsert(self, data: dict[str, Any]) -> None:
         return None
 
+    async def update_doc_status_fields(
+        self,
+        doc_id: str,
+        fields: dict[str, Any],
+        *,
+        missing_ok: bool = False,
+    ) -> None:
+        return None
 
-def build_debug_rag():
-    """Build a minimal LightRAG stand-in that exposes what ``parse_*`` reads.
+
+def build_debug_rag(*, extract_llm_func=None):
+    """Build a minimal LightRAG stand-in that exposes what a parser reads.
 
     The import of ``LightRAG`` is intentionally function-local: deferring
     it avoids a circular import when this helper is loaded during package
     init (the parser CLI resolves ``lightrag.parser.debug`` before
     ``lightrag`` itself is fully bound).
 
-    LightRAG-side attributes the three ``parse_*`` methods read off ``self`` —
-    every entry MUST be provided by this stand-in, or the debug CLI / golden
-    tests / regen script will all break in sync:
+    A parser is driven via ``get_parser(engine).parse(ParseContext(rag, ...))``
+    (CLI / golden tests / regen script). ``ParseContext`` reads these off the
+    ``rag`` it is handed — every entry MUST be provided by this stand-in:
 
     - **methods** (rebound from :class:`LightRAG`):
         - ``_persist_parsed_full_docs(doc_id, payload)`` — async; touches
@@ -66,27 +81,39 @@ def build_debug_rag():
     - **storages**:
         - ``self.full_docs.upsert(...)`` / ``.get_by_id(...)`` /
           ``.index_done_callback()`` — :class:`DebugFullDocs` covers all three.
-        - ``self.doc_status.get_by_id(...)`` / ``.upsert(...)`` —
-          :class:`DebugDocStatus` covers both.
+        - ``self.doc_status.get_by_id(...)`` / ``.upsert(...)`` /
+          ``.update_doc_status_fields(...)`` — :class:`DebugDocStatus` covers
+          all three.
+    - **LLM surface** (``_build_global_config`` + ``llm_response_cache``):
+        consumed by ``NativeParserBase._build_llm_submit`` when an engine
+        param requests the LLM bridge (docx ``smart_heading``). Pass
+        ``extract_llm_func`` (an async ``(prompt, **kwargs) -> str``) to
+        enable it; without injection the bridge stays ``None`` and the
+        algorithm hard-fails only if it actually needs the LLM.
 
-    When any of the three ``LightRAG.parse_*`` methods grows a new
-    dependency on ``self``, extend this stand-in (and update the list
-    above) rather than copy-pasting a parallel stub into the call sites.
+    When a parser grows a new dependency on the ``rag`` handed to
+    ``ParseContext``, extend this stand-in (and update the list above) rather
+    than copy-pasting a parallel stub into the call sites.
     """
     from lightrag import LightRAG
 
     class _DebugRag:
         _persist_parsed_full_docs = LightRAG._persist_parsed_full_docs
-        parse_native = LightRAG.parse_native
-        parse_mineru = LightRAG.parse_mineru
-        parse_docling = LightRAG.parse_docling
 
         def __init__(self) -> None:
             self.full_docs = DebugFullDocs()
             self.doc_status = DebugDocStatus()
+            self.llm_response_cache = None
 
         def _resolve_source_file_for_parser(self, file_path: str) -> str:
             return file_path
+
+        def _build_global_config(self) -> dict[str, Any]:
+            return {
+                "role_llm_funcs": {"extract": extract_llm_func},
+                "llm_cache_identities": {},
+                "enable_llm_cache_for_entity_extract": True,
+            }
 
     return _DebugRag()
 

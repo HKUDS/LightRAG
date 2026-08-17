@@ -46,6 +46,7 @@ export const supportedFileTypes = {
   'text/plain': [
     '.txt',
     '.md',
+    '.textpack', // # Markdown Bundle(zip)
     '.mdx', // # MDX (Markdown + JSX)
     '.rtf', // # Rich Text Format
     '.odt', // # OpenDocument Text
@@ -92,3 +93,35 @@ export const SiteInfo = {
   home: '/',
   github: 'https://github.com/HKUDS/LightRAG'
 }
+
+// --- Graph layout performance thresholds ------------------------------------
+// Shared by the initial FA2 layout (GraphControl) and the manual worker
+// layouts (LayoutsControl) so the two cannot drift.
+
+// Above this node count, node labels are forced off regardless of the
+// showNodeLabel setting (the hovered node's label is still drawn by sigma's
+// hover layer). Rendering thousands of labels is a major large-graph slowdown.
+export const LABEL_RENDER_LIMIT = 2000
+
+// Above this node count, layout switches assign positions directly instead of
+// animating: animateNodes interpolates every node per frame on the main thread.
+export const ANIMATE_NODE_LIMIT = 5000
+
+// Edge-count threshold that switches the graph between "small-graph experience"
+// and "large-graph performance". At or below it edges render as curves and edge
+// events (hover/click picking) follow the user setting; above it edges render
+// straight and edge events are fully disabled (no picking buffer allocated).
+// Shared by GraphControl (defaultEdgeType), GraphViewer (enableEdgeEvents
+// gating) and Settings (greying the Edge Events menu item) so they cannot drift.
+export const EDGE_PERF_LIMIT = 5000
+
+// Time budget (ms) a relaxing worker layout runs before it is stopped. Scales
+// with graph size, capped so huge graphs don't run unbounded.
+export const workerBudgetMs = (order: number): number => Math.min(1500 + order / 10, 10000)
+
+// One-time system-suggested user prompts, injected once into userPromptHistory
+// (for both fresh installs and upgrades). See settings store version 20 migration.
+export const suggestedUserPrompts: string[] = [
+  'Ignore the `References Section Format` instruction in the system prompt, and do not include a `References` section in the response.',
+  'For inline citations, use the footnote marker syntax `[^1]`, where the `^` preceding the identifier indicates a footnote reference. When multiple citations are required at a single location, each ID should be enclosed in separate footnote markers (e.g., `[^1][^2][^3]`).'
+]

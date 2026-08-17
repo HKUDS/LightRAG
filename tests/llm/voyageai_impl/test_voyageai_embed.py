@@ -159,6 +159,6 @@ def test_anthropic_embed_deprecation_shim():
         if hasattr(coro, "close"):
             coro.close()
 
-    assert any(
-        issubclass(w.category, DeprecationWarning) for w in caught
-    ), "anthropic_embed should warn DeprecationWarning"
+    assert any(issubclass(w.category, DeprecationWarning) for w in caught), (
+        "anthropic_embed should warn DeprecationWarning"
+    )

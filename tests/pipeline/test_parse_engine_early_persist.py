@@ -23,7 +23,7 @@ These tests pin the new contract:
 """
 
 import asyncio
-import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -44,6 +44,7 @@ from lightrag.utils_pipeline import (
     _DOC_STATUS_METADATA_CARRY_OVER_KEYS,
     doc_status_metadata_carry_over,
     doc_status_reset_metadata,
+    make_lightrag_doc_content,
     resolve_doc_status_parse_engine,
 )
 
@@ -253,57 +254,50 @@ def test_raw_doc_records_legacy_engine_at_parsing(tmp_path):
     asyncio.run(_run())
 
 
-def _write_lightrag_blocks(blocks_path: Path, body_paragraphs: list[str]) -> None:
-    lines = [
-        json.dumps(
-            {
-                "type": "meta",
-                "format": "lightrag",
-                "version": "1.0",
-                "format_version": "1.0",
-            },
-            ensure_ascii=False,
-        )
-    ]
-    for i, para in enumerate(body_paragraphs):
-        lines.append(
-            json.dumps(
-                {
-                    "type": "content",
-                    "blockid": f"b{i}",
-                    "format": "plain_text",
-                    "content": para,
-                },
-                ensure_ascii=False,
-            )
-        )
-    blocks_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+def test_lightrag_doc_records_native_engine_at_parsing(tmp_path):
+    """A lightrag-format doc on resume (already-parsed full_docs row pulled
+    back through the parse queue → ReuseParser cache-hit, parser does not
+    re-persist): parse_engine resolves to ``native`` and is stamped at
+    PARSING, identical through PROCESSED.
 
-
-def test_lightrag_doc_records_native_engine_at_parsing(tmp_path, monkeypatch):
-    """A lightrag-format doc (cache-hit, parser does not re-persist):
-    parse_engine resolves to ``native`` and is stamped at PARSING, identical
-    through PROCESSED."""
+    The row is seeded directly (full_docs ``parse_format=lightrag`` +
+    PENDING doc_status), mirroring how such rows exist in production now
+    that the ``docs_format="lightrag"`` enqueue entrypoint is removed:
+    they are written by the parsers and re-enter the queue only on
+    resume/retry."""
 
     async def _run():
-        input_dir = tmp_path / "input"
-        parsed_dir = input_dir / "__parsed__"
-        parsed_dir.mkdir(parents=True)
-        monkeypatch.setenv("INPUT_DIR", str(input_dir))
-
-        blocks_path = parsed_dir / "early.blocks.jsonl"
-        _write_lightrag_blocks(blocks_path, ["Body paragraph for lightrag doc."])
-
         rag = _new_rag(tmp_path / "work")
         await rag.initialize_storages()
         records = _attach_transition_spy(rag)
         try:
-            await rag.apipeline_enqueue_documents(
-                "",
-                file_paths="early.lightrag",
-                docs_format=FULL_DOCS_FORMAT_LIGHTRAG,
-                lightrag_document_paths="__parsed__/early.blocks.jsonl",
-                track_id="track-lr",
+            doc_id = "doc-early-lr"
+            body = "Body paragraph for lightrag doc."
+            now = datetime.now(timezone.utc).isoformat()
+            await rag.full_docs.upsert(
+                {
+                    doc_id: {
+                        # Stored WITH the marker, as the parsers persist
+                        # lightrag rows. No parse_engine → the format-based
+                        # fallback resolves to native.
+                        "content": make_lightrag_doc_content(body),
+                        "file_path": "early.lightrag",
+                        "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
+                    }
+                }
+            )
+            await rag.doc_status.upsert(
+                {
+                    doc_id: {
+                        "status": DocStatus.PENDING.value,
+                        "content_summary": body,
+                        "content_length": len(body),
+                        "file_path": "early.lightrag",
+                        "created_at": now,
+                        "updated_at": now,
+                        "track_id": "track-lr",
+                    }
+                }
             )
             await rag.apipeline_process_enqueue_documents()
 

@@ -33,9 +33,11 @@
     <p>
       <a href="README-zh.md"><img src="https://img.shields.io/badge/🇨🇳中文版-1a1a2e?style=for-the-badge"></a>
       <a href="README.md"><img src="https://img.shields.io/badge/🇺🇸English-1a1a2e?style=for-the-badge"></a>
+      <a href="README-ja.md"><img src="https://img.shields.io/badge/🇯🇵日本語版-1a1a2e?style=for-the-badge"></a>
     </p>
     <p>
       <a href="https://pepy.tech/projects/lightrag-hku"><img src="https://static.pepy.tech/personalized-badge/lightrag-hku?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads"></a>
+      <a href="https://hvtracker.net/agents/lightrag/"><img src="https://hvtracker.net/badge/lightrag.svg"></a>
     </p>
   </div>
 </div>
@@ -74,6 +76,7 @@
 ---
 
 ## 🎉 新闻
+- [2026.07]🎯[新功能]: 添加 Word 文档 **智能章节标题** 识别功能。
 - [2026.05]🎯[新功能]：**将 RagAnything 合并至 LightRAG**🎉。支持通过 **MinerU / Docling** 服务进行多模态内容解析与提取。
 - [2026.05]🎯[新功能]：引入四种可选的文本分块策略：`Fix`（固定）、`Recursive`（递归）、`Vector`（向量）和 `Paragraph`（段落语义）。
 - [2026.05]🎯[新功能]：**支持按角色配置 LLM**，提供四个独立角色：EXTRACT、QUERY、KEYWORDS 和 VLM，每个角色拥有独立的 LLM 设置。
@@ -130,17 +133,16 @@ uv tool install "lightrag-hku[api]"
 # source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install "lightrag-hku[api]"
 
-### 构建前端代码
-cd lightrag_webui
-bun install --frozen-lockfile
-bun run build
-cd ..
-
 # 配置 env 文件
 # 从 GitHub 仓库的根目录上下载 env.example 文件
 # 或从本地检出的源代码中获取 env.example 文件
 cp env.example .env  # 使用你的LLM和Embedding模型访问参数更新.env文件
-# 启动API-WebUI服务
+# 启动 API-WebUI 服务。默认绑定所有网络接口(0.0.0.0)。
+# 安全提示:对外网暴露前,请在 .env 中配置认证(LIGHTRAG_API_KEY,或
+# AUTH_ACCOUNTS 搭配 TOKEN_SECRET);若仅需本机访问,可绑定 127.0.0.1;
+# 否则所有接口都将公开可访问。
+# 注意:为兼容 Ollama 客户端,/api/* 路由默认不鉴权;如需对其启用认证,
+# 请将 WHITELIST_PATHS 收窄为 /health。
 lightrag-server
 ```
 
@@ -195,6 +197,8 @@ docker compose up
 > 在此获取LightRAG docker镜像历史版本: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
 >
 > 由 GitHub Actions 发布到 GHCR 的官方镜像已使用 GitHub OIDC 和 Sigstore Cosign 进行签名。校验方式请参阅 [docs/DockerDeployment.md](./docs/DockerDeployment.md#verify-official-ghcr-images-with-cosign)。
+>
+> 在 Apple Silicon（macOS 26）上，无需 Docker Desktop 即可在 Apple 原生的 `container` 运行时上运行相同的 Postgres/Neo4j/Milvus 存储栈 —— 参见 [docs/AppleContainerSetup.md](./docs/AppleContainerSetup.md)。
 
 ### 使用设置向导创建 .env 文件
 
@@ -211,26 +215,64 @@ make env-security-check # 可选：审计当前 .env 中的安全风险
 
 设置向导工具的详细说明请参阅 [docs/InteractiveSetup.md](./docs/InteractiveSetup.md)。
 
+### 可选：docx smart_heading 的 spaCy 模型
+
+Native docx 解析器的可选引擎参数 `smart_heading` 使用 spaCy 做分句/NER 启发式判断。spaCy 运行时已包含在 `api` extra 中——只有两个钉定版本的语言模型（`zh_core_web_sm` / `en_core_web_sm` 3.8.0，GitHub release wheel，未发布到 PyPI）需要额外一步安装：
+
+```bash
+lightrag-download-cache --spacy-install
+```
+
+可以按文件/规则启用 smart_heading（如 `LIGHTRAG_PARSER=docx:native(smart_heading=true)`），也可以在 `.env` 中全局启用：
+
+```bash
+# 路由到 native 引擎的 .docx 文件默认启用 smart_heading；
+# 单个文件/规则可用显式 native(smart_heading=false) 关闭。
+DOCX_SMART_HEADING=true
+```
+
+全局开关开启（或 `LIGHTRAG_PARSER` 规则携带 `native(smart_heading=true)`）时，服务器会在启动阶段校验模型并在缺失时立即报错（附安装指引）。从不启用 smart_heading 的部署无需安装模型。Docker 主镜像已内置模型（lite 镜像不含）；离线环境请参阅[离线部署指南](./docs/OfflineDeployment.md)。
+
+### 可选：SVG 栅格化所需的 libcairo（native md/textpack）
+
+Native markdown/textpack 解析器会通过 `cairosvg` 把内嵌的 SVG 图片栅格化为 PNG。`cairosvg` 是对 cairo 的 cffi 绑定：`pip install cairosvg`（随 `api` extra 一起安装）总能成功，但只有宿主机同时装了原生的 `libcairo` 共享库，栅格化才真正能跑——`pip`/`uv` 装不了系统库。缺失时栅格化会在运行时失败，对应的 SVG 会被跳过（不影响文档其余内容）；服务器会在启动时探测这一能力，缺失时以醒目的黄色警告提示，避免这个缺口一直藏到某篇文档处理时才被发现。
+
+按平台安装对应的系统包：
+
+```bash
+# Debian / Ubuntu（官方 Docker 镜像已内置）
+sudo apt-get install -y libcairo2
+
+# RHEL / Fedora
+sudo dnf install -y cairo
+
+# macOS（Homebrew）
+brew install cairo
+
+# Windows：安装内含 libcairo-2.dll 的 GTK3 运行时
+```
+
+从不处理带内嵌 SVG 的 markdown/textpack 文档的部署，可以忽略这条启动警告。
+
 ## 关于LightRAG
 
 ### 基于图的轻量级RAG框架
 
-**LightRAG** 是一种专为法律、医疗或金融等复杂文档分析设计的轻量级 RAG 框架，被视为 Microsoft GraphRAG 的高效替代方案。它采用双层架构来同时管理知识图谱（KG）和向量嵌入，完美填补了传统基于向量的 RAG 与基于图谱的 RAG 之间的技术鸿沟。同时，它有效解决了 GraphRAG 在处理大规模数据时计算开销大、响应缓慢以及增量更新成本高昂等瓶颈。该系统专为高扩展性而设计，在支持大规模数据集的同时，即使搭载 30B（300亿参数）的开源大语言模型（LLM），也能保持极高的信息提取准确率。
+**LightRAG** 是一个轻量级的知识图谱 RAG 框架，被视为 Microsoft GraphRAG 的高效替代方案。它采用双层架构来同时管理知识图谱（KG）和向量嵌入，完美填补了传统基于向量的 RAG 与基于图谱的 RAG 之间的技术鸿沟。LightRAG专为高扩展性而设计，有效地解决了大规模图谱索引和查询时计算开销大、响应缓慢以及增量更新成本高等问题；LightRAG在支持大规模数据集的同时，即使搭载 30B开源大语言模型（LLM），也能保持极高的RAG质量。
 
 ### 特点与优势
 
 1. **深度上下文理解**：通过图结构索引，LightRAG 能够捕捉实体间复杂的语义依赖关系，克服了传统分块检索方法上下文割裂的缺陷。在需要全局理解或逻辑推理的垂直领域（如法律、金融），其生成质量与上下文感知能力尤为突出。
 2. **卓越的全面性与多样性**：LightRAG的双层检索机制使其能够同时整合详细事实与抽象概念，让其在查询结果全面性（Comprehensiveness）和多样性（Diversity）取得卓越的成绩，有效应对复杂的跨文档查询。
 3. **极高的检索效率与低成本**：LightRAG不需要依赖低效的社区报告和复杂查询时的多跳推理，大幅度减少了索引和查询阶段对LLM的调用，显著减少了响应延迟与LLM计算成本。
-4. **快速适应动态数据**：LightRAG 支持无缝的增量知识库更新。新数据只需经过标准的图索引流程生成局部图谱，即可通过集合合并的方式直接融入现有图谱，无需破坏原有结构或重建全局索引，保证了系统在动态数据环境下的时效性。删除文档时可以利用构建阶段的LLM缓存快速重建受影响的实体关系，大幅度提高了知识库更新效率。
+4. **支持增量更新与局部删除**：LightRAG 解决了基于图的知识库难以增量更新和局部删除的问题，保证系统在动态数据环境下的时效性。删除文档时，系统可以利用构建阶段的 LLM 缓存快速重建受影响的实体与关系，大幅提升知识库的更新效率。
+5. **支持多种文档解析引擎**：LightRAG 的文件处理管线支持 MinerU、Docling 和 Native 等文档解析引擎，也支持第三方扩展解析引擎。LightRAG 专属的 Native 引擎可高效解析 Word 和 Markdown 文档中的图片、表格和公式，尤其适合处理多模态内容丰富的文档。Native 引擎还支持自动识别和纠正 Word 文档的章节标题，即使文档大纲不规范，也能改善内容提取效果，为后续按章节进行文本分块打下基础。
+6. **支持多种文本分块策略**：LightRAG 支持 4 种文本分块策略，分别是 `固定长度分块(F)`、`递归字符分块(R)`、`向量语义分块(V)` 和 `段落语义分块(P)`。其中，`段落语义分块(P)` 是 LightRAG 专属的分块策略，可以**让分块边界尽可能对齐文档原生的语义边界**（标题、段落和表格），从而减少标题与内容错配、长表格切分后丢失标题行等问题。
+7. **支持多种存储后端**：LightRAG 默认的 KV、向量和图存储均采用基于本地文件持久化的内存数据库，非常适合研究者快速评估项目。LightRAG 还支持多种主流后端存储，可用于大规模数据集的生产部署。
 
 ### 多模态能力的升级
 
-从 LightRAG v1.5 版本开始，该框架正式引入了对多模态文档的分析和检索能力：
-
-* **多引擎文档解析：** 其文件处理流水线（Pipeline）支持使用 MinerU、Docling 和 Native 文档解析引擎，可高效提取文档中的文字、表格、公式和图片。
-* **跨模态实体与关系映射：** 在统一的框架内实现跨模态的实体提取和关系映射，从而达成无缝的索引与查询。
-* **应用场景提升：** 全新的多模态处理流水线能够大幅提高操作说明书、学术论文等含有丰富多模态内容文档的 RAG 质量。
+传统 RAG 系统缺乏有效处理文档中图片、公式和表格等多模态内容的能力。从 v1.5 版本开始，LightRAG 将多模态处理能力无缝集成到文件处理管线和查询流程中。LightRAG 通过知识图谱将这些多模态内容与正文有机联系起来，在回答用户查询时能够结合多模态信息，给出更准确、更可靠的答案。这一能力可大幅提升操作说明书、学术论文等多模态内容丰富文档的 RAG 质量。
 
 ### LightRAG API 服务器
 
@@ -242,7 +284,16 @@ LightRAG 服务器不仅提供给了一个供出选择体验LightRAG功能的Web
 
 ### LLM 模型的选择
 
-LightRAG 的工作过程中需要使用到 4 种角色的 LLM/VLM。应该为不同角色的 LLM 配置不同能力和速度的模型，以获得速度和能力之间的平衡。LightRAG 对大型语言模型（LLM）的能力要求会高于传统 RAG，因为它需要 LLM 执行文档中的实体关系抽取任务。在查询阶段，LLM 模型需要处理 LightRAG 召回的实体、关系和文本块等大量信息，需要模型具备在含有噪声的长上下文中作出高质量回答的能力。详细的模型配置请参见 [RoleSpecificLLMConfiguration-zh.md](./docs/RoleSpecificLLMConfiguration-zh.md)
+LightRAG 的工作过程中需要使用到 4 种角色的 LLM/VLM。应该为不同角色的 LLM 配置不同能力和速度的模型，以获得速度和能力之间的平衡。LightRAG 对大型语言模型（LLM）的能力要求会高于传统 RAG，因为它需要 LLM 执行文档中的实体关系抽取任务。在查询阶段，LLM 模型需要处理 LightRAG 召回的实体、关系和文本块等大量信息，需要模型具备在含有噪声的长上下文中作出高质量回答的能力。
+
+**按角色推荐的模型：**
+
+- **抽取 LLM（`EXTRACT`）**：实体关系抽取会对每个文本块调用，选择主流的高速模型即可，并**强烈推荐使用非思考模型（关闭 reasoning/thinking 模式）**，以免抽取变慢、变贵。国外可选 GPT-5.6-luna、Claude Haiku、Gemini-mini；国内可选 DeepSeek-V4-lite、Kimi。本地部署最低可考虑 Qwen3-30B-A3B-Instruct。
+- **查询 LLM（`QUERY`）**：负责在长且嘈杂的召回内容上生成最终答案，应选择比抽取模型*更强*的模型，尽量提高回答质量；此处使用带思考能力的模型没有问题。
+- **关键词 LLM（`KEYWORD`）**：轻量、对延迟敏感的环节，**一定要选择非思考模型**以降低查询延迟；选用与抽取模型相当的高速模型即可。
+- **VLM（`VLM`）**：主流的多模态模型均可，需支持图片输入。本地部署可考虑 Qwen3.6-35B-A3B。
+
+在可接受的时间和价格范围内，优先选择评分（各类公开榜单/基准）越高的模型越好。详细的模型配置请参见 [RoleSpecificLLMConfiguration-zh.md](./docs/RoleSpecificLLMConfiguration-zh.md)
 
 ### 查询模式的选择
 
@@ -258,13 +309,13 @@ LightRAG 的默认查询模式为 mix。使用 mix 模式通常可以获得最�
 
 ### Embedding 模型
 
-在选择 Embedding 模型的时候需要注意其对多语言的支持能力。LightRAG 的检索质量对 Embedding 模型的依赖有限，因此建议尽量选择低维度和速度快的模型。通常 `BAAI/bge-m3` 已经足够使用。建议尽量本地部署 Embedding 模型，以获得最好的性能。
+在选择 Embedding 模型的时候需要注意其对多语言的支持能力。LightRAG 的检索质量对 Embedding 模型的依赖有限，因此建议尽量选择低维度和速度快的模型。选择主流最新的 Embedding 模型即可；本地部署首选 `BAAI/bge-m3`。建议尽量本地部署 Embedding 模型，以获得最好的性能。
 
 **重要提示**：在文档索引前必须确定使用的 Embedding 模型，且在文档查询阶段必须沿用与索引阶段相同的模型。嵌入模型一旦选定通常就不能修改。如果修改的话，需要对所有文本块、实体和关系进行重新嵌入。LightRAG 目前没有提供重新嵌入的工具。有些存储（例如 PostgreSQL）在首次建立数据表的时候需要确定向量维度，因此更换 Embedding 模型后需要删除向量相关库表，以便让 LightRAG 重建新的库表。
 
 ### 开启 Rerank 选项
 
-查询阶段开启 Rerank 选项可以显著提高查询的质量。开启 Rerank 通常会引入 1～2 秒的延时。为了降低延时，建议尽量在本地部署 Rerank 模型。Rerank 的相关配置方式请参考 `.env.example` 文件。Rerank 模型与 Embedding 模型不同，可以在查询阶段随时更换。
+查询阶段开启 Rerank 选项可以显著提高查询的质量。开启 Rerank 通常会引入 1～2 秒的延时。为了降低延时，建议尽量在本地部署 Rerank 模型。主流最新的 Reranker 皆可，本地部署推荐 `BAAI/bge-reranker-v2-m3`。Rerank 的相关配置方式请参考 `.env.example` 文件。Rerank 模型与 Embedding 模型不同，可以在查询阶段随时更换。
 
 ### 文档处理流水线的配置
 
@@ -319,7 +370,15 @@ LightRAG 的默认存储全部都是基于文件进行持久化的内存数据�
 - **FORCE_LLM_SUMMARY_ON_MERGE / MAX_SOURCE_IDS_PER_RELATION**：控制每个`实体/关系`能够最多与多少个文本块保持关联
 - **SOURCE_IDS_LIMIT_METHOD**：控制`实体/关系`关联文本块超过限制后是否继续更新实体关系的描述（默认不再更新，因为此时实体关系的描述已经足够丰富，继续更新的意义不大；放弃更新可以极大地提高知识库的构建速度）
 - **DEFAULT_MAX_FILE_PATHS**：控制`实体/关系`关联的原始文件的最大数量，超过这个数量之后新的文件名不再写入到向量存储。
-- **OPENAI_LLM_MAX_TOKENS / OPENAI_LLM_MAX_COMPLETION_TOKENS**: 为了解决循环输出或输出太多实体关系导致LLM调用超时问题，可以设置LLM模型最大的输出token数量。不同LLM供应商需要设置不同参数，详见`env.example`中的说明。
+
+### 解决实体关系抽取阶段的 LLM 超时
+
+实体关系抽取阶段的 LLM 超时通常源于以下三种原因之一。先判断原因，再采用对应的解决方案（参数可以组合使用）：
+
+- **模型太慢。** 速度低于约 50 tokens/秒的模型，可能无法在请求超时前完成包含大量实体关系的文本块的抽取。可以通过 `*_LLM_TIMEOUT` 增大超时时间——既可以是全局的 `LLM_TIMEOUT`，也可以是抽取阶段专用的角色参数 `EXTRACT_LLM_TIMEOUT`。注意实际的执行超时是所配置值的**两倍**，因此 `EXTRACT_LLM_TIMEOUT=300` 对应最长 **600 秒**。
+- **文本块产生的实体关系太多。** 例如参考文献文本块会让模型输出极其大量的记录，从而无法在限定时间内完成。可以通过 `OPENAI_LLM_MAX_TOKENS` 或 `OPENAI_LLM_MAX_COMPLETION_TOKENS` 限制输出长度（具体参数名取决于 LLM 供应商，详见 `env.example`）。一个实用的估算规则是 `max_output_tokens < LLM_TIMEOUT × 每秒token数`（例如 `9000 < 240s × 50 tps`）。
+- **模型存在缺陷，陷入输出死循环。** 某些模型（尤其是本地部署的 Qwen 模型）在遇到特殊文本时偶尔会陷入无尽的输出死循环。如果是偶发情况，通常只需将该文档重新处理一次即可解决。
+- **专门针对参考文献（P 分块策略）。** 使用段落语义（`P`）分块策略（例如 `LIGHTRAG_PARSER=...-iteP`）时，设置 `CHUNK_P_DROP_REFERENCES=true` 可在分块前自动删除匹配的参考文献块，从而避免参考文献产生大量低价值的实体关系（这是导致超时的常见原因）。也可以通过文件名提示 `paper.[-P(drop_rf=true)].pdf` 对单个文件启用；相关的检测参数（`CHUNK_P_REFERENCES_TAIL_N`、`CHUNK_P_REFERENCES_HEADINGS`）详见 `env.example`。
 
 ### 文档查询阶段其他重要配置
 
@@ -408,6 +467,92 @@ LightRAG 在农业、计算机科学、法律和混合等领域均显著优于 N
 |**总体**|45.2%|**54.8%**|48.0%|**52.0%**|47.2%|**52.8%**|**50.4%**|49.6%|
 
 
+## 📚 文档与工具清单
+
+### 参考文档（`docs/`）
+
+下表优先给出中文版链接；同目录下的同名 `*.md` 为对应的英文原版。
+
+**部署与安装**
+
+| 文档 | 内容 |
+|---|---|
+| [InteractiveSetup.md](./docs/InteractiveSetup.md) | `make env-*` 安装向导：生成 `.env` 以及由向导管理的 `docker-compose.final.yml` |
+| [DockerDeployment.md](./docs/DockerDeployment.md) | Docker / Docker Compose 部署、镜像版本差异，以及用 Cosign 验证官方 GHCR 镜像 |
+| [AppleContainerSetup.md](./docs/AppleContainerSetup.md) | 在 Apple 原生 `container` 运行时上运行 Postgres / Neo4j / Milvus 存储栈（Apple Silicon，无需 Docker Desktop） |
+| [OfflineDeployment.md](./docs/OfflineDeployment.md) | 离线/内网环境部署：预装依赖、tiktoken 缓存与 spaCy 模型 |
+| [MultiSiteDeployment.md](./docs/MultiSiteDeployment.md) | 单机反向代理后运行多个相互隔离的实例，共用一份 WebUI 构建产物（`LIGHTRAG_API_PREFIX`） |
+| [FrontendBuildGuide.md](./docs/FrontendBuildGuide.md) | WebUI 的构建与分发方式（Bun / Node），以及哪些安装场景需要自行构建 |
+
+**服务器与 API**
+
+| 文档 | 内容 |
+|---|---|
+| [LightRAG-API-Server-zh.md](./docs/LightRAG-API-Server-zh.md) | 服务器完整指南：启动、配置、认证、REST 接口与 WebUI 使用 |
+
+**文档处理**
+
+| 文档 | 内容 |
+|---|---|
+| [FileProcessingPipeline-zh.md](./docs/FileProcessingPipeline-zh.md) | 流水线规格说明：`LIGHTRAG_PARSER` 路由规则、各引擎参数、多模态分析、文档状态生命周期 |
+| [ParserServiceDeployment-zh.md](./docs/ParserServiceDeployment-zh.md) | 自行搭建 MinerU 与 docling-serve 外部解析服务（Docker、GPU、模型权重） |
+| [ParagraphSemanticChunking-zh.md](./docs/ParagraphSemanticChunking-zh.md) | `Paragraph semantic (P)` 分块策略：对齐标题/段落/表格边界、参考文献丢弃 |
+| [LightRAGSidecarFormat-zh.md](./docs/LightRAGSidecarFormat-zh.md) | sidecar（`*.parsed/`）交换格式规范，所有支持多模态的解析引擎都必须遵循 |
+| [ThirdPartyParser-zh.md](./docs/ThirdPartyParser-zh.md) | 开发并注册自定义 parser 引擎 |
+| [ParserDebugCLI-zh.md](./docs/ParserDebugCLI-zh.md) | `python -m lightrag.parser.cli` —— 脱离服务器离线解析单个文件并查看结果 |
+
+**模型与存储**
+
+| 文档 | 内容 |
+|---|---|
+| [RoleSpecificLLMConfiguration-zh.md](./docs/RoleSpecificLLMConfiguration-zh.md) | 按角色（`EXTRACT` / `QUERY` / `KEYWORD` / `VLM`）配置 LLM 与 VLM |
+| [AsymmetricEmbedding.md](./docs/AsymmetricEmbedding.md) | 查询/文档非对称 embedding（`EMBEDDING_ASYMMETRIC`）与各模型的前缀 |
+| [MilvusConfigurationGuide.md](./docs/MilvusConfigurationGuide.md) | 通过 `vector_db_storage_cls_kwargs` 调整 Milvus 索引参数 |
+
+**SDK 与开发**
+
+| 文档 | 内容 |
+|---|---|
+| [ProgramingWithCore.md](./docs/ProgramingWithCore.md) | 以 Python SDK 方式使用 LightRAG，包含未通过 REST 暴露的功能 |
+| [Reproduce.md](./docs/Reproduce.md) | 复现论文中的评测结果 |
+| [UV_LOCK_GUIDE.md](./docs/UV_LOCK_GUIDE.md) | 何时以及如何更新 `uv.lock` |
+
+### 运维工具（`lightrag/tools/`）
+
+涉及存储的工具与服务器一样读取 `.env` 和环境变量，请在项目根目录下、使用同一套配置运行。其中若干工具会原地改写存储——是否必须先停掉服务器（以及其它写入方）请查看对应指南，`rebuild_vdb` 必须先停。
+
+**`rebuild_vdb.py`** — `lightrag-rebuild-vdb` — [README_REBUILD_VDB.md](./lightrag/tools/README_REBUILD_VDB.md)
+
+丢弃并从权威数据源（图节点/边、`text_chunks` KV 存储）重建全部向量存储。用于向量写入失败后的恢复，以及更换 embedding 模型或维度之后的重建；另提供只读的一致性检查模式。
+
+**`clean_llm_query_cache.py`** — `lightrag-clean-llmqc` — [README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md)
+
+删除查询模式的 LLM 缓存条目（`mix:*`、`hybrid:*`、`local:*`、`global:*`、`naive:*`），同时保留成本高昂的抽取缓存。
+
+**`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
+
+在不同 KV 存储后端之间迁移 default 模式缓存（抽取、摘要、多模态分析），并保持 workspace 隔离。
+
+**`kg_integrity_repair.py`** — `python -m lightrag.tools.kg_integrity_repair [--apply]` — [README_KG_INTEGRITY_REPAIR.md](./lightrag/tools/README_KG_INTEGRITY_REPAIR.md)
+
+全图审计，找出未被 `full_entities` / `full_relations` 恢复锚点引用的图数据，报告无法归属的孤儿对象，并可选地补齐锚点，使删除/重试流程重新能够发现它们。
+
+**`source_conflict_repair.py`** — `python -m lightrag.tools.source_conflict_repair list` / `... repair` — [README_SOURCE_CONFLICT_REPAIR.md](./lightrag/tools/README_SOURCE_CONFLICT_REPAIR.md)
+
+列出争用同一个规范 source key 的文档，并把运维人员未选中的候选降级为重复项。工具本身从不自行裁定胜者，也从不删除内容。
+
+**`download_cache.py`** — `lightrag-download-cache [--spacy-install]` — [OfflineDeployment.md](./docs/OfflineDeployment.md)
+
+预先下载离线部署及 docx `smart_heading` 引擎参数所需的 tiktoken 编码与钉版 spaCy 模型。
+
+**`hash_password.py`** — `lightrag-hash-password [--username USER]` — [LightRAG-API-Server-zh.md](./docs/LightRAG-API-Server-zh.md)
+
+生成可直接粘贴进 `AUTH_ACCOUNTS` 的 bcrypt 口令值。
+
+**`check_initialization.py`** — `python -m lightrag.tools.check_initialization --demo` — [ProgramingWithCore.md](./docs/ProgramingWithCore.md)
+
+SDK 诊断工具：校验 `LightRAG` 实例是否已完整初始化，用于排查最常见的「忘记 `await rag.initialize_storages()`」问题。
+
 ## 🔗 相关项目
 
 *生态与扩展*
@@ -447,10 +592,6 @@ LightRAG 在农业、计算机科学、法律和混合等领域均显著优于 N
 </div>
 
 ---
-
-## ⭐ Star 历史
-
-[![Star History Chart](https://api.star-history.com/svg?repos=HKUDS/LightRAG&type=Date)](https://star-history.com/#HKUDS/LightRAG&Date)
 
 ## 🤝 贡献
 

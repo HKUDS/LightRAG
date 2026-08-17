@@ -31,8 +31,9 @@ keyfile = None
 # Enable preload_app option
 preload_app = True
 
-# Use Uvicorn worker
-worker_class = "uvicorn.workers.UvicornWorker"
+# Use Uvicorn worker, subclassed so a worker whose master died stops serving
+# instead of holding the listening socket forever (see gunicorn_worker.py).
+worker_class = "lightrag.api.gunicorn_worker.LightRAGUvicornWorker"
 
 # Other Gunicorn configurations
 

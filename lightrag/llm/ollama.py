@@ -27,13 +27,78 @@ from lightrag.api import __api_version__
 import numpy as np
 from typing import Any, Optional, Union
 from lightrag.utils import (
+    TruncatedResponse,
+    empty_length_truncated_hint,
+    format_response_diagnostics,
     wrap_embedding_func_with_attrs,
     logger,
 )
 
 
+class InvalidResponseError(Exception):
+    """A response that cannot be used, e.g. empty content.
+
+    Declared per binding, as in ``lightrag.llm.openai`` / ``gemini`` /
+    ``anthropic``: each provider owns its own so importing one binding never
+    drags in another's import-time setup. Deliberately absent from the retry
+    predicate below — see the raise site for why re-running is pointless here.
+    """
+
+    pass
+
+
 _OLLAMA_CLOUD_HOST = "https://ollama.com"
 _CLOUD_MODEL_SUFFIX_PATTERN = re.compile(r"(?:-cloud|:cloud)$")
+
+# think= (OllamaLLMOptions.think) needs ollama-python>=0.5.3 on its own -- the
+# version where ChatRequest.think widened from Optional[bool] to a Union with a
+# Literal, so both the booleans and the named reasoning levels
+# ("low"/"medium"/"high") serialize. The gate is pinned to the binding's
+# declared floor (>=0.5.4, raised by ollama_embed forwarding dimensions=) rather
+# than to think's own 0.5.3, so there is one ollama version to reason about
+# instead of a per-feature matrix: an install below the declared floor is out of
+# contract for this binding as a whole.
+# This check is what enforces that floor where the declaration was never applied
+# -- the auto-install at the top of this module installs a *missing* ollama but
+# never upgrades an outdated one, so an in-place LightRAG upgrade can still be
+# sitting on an old version. Installed-package metadata only (no network call),
+# consulted solely from ensure_think_supported: an environment on an older
+# ollama still imports and works normally for every call that doesn't set think.
+_OLLAMA_SUPPORTS_THINK = pm.is_installed("ollama", ">=0.5.4")
+
+
+def ensure_think_supported(options: Any, *, context: str = "") -> None:
+    """Reject a think= option the installed ollama package cannot forward.
+
+    Called from two places on purpose:
+
+    - ``_ollama_model_if_cache``, right before the option is lifted out --
+      the only defence library callers (who never go through the API server)
+      get.
+    - the API server's option-resolution chokepoints, so a misconfigured
+      OLLAMA_LLM_THINK fails while the server is still starting up instead of
+      mid-pipeline, hours into a document run.
+
+    ``options`` that is not a dict, or carries no ``think`` key at all (e.g.
+    the embedding options dict, which has no such field), is left alone: the
+    model keeps its own thinking default and an older ollama stays usable.
+
+    Only the installed *package* is checkable here. Whether the Ollama server
+    is new enough for reasoning levels, and whether the model supports thinking
+    at all, are answerable only by a live request and so stay runtime errors.
+    """
+    if not isinstance(options, dict) or "think" not in options:
+        return
+    if _OLLAMA_SUPPORTS_THINK:
+        return
+    where = f" for {context}" if context else ""
+    raise RuntimeError(
+        f"OLLAMA_LLM_THINK / {{ROLE}}_OLLAMA_LLM_THINK is set{where} to "
+        f"{options['think']!r}, but the installed ollama package does not "
+        'support think= (needs ollama>=0.5.4). Run `pip install -U "ollama'
+        '>=0.5.4"` (or `uv sync`) to use it, or unset the option to leave '
+        "thinking at the model's own default."
+    )
 
 
 def _coerce_host_for_cloud_model(host: Optional[str], model: object) -> Optional[str]:
@@ -50,6 +115,28 @@ def _coerce_host_for_cloud_model(host: Optional[str], model: object) -> Optional
         )
         return _OLLAMA_CLOUD_HOST
     return host
+
+
+def _response_message_field(response: Any, field: str) -> Any:
+    """Read ``message.<field>`` across the ollama response shapes.
+
+    ollama<0.4 returns raw dicts, ollama>=0.4 a ChatResponse whose ``message``
+    is a SubscriptableBaseModel; both expose ``.get``, and attribute access
+    covers anything that does not. Used only for diagnostics, so an unexpected
+    shape must degrade to ``None`` rather than raise over the failure the
+    caller is in the middle of reporting.
+    """
+    try:
+        message = response["message"]
+    except Exception:
+        return None
+    getter = getattr(message, "get", None)
+    if getter is None:
+        return getattr(message, field, None)
+    try:
+        return getter(field)
+    except Exception:
+        return None
 
 
 def _normalize_ollama_response_format(kwargs: dict) -> None:
@@ -136,6 +223,23 @@ async def _ollama_model_if_cache(
         kwargs.pop("keyword_extraction", None)
 
     _normalize_ollama_response_format(kwargs)
+
+    # `think` (OllamaLLMOptions) travels in with the rest of the generation
+    # options, but Ollama's chat() takes it as its own top-level argument,
+    # not a key inside `options` -- lift it out here rather than at every
+    # call site. Absent entirely (e.g. the embedding options dict, which has
+    # no `think` field) leaves thinking at the model's own default.
+    options = kwargs.get("options")
+    ensure_think_supported(options)
+    if isinstance(options, dict) and "think" in options:
+        # Read without mutating -- options can be the same dict object
+        # reused across every call for a role's lifetime (library callers
+        # pass it once via llm_model_kwargs), so popping from it here would
+        # only lift `think` out on the first call and silently lose it on
+        # every call after that.
+        kwargs["think"] = options["think"]
+        kwargs["options"] = {k: v for k, v in options.items() if k != "think"}
+
     host = kwargs.pop("host", None)
     timeout = kwargs.pop("timeout", None)
     if timeout == 0:
@@ -196,6 +300,50 @@ async def _ollama_model_if_cache(
             this information is not needed for the final
             response and can simply be trimmed.
             """
+
+            # Flag token-limit truncation (done_reason == "length", num_predict
+            # exhausted) so the cache layer skips persisting partial output.
+            # .get works on both the raw dict (ollama<0.4) and the
+            # SubscriptableBaseModel ChatResponse (ollama>=0.4); a missing key
+            # returns None and keeps the previous cache-everything behavior.
+            if response.get("done_reason") == "length":
+                if not model_response or not model_response.strip():
+                    # Empty AND cut off: nothing was generated at all, which is
+                    # structurally broken rather than merely short. Returning ""
+                    # here indexed an empty knowledge graph and still reported
+                    # the document PROCESSED (issue #3601 gap 4, seen with
+                    # thinking models burning the whole num_predict budget on
+                    # the reasoning trace). Raise like the OpenAI binding does,
+                    # so the document ends FAILED and stays retryable.
+                    #
+                    # Deliberately NOT added to the @retry set: unlike the
+                    # OpenAI check — which also covers non-deterministic
+                    # empty-content modes — this fires only on the token limit,
+                    # and re-running the same prompt against the same budget
+                    # would just burn three calls before failing anyway.
+                    thinking = _response_message_field(response, "thinking") or ""
+                    diagnostics = format_response_diagnostics(
+                        done_reason="length",
+                        eval_count=response.get("eval_count"),
+                        prompt_eval_count=response.get("prompt_eval_count"),
+                        thinking_len=len(thinking.strip()),
+                    )
+                    hint = empty_length_truncated_hint(
+                        "consider raising OLLAMA_LLM_NUM_PREDICT or disabling "
+                        "thinking mode",
+                        reasoning_consumed_budget=bool(thinking.strip()),
+                    )
+                    error_message = (
+                        f"Received empty content from Ollama API "
+                        f"({diagnostics}): {hint}"
+                    )
+                    logger.error(error_message)
+                    raise InvalidResponseError(error_message)
+                logger.warning(
+                    "Ollama response truncated by token limit "
+                    f"(done_reason=length, content_len={len(model_response)}), returning partial content"
+                )
+                model_response = TruncatedResponse(model_response)
 
             return model_response
     except Exception as e:
@@ -259,6 +407,7 @@ async def ollama_embed(
     context: str = "document",
     query_prefix: str | None = None,
     document_prefix: str | None = None,
+    embedding_dim: int | None = None,
     **kwargs,
 ) -> np.ndarray:
     """Generate embeddings using Ollama's API.
@@ -276,6 +425,10 @@ async def ollama_embed(
             when supports_asymmetric=True. Default is "document".
         query_prefix: Optional prefix to prepend to texts when context="query" (e.g., "search_query: ").
         document_prefix: Optional prefix to prepend to texts when context="document" (e.g., "search_document: ").
+        embedding_dim: Optional target dimension. When set, forwarded to Ollama's
+            embed API so the model actually returns a vector of that size. Kept as
+            the last named parameter (before **kwargs) so existing positional
+            callers of the pre-existing parameters are unaffected.
         **kwargs: Additional arguments passed to the Ollama client.
 
     Returns:
@@ -312,9 +465,11 @@ async def ollama_embed(
     ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
     try:
         options = kwargs.pop("options", {})
-        data = await ollama_client.embed(
-            model=embed_model, input=texts, options=options
-        )
+        embed_kwargs = {"model": embed_model, "input": texts, "options": options}
+        # mirrors lightrag/llm/openai.py's api_params["dimensions"] handling
+        if embedding_dim is not None:
+            embed_kwargs["dimensions"] = embedding_dim
+        data = await ollama_client.embed(**embed_kwargs)
         return np.array(data["embeddings"])
     except Exception as e:
         logger.error(f"Error in ollama_embed: {str(e)}")

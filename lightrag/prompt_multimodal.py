@@ -133,7 +133,8 @@ MULTIMODAL_PROMPTS[
 6. OUTPUT RULES
    - Return ONE valid JSON object only.
    - No surrounding markdown, no code fences, no preamble, no explanation.
-   - All string values must be properly escaped JSON strings (escape `"` as `\\"`, newlines as `\\n`).
+   - All string values must be properly escaped JSON strings (escape `"` as `\\"`, escape backslashes as `\\\\`, newlines as `\\n`).
+   - Any LaTeX inside a string value must use double-escaped backslashes (e.g. `\\frac{{a}}{{b}}` is written as `"\\\\frac{{a}}{{b}}"` in the JSON).
    - The output values for the JSON fields `name` and `description` must be written in `{language}`.
 
 ================ ADDITIONAL CONTEXT ================
@@ -212,7 +213,8 @@ MULTIMODAL_PROMPTS[
 5. OUTPUT RULES
    - Return ONE valid JSON object only.
    - No surrounding markdown, no code fences, no preamble, no explanation.
-   - All string values must be properly escaped JSON strings (escape `"` as `\\"`, newlines as `\\n`).
+   - All string values must be properly escaped JSON strings (escape `"` as `\\"`, escape backslashes as `\\\\`, newlines as `\\n`).
+   - Any LaTeX inside a string value (e.g. formulas quoted from table cells) must use double-escaped backslashes (e.g. `\\frac{{a}}{{b}}` is written as `"\\\\frac{{a}}{{b}}"` in the JSON).
    - The output values for the JSON fields `name` and `description` must be written in `{language}`.
 
 ================ TABLE CONTENT ================

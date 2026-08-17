@@ -37,7 +37,10 @@
     "cancel": "Annuler",
     "save": "Sauvegarder",
     "saving": "Sauvegarde en cours...",
-    "saveFailed": "Échec de la sauvegarde"
+    "saveFailed": "Échec de la sauvegarde",
+    "errorBoundaryTitle": "Une erreur s'est produite",
+    "errorBoundaryDescription": "Ce panneau n'a pas pu s'afficher. Réessayez ou passez à un autre onglet.",
+    "errorBoundaryRetry": "Réessayer"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -99,7 +102,7 @@
         "error": "Certains fichiers n'ont pas pu être téléchargés"
       },
       "generalError": "Échec du téléchargement\n{{error}}",
-      "fileTypes": "Types pris en charge : TXT, MD, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "Types pris en charge : {{types}}",
       "fileUploader": {
         "singleFileLimit": "Impossible de télécharger plus d'un fichier à la fois",
         "maxFilesLimit": "Impossible de télécharger plus de {{count}} fichiers",
@@ -139,18 +142,18 @@
       "filters": {
         "all": "Tous",
         "completed": "Terminé",
-        "parse": "Extraction",
+        "parse": "Parsing",
         "analyze": "Analyse",
-        "process": "Traitement",
-        "failed": "Échec"
+        "process": "Extraction",
+        "failed": "Échoué"
       },
       "status": {
         "all": "Tous",
         "completed": "Terminé",
         "preprocessed": "Prétraité",
-        "parsing": "Analyse syntaxique",
-        "analyzing": "Analyse en cours",
-        "processing": "En traitement",
+        "parsing": "Parsing",
+        "analyzing": "Analyse",
+        "processing": "Extraction",
         "pending": "En attente",
         "failed": "Échoué"
       },
@@ -177,7 +180,6 @@
     "pipelineStatus": {
       "title": "État du Pipeline",
       "busy": "Pipeline Occupé",
-      "requestPending": "Demande en Attente",
       "cancellationRequested": "Annulation Demandée",
       "jobName": "Nom du Travail",
       "startTime": "Heure de Début",
@@ -201,6 +203,8 @@
   },
   "graphPanel": {
     "dataIsTruncated": "Les données du graphe sont tronquées au nombre maximum de nœuds",
+    "fetchRetriesExhausted": "Échec du chargement des données du graphe. Utilisez l'actualisation pour réessayer.",
+    "graphBuildFailed": "Échec du rendu des données du graphe. Utilisez l'actualisation pour réessayer.",
     "statusDialog": {
       "title": "Paramètres du Serveur LightRAG",
       "description": "Afficher l'état actuel du système et les informations de connexion"
@@ -249,13 +253,14 @@
         "showEdgeLabel": "Afficher l'étiquette de l'arête",
         "hideUnselectedEdges": "Masquer les arêtes non sélectionnées",
         "edgeEvents": "Événements des arêtes",
+        "edgeEventsDisabledHint": "Désactivé pour les graphes de plus de {{count}} arêtes",
         "maxQueryDepth": "Profondeur maximale de la requête",
         "maxNodes": "Nombre maximum de nœuds",
-        "maxLayoutIterations": "Itérations maximales de mise en page",
         "resetToDefault": "Réinitialiser par défaut",
         "edgeSizeRange": "Plage de taille des arêtes",
         "depth": "D",
-        "max": "Max",
+        "node": "Nœud",
+        "edge": "Arête",
         "degree": "Degré",
         "apiKey": "Clé API",
         "enterYourAPIkey": "Entrez votre clé API",
@@ -327,6 +332,7 @@
       "editPropertyDescription": "Modifiez la valeur de la propriété dans la zone de texte ci-dessous.",
       "errors": {
         "duplicateName": "Le nom du nœud existe déjà",
+        "invalidEntityName": "Saisissez un nom de nœud valide",
         "updateFailed": "Échec de la mise à jour du nœud",
         "tryAgainLater": "Veuillez réessayer plus tard",
         "updateSuccessButMergeFailed": "Propriétés mises à jour, mais la fusion a échoué : {{error}}",
@@ -407,10 +413,21 @@
       "copyManualInstruction": "Veuillez sélectionner et copier le texte manuellement",
       "thinking": "Réflexion en cours...",
       "thinkingTime": "Temps de réflexion {{time}}s",
-      "thinkingInProgress": "Réflexion en cours..."
+      "thinkingInProgress": "Réflexion en cours...",
+      "responseTime": "Temps de réponse {{time}}s",
+      "firstTokenTime": "Premier token {{time}}s",
+      "progress": {
+        "extracting_keywords": "Extraction des mots-clés...",
+        "retrieving_entities": "Récupération des entités...",
+        "retrieving_relations": "Récupération des relations...",
+        "retrieving_chunks": "Récupération des segments...",
+        "reranking": "Réévaluation des résultats...",
+        "generating_response": "Génération de la réponse..."
+      }
     },
     "retrieval": {
       "startPrompt": "Démarrez une récupération en tapant votre requête ci-dessous",
+      "scrollToBottom": "Aller au dernier message",
       "clear": "Effacer",
       "send": "Envoyer",
       "stop": "Arrêter",
@@ -425,6 +442,7 @@
       "parametersDescription": "Configurez vos paramètres de requête",
       "queryMode": "Mode de requête",
       "queryModeTooltip": "Sélectionnez la stratégie de récupération :\n• Naïf : Récupération vectorielle traditionnelle par blocs de texte\n• Local : Axé sur la récupération d'entités\n• Global : Axé sur la récupération de relations\n• Hybride : Local+Global\n• Mixte : Local+Global+Naïf\n• Bypass : Ignorer la récupération, envoyer l'historique de conversation et la question actuelle au LLM",
+      "queryModeWarning": "Peut réduire la qualité de récupération",
       "queryModeOptions": {
         "naive": "Naïf",
         "local": "Local",

@@ -10,10 +10,14 @@ and post-parse dedup fires.
 
 from __future__ import annotations
 
+import pytest
+
 from lightrag.utils_pipeline import (
     compute_text_content_hash,
     normalize_merged_text_for_hash,
 )
+
+pytestmark = pytest.mark.offline
 
 
 def _render(doc_hash: str, base_name: str) -> str:
