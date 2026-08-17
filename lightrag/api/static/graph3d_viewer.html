@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GK Brain Knowledge Graph · 3D Galaxy</title>
+<title data-i18n="app.title.full">GK Brain Knowledge Graph · 3D Galaxy</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
 <style>
   :root {
@@ -14,8 +14,20 @@
     --color-text-muted: #8888aa;
     --color-accent: #4a9eff;
     --color-accent-glow: rgba(74, 158, 255, 0.4);
+    --color-topbar-fade: rgba(5, 5, 16, 0.8);
     --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     --font-mono: 'SF Mono', Monaco, Consolas, monospace;
+  }
+
+  [data-theme="light"] {
+    --color-bg: #e9edf5;
+    --color-surface: rgba(255, 255, 255, 0.78);
+    --color-border: rgba(40, 60, 120, 0.2);
+    --color-text: #1c2436;
+    --color-text-muted: #5b657a;
+    --color-accent: #2f6fd0;
+    --color-accent-glow: rgba(47, 111, 208, 0.25);
+    --color-topbar-fade: rgba(233, 237, 245, 0.85);
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -27,6 +39,7 @@
     overflow: hidden;
     height: 100vh;
     width: 100vw;
+    transition: background 0.3s ease, color 0.3s ease;
   }
 
   #canvas-container {
@@ -48,30 +61,30 @@
 
   .top-bar {
     top: 0; left: 0; right: 0;
-    padding: 16px 24px;
+    padding: 24px 32px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    background: linear-gradient(to bottom, rgba(5, 5, 16, 0.8), transparent);
+    background: linear-gradient(to bottom, var(--color-topbar-fade), transparent);
   }
 
   .logo {
     display: flex;
     align-items: center;
-    gap: 12px;
-    font-size: 18px;
+    gap: 16px;
+    font-size: 36px;
     font-weight: 600;
     letter-spacing: 0.5px;
   }
 
   .logo-icon {
-    width: 32px; height: 32px;
+    width: 64px; height: 64px;
     background: linear-gradient(135deg, var(--color-accent), #a855f7);
-    border-radius: 8px;
+    border-radius: 12px;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 18px;
+    font-size: 36px;
   }
 
   .stats {
@@ -156,14 +169,100 @@
     font-family: var(--font-mono);
   }
 
-  .bottom-bar {
-    bottom: 0; left: 0; right: 0;
-    padding: 16px 24px;
+  .settings-gear {
+    position: fixed;
+    bottom: 24px; right: 24px;
+    z-index: 30;
+    width: 48px; height: 48px;
+    border-radius: 50%;
+    background: var(--color-surface);
+    backdrop-filter: blur(20px);
+    border: 1px solid var(--color-border);
+    color: var(--color-text);
+    font-size: 22px;
+    cursor: pointer;
+    transition: all 0.2s ease;
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 16px;
-    background: linear-gradient(to top, rgba(5, 5, 16, 0.8), transparent);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  }
+
+  .settings-gear:hover {
+    background: rgba(74, 158, 255, 0.15);
+    border-color: var(--color-accent);
+    transform: scale(1.1);
+  }
+
+  .settings-panel {
+    bottom: 80px; right: 24px;
+    width: 280px;
+    max-height: calc(100vh - 100px);
+    background: var(--color-surface);
+    backdrop-filter: blur(20px);
+    border: 1px solid var(--color-border);
+    border-radius: 16px;
+    padding: 20px;
+    overflow-y: auto;
+    transition: transform 0.3s ease, opacity 0.3s ease;
+    z-index: 25;
+  }
+
+  .settings-panel.hidden {
+    transform: translateX(320px);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .settings-section-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin: 16px 0 8px;
+  }
+
+  .settings-section-title:first-of-type {
+    margin-top: 4px;
+  }
+
+  .lang-toggle {
+    display: flex;
+    gap: 0;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 4px;
+  }
+
+  .lang-btn, .theme-btn {
+    flex: 1;
+    padding: 6px 12px;
+    background: transparent;
+    border: none;
+    color: var(--color-text-muted);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .lang-btn.active, .theme-btn.active {
+    background: var(--color-accent);
+    color: #fff;
+  }
+
+  .settings-panel .control-btn {
+    width: 100%;
+    justify-content: flex-start;
+    margin-bottom: 6px;
+  }
+
+  .title-qr {
+    width: 144px; height: 144px;
+    border-radius: 12px;
+    border: 2px solid var(--color-border);
+    margin-left: 16px;
   }
 
   .control-btn {
@@ -332,51 +431,8 @@
     background: rgba(100, 120, 200, 0.5);
   }
 
-  .query-panel {
-    top: 80px;
-    left: 24px;
-    display: flex;
-    gap: 8px;
-    z-index: 10;
-  }
-
-  .query-panel input {
-    background: var(--color-surface);
-    backdrop-filter: blur(20px);
-    border: 1px solid var(--color-border);
-    border-radius: 12px;
-    padding: 10px 16px;
-    color: var(--color-text);
-    font-size: 14px;
-    width: 350px;
-    outline: none;
-    transition: all 0.2s ease;
-  }
-
-  .query-panel input:focus {
-    border-color: var(--color-accent);
-    box-shadow: 0 0 0 3px var(--color-accent-glow);
-  }
-
   .query-panel input::placeholder {
     color: var(--color-text-muted);
-  }
-
-  .query-panel button {
-    background: linear-gradient(135deg, var(--color-accent), #a855f7);
-    border: none;
-    border-radius: 12px;
-    padding: 10px 20px;
-    color: white;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s ease;
-  }
-
-  .query-panel button:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px var(--color-accent-glow);
   }
 
   .query-panel button:active {
@@ -869,24 +925,25 @@
 <div class="ui-overlay top-bar">
   <div class="logo">
     <div class="logo-icon">⚡</div>
-    <span>GK Brain Knowledge Graph</span>
+    <span data-i18n="app.title">GK Brain Knowledge Graph</span>
+    <img class="title-qr" src="__API_BASE__/graph3d/gkcharger_qrcode.jpg" data-i18n-alt="gk.qrAlt" alt="GK Charger mobile WeChat QR code" />
   </div>
   <div class="stats">
-    <div>Entities: <span class="stat-value" id="stat-entities">—</span></div>
-    <div>Edges: <span class="stat-value" id="stat-edges">—</span></div>
-    <div>Clusters: <span class="stat-value" id="stat-clusters">—</span></div>
+    <div><span data-i18n="stats.entities">Entities</span>: <span class="stat-value" id="stat-entities">—</span></div>
+    <div><span data-i18n="stats.edges">Edges</span>: <span class="stat-value" id="stat-edges">—</span></div>
+    <div><span data-i18n="stats.clusters">Clusters</span>: <span class="stat-value" id="stat-clusters">—</span></div>
   </div>
 </div>
 
 <div class="ui-overlay side-panel hidden" id="side-panel">
-  <div class="panel-title">Entity Details</div>
-  <button class="panel-back" id="panel-back">← Back</button>
+  <div class="panel-title" data-i18n="panel.title">Entity Details</div>
+  <button class="panel-back" id="panel-back" data-i18n="panel.back">← Back</button>
   <div class="entity-name" id="entity-name">—</div>
   <div class="entity-description" id="entity-description">—</div>
   <div class="entity-meta">
-    <div>Cluster: <span id="entity-cluster" title="Hover to highlight this cluster in the graph">—</span></div>
-    <div>Position: <span id="entity-position">—</span></div>
-    <div>Connections: <span id="entity-connections">—</span></div>
+    <div><span data-i18n="panel.cluster">Cluster</span>: <span id="entity-cluster" data-i18n-title="panel.clusterHoverHint" title="Hover to highlight this cluster in the graph">—</span></div>
+    <div><span data-i18n="panel.position">Position</span>: <span id="entity-position">—</span></div>
+    <div><span data-i18n="panel.connections">Connections</span>: <span id="entity-connections">—</span></div>
   </div>
   <div class="conn-chips" id="entity-conn-chips"></div>
 
@@ -895,82 +952,98 @@
 
   <!-- Cluster Information Legend -->
   <div class="cluster-legend" id="cluster-legend">
-    <div class="cluster-legend-title">📊 Cluster Information</div>
-    <div class="cluster-label" id="cluster-label">Select an entity to view cluster info</div>
+    <div class="cluster-legend-title" data-i18n="panel.clusterInfo">📊 Cluster Information</div>
+    <div class="cluster-label" id="cluster-label" data-i18n="panel.selectEntity">Select an entity to view cluster info</div>
     <div class="cluster-stats" id="cluster-stats"></div>
-    <div class="top-entities-title">Key Entities</div>
+    <div class="top-entities-title" data-i18n="panel.keyEntities">Key Entities</div>
     <div id="cluster-entities"></div>
   </div>
 </div>
 
-<div class="ui-overlay bottom-bar">
-  <button class="control-btn" id="btn-insights">
-    <span>💡</span> Insights
-  </button>
+<button class="settings-gear" id="btn-settings" data-i18n-title="settings.title" title="Settings">⚙️</button>
+
+<div class="ui-overlay settings-panel hidden" id="settings-panel">
+  <div class="panel-title" data-i18n="settings.title">Settings</div>
+
+  <div class="settings-section-title" data-i18n="settings.language">Language</div>
+  <div class="lang-toggle">
+    <button class="lang-btn active" data-lang="zh" data-i18n="lang.zh">中文</button>
+    <button class="lang-btn" data-lang="en" data-i18n="lang.en">English</button>
+  </div>
+
+  <div class="settings-section-title" data-i18n="settings.theme">Theme</div>
+  <div class="lang-toggle">
+    <button class="theme-btn active" data-theme="dark" data-i18n="theme.dark">🌙 Dark</button>
+    <button class="theme-btn" data-theme="light" data-i18n="theme.light">☀️ Light</button>
+  </div>
+
+  <div class="settings-section-title" data-i18n="settings.brightness">Node Brightness</div>
+  <div class="brightness-control" data-i18n-title="brightness.title" title="Node brightness">
+    <span>🔆</span>
+    <input type="range" id="brightness-slider" min="0.2" max="4.0" step="0.05" value="1.0">
+  </div>
+
+  <div class="settings-section-title" data-i18n="settings.view">View</div>
   <button class="control-btn" id="btn-reset-camera">
-    <span>⟲</span> Reset View
+    <span>⟲</span> <span data-i18n="btn.resetView">Reset View</span>
   </button>
   <button class="control-btn" id="btn-toggle-edges">
-    <span>⋯</span> Toggle Edges
+    <span></span> <span data-i18n="btn.toggleEdges">Toggle Edges</span>
   </button>
   <button class="control-btn" id="btn-toggle-labels">
-    <span>Aa</span> Toggle Labels
+    <span>Aa</span> <span data-i18n="btn.toggleLabels">Toggle Labels</span>
   </button>
   <button class="control-btn" id="btn-auto-rotate">
-    <span>🔄</span> Auto Rotate
+    <span>🔄</span> <span data-i18n="btn.autoRotate">Auto Rotate</span>
+  </button>
+
+  <div class="settings-section-title" data-i18n="settings.panels">Panels</div>
+  <button class="control-btn" id="btn-insights">
+    <span>💡</span> <span data-i18n="btn.insights">Insights</span>
   </button>
   <button class="control-btn" id="btn-entity-details">
-    <span>ℹ️</span> Entity Details
+    <span>ℹ️</span> <span data-i18n="btn.entityDetails">Entity Details</span>
   </button>
   <button class="control-btn" id="btn-query-log">
-    <span>🔍</span> Query Log
+    <span>🔍</span> <span data-i18n="btn.queryLog">Query Log</span>
   </button>
   <button class="control-btn" id="btn-gk-mobile">
-    <span>📱</span> GK充电宝移动端
+    <span>📱</span> <span data-i18n="btn.gkMobile">GK充电宝移动端</span>
   </button>
-  <div class="brightness-control" title="Node brightness">
-    <span>🔆</span>
-    <input type="range" id="brightness-slider" min="0.2" max="2.0" step="0.05" value="1.0">
-  </div>
 </div>
 
 <div class="gk-modal-overlay hidden" id="gk-modal-overlay">
   <div class="gk-modal">
     <button class="gk-modal-close" id="gk-modal-close">×</button>
-    <div class="gk-modal-title">使用GK充电宝移动端提问</div>
+    <div class="gk-modal-title" data-i18n="gk.title">使用GK充电宝移动端提问</div>
     <img class="gk-modal-qr" src="__API_BASE__/graph3d/gkcharger_qrcode.jpg" alt="GK Charger mobile WeChat QR code" />
-    <div class="gk-modal-hint">微信扫一扫，打开小程序提问</div>
+    <div class="gk-modal-hint" data-i18n="gk.hint">微信扫一扫，打开小程序提问</div>
   </div>
-</div>
-
-<div class="ui-overlay query-panel" id="query-panel">
-  <input type="text" id="query-input" placeholder="Enter query to activate neurons..." />
-  <button id="query-submit">Query</button>
 </div>
 
 <div class="ui-overlay activation-log" id="activation-log">
   <div class="log-header">
-    <span>🔍 Query Log</span>
+    <span data-i18n="log.title">🔍 Query Log</span>
     <button class="log-close" id="log-close">×</button>
   </div>
   <div class="log-content" id="log-content">
-    <div class="log-entry log-info">Ready to query. Enter a search term above.</div>
+    <div class="log-entry log-info" data-i18n="query.ready">Ready to query. Enter a search term above.</div>
   </div>
 </div>
 
 <div class="tooltip" id="tooltip"></div>
 
 <div class="ui-overlay insights-panel hidden" id="insights-panel">
-  <div class="insights-title">🔬 Research Insights</div>
+  <div class="insights-title" data-i18n="insights.title">🔬 Research Insights</div>
   <div class="stats-grid" id="insights-stats"></div>
   <div id="insights-content"></div>
-  <div class="insights-title" style="margin-top: 20px; font-size: 16px;">📚 Research Use Cases</div>
+  <div class="insights-title" style="margin-top: 20px; font-size: 16px;" data-i18n="insights.useCases">📚 Research Use Cases</div>
   <div id="use-cases-content"></div>
 </div>
 
 <div class="loading-overlay" id="loading">
   <div class="loading-spinner"></div>
-  <div class="loading-text">Loading knowledge graph...</div>
+  <div class="loading-text" data-i18n="loading.text">Loading knowledge graph...</div>
 </div>
 
 <script type="importmap">
@@ -1017,6 +1090,132 @@ let showLabels = false;
 // Node brightness (slider-controlled, persisted in localStorage)
 const BLOOM_STRENGTH_BASE = 0.6; // UnrealBloomPass strength at brightness 1.0
 let brightnessFactor = parseFloat(localStorage.getItem('graph3d_brightness')) || 1.0;
+
+// Light/dark theme (persisted in localStorage)
+const THEME_SCENE_BG = { dark: 0x050510, light: 0xe9edf5 };
+let currentTheme = localStorage.getItem('graph3d_theme') === 'light' ? 'light' : 'dark';
+// Stamp before first paint so CSS tokens apply immediately.
+document.documentElement.dataset.theme = currentTheme;
+
+function isLightTheme() { return currentTheme === 'light'; }
+
+// Additive blending glows on a dark background but washes out to white on a
+// light one — the light theme uses normal blending with higher opacity instead.
+function getBlendMode() { return isLightTheme() ? THREE.NormalBlending : THREE.AdditiveBlending; }
+
+// Pulse/highlight target: brighten toward white in dark mode, deepen toward
+// dark navy in light mode so activations stay visible on a light background.
+function getGlowColor() {
+  return new THREE.Color(isLightTheme() ? 0x222244 : 0xffffff);
+}
+
+// Re-skin the 3D scene for the current theme. Safe to call any time after
+// init — every check tolerates not-yet-created objects.
+function applyTheme(theme) {
+  currentTheme = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = currentTheme;
+  document.querySelectorAll('.theme-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.theme === currentTheme);
+  });
+  const light = isLightTheme();
+  const blending = getBlendMode();
+  if (scene) scene.background.set(THEME_SCENE_BG[currentTheme]);
+  // Bloom reads as fog on a light background — dark theme only.
+  if (bloomPass) bloomPass.enabled = !light;
+  if (pointsMesh) {
+    pointsMesh.material.blending = blending;
+    pointsMesh.material.opacity = light ? 0.85 : 0.4;
+    pointsMesh.material.needsUpdate = true;
+  }
+  if (edgesMesh) {
+    edgesMesh.material.blending = blending;
+    edgesMesh.material.opacity = light ? 0.35 : 0.15;
+    edgesMesh.material.needsUpdate = true;
+  }
+  for (const group of activationGroups) {
+    for (const sphere of group.spheres) {
+      sphere.material.blending = blending;
+      sphere.material.needsUpdate = true;
+    }
+    for (const mesh of [group.edgesMesh, group.particles]) {
+      if (mesh) {
+        mesh.material.blending = blending;
+        mesh.material.needsUpdate = true;
+      }
+    }
+  }
+}
+
+function setTheme(theme) {
+  localStorage.setItem('graph3d_theme', theme === 'light' ? 'light' : 'dark');
+  applyTheme(theme);
+}
+
+// ===== i18n (English/Chinese translation) =====
+const I18N_FALLBACK = {"en":{"app.title":"GK Brain Knowledge Graph","app.title.full":"GK Brain Knowledge Graph · 3D Galaxy","stats.entities":"Entities","stats.edges":"Edges","stats.clusters":"Clusters","panel.title":"Entity Details","panel.back":"← Back","panel.cluster":"Cluster","panel.clusterHoverHint":"Hover to highlight this cluster in the graph","panel.position":"Position","panel.connections":"Connections","panel.clusterInfo":"📊 Cluster Information","panel.selectEntity":"Select an entity to view cluster info","panel.keyEntities":"Key Entities","panel.noClusterAnalysis":"Detailed analysis not available for this cluster.","btn.insights":"Insights","btn.resetView":"Reset View","btn.toggleEdges":"Toggle Edges","btn.toggleLabels":"Toggle Labels","btn.autoRotate":"Auto Rotate","btn.entityDetails":"Entity Details","btn.queryLog":"Query Log","btn.gkMobile":"GK充电宝移动端","btn.settings":"Settings","settings.title":"Settings","settings.language":"Language","settings.theme":"Theme","settings.brightness":"Node Brightness","settings.panels":"Panels","settings.view":"View","brightness.title":"Node brightness","query.title":"Query","query.placeholder":"Enter query to activate neurons…","query.ready":"Ready to query. Enter a search term above.","log.title":"🔍 Query Log","log.querying":"🔍 Querying","log.queryFailed":"❌ Query failed","log.noResults":"⚠️ Query returned no results","log.queryError":"❌ Query error","log.noEntities":"⚠️ No entities found in point cloud. Try a different query.","log.edgesCreated":"🔗 Created <strong>{count}</strong> activated edges with traffic flow","log.pulse":"✨ Neural Pulse activated for <strong>{count}</strong> entities ({color})","log.found":"✅ Found <strong>{entities}</strong> entities, <strong>{rels}</strong> relationships","log.monitoringOn":"🔄 Real-time activation monitoring enabled","log.replay":"🔁 Replay","log.dimmed":"(dimmed)","log.manualQuery":"🔍 Manual query","log.externalQuery":"🌐 External query","log.foundEntities":"✅ Found <strong>{count}</strong> entities","log.activated":"⚡ Activated <strong>{count}</strong> neurons","log.queued":"⏳ {count} more que{plural} queued…","log.monitoringOff":"⏸️ Real-time activation monitoring paused","log.rotateOn":"🔄 Auto-rotate enabled","log.rotateOff":"️ Auto-rotate disabled","log.insightsLoading":"📊 Loading research insights…","log.insightsLoaded":"✅ Research insights loaded","log.insightsFailed":"⚠️ Failed to load insights","log.more":"+{count} more","relationship.title":"Relationship","relationship.loading":"Loading…","relationship.weight":"Weight","insights.title":"🔬 Research Insights","insights.entities":"Entities","insights.relationships":"Relationships","insights.clusters":"Clusters","insights.avgConnections":"Avg Connections","insights.useCases":"📚 Research Use Cases","cluster.label":"Cluster {id}","cluster.internalEdges":"Internal Edges","loading.text":"Loading knowledge graph…","loading.failed":"Failed to load knowledge graph","loading.hint":"${t('loading.hint')}","gk.title":"使用GK充电宝移动端提问","gk.hint":"微信扫一扫,打开小程序提问","gk.qrAlt":"GK Charger mobile WeChat QR code","rel.notInLayout":"Not in 3D layout","rel.chipTitle":"Weight {weight} — click to view relationship","rel.weight":"Weight","entity.noDesc":"No description available.","lang.zh":"中文","lang.en":"English","theme.dark":"🌙 Dark","theme.light":"☀️ Light"},"zh":{"app.title":"GK大脑类神经元3D视图","app.title.full":"GK大脑类神经元3D视图","stats.entities":"实体","stats.edges":"关系","stats.clusters":"聚类","panel.title":"实体详情","panel.back":"← 返回","panel.cluster":"聚类","panel.clusterHoverHint":"悬停以在图中高亮该聚类","panel.position":"位置","panel.connections":"连接数","panel.clusterInfo":"📊 聚类信息","panel.selectEntity":"选择一个实体以查看聚类信息","panel.keyEntities":"关键实体","panel.noClusterAnalysis":"该聚类暂无详细分析。","btn.insights":"研究洞察","btn.resetView":"重置视图","btn.toggleEdges":"切换边线","btn.toggleLabels":"切换标签","btn.autoRotate":"自动旋转","btn.entityDetails":"实体详情","btn.queryLog":"查询日志","btn.gkMobile":"GK充电宝移动端","btn.settings":"设置","settings.title":"设置","settings.language":"语言","settings.theme":"主题","settings.brightness":"节点亮度","settings.panels":"面板","settings.view":"视图","brightness.title":"节点亮度","query.title":"查询","query.placeholder":"输入查询以激活神经元…","query.ready":"等待外部查询激活…","log.title":"🔍 查询日志","log.querying":"🔍 查询中","log.queryFailed":"❌ 查询失败","log.noResults":"⚠️ 查询无结果","log.queryError":"❌ 查询出错","log.noEntities":"⚠️ 点云中未找到实体,请尝试其他查询。","log.edgesCreated":"🔗 已创建 <strong>{count}</strong> 条带信息流的激活边","log.pulse":"✨ 神经脉冲已激活 <strong>{count}</strong> 个实体({color})","log.found":"✅ 找到 <strong>{entities}</strong> 个实体、<strong>{rels}</strong> 条关系","log.monitoringOn":"🔄 实时激活监控已开启","log.replay":" 回放","log.dimmed":"(暗色)","log.manualQuery":"🔍 手动查询","log.externalQuery":"🌐 外部查询","log.foundEntities":"✅ 找到 <strong>{count}</strong> 个实体","log.activated":"⚡ 已激活 <strong>{count}</strong> 个神经元","log.queued":"⏳ 还有 {count} 条查询排队中…","log.monitoringOff":"⏸️ 实时激活监控已暂停","log.rotateOn":" 自动旋转已开启","log.rotateOff":"️ 自动旋转已关闭","log.insightsLoading":"📊 正在加载研究洞察…","log.insightsLoaded":"✅ 研究洞察已加载","log.insightsFailed":"️ 洞察加载失败","log.more":"+{count} 更多","relationship.title":"关系","relationship.loading":"加载中…","relationship.weight":"权重","insights.title":"🔬 研究洞察","insights.entities":"实体","insights.relationships":"关系","insights.clusters":"聚类","insights.avgConnections":"平均连接数","insights.useCases":" 研究用例","cluster.label":"聚类 {id}","cluster.internalEdges":"内部边","loading.text":"正在加载知识图谱…","loading.failed":"知识图谱加载失败","loading.hint":"请确认已计算3D布局。","gk.title":"使用GK充电宝移动端提问","gk.hint":"微信扫一扫,打开小程序提问","gk.qrAlt":"GK充电宝移动端微信二维码","rel.notInLayout":"不在3D布局中","rel.chipTitle":"权重 {weight} — 点击查看关系","rel.weight":"权重","entity.noDesc":"暂无描述。","lang.zh":"中文","lang.en":"English","theme.dark":"🌙 深色","theme.light":"☀️ 浅色"}};
+
+let I18N = JSON.parse(JSON.stringify(I18N_FALLBACK));
+let currentLang = localStorage.getItem('graph3d_lang') || 'zh';
+
+function t(key, params) {
+  let s = (I18N[currentLang] && I18N[currentLang][key]) || (I18N.en && I18N.en[key]) || key;
+  if (params) {
+    for (const [k, v] of Object.entries(params)) {
+      s = s.replace(new RegExp('\\{' + k + '\\}', 'g'), String(v));
+    }
+  }
+  return s;
+}
+
+function applyI18n() {
+  document.documentElement.lang = currentLang;
+  // Walk data-i18n attributes
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const key = el.getAttribute('data-i18n');
+    if (key) el.textContent = t(key);
+  });
+  // Walk data-i18n-title attributes
+  document.querySelectorAll('[data-i18n-title]').forEach(el => {
+    const key = el.getAttribute('data-i18n-title');
+    if (key) el.title = t(key);
+  });
+  // Walk data-i18n-alt attributes
+  document.querySelectorAll('[data-i18n-alt]').forEach(el => {
+    const key = el.getAttribute('data-i18n-alt');
+    if (key) el.alt = t(key);
+  });
+  // Walk data-i18n-placeholder attributes
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+    const key = el.getAttribute('data-i18n-placeholder');
+    if (key) el.placeholder = t(key);
+  });
+  // Update HTML title
+  const titleEl = document.querySelector('title[data-i18n]');
+  if (titleEl) titleEl.textContent = t(titleEl.getAttribute('data-i18n'));
+  // Update language toggle buttons
+  document.querySelectorAll('.lang-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.lang === currentLang);
+  });
+}
+
+function setLanguage(lang) {
+  if (!I18N[lang]) return;
+  currentLang = lang;
+  localStorage.setItem('graph3d_lang', lang);
+  applyI18n();
+}
+
+async function loadI18n() {
+  try {
+    const resp = await fetch(`${API_BASE}/graph3d/i18n.json`);
+    if (resp.ok) {
+      I18N = await resp.json();
+    }
+  } catch (e) { /* keep fallback */ }
+  applyI18n();
+}
+
+
 
 // Neuron activation state
 let entityNameToIndex = new Map();
@@ -1210,7 +1409,7 @@ function formatEntityList(entities, maxShow = 10) {
   const shown = entities.slice(0, maxShow);
   let html = shown.map(e => `<span>${e}</span>`).join('');
   if (entities.length > maxShow) {
-    html += `<span>+${entities.length - maxShow} more</span>`;
+    html += `<span>${t('log.more', {count: entities.length - maxShow})}</span>`;
   }
   return html;
 }
@@ -1260,7 +1459,7 @@ function initScene() {
 
   // Scene
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x050510);
+  scene.background = new THREE.Color(THEME_SCENE_BG[currentTheme]);
 
   // Camera
   camera = new THREE.PerspectiveCamera(55, width / height, 0.1, 2000);
@@ -1285,6 +1484,8 @@ function initScene() {
     0.4,  // radius
     0.3   // threshold (increased so only activated entities glow brightly)
   );
+  // Bloom reads as fog on a light background — dark theme only.
+  bloomPass.enabled = !isLightTheme();
   composer.addPass(bloomPass);
 
   // Controls
@@ -1346,9 +1547,9 @@ function createPoints() {
     size: POINT_SIZE,
     vertexColors: true,
     transparent: true,
-    opacity: 0.4,
+    opacity: isLightTheme() ? 0.85 : 0.4,
     sizeAttenuation: true,
-    blending: THREE.AdditiveBlending,
+    blending: getBlendMode(),
     depthWrite: false
   });
 
@@ -1397,7 +1598,7 @@ function activateEntities(entityNames, duration = 3000, dimFactor = 1.0) {
   }
 
   if (indices.size === 0) {
-    addLog(`⚠️ No entities found in point cloud. Try a different query.`, 'warning');
+    addLog(t('log.noEntities'), 'warning');
     return;
   }
 
@@ -1435,7 +1636,7 @@ function activateEntities(entityNames, duration = 3000, dimFactor = 1.0) {
       color: ACTIVATION_COLOR,
       transparent: true,
       opacity: 0.9,
-      blending: THREE.AdditiveBlending,
+      blending: getBlendMode(),
       depthWrite: false
     });
 
@@ -1468,7 +1669,7 @@ function activateEntities(entityNames, duration = 3000, dimFactor = 1.0) {
         activatedPositions.push(tgt.x, tgt.y, tgt.z);
 
         // Use activation color with white blend for edges
-        const edgeColor = ACTIVATION_COLOR.clone().lerp(new THREE.Color(0xffffff), 0.3);
+        const edgeColor = ACTIVATION_COLOR.clone().lerp(getGlowColor(), 0.3);
         activatedColors.push(edgeColor.r, edgeColor.g, edgeColor.b);
         activatedColors.push(edgeColor.r, edgeColor.g, edgeColor.b);
 
@@ -1485,7 +1686,7 @@ function activateEntities(entityNames, duration = 3000, dimFactor = 1.0) {
         vertexColors: true,
         transparent: true,
         opacity: 0.6,
-        blending: THREE.AdditiveBlending,
+        blending: getBlendMode(),
         depthWrite: false,
         linewidth: 2
       });
@@ -1494,7 +1695,7 @@ function activateEntities(entityNames, duration = 3000, dimFactor = 1.0) {
       scene.add(activationGroup.edgesMesh);
 
       const edgeCount = activatedPositions.length / 6;
-      addLog(`🔗 Created <strong>${edgeCount}</strong> activated edges with traffic flow`, 'info');
+      addLog(t('log.edgesCreated', {count: edgeCount}), 'info');
 
       // Create traffic lines along edges using the activation color
       activationGroup.trafficData = createTrafficLines(edgeSegments, ACTIVATION_COLOR);
@@ -1518,7 +1719,7 @@ function activateEntities(entityNames, duration = 3000, dimFactor = 1.0) {
     startActivationAnimation();
   }
 
-  addLog(`✨ Neural Pulse activated for <strong>${indices.size}</strong> entities (${ACTIVATION_COLOR_NAME})`, 'success');
+  addLog(t('log.pulse', {count: indices.size, color: ACTIVATION_COLOR_NAME}), 'success');
 }
 
 // Global animation loop for all activation groups
@@ -1578,7 +1779,7 @@ function startActivationAnimation() {
         // Blend toward activation color-white with fade
         const brightColor = baseColor.clone()
           .lerp(group.color, 0.3 * effectiveFade)
-          .lerp(new THREE.Color(0xffffff), pulseIntensity * 0.5 * effectiveFade);
+          .lerp(getGlowColor(), pulseIntensity * 0.5 * effectiveFade);
         colors[idx * 3] = brightColor.r;
         colors[idx * 3 + 1] = brightColor.g;
         colors[idx * 3 + 2] = brightColor.b;
@@ -1598,7 +1799,7 @@ function startActivationAnimation() {
               const dimPulse = pulseIntensity * 0.3 * effectiveFade;
               const dimColor = neighborColor.clone()
                 .lerp(group.color, 0.2 * effectiveFade)
-                .lerp(new THREE.Color(0xffffff), dimPulse);
+                .lerp(getGlowColor(), dimPulse);
               colors[neighborIdx * 3] = dimColor.r;
               colors[neighborIdx * 3 + 1] = dimColor.g;
               colors[neighborIdx * 3 + 2] = dimColor.b;
@@ -1699,8 +1900,8 @@ function createTrafficLines(edgeSegments, activationColor) {
   const colors = new Float32Array(totalLines * 2 * 3);
 
   // Create lighter and darker variants of the activation color
-  const TRAFFIC_BRIGHT = activationColor.clone().lerp(new THREE.Color(0xffffff), 0.4);
-  const TRAFFIC_DIM = activationColor.clone().lerp(new THREE.Color(0xffffff), 0.1);
+  const TRAFFIC_BRIGHT = activationColor.clone().lerp(getGlowColor(), 0.4);
+  const TRAFFIC_DIM = activationColor.clone().lerp(getGlowColor(), 0.1);
 
   // Initialize traffic lines at random positions along edges
   for (let i = 0; i < totalLines; i++) {
@@ -1748,7 +1949,7 @@ function createTrafficLines(edgeSegments, activationColor) {
     vertexColors: true,
     transparent: true,
     opacity: 0.9,
-    blending: THREE.AdditiveBlending,
+    blending: getBlendMode(),
     depthWrite: false,
     linewidth: 2
   });
@@ -1796,86 +1997,6 @@ function removeActivationGroup(group) {
   console.log(`Removed activation group ${group.id} (age: ${((Date.now() - group.timestamp) / 1000).toFixed(1)}s)`);
 }
 
-async function queryAndActivate(queryText) {
-  addLog(`🔍 Querying: <strong>${queryText}</strong>`, 'info');
-
-  try {
-    const response = await fetch(`${API_BASE}/query/data`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query: queryText,
-        mode: 'hybrid',
-        top_k: 20,
-        chunk_top_k: 10
-      })
-    });
-
-    if (!response.ok) {
-      addLog(`❌ Query failed: ${response.statusText}`, 'error');
-      console.error('Query failed:', response.statusText);
-      return;
-    }
-
-    const result = await response.json();
-    if (result.status === 'success' && result.data) {
-      const entityNames = [];
-
-      // Collect entity names from results
-      if (result.data.entities) {
-        entityNames.push(...result.data.entities.map(e => e.entity_name));
-      }
-
-      // Collect entity names from relationships
-      if (result.data.relationships) {
-        for (const rel of result.data.relationships) {
-          entityNames.push(rel.src_id, rel.tgt_id);
-        }
-      }
-
-      // Remove duplicates
-      const uniqueEntities = [...new Set(entityNames)];
-
-      // Log the results
-      const entityCount = result.data.entities ? result.data.entities.length : 0;
-      const relCount = result.data.relationships ? result.data.relationships.length : 0;
-      addLog(
-        `✅ Found <strong>${entityCount}</strong> entities, <strong>${relCount}</strong> relationships`,
-        'success',
-        formatEntityList(uniqueEntities, 15)
-      );
-
-      // Add to queue instead of activating directly
-      activationQueue.push({
-        query: queryText,
-        entities: uniqueEntities,
-        entityCount: entityCount,
-        timestamp: Date.now() / 1000,
-        isManual: true
-      });
-
-      // Stamp activity so idle replay pauses
-      lastQueryActivityAt = Date.now();
-
-      // Advance the polling watermark so the same activation isn't
-      // re-fetched by pollForActivations() and processed a second time.
-      lastActivationTimestamp = Date.now() / 1000 + 1;
-
-      // Start processing queue if not already processing
-      if (!isProcessingQueue) {
-        processActivationQueue();
-      }
-    } else {
-      addLog(`⚠️ Query returned no results`, 'warning');
-    }
-  } catch (error) {
-    addLog(`❌ Query error: ${error.message}`, 'error');
-    console.error('Query error:', error);
-  }
-}
-
 function createEdges() {
   if (!edgeData || !entityData) return;
 
@@ -1903,8 +2024,8 @@ function createEdges() {
   const material = new THREE.LineBasicMaterial({
     vertexColors: true,
     transparent: true,
-    opacity: 0.15,
-    blending: THREE.AdditiveBlending,
+    opacity: isLightTheme() ? 0.35 : 0.15,
+    blending: getBlendMode(),
     depthWrite: false
   });
 
@@ -2002,7 +2123,7 @@ function setupInteraction() {
       updatePanelBack();
       // Light up the clicked node (pulse-then-settle, source-tagged 'click')
       clearHighlights('click');
-      setHighlight([selectedEntity], new THREE.Color(0xffffff), 2.5, 'click');
+      setHighlight([selectedEntity], getGlowColor(), 2.5, 'click');
       showEntityDetails(selectedEntity);
     }
   });
@@ -2026,7 +2147,7 @@ function navigateToEntity(idx) {
   }
   selectedEntity = idx;
   clearHighlights('click');
-  setHighlight([idx], new THREE.Color(0xffffff), 2.5, 'click');
+  setHighlight([idx], getGlowColor(), 2.5, 'click');
   showEntityDetails(idx);
   updatePanelBack();
 }
@@ -2040,10 +2161,10 @@ function setHighlightEdge(srcIdx, tgtIdx) {
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(
     [src.x, src.y, src.z, tgt.x, tgt.y, tgt.z], 3));
   const material = new THREE.LineBasicMaterial({
-    color: 0xffffff,
+    color: isLightTheme() ? 0x222244 : 0xffffff,
     transparent: true,
     opacity: 0.9,
-    blending: THREE.AdditiveBlending,
+    blending: getBlendMode(),
     depthWrite: false
   });
   highlightEdgeMesh = new THREE.LineSegments(geometry, material);
@@ -2064,8 +2185,8 @@ function clearHighlightEdge() {
 async function showRelationship(fromName, toName) {
   const relView = document.getElementById('relationship-view');
   relView.classList.remove('hidden');
-  relView.innerHTML = '<div class="relationship-title">Relationship</div>' +
-    '<div class="rel-desc">Loading…</div>';
+  relView.innerHTML = '<div class="relationship-title">' + t('relationship.title') + '</div>' +
+    '<div class="rel-desc">' + t('relationship.loading') + '</div>';
 
   let edge;
   try {
@@ -2078,12 +2199,12 @@ async function showRelationship(fromName, toName) {
     }
     edge = await r.json();
   } catch (err) {
-    relView.innerHTML = '<div class="relationship-title">Relationship</div>' +
+    relView.innerHTML = '<div class="relationship-title">' + t('relationship.title') + '</div>' +
       `<div class="rel-desc">⚠️ ${err.message}</div>`;
     return;
   }
 
-  relView.innerHTML = '<div class="relationship-title">Relationship</div>';
+  relView.innerHTML = '<div class="relationship-title">' + t('relationship.title') + '</div>';
 
   // Entity pair as clickable links (built via DOM to avoid attribute injection)
   const pairDiv = document.createElement('div');
@@ -2104,7 +2225,7 @@ async function showRelationship(fromName, toName) {
 
   const descDiv = document.createElement('div');
   descDiv.className = 'rel-desc';
-  descDiv.innerHTML = formatDescription(edge.description) || 'No description available.';
+  descDiv.innerHTML = formatDescription(edge.description) || t('entity.noDesc');
   relView.appendChild(descDiv);
 
   const keywords = (edge.keywords || '').split(',').map(k => k.trim()).filter(Boolean);
@@ -2122,7 +2243,7 @@ async function showRelationship(fromName, toName) {
 
   const weightDiv = document.createElement('div');
   weightDiv.className = 'rel-weight';
-  weightDiv.textContent = `Weight: ${Number(edge.weight || 0).toFixed(2)}`;
+  weightDiv.textContent = `${t('relationship.weight')}: ${Number(edge.weight || 0).toFixed(2)}`;
   relView.appendChild(weightDiv);
 
   // Light both nodes and the edge in the 3D graph
@@ -2133,7 +2254,7 @@ async function showRelationship(fromName, toName) {
   const lit = [];
   if (srcIdx !== undefined) lit.push(srcIdx);
   if (tgtIdx !== undefined) lit.push(tgtIdx);
-  if (lit.length) setHighlight(lit, new THREE.Color(0xffffff), 2.2, 'edge');
+  if (lit.length) setHighlight(lit, getGlowColor(), 2.2, 'edge');
   if (srcIdx !== undefined && tgtIdx !== undefined) {
     setHighlightEdge(srcIdx, tgtIdx);
   }
@@ -2149,7 +2270,7 @@ function showEntityDetails(idx) {
   if (descHtml) {
     descEl.innerHTML = descHtml;
   } else {
-    descEl.textContent = 'No description available.';
+    descEl.textContent = t('entity.noDesc');
   }
   document.getElementById('entity-cluster').textContent = entity.cluster;
   document.getElementById('entity-position').textContent =
@@ -2186,8 +2307,8 @@ function showEntityDetails(idx) {
         chip.className = inLayout ? 'conn-chip' : 'conn-chip disabled';
         chip.textContent = neighbor.name;
         chip.title = inLayout
-          ? `Weight ${Number(neighbor.weight || 0).toFixed(2)} — click to view relationship`
-          : 'Not in 3D layout';
+          ? `${t('rel.chipTitle', {weight: Number(neighbor.weight || 0).toFixed(2)})}`
+          : t('rel.notInLayout');
         if (inLayout) {
           chip.addEventListener('click', () => showRelationship(entity.name, neighbor.name));
         }
@@ -2228,24 +2349,7 @@ document.getElementById('btn-toggle-labels').addEventListener('click', () => {
   // TODO: Implement label rendering with CSS2DRenderer
 });
 
-// Query panel - submit button
-document.getElementById('query-submit').addEventListener('click', () => {
-  const queryInput = document.getElementById('query-input');
-  const queryText = queryInput.value.trim();
-  if (queryText) {
-    queryAndActivate(queryText);
-  }
-});
 
-// Query panel - enter key
-document.getElementById('query-input').addEventListener('keypress', (e) => {
-  if (e.key === 'Enter') {
-    const queryText = e.target.value.trim();
-    if (queryText) {
-      queryAndActivate(queryText);
-    }
-  }
-});
 
 // Auto-rotate toggle button
 document.getElementById('btn-auto-rotate').addEventListener('click', () => {
@@ -2253,7 +2357,7 @@ document.getElementById('btn-auto-rotate').addEventListener('click', () => {
   const btn = document.getElementById('btn-auto-rotate');
   btn.style.opacity = controls.autoRotate ? '1' : '0.5';
   addLog(
-    controls.autoRotate ? '🔄 Auto-rotate enabled' : '⏸️ Auto-rotate disabled',
+    controls.autoRotate ? t('log.rotateOn') : t('log.rotateOff'),
     'info'
   );
 });
@@ -2288,7 +2392,7 @@ document.getElementById('panel-back').addEventListener('click', () => {
   if (prev != null) {
     selectedEntity = prev;
     clearHighlights('click');
-    setHighlight([prev], new THREE.Color(0xffffff), 2.5, 'click');
+    setHighlight([prev], getGlowColor(), 2.5, 'click');
     showEntityDetails(prev);
   }
   updatePanelBack();
@@ -2300,7 +2404,7 @@ clusterSpan.addEventListener('mouseenter', () => {
   if (panelClusterId == null) return;
   const idxs = clusterToIndices.get(panelClusterId) || [];
   const color = new THREE.Color(CLUSTER_COLORS[panelClusterId % CLUSTER_COLORS.length])
-    .lerp(new THREE.Color(0xffffff), 0.55);
+    .lerp(getGlowColor(), 0.55);
   setHighlight(idxs, color, 1.8, 'cluster-hover');
 });
 clusterSpan.addEventListener('mouseleave', () => {
@@ -2328,7 +2432,35 @@ gkModalOverlay.addEventListener('click', (e) => {
   if (e.target === gkModalOverlay) gkModalOverlay.classList.add('hidden');
 });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') gkModalOverlay.classList.add('hidden');
+  if (e.key === 'Escape') {
+    gkModalOverlay.classList.add('hidden');
+    document.getElementById('settings-panel').classList.add('hidden');
+  }
+});
+
+// Settings sidebar
+const settingsPanel = document.getElementById('settings-panel');
+document.getElementById('btn-settings').addEventListener('click', () => {
+  settingsPanel.classList.toggle('hidden');
+});
+// Close settings panel on outside click
+document.addEventListener('click', (e) => {
+  if (!settingsPanel.contains(e.target) && e.target.id !== 'btn-settings' && !e.target.closest('#btn-settings')) {
+    settingsPanel.classList.add('hidden');
+  }
+});
+// Language toggle buttons
+document.querySelectorAll('.lang-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    setLanguage(btn.dataset.lang);
+  });
+});
+// Theme toggle buttons (initial active state comes from stored theme)
+document.querySelectorAll('.theme-btn').forEach(btn => {
+  btn.classList.toggle('active', btn.dataset.theme === currentTheme);
+  btn.addEventListener('click', () => {
+    setTheme(btn.dataset.theme);
+  });
 });
 
 // Log panel close button (now toggles visibility)
@@ -2403,7 +2535,7 @@ function startPolling() {
 
   pollingInterval = setInterval(pollForActivations, POLL_INTERVAL_MS);
   setInterval(checkIdleReplay, REPLAY_CHECK_INTERVAL_MS);
-  addLog('🔄 Real-time activation monitoring enabled', 'info');
+  addLog(t('log.monitoringOn'), 'info');
 }
 
 // After 30s without real query activity, replay a random activation from
@@ -2457,26 +2589,21 @@ async function processActivationQueue() {
   while (activationQueue.length > 0) {
     const activation = activationQueue.shift();
 
-    // Log the activation (different message for manual vs external vs replay)
+    // Log the activation (replay vs external)
     if (activation.isReplay) {
       addLog(
-        `🔁 Replay: <strong>"${activation.query}"</strong> (dimmed)`,
-        'info'
-      );
-    } else if (activation.isManual) {
-      addLog(
-        `🔍 Manual query: <strong>"${activation.query}"</strong>`,
+        `${t('log.replay')}: <strong>"${activation.query}"</strong> ${t('log.dimmed')}`,
         'info'
       );
     } else {
       addLog(
-        `🌐 External query: <strong>"${activation.query}"</strong>`,
+        `${t('log.externalQuery')}: <strong>"${activation.query}"</strong>`,
         'info'
       );
     }
 
     addLog(
-      `✅ Found <strong>${activation.entityCount}</strong> entities`,
+      t('log.foundEntities', {count: activation.entityCount}),
       'success',
       formatEntityList(activation.entities, 15)
     );
@@ -2487,12 +2614,12 @@ async function processActivationQueue() {
       ACTIVATION_DISPLAY_DURATION,
       activation.isReplay ? REPLAY_DIM_FACTOR : 1.0
     );
-    addLog(`⚡ Activated <strong>${activation.entities.length}</strong> neurons`, 'success');
+    addLog(t('log.activated', {count: activation.entities.length}), 'success');
 
     // If there are more items in queue, show queue status
     if (activationQueue.length > 0) {
       addLog(
-        `⏳ ${activationQueue.length} more query${activationQueue.length > 1 ? 'ies' : 'y'} queued...`,
+        t('log.queued', {count: activationQueue.length}),
         'info'
       );
     }
@@ -2508,18 +2635,19 @@ function stopPolling() {
   if (pollingInterval) {
     clearInterval(pollingInterval);
     pollingInterval = null;
-    addLog('⏸️ Real-time activation monitoring paused', 'info');
+    addLog(t('log.monitoringOff'), 'info');
   }
 }
 
 async function init() {
+  await loadI18n();
   const loaded = await loadData();
   if (!loaded) {
     document.getElementById('loading').innerHTML = `
       <div style="text-align: center; color: var(--color-text-muted);">
         <div style="font-size: 48px; margin-bottom: 16px;">⚠</div>
-        <div style="font-size: 18px; margin-bottom: 8px;">Failed to load knowledge graph</div>
-        <div style="font-size: 14px;">Make sure the layout has been computed.</div>
+        <div style="font-size: 18px; margin-bottom: 8px;">${t('loading.failed')}</div>
+        <div style="font-size: 14px;">${t('loading.hint')}</div>
       </div>
     `;
     return;
@@ -2568,7 +2696,7 @@ document.getElementById('btn-insights').addEventListener('click', async () => {
 // Load insights from backend
 async function loadInsights() {
   try {
-    addLog('📊 Loading research insights...', 'info');
+    addLog(t('log.insightsLoading'), 'info');
 
     // Fetch insights
     const insightsResponse = await fetch(`${API_BASE}/graph3d/insights`);
@@ -2581,10 +2709,10 @@ async function loadInsights() {
     // Display insights
     displayInsights();
 
-    addLog('✅ Research insights loaded', 'success');
+    addLog(t('log.insightsLoaded'), 'success');
   } catch (error) {
     console.error('Error loading insights:', error);
-    addLog('⚠️ Failed to load insights', 'warning');
+    addLog(t('log.insightsFailed'), 'warning');
   }
 }
 
@@ -2597,19 +2725,19 @@ function displayInsights() {
   statsGrid.innerHTML = `
     <div class="stat-card">
       <div class="stat-card-value">${insightsData.total_entities.toLocaleString()}</div>
-      <div class="stat-card-label">Entities</div>
+      <div class="stat-card-label">${t('insights.entities')}</div>
     </div>
     <div class="stat-card">
       <div class="stat-card-value">${insightsData.total_edges.toLocaleString()}</div>
-      <div class="stat-card-label">Relationships</div>
+      <div class="stat-card-label">${t('insights.relationships')}</div>
     </div>
     <div class="stat-card">
       <div class="stat-card-value">${insightsData.total_clusters}</div>
-      <div class="stat-card-label">Clusters</div>
+      <div class="stat-card-label">${t('insights.clusters')}</div>
     </div>
     <div class="stat-card">
       <div class="stat-card-value">${insightsData.avg_connections_per_entity}</div>
-      <div class="stat-card-label">Avg Connections</div>
+      <div class="stat-card-label">${t('insights.avgConnections')}</div>
     </div>
   `;
 
@@ -2652,18 +2780,18 @@ function showClusterInfo(clusterId) {
   }
 
   // Display cluster label
-  document.getElementById('cluster-label').textContent = `Cluster ${clusterId}: ${cluster.label}`;
+  document.getElementById('cluster-label').textContent = `${t('cluster.label', {id: clusterId})}: ${cluster.label}`;
 
   // Display stats
   const statsDiv = document.getElementById('cluster-stats');
   statsDiv.innerHTML = `
     <div class="cluster-stat">
       <div class="cluster-stat-value">${cluster.entity_count}</div>
-      <div class="cluster-stat-label">Entities</div>
+      <div class="cluster-stat-label">${t('insights.entities')}</div>
     </div>
     <div class="cluster-stat">
       <div class="cluster-stat-value">${cluster.internal_edges}</div>
-      <div class="cluster-stat-label">Internal Edges</div>
+      <div class="cluster-stat-label">${t('cluster.internalEdges')}</div>
     </div>
   `;
 

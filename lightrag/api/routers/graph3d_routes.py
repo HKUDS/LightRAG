@@ -109,6 +109,14 @@ def create_graph3d_routes(rag, api_key: Optional[str] = None):
             raise HTTPException(status_code=404, detail="QR code image not found.")
         return FileResponse(img_path, media_type="image/jpeg")
 
+    @router.get("/graph3d/i18n.json", include_in_schema=False)
+    async def graph3d_i18n_json():
+        """Serve the viewer i18n translation mapping (en/zh)."""
+        i18n_path = Path(__file__).parent.parent / "static" / "graph3d_i18n.json"
+        if not i18n_path.exists():
+            raise HTTPException(status_code=404, detail="i18n mapping not found.")
+        return FileResponse(i18n_path, media_type="application/json")
+
     @router.get("/graph3d/edge_info", dependencies=[Depends(combined_auth)])
     async def graph3d_edge_info(src: str, tgt: str):
         """Return relationship details (description, keywords, weight) for an entity pair."""

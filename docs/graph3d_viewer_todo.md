@@ -80,3 +80,73 @@ Make the connected nodes listed in the entity panel clickable.
 connection chips under the entity meta; relationship view with clickable
 entity links; both nodes + connecting edge light up white in the 3D graph;
 `← Back` button walks the navigation history.
+
+## 6. Settings sidebar (collapsed footer) ✅
+
+Collapse all footer navigation buttons into a single gear (⚙) button in the
+bottom-right corner. Clicking opens a sliding sidebar containing all
+controls (language, brightness, view toggles, panel toggles).
+
+**Implemented**: deleted `.bottom-bar`; added `.settings-gear` fixed button +
+`.settings-panel` sliding sidebar (mirrors `.side-panel` slide CSS); all 8
+controls moved inside with full-width stacked layout.
+
+## 7. Brightness slider ceiling ×2 ✅
+
+Double the maximum brightness from 2.0× to 4.0×.
+
+**Implemented**: slider `max` changed from `2.0` to `4.0`. Linear scale
+unchanged.
+
+## 8. Chinese i18n with language toggle ✅
+
+Translate the entire viewer UI into Chinese. Provide an external
+`graph3d_i18n.json` (en/zh mapping) served via `GET /graph3d/i18n.json`.
+Add a language toggle in the settings sidebar. Default language: Chinese.
+
+**Implemented**: `lightrag/api/static/graph3d_i18n.json` (78 keys, en/zh
+parity enforced); `t()` runtime with embedded English fallback;
+`data-i18n` / `data-i18n-title` / `data-i18n-alt` attribute wiring on all
+static text + dynamic `t()` calls in `addLog()`, `displayInsights()`,
+`showClusterInfo()`, `formatEntityList()`, `showRelationship()`;
+`setLanguage()` persists to `localStorage` (`graph3d_lang`).
+
+## 9. Title translation ✅
+
+Translate "GK Brain Knowledge Graph" → "GK大脑类神经元3D视图" (default zh).
+
+**Implemented**: `app.title` key in i18n JSON; `data-i18n` on title `<span>`
+and `<title>` element.
+
+## 10. Remove query input ✅
+
+Remove the manual query input box and its submit path (the external query
+polling, Query Log, and idle replay remain — only the input UI goes).
+
+**Implemented**: deleted `#query-panel` markup, `.query-panel` CSS,
+`#query-submit` / `#query-input` event listeners, and the
+`queryAndActivate()` function. Removed dead `isManual` branch from
+`processActivationQueue()`.
+
+## 11. Title QR badge ✅
+
+Pin a small (36×36) always-visible GK QR code next to the title in the
+top-left.
+
+**Implemented**: `<img class="title-qr" src="…gkcharger_qrcode.jpg">` inside
+`.top-bar .logo` after the title span.
+
+## 12. Light/dark theme toggle ✅
+
+Add a theme toggle (🌙 Dark / ☀️ Light) to the settings sidebar, next to the
+language toggle. Persisted in `localStorage`, applied before first paint.
+
+**Implemented**: `[data-theme="light"]` CSS token overrides (bg, surface,
+border, text, accent, top-bar fade) on top of the existing `:root` tokens;
+`setTheme()` / `applyTheme()` re-skin the Three.js scene live — scene
+background, point/edge materials switch from `AdditiveBlending` (dark) to
+`NormalBlending` with higher opacity (light), bloom pass disabled in light
+mode (reads as fog on a light background), and pulse/highlight colors lerp
+toward dark navy instead of white so activations stay visible. Choice
+persisted in `localStorage` (`graph3d_theme`); new i18n keys
+`settings.theme` / `theme.dark` / `theme.light` (en/zh).
