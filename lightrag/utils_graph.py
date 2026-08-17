@@ -620,10 +620,11 @@ async def _edit_entity_impl(
         if entity_chunks_storage is not None:
             storage_key = original_entity_name if is_renaming else entity_name
             stored_data = await entity_chunks_storage.get_by_id(storage_key)
-            has_stored_data = (
-                stored_data
-                and isinstance(stored_data, dict)
-                and stored_data.get("chunk_ids")
+            # Test row *presence*, not list truthiness: a persisted row of
+            # {"chunk_ids": [], "count": 0} is authoritative ("this object tracks no
+            # chunks") and must be distinguished from an absent row (never migrated).
+            has_stored_row = (
+                isinstance(stored_data, dict) and "chunk_ids" in stored_data
             )
 
             old_source_id = node_data.get("source_id", "")
@@ -634,14 +635,17 @@ async def _edit_entity_impl(
 
             source_id_changed = set(new_chunk_ids) != set(old_chunk_ids)
 
-            if source_id_changed or not has_stored_data or is_renaming:
+            if source_id_changed or not has_stored_row or is_renaming:
                 existing_full_chunk_ids = []
-                if has_stored_data:
+                if has_stored_row:
                     existing_full_chunk_ids = [
                         cid for cid in stored_data.get("chunk_ids", []) if cid
                     ]
 
-                if not existing_full_chunk_ids:
+                # Reseed from the graph's source_id only when no tracking row exists at
+                # all; a present-but-empty row must not be repopulated from a possibly
+                # stale source_id.
+                if not has_stored_row:
                     existing_full_chunk_ids = old_chunk_ids.copy()
 
                 updated_chunk_ids = compute_incremental_chunk_ids(
@@ -1154,10 +1158,11 @@ async def aedit_relation(
 
                 # Check if storage has existing data
                 stored_data = await relation_chunks_storage.get_by_id(storage_key)
-                has_stored_data = (
-                    stored_data
-                    and isinstance(stored_data, dict)
-                    and stored_data.get("chunk_ids")
+                # Test row *presence*, not list truthiness: a persisted row of
+                # {"chunk_ids": [], "count": 0} is authoritative ("this relation tracks
+                # no chunks") and must be distinguished from an absent row.
+                has_stored_row = (
+                    isinstance(stored_data, dict) and "chunk_ids" in stored_data
                 )
 
                 # Get old and new source_id
@@ -1173,17 +1178,19 @@ async def aedit_relation(
 
                 source_id_changed = set(new_chunk_ids) != set(old_chunk_ids)
 
-                # Update if: source_id changed OR storage has no data
-                if source_id_changed or not has_stored_data:
+                # Update if: source_id changed OR no tracking row exists
+                if source_id_changed or not has_stored_row:
                     # Get existing full chunk_ids from storage
                     existing_full_chunk_ids = []
-                    if has_stored_data:
+                    if has_stored_row:
                         existing_full_chunk_ids = [
                             cid for cid in stored_data.get("chunk_ids", []) if cid
                         ]
 
-                    # If no stored data exists, use old source_id as baseline
-                    if not existing_full_chunk_ids:
+                    # Reseed from the graph's source_id only when no tracking row exists
+                    # at all; a present-but-empty row must not be repopulated from a
+                    # possibly stale source_id.
+                    if not has_stored_row:
                         existing_full_chunk_ids = old_chunk_ids.copy()
 
                     # Use utility function to compute incremental updates

@@ -1903,3 +1903,58 @@ async def test_smartheading_cache_cleared_by_aclear_cache(tmp_path):
         assert await rag.llm_response_cache.get_by_id(cache_id) is None
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_edit_does_not_reseed_present_but_empty_chunk_tracking(tmp_path):
+    """Regression for #3609.
+
+    A persisted chunk-tracking row of ``{"chunk_ids": [], "count": 0}`` is
+    authoritative ("this entity tracks no chunks") and must be distinguished from an
+    absent row. Editing the entity must not repopulate the empty row from the graph
+    node's ``source_id``, which may still name chunks a previous purge pruned.
+    """
+    rag = await _build_rag(tmp_path, "reseed_guard", _deterministic_chunking)
+    try:
+        entity_name = "StaleEntity"
+        stale_source_id = "chunk-already-purged"
+        created_at = int(datetime.now(timezone.utc).timestamp())
+
+        # Graph node still names a chunk that a previous purge already removed.
+        await rag.chunk_entity_relation_graph.upsert_node(
+            entity_name,
+            {
+                "entity_id": entity_name,
+                "source_id": stale_source_id,
+                "description": f"{entity_name} description",
+                "entity_type": "test",
+                "file_path": "reseed.txt",
+                "created_at": created_at,
+            },
+        )
+        await rag.entities_vdb.upsert(
+            {
+                compute_mdhash_id(entity_name, prefix="ent-"): {
+                    "content": f"{entity_name}\n{entity_name} description",
+                    "entity_name": entity_name,
+                    "source_id": stale_source_id,
+                    "description": f"{entity_name} description",
+                    "entity_type": "test",
+                    "file_path": "reseed.txt",
+                }
+            }
+        )
+        # Authoritative, curated tracking row: this entity tracks no chunks.
+        await rag.entity_chunks.upsert({entity_name: {"chunk_ids": [], "count": 0}})
+
+        # Edit only the description; the source_id is unchanged.
+        await rag.aedit_entity(entity_name, {"description": "updated description"})
+
+        # The empty row must stay empty, not be reseeded from the stale source_id.
+        row = await rag.entity_chunks.get_by_id(entity_name)
+        assert row is not None, "tracking row should still exist"
+        assert row.get("chunk_ids") == [], (
+            f"present-but-empty tracking row was reseeded from stale source_id: {row}"
+        )
+    finally:
+        await rag.finalize_storages()
