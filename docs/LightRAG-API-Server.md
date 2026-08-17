@@ -778,7 +778,7 @@ lightrag-server --embedding-binding ollama --help
 lightrag-server --embedding-binding gemini --help
 ```
 
-> Please use OpenAI-compatible method to access LLMs deployed by OpenRouter or vLLM/SGLang. You can pass additional parameters to OpenRouter or vLLM/SGLang through the `OPENAI_LLM_EXTRA_BODY` environment variable to disable reasoning mode or achieve other personalized controls.
+> Please use OpenAI-compatible method to access LLMs deployed by OpenRouter, [OrcaRouter](https://www.orcarouter.ai), or vLLM/SGLang. You can pass additional parameters to these providers through the `OPENAI_LLM_EXTRA_BODY` environment variable to disable reasoning mode or achieve other personalized controls.
 
 Set the max_tokens to **prevent excessively long or endless output loop** during the entity relationship extraction phase for Large Language Model (LLM) responses.  The purpose of setting max_tokens parameter is to truncate LLM output before timeouts occur, thereby preventing document extraction failures. This addresses issues where certain text blocks (e.g., tables or citations) containing numerous entities and relationships can lead to overly long or even endless loop outputs from LLMs. This setting is particularly crucial for locally deployed, smaller-parameter models. Max tokens value can be calculated by this formula: `LLM_TIMEOUT * llm_output_tokens/second` (i.e. `240s * 50 tokens/s = 12000`, max_tokens should smaller than 12000)
 
