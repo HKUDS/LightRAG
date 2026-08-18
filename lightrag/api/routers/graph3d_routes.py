@@ -89,16 +89,52 @@ def create_graph3d_routes(rag, api_key: Optional[str] = None):
             headers={"Content-Disposition": "inline"},
         )
 
+    def _config_path() -> Path:
+        return _layout_dir() / "graph3d_config.json"
+
+    def _load_viewer_config() -> dict:
+        """Optional per-instance viewer config from the working dir.
+
+        ``graph3d_config.json`` may define title overrides applied by the
+        viewer on top of the i18n table::
+
+            {
+              "title_en": "GK Brain Knowledge Graph",
+              "title_zh": "GK大脑类神经元3D视图",
+              "title_full_en": "GK Brain Knowledge Graph · 3D Galaxy",
+              "title_full_zh": "GK大脑类神经元3D视图"
+            }
+        """
+        import json
+        path = _config_path()
+        if not path.exists():
+            return {}
+        try:
+            config = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(config, dict):
+                raise ValueError("graph3d_config.json must contain a JSON object")
+            return config
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Invalid {path.name}: {e}",
+            )
+
     @router.get("/graph3d/viewer", response_class=HTMLResponse, include_in_schema=False)
     async def graph3d_viewer(request: Request):
         """Serve the standalone 3D graph viewer page."""
+        import json
         viewer_path = Path(__file__).parent.parent / "static" / "graph3d_viewer.html"
         if not viewer_path.exists():
             raise HTTPException(status_code=404, detail="3D viewer page not found.")
-        # Inject the API base path so the viewer can find the layout endpoints
+        # Inject the API base path so the viewer can find the layout endpoints,
+        # plus any per-instance viewer config (title overrides, ...).
         root_path = request.scope.get("root_path", "")
         html = viewer_path.read_text(encoding="utf-8")
         html = html.replace("__API_BASE__", root_path)
+        html = html.replace(
+            "__VIEWER_CONFIG__", json.dumps(_load_viewer_config(), ensure_ascii=False)
+        )
         return HTMLResponse(content=html)
 
     @router.get("/graph3d/gkcharger_qrcode.jpg", include_in_schema=False)

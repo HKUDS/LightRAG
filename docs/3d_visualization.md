@@ -79,6 +79,25 @@ lightrag-server --host 0.0.0.0 --port 9621
 open http://localhost:9621/graph3d/viewer
 ```
 
+## Per-Instance Viewer Title
+
+When multiple LightRAG instances serve different corpora, give each viewer its
+own title by placing a `graph3d_config.json` in the instance's working dir:
+
+```json
+{
+  "title_en": "Research Papers Knowledge Graph",
+  "title_zh": "论文知识图谱3D视图",
+  "title_full_en": "Research Papers Knowledge Graph · 3D Galaxy",
+  "title_full_zh": "论文知识图谱 · 3D星系视图"
+}
+```
+
+The `/graph3d/viewer` route injects this into the page as `VIEWER_CONFIG`; the
+viewer applies the values on top of the i18n table (`app.title` header,
+`app.title.full` browser tab). All keys are optional — omitted keys keep the
+built-in defaults, and a missing file means the stock "GK Brain" title.
+
 ## Binary Format
 
 The binary layout file (`graph3d_layout.bin`) uses a compact format for fast frontend loading:

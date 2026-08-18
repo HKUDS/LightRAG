@@ -1066,6 +1066,9 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 
 const API_BASE = '__API_BASE__';
+// Per-instance viewer config injected by the /graph3d/viewer route from
+// <working_dir>/graph3d_config.json (title overrides, ...). Defaults to {}.
+const VIEWER_CONFIG = __VIEWER_CONFIG__;
 const BINARY_URL = `${API_BASE}/graph3d/layout.bin`;
 const META_URL = `${API_BASE}/graph3d/layout_meta.json`;
 const ACTIVATIONS_URL = `${API_BASE}/query/activations`;
@@ -1208,6 +1211,16 @@ function setLanguage(lang) {
   applyI18n();
 }
 
+// Per-instance title overrides from graph3d_config.json, applied on top of
+// whichever i18n table is active (fetched or inline fallback).
+function applyViewerConfigOverrides() {
+  for (const lang of ['en', 'zh']) {
+    if (!I18N[lang]) continue;
+    if (VIEWER_CONFIG[`title_${lang}`]) I18N[lang]['app.title'] = VIEWER_CONFIG[`title_${lang}`];
+    if (VIEWER_CONFIG[`title_full_${lang}`]) I18N[lang]['app.title.full'] = VIEWER_CONFIG[`title_full_${lang}`];
+  }
+}
+
 async function loadI18n() {
   try {
     const resp = await fetch(`${API_BASE}/graph3d/i18n.json`);
@@ -1215,6 +1228,7 @@ async function loadI18n() {
       I18N = await resp.json();
     }
   } catch (e) { /* keep fallback */ }
+  applyViewerConfigOverrides();
   applyI18n();
 }
 
