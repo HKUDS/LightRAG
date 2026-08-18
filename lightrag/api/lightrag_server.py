@@ -1307,6 +1307,41 @@ def _build_scheduling_status(pipeline_snapshot: dict, ingress_counts: dict) -> d
     }
 
 
+def _create_llm_model_kwargs(binding: str, args, llm_timeout: int) -> dict:
+    """
+    Create LLM model kwargs based on binding type.
+    Uses lazy import for binding-specific options.
+    """
+    if binding in ["lollms", "ollama"]:
+        try:
+            from lightrag.llm.binding_options import OllamaLLMOptions
+
+            options = OllamaLLMOptions.options_dict(args)
+        except ImportError as e:
+            raise Exception(f"Failed to import {binding} options: {e}")
+        if binding == "ollama":
+            # Imported lazily (the module installs the ollama package on
+            # import) and only for the binding that actually forwards
+            # think= -- lollms never reaches the ollama client.
+            from lightrag.llm.ollama import ensure_think_supported
+
+            ensure_think_supported(options, context="the base LLM binding")
+        kwargs = {
+            "timeout": llm_timeout,
+            "options": options,
+            "api_key": args.llm_binding_api_key,
+        }
+        if binding == "lollms":
+            # lollms_model_if_cache()'s parameter is named base_url, not
+            # host -- unlike ollama's AsyncClient(host=...). Passing "host"
+            # here would silently land in its **kwargs and never be read.
+            kwargs["base_url"] = args.llm_binding_host
+        else:
+            kwargs["host"] = args.llm_binding_host
+        return kwargs
+    return {}
+
+
 def create_app(args):
     # Check frontend build first and get status
     webui_assets_exist, is_frontend_outdated = check_frontend_build()
@@ -1803,33 +1838,6 @@ def create_app(args):
         except ImportError as e:
             raise Exception(f"Failed to import {binding} LLM binding: {e}")
 
-    def create_llm_model_kwargs(binding: str, args, llm_timeout: int) -> dict:
-        """
-        Create LLM model kwargs based on binding type.
-        Uses lazy import for binding-specific options.
-        """
-        if binding in ["lollms", "ollama"]:
-            try:
-                from lightrag.llm.binding_options import OllamaLLMOptions
-
-                options = OllamaLLMOptions.options_dict(args)
-            except ImportError as e:
-                raise Exception(f"Failed to import {binding} options: {e}")
-            if binding == "ollama":
-                # Imported lazily (the module installs the ollama package on
-                # import) and only for the binding that actually forwards
-                # think= -- lollms never reaches the ollama client.
-                from lightrag.llm.ollama import ensure_think_supported
-
-                ensure_think_supported(options, context="the base LLM binding")
-            return {
-                "host": args.llm_binding_host,
-                "timeout": llm_timeout,
-                "options": options,
-                "api_key": args.llm_binding_api_key,
-            }
-        return {}
-
     def resolve_role_llm_settings(
         role: str, override_meta: dict | None = None
     ) -> dict[str, Any]:
@@ -2322,7 +2330,7 @@ def create_app(args):
             embedding_chunk_overlap_token_size=int(
                 args.embedding_chunk_overlap_token_size
             ),
-            llm_model_kwargs=create_llm_model_kwargs(
+            llm_model_kwargs=_create_llm_model_kwargs(
                 args.llm_binding, args, llm_timeout
             ),
             embedding_func=embedding_func,
