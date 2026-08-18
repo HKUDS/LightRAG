@@ -712,7 +712,9 @@ def test_text_ingress_rejects_custom_without_an_injected_callback(
 
 
 def test_text_ingress_accepts_custom_with_an_injected_callback(monkeypatch):
-    custom = lambda *args, **kwargs: []
+    def custom(*args, **kwargs):
+        return []
+
     client, captured = _make_client(monkeypatch, chunking_func=custom)
     response = client.post(
         "/documents/text",
