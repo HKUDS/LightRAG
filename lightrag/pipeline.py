@@ -4923,6 +4923,18 @@ class _PipelineMixin:
                 # so admin/list APIs can see the actual chunker params used.
                 chunk_opts_str: str = ""
 
+                from lightrag.chunker import chunking_by_token_size
+
+                if (
+                    doc_process_opts.chunking_explicit
+                    and self.chunking_func is not chunking_by_token_size
+                ):
+                    logger.warning(
+                        "Custom chunking_func bypassed: process_options "
+                        f"explicitly selects strategy {doc_process_opts.chunking} "
+                        f"for d-id: {doc_id}"
+                    )
+
                 if doc_process_opts.chunking_explicit:
                     from lightrag.chunker import (
                         chunking_by_fixed_token,
@@ -5090,7 +5102,6 @@ class _PipelineMixin:
                     logger.info(
                         f"Chunking F(legacy): {chunk_opts_str}, doc_id: {doc_id}"
                     )
-                    from lightrag.chunker import chunking_by_token_size
 
                     # Only the unmodified default fixed-token chunker understands the
                     # private ``_emit_source_span`` kwarg; a user-supplied
