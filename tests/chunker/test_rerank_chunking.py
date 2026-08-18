@@ -29,6 +29,31 @@ class TestChunkDocumentsForRerank:
         assert docs == ["short"]
         assert idxs == [0]
 
+    def test_negative_overlap_tokens_raises(self):
+        """overlap_tokens < 0 has no sensible meaning and must raise up front,
+        before the tokenizer/fallback branching -- including for a short
+        document that never enters either windowing loop and would
+        otherwise let the value pass through silently.
+
+        Existing zero, positive, and upper-bound-clamp behaviour (see
+        test_overlap_validation.py) is unaffected: this guard only rejects
+        values below zero.
+        """
+        with pytest.raises(ValueError, match="overlap_tokens"):
+            chunk_documents_for_rerank(["short"], max_tokens=100, overlap_tokens=-1)
+
+        docs, idxs = chunk_documents_for_rerank(
+            ["short"], max_tokens=100, overlap_tokens=0
+        )
+        assert docs == ["short"]
+        assert idxs == [0]
+
+        docs, idxs = chunk_documents_for_rerank(
+            ["short"], max_tokens=100, overlap_tokens=10
+        )
+        assert docs == ["short"]
+        assert idxs == [0]
+
     def test_max_tokens_one_terminates(self):
         """max_tokens=1 is the boundary: overlap must clamp so the loop still terminates.
 
