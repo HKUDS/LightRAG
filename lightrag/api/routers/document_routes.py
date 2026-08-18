@@ -106,6 +106,7 @@ from lightrag.kg.scan_job_store import (
 )
 from lightrag.parser.routing import (
     FilenameParserHintError,
+    ParserDirectives,
     canonicalize_parser_hinted_basename,
     chunk_strategy_key,
     encode_parse_engine,
@@ -1616,7 +1617,9 @@ class DocumentManager:
     def mark_as_indexed(self, file_path: Path):
         self.indexed_files.add(file_path)
 
-    def is_supported_file(self, filename: str) -> bool:
+    def is_supported_file(
+        self, filename: str, *, directives: ParserDirectives | None = None
+    ) -> bool:
         """True when THIS filename routes to an engine that can parse it.
 
         Resolves the engine for the concrete name — so a per-file hint
@@ -1625,9 +1628,15 @@ class DocumentManager:
         default ``legacy`` engine is rejected here instead of failing later
         at the parse worker's suffix gate.
 
+        ``directives`` lets a caller that already resolved this filename
+        (upload does, to gate the ``C`` selector) reuse that resolution
+        instead of paying a second hint parse plus rule scan.
+
         Raises :class:`FilenameParserHintError` for a malformed hint —
         callers surface it (upload → HTTP 400 with the detailed message;
         scan passes the file through so enqueue emits an error document).
+        A caller passing ``directives`` has already resolved (and therefore
+        already surfaced) that error, so nothing is raised on that path.
         """
         from lightrag.parser.routing import (
             parser_engine_supports_suffix,
@@ -1635,7 +1644,11 @@ class DocumentManager:
             resolve_file_parser_engine,
         )
 
-        engine = resolve_file_parser_engine(filename)
+        engine = (
+            directives.engine
+            if directives is not None
+            else resolve_file_parser_engine(filename)
+        )
         return parser_engine_supports_suffix(engine, parser_suffix(filename))
 
 
@@ -5254,9 +5267,11 @@ def create_document_routes(
                 - status="success": File accepted and queued for processing
 
         Raises:
-            HTTPException: 400 unsupported file type, 409 same-name
-                conflict or scan-classifying / destructive job in
-                flight, 413 file too large, 500 other errors.
+            HTTPException: 400 unsupported file type or malformed filename
+                hint, 409 same-name conflict or scan-classifying /
+                destructive job in flight, 413 file too large, 422 invalid
+                chunking configuration (an explicit ``C`` selector without a
+                custom ``LightRAG.chunking_func``), 500 other errors.
         """
         from lightrag.kg.shared_storage import start_reserved_background_task
 
@@ -5279,14 +5294,20 @@ def create_document_routes(
             # Sanitize filename to prevent Path Traversal attacks
             safe_filename = sanitize_filename(file.filename, doc_manager.input_dir)
 
+            # Resolve engine + process options once and reuse the result for
+            # both gates below; each resolution costs a hint parse plus a
+            # LIGHTRAG_PARSER rule scan.
             try:
-                filename_supported = doc_manager.is_supported_file(safe_filename)
+                upload_directives = resolve_parser_directives(safe_filename)
             except FilenameParserHintError as hint_error:
                 # Reject malformed hints synchronously with the detailed
                 # message (previously surfaced asynchronously as an error
                 # document after the upload was accepted).
                 raise HTTPException(status_code=400, detail=str(hint_error))
-            if not filename_supported:
+
+            if not doc_manager.is_supported_file(
+                safe_filename, directives=upload_directives
+            ):
                 raise HTTPException(
                     status_code=400,
                     detail=f"Unsupported file type. Supported types: {doc_manager.supported_extensions}",
@@ -5296,12 +5317,9 @@ def create_document_routes(
             # an unusable explicit ``C`` selector. Reject before writing the
             # upload rather than silently accepting work that must fall back.
             try:
-                upload_directives = resolve_parser_directives(safe_filename)
                 _validate_custom_chunking_available(
                     upload_directives.process_options, rag
                 )
-            except FilenameParserHintError as hint_error:
-                raise HTTPException(status_code=400, detail=str(hint_error))
             except ValueError as exc:
                 raise HTTPException(
                     status_code=422,
