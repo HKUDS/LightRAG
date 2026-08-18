@@ -18,6 +18,7 @@ Three concerns:
    scheduling any background work) for a malformed body.
 """
 
+import asyncio
 import importlib
 import sys
 from types import SimpleNamespace
@@ -580,6 +581,20 @@ class _FwdRag:
         self.doc_status = _FwdDocStatus()
 
 
+class _CallbackRemovalRag(_FwdRag):
+    def __init__(self, chunking_func):
+        super().__init__()
+        self.chunking_func = chunking_func
+        self.enqueued: list[dict] = []
+        self.process_calls = 0
+
+    async def apipeline_enqueue_documents(self, **kwargs):
+        self.enqueued.append(kwargs)
+
+    async def apipeline_process_enqueue_documents(self):
+        self.process_calls += 1
+
+
 _HEADERS = {"X-API-Key": "test-key"}
 
 
@@ -628,6 +643,51 @@ def _make_client(monkeypatch, addon_params=None, chunking_func=chunking_by_token
         create_document_routes(rag, SimpleNamespace(), api_key="test-key")
     )
     return TestClient(app), captured
+
+
+def _make_callback_removal_client(monkeypatch):
+    """Run managed work after removing the callback accepted at preflight."""
+
+    def custom(*args, **kwargs):
+        return []
+
+    rag = _CallbackRemovalRag(custom)
+
+    async def _noop_reserve(rag, token):
+        return False
+
+    async def _noop_release(rag, token):
+        return None
+
+    async def _noop_reweight(rag, token, weight):
+        return None
+
+    async def _run_after_callback_removal(background_tasks, *, work, backstop_release):
+        # This hook runs only after the endpoint's synchronous preflight. Model
+        # a runtime deployment change in the exact window called out by review:
+        # the accepted request must retain its frozen C snapshot even though the
+        # processing callback is gone by the time managed work starts.
+        rag.chunking_func = chunking_by_token_size
+        started = asyncio.Event()
+        await work(started)
+        assert started.is_set()
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    monkeypatch.setattr(_dr, "_reserve_enqueue_slot", _noop_reserve)
+    monkeypatch.setattr(_dr, "_release_enqueue_slot", _noop_release)
+    monkeypatch.setattr(_dr, "_reweight_enqueue_slot", _noop_reweight)
+    monkeypatch.setattr(
+        shared_storage,
+        "start_reserved_background_task",
+        _run_after_callback_removal,
+    )
+
+    app = FastAPI()
+    app.state.background_tasks = set()
+    app.include_router(
+        create_document_routes(rag, SimpleNamespace(), api_key="test-key")
+    )
+    return TestClient(app), rag
 
 
 def test_insert_text_forwards_chunking(monkeypatch):
@@ -731,6 +791,51 @@ def test_text_ingress_accepts_custom_with_an_injected_callback(monkeypatch):
     assert response.status_code == 200
     assert captured["chunking"].strategy == "custom"
     assert captured["chunking"].params == {"chunk_token_size": 400}
+
+
+@pytest.mark.parametrize(
+    "path,payload,expected_inputs",
+    [
+        (
+            "/documents/text",
+            {
+                "text": "hello",
+                "file_source": "a.md",
+                "chunking": {
+                    "strategy": "custom",
+                    "params": {"chunk_token_size": 400},
+                },
+            },
+            ["hello"],
+        ),
+        (
+            "/documents/texts",
+            {
+                "texts": ["one", "two"],
+                "file_sources": ["a.md", "b.md"],
+                "chunking": {
+                    "strategy": "custom",
+                    "params": {"chunk_token_size": 400},
+                },
+            },
+            ["one", "two"],
+        ),
+    ],
+)
+def test_accepted_custom_request_keeps_preflight_snapshot_after_callback_removal(
+    monkeypatch, path, payload, expected_inputs
+):
+    client, rag = _make_callback_removal_client(monkeypatch)
+
+    response = client.post(path, headers=_HEADERS, json=payload)
+
+    assert response.status_code == 200
+    assert rag.process_calls == 1
+    assert len(rag.enqueued) == 1
+    enqueue = rag.enqueued[0]
+    assert enqueue["input"] == expected_inputs
+    assert enqueue["process_options"] == "C"
+    assert enqueue["chunk_options"]["fixed_token"]["chunk_token_size"] == 400
 
 
 def test_insert_text_returns_422_on_malformed_chunking_without_scheduling(monkeypatch):
