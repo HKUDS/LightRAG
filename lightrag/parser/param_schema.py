@@ -323,7 +323,7 @@ def chunk_param_overlap_error(params: Mapping[str, Any]) -> str | None:
 # ---------------------------------------------------------------------------
 # Engine parameters (Phase 2) — per-file params attached to the engine token,
 # e.g. ``mineru(page_range=1-3,language=en)`` / ``docling(force_ocr=true)``.
-# Keyed by engine name (unlike chunk params, which are keyed by F/R/V/P).
+# Keyed by engine name (unlike chunk params, which are keyed by F/R/V/P/C).
 # ---------------------------------------------------------------------------
 
 _BOOL_TRUE = frozenset({"1", "true", "yes", "on", "t", "y"})
@@ -338,7 +338,7 @@ class EngineParamSpec:
     """Declares one tunable engine parameter (Phase 2).
 
     Separate from the chunk :class:`ParamSpec` (which requires a ``targets``
-    set of F/R/V/P selectors that is meaningless for engines).  ``kind`` is one
+    set of F/R/V/P/C selectors that is meaningless for engines).  ``kind`` is one
     of ``"str"`` / ``"enum"`` / ``"bool"``.  ``is_list`` marks a repeated-key
     parameter (``page_range``) whose canonical value is a comma-joined string.
     ``enum_values`` constrains an ``"enum"`` parameter.

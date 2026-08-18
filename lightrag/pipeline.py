@@ -698,7 +698,7 @@ class _PipelineMixin:
                 content-dedup happens after parsing). Ignored when ``ids``
                 is provided (see ``ids`` above).
             parse_engine: file extraction engine already used or target engine for pending_parse
-            process_options: per-document processing options string (i/t/e/!/F/R/V/P);
+            process_options: per-document processing options string (i/t/e/!/F/R/V/P/C);
                 accepted as a single string broadcast to every input or as a list
                 aligned with ``input``. Stored verbatim on ``full_docs`` and
                 mirrored to ``doc_status.metadata['process_options']``.
