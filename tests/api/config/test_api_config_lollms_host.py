@@ -74,7 +74,10 @@ def test_timeout_and_api_key_unchanged_for_both_bindings(
 
     assert kwargs["timeout"] == 42
     assert kwargs["api_key"] == "secret"
-    assert "options" in kwargs
+    # Ollama-only payload, pinned explicitly rather than borrowed from
+    # OllamaLLMOptions.options_dict(), which is empty for lollms only as a
+    # side effect of where its arguments are registered.
+    assert kwargs["options"] == {}
 
 
 def test_unsupported_binding_returns_empty_dict(monkeypatch, create_llm_model_kwargs):

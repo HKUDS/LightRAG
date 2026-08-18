@@ -1312,33 +1312,40 @@ def _create_llm_model_kwargs(binding: str, args, llm_timeout: int) -> dict:
     Create LLM model kwargs based on binding type.
     Uses lazy import for binding-specific options.
     """
-    if binding in ["lollms", "ollama"]:
+    if binding == "lollms":
+        return {
+            "timeout": llm_timeout,
+            # "options" is an Ollama-only payload; lollms_model_if_cache()
+            # never reads it. Pin it to an empty dict instead of deriving it
+            # from OllamaLLMOptions.options_dict(args), which only happens to
+            # return {} because its arguments are registered for the ollama
+            # binding alone.
+            "options": {},
+            "api_key": args.llm_binding_api_key,
+            # lollms_model_if_cache()'s parameter is named base_url, not
+            # host -- unlike ollama's AsyncClient(host=...). Passing "host"
+            # here would silently land in its **kwargs and never be read.
+            "base_url": args.llm_binding_host,
+        }
+    if binding == "ollama":
         try:
             from lightrag.llm.binding_options import OllamaLLMOptions
 
             options = OllamaLLMOptions.options_dict(args)
         except ImportError as e:
             raise Exception(f"Failed to import {binding} options: {e}")
-        if binding == "ollama":
-            # Imported lazily (the module installs the ollama package on
-            # import) and only for the binding that actually forwards
-            # think= -- lollms never reaches the ollama client.
-            from lightrag.llm.ollama import ensure_think_supported
+        # Imported lazily (the module installs the ollama package on import)
+        # and only for the binding that actually forwards think= -- lollms
+        # never reaches the ollama client.
+        from lightrag.llm.ollama import ensure_think_supported
 
-            ensure_think_supported(options, context="the base LLM binding")
-        kwargs = {
+        ensure_think_supported(options, context="the base LLM binding")
+        return {
             "timeout": llm_timeout,
             "options": options,
             "api_key": args.llm_binding_api_key,
+            "host": args.llm_binding_host,
         }
-        if binding == "lollms":
-            # lollms_model_if_cache()'s parameter is named base_url, not
-            # host -- unlike ollama's AsyncClient(host=...). Passing "host"
-            # here would silently land in its **kwargs and never be read.
-            kwargs["base_url"] = args.llm_binding_host
-        else:
-            kwargs["host"] = args.llm_binding_host
-        return kwargs
     return {}
 
 
