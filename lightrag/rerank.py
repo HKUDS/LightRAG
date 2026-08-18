@@ -57,6 +57,13 @@ def chunk_documents_for_rerank(
         # max_tokens=0 makes the chunk window zero-width and the loop never advances
         raise ValueError(f"max_tokens must be >= 1, got {max_tokens}")
 
+    if overlap_tokens < 0:
+        # Checked up front, before the tokenizer/fallback branching below, so a
+        # negative value is always rejected -- including for a short document
+        # that never enters either windowing loop and would otherwise let the
+        # invalid value pass through unnoticed.
+        raise ValueError(f"overlap_tokens must be non-negative, got {overlap_tokens}")
+
     # Clamp overlap_tokens to ensure the loop always advances.
     # If overlap_tokens >= max_tokens the loop would never progress. Recover by
     # clamping to max_tokens // 2 rather than max_tokens - 1: the latter leaves an
