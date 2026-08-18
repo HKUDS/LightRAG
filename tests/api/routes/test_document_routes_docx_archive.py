@@ -7,6 +7,8 @@ from uuid import uuid4
 
 import pytest
 
+from lightrag.chunker import chunking_by_token_size
+
 _original_argv = sys.argv[:]
 sys.argv = [sys.argv[0]]
 _document_routes = importlib.import_module("lightrag.api.routers.document_routes")
@@ -119,6 +121,7 @@ class _FakeRag:
         self.errors = []
         # _resolve_text_chunking reads addon_params; {} -> default chunker config.
         self.addon_params = {}
+        self.chunking_func = chunking_by_token_size
 
     async def apipeline_enqueue_documents(
         self,
@@ -335,9 +338,11 @@ class _ScanRag:
 
 
 class _DuplicateUploadRag:
-    def __init__(self, docs_by_path):
+    def __init__(self, docs_by_path, chunking_func=chunking_by_token_size):
         self.doc_status = _ScanDocStatus(docs_by_path)
         self.workspace = f"upload-test-{uuid4().hex}"
+        self.chunking_func = chunking_func
+        self.addon_params = {}
 
 
 class _DeleteDocStatus:
@@ -636,6 +641,26 @@ async def test_pipeline_enqueue_passes_process_options_from_filename_hint(
     ]
     # Native engine deferral keeps the source file in place for the parser.
     assert file_path.exists()
+
+
+async def test_scan_enqueue_accepts_c_hint_for_observable_runtime_fallback(
+    tmp_path, monkeypatch
+):
+    """Scan has no caller to receive a 422, so ``C`` remains persisted and the
+    runtime decides between the injected callback and warned F fallback."""
+    monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native")
+    file_path = tmp_path / "report.[native-Cite].docx"
+    file_path.write_bytes(b"docx-bytes")
+    rag = _FakeRag()
+
+    enqueued = await pipeline_enqueue_scan_batch(
+        rag,
+        [_ScanCandidate(file_path, len(b"docx-bytes"))],
+        "track-custom-scan",
+    )
+
+    assert enqueued == 1
+    assert rag.enqueued[0]["process_options"] == "Cite"
 
 
 async def test_pipeline_enqueue_rejects_invalid_filename_hint(tmp_path, monkeypatch):
@@ -1414,6 +1439,68 @@ async def test_upload_rejects_malformed_hint_with_detail(tmp_path, monkeypatch):
         await upload_endpoint(set(), upload_file)
     assert excinfo.value.status_code == 400
     assert "multiple chunking modes" in excinfo.value.detail
+
+
+async def test_upload_rejects_c_without_custom_callback_before_writing(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+    upload_file = _document_routes.UploadFile(
+        filename="custom.[native-C].docx",
+        file=BytesIO(b"docx bytes"),
+    )
+
+    with pytest.raises(_document_routes.HTTPException) as excinfo:
+        await upload_endpoint(set(), upload_file)
+
+    assert excinfo.value.status_code == 422
+    assert "custom chunking requires" in str(excinfo.value.detail)
+    assert not (tmp_path / "custom.[native-C].docx").exists()
+
+
+async def test_upload_accepts_c_when_custom_callback_is_injected(tmp_path, monkeypatch):
+    import importlib
+
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({}, chunking_func=lambda *args, **kwargs: [])
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+
+    async def _no_op_index(rag_arg, file_path, track_id=None, admission_token=None):
+        return None
+
+    monkeypatch.setattr(_document_routes, "pipeline_index_file", _no_op_index)
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+    upload_file = _document_routes.UploadFile(
+        filename="custom.[native-C].docx",
+        file=BytesIO(b"docx bytes"),
+    )
+
+    managed: set = set()
+    response = await upload_endpoint(managed, upload_file)
+    await _await_managed(managed)
+
+    assert response.status == "success"
+    assert (tmp_path / "custom.[native-C].docx").exists()
 
 
 async def test_upload_succeeds_concurrent_with_pipeline_busy(tmp_path, monkeypatch):

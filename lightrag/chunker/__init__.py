@@ -11,12 +11,15 @@ Two contracts coexist intentionally:
 
     so externally-supplied :attr:`lightrag.LightRAG.chunking_func`
     implementations continue to work unchanged. The legacy contract is
-    only invoked when ``process_options`` does NOT specify a chunking
-    selector (i.e. ``chunking_explicit`` is False) — typically direct
-    :meth:`LightRAG.ainsert` calls with raw text.
+    invoked when ``process_options`` does NOT specify a chunking selector
+    (i.e. ``chunking_explicit`` is False) — typically direct
+    :meth:`LightRAG.ainsert` calls with raw text — and when the explicit
+    ``"C"`` selector requests the configured custom callback. If ``C`` is
+    processed without a custom callback, the dispatcher warns and invokes
+    :func:`chunking_by_fixed_token` instead.
 
   - **File-chunker contract** — for documents whose ``process_options``
-    explicitly selects a chunking strategy, the file-based dispatcher in
+    explicitly selects a built-in chunking strategy, the file-based dispatcher in
     ``_PipelineMixin.process_single_document`` reads
     ``doc_process_opts.chunking`` and routes to a chunker following the
     standardized signature
@@ -40,6 +43,11 @@ Two contracts coexist intentionally:
         Heading-aware semantic chunker; consumes the docx-native
         ``.blocks.jsonl`` sidecar. Falls back to R when the sidecar is
         missing or unreadable.
+
+    The explicit ``"C"`` selector is the bridge between the two contracts:
+    it uses the legacy callback signature and the ``fixed_token`` parameter
+    snapshot, while retaining the file pipeline's persisted selector and
+    observability.
 
 See ``docs/ParagraphSemanticChunking-zh.md`` for the algorithm behind
 the ``"P"`` strategy and ``docs/FileProcessingPipeline.md`` for
