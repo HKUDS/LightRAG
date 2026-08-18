@@ -84,7 +84,7 @@ def compute_umap_layout(
     import umap
 
     print(f"Computing UMAP layout: n_components={n_components}, "
-          f"n_neighbors={n_neighbors}, metric={metric}")
+          f"n_neighbors={n_neighbors}, min_dist={min_dist}, metric={metric}")
     print(f"Input matrix shape: {matrix.shape}")
 
     reducer = umap.UMAP(
@@ -100,7 +100,9 @@ def compute_umap_layout(
     return positions.astype(np.float32)
 
 
-def compute_clusters(positions: np.ndarray, min_cluster_size: int = 50) -> np.ndarray:
+def compute_clusters(
+    positions: np.ndarray, min_cluster_size: int = 50, n_clusters: int = 50
+) -> np.ndarray:
     """Cluster 3D positions using HDBSCAN.
 
     Returns:
@@ -116,7 +118,7 @@ def compute_clusters(positions: np.ndarray, min_cluster_size: int = 50) -> np.nd
         labels = clusterer.fit_predict(positions)
     except ImportError:
         # Fallback to KMeans if HDBSCAN not available
-        n_clusters = min(50, len(positions) // 100)
+        n_clusters = min(n_clusters, len(positions) // 100)
         print(f"HDBSCAN not available, using KMeans with n_clusters={n_clusters}")
         kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
         labels = kmeans.fit_predict(positions)
@@ -230,6 +232,18 @@ def main():
         help="UMAP n_neighbors parameter",
     )
     parser.add_argument(
+        "--min-dist",
+        type=float,
+        default=0.1,
+        help="UMAP min_dist parameter (larger values spread clusters apart)",
+    )
+    parser.add_argument(
+        "--n-clusters",
+        type=int,
+        default=50,
+        help="Number of clusters for the KMeans fallback",
+    )
+    parser.add_argument(
         "--min-cluster-size",
         type=int,
         default=50,
@@ -257,10 +271,16 @@ def main():
     entity_names, matrix, metadata = load_entity_vectors(vdb_path)
 
     # Step 2: Compute UMAP layout
-    positions = compute_umap_layout(matrix, n_neighbors=args.n_neighbors)
+    positions = compute_umap_layout(
+        matrix, n_neighbors=args.n_neighbors, min_dist=args.min_dist
+    )
 
     # Step 3: Compute clusters
-    clusters = compute_clusters(positions, min_cluster_size=args.min_cluster_size)
+    clusters = compute_clusters(
+        positions,
+        min_cluster_size=args.min_cluster_size,
+        n_clusters=args.n_clusters,
+    )
 
     # Step 4: Load graph structure and remap edges to VDB indices
     print(f"Loading graph from {graphml_path}...")
