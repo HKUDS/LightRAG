@@ -2231,3 +2231,142 @@ async def test_rename_reseeds_relation_row_without_chunk_ids_key(tmp_path):
         )
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_edit_treats_null_chunk_ids_as_absent(tmp_path):
+    """A malformed row of ``{"chunk_ids": None}`` must be treated as absent, not
+    present. Testing only key-presence would classify it as present and then
+    iterate ``None`` -> ``TypeError`` (a 500 after partial mutation). It must be
+    reseeded from the graph node's ``source_id`` instead (per the #3660 review).
+    """
+    rag = await _build_rag(tmp_path, "null_chunk_ids", _deterministic_chunking)
+    try:
+        entity_name = "NullEntity"
+        live_chunk = "chunk-live-null"
+        created_at = int(datetime.now(timezone.utc).timestamp())
+
+        await rag.chunk_entity_relation_graph.upsert_node(
+            entity_name,
+            {
+                "entity_id": entity_name,
+                "source_id": live_chunk,
+                "description": f"{entity_name} description",
+                "entity_type": "test",
+                "file_path": "null.txt",
+                "created_at": created_at,
+            },
+        )
+        await rag.entities_vdb.upsert(
+            {
+                compute_mdhash_id(entity_name, prefix="ent-"): {
+                    "content": f"{entity_name}\n{entity_name} description",
+                    "entity_name": entity_name,
+                    "source_id": live_chunk,
+                    "description": f"{entity_name} description",
+                    "entity_type": "test",
+                    "file_path": "null.txt",
+                }
+            }
+        )
+        # Malformed/legacy row: present dict, but chunk_ids is null (not a list).
+        await rag.entity_chunks.upsert({entity_name: {"chunk_ids": None}})
+
+        # Renaming enters the tracking branch unconditionally. On the old
+        # key-presence check this iterated `None` and raised TypeError; it must
+        # instead treat the row as absent and reseed from source_id.
+        await rag.aedit_entity(
+            entity_name, {"entity_name": "NullEntityZ"}, allow_rename=True
+        )
+
+        row = await rag.entity_chunks.get_by_id("NullEntityZ")
+        assert row is not None
+        assert row.get("chunk_ids") == [live_chunk], (
+            "a null chunk_ids must be treated as absent and reseeded from "
+            f"source_id, got: {row}"
+        )
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_merge_reseeds_relation_row_without_chunk_ids(tmp_path):
+    """`amerge_entities` must classify a partial relation tracking row
+    (e.g. ``{"count": 0}``, no ``chunk_ids`` list) as unknown and reseed it from
+    the edge's live ``source_id`` — not persist an authoritative empty row at the
+    merged key (per the #3660 review, item 2)."""
+    rag = await _build_rag(tmp_path, "merge_partial_relation", _deterministic_chunking)
+    try:
+        src, other, target = "SrcA", "Common", "TargetE"
+        live_chunk = "chunk-live-merge"
+        created_at = int(datetime.now(timezone.utc).timestamp())
+
+        for name in (src, other):
+            await rag.chunk_entity_relation_graph.upsert_node(
+                name,
+                {
+                    "entity_id": name,
+                    "source_id": live_chunk,
+                    "description": f"{name} description",
+                    "entity_type": "test",
+                    "file_path": "merge.txt",
+                    "created_at": created_at,
+                },
+            )
+        await rag.chunk_entity_relation_graph.upsert_edge(
+            src,
+            other,
+            {
+                "source": src,
+                "target": other,
+                "source_id": live_chunk,
+                "description": "related",
+                "keywords": "test",
+                "weight": 1.0,
+                "file_path": "merge.txt",
+            },
+        )
+        await rag.entities_vdb.upsert(
+            {
+                compute_mdhash_id(name, prefix="ent-"): {
+                    "content": f"{name}\n{name} description",
+                    "entity_name": name,
+                    "source_id": live_chunk,
+                    "description": f"{name} description",
+                    "entity_type": "test",
+                    "file_path": "merge.txt",
+                }
+                for name in (src, other)
+            }
+        )
+        await rag.relationships_vdb.upsert(
+            {
+                compute_mdhash_id(src + other, prefix="rel-"): {
+                    "content": f"test\t{src}\n{other}\nrelated",
+                    "src_id": src,
+                    "tgt_id": other,
+                    "source_id": live_chunk,
+                    "description": "related",
+                    "keywords": "test",
+                    "weight": 1.0,
+                    "file_path": "merge.txt",
+                }
+            }
+        )
+        # Partial relation row: present dict, no chunk_ids list.
+        await rag.relation_chunks.upsert(
+            {make_relation_chunk_key(src, other): {"count": 0}}
+        )
+
+        await rag.amerge_entities([src], target)
+
+        new_row = await rag.relation_chunks.get_by_id(
+            make_relation_chunk_key(target, other)
+        )
+        assert new_row is not None, "merged relation row should exist"
+        assert new_row.get("chunk_ids") == [live_chunk], (
+            "a partial relation row must be reseeded from source_id on merge, "
+            f"not persisted empty: {new_row}"
+        )
+    finally:
+        await rag.finalize_storages()

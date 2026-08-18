@@ -623,8 +623,8 @@ async def _edit_entity_impl(
             # Test row *presence*, not list truthiness: a persisted row of
             # {"chunk_ids": [], "count": 0} is authoritative ("this object tracks no
             # chunks") and must be distinguished from an absent row (never migrated).
-            has_stored_row = (
-                isinstance(stored_data, dict) and "chunk_ids" in stored_data
+            has_stored_row = isinstance(stored_data, dict) and isinstance(
+                stored_data.get("chunk_ids"), list
             )
 
             old_source_id = node_data.get("source_id", "")
@@ -701,9 +701,8 @@ async def _edit_entity_impl(
                     # row — or a legacy/partial shape with no "chunk_ids" key
                     # (e.g. {} or {"count": 0}) — is treated as unknown and
                     # reseeded from the edge's source_id.
-                    old_row_present = (
-                        isinstance(old_stored_data, dict)
-                        and "chunk_ids" in old_stored_data
+                    old_row_present = isinstance(old_stored_data, dict) and isinstance(
+                        old_stored_data.get("chunk_ids"), list
                     )
                     relation_chunk_ids = []
 
@@ -1738,8 +1737,12 @@ async def _merge_entities_impl(
             # Get chunk_ids from storage for this original relation
             stored = await relation_chunks_storage.get_by_id(old_storage_key)
 
-            if stored is not None and isinstance(stored, dict):
-                chunk_ids = [cid for cid in stored.get("chunk_ids", []) if cid]
+            # Test row presence by schema (a `chunk_ids` list), consistent with
+            # the edit/rename paths: a curated row (incl. an empty list) is
+            # authoritative, while an absent or legacy/partial shape (`{}`,
+            # `{"count": 0}`, `{"chunk_ids": null}`) is reseeded from source_id.
+            if isinstance(stored, dict) and isinstance(stored.get("chunk_ids"), list):
+                chunk_ids = [cid for cid in stored["chunk_ids"] if cid]
             else:
                 # Fallback to source_id from graph
                 source_id = edge_data.get("source_id", "")
