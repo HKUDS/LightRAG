@@ -16,20 +16,56 @@ from unittest.mock import patch
 import pytest
 
 from lightrag.api.config import parse_args
+from lightrag.llm_roles import ROLES
 
 pytestmark = pytest.mark.offline
 
 
+# Cleared so a developer-local .env cannot decide the outcome. Two parse_args()
+# guards SystemExit on ambient values: VLM_PROCESS_ENABLE=true rejects the lollms
+# binding these tests select, and any {ROLE}_LLM_BINDING differing from the base
+# one demands a role model and api key. The role names come from the registry so
+# a newly added role cannot silently reintroduce the leak.
+_ENV_VARS_TO_ISOLATE = (
+    "LLM_BINDING",
+    "LLM_BINDING_HOST",
+    "LLM_BINDING_API_KEY",
+    "LLM_MODEL",
+    "VLM_PROCESS_ENABLE",
+    *(
+        f"{spec.env_prefix}_{suffix}"
+        for spec in ROLES
+        for suffix in (
+            "LLM_BINDING",
+            "LLM_BINDING_HOST",
+            "LLM_BINDING_API_KEY",
+            "LLM_MODEL",
+        )
+    ),
+)
+
+
 @pytest.fixture(autouse=True)
-def _lightrag_server_argv(monkeypatch):
-    """Importing lightrag.api.lightrag_server triggers auth.py's module-level
-    parse_args() against ambient sys.argv, so it must be pinned before that
-    module is ever imported -- see create_llm_model_kwargs below."""
+def _isolated_config_env(monkeypatch):
+    """Pin sys.argv, then import the server module, then clear the environment.
+
+    The order is load-bearing. Importing lightrag.api.lightrag_server triggers
+    auth.py's module-level parse_args() against ambient sys.argv, so argv has to
+    be pinned first. That import also runs several module-level
+    load_dotenv(override=False) calls, which would re-populate anything deleted
+    beforehand straight back out of a developer-local .env -- so the deletions
+    only stick once every such module is in sys.modules.
+    """
     monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+
+    import lightrag.api.lightrag_server  # noqa: F401
+
+    for var in _ENV_VARS_TO_ISOLATE:
+        monkeypatch.delenv(var, raising=False)
 
 
 @pytest.fixture
-def create_llm_model_kwargs(_lightrag_server_argv):
+def create_llm_model_kwargs(_isolated_config_env):
     from lightrag.api.lightrag_server import _create_llm_model_kwargs
 
     return _create_llm_model_kwargs
