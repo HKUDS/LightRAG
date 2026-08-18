@@ -695,11 +695,15 @@ async def _edit_entity_impl(
                     old_stored_data = await relation_chunks_storage.get_by_id(
                         old_storage_key
                     )
-                    # Whether a tracking row exists for the old key. A present row
-                    # (even {"chunk_ids": [], "count": 0}) is authoritative and must
-                    # be migrated as-is; an absent row is reseeded from source_id.
-                    old_row_present = bool(old_stored_data) and isinstance(
-                        old_stored_data, dict
+                    # Test row *presence* the same way the entity/relation edit
+                    # paths do: a curated row of {"chunk_ids": [], "count": 0} is
+                    # authoritative and must be migrated as-is, while an absent
+                    # row — or a legacy/partial shape with no "chunk_ids" key
+                    # (e.g. {} or {"count": 0}) — is treated as unknown and
+                    # reseeded from the edge's source_id.
+                    old_row_present = (
+                        isinstance(old_stored_data, dict)
+                        and "chunk_ids" in old_stored_data
                     )
                     relation_chunk_ids = []
 

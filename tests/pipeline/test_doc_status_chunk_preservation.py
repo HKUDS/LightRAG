@@ -2148,3 +2148,86 @@ async def test_rename_migrates_present_but_empty_relation_tracking_row(tmp_path)
         )
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_rename_reseeds_relation_row_without_chunk_ids_key(tmp_path):
+    """A legacy/partial relation row with no ``chunk_ids`` key (e.g. ``{"count": 0}``)
+    is 'unknown', not an authoritative empty row. On rename it must be treated as
+    absent and reseeded from the edge's ``source_id`` — consistent with how the
+    entity/relation edit paths classify the same shape (per the #3660 review).
+    """
+    rag = await _build_rag(tmp_path, "rename_partial_relation", _deterministic_chunking)
+    try:
+        entity_a, entity_b, renamed = "EntA", "EntB", "EntZ"
+        live_chunk = "chunk-live"
+        created_at = int(datetime.now(timezone.utc).timestamp())
+
+        for name in (entity_a, entity_b):
+            await rag.chunk_entity_relation_graph.upsert_node(
+                name,
+                {
+                    "entity_id": name,
+                    "source_id": live_chunk,
+                    "description": f"{name} description",
+                    "entity_type": "test",
+                    "file_path": "rename.txt",
+                    "created_at": created_at,
+                },
+            )
+        await rag.chunk_entity_relation_graph.upsert_edge(
+            entity_a,
+            entity_b,
+            {
+                "source": entity_a,
+                "target": entity_b,
+                "source_id": live_chunk,
+                "description": "related",
+                "keywords": "test",
+                "weight": 1.0,
+                "file_path": "rename.txt",
+            },
+        )
+        await rag.entities_vdb.upsert(
+            {
+                compute_mdhash_id(name, prefix="ent-"): {
+                    "content": f"{name}\n{name} description",
+                    "entity_name": name,
+                    "source_id": live_chunk,
+                    "description": f"{name} description",
+                    "entity_type": "test",
+                    "file_path": "rename.txt",
+                }
+                for name in (entity_a, entity_b)
+            }
+        )
+        await rag.relationships_vdb.upsert(
+            {
+                compute_mdhash_id(entity_a + entity_b, prefix="rel-"): {
+                    "content": f"test\t{entity_a}\n{entity_b}\nrelated",
+                    "src_id": entity_a,
+                    "tgt_id": entity_b,
+                    "source_id": live_chunk,
+                    "description": "related",
+                    "keywords": "test",
+                    "weight": 1.0,
+                    "file_path": "rename.txt",
+                }
+            }
+        )
+        # Legacy/partial row: present dict but no "chunk_ids" key -> unknown.
+        old_key = make_relation_chunk_key(entity_a, entity_b)
+        await rag.relation_chunks.upsert({old_key: {"count": 0}})
+
+        await rag.aedit_entity(entity_a, {"entity_name": renamed}, allow_rename=True)
+
+        new_key = make_relation_chunk_key(renamed, entity_b)
+        new_row = await rag.relation_chunks.get_by_id(new_key)
+
+        assert new_row is not None, "row should be reseeded under the new key"
+        assert new_row.get("chunk_ids") == [live_chunk], (
+            "a row without a chunk_ids key must be treated as absent and reseeded "
+            f"from source_id, not persisted as empty: {new_row}"
+        )
+    finally:
+        await rag.finalize_storages()
