@@ -118,6 +118,9 @@ def _window_step(chunk_token_size: int, chunk_overlap_token_size: int) -> int:
     empty sequence (dropping the whole segment silently) or raise the opaque
     ``range() arg 3 must not be zero``. Fail closed with the same invariant the
     API-boundary validators enforce.
+
+    Negative overlap is rejected up front in ``chunking_by_token_size()``,
+    before this function is ever reached -- see the check there.
     """
     if chunk_overlap_token_size >= chunk_token_size:
         raise ValueError(
@@ -143,6 +146,18 @@ def chunking_by_token_size(
     supplied ``chunking_func`` implementations. New file-based chunking
     dispatch uses :func:`chunking_by_fixed_token` instead.
     """
+    # Checked up front, before any branching on split_by_character, so a
+    # negative chunk_overlap_token_size is always rejected -- including on
+    # the split_by_character path where every segment stays under
+    # chunk_token_size and _window_step()'s own (upper-bound only) check
+    # would otherwise never be reached. The upper-bound check stays lazy,
+    # inside _window_step(), since it's only meaningful once windowing is
+    # actually about to happen.
+    if chunk_overlap_token_size < 0:
+        raise ValueError(
+            f"chunk_overlap_token_size must be non-negative, got "
+            f"{chunk_overlap_token_size}"
+        )
     tokens = tokenizer.encode(content)
     results: list[dict[str, Any]] = []
     if split_by_character:
