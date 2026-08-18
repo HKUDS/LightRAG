@@ -173,6 +173,10 @@ def test_filename_parser_directives_decodes_engine_and_options():
 
     assert filename_parser_directives("paper.[native-iet].docx") == ("native", "iet")
     assert filename_parser_directives("memo.[native-R!].md") == ("native", "R!")
+    assert filename_parser_directives("custom.[native-Cite].docx") == (
+        "native",
+        "Cite",
+    )
     assert filename_parser_directives("report.[-!].pdf") == (None, "!")
     assert filename_parser_directives("doc.[mineru].docx") == ("mineru", "")
     assert filename_parser_directives("foo.docx") == (None, "")
@@ -256,6 +260,11 @@ def test_parse_process_options_decodes_flags():
     opts = parse_process_options("P")
     assert opts.chunking == "P"
 
+    opts = parse_process_options("Cite!")
+    assert opts.chunking == "C"
+    assert opts.chunking_explicit
+    assert opts.images and opts.tables and opts.equations and opts.skip_kg
+
     opts = parse_process_options("")
     assert not (opts.images or opts.tables or opts.equations or opts.skip_kg)
     assert opts.chunking == "F"
@@ -267,9 +276,13 @@ def test_validate_process_options_rejects_invalid_combos():
 
     assert validate_process_options("iet") == []
     assert validate_process_options("R!") == []
+    assert validate_process_options("Cite!") == []
     # F+R conflict is reported.
     errs = validate_process_options("FR")
     assert any("multiple chunking modes" in m for m in errs)
+    errs = validate_process_options("CF")
+    assert any("multiple chunking modes" in m for m in errs)
+    assert any("F/R/V/P/C" in m for m in errs)
     # Lowercase chunking selectors are not valid.
     errs = validate_process_options("f")
     assert any("'f'" in m for m in errs)
@@ -284,6 +297,7 @@ def test_lightrag_parser_rule_supports_options_suffix(monkeypatch):
     monkeypatch.delenv("DOCLING_ENDPOINT", raising=False)
     # Valid options suffix passes validation.
     validate_parser_routing_config("docx:native-iet,*:legacy")
+    validate_parser_routing_config("docx:native-Cite,*:legacy")
 
     # Invalid options suffix is rejected with the rule label and message.
     with pytest.raises(ParserRoutingConfigError, match="multiple chunking modes"):

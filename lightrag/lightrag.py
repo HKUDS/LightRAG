@@ -569,8 +569,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     ``_PipelineMixin.process_single_document`` is driven by the
     document's ``process_options``:
 
-      - If ``process_options`` explicitly contains a chunking selector
-        char (``F``/``R``/``V``/``P``), the dispatcher routes to a
+      - If ``process_options`` explicitly contains a built-in chunking
+        selector (``F``/``R``/``V``/``P``), the dispatcher routes to a
         chunker that follows the new file-chunker contract — see
         :mod:`lightrag.chunker` (``chunking_by_fixed_token`` for ``F``,
         ``chunking_by_recursive_character`` for ``R``,
@@ -579,6 +579,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         ``chunking_func`` is NOT called in that case**. If it was replaced
         with a custom callable, the dispatcher logs a warning that the
         selected strategy is bypassing it.
+
+      - If ``process_options`` explicitly contains ``C``, the dispatcher
+        invokes this ``chunking_func`` with the same legacy 6-arg signature.
+        Sync and async callbacks both run on the event loop. If the callback
+        is still the built-in default, background/reprocessing work logs one
+        warning per attempt and uses the exact fixed-token file chunker as an
+        observable fallback instead. Synchronous text/upload API boundaries
+        reject that unavailable-custom configuration with HTTP 422.
 
       - If ``process_options`` does **not** name a chunking strategy
         (empty string, or only non-chunking flags such as ``i`` / ``t``
@@ -1787,8 +1795,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         The LightRAG **server / REST API does not call this method** — it
         ingests via :meth:`apipeline_enqueue_documents` +
         :meth:`apipeline_process_enqueue_documents` with a per-document
-        ``process_options`` selector, which is how F/R/V/P are chosen there.
-        To use R/V/P (or pass an explicit per-document ``chunk_options``) from
+        ``process_options`` selector, which is how F/R/V/P/C are chosen there.
+        To use R/V/P/C (or pass an explicit per-document ``chunk_options``) from
         the SDK, call those two methods directly with ``process_options=…``
         instead of ``ainsert``.
 

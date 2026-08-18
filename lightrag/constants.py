@@ -443,7 +443,7 @@ PROCESS_OPTION_IMAGES = "i"  # Enable VLM analysis for drawings/images
 PROCESS_OPTION_TABLES = "t"  # Enable VLM analysis for tables
 PROCESS_OPTION_EQUATIONS = "e"  # Enable VLM analysis for equations
 PROCESS_OPTION_SKIP_KG = "!"  # Skip entity/relation extraction (no KG build)
-ProcessChunkingOption: TypeAlias = Literal["F", "R", "V", "P"]
+ProcessChunkingOption: TypeAlias = Literal["F", "R", "V", "P", "C"]
 PROCESS_OPTION_CHUNK_FIXED: ProcessChunkingOption = (
     "F"  # Fixed-length / separator chunking (default)
 )
@@ -456,6 +456,9 @@ PROCESS_OPTION_CHUNK_VECTOR: ProcessChunkingOption = (
 PROCESS_OPTION_CHUNK_PARAGRAH: ProcessChunkingOption = (
     "P"  # Paragrah-driven semantic chunking
 )
+PROCESS_OPTION_CHUNK_CUSTOM: ProcessChunkingOption = (
+    "C"  # Explicitly invoke LightRAG.chunking_func
+)
 
 PROCESS_OPTION_CHUNK_CHARS: frozenset[ProcessChunkingOption] = frozenset(
     {
@@ -463,6 +466,7 @@ PROCESS_OPTION_CHUNK_CHARS: frozenset[ProcessChunkingOption] = frozenset(
         PROCESS_OPTION_CHUNK_RECURSIVE,
         PROCESS_OPTION_CHUNK_VECTOR,
         PROCESS_OPTION_CHUNK_PARAGRAH,
+        PROCESS_OPTION_CHUNK_CUSTOM,
     }
 )
 SUPPORTED_PROCESS_OPTIONS = frozenset(
@@ -475,6 +479,7 @@ SUPPORTED_PROCESS_OPTIONS = frozenset(
         PROCESS_OPTION_CHUNK_RECURSIVE,
         PROCESS_OPTION_CHUNK_VECTOR,
         PROCESS_OPTION_CHUNK_PARAGRAH,
+        PROCESS_OPTION_CHUNK_CUSTOM,
     }
 )
 
