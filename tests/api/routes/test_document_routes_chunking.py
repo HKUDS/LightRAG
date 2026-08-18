@@ -27,6 +27,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from lightrag.chunker import chunking_by_token_size
+
 _original_argv = sys.argv[:]
 sys.argv = [sys.argv[0]]
 _dr = importlib.import_module("lightrag.api.routers.document_routes")
@@ -275,7 +277,15 @@ def test_insert_text_request_rejects_malformed_chunking():
 
 def _stub_rag(addon_params=None):
     return SimpleNamespace(
-        addon_params=addon_params if addon_params is not None else {}
+        addon_params=addon_params if addon_params is not None else {},
+        chunking_func=chunking_by_token_size,
+    )
+
+
+def _stub_rag_with_custom_chunker(addon_params=None):
+    return SimpleNamespace(
+        addon_params=addon_params if addon_params is not None else {},
+        chunking_func=lambda *args, **kwargs: [],
     )
 
 
@@ -502,6 +512,55 @@ def test_resolve_null_size_does_not_erase_inherited_default(monkeypatch):
     assert chunk_options["fixed_token"]["chunk_token_size"] == 640
 
 
+def test_custom_chunking_reuses_the_fixed_token_parameter_contract():
+    cfg = TextChunkingConfig.model_validate(
+        {
+            "strategy": "custom",
+            "params": {
+                "chunk_token_size": 512,
+                "chunk_overlap_token_size": 32,
+                "split_by_character": "\n\n",
+                "split_by_character_only": False,
+            },
+        }
+    )
+    assert cfg.params == {
+        "chunk_token_size": 512,
+        "chunk_overlap_token_size": 32,
+        "split_by_character": "\n\n",
+        "split_by_character_only": False,
+    }
+
+
+def test_custom_chunking_rejects_params_outside_the_legacy_contract():
+    with pytest.raises(ValidationError):
+        TextChunkingConfig.model_validate(
+            {"strategy": "custom", "params": {"buffer_size": 2}}
+        )
+
+
+def test_resolve_custom_requires_a_non_default_callback():
+    cfg = TextChunkingConfig.model_validate({"strategy": "custom"})
+    with pytest.raises(ValueError, match="custom chunking requires"):
+        _resolve_text_chunking(cfg, _stub_rag())
+
+
+def test_resolve_custom_maps_to_c_and_a_fixed_token_snapshot():
+    cfg = TextChunkingConfig.model_validate(
+        {
+            "strategy": "custom",
+            "params": {"chunk_token_size": 333, "chunk_overlap_token_size": 11},
+        }
+    )
+    process_options, chunk_options = _resolve_text_chunking(
+        cfg, _stub_rag_with_custom_chunker()
+    )
+    assert process_options == "C"
+    assert set(chunk_options) <= {"chunk_token_size", "fixed_token"}
+    assert chunk_options["fixed_token"]["chunk_token_size"] == 333
+    assert chunk_options["fixed_token"]["chunk_overlap_token_size"] == 11
+
+
 # ---------------------------------------------------------------------------
 # 3. Route forwarding + synchronous 422
 # ---------------------------------------------------------------------------
@@ -515,6 +574,7 @@ class _FwdDocStatus:
 class _FwdRag:
     workspace = "chunk-fwd-test"
     addon_params: dict = {}
+    chunking_func = chunking_by_token_size
 
     def __init__(self):
         self.doc_status = _FwdDocStatus()
@@ -523,7 +583,7 @@ class _FwdRag:
 _HEADERS = {"X-API-Key": "test-key"}
 
 
-def _make_client(monkeypatch, addon_params=None):
+def _make_client(monkeypatch, addon_params=None, chunking_func=chunking_by_token_size):
     """Build a TestClient whose enqueue-slot guards are no-ops and whose
     ``pipeline_index_texts`` is a spy recording the forwarded args.
 
@@ -557,6 +617,7 @@ def _make_client(monkeypatch, addon_params=None):
 
     rag = _FwdRag()
     rag.addon_params = addon_params if addon_params is not None else {}
+    rag.chunking_func = chunking_func
 
     app = FastAPI()
     # The endpoints start reservation-holding work as managed asyncio tasks via
@@ -617,6 +678,57 @@ def test_insert_text_without_chunking_forwards_none(monkeypatch):
     )
     assert resp.status_code == 200
     assert captured["chunking"] is None
+
+
+@pytest.mark.parametrize(
+    "path,payload",
+    [
+        (
+            "/documents/text",
+            {
+                "text": "hello",
+                "file_source": "a.md",
+                "chunking": {"strategy": "custom"},
+            },
+        ),
+        (
+            "/documents/texts",
+            {
+                "texts": ["hello"],
+                "file_sources": ["a.md"],
+                "chunking": {"strategy": "custom"},
+            },
+        ),
+    ],
+)
+def test_text_ingress_rejects_custom_without_an_injected_callback(
+    monkeypatch, path, payload
+):
+    client, captured = _make_client(monkeypatch)
+    response = client.post(path, headers=_HEADERS, json=payload)
+    assert response.status_code == 422
+    assert "custom chunking requires" in str(response.json()["detail"])
+    assert captured == {}
+
+
+def test_text_ingress_accepts_custom_with_an_injected_callback(monkeypatch):
+    custom = lambda *args, **kwargs: []
+    client, captured = _make_client(monkeypatch, chunking_func=custom)
+    response = client.post(
+        "/documents/text",
+        headers=_HEADERS,
+        json={
+            "text": "hello",
+            "file_source": "a.md",
+            "chunking": {
+                "strategy": "custom",
+                "params": {"chunk_token_size": 400},
+            },
+        },
+    )
+    assert response.status_code == 200
+    assert captured["chunking"].strategy == "custom"
+    assert captured["chunking"].params == {"chunk_token_size": 400}
 
 
 def test_insert_text_returns_422_on_malformed_chunking_without_scheduling(monkeypatch):
