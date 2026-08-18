@@ -367,8 +367,8 @@ def test_negative_overlap_raises():
         )
 
     message = str(excinfo.value)
-    assert "chunk_overlap_token_size (-1)" in message
-    assert "must be >= 0" in message
+    assert "chunk_overlap_token_size must be non-negative" in message
+    assert "-1" in message
 
 
 @pytest.mark.offline
@@ -398,6 +398,28 @@ def test_valid_overlap_still_covers_every_token(chunk_overlap_token_size):
         covered.update(chunk["content"])
 
     assert covered == set(content)
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("split_by_character_only", [False, True])
+def test_negative_overlap_raises_with_split_by_character(split_by_character_only):
+    """Negative overlap must be rejected even when every split_by_character
+    segment stays under chunk_token_size -- that path never reaches
+    _window_step()'s inline calls, so the check has to run up front."""
+    tokenizer = make_tokenizer()
+    content = "abc|def|ghi"
+
+    with pytest.raises(ValueError) as excinfo:
+        chunking_by_token_size(
+            tokenizer,
+            content,
+            split_by_character="|",
+            split_by_character_only=split_by_character_only,
+            chunk_token_size=10,
+            chunk_overlap_token_size=-1,
+        )
+
+    assert "chunk_overlap_token_size must be non-negative" in str(excinfo.value)
 
 
 @pytest.mark.offline
