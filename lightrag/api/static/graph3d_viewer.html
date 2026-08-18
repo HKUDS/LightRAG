@@ -1077,11 +1077,33 @@ const POINT_SIZE = 0.012;
 const SPHERE_SEGMENTS_W = 48;
 const SPHERE_SEGMENTS_H = 32;
 
-// Cluster color palette (10 distinct colors)
-const CLUSTER_COLORS = [
-  0x2a5a9f, 0x6835a7, 0x0a7951, 0x956e0b, 0x8f2424,
-  0x047684, 0x5b3c96, 0x547c0e, 0x99550e, 0x942c5f
-];
+// Cluster color palette. The first 10 entries are the original hand-picked
+// palette; beyond that, golden-angle hue spacing (with alternating lightness
+// bands) generates perceptually distinct colors, so up to 60 clusters each
+// get a UNIQUE color. Previously 25-cluster layouts aliased 2-3 unrelated
+// clusters onto each of 10 colors, making same-colored nodes appear scattered.
+function hslToHex(h, s, l) {
+  const a = s * Math.min(l, 1 - l);
+  const f = n => {
+    const k = (n + h / 30) % 12;
+    const v = l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(v * 255);
+  };
+  return (f(0) << 16) | (f(8) << 8) | f(4);
+}
+const CLUSTER_COLORS = (() => {
+  const colors = [
+    0x2a5a9f, 0x6835a7, 0x0a7951, 0x956e0b, 0x8f2424,
+    0x047684, 0x5b3c96, 0x547c0e, 0x99550e, 0x942c5f
+  ];
+  const GOLDEN_ANGLE = 137.508; // maximizes hue separation between neighbors
+  for (let i = colors.length; i < 60; i++) {
+    const hue = (i * GOLDEN_ANGLE) % 360;
+    const lightness = 0.42 + 0.18 * ((i >> 3) % 2); // alternate dark/bright bands
+    colors.push(hslToHex(hue, 0.7, lightness));
+  }
+  return colors;
+})();
 
 let scene, camera, renderer, composer, controls;
 let bloomPass = null;
