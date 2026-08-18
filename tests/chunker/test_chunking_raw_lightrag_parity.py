@@ -447,6 +447,60 @@ class _ListHandler(logging.Handler):
 
 
 @pytest.mark.offline
+@pytest.mark.parametrize("use_custom_chunker", [False, True])
+def test_explicit_selector_reports_custom_chunking_func_bypass(
+    tmp_path, use_custom_chunker
+):
+    """An explicit selector warns only when it bypasses a customization."""
+
+    custom_calls = 0
+
+    def _custom_chunker(*args, **kwargs):
+        nonlocal custom_calls
+        custom_calls += 1
+        return [{"tokens": 1, "content": "custom", "chunk_order_index": 0}]
+
+    async def _run():
+        kwargs = {"chunking_func": _custom_chunker} if use_custom_chunker else {}
+        rag = _new_rag(tmp_path, **kwargs)
+        await rag.initialize_storages()
+
+        lightrag_logger = logging.getLogger("lightrag")
+        list_handler = _ListHandler()
+        list_handler.setLevel(logging.WARNING)
+        lightrag_logger.addHandler(list_handler)
+        doc_id = f"doc-bypass-{'custom' if use_custom_chunker else 'builtin'}"
+        try:
+            await rag.apipeline_enqueue_documents(
+                "Body for explicit fixed-token chunking.",
+                ids=[doc_id],
+                file_paths=f"{doc_id}.txt",
+                track_id=f"track-{doc_id}",
+                process_options="F",
+            )
+            await rag.apipeline_process_enqueue_documents()
+        finally:
+            lightrag_logger.removeHandler(list_handler)
+            await rag.finalize_storages()
+
+        warnings = [
+            record.getMessage()
+            for record in list_handler.records
+            if record.levelno == logging.WARNING
+            and "Custom chunking_func bypassed" in record.getMessage()
+        ]
+        if use_custom_chunker:
+            assert custom_calls == 0
+            assert len(warnings) == 1
+            assert "strategy F" in warnings[0]
+            assert doc_id in warnings[0]
+        else:
+            assert warnings == []
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_explicit_R_dispatches_to_recursive_character(tmp_path, monkeypatch):
     """``process_options=R`` must invoke
     :func:`chunking_by_recursive_character` (the new file-chunker
