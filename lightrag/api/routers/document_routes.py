@@ -85,6 +85,7 @@ from lightrag.constants import (
     MAX_R_SEPARATORS,
     PARSED_ARTIFACT_DIR_SUFFIXES,
     PARSED_DIR_NAME,
+    PROCESS_OPTION_CHUNK_CUSTOM,
     PROCESS_OPTION_CHUNK_FIXED,
     PROCESS_OPTION_CHUNK_PARAGRAH,
     PROCESS_OPTION_CHUNK_RECURSIVE,
@@ -616,6 +617,7 @@ TextChunkingStrategy = Literal[
     "recursive_character",
     "semantic_vector",
     "paragraph_semantic",
+    "custom",
 ]
 
 
@@ -760,6 +762,10 @@ _CHUNKING_PARAMS_MODEL: dict[str, type[_StrictChunkParams]] = {
     "recursive_character": RecursiveCharacterChunkParams,
     "semantic_vector": SemanticVectorChunkParams,
     "paragraph_semantic": ParagraphSemanticChunkParams,
+    # ``custom`` invokes LightRAG.chunking_func with the historical six
+    # arguments, so its request parameters are exactly the fixed-token fields
+    # that populate that signature.
+    "custom": FixedTokenChunkParams,
 }
 
 
@@ -770,6 +776,11 @@ class TextChunkingConfig(BaseModel):
     keys, wrong types, and out-of-range values all raise synchronously
     during request parsing (HTTP 422) — never later in the background
     indexing task, where the HTTP response has already been sent.
+
+    ``custom`` explicitly invokes ``LightRAG.chunking_func`` and reuses the
+    fixed-token parameter contract (split character, split-only flag, overlap,
+    and size). It is rejected unless the application injected a non-default
+    callback.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -2609,7 +2620,27 @@ _STRATEGY_TO_PROCESS_OPTION: Dict[str, str] = {
     "recursive_character": PROCESS_OPTION_CHUNK_RECURSIVE,
     "semantic_vector": PROCESS_OPTION_CHUNK_VECTOR,
     "paragraph_semantic": PROCESS_OPTION_CHUNK_PARAGRAH,
+    "custom": PROCESS_OPTION_CHUNK_CUSTOM,
 }
+
+
+def _validate_custom_chunking_available(process_options: str, rag: LightRAG) -> None:
+    """Require an injected callback for synchronous user-facing ``C`` ingress.
+
+    Background scans and reprocessing intentionally do not call this helper:
+    they may encounter an already-persisted ``C`` document after the callback
+    was removed, and the processing pipeline has an observable fixed-token
+    fallback for that case.
+    """
+    if parse_process_options(process_options).chunking != PROCESS_OPTION_CHUNK_CUSTOM:
+        return
+
+    from lightrag.chunker import chunking_by_token_size
+
+    if getattr(rag, "chunking_func", chunking_by_token_size) is chunking_by_token_size:
+        raise ValueError(
+            "custom chunking requires a non-default LightRAG.chunking_func"
+        )
 
 
 def _resolve_text_chunking(
@@ -2647,6 +2678,7 @@ def _resolve_text_chunking(
         )
 
     process_options = _STRATEGY_TO_PROCESS_OPTION[chunking.strategy]
+    _validate_custom_chunking_available(process_options, rag)
     chunk_options = resolve_chunk_options(
         rag.addon_params, process_options=process_options
     )
@@ -5250,6 +5282,22 @@ def create_document_routes(
                 raise HTTPException(
                     status_code=400,
                     detail=f"Unsupported file type. Supported types: {doc_manager.supported_extensions}",
+                )
+
+            # Unlike scans/reprocessing, this request has a caller to correct
+            # an unusable explicit ``C`` selector. Reject before writing the
+            # upload rather than silently accepting work that must fall back.
+            try:
+                upload_directives = resolve_parser_directives(safe_filename)
+                _validate_custom_chunking_available(
+                    upload_directives.process_options, rag
+                )
+            except FilenameParserHintError as hint_error:
+                raise HTTPException(status_code=400, detail=str(hint_error))
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Invalid chunking configuration: {exc}",
                 )
 
             # Check file size limit (if configured)
