@@ -118,11 +118,20 @@ def _window_step(chunk_token_size: int, chunk_overlap_token_size: int) -> int:
     empty sequence (dropping the whole segment silently) or raise the opaque
     ``range() arg 3 must not be zero``. Fail closed with the same invariant the
     API-boundary validators enforce.
+
+    When overlap is negative the stride is > chunk_token_size, silently
+    skipping tokens between windows instead of the intended overlap --
+    fail closed here too, matching the sibling
+    ``embedding_chunk_overlap_token_size`` validation in ``lightrag.py``.
     """
     if chunk_overlap_token_size >= chunk_token_size:
         raise ValueError(
             f"chunk_overlap_token_size ({chunk_overlap_token_size}) must be < "
             f"chunk_token_size ({chunk_token_size})"
+        )
+    if chunk_overlap_token_size < 0:
+        raise ValueError(
+            f"chunk_overlap_token_size ({chunk_overlap_token_size}) must be >= 0"
         )
     return chunk_token_size - chunk_overlap_token_size
 

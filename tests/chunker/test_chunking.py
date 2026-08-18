@@ -350,6 +350,57 @@ def test_overlap_equal_to_chunk_size_raises():
 
 
 @pytest.mark.offline
+def test_negative_overlap_raises():
+    """Negative overlap makes the stride larger than chunk_token_size (e.g.
+    step = 10 - (-1) = 11 for a 10-token chunk), silently skipping a token
+    between every window instead of the intended overlap. Fail closed,
+    matching the >= chunk_size case above."""
+    tokenizer = make_tokenizer()
+    content = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+    with pytest.raises(ValueError) as excinfo:
+        chunking_by_token_size(
+            tokenizer,
+            content,
+            chunk_token_size=10,
+            chunk_overlap_token_size=-1,
+        )
+
+    message = str(excinfo.value)
+    assert "chunk_overlap_token_size (-1)" in message
+    assert "must be >= 0" in message
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("chunk_overlap_token_size", [0, 5])
+def test_valid_overlap_still_covers_every_token(chunk_overlap_token_size):
+    """Control: zero and a valid positive overlap must still produce
+    complete, gap-free coverage of the source content -- guards the
+    negative-overlap rejection above against accidentally tightening or
+    loosening a legitimate case.
+
+    DummyTokenizer maps each character to its own token (ord(ch)), so a
+    string of distinct printable characters lets coverage be checked by
+    set membership without collisions.
+    """
+    tokenizer = make_tokenizer()
+    content = "".join(chr(33 + i) for i in range(90))
+
+    chunks = chunking_by_token_size(
+        tokenizer,
+        content,
+        chunk_token_size=10,
+        chunk_overlap_token_size=chunk_overlap_token_size,
+    )
+
+    covered = set()
+    for chunk in chunks:
+        covered.update(chunk["content"])
+
+    assert covered == set(content)
+
+
+@pytest.mark.offline
 def test_empty_content():
     """Test chunking with empty content."""
     tokenizer = make_tokenizer()
