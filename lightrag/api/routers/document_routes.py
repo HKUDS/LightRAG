@@ -2767,6 +2767,7 @@ async def pipeline_index_texts(
     file_sources: List[str] = None,
     track_id: str = None,
     chunking: Optional[TextChunkingConfig] = None,
+    resolved_chunking: Optional[tuple[str, dict]] = None,
     admission_token: str | None = None,
 ):
     """Index a list of texts with track_id
@@ -2778,6 +2779,10 @@ async def pipeline_index_texts(
         track_id: Optional tracking ID
         chunking: Optional chunking strategy + params (already validated by
             the request model); when None, default fixed-token chunking is used
+        resolved_chunking: Optional preflight-frozen ``(process_options,
+            chunk_options)`` snapshot. Request handlers pass this so accepted
+            work cannot be invalidated by a callback/config change before its
+            managed task starts. Direct callers may omit it to resolve here.
         admission_token: the endpoint's pending-enqueue reservation, forwarded so
             the admission guard re-weights that token to the deduped count
             (LR2 §9.2)
@@ -2794,7 +2799,10 @@ async def pipeline_index_texts(
     if len(set(normalized_file_sources)) != len(normalized_file_sources):
         raise ValueError("File sources must be unique by filename")
 
-    process_options, chunk_options = _resolve_text_chunking(chunking, rag)
+    if resolved_chunking is None:
+        process_options, chunk_options = _resolve_text_chunking(chunking, rag)
+    else:
+        process_options, chunk_options = resolved_chunking
     enqueue_kwargs: dict[str, Any] = {
         "input": texts,
         "file_paths": normalized_file_sources,
@@ -5564,10 +5572,11 @@ def create_document_routes(
             # Resolve + validate chunking synchronously so an invalid
             # effective config (e.g. chunk_token_size below the inherited
             # overlap) fails with HTTP 422 here, before any background work is
-            # scheduled. pipeline_index_texts re-resolves from the same
-            # addon_params inside the task.
+            # scheduled. Keep the returned snapshot: the callback/config may
+            # change before the managed task starts, but an accepted request
+            # must enqueue the exact options that passed this preflight.
             try:
-                _resolve_text_chunking(request.chunking, rag)
+                resolved_chunking = _resolve_text_chunking(request.chunking, rag)
             except ValueError as exc:
                 # Controlled chunking-config validation message (numeric sizes
                 # only, no internal detail); kept as client-facing 422 feedback
@@ -5592,6 +5601,7 @@ def create_document_routes(
                         file_sources=[normalized_file_source],
                         track_id=track_id,
                         chunking=request.chunking,
+                        resolved_chunking=resolved_chunking,
                         admission_token=enqueue_token,
                     )
                 finally:
@@ -5719,10 +5729,11 @@ def create_document_routes(
             # Resolve + validate the shared chunking synchronously so an
             # invalid effective config (e.g. chunk_token_size below the
             # inherited overlap) fails with HTTP 422 here, before any
-            # background work is scheduled. pipeline_index_texts re-resolves
-            # from the same addon_params inside the task.
+            # background work is scheduled. Keep the returned snapshot: the
+            # callback/config may change before the managed task starts, but an
+            # accepted request must enqueue the exact options from preflight.
             try:
-                _resolve_text_chunking(request.chunking, rag)
+                resolved_chunking = _resolve_text_chunking(request.chunking, rag)
             except ValueError as exc:
                 # Controlled chunking-config validation message (numeric sizes
                 # only, no internal detail); kept as client-facing 422 feedback
@@ -5754,6 +5765,7 @@ def create_document_routes(
                         file_sources=normalized_file_sources,
                         track_id=track_id,
                         chunking=request.chunking,
+                        resolved_chunking=resolved_chunking,
                         admission_token=enqueue_token,
                     )
                 finally:

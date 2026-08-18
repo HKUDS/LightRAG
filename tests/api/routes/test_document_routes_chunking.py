@@ -614,11 +614,13 @@ def _make_client(monkeypatch, addon_params=None, chunking_func=chunking_by_token
         file_sources=None,
         track_id=None,
         chunking=None,
+        resolved_chunking=None,
         admission_token=None,
     ):
         captured["texts"] = texts
         captured["file_sources"] = file_sources
         captured["chunking"] = chunking
+        captured["resolved_chunking"] = resolved_chunking
 
     async def _noop_reserve(rag, token):
         return False
