@@ -695,9 +695,15 @@ async def _edit_entity_impl(
                     old_stored_data = await relation_chunks_storage.get_by_id(
                         old_storage_key
                     )
+                    # Whether a tracking row exists for the old key. A present row
+                    # (even {"chunk_ids": [], "count": 0}) is authoritative and must
+                    # be migrated as-is; an absent row is reseeded from source_id.
+                    old_row_present = bool(old_stored_data) and isinstance(
+                        old_stored_data, dict
+                    )
                     relation_chunk_ids = []
 
-                    if old_stored_data and isinstance(old_stored_data, dict):
+                    if old_row_present:
                         relation_chunk_ids = [
                             cid for cid in old_stored_data.get("chunk_ids", []) if cid
                         ]
@@ -711,7 +717,14 @@ async def _edit_entity_impl(
 
                     await relation_chunks_storage.delete([old_storage_key])
 
-                    if relation_chunk_ids:
+                    # Migrate the row to the new key. A present-but-empty row is
+                    # authoritative ("this relation tracks no chunks") and must
+                    # survive the rename; dropping it would make the row absent and
+                    # cause the next relation edit to reseed it from a possibly-stale
+                    # source_id — the exact bug this PR fixes, re-armed at rename.
+                    # Only skip the write when the row was absent AND source_id
+                    # yielded nothing to seed from.
+                    if old_row_present or relation_chunk_ids:
                         await relation_chunks_storage.upsert(
                             {
                                 new_storage_key: {

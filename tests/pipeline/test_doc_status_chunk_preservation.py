@@ -1958,3 +1958,193 @@ async def test_edit_does_not_reseed_present_but_empty_chunk_tracking(tmp_path):
         )
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_edit_seeds_chunk_tracking_from_source_id_when_row_absent(tmp_path):
+    """Regression pin for #3609 (the direction the presence guard was narrowed).
+
+    When no chunk-tracking row exists at all (``get_by_id`` returns ``None``),
+    editing the entity must fall back to seeding the tracking row from the graph
+    node's ``source_id``. This pins the migration fallback so the narrowed
+    presence check keeps seeding never-migrated objects.
+    """
+    rag = await _build_rag(tmp_path, "absent_seed", _deterministic_chunking)
+    try:
+        entity_name = "FreshEntity"
+        source_chunk = "chunk-live-1"
+        created_at = int(datetime.now(timezone.utc).timestamp())
+
+        await rag.chunk_entity_relation_graph.upsert_node(
+            entity_name,
+            {
+                "entity_id": entity_name,
+                "source_id": source_chunk,
+                "description": f"{entity_name} description",
+                "entity_type": "test",
+                "file_path": "absent.txt",
+                "created_at": created_at,
+            },
+        )
+        await rag.entities_vdb.upsert(
+            {
+                compute_mdhash_id(entity_name, prefix="ent-"): {
+                    "content": f"{entity_name}\n{entity_name} description",
+                    "entity_name": entity_name,
+                    "source_id": source_chunk,
+                    "description": f"{entity_name} description",
+                    "entity_type": "test",
+                    "file_path": "absent.txt",
+                }
+            }
+        )
+        # No tracking row seeded: it is genuinely absent.
+        assert await rag.entity_chunks.get_by_id(entity_name) is None
+
+        await rag.aedit_entity(entity_name, {"description": "updated description"})
+
+        row = await rag.entity_chunks.get_by_id(entity_name)
+        assert row is not None, "absent tracking row should be seeded on edit"
+        assert row.get("chunk_ids") == [source_chunk], (
+            f"absent row must be seeded from source_id, got: {row}"
+        )
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_edit_treats_row_without_chunk_ids_key_as_absent(tmp_path):
+    """Regression for #3609: a row of ``{}`` (present but with no ``chunk_ids``
+    key) is 'unknown', not an authoritative empty tracking row, and must be
+    seeded from the graph node's ``source_id`` like an absent row.
+    """
+    rag = await _build_rag(tmp_path, "empty_dict_seed", _deterministic_chunking)
+    try:
+        entity_name = "UnknownEntity"
+        source_chunk = "chunk-live-2"
+        created_at = int(datetime.now(timezone.utc).timestamp())
+
+        await rag.chunk_entity_relation_graph.upsert_node(
+            entity_name,
+            {
+                "entity_id": entity_name,
+                "source_id": source_chunk,
+                "description": f"{entity_name} description",
+                "entity_type": "test",
+                "file_path": "unknown.txt",
+                "created_at": created_at,
+            },
+        )
+        await rag.entities_vdb.upsert(
+            {
+                compute_mdhash_id(entity_name, prefix="ent-"): {
+                    "content": f"{entity_name}\n{entity_name} description",
+                    "entity_name": entity_name,
+                    "source_id": source_chunk,
+                    "description": f"{entity_name} description",
+                    "entity_type": "test",
+                    "file_path": "unknown.txt",
+                }
+            }
+        )
+        # Present row but with no chunk_ids key -> unknown, must be reseeded.
+        await rag.entity_chunks.upsert({entity_name: {}})
+
+        await rag.aedit_entity(entity_name, {"description": "updated description"})
+
+        row = await rag.entity_chunks.get_by_id(entity_name)
+        assert row is not None
+        assert row.get("chunk_ids") == [source_chunk], (
+            "a row without a chunk_ids key must be treated as absent and seeded "
+            f"from source_id, got: {row}"
+        )
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_rename_migrates_present_but_empty_relation_tracking_row(tmp_path):
+    """Regression for #3609: renaming an entity migrates a curated EMPTY relation
+    tracking row to the new key instead of dropping it.
+
+    Dropping it would make the row absent, so the next relation edit would reseed
+    it from the edge's (possibly stale) ``source_id`` — re-arming the exact bug
+    this PR fixes, through the HTTP-reachable rename path.
+    """
+    rag = await _build_rag(tmp_path, "rename_empty_relation", _deterministic_chunking)
+    try:
+        entity_a, entity_b, renamed = "EntA", "EntB", "EntZ"
+        stale_chunk = "chunk-stale"
+        created_at = int(datetime.now(timezone.utc).timestamp())
+
+        for name in (entity_a, entity_b):
+            await rag.chunk_entity_relation_graph.upsert_node(
+                name,
+                {
+                    "entity_id": name,
+                    "source_id": stale_chunk,
+                    "description": f"{name} description",
+                    "entity_type": "test",
+                    "file_path": "rename.txt",
+                    "created_at": created_at,
+                },
+            )
+        await rag.chunk_entity_relation_graph.upsert_edge(
+            entity_a,
+            entity_b,
+            {
+                "source": entity_a,
+                "target": entity_b,
+                "source_id": stale_chunk,
+                "description": "related",
+                "keywords": "test",
+                "weight": 1.0,
+                "file_path": "rename.txt",
+            },
+        )
+        await rag.entities_vdb.upsert(
+            {
+                compute_mdhash_id(name, prefix="ent-"): {
+                    "content": f"{name}\n{name} description",
+                    "entity_name": name,
+                    "source_id": stale_chunk,
+                    "description": f"{name} description",
+                    "entity_type": "test",
+                    "file_path": "rename.txt",
+                }
+                for name in (entity_a, entity_b)
+            }
+        )
+        await rag.relationships_vdb.upsert(
+            {
+                compute_mdhash_id(entity_a + entity_b, prefix="rel-"): {
+                    "content": f"test\t{entity_a}\n{entity_b}\nrelated",
+                    "src_id": entity_a,
+                    "tgt_id": entity_b,
+                    "source_id": stale_chunk,
+                    "description": "related",
+                    "keywords": "test",
+                    "weight": 1.0,
+                    "file_path": "rename.txt",
+                }
+            }
+        )
+        # Curated empty relation tracking row: this relation tracks no chunks.
+        old_key = make_relation_chunk_key(entity_a, entity_b)
+        await rag.relation_chunks.upsert({old_key: {"chunk_ids": [], "count": 0}})
+
+        # Rename EntA -> EntZ (the HTTP-reachable path).
+        await rag.aedit_entity(entity_a, {"entity_name": renamed}, allow_rename=True)
+
+        new_key = make_relation_chunk_key(renamed, entity_b)
+        old_row = await rag.relation_chunks.get_by_id(old_key)
+        new_row = await rag.relation_chunks.get_by_id(new_key)
+
+        assert old_row is None, f"old-key relation row should be removed, got {old_row}"
+        assert new_row is not None, "curated empty relation row must survive the rename"
+        assert new_row.get("chunk_ids") == [], (
+            "empty relation row must migrate as empty, not reseed from the stale "
+            f"source_id: {new_row}"
+        )
+    finally:
+        await rag.finalize_storages()
