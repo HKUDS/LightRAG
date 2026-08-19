@@ -10,7 +10,7 @@
     "documents": "Dokumente",
     "knowledgeGraph": "Wissensgraph",
     "retrieval": "Abruf",
-    "api": "API",
+    "apiDocs": "API-Dokumentation",
     "projectRepository": "Projekt-Repository",
     "logout": "Abmelden",
     "frontendNeedsRebuild": "Frontend muss neu erstellt werden",
@@ -485,9 +485,6 @@
       "enableRerank": "Rerank aktivieren",
       "enableRerankTooltip": "Reranking für abgerufene Text-Chunks aktivieren. Wenn True, aber kein Rerank-Modell konfiguriert ist, wird eine Warnung ausgegeben. Standard ist True."
     }
-  },
-  "apiSite": {
-    "loading": "API-Dokumentation wird geladen..."
   },
   "apiKeyAlert": {
     "title": "API-Schlüssel ist erforderlich",

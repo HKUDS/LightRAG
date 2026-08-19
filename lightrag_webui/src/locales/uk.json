@@ -10,7 +10,7 @@
     "documents": "Документи",
     "knowledgeGraph": "Граф знань",
     "retrieval": "Пошук",
-    "api": "API",
+    "apiDocs": "Документація API",
     "projectRepository": "Репозиторій проекту",
     "logout": "Вихід",
     "frontendNeedsRebuild": "Потрібна перебудова фронтенду",
@@ -485,9 +485,6 @@
       "enableRerank": "Увімкнути реранк",
       "enableRerankTooltip": "Увімкнути реранкінг для отриманих текстових чанків. Якщо True, але модель реранкера не налаштована, буде видано попередження. За замовчуванням True."
     }
-  },
-  "apiSite": {
-    "loading": "Завантаження документації API..."
   },
   "apiKeyAlert": {
     "title": "Потрібен API ключ",

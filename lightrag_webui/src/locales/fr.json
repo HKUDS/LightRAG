@@ -10,7 +10,7 @@
     "documents": "Documents",
     "knowledgeGraph": "Graphe de connaissances",
     "retrieval": "Récupération",
-    "api": "API",
+    "apiDocs": "Documentation de l'API",
     "projectRepository": "Référentiel du projet",
     "logout": "Déconnexion",
     "frontendNeedsRebuild": "Le frontend nécessite une reconstruction",
@@ -485,9 +485,6 @@
       "enableRerank": "Activer le Reclassement",
       "enableRerankTooltip": "Active le reclassement pour les fragments de texte récupérés. Si True mais qu'aucun modèle de reclassement n'est configuré, un avertissement sera émis. True par défaut."
     }
-  },
-  "apiSite": {
-    "loading": "Chargement de la documentation de l'API..."
   },
   "apiKeyAlert": {
     "title": "Clé API requise",

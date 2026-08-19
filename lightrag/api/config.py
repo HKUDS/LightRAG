@@ -814,6 +814,12 @@ def parse_args() -> argparse.Namespace:
     args.summary_language = get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE)
     args.whitelist_paths = get_env_value("WHITELIST_PATHS", "/health,/api/*")
 
+    # Single authoritative switch for the interactive API documentation
+    # surfaces (/docs, /docs/oauth2-redirect, /redoc, /openapi.json and the
+    # /static/swagger-ui mount). When False all five return 404 (issue #3666,
+    # RFC #3671). Any route audit must condition the same set on this flag.
+    args.enable_api_docs = get_env_value("ENABLE_API_DOCS", True, bool)
+
     # For JWT Auth
     args.auth_accounts = get_env_value("AUTH_ACCOUNTS", "")
     args.token_secret = get_env_value("TOKEN_SECRET", None)

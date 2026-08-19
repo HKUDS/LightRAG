@@ -4,11 +4,19 @@ import { checkHealth, LightragStatus } from '@/api/lightrag'
 import { useSettingsStore } from './settings'
 import { healthCheckInterval } from '@/lib/constants'
 
+export type ApiDocsCapability = 'unknown' | 'available' | 'unavailable'
+
 interface BackendState {
   health: boolean
   message: string | null
   messageTitle: string | null
   status: LightragStatus | null
+  // Whether the backend serves /docs. Tri-state on purpose: `status` is
+  // transient (null before the first response and reset on failure), so a
+  // predicate over it would show the docs entry point against servers that
+  // explicitly disabled docs. Only a successful /health response updates
+  // this; failures retain the last known value (RFC #3671).
+  apiDocsCapability: ApiDocsCapability
   lastCheckTime: number
   pipelineBusy: boolean
   pipelineActive: boolean
@@ -50,6 +58,7 @@ const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
   messageTitle: null,
   lastCheckTime: Date.now(),
   status: null,
+  apiDocsCapability: 'unknown',
   pipelineBusy: false,
   pipelineActive: false,
   healthCheckIntervalId: null,
@@ -100,6 +109,9 @@ const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
         messageTitle: null,
         lastCheckTime: Date.now(),
         status: health,
+        // A missing field means an older backend, which always exposes docs.
+        // This interpretation is only safe here, on a successful response.
+        apiDocsCapability: health.api_docs_available === false ? 'unavailable' : 'available',
         pipelineBusy: health.pipeline_busy,
         pipelineActive: health.pipeline_active ?? health.pipeline_busy
       })
