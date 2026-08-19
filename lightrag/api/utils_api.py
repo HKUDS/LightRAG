@@ -724,16 +724,21 @@ def display_splash_screen(args: argparse.Namespace) -> None:
 
     # Server Access Information
     protocol = "https" if args.ssl else "http"
+    api_docs_enabled = bool(getattr(args, "enable_api_docs", True))
     if args.host == "0.0.0.0":
         ASCIIColors.magenta("\n🌐 Server Access Information:")
         ASCIIColors.white("    ├─ WebUI (local): ", end="")
         ASCIIColors.yellow(f"{protocol}://localhost:{args.port}")
         ASCIIColors.white("    ├─ Remote Access: ", end="")
         ASCIIColors.yellow(f"{protocol}://<your-ip-address>:{args.port}")
-        ASCIIColors.white("    ├─ API Documentation (local): ", end="")
-        ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/docs")
-        ASCIIColors.white("    └─ Alternative Documentation (local): ", end="")
-        ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/redoc")
+        if api_docs_enabled:
+            ASCIIColors.white("    ├─ API Documentation (local): ", end="")
+            ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/docs")
+            ASCIIColors.white("    └─ Alternative Documentation (local): ", end="")
+            ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/redoc")
+        else:
+            ASCIIColors.white("    └─ API Documentation: ", end="")
+            ASCIIColors.yellow("disabled (ENABLE_API_DOCS=false)")
 
         ASCIIColors.magenta("\n📝 Note:")
         ASCIIColors.cyan("""    Since the server is running on 0.0.0.0:
@@ -748,10 +753,14 @@ def display_splash_screen(args: argparse.Namespace) -> None:
         ASCIIColors.magenta("\n🌐 Server Access Information:")
         ASCIIColors.white("    ├─ WebUI (local): ", end="")
         ASCIIColors.yellow(f"{base_url}")
-        ASCIIColors.white("    ├─ API Documentation: ", end="")
-        ASCIIColors.yellow(f"{base_url}/docs")
-        ASCIIColors.white("    └─ Alternative Documentation: ", end="")
-        ASCIIColors.yellow(f"{base_url}/redoc")
+        if api_docs_enabled:
+            ASCIIColors.white("    ├─ API Documentation: ", end="")
+            ASCIIColors.yellow(f"{base_url}/docs")
+            ASCIIColors.white("    └─ Alternative Documentation: ", end="")
+            ASCIIColors.yellow(f"{base_url}/redoc")
+        else:
+            ASCIIColors.white("    └─ API Documentation: ", end="")
+            ASCIIColors.yellow("disabled (ENABLE_API_DOCS=false)")
 
     # Security Notice
     if args.key:
