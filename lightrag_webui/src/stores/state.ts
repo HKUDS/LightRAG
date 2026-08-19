@@ -25,6 +25,12 @@ interface BackendState {
   healthCheckIntervalValue: number
 
   check: () => Promise<boolean>
+  // Resolve `apiDocsCapability` alone, without touching the shared backend
+  // health state. Needed when periodic health checks are disabled: reusing
+  // `check()` there would let a single failed probe latch `health: false`,
+  // which stops the document list polling for good and re-opens the API key
+  // alert on every dismissal (RFC #3671).
+  probeApiDocsCapability: () => Promise<void>
   clear: () => void
   setErrorMessage: (message: string, messageTitle: string) => void
   setPipelineBusy: (busy: boolean) => void
@@ -51,6 +57,10 @@ interface AuthState {
   setCustomTitle: (webuiTitle: string | null, webuiDescription: string | null) => void;
   setTokenRenewal: (renewalTime: number, expiresAt: number) => void; // Track token renewal
 }
+
+// Single-flight guard for the docs capability probe: React 19 strict mode
+// mounts effects twice, and the probe is idempotent but not free.
+let apiDocsProbeInFlight: Promise<void> | null = null
 
 const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
   health: true,
@@ -125,6 +135,26 @@ const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
       status: null
     })
     return false
+  },
+
+  probeApiDocsCapability: async () => {
+    if (get().apiDocsCapability !== 'unknown') return
+    if (apiDocsProbeInFlight) return apiDocsProbeInFlight
+
+    apiDocsProbeInFlight = (async () => {
+      const health = await checkHealth()
+      // A failed probe mutates nothing: the capability stays 'unknown' (the
+      // docs entry point stays hidden) and no health/message write can leak
+      // into the periodic-check state machine.
+      if (health.status !== 'healthy') return
+      set({
+        apiDocsCapability: health.api_docs_available === false ? 'unavailable' : 'available'
+      })
+    })().finally(() => {
+      apiDocsProbeInFlight = null
+    })
+
+    return apiDocsProbeInFlight
   },
 
   clear: () => {

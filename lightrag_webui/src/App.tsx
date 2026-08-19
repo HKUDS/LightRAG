@@ -74,13 +74,11 @@ function App() {
     if (!enableHealthCheck || apiKeyAlertOpen) {
       useBackendState.getState().clearHealthCheckTimer();
       // With periodic checks disabled the header still needs to know whether
-      // the backend serves /docs; resolve the capability once (RFC #3671).
-      if (
-        !enableHealthCheck &&
-        !apiKeyAlertOpen &&
-        useBackendState.getState().apiDocsCapability === 'unknown'
-      ) {
-        performHealthCheck();
+      // the backend serves /docs. Resolve that capability alone (RFC #3671) —
+      // never through `check()`, whose failure path would latch `health: false`
+      // and stop the document list polling with no timer left to recover it.
+      if (!enableHealthCheck && !apiKeyAlertOpen) {
+        useBackendState.getState().probeApiDocsCapability();
       }
       return;
     }

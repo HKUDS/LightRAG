@@ -100,3 +100,55 @@ describe('apiDocsCapability state transitions', () => {
     expect(backend().apiDocsCapability).toBe('available')
   })
 })
+
+describe('probeApiDocsCapability isolation', () => {
+  // The probe runs when periodic health checks are disabled. Routing it
+  // through check() made a single failure latch health:false, which stops the
+  // document list polling for good (no timer left to restart it) and re-opens
+  // the API key alert on every dismissal (RFC #3671).
+  test('a failed probe mutates nothing', async () => {
+    const backend = () => stateModule.useBackendState.getState()
+    stateModule.useBackendState.setState({
+      apiDocsCapability: 'unknown',
+      health: true,
+      message: null,
+      messageTitle: null,
+      status: null
+    })
+
+    healthResponse = { status: 'error', message: 'connection refused' }
+    await backend().probeApiDocsCapability()
+
+    expect(backend().health).toBe(true)
+    expect(backend().message).toBeNull()
+    expect(backend().messageTitle).toBeNull()
+    expect(backend().apiDocsCapability).toBe('unknown')
+  })
+
+  test('a successful probe sets only the capability', async () => {
+    const backend = () => stateModule.useBackendState.getState()
+    stateModule.useBackendState.setState({
+      apiDocsCapability: 'unknown',
+      status: null,
+      pipelineBusy: true
+    })
+
+    healthResponse = healthy({ api_docs_available: false })
+    await backend().probeApiDocsCapability()
+
+    expect(backend().apiDocsCapability).toBe('unavailable')
+    // Transient health state stays owned by check() alone.
+    expect(backend().status).toBeNull()
+    expect(backend().pipelineBusy).toBe(true)
+  })
+
+  test('the probe no-ops once the capability is resolved', async () => {
+    const backend = () => stateModule.useBackendState.getState()
+    stateModule.useBackendState.setState({ apiDocsCapability: 'unavailable' })
+
+    healthResponse = healthy({ api_docs_available: true })
+    await backend().probeApiDocsCapability()
+
+    expect(backend().apiDocsCapability).toBe('unavailable')
+  })
+})
