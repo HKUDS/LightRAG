@@ -219,11 +219,19 @@ async def hf_embed(
 
     # Perform inference
     with torch.no_grad():
+        attention_mask = encoded_texts["attention_mask"]
         outputs = embed_model(
             input_ids=encoded_texts["input_ids"],
-            attention_mask=encoded_texts["attention_mask"],
+            attention_mask=attention_mask,
         )
-        embeddings = outputs.last_hidden_state.mean(dim=1)
+        # Plain .mean(dim=1) counts padding-token hidden states, so the same
+        # text's embedding shifts depending on what else is in the batch.
+        # Weight by attention_mask instead; clamp_min(1) keeps a fully-masked
+        # row finite (all-padding input) rather than dividing by zero.
+        mask = attention_mask.unsqueeze(-1).to(outputs.last_hidden_state.dtype)
+        summed = (outputs.last_hidden_state * mask).sum(dim=1)
+        counts = mask.sum(dim=1).clamp_min(1)
+        embeddings = summed / counts
 
     # Convert embeddings to NumPy
     if embeddings.dtype == torch.bfloat16:
