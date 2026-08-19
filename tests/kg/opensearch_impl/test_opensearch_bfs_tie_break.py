@@ -144,3 +144,59 @@ async def test_bfs_level_that_fits_keeps_every_node():
 
     assert sorted(node.id for node in result.nodes) == ["A", "X", "Y", "Z"]
     assert result.is_truncated is False
+
+
+def _ppl_response(edges):
+    return {
+        "schema": [{"name": "connected_edges"}],
+        "datarows": [[[dict(edge, _depth=depth) for depth, edge in edges]]],
+    }
+
+
+def _make_ppl_storage(edges, real_ids):
+    storage = _make_storage()
+    storage._ppl_graphlookup_available = True
+    storage.client.transport = AsyncMock()
+    storage.client.transport.perform_request = AsyncMock(
+        return_value=_ppl_response(edges)
+    )
+    storage.client.mget = AsyncMock(side_effect=_mget_side_effect(real_ids))
+    return storage
+
+
+@pytest.mark.asyncio
+async def test_ppl_degree_lookup_skips_levels_that_cannot_reach_the_cap():
+    """Only the level straddling ``max_nodes`` is ranked. node_degrees_batch
+    sends its argument as a ``terms`` clause, so passing the whole reachable
+    set made a large component breach OpenSearch's index.max_terms_count and
+    fail the request instead of returning a truncated subgraph."""
+    edges = [(1, {"source_node_id": "A", "target_node_id": f"n{i}"}) for i in range(3)]
+    edges += [
+        (2, {"source_node_id": "n0", "target_node_id": f"d{i}"}) for i in range(500)
+    ]
+    storage = _make_ppl_storage(edges, {"A"} | {f"n{i}" for i in range(3)})
+    storage.node_degrees_batch = AsyncMock(return_value={})
+
+    await storage.get_knowledge_graph("A", max_depth=3, max_nodes=3)
+
+    ranked = storage.node_degrees_batch.await_args.args[0]
+    assert set(ranked) == {"n0", "n1", "n2"}
+
+
+@pytest.mark.asyncio
+async def test_ppl_degree_lookup_is_capped_on_a_single_wide_level():
+    """A hub puts every neighbour on one level, so bounding by level is not
+    enough on its own -- the candidate list itself carries a ceiling."""
+    from lightrag.kg.opensearch_impl import _GRAPH_DEGREE_RANK_MAX_CANDIDATES
+
+    width = _GRAPH_DEGREE_RANK_MAX_CANDIDATES + 500
+    edges = [
+        (1, {"source_node_id": "A", "target_node_id": f"n{i}"}) for i in range(width)
+    ]
+    storage = _make_ppl_storage(edges, {"A"})
+    storage.node_degrees_batch = AsyncMock(return_value={})
+
+    await storage.get_knowledge_graph("A", max_depth=1, max_nodes=1000)
+
+    ranked = storage.node_degrees_batch.await_args.args[0]
+    assert len(ranked) == _GRAPH_DEGREE_RANK_MAX_CANDIDATES

@@ -899,6 +899,15 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         across shards. Tracked in issue #3613; it needs a storage-shape change,
         not an ordering one.
 
+        Its BFS path carries a second, narrower approximation: the degree
+        lookup that ranks the level straddling ``max_nodes`` is capped at a
+        fixed number of candidates, because that lookup sends the level as a
+        ``terms`` clause and OpenSearch bounds those by
+        ``index.max_terms_count``. A level wider than the cap (a single hub with
+        more neighbours than the cap reaches it at depth 1) ranks only the cap's
+        worth and admits the remainder in traversal order, which is the
+        pre-existing behaviour for that overflow rather than a new deviation.
+
         This constrains WHICH nodes survive truncation, not the order of
         :class:`KnowledgeGraph.nodes` in the response — implementations
         materialize that list from a dict or a subgraph view, and callers that

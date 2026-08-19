@@ -326,6 +326,15 @@ _EDGE_ID_CANONICAL_META_FLAG = "edge_id_canonical_v1"
 # watching a large-index reindex see liveness and an X/total denominator.
 _EDGE_MIGRATION_PROGRESS_INTERVAL = 50_000
 
+# Ceiling on how many same-depth candidates get a degree lookup before the
+# max_nodes cap. node_degrees_batch puts the whole list in two `terms` clauses
+# and asks for 2x its length in buckets per aggregation, so an unbounded level
+# (one hub with 100k neighbours reaches that at depth 1) breaches OpenSearch's
+# default index.max_terms_count / search.max_buckets of 65536 and turns a
+# truncated subgraph into a failed request. 8192 keeps both well inside the
+# defaults while still ranking far more candidates than max_nodes admits.
+_GRAPH_DEGREE_RANK_MAX_CANDIDATES = 8192
+
 
 def _canonical_edge_id(source_node_id: str, target_node_id: str) -> str:
     """Direction-independent edge document ``_id``.
@@ -4968,13 +4977,20 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 discovered_nodes.add(node_id)
                 levels.setdefault(depth, []).append(node_id)
 
-        # One lookup for the whole reachable set rather than one per level: the
-        # rows already name it, so extra ids cost buckets, not round trips.
+        # Only the level straddling the cap competes for the remaining slots:
+        # shallower levels are admitted whole and deeper ones never survive, so
+        # ranking either would cost terms/bucket budget for no change in output.
         degrees: dict[str, int] = {}
         if len(discovered_nodes) > max_nodes:
-            degrees = await self.node_degrees_batch(
-                [nid for level in levels.values() for nid in level]
-            )
+            remaining = max_nodes - 1
+            for depth in sorted(levels):
+                level = levels[depth]
+                if len(level) > remaining:
+                    degrees = await self.node_degrees_batch(
+                        level[:_GRAPH_DEGREE_RANK_MAX_CANDIDATES]
+                    )
+                    break
+                remaining -= len(level)
 
         ranked = [
             node_id
