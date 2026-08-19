@@ -224,9 +224,7 @@ def _assert_service_info(resp, expected_health_url):
 
 
 def test_missing_webui_and_disabled_docs_return_service_info(monkeypatch):
-    client = _build_client(
-        monkeypatch, enable_api_docs="false", webui_available=False
-    )
+    client = _build_client(monkeypatch, enable_api_docs="false", webui_available=False)
 
     for path in ("/", "/webui", "/webui/"):
         _assert_service_info(client.get(path), "/health")
