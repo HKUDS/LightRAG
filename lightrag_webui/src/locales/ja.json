@@ -10,7 +10,7 @@
     "documents": "ドキュメント",
     "knowledgeGraph": "ナレッジグラフ",
     "retrieval": "検索",
-    "api": "API",
+    "apiDocs": "APIドキュメント",
     "projectRepository": "プロジェクトリポジトリ",
     "logout": "ログアウト",
     "frontendNeedsRebuild": "フロントエンドの再ビルドが必要です",
@@ -485,9 +485,6 @@
       "enableRerank": "リランクを有効化",
       "enableRerankTooltip": "取得されたテキストチャンクのリランクを有効にします。Trueに設定してもリランクモデルが設定されていない場合、警告が発行されます。デフォルトはTrueです。"
     }
-  },
-  "apiSite": {
-    "loading": "APIドキュメントを読み込み中..."
   },
   "apiKeyAlert": {
     "title": "APIキーが必要です",

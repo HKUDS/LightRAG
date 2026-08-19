@@ -1245,6 +1245,8 @@ notes.[-R].md
 - Swagger UI：http://localhost:9621/docs
 - ReDoc：http://localhost:9621/redoc
 
+设置 `ENABLE_API_DOCS=false` 可完全关闭交互式接口文档——`/docs`、`/redoc`、`/openapi.json` 及内置 Swagger UI 静态资源全部返回 404（建议加固的生产部署使用）。`/health` 以 `api_docs_available` 字段报告该状态，WebUI 会据此隐藏 API 文档入口。
+
 您可以使用提供的 curl 命令或通过 Swagger UI 界面测试 API 端点。确保：
 
 1. 启动相应的后端服务，或确认托管 provider 的凭据可用

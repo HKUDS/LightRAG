@@ -4,11 +4,19 @@ import { checkHealth, LightragStatus } from '@/api/lightrag'
 import { useSettingsStore } from './settings'
 import { healthCheckInterval } from '@/lib/constants'
 
+export type ApiDocsCapability = 'unknown' | 'available' | 'unavailable'
+
 interface BackendState {
   health: boolean
   message: string | null
   messageTitle: string | null
   status: LightragStatus | null
+  // Whether the backend serves /docs. Tri-state on purpose: `status` is
+  // transient (null before the first response and reset on failure), so a
+  // predicate over it would show the docs entry point against servers that
+  // explicitly disabled docs. Only a successful /health response updates
+  // this; failures retain the last known value (RFC #3671).
+  apiDocsCapability: ApiDocsCapability
   lastCheckTime: number
   pipelineBusy: boolean
   pipelineActive: boolean
@@ -17,6 +25,12 @@ interface BackendState {
   healthCheckIntervalValue: number
 
   check: () => Promise<boolean>
+  // Resolve `apiDocsCapability` alone, without touching the shared backend
+  // health state. Needed when periodic health checks are disabled: reusing
+  // `check()` there would let a single failed probe latch `health: false`,
+  // which stops the document list polling for good and re-opens the API key
+  // alert on every dismissal (RFC #3671).
+  probeApiDocsCapability: () => Promise<void>
   clear: () => void
   setErrorMessage: (message: string, messageTitle: string) => void
   setPipelineBusy: (busy: boolean) => void
@@ -44,12 +58,17 @@ interface AuthState {
   setTokenRenewal: (renewalTime: number, expiresAt: number) => void; // Track token renewal
 }
 
+// Single-flight guard for the docs capability probe: React 19 strict mode
+// mounts effects twice, and the probe is idempotent but not free.
+let apiDocsProbeInFlight: Promise<void> | null = null
+
 const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
   health: true,
   message: null,
   messageTitle: null,
   lastCheckTime: Date.now(),
   status: null,
+  apiDocsCapability: 'unknown',
   pipelineBusy: false,
   pipelineActive: false,
   healthCheckIntervalId: null,
@@ -100,6 +119,9 @@ const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
         messageTitle: null,
         lastCheckTime: Date.now(),
         status: health,
+        // A missing field means an older backend, which always exposes docs.
+        // This interpretation is only safe here, on a successful response.
+        apiDocsCapability: health.api_docs_available === false ? 'unavailable' : 'available',
         pipelineBusy: health.pipeline_busy,
         pipelineActive: health.pipeline_active ?? health.pipeline_busy
       })
@@ -113,6 +135,26 @@ const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
       status: null
     })
     return false
+  },
+
+  probeApiDocsCapability: async () => {
+    if (get().apiDocsCapability !== 'unknown') return
+    if (apiDocsProbeInFlight) return apiDocsProbeInFlight
+
+    apiDocsProbeInFlight = (async () => {
+      const health = await checkHealth()
+      // A failed probe mutates nothing: the capability stays 'unknown' (the
+      // docs entry point stays hidden) and no health/message write can leak
+      // into the periodic-check state machine.
+      if (health.status !== 'healthy') return
+      set({
+        apiDocsCapability: health.api_docs_available === false ? 'unavailable' : 'available'
+      })
+    })().finally(() => {
+      apiDocsProbeInFlight = null
+    })
+
+    return apiDocsProbeInFlight
   },
 
   clear: () => {

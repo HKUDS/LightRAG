@@ -1245,6 +1245,8 @@ All supported backends (`lollms`, `ollama`, `openai` / OpenAI-compatible, `azure
 - Swagger UI: http://localhost:9621/docs
 - ReDoc: http://localhost:9621/redoc
 
+Set `ENABLE_API_DOCS=false` to disable the interactive documentation entirely — `/docs`, `/redoc`, `/openapi.json` and the bundled Swagger UI assets all return 404 (recommended for hardened production deployments). `/health` reports the state as `api_docs_available`, and the WebUI hides its API-docs entry point accordingly.
+
 You can test the API endpoints using the provided curl commands or through the Swagger UI interface. Make sure to:
 
 1. Start the appropriate backend service or confirm the hosted provider credentials
