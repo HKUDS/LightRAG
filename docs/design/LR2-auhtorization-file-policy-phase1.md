@@ -15,9 +15,11 @@
 | 前端 | §12（401/403/500/503 分流与 `/auth/me`） |
 | 评审 | §15（RFC 偏离裁决）、§16（遗留风险）、§9.7（被否决方案） |
 
-**唯一权威口径**（其它位置只作引用，不再复述理由）：四档状态码语义 = §10.2；`documents.artifacts.*` 与 `workspace.*` 仅 policy 模式可授予 = §11.4；`WHITELIST_PATHS` 处置 = §11.2 #1；冷启动"磁盘是权威" = §9.5；`STALE_AFTER` 公式 = §9.4；`/health` 与 `/status` 的分工 = §5.1；传播协议伪代码 = 附录 A。
+**唯一权威口径**（其它位置只作引用，不再复述理由）：四档状态码语义 = §10.2；`documents.artifacts.*` 与 `workspace.*` 仅 policy 模式可授予 = §11.4；`WHITELIST_PATHS` 处置 = §11.2 #1；冷启动"磁盘是权威" = §9.5；`STALE_AFTER` 公式 = §9.4；`/health` 与 `/status` 的分工 = §5.1；API 文档暴露面与 `ENABLE_API_DOCS` = [RFC #3671](https://github.com/HKUDS/LightRAG/issues/3671)；传播协议伪代码 = 附录 A。
 
 > **与多工作空间方案的关系**：[LR2-multi-workspace-phase1.md](./LR2-multi-workspace-phase1.md) 建立在本文件之上，并要求本文件做四类改动，均已落入正文 —— 新增 `workspace.*` 四个权限码（§3）、`/health` 去双身份并新增 `/status`（§5.1 / §5.2）、`legacy_user` 冻结列表的后果说明（§11.4）、WebUI 两条工作区分流（§12）。**本文件的策略文件 schema、加载器与 §7.3 的 16 条校验规则一个字未改**：工作区的可达性由工作区目录承载，不进策略文件（§1.2 / §4.2）。
+
+> **与 API 文档开关 RFC 的关系**：[RFC #3671](https://github.com/HKUDS/LightRAG/issues/3671) 及其实现是本授权方案的**前置基线**，必须先于§14 的授权 PR 链落地。#3671 唯一拥有 `ENABLE_API_DOCS`、四个文档路由与 `/static/swagger-ui` mount 的条件注册、启动横幅与 WebUI 入口、以及 `/health.api_docs_available` 的原始契约。本文件只在已落地的基线上对这些路由/mount 做公共面归类与审计，并在拆分 `/health` / `/status` 时保持该字段；**不重复实现、不重新命名、不改写 #3671 的默认值或 UI 语义**。
 
 ---
 
@@ -61,7 +63,9 @@
 | 登录限流器（IP+username，预占式） | `lightrag/api/login_rate_limit.py` | 保持不变，只把"账号从哪来"换成策略文件 |
 | 路由清单（现存） | 受保护 `APIRoute` 40 个 + 公共 `APIRoute`（`/login`、`/auth-status`、`/`、`/webui`、`/docs`、`/docs/oauth2-redirect`）+ **FastAPI 自动注册的 `/openapi.json` 与 `/redoc`** + 2 个 `Mount` | 见 §5 完整映射表 |
 | `docs_url=None` + 自定义 `/docs`；`redoc_url="/redoc"`、`openapi_url="/openapi.json"` 走 FastAPI 自动注册 | [lightrag_server.py:1425-1434](../../lightrag/api/lightrag_server.py#L1425-L1434)、[:2328](../../lightrag/api/lightrag_server.py#L2328) | 这四个端点**今天完全无认证依赖**。审计要遍历全部 `APIRoute`，漏列它们会让 `enforce` 直接启动失败 —— §5.1 已补齐 |
-| swagger 静态资产挂在 **`/static/swagger-ui`**（`name="swagger-ui-static"`） | [lightrag_server.py:2802](../../lightrag/api/lightrag_server.py#L2802) | `PUBLIC_MOUNTS` 必须写**实际挂载路径**，不是 `name=` |
+| swagger 静态资产挂在 **`/static/swagger-ui`**（`name="swagger-ui-static"`） | [lightrag_server.py:2802](../../lightrag/api/lightrag_server.py#L2802) | docs 开启时，`API_DOCS_MOUNTS` 必须写**实际挂载路径**，不是 `name=` |
+
+> 上表记录的是 #3671 落地前的代码现状。授权实施不以这份快照重做 docs 开关；它必须先 rebase 到 #3671 的实现之后，再从实际 `app.routes` 生成新的路由清单与 golden（§6）。
 
 > RFC 里出现的 artifact 导出路由（`/documents/{doc_id}/artifacts/...`）在当前代码中**尚不存在**（属于 LR2 下载管线设计的在途工作）。本方案把它们列为"预留行"，落地时必须按同表补齐权限声明，且启动期审计会强制这一点。
 
@@ -218,9 +222,10 @@ PUBLIC_ROUTES = {
     ("GET", "/"),                # WebUI 重定向
     ("GET", "/webui"), ("GET", "/webui/"),   # 无资产时的重定向路由
 }
-PUBLIC_MOUNTS = {"/webui", "/static/swagger-ui"}   # 静态资产；后者是实际挂载路径，
-                                                   # 不是 name="swagger-ui-static"
-API_DOCS_ROUTES = {                # 由 AUTH_EXPOSE_API_DOCS 决定是否注册
+PUBLIC_MOUNTS = {"/webui"}
+API_DOCS_MOUNTS = {"/static/swagger-ui"}  # 实际挂载路径，不是
+                                           # name="swagger-ui-static"
+API_DOCS_ROUTES = {                # 由全局 ENABLE_API_DOCS 决定是否注册
     ("GET", "/docs"),              # 自定义端点（docs_url=None）
     ("GET", "/docs/oauth2-redirect"),
     ("GET", "/redoc"),             # FastAPI 自动注册
@@ -228,7 +233,7 @@ API_DOCS_ROUTES = {                # 由 AUTH_EXPOSE_API_DOCS 决定是否注册
 }
 ```
 
-`/health` 是**纯 liveness 探针**，无条件返回同一份最小载荷（`status`、core/api 版本、WebUI 可用性）。它**不再有"认证与否决定返回内容"的双重身份** —— 完整的运行时配置（LLM / embedding / 存储后端 / 队列 / keyed-lock）移到受 `system.health.read` 保护的 `GET /status`（§5.2）。
+`/health` 是**纯 liveness 探针**，无条件返回同一份最小载荷（`status`、core/api 版本、WebUI 可用性、`api_docs_available`）。`api_docs_available` 是全局 `ENABLE_API_DOCS` 的有效布尔状态，属于可公开探测的能力信号，不进入受保护的配置块。`/health` **不再有"认证与否决定返回内容"的双重身份** —— 完整的运行时配置（LLM / embedding / 存储后端 / 队列 / keyed-lock）移到受 `system.health.read` 保护的 `GET /status`（§5.2）。
 
 改动理由由多工作空间方案给出（[LR2-multi-workspace-phase1.md](./LR2-multi-workspace-phase1.md) §12.3）：`/health` 的两类消费者要求相反 —— k8s / 负载均衡探针每 10–30 秒一次、不需要配置、**绝不容忍副作用**；运维排障偶发调用、需要完整信息。把两者塞进一个端点，就意味着探针路径必须携带"够不够权限"的分支；多工作空间下更进一步：任何"看一眼状态"的端点若能触碰实例池，就会变成"建 N 套连接 + 跑 N 次迁移"。拆开后 `/health` 退化为常量响应，`/status` 独占需要读目录与共享状态的那部分。
 
@@ -237,11 +242,11 @@ API_DOCS_ROUTES = {                # 由 AUTH_EXPOSE_API_DOCS 决定是否注册
 1. `/health` 上**不再挂任何认证依赖**（今天它是 `lightrag_server.py` 里唯一那处 `Depends(combined_auth)`，见 §2）。它留在 `PUBLIC_ROUTES` 里，但语义从"公共且分档"变成"公共且单一"。
 2. `/status` 是一条**新的受保护路由**，进 §5.2 的表。它同时也是 stale worker（§9.4）的 503 覆盖面之一 —— 一个无法信任自己授权判定的 worker 不得回答"服务状态是什么"。`/health` 不在覆盖面内（stale 时仍 200，见 §9.4 的表）。
 
-#### API 文档面：四个端点，全有或全无
+#### API 文档面：四个端点与一个静态 mount，全有或全无
 
-`/redoc` 与 `/openapi.json` 是 FastAPI 根据 `app_kwargs` **自动注册**的（[lightrag_server.py:1428-1431](../../lightrag/api/lightrag_server.py#L1428-L1431)），`/docs` 与 `/docs/oauth2-redirect` 是自定义端点（[:2328](../../lightrag/api/lightrag_server.py#L2328)、[:2346](../../lightrag/api/lightrag_server.py#L2346)）。**四个今天都没有任何认证依赖**。四个都必须进公共清单、静态 mount 必须按**实际挂载路径**归类 —— 任何漏列都会让 `AUTH_ROUTE_AUDIT=enforce` 在启动时撞上未归类的 `APIRoute` / `Mount`：要么启动失败，要么迫使实现里写一份没有文档记载的排除清单。
+`/redoc` 与 `/openapi.json` 是 FastAPI 根据 `app_kwargs` **自动注册**的（[lightrag_server.py:1428-1431](../../lightrag/api/lightrag_server.py#L1428-L1431)），`/docs` 与 `/docs/oauth2-redirect` 是自定义端点（[:2328](../../lightrag/api/lightrag_server.py#L2328)、[:2346](../../lightrag/api/lightrag_server.py#L2346)），Swagger 静态资产挂在 `/static/swagger-ui`。**四个端点今天都没有任何认证依赖**。开启时，四个端点必须进公共清单，静态 mount 必须按**实际挂载路径**归类 —— 任何漏列都会让 `AUTH_ROUTE_AUDIT=enforce` 在启动时撞上未归类的 `APIRoute` / `Mount`：要么启动失败，要么迫使实现里写一份没有文档记载的排除清单。
 
-裁决：**保持公开（现状），由 `AUTH_EXPOSE_API_DOCS`（默认 `true`）整体开关**，关闭时四个端点**不注册**（404），不做"部分需要权限"的中间态。理由是 Swagger UI 在浏览器里自行拉取 `/openapi.json`，只给它挂权限会让文档页在未登录时直接坏掉，而"坏掉的文档页"比"公开的 schema"更容易被误判成 bug；要收敛攻击面就整片关掉。权限码 `system.config.read` 保留给将来真正返回运行时配置的端点，不用来盖文档面。
+前置契约：[#3671](https://github.com/HKUDS/LightRAG/issues/3671) 已裁决**保持公开（现状），由全局唯一开关 `ENABLE_API_DOCS`（默认 `true`）整体控制**。该开关独立于 `policy` / `legacy` / `unauthenticated` profile，授权子系统不得再定义 `AUTH_*` 同义开关。`false` 时四个端点**不注册**，`/static/swagger-ui` **不挂载**，五个表面均为 404；`true` 时它们全部存在且保持公开，不做"部分需要权限"的中间态。理由是 Swagger UI 在浏览器里自行拉取 `/openapi.json`，只给它挂权限会让文档页在未登录时直接坏掉，而"坏掉的文档页"比"公开的 schema"更容易被误判成 bug；要收敛攻击面就整片关掉。本授权方案只消费该前置契约来归类实际存在的公共路由/mount；权限码 `system.config.read` 保留给将来真正返回运行时配置的端点，不用来盖文档面。
 
 审计的 golden 清单**必须从实际 `app.routes` 生成**（§6），不能从本节手抄 —— 手抄清单必然漂移。
 
@@ -337,7 +342,7 @@ def audit_route_coverage(app: FastAPI) -> RouteInventory
 递归遍历完整的 Starlette `BaseRoute` 拓扑，断言：
 
 - 每个 `APIRoute` 要么在公共清单里（含 `API_DOCS_ROUTES`，即 FastAPI 自动注册的 `/redoc`、`/openapi.json` 与自定义 `/docs*`），要么带 `authorize` 依赖且 scopes 全部是已知权限码；
-- 每个 `Mount` 要么在 `PUBLIC_MOUNTS` 里（按**实际挂载路径**匹配，不是 `name=`），要么递归审计其子路由；
+- 每个 `Mount` 要么在 `PUBLIC_MOUNTS` 里，要么是 `ENABLE_API_DOCS=true` 时存在的 `API_DOCS_MOUNTS`（均按**实际挂载路径**匹配，不是 `name=`），要么递归审计其子路由；
 - `WebSocketRoute` 与任何其它路由类型必须显式归类，否则启动失败；
 - 敏感路由（`DELETE`、`clear`、`force_reset`、`cancel_pipeline`、artifact 下载、**工作区删除**）不得只挂通用 read/write 权限（白名单式断言，新增敏感路由必须同步更新，属于刻意的"改动即评审"）。`DELETE /workspaces/{id}` 必须挂 `workspace.delete`，挂 `workspace.update` 或任何通用码都要让审计失败 —— 它是本清单里破坏面最大的一条（级联销毁四类存储 + 输入目录）；
 - OpenAPI 中写入 `x-required-permissions`。
@@ -353,13 +358,14 @@ APIRoute   GET     /health                                                public
 APIRoute   GET     /status                                                system.health.read
 APIRoute   DELETE  /workspaces/{id}                                       workspace.delete
 Mount      -       /webui                                                 public-static
+Mount      -       /static/swagger-ui                                     public-static (ENABLE_API_DOCS=true only)
 ```
 
 `AUTH_ROUTE_AUDIT=report` 只打印，`enforce` 则启动失败。CI 用固化清单做 golden 对比：新增路由若未归类，测试失败。
 
 **golden 清单必须由实际 `app.routes` 生成，不得手抄** —— 文档里的清单必然漂移（自动注册端点、mount 实际路径、路由计数都漂过）。生成脚本产出 golden，评审看 diff：这样"文档写错"最多是文档问题，不会变成 `enforce` 启不起来。
 
-**golden 清单按 profile 各一份**：`/auth/policy/*` 三个端点只在 policy 模式挂载（§5.2），`API_DOCS_ROUTES` 受 `AUTH_EXPOSE_API_DOCS` 控制，两份清单的路由集合本就不同；用一份清单会逼实现把它们无条件挂上去，legacy 模式下就变成"存在但永远 403"。
+**golden 清单按 profile 与全局 docs 开关状态分别固化**：`/auth/policy/*` 三个端点只在 policy 模式挂载（§5.2）；每个 profile 都要覆盖 `ENABLE_API_DOCS=true/false` 两种形态，后者必须同时移除 `API_DOCS_ROUTES` 与 `API_DOCS_MOUNTS`。用一份手写清单会逼实现把条件路由无条件挂上去，或在关闭 docs 时让审计期望一个实际不存在的 mount。
 
 ---
 
@@ -975,7 +981,7 @@ async def list_documents(
 | `AUTH_POLICY_RELOAD_POLL_SECONDS` | `2.0` | worker 轮询 epoch 间隔（≥0.5） |
 | `AUTH_POLICY_HEARTBEAT_SECONDS` | `10.0` | 心跳写共享报告的最大间隔（≥ 5 × 轮询间隔）。调度语义、注册前置与 `unresponsive` 判据见 §9.3 |
 | `AUTH_POLICY_STALE_GRACE_SECONDS` | `10.0` | stale 宽限期。实际生效值与语义见 §9.4（`STALE_AFTER` 公式的唯一权威） |
-| `AUTH_EXPOSE_API_DOCS` | `true` | 是否注册 `/docs`、`/docs/oauth2-redirect`、`/redoc`、`/openapi.json`（§5.1）。`false` 时四个端点均不注册 |
+| `ENABLE_API_DOCS` | `true` | **由前置 RFC #3671 提供的全局唯一开关，不属于授权 profile，也不由本方案实现**。控制 `/docs`、`/docs/oauth2-redirect`、`/redoc`、`/openapi.json` 与 `/static/swagger-ui` mount（§5.1）；`false` 时四个端点不注册、mount 不存在，五个表面均为 404 |
 | `AUTH_ALLOW_UNAUTHENTICATED` | `false` | 匿名开发模式显式开关 |
 | `AUTH_ANONYMOUS_ROLE` | `reader` | 匿名模式下匿名 principal 的角色；**仅在有策略文件时生效**（角色定义在文件里）。无策略文件的匿名模式用内建 `legacy_user`（§8.4） |
 | `AUTH_LEGACY_ACCOUNTS_COMPAT` | `false` | 允许 `AUTH_ACCOUNTS` 与策略文件共存并映射为 `legacy_user` |
@@ -1163,8 +1169,8 @@ LEGACY_USER_PERMISSIONS: frozenset[Permission] = frozenset({
 
 **路由审计**（`test_route_inventory.py`）
 - golden 清单对比，且 golden **由实际 `app.routes` 生成**（§6）。
-- `/redoc`、`/openapi.json`、`/docs`、`/docs/oauth2-redirect` 在 `enforce` 下不导致启动失败；`AUTH_EXPOSE_API_DOCS=false` 时四者全部 404。
-- swagger 静态 mount 按实际路径 `/static/swagger-ui` 归类为 public（用 `name=` 匹配的实现会漏判，这是行为级差异）。
+- `ENABLE_API_DOCS=true` 时，`/redoc`、`/openapi.json`、`/docs`、`/docs/oauth2-redirect` 在 `enforce` 下不导致启动失败，Swagger 静态 mount 按实际路径 `/static/swagger-ui` 归类为 public（用 `name=` 匹配的实现会漏判，这是行为级差异）。
+- `ENABLE_API_DOCS=false` 时，上述四个端点与 `/static/swagger-ui/*` 全部 404，实际 `app.routes` 中既没有 `API_DOCS_ROUTES` 也没有 `API_DOCS_MOUNTS`；开关的两种状态都要在每种 profile 下跑路由审计。
 - `/documents/scan` 的 scopes 恰好是 `{documents.retry, documents.write}`；只持 `documents.retry` 的 principal 调它 ⇒ 403，且 `detail` 里列出缺失的 `documents.write`（§5.2 的越权 fix-proof）。
 - `/api/ps` 的 scope 是 `ollama.metadata.read`；只持 `pipeline.read` 的 principal 调它 ⇒ 403。
 - **fix-proof**：往测试 app 里加一个裸路由（无 `authorize`）⇒ `enforce` 下启动失败；这条必须是行为级失败，而不是靠符号缺失报 AttributeError。
@@ -1189,17 +1195,19 @@ LEGACY_USER_PERMISSIONS: frozenset[Permission] = frozenset({
 
 ## 14. 分阶段实施（PR 拆分）
 
+**前置顺序**：RFC #3671 及其实现先落地；下表 PR1 开始前必须 rebase 到该实现。因此本 PR 链中不存在"实现 `ENABLE_API_DOCS`" 的任务，只有保留其 `/health` 契约、归类其条件路由/mount、并让授权审计覆盖开/关两种现有形态的集成工作。
+
 | PR | 内容 | 风险 / 验收 |
 | --- | --- | --- |
 | PR1 | `lightrag/api/authz/` 骨架：`catalog.py`（含 `ollama.metadata.read`）、`models.py`、`policy_file.py`（loader + strict schema + §7.3 全 16 条校验 + #13 的信任链路径解析）、`LEGACY_USER_PERMISSIONS` 冻结常量、`hashpw.py`（**不是新命令**：console script 沿用已注册的 `lightrag-hash-password`，entry point 从 `lightrag.tools.hash_password` 改指本模块；`AUTH_ACCOUNTS` 模式行为逐字保持——含 `{bcrypt}` 前缀输出，新增 `--format policy` 模式输出裸 bcrypt spec + `credential_version` 提醒 + `AUTH_ACCOUNTS` 批量转换）。**不接线**，纯新增 | 无行为变更；验收 = §13 加载与校验 + legacy 预设 golden 全绿 + `lightrag-hash-password` 旧模式（无 `--format`）输出格式回归（`username:{bcrypt}$2b$...` 逐字不变，钉住 entry point 迁移） |
 | PR2 | `PolicyRuntime` + 两个 provider + `authorize` 依赖（含 §8.5 凭据优先级）+ `/auth/me`；拆解 §10.3 的四个 import 期单例；legacy profile 走 `legacy_user` 预设，行为**逐字保持不变**（含 `WHITELIST_PATHS` 旧默认） | 最容易回归的一步。验收 = 现有 `tests/api/` 全绿 + §13 的 39 条路由 legacy 行为对照测试（`/health` 在 PR5 才拆，本 PR 保持现状） |
 | PR3 | 迁移 `query_routes.py`(3) + `ollama_api.py`(5) 到 `Security(authorize, scopes=[...])`；`/api/tags`、`/api/version`、`/api/ps` 用 `ollama.metadata.read` | 小面积试点，先验证形态 |
 | PR4 | 迁移 `document_routes.py`(19) | 最大 diff；逐条对照 §5.2 表，含 `/documents/scan` 的双 scope |
-| PR5 | 迁移 `graph_routes.py`(12) + `lightrag_server.py` 的 `/health` → 拆成纯 liveness 的 `/health`（去掉认证依赖）与受 `system.health.read` 保护的 `/status`（§5.1）、公共路由分离（public router，含 `API_DOCS_ROUTES`） | `/health` 的**去双身份**需专门测试：未认证与已认证拿到**逐字节相同**的最小载荷；原完整配置在 `/status` 上可取且未授权时 403。多工作空间的全工作区汇总不在本 PR，由多工作空间 PRD 的 PR5 往 `/status` 上叠加 |
-| PR6 | 路由覆盖审计 + CI golden 清单（按 profile 各一份）；`AUTH_ROUTE_AUDIT` 先 `report` 一轮再切 `enforce` | 验收 = 裸路由 fix-proof 测试 |
+| PR5 | 迁移 `graph_routes.py`(12) + `lightrag_server.py` 的 `/health` → 拆成纯 liveness 的 `/health`（去掉认证依赖）与受 `system.health.read` 保护的 `/status`（§5.1）、公共路由分离（public router，含 #3671 已有 `API_DOCS_ROUTES` 与 `API_DOCS_MOUNTS` 的条件归类） | `/health` 的**去双身份**需专门测试：未认证与已认证拿到**逐字节相同**的最小载荷；拆分前后必须保留 #3671 已有的 `api_docs_available`，且它与实际路由/mount 状态一致；原完整配置在 `/status` 上可取且未授权时 403。本 PR 不改 #3671 的 docs 注册、回退响应或 WebUI 逻辑。多工作空间的全工作区汇总不在本 PR，由多工作空间 PRD 的 PR5 往 `/status` 上叠加 |
+| PR6 | 路由覆盖审计 + CI golden 清单（按 profile × `ENABLE_API_DOCS` 状态固化）；`AUTH_ROUTE_AUDIT` 先 `report` 一轮再切 `enforce` | 验收 = 裸路由 fix-proof 测试 + docs 四路由/一 mount 全有或全无 |
 | **PR7a** | 传播机制骨架，**不接任何端点**：共享 epoch 与内容字节（分 key、同临界区发布）+ 附录 A 的全部原语（`shared_get` 三态 / `adopt_from_shared` / `apply_snapshot` / `publish_report` / `maybe_publish`）+ 冷启动初始化事务 + 轮询任务与 `register_or_die` 启动前置 + `stale`/`pending` 状态机与 503 闸门（§9.3–§9.4）。发布动作由内部函数触发（测试直接调），不经 HTTP | 验收 = §13“热重载”节里除 status 汇总与端点外的**全部**用例（用例清单以 §13 为唯一权威，此处不重复点名） |
 | **PR7b** | 接线与可观测：三个端点（仅 policy 模式挂载）+ `/auth/policy/status` 汇总与收敛判定（含 `reported_at` 心跳与 `unresponsive_workers`）+ 死 pid 清理 + `stale` 的 503 响应体 + WebUI 的 401/403/500/503 四路分流 | 验收 = 收敛断言（`converged` / `pending_workers` / `failed_workers` / `unresponsive_workers`，含停摆 worker 不得显示收敛）+ 自锁保护三条（含 disabled 持有者 422）+ 轮询 key 级成本断言 + 前端不因 503 清 token |
-| PR8 | profile 判定与 `WHITELIST_PATHS` 的 **policy 模式忽略**（不改全局默认值）、`TOKEN_SECRET` 启动期校验、`AUTH_EXPOSE_API_DOCS`、Ollama 兼容开关、启动横幅、`env.example`、文档（`docs/LightRAG-API-Server*.md` 两语言）、WebUI 权限门控 | 破坏性变更集中在此且全部限定 policy 模式，PR 描述须列全 §11.2 |
+| PR8 | profile 判定与 `WHITELIST_PATHS` 的 **policy 模式忽略**（不改全局默认值）、`TOKEN_SECRET` 启动期校验、与 #3671 已有 `ENABLE_API_DOCS` 形态的路由审计集成（不新增 `AUTH_*` 同义开关）、Ollama 兼容开关、授权 profile 启动横幅、`env.example`、授权文档（`docs/LightRAG-API-Server*.md` 两语言）、WebUI 权限门控 | 破坏性变更集中在此且全部限定 policy 模式；#3671 已完成的开关、docs 启动信息、WebUI docs 入口与通用文档不在本 PR 范围内；PR 描述须列全 §11.2 |
 
 每个 PR 独立可回滚；PR2 之后任意时刻停下来都是"能跑的中间态"（legacy 行为不变）。
 
@@ -1230,9 +1238,9 @@ LEGACY_USER_PERMISSIONS: frozenset[Permission] = frozenset({
 10. **裸部署推断为匿名开放模式**（§8.4）。RFC 原文："Anonymous development mode, if retained, requires an explicit opt-in such as `AUTH_ALLOW_UNAUTHENTICATED=true`; **it is never inferred merely because credentials are absent** and must not be suitable for network-exposed deployments." 这个 "never" 在 RFC 里没有模式限定；而 §8.4 的裁决恰恰是"三者皆未配 ⇒ 归入 legacy 开放子形态，匿名调用者持 `legacy_user`"——即从凭据缺失推断出匿名放行。§8.4 把该红线重新限定到 policy 模式，是本方案自己做的 rescoping，RFC 文本不含这个限定。
     - 理由：与 #9 同源 —— 裸部署是今天最常见的开发形态（`credentials_accepted` 第一分支），按 RFC 字面执行 = 所有 quickstart / 开发环境启动即失败，属于发生在 policy 模式之外的破坏性变更。
     - 收敛做法：仅限未设 `AUTH_POLICY_FILE` 时成立（设了就是规则 #14 的 fail closed）；新增启动横幅警告并声明不适合网络暴露；`documents.artifacts.*` 不可获得。改判路径已在 §8.4 末尾写明。
-11. **API 文档面默认公开**（§5.1）。RFC 公共面清单写的是 "API documentation **only if the deployment explicitly elects to expose it**"；本方案的 `AUTH_EXPOSE_API_DOCS` 默认 `true`，默认开启不是"显式选择"。
-    - 理由：四个文档端点今天就完全无认证依赖，改默认值是 policy 模式之外的行为变更；且"部分鉴权"会做出坏掉的文档页（§5.1 已论证），收敛攻击面的正确动作是整片关闭。
-    - 收敛做法：单开关全有或全无，`false` 时四端点不注册（404）；已列入 §16 接受风险。
+11. **API 文档面默认公开**（§5.1）。RFC 公共面清单写的是 "API documentation **only if the deployment explicitly elects to expose it**"；前置 RFC #3671 已把全局 `ENABLE_API_DOCS` 默认定为 `true`，默认开启不是"显式选择"。本授权方案不重新打开该裁决，只记录并保持前置基线。
+    - 理由：四个文档端点与 Swagger 静态 mount 今天就公开，改默认值是 policy 模式之外的行为变更；且"部分鉴权"会做出坏掉的文档页（§5.1 已论证），收敛攻击面的正确动作是整片关闭。
+    - 收敛做法：全局单开关全有或全无，`false` 时四端点不注册、静态 mount 不挂载（均 404）；已列入 §16 接受风险。
 12. **`WHITELIST_PATHS` 的 `/api/*` 豁免只在 policy 模式移除**（§11.2 #1）。RFC 原文是无条件的 "The current default exemption of `/api/*` is incompatible with this model **and must be removed**"；本方案只在 policy 模式忽略该项，legacy 模式保留旧默认 + 启动告警。#9 兼容原则的衍生物：全局改默认值会让 legacy 部署的 `/api/*` 突然要求认证，与 §14 PR2"legacy 行为逐字不变"的验收标准冲突。
 
 > 附注（不构成违例）：`/documents/scan` 挂 `documents.retry` **AND** `documents.write`（§5.2），比 RFC 初始映射（仅 `documents.retry`）多一个 scope。这是**收窄**而非放宽（堵"只能重试者经共享输入目录绕过 `documents.write` 摄取"的旁路），且 RFC 自称 "initial semantic mapping"、把精确路由清单留给实现评审，属于 RFC 授权的裁量范围。同理，`ollama.metadata.read` 不是偏离：RFC 映射表原文即 "`auth.session.read` **or a more specific read permission agreed during implementation**"，本方案选的是被授权的后一分支。
@@ -1248,7 +1256,7 @@ LEGACY_USER_PERMISSIONS: frozenset[Permission] = frozenset({
 | `password_env` / `secret_env` 按各 worker 自己的 env 解析 | 字节一致仍可能构建失败。fork 模型下所有 worker 继承同一份 env，实际极难发生；发生时该 worker 进 `stale` 并 503（§9.4），不再"拿旧快照继续放行" | 接受，文档写明 |
 | `stale` worker 造成的可用性损失 | N 个 worker 里 1 个 stale ⇒ 约 1/N 请求 503。刻意选择：授权正确性优先于可用性（§9.4 已量化） | 接受 |
 | `credential_version` 依赖运维纪律 | 服务端对策略文件只读，无处持久化自增计数器；"禁用后恢复 / 删除后重建必须 +1"只能靠文档 + CLI 提醒。第二阶段 DB provider 可自动化（§8.2） | 接受，第二阶段解决 |
-| API 文档面（`/docs`、`/redoc`、`/openapi.json`）默认公开 | 保持现状；要收敛攻击面用 `AUTH_EXPOSE_API_DOCS=false` 整片关闭，不做部分鉴权（§5.1） | 接受 |
+| API 文档面（四个端点 + `/static/swagger-ui` mount）默认公开 | 前置 RFC #3671 已裁决并先行落地；本方案保持其契约。要收敛攻击面用全局 `ENABLE_API_DOCS=false` 整片关闭，不做部分鉴权（§5.1） | 接受 |
 | API Key 明文轮换需重启 | env 属进程启动态 | 接受，文档写明 |
 | legacy 部署用不上 artifact 下载 | 刻意：下载能力仅 policy 模式可授予（§11.4），也是迁移的正向激励 | 接受 |
 | legacy 部署用不上工作区管理 | 同上：`workspace.*` 四个码不进 `legacy_user` 冻结列表（§11.4），legacy 部署只有一条自动登记的默认工作区 | 接受 |
