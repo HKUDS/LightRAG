@@ -1745,6 +1745,16 @@ async def _merge_entities_impl(
                 },
                 filter_none_only=True,  # Use relation behavior: only filter None
             )
+            # weight tracks distinct-source count elsewhere (operate.py's
+            # _merge_edges_then_upsert); recompute it from source_id instead
+            # of trusting the "max" strategy above, which under-counts here.
+            merged_relation["weight"] = len(
+                [
+                    s
+                    for s in merged_relation.get("source_id", "").split(GRAPH_FIELD_SEP)
+                    if s
+                ]
+            )
             relation_updates[relation_key]["data"] = merged_relation
             logger.debug(
                 f"Entity Merge: deduplicating relation `{normalized_src}`~`{normalized_tgt}`"
