@@ -12,6 +12,7 @@
     "retrieval": "الاسترجاع",
     "apiDocs": "وثائق واجهة برمجة التطبيقات",
     "projectRepository": "مستودع المشروع",
+    "appSettings": "الإعدادات",
     "logout": "تسجيل الخروج",
     "frontendNeedsRebuild": "الواجهة الأمامية تحتاج إلى إعادة البناء",
     "themeToggle": {

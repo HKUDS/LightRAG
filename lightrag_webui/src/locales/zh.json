@@ -12,6 +12,7 @@
     "retrieval": "检索",
     "apiDocs": "API 文档",
     "projectRepository": "项目仓库",
+    "appSettings": "设置",
     "logout": "退出登录",
     "frontendNeedsRebuild": "前端代码需重新构建",
     "themeToggle": {

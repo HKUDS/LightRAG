@@ -12,6 +12,7 @@
     "retrieval": "Récupération",
     "apiDocs": "Documentation de l'API",
     "projectRepository": "Référentiel du projet",
+    "appSettings": "Paramètres",
     "logout": "Déconnexion",
     "frontendNeedsRebuild": "Le frontend nécessite une reconstruction",
     "themeToggle": {

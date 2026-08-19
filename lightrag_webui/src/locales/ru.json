@@ -12,6 +12,7 @@
     "retrieval": "Поиск",
     "apiDocs": "Документация API",
     "projectRepository": "Репозиторий проекта",
+    "appSettings": "Настройки",
     "logout": "Выйти",
     "frontendNeedsRebuild": "Требуется пересборка фронтенда",
     "themeToggle": {
