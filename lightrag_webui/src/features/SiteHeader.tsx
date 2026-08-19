@@ -1,13 +1,13 @@
 import Button from '@/components/ui/Button'
-import { SiteInfo, webuiPrefix } from '@/lib/constants'
+import { SiteInfo, backendBaseUrl, webuiPrefix } from '@/lib/constants'
 import AppSettings from '@/components/AppSettings'
 import { TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { useSettingsStore } from '@/stores/settings'
-import { useAuthStore } from '@/stores/state'
+import { useAuthStore, useBackendState } from '@/stores/state'
 import { cn } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
 import { navigationService } from '@/services/navigation'
-import { ZapIcon, LogOutIcon } from 'lucide-react'
+import { ZapIcon, LogOutIcon, BookOpenIcon } from 'lucide-react'
 import GithubIcon from '@/components/icons/GithubIcon'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 
@@ -47,9 +47,6 @@ function TabsNavigation() {
         <NavigationTab value="retrieval" currentTab={currentTab}>
           {t('header.retrieval')}
         </NavigationTab>
-        <NavigationTab value="api" currentTab={currentTab}>
-          {t('header.api')}
-        </NavigationTab>
       </TabsList>
     </div>
   )
@@ -58,6 +55,13 @@ function TabsNavigation() {
 export default function SiteHeader() {
   const { t } = useTranslation()
   const { isGuestMode, coreVersion, apiVersion, username, webuiTitle, webuiDescription } = useAuthStore()
+  const theme = useSettingsStore.use.theme()
+  // Tri-state on purpose — 'unknown' (no successful /health yet) hides the
+  // entry point rather than guessing; see apiDocsCapability in stores/state.ts.
+  const apiDocsCapability = useBackendState.use.apiDocsCapability()
+  // /docs renders Swagger UI itself; the theme query param keeps it visually
+  // consistent with the WebUI ('system' falls back to the OS preference).
+  const apiDocsUrl = `${backendBaseUrl}/docs?theme=${theme === 'system' ? 'auto' : theme}`
 
   const versionDisplay = (coreVersion && apiVersion)
     ? `${coreVersion}/${apiVersion}`
@@ -125,6 +129,13 @@ export default function SiteHeader() {
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
+          )}
+          {apiDocsCapability === 'available' && (
+            <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.apiDocs')}>
+              <a href={apiDocsUrl} target="_blank" rel="noopener noreferrer">
+                <BookOpenIcon className="size-4" aria-hidden="true" />
+              </a>
+            </Button>
           )}
           <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.projectRepository')}>
             <a href={SiteInfo.github} target="_blank" rel="noopener noreferrer">

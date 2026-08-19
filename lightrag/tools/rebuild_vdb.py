@@ -61,6 +61,7 @@ from lightrag.constants import (
     DEFAULT_COSINE_THRESHOLD,
     DEFAULT_EMBEDDING_BATCH_NUM,
 )
+from lightrag.exceptions import StorageCapabilityError
 from lightrag.kg import STORAGE_ENV_REQUIREMENTS
 from lightrag.namespace import NameSpace
 from lightrag.utils import (
@@ -112,6 +113,16 @@ def _new_stats(label: str, source_total: int) -> Dict[str, Any]:
         "failed_batches": 0,
         "errors": [],
     }
+
+
+def _ensure_vector_rebuild_supported(vdb) -> None:
+    if not getattr(vdb, "persists_vectors", True):
+        storage_name = type(vdb).__name__
+        raise StorageCapabilityError(
+            f"{storage_name} does not persist vectors and cannot be used as a "
+            "rebuild target. Configure a persistent vector storage before "
+            "calling the rebuild library API."
+        )
 
 
 async def _drop_vdb(vdb, label: str) -> None:
@@ -225,6 +236,7 @@ async def rebuild_entities_vdb(
     Payloads mirror the authoritative write point in
     operate._merge_nodes_then_upsert field for field.
     """
+    _ensure_vector_rebuild_supported(entities_vdb)
     from lightrag.operate import _truncate_vdb_content
 
     nodes = await graph.get_all_nodes()
@@ -285,6 +297,7 @@ async def rebuild_relationships_vdb(
     undirected edge once per direction (e.g. Neo4j, Memgraph) are deduplicated
     by that normalized id.
     """
+    _ensure_vector_rebuild_supported(relationships_vdb)
     from lightrag.operate import _truncate_vdb_content
 
     edges = await graph.get_all_edges()
@@ -415,6 +428,7 @@ async def rebuild_chunks_vdb(
     keys (and silently drop a scheme), all keys are enumerated and the
     per-record ``content`` check below is the only filter.
     """
+    _ensure_vector_rebuild_supported(chunks_vdb)
     chunk_ids = [str(key) for key in await enumerate_kv_keys(text_chunks_kv)]
     stats = _new_stats("chunks", len(chunk_ids))
 

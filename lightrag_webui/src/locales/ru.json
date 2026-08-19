@@ -10,8 +10,9 @@
     "documents": "Документы",
     "knowledgeGraph": "Граф знаний",
     "retrieval": "Поиск",
-    "api": "API",
+    "apiDocs": "Документация API",
     "projectRepository": "Репозиторий проекта",
+    "appSettings": "Настройки",
     "logout": "Выйти",
     "frontendNeedsRebuild": "Требуется пересборка фронтенда",
     "themeToggle": {
@@ -37,7 +38,10 @@
     "cancel": "Отмена",
     "save": "Сохранить",
     "saving": "Сохранение...",
-    "saveFailed": "Ошибка сохранения"
+    "saveFailed": "Ошибка сохранения",
+    "errorBoundaryTitle": "Что-то пошло не так",
+    "errorBoundaryDescription": "Не удалось отобразить эту панель. Повторите попытку или перейдите на другую вкладку.",
+    "errorBoundaryRetry": "Повторить"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -482,9 +486,6 @@
       "enableRerank": "Включить ранжирование",
       "enableRerankTooltip": "Включить ранжирование для извлечённых текстовых фрагментов. Если True, но модель ранжирования не настроена, будет выдано предупреждение. По умолчанию True."
     }
-  },
-  "apiSite": {
-    "loading": "Загрузка документации API..."
   },
   "apiKeyAlert": {
     "title": "Требуется API ключ",

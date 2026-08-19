@@ -690,6 +690,17 @@ def parse_args() -> argparse.Namespace:
     # EMBEDDING_DIM defaults to None - each binding will use its own default dimension
     # Value is inherited from provider defaults via wrap_embedding_func_with_attrs decorator
     args.embedding_dim = get_env_value("EMBEDDING_DIM", None, int, special_none=True)
+    # Reject non-positive dimensions here rather than downstream: the embedding
+    # factory resolves the effective dimension with a truthiness test
+    # (`args.embedding_dim if args.embedding_dim else provider_default`), so a
+    # configured 0 would silently fall back to the provider default while still
+    # satisfying the `EMBEDDING_DIM is set` startup guard, and a negative value
+    # would propagate into the vector stores unchecked.
+    if args.embedding_dim is not None and args.embedding_dim <= 0:
+        raise SystemExit(
+            f"EMBEDDING_DIM must be a positive integer (got {args.embedding_dim}). "
+            "Leave it unset to inherit the embedding binding's default dimension."
+        )
     args.embedding_send_dim = get_env_value("EMBEDDING_SEND_DIM", False, bool)
 
     # Inject chunk configuration
@@ -802,6 +813,12 @@ def parse_args() -> argparse.Namespace:
     args.cors_origins = get_env_value("CORS_ORIGINS", "*")
     args.summary_language = get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE)
     args.whitelist_paths = get_env_value("WHITELIST_PATHS", "/health,/api/*")
+
+    # Single authoritative switch for the interactive API documentation
+    # surfaces (/docs, /docs/oauth2-redirect, /redoc, /openapi.json and the
+    # /static/swagger-ui mount). When False all five return 404 (issue #3666,
+    # RFC #3671). Any route audit must condition the same set on this flag.
+    args.enable_api_docs = get_env_value("ENABLE_API_DOCS", True, bool)
 
     # For JWT Auth
     args.auth_accounts = get_env_value("AUTH_ACCOUNTS", "")

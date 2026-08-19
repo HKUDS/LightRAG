@@ -10,8 +10,9 @@
     "documents": "Tài liệu",
     "knowledgeGraph": "Đồ thị tri thức",
     "retrieval": "Truy xuất",
-    "api": "API",
+    "apiDocs": "Tài liệu API",
     "projectRepository": "Kho dự án",
+    "appSettings": "Cài đặt",
     "logout": "Đăng xuất",
     "frontendNeedsRebuild": "Giao diện cần được xây dựng lại",
     "themeToggle": {
@@ -37,7 +38,10 @@
     "cancel": "Hủy",
     "save": "Lưu",
     "saving": "Đang lưu...",
-    "saveFailed": "Lưu thất bại"
+    "saveFailed": "Lưu thất bại",
+    "errorBoundaryTitle": "Đã xảy ra lỗi",
+    "errorBoundaryDescription": "Không thể hiển thị bảng này. Hãy thử lại hoặc chuyển sang tab khác.",
+    "errorBoundaryRetry": "Thử lại"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -482,9 +486,6 @@
       "enableRerank": "Bật Xếp Hạng Lại",
       "enableRerankTooltip": "Bật xếp hạng lại cho các đoạn văn bản đã truy xuất. Nếu True nhưng không có mô hình rerank nào được cấu hình, một cảnh báo sẽ được đưa ra. Mặc định là True."
     }
-  },
-  "apiSite": {
-    "loading": "Đang tải tài liệu API..."
   },
   "apiKeyAlert": {
     "title": "Cần Có Khóa API",

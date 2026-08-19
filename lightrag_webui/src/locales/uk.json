@@ -10,8 +10,9 @@
     "documents": "Документи",
     "knowledgeGraph": "Граф знань",
     "retrieval": "Пошук",
-    "api": "API",
+    "apiDocs": "Документація API",
     "projectRepository": "Репозиторій проекту",
+    "appSettings": "Налаштування",
     "logout": "Вихід",
     "frontendNeedsRebuild": "Потрібна перебудова фронтенду",
     "themeToggle": {
@@ -37,7 +38,10 @@
     "cancel": "Скасувати",
     "save": "Зберегти",
     "saving": "Збереження...",
-    "saveFailed": "Збереження не вдалося"
+    "saveFailed": "Збереження не вдалося",
+    "errorBoundaryTitle": "Щось пішло не так",
+    "errorBoundaryDescription": "Не вдалося відобразити цю панель. Повторіть спробу або перейдіть на іншу вкладку.",
+    "errorBoundaryRetry": "Повторити"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -482,9 +486,6 @@
       "enableRerank": "Увімкнути реранк",
       "enableRerankTooltip": "Увімкнути реранкінг для отриманих текстових чанків. Якщо True, але модель реранкера не налаштована, буде видано попередження. За замовчуванням True."
     }
-  },
-  "apiSite": {
-    "loading": "Завантаження документації API..."
   },
   "apiKeyAlert": {
     "title": "Потрібен API ключ",

@@ -10,8 +10,9 @@
     "documents": "ドキュメント",
     "knowledgeGraph": "ナレッジグラフ",
     "retrieval": "検索",
-    "api": "API",
+    "apiDocs": "APIドキュメント",
     "projectRepository": "プロジェクトリポジトリ",
+    "appSettings": "設定",
     "logout": "ログアウト",
     "frontendNeedsRebuild": "フロントエンドの再ビルドが必要です",
     "themeToggle": {
@@ -37,7 +38,10 @@
     "cancel": "キャンセル",
     "save": "保存",
     "saving": "保存中...",
-    "saveFailed": "保存に失敗しました"
+    "saveFailed": "保存に失敗しました",
+    "errorBoundaryTitle": "問題が発生しました",
+    "errorBoundaryDescription": "このパネルを表示できませんでした。もう一度試すか、別のタブに切り替えてください。",
+    "errorBoundaryRetry": "再試行"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -482,9 +486,6 @@
       "enableRerank": "リランクを有効化",
       "enableRerankTooltip": "取得されたテキストチャンクのリランクを有効にします。Trueに設定してもリランクモデルが設定されていない場合、警告が発行されます。デフォルトはTrueです。"
     }
-  },
-  "apiSite": {
-    "loading": "APIドキュメントを読み込み中..."
   },
   "apiKeyAlert": {
     "title": "APIキーが必要です",

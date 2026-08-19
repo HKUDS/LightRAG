@@ -10,8 +10,9 @@
     "documents": "문서",
     "knowledgeGraph": "지식 그래프",
     "retrieval": "검색",
-    "api": "API",
+    "apiDocs": "API 문서",
     "projectRepository": "프로젝트 저장소",
+    "appSettings": "설정",
     "logout": "로그아웃",
     "frontendNeedsRebuild": "프론트엔드 재빌드 필요",
     "themeToggle": {
@@ -37,7 +38,10 @@
     "cancel": "취소",
     "save": "저장",
     "saving": "저장 중...",
-    "saveFailed": "저장 실패"
+    "saveFailed": "저장 실패",
+    "errorBoundaryTitle": "문제가 발생했습니다",
+    "errorBoundaryDescription": "이 패널을 표시하지 못했습니다. 다시 시도하거나 다른 탭으로 전환하세요.",
+    "errorBoundaryRetry": "다시 시도"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -482,9 +486,6 @@
       "enableRerank": "Rerank 활성화",
       "enableRerankTooltip": "검색된 텍스트 청크에 대해 Rerank를 활성화합니다. True이지만 Rerank 모델이 구성되지 않은 경우 경고가 발생합니다. 기본값은 True입니다."
     }
-  },
-  "apiSite": {
-    "loading": "API 문서 로드 중..."
   },
   "apiKeyAlert": {
     "title": "API 키가 필요합니다",

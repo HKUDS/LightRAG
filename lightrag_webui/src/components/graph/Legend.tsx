@@ -28,7 +28,7 @@ const Legend: React.FC<LegendProps> = ({ className }) => {
                 style={{ backgroundColor: color }}
               />
               <span className="text-xs truncate" title={type}>
-                {t(`graphPanel.nodeTypes.${type.toLowerCase().replace(/\s+/g, '')}`, type)}
+                {t(`graphPanel.nodeTypes.${String(type).toLowerCase().replace(/\s+/g, '')}`, type)}
               </span>
             </div>
           ))}

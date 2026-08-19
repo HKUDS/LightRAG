@@ -10,8 +10,9 @@
     "documents": "Dokumente",
     "knowledgeGraph": "Wissensgraph",
     "retrieval": "Abruf",
-    "api": "API",
+    "apiDocs": "API-Dokumentation",
     "projectRepository": "Projekt-Repository",
+    "appSettings": "Einstellungen",
     "logout": "Abmelden",
     "frontendNeedsRebuild": "Frontend muss neu erstellt werden",
     "themeToggle": {
@@ -37,7 +38,10 @@
     "cancel": "Abbrechen",
     "save": "Speichern",
     "saving": "Speichern...",
-    "saveFailed": "Speichern fehlgeschlagen"
+    "saveFailed": "Speichern fehlgeschlagen",
+    "errorBoundaryTitle": "Etwas ist schiefgelaufen",
+    "errorBoundaryDescription": "Dieses Panel konnte nicht angezeigt werden. Versuchen Sie es erneut oder wechseln Sie zu einem anderen Tab.",
+    "errorBoundaryRetry": "Erneut versuchen"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -482,9 +486,6 @@
       "enableRerank": "Rerank aktivieren",
       "enableRerankTooltip": "Reranking für abgerufene Text-Chunks aktivieren. Wenn True, aber kein Rerank-Modell konfiguriert ist, wird eine Warnung ausgegeben. Standard ist True."
     }
-  },
-  "apiSite": {
-    "loading": "API-Dokumentation wird geladen..."
   },
   "apiKeyAlert": {
     "title": "API-Schlüssel ist erforderlich",

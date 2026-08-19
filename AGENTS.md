@@ -177,15 +177,22 @@ bun test src/api/lightrag.test.ts  # Single test file
 
 - Use mock-based tests for external services (Redis, httpx, etc.) — do not depend on live services in unit tests.
 - Add regression tests for every bug fix.
-- Run the full test suite (or relevant subset) and report pass counts before declaring done.
+- **Run only the test directories that mirror the modules you changed**, and report which subset you ran plus its pass count. The suite is ~7000 tests and a full run takes over 6 minutes, which is too slow for the edit loop. Every PR's CI runs the full suite — proving nothing else broke is its job, not yours.
+- Derive the subset from the mirror layout below: `lightrag/api/config.py` → `tests/api/config/`, `lightrag/kg/redis_impl.py` → `tests/kg/redis_impl/`, `lightrag/chunker/` → `tests/chunker/`. When a change spans several modules, run each of their directories rather than widening to `tests/`.
+- Run the full suite locally only at a milestone, or when the change is genuinely cross-cutting (`lightrag/base.py`, `lightrag/utils.py`, `lightrag/kg/shared_storage.py`, or anything every backend inherits).
 - Backend tests use pytest; frontend unit tests use Bun's built-in runner — see *WebUI* above.
 
 ```bash
 # Preferred for fresh shells and automation; resolves PYTHON, venv, uv, .venv, venv, python, python3
-./scripts/test.sh tests
+# Default during development: only the directories mirroring the changed modules
+./scripts/test.sh tests/api/config
+./scripts/test.sh tests/kg/redis_impl
 
 # Run specific test file
 ./scripts/test.sh tests/kg/test_graph_storage.py
+
+# Full suite — ~7000 tests, >6 min; milestones and cross-cutting changes only
+./scripts/test.sh tests
 
 # Run with custom workers
 ./scripts/test.sh tests --test-workers 4

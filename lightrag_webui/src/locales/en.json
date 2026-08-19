@@ -10,8 +10,9 @@
     "documents": "Documents",
     "knowledgeGraph": "Knowledge Graph",
     "retrieval": "Retrieval",
-    "api": "API",
+    "apiDocs": "API Documentation",
     "projectRepository": "Project Repository",
+    "appSettings": "Settings",
     "logout": "Logout",
     "frontendNeedsRebuild": "Frontend needs rebuild",
     "themeToggle": {
@@ -37,7 +38,10 @@
     "cancel": "Cancel",
     "save": "Save",
     "saving": "Saving...",
-    "saveFailed": "Save failed"
+    "saveFailed": "Save failed",
+    "errorBoundaryTitle": "Something went wrong",
+    "errorBoundaryDescription": "This panel failed to render. Try again, or switch to another tab.",
+    "errorBoundaryRetry": "Try again"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -482,9 +486,6 @@
       "enableRerank": "Enable Rerank",
       "enableRerankTooltip": "Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True."
     }
-  },
-  "apiSite": {
-    "loading": "Loading API Documentation..."
   },
   "apiKeyAlert": {
     "title": "API Key is required",
