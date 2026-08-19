@@ -141,9 +141,63 @@ async def test_merge_entities_relation_weight_matches_distinct_source_count():
         "chunk-b2",
     }
     # weight must track that same distinct-source count, not max(3.0, 2.0).
-    assert merged_edge["weight"] == len(source_chunks) == 5
+    assert merged_edge["weight"] == len(source_chunks) == 5.0
 
     # The vector-store payload the API actually returns must agree.
     vdb_payload = relationships_vdb.upserts[-1]
     persisted = next(iter(vdb_payload.values()))
-    assert persisted["weight"] == 5
+    assert persisted["weight"] == 5.0
+
+
+class _ExplicitWeightGraphStorage(_MergeGraphStorage):
+    """Both edges carry the same single manual source_id (no per-chunk
+    provenance), with explicit weights of 10 and 8 -- the shape produced by
+    a hand-created relation, or by pipeline accumulation once
+    SOURCE_IDS_LIMIT_METHOD=FIFO has truncated source_id below the true
+    contribution count. len(distinct_sources) collapses to 1 here, which
+    must never win over the higher input weight."""
+
+    def __init__(self):
+        super().__init__()
+        self.edges = {
+            ("A", "C"): {
+                "description": "A relates to C",
+                "keywords": "k1",
+                "source_id": "manual_creation",
+                "weight": 10.0,
+                "file_path": "docA.txt",
+            },
+            ("B", "C"): {
+                "description": "B relates to C",
+                "keywords": "k2",
+                "source_id": "manual_creation",
+                "weight": 8.0,
+                "file_path": "docB.txt",
+            },
+        }
+
+
+@pytest.mark.asyncio
+async def test_merge_entities_relation_weight_never_regresses_below_max_input():
+    graph = _ExplicitWeightGraphStorage()
+    entities_vdb = _DummyVectorStorage()
+    relationships_vdb = _DummyVectorStorage()
+
+    await utils_graph._merge_entities_impl(
+        chunk_entity_relation_graph=graph,
+        entities_vdb=entities_vdb,
+        relationships_vdb=relationships_vdb,
+        source_entities=["A", "B"],
+        target_entity="AB",
+    )
+
+    merged_edge = graph.edges[("AB", "C")]
+
+    # Deduplicated source_id collapses both edges to the single shared
+    # "manual_creation" marker, so len(distinct_sources) == 1 -- but the
+    # merged weight must stay at max(10.0, 8.0) == 10.0, never drop to 1.
+    assert merged_edge["weight"] == 10.0
+
+    vdb_payload = relationships_vdb.upserts[-1]
+    persisted = next(iter(vdb_payload.values()))
+    assert persisted["weight"] == 10.0

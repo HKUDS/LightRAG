@@ -1746,14 +1746,19 @@ async def _merge_entities_impl(
                 filter_none_only=True,  # Use relation behavior: only filter None
             )
             # weight tracks distinct-source count elsewhere (operate.py's
-            # _merge_edges_then_upsert); recompute it from source_id instead
-            # of trusting the "max" strategy above, which under-counts here.
-            merged_relation["weight"] = len(
-                [
-                    s
-                    for s in merged_relation.get("source_id", "").split(GRAPH_FIELD_SEP)
-                    if s
-                ]
+            # _merge_edges_then_upsert). The "max" strategy above already put
+            # the correct floor in merged_relation["weight"]; lift it to the
+            # distinct-source count instead of overwriting it outright, so an
+            # explicit or FIFO-truncated weight never regresses below what it
+            # already was (merged weight must be monotonic: never below either
+            # input's own weight).
+            distinct_sources = [
+                s
+                for s in merged_relation.get("source_id", "").split(GRAPH_FIELD_SEP)
+                if s
+            ]
+            merged_relation["weight"] = max(
+                float(merged_relation.get("weight", 1.0)), float(len(distinct_sources))
             )
             relation_updates[relation_key]["data"] = merged_relation
             logger.debug(
