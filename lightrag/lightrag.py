@@ -35,7 +35,7 @@ from typing import (
     Dict,
     Union,
 )
-from lightrag.prompt import (
+from lightrag.prompt_v1 import (
     PROMPTS,
     get_default_entity_extraction_prompt_profile,
     resolve_entity_extraction_prompt_profile,
