@@ -12,6 +12,7 @@
     "retrieval": "Truy xuất",
     "apiDocs": "Tài liệu API",
     "projectRepository": "Kho dự án",
+    "appSettings": "Cài đặt",
     "logout": "Đăng xuất",
     "frontendNeedsRebuild": "Giao diện cần được xây dựng lại",
     "themeToggle": {

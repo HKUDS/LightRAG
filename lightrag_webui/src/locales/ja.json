@@ -12,6 +12,7 @@
     "retrieval": "検索",
     "apiDocs": "APIドキュメント",
     "projectRepository": "プロジェクトリポジトリ",
+    "appSettings": "設定",
     "logout": "ログアウト",
     "frontendNeedsRebuild": "フロントエンドの再ビルドが必要です",
     "themeToggle": {

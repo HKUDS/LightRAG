@@ -12,6 +12,7 @@
     "retrieval": "Abruf",
     "apiDocs": "API-Dokumentation",
     "projectRepository": "Projekt-Repository",
+    "appSettings": "Einstellungen",
     "logout": "Abmelden",
     "frontendNeedsRebuild": "Frontend muss neu erstellt werden",
     "themeToggle": {

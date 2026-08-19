@@ -12,6 +12,7 @@
     "retrieval": "Retrieval",
     "apiDocs": "API Documentation",
     "projectRepository": "Project Repository",
+    "appSettings": "Settings",
     "logout": "Logout",
     "frontendNeedsRebuild": "Frontend needs rebuild",
     "themeToggle": {
