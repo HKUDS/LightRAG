@@ -615,17 +615,18 @@ async def _edit_entity_impl(
         ) from e
 
     if entity_chunks_storage is not None or relation_chunks_storage is not None:
-        from .utils import make_relation_chunk_key, compute_incremental_chunk_ids
+        from .utils import (
+            make_relation_chunk_key,
+            compute_incremental_chunk_ids,
+            has_chunk_tracking_row,
+        )
 
         if entity_chunks_storage is not None:
             storage_key = original_entity_name if is_renaming else entity_name
             stored_data = await entity_chunks_storage.get_by_id(storage_key)
-            # Test row *presence*, not list truthiness: a persisted row of
-            # {"chunk_ids": [], "count": 0} is authoritative ("this object tracks no
-            # chunks") and must be distinguished from an absent row (never migrated).
-            has_stored_row = isinstance(stored_data, dict) and isinstance(
-                stored_data.get("chunk_ids"), list
-            )
+            # Row presence by schema, never list truthiness — see
+            # has_chunk_tracking_row for the authority model.
+            has_stored_row = has_chunk_tracking_row(stored_data)
 
             old_source_id = node_data.get("source_id", "")
             old_chunk_ids = [cid for cid in old_source_id.split(GRAPH_FIELD_SEP) if cid]
@@ -652,25 +653,22 @@ async def _edit_entity_impl(
                     existing_full_chunk_ids, old_chunk_ids, new_chunk_ids
                 )
 
+                # On rename, write the new key BEFORE deleting the old one: on
+                # RPC-backed KV storages each call commits independently, so the
+                # reverse order opens a crash window in which the row exists under
+                # neither key — turning a curated row absent and re-arming the
+                # stale reseed. An orphaned old-key row is dead bookkeeping; a
+                # lost row is the bug.
+                await entity_chunks_storage.upsert(
+                    {
+                        entity_name: {
+                            "chunk_ids": updated_chunk_ids,
+                            "count": len(updated_chunk_ids),
+                        }
+                    }
+                )
                 if is_renaming:
                     await entity_chunks_storage.delete([original_entity_name])
-                    await entity_chunks_storage.upsert(
-                        {
-                            entity_name: {
-                                "chunk_ids": updated_chunk_ids,
-                                "count": len(updated_chunk_ids),
-                            }
-                        }
-                    )
-                else:
-                    await entity_chunks_storage.upsert(
-                        {
-                            entity_name: {
-                                "chunk_ids": updated_chunk_ids,
-                                "count": len(updated_chunk_ids),
-                            }
-                        }
-                    )
 
                 logger.info(
                     f"Entity Edit: find {len(updated_chunk_ids)} chunks related to `{entity_name}`"
@@ -695,15 +693,11 @@ async def _edit_entity_impl(
                     old_stored_data = await relation_chunks_storage.get_by_id(
                         old_storage_key
                     )
-                    # Test row *presence* the same way the entity/relation edit
-                    # paths do: a curated row of {"chunk_ids": [], "count": 0} is
-                    # authoritative and must be migrated as-is, while an absent
-                    # row — or a legacy/partial shape with no "chunk_ids" key
-                    # (e.g. {} or {"count": 0}) — is treated as unknown and
-                    # reseeded from the edge's source_id.
-                    old_row_present = isinstance(old_stored_data, dict) and isinstance(
-                        old_stored_data.get("chunk_ids"), list
-                    )
+                    # Row presence by schema (see has_chunk_tracking_row): a
+                    # curated row — including an empty one — is authoritative and
+                    # must be migrated as-is; an absent or legacy/partial shape is
+                    # unknown and reseeded from the edge's source_id.
+                    old_row_present = has_chunk_tracking_row(old_stored_data)
                     relation_chunk_ids = []
 
                     if old_row_present:
@@ -718,15 +712,17 @@ async def _edit_entity_impl(
                             if cid
                         ]
 
-                    await relation_chunks_storage.delete([old_storage_key])
-
                     # Migrate the row to the new key. A present-but-empty row is
                     # authoritative ("this relation tracks no chunks") and must
                     # survive the rename; dropping it would make the row absent and
                     # cause the next relation edit to reseed it from a possibly-stale
                     # source_id — the exact bug this PR fixes, re-armed at rename.
                     # Only skip the write when the row was absent AND source_id
-                    # yielded nothing to seed from.
+                    # yielded nothing to seed from. Upsert the new key BEFORE
+                    # deleting the old one: on RPC-backed KV storages each call
+                    # commits independently, and the reverse order opens a crash
+                    # window in which the row exists under neither key — losing the
+                    # curated row this migration exists to preserve.
                     if old_row_present or relation_chunk_ids:
                         await relation_chunks_storage.upsert(
                             {
@@ -736,6 +732,8 @@ async def _edit_entity_impl(
                                 }
                             }
                         )
+
+                    await relation_chunks_storage.delete([old_storage_key])
             logger.info(
                 f"Entity Edit: migrate {len(relations_to_update)} relations after rename"
             )
@@ -1168,18 +1166,16 @@ async def aedit_relation(
                 from .utils import (
                     make_relation_chunk_key,
                     compute_incremental_chunk_ids,
+                    has_chunk_tracking_row,
                 )
 
                 storage_key = make_relation_chunk_key(source_entity, target_entity)
 
                 # Check if storage has existing data
                 stored_data = await relation_chunks_storage.get_by_id(storage_key)
-                # Test row *presence*, not list truthiness: a persisted row of
-                # {"chunk_ids": [], "count": 0} is authoritative ("this relation tracks
-                # no chunks") and must be distinguished from an absent row.
-                has_stored_row = isinstance(stored_data, dict) and isinstance(
-                    stored_data.get("chunk_ids"), list
-                )
+                # Row presence by schema, never list truthiness — see
+                # has_chunk_tracking_row for the authority model.
+                has_stored_row = has_chunk_tracking_row(stored_data)
 
                 # Get old and new source_id
                 old_source_id = edge_data.get("source_id", "")
@@ -1713,7 +1709,7 @@ async def _merge_entities_impl(
 
         # Collect old chunk tracking key for deletion
         if relation_chunks_storage is not None:
-            from .utils import make_relation_chunk_key
+            from .utils import make_relation_chunk_key, has_chunk_tracking_row
 
             old_storage_key = make_relation_chunk_key(src, tgt)
             old_relation_keys_to_delete.append(old_storage_key)
@@ -1737,11 +1733,9 @@ async def _merge_entities_impl(
             # Get chunk_ids from storage for this original relation
             stored = await relation_chunks_storage.get_by_id(old_storage_key)
 
-            # Test row presence by schema (a `chunk_ids` list), consistent with
-            # the edit/rename paths: a curated row (incl. an empty list) is
-            # authoritative, while an absent or legacy/partial shape (`{}`,
-            # `{"count": 0}`, `{"chunk_ids": null}`) is reseeded from source_id.
-            if isinstance(stored, dict) and isinstance(stored.get("chunk_ids"), list):
+            # Row presence by schema, consistent with the edit/rename paths —
+            # see has_chunk_tracking_row for the authority model.
+            if has_chunk_tracking_row(stored):
                 chunk_ids = [cid for cid in stored["chunk_ids"] if cid]
             else:
                 # Fallback to source_id from graph
@@ -1989,7 +1983,10 @@ async def _merge_entities_impl(
 
     # 9. Merge entity chunk tracking (source entities first, then target entity)
     if entity_chunks_storage is not None:
+        from .utils import has_chunk_tracking_row
+
         all_chunk_id_lists = []
+        any_row_present = False
 
         # Build list of entities to process (source entities first, then target entity)
         entities_to_process = []
@@ -2003,10 +2000,16 @@ async def _merge_entities_impl(
         if target_exists:
             entities_to_process.append(target_entity)
 
-        # Process all entities in order with unified logic
+        # Process all entities in order with unified logic. Row presence by
+        # schema, never list truthiness (see has_chunk_tracking_row): a
+        # curated-empty row contributes no chunk ids but still asserts
+        # authority, so the target must end up with a present row rather than
+        # an absent one — an absent row would let the next edit reseed the
+        # merged node's tracking from its possibly-stale graph source_id.
         for entity_name in entities_to_process:
             stored = await entity_chunks_storage.get_by_id(entity_name)
-            if stored and isinstance(stored, dict):
+            if has_chunk_tracking_row(stored):
+                any_row_present = True
                 chunk_ids = [cid for cid in stored.get("chunk_ids", []) if cid]
                 if chunk_ids:
                     all_chunk_id_lists.append(chunk_ids)
@@ -2020,13 +2023,12 @@ async def _merge_entities_impl(
                     seen.add(chunk_id)
                     merged_chunk_ids.append(chunk_id)
 
-        # Delete source entities' chunk tracking records
-        entity_keys_to_delete = [e for e in source_entities if e != target_entity]
-        if entity_keys_to_delete:
-            await entity_chunks_storage.delete(entity_keys_to_delete)
-
-        # Update target entity's chunk tracking
-        if merged_chunk_ids:
+        # Update target entity's chunk tracking BEFORE deleting the source
+        # rows: on RPC-backed KV storages each call commits independently, so
+        # the reverse order opens a crash window in which the merged
+        # attribution exists under no key at all. Skip the write only when no
+        # source had a row (nothing known — leave the target absent/unknown).
+        if merged_chunk_ids or any_row_present:
             await entity_chunks_storage.upsert(
                 {
                     target_entity: {
@@ -2038,6 +2040,11 @@ async def _merge_entities_impl(
             logger.info(
                 f"Entity Merge: find {len(merged_chunk_ids)} chunks related to '{target_entity}'"
             )
+
+        # Delete source entities' chunk tracking records
+        entity_keys_to_delete = [e for e in source_entities if e != target_entity]
+        if entity_keys_to_delete:
+            await entity_chunks_storage.delete(entity_keys_to_delete)
 
     # 10. Delete source entities
     for entity_name in source_entities:
