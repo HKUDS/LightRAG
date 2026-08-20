@@ -3570,7 +3570,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 pipeline busy flag, so leaving the loop here would let it encode
                 concurrently with a document being chunked.
                 """
-                nonlocal update_storage
                 for chunk_data in custom_kg.get("chunks", []):
                     chunk_content = sanitize_text_for_encoding(chunk_data["content"])
                     source_id = chunk_data["source_id"]
@@ -3598,11 +3597,30 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     }
                     all_chunks_data[chunk_id] = chunk_entry
                     chunk_to_source_map[source_id] = chunk_id
-                    update_storage = True
 
             await run_in_chunking_executor(_build_custom_kg_chunks)
 
+            # Validate the source IDs that will actually be persisted. Custom
+            # KG relationships refer to chunk aliases, and even a historical
+            # no-source placeholder can be a real alias that resolves to a
+            # chunk hash. This second pass must run before the chunk upserts
+            # below so an invalid mapped relation leaves every storage clean.
+            for index, relationship_data in enumerate(normalized_relationships):
+                source_alias = relationship_data["source_id"]
+                source_id = (
+                    chunk_to_source_map.get(source_alias, "UNKNOWN")
+                    if source_alias
+                    else ""
+                )
+                relationship_data["source_id"] = source_id
+                relationship_data["weight"] = validate_relation_weight(
+                    relationship_data["weight"],
+                    source_id,
+                    context=f"Custom KG relationships[{index}]",
+                )
+
             if all_chunks_data:
+                update_storage = True
                 await asyncio.gather(
                     self.chunks_vdb.upsert(all_chunks_data),
                     self.text_chunks.upsert(all_chunks_data),
@@ -3737,12 +3755,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 for relationship_data in deduped_relationships.values():
                     src_id = relationship_data["src_id"]
                     tgt_id = relationship_data["tgt_id"]
-                    source_chunk_id = relationship_data["source_id"]
-                    source_id = (
-                        chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
-                        if source_chunk_id
-                        else ""
-                    )
+                    source_id = relationship_data["source_id"]
                     file_path = normalize_document_file_path(
                         relationship_data.get("file_path", "custom_kg")
                     )

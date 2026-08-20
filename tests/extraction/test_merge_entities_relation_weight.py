@@ -212,6 +212,20 @@ class _LegacySourceLessLowWeightGraphStorage(_ExplicitWeightGraphStorage):
         self.edges[("B", "C")]["weight"] = 0.5
 
 
+class _SingleSourcedLowWeightGraphStorage(_MergeGraphStorage):
+    def __init__(self):
+        super().__init__()
+        self.edges = {
+            ("A", "C"): {
+                "description": "A relates to C",
+                "keywords": "k1",
+                "source_id": GRAPH_FIELD_SEP.join(["chunk-1", "chunk-2"]),
+                "weight": 0.25,
+                "file_path": "docA.txt",
+            }
+        }
+
+
 @pytest.mark.asyncio
 async def test_merge_entities_relation_weight_never_regresses_below_max_input():
     graph = _ExplicitWeightGraphStorage()
@@ -278,6 +292,28 @@ async def test_merge_entities_lifts_sourced_low_weight_to_evidence_floor():
     # Both inputs are below the contract's one-per-source baseline. The merge
     # intentionally normalizes the edge to its two-source evidence floor.
     assert merged_edge["weight"] == 2.0
+
+    vdb_payload = relationships_vdb.upserts[-1]
+    persisted = next(iter(vdb_payload.values()))
+    assert persisted["weight"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_merge_entities_lifts_first_redirected_relation_to_evidence_floor():
+    graph = _SingleSourcedLowWeightGraphStorage()
+    entities_vdb = _DummyVectorStorage()
+    relationships_vdb = _DummyVectorStorage()
+
+    await utils_graph._merge_entities_impl(
+        chunk_entity_relation_graph=graph,
+        entities_vdb=entities_vdb,
+        relationships_vdb=relationships_vdb,
+        source_entities=["A"],
+        target_entity="AB",
+    )
+
+    redirected_edge = graph.edges[("AB", "C")]
+    assert redirected_edge["weight"] == 2.0
 
     vdb_payload = relationships_vdb.upserts[-1]
     persisted = next(iter(vdb_payload.values()))

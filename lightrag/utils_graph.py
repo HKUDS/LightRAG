@@ -1841,7 +1841,7 @@ async def _merge_entities_impl(
         if relation_key in relation_updates:
             # Merge relationship data
             existing_data = relation_updates[relation_key]["data"]
-            merged_relation = _merge_attributes(
+            updated_relation = _merge_attributes(
                 [existing_data, edge_data],
                 {
                     "description": "concatenate",
@@ -1852,28 +1852,29 @@ async def _merge_entities_impl(
                 },
                 filter_none_only=True,  # Use relation behavior: only filter None
             )
-            # Every distinct non-empty source contributes a baseline evidence
-            # count of 1. An explicit weight may boost that baseline, but must
-            # never reduce it. The "max" strategy above preserves the strongest
-            # input weight; lift that value to the merged evidence-count floor.
-            # This also keeps FIFO-truncated weights monotonic when the visible
-            # graph source_id contains fewer IDs than the accumulated weight.
-            merged_relation["weight"] = apply_relation_weight_floor(
-                merged_relation.get("weight", 1.0),
-                merged_relation.get("source_id") or "",
-            )
-            relation_updates[relation_key]["data"] = merged_relation
             logger.debug(
                 f"Entity Merge: deduplicating relation `{normalized_src}`~`{normalized_tgt}`"
             )
         else:
+            updated_relation = edge_data.copy()
             relation_updates[relation_key] = {
                 "graph_src": new_src,
                 "graph_tgt": new_tgt,
                 "norm_src": normalized_src,
                 "norm_tgt": normalized_tgt,
-                "data": edge_data.copy(),
+                "data": updated_relation,
             }
+
+        # Every distinct real source contributes a baseline evidence count of
+        # 1. Apply the floor to the first redirected relation as well as later
+        # duplicates so every relation rewritten by the merge repairs legacy
+        # undersized weights. The "max" merge strategy still preserves the
+        # strongest input boost and FIFO-accumulated weights.
+        updated_relation["weight"] = apply_relation_weight_floor(
+            updated_relation.get("weight", 1.0),
+            updated_relation.get("source_id") or "",
+        )
+        relation_updates[relation_key]["data"] = updated_relation
 
     # Apply relationship updates
     logger.info(f"Entity Merge: updating {len(relation_updates)} relations")
