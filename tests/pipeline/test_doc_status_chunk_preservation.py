@@ -2290,6 +2290,47 @@ async def test_edit_treats_null_chunk_ids_as_absent(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_relation_edit_treats_null_chunk_ids_as_absent(tmp_path):
+    """A malformed relation row with null ``chunk_ids`` must be reseeded.
+
+    Relation edits update the graph and VDB before synchronizing chunk tracking.
+    Treating key presence as a usable row would therefore iterate ``None`` and
+    fail after partial mutation when ``source_id`` changes.
+    """
+    rag = await _build_rag(tmp_path, "relation_null_chunk_ids", _deterministic_chunking)
+    try:
+        source_entity, target_entity = "EntA", "EntB"
+        old_chunk = "chunk-old"
+        new_chunk = "chunk-new"
+
+        await rag.chunk_entity_relation_graph.upsert_edge(
+            source_entity,
+            target_entity,
+            {
+                "source": source_entity,
+                "target": target_entity,
+                "source_id": old_chunk,
+                "description": "related",
+                "keywords": "test",
+                "weight": 1.0,
+            },
+        )
+        storage_key = make_relation_chunk_key(source_entity, target_entity)
+        await rag.relation_chunks.upsert({storage_key: {"chunk_ids": None, "count": 0}})
+
+        await rag.aedit_relation(source_entity, target_entity, {"source_id": new_chunk})
+
+        row = await rag.relation_chunks.get_by_id(storage_key)
+        assert row is not None
+        assert row.get("chunk_ids") == [new_chunk], (
+            "a null chunk_ids must be treated as absent and updated from the "
+            f"edge source_id delta, got: {row}"
+        )
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
 async def test_merge_reseeds_relation_row_without_chunk_ids(tmp_path):
     """`amerge_entities` must classify a partial relation tracking row
     (e.g. ``{"count": 0}``, no ``chunk_ids`` list) as unknown and reseed it from

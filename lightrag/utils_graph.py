@@ -1177,8 +1177,8 @@ async def aedit_relation(
                 # Test row *presence*, not list truthiness: a persisted row of
                 # {"chunk_ids": [], "count": 0} is authoritative ("this relation tracks
                 # no chunks") and must be distinguished from an absent row.
-                has_stored_row = (
-                    isinstance(stored_data, dict) and "chunk_ids" in stored_data
+                has_stored_row = isinstance(stored_data, dict) and isinstance(
+                    stored_data.get("chunk_ids"), list
                 )
 
                 # Get old and new source_id
