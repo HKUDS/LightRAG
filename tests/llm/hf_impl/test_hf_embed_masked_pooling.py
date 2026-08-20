@@ -1,9 +1,16 @@
-"""hf_embed(): mean pooling must be attention_mask-weighted.
+"""hf_embed(): mean pooling must be attention_mask-weighted and reduced
+in float32, regardless of the model's own hidden-state dtype.
 
 Plain .mean(dim=1) counts padding-token hidden states, so the same text's
 embedding shifts depending on what else shares its batch (padding length
 varies per batch). attention_mask is already computed and passed to the
 model one line above the pooling step, but was unused there.
+
+Separately, accumulating the masked sum and the token count directly in a
+low-precision dtype (fp16/bf16) risks overflow (fp16 max ~65504) and loses
+exact integer counting (fp16 represents integers exactly only up to 2048;
+bf16 only to 256) -- so the reduction itself must run in float32, casting
+back to the original hidden-state dtype only for the final result.
 
 lightrag/llm/hf.py imports transformers and torch at module level. Neither
 is a project dependency -- both are lazily pip-installed by hf.py itself
@@ -13,8 +20,12 @@ transformers with a bare placeholder (unused by hf_embed() itself), and
 torch with a minimal, numpy-backed FakeTensor that implements exactly the
 tensor operations hf_embed()'s pooling step performs (unsqueeze, elementwise
 multiply, sum(dim=), clamp_min, divide, dtype comparison, detach/cpu/numpy).
-Backing it with numpy -- a real, always-installed core dependency -- keeps
-the arithmetic genuine rather than a call-recording mock.
+
+FakeTensor backs most dtypes with float64 (ample precision, so ordinary
+correctness assertions aren't sensitive to rounding). The one exception is
+float16, which is backed by real numpy float16 -- numpy supports it
+natively, so the fp16 overflow and integer-count tests below exercise
+genuine low-precision arithmetic, not a simulation of it.
 """
 
 from __future__ import annotations
@@ -41,7 +52,14 @@ class _FakeDType:
 
 
 FLOAT32 = _FakeDType("float32")
+FLOAT16 = _FakeDType("float16")
 BFLOAT16 = _FakeDType("bfloat16")
+
+# Only float16 gets genuine low-precision numpy backing (numpy has no
+# native bfloat16, and float32/bfloat16 tags stay at full float64
+# precision internally so ordinary correctness assertions aren't
+# sensitive to rounding -- see module docstring).
+_GENUINE_NUMPY_DTYPE = {"float16": np.float16}
 
 
 class FakeTensor:
@@ -49,7 +67,8 @@ class FakeTensor:
     hf_embed()'s pooling step actually calls."""
 
     def __init__(self, array, dtype=FLOAT32):
-        self.array = np.asarray(array, dtype=np.float64)
+        backing = _GENUINE_NUMPY_DTYPE.get(dtype.name, np.float64)
+        self.array = np.asarray(array, dtype=backing)
         self.dtype = dtype
 
     @property
@@ -61,7 +80,8 @@ class FakeTensor:
 
     def to(self, target):
         if isinstance(target, _FakeDType):
-            return FakeTensor(self.array, target)
+            backing = _GENUINE_NUMPY_DTYPE.get(target.name, np.float64)
+            return FakeTensor(self.array.astype(backing), target)
         return self  # device argument -- no-op
 
     def sum(self, dim):
@@ -86,7 +106,8 @@ class FakeTensor:
         return self
 
     def numpy(self):
-        return self.array.astype(np.float32)
+        backing = _GENUINE_NUMPY_DTYPE.get(self.dtype.name, np.float32)
+        return self.array.astype(backing)
 
 
 def zeros(*shape):
@@ -128,6 +149,7 @@ def install_fake_transformers_and_torch(monkeypatch):
 
     fake_torch = types.ModuleType("torch")
     fake_torch.float32 = FLOAT32
+    fake_torch.float16 = FLOAT16
     fake_torch.bfloat16 = BFLOAT16
     fake_torch.cuda = types.SimpleNamespace(is_available=lambda: False)
     fake_torch.backends = types.SimpleNamespace(
@@ -274,3 +296,85 @@ async def test_bfloat16_conversion_path_still_triggers(hf_module):
     result = await hf_module.hf_embed(["a"], tokenizer, embed_model)
 
     assert result.dtype == np.float32  # converted from bfloat16 before .numpy()
+
+
+@pytest.mark.asyncio
+async def test_fp16_hidden_states_upcast_to_float32_avoid_overflow(hf_module):
+    """Codex review: accumulating in fp16 can overflow to infinity on long
+    inputs even though the true mean is finite. Confirmed with real
+    np.float16 arithmetic (not simulated) that this exact scenario
+    overflows when summed at fp16 precision; hf_embed() must upcast to
+    float32 before reducing, so its result stays finite."""
+    seq = 8192
+    dim = 1024
+
+    with np.errstate(over="ignore"):  # the overflow below is the point being proven
+        naive_fp16_sum = np.full(seq, 10.0, dtype=np.float16).sum()
+    assert not np.isfinite(naive_fp16_sum), (
+        "test setup invalid: this scenario doesn't actually overflow in real fp16"
+    )
+
+    hidden_np = np.full((1, seq, dim), 10.0, dtype=np.float16)
+    hidden = FakeTensor(hidden_np, dtype=FLOAT16)
+    embed_model = _FakeEmbedModel(hidden)
+    tokenizer = _FakeTokenizer(
+        {"input_ids": zeros(1, seq), "attention_mask": ones(1, seq)}
+    )
+
+    result = await hf_module.hf_embed(["x"], tokenizer, embed_model)
+
+    assert np.isfinite(result).all()
+    assert np.allclose(result, 10.0, atol=1e-2)
+
+
+@pytest.mark.asyncio
+async def test_token_count_and_hidden_state_reduction_occur_in_float32(hf_module):
+    """seq=3001 exceeds fp16's exact-integer range (2048), so a token
+    count -- or a hidden-state sum -- accumulated in fp16 would round.
+    Confirmed with real np.float16 arithmetic that this scenario measurably
+    diverges between an fp16 reduction and the true (float64) reduction of
+    the same fp16-stored values (max abs diff ~0.09 for this seed). hf_embed()
+    must land on the precise side: its result -- cast back to fp16 only at
+    the very end, per the fix -- should match the true reduction to within a
+    single fp16 rounding step (max abs diff ~0.0005 for this seed), not the
+    much larger fp16-reduction error."""
+    seq = 3001
+    dim = 1024
+    rng = np.random.default_rng(7)
+    hidden_np = rng.uniform(0.5, 2.0, size=(1, seq, dim)).astype(np.float16)
+
+    true_mean = hidden_np.astype(np.float64).mean(axis=1)
+    naive_fp16_mean = hidden_np.mean(axis=1, dtype=np.float16)
+    assert not np.allclose(naive_fp16_mean, true_mean, atol=2e-3), (
+        "test setup invalid: fp16 reduction doesn't actually diverge here"
+    )
+
+    hidden = FakeTensor(hidden_np, dtype=FLOAT16)
+    embed_model = _FakeEmbedModel(hidden)
+    tokenizer = _FakeTokenizer(
+        {"input_ids": zeros(1, seq), "attention_mask": ones(1, seq)}
+    )
+
+    result = await hf_module.hf_embed(["x"], tokenizer, embed_model)
+
+    # atol covers the single expected fp16 rounding step on the final
+    # cast-back (~5e-4 observed), while staying far tighter than the
+    # naive fp16-reduction error (~0.09 observed) -- so this still fails
+    # if the reduction itself regresses to low precision.
+    assert np.allclose(result, true_mean, atol=2e-3)
+
+
+@pytest.mark.asyncio
+async def test_pooled_embedding_cast_back_to_original_hidden_state_dtype(hf_module):
+    """The final embedding must be cast back to the model's own hidden-
+    state dtype (fp16 here), matching pre-fix output-dtype behaviour, even
+    though the reduction itself runs in float32."""
+    dim = 1024
+    hidden_np = np.full((1, 3, dim), 2.0, dtype=np.float16)
+    hidden = FakeTensor(hidden_np, dtype=FLOAT16)
+    embed_model = _FakeEmbedModel(hidden)
+    tokenizer = _FakeTokenizer({"input_ids": zeros(1, 3), "attention_mask": ones(1, 3)})
+
+    result = await hf_module.hf_embed(["x"], tokenizer, embed_model)
+
+    assert result.dtype == np.float16
