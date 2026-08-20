@@ -1430,33 +1430,23 @@ class Neo4JStorage(BaseGraphStorage):
                                 f"[{self.workspace}] Graph truncated: {total_nodes} nodes found, breadth-first search limited to {max_nodes}"
                             )
 
-                            # expandConfig rather than subgraphAll: its per-node
-                            # path carries the depth and node the ranking needs,
-                            # which subgraphAll's `limit` discards. NODE_GLOBAL
-                            # keeps one path per node, so none is ranked twice.
+                            # Run limited query
                             limited_query = f"""
                             MATCH (start:`{workspace_label}`)
                             WHERE start.entity_id = $entity_id
-                            CALL apoc.path.expandConfig(start, {{
+                            WITH start
+                            CALL apoc.path.subgraphAll(start, {{
                                 relationshipFilter: '',
                                 labelFilter: $label_filter,
                                 minLevel: 0,
                                 maxLevel: $max_depth,
-                                bfs: true,
-                                uniqueness: 'NODE_GLOBAL'
+                                limit: $max_nodes,
+                                bfs: true
                             }})
-                            YIELD path
-                            WITH last(nodes(path)) AS node, length(path) AS depth
-                            OPTIONAL MATCH (node)-[r]-()
-                            WITH node, depth, count(r) AS degree
-                            ORDER BY depth ASC, degree DESC, node.entity_id ASC
-                            LIMIT $max_nodes
-                            WITH collect(node) AS kept_nodes
-                            UNWIND kept_nodes AS n
-                            WITH kept_nodes, collect({{node: n}}) AS node_info
-                            OPTIONAL MATCH (a)-[r]-(b)
-                            WHERE a IN kept_nodes AND b IN kept_nodes
-                            RETURN node_info, collect(DISTINCT r) AS relationships
+                            YIELD nodes, relationships
+                            UNWIND nodes AS node
+                            WITH collect({{node: node}}) AS node_info, relationships
+                            RETURN node_info, relationships
                             """
                             result_set = None
                             try:

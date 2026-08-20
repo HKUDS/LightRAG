@@ -859,26 +859,40 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         Order the labels by code point (SQL ``COLLATE "C"``, not a locale
         collation) so every backend agrees with Python's ``str`` comparison.
 
-        **Scope: both selection paths.** The rule governs the non-wildcard path
-        for the same reason it governs ``*`` -- a BFS level that overflows
-        ``max_nodes`` faces the same tie, and it decides both which neighbours
-        survive and which get expanded next. A level is therefore ranked on
-        ``(degree DESC, label ASC)`` before the cap reads it, after the depth it
-        was reached at, so the full key is ``(depth, -degree, label)`` with the
-        seed at depth 0. Every backend implements both paths; a new one should
-        too.
+        **Scope: the ``*`` whole-graph ranking.** The non-wildcard path -- BFS
+        expansion from a start ``node_label`` -- is deliberately NOT bound by
+        it, and a backend that admits same-depth nodes in traversal order there
+        is compliant. Only one level of that path could ever be affected: once
+        ``max_nodes`` is filled no deeper level contributes a node at all, so
+        the rule would decide nothing beyond which same-depth neighbours of the
+        single straddling level survive.
 
-        Two narrow exceptions remain, both tracked in issue #3612:
+        Buying that decision is not worth its price. The only caller is the
+        graph view (``GET /graphs``), whose consumer treats ``nodes`` and
+        ``edges`` as sets: the WebUI recomputes each node's degree from the
+        returned edges to size it and never reads the order a backend produced.
+        Against that, ranking a level requires seeing the whole level AND its
+        global degrees before the cap, which on a graph database costs the
+        traversal's early exit (the cap can no longer stop the expansion), a
+        degree count over the entire reached neighbourhood, and -- once the
+        surviving set is no longer the traversal's own subgraph -- a second,
+        unbounded relationship match to rebuild the edges. Those are real
+        query-plan costs paid on every truncated view, in exchange for a
+        marginally better neighbour choice in one level that the consumer
+        cannot distinguish.
 
-        - :meth:`~lightrag.kg.neo4j_impl.Neo4JStorage._robust_fallback`, used
-          only when APOC is unavailable, walks a plain FIFO queue and admits in
-          traversal order.
-        - ``MongoGraphStorage`` under the opt-in
-          ``MONGO_GRAPH_BFS_MODE=in_out_bound``, which orders candidates on edge
-          weight. It confirms node existence in bounded batches and stops at the
-          first ``max_nodes`` real ids; ranking the whole candidate set by
-          degree would defeat that probe. Its default ``bidirectional`` path
-          complies.
+        Level-internal admission order is therefore backend-defined. Backends
+        where the ranking is a local sort pay approximately nothing and do
+        apply it: :class:`~lightrag.kg.networkx_impl.NetworkXStorage` and
+        :class:`~lightrag.kg.pgtable_impl.PGTableGraphStorage` order every
+        level, while ``MongoGraphStorage`` (default ``bidirectional`` mode) and
+        :class:`~lightrag.kg.opensearch_impl.OpenSearchGraphStorage` rank the
+        level straddling the cap, gated on overflow so a subgraph that fits
+        pays nothing at all. Neo4j, Memgraph and ``PGGraphStorage`` (Apache AGE)
+        admit in traversal order. A new backend should rank its levels where
+        its query language makes that free, and is under no obligation to
+        reshape a traversal to achieve it.
+        This is the resolution of issue #3612, not an outstanding gap in it.
 
         **Known deviation -- PGGraphStorage (Apache AGE)** ranks the ``*`` view
         on ``degree DESC, v.id ASC``, the internal vertex id, not the label.
@@ -901,15 +915,6 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         undirected degree is, and terms aggregations are count-approximate
         across shards. Tracked in issue #3613; it needs a storage-shape change,
         not an ordering one.
-
-        Its BFS path carries a second, narrower approximation: the degree
-        lookup that ranks the level straddling ``max_nodes`` is capped at a
-        fixed number of candidates, because that lookup sends the level as a
-        ``terms`` clause and OpenSearch bounds those by
-        ``index.max_terms_count``. A level wider than the cap (a single hub with
-        more neighbours than the cap reaches it at depth 1) ranks only the cap's
-        worth and admits the remainder in traversal order, which is the
-        pre-existing behaviour for that overflow rather than a new deviation.
 
         This constrains WHICH nodes survive truncation, not the order of
         :class:`KnowledgeGraph.nodes` in the response — implementations

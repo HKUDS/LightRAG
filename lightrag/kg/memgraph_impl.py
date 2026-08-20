@@ -1102,24 +1102,19 @@ class MemgraphStorage(BaseGraphStorage):
 
                 else:
                     # Run subgraph query for specific node_label
-                    # Null and self are filtered out of the LIST, not by a WHERE
-                    # on the rows: a start node with no neighbours produces one
-                    # row whose `end` is null, and dropping it would aggregate
-                    # over nothing and lose the start node too.
                     subgraph_query = f"""
                     MATCH (start:`{workspace_label}`)
                     WHERE start.entity_id = $entity_id
 
                     OPTIONAL MATCH path = (start)-[*BFS 0..{max_depth}]-(end:`{workspace_label}`)
                     WHERE path IS NULL OR ALL(n IN nodes(path) WHERE '{workspace_label}' IN labels(n))
-                    WITH start, end,
-                         CASE WHEN path IS NULL THEN -1 ELSE size(nodes(path)) - 1 END AS depth
-                    OPTIONAL MATCH (end)-[r]-()
-                    WITH start, end, depth, count(r) AS degree
-                    ORDER BY depth ASC, degree DESC, end.entity_id ASC
-                    WITH start, [n IN collect(end) WHERE n IS NOT NULL AND n <> start] AS other_nodes
+                    WITH start, collect(DISTINCT end) AS discovered_nodes
+                    WITH start, [node IN discovered_nodes WHERE node IS NOT NULL AND node <> start] AS other_nodes
                     WITH
-                    [start] + other_nodes[0..$max_other_nodes] AS limited_nodes,
+                    CASE
+                        WHEN 1 + size(other_nodes) <= $max_nodes THEN [start] + other_nodes
+                        ELSE [start] + other_nodes[0..$max_other_nodes]
+                    END AS limited_nodes,
                     1 + size(other_nodes) > $max_nodes AS is_truncated
 
                     UNWIND limited_nodes AS n
