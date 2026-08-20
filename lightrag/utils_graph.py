@@ -1803,11 +1803,15 @@ async def _merge_entities_impl(
             f"Entity Merge: updating relation `{rel_data['graph_src']}`~`{rel_data['graph_tgt']}`"
         )
 
-    # Update relation chunk tracking storage
+    # Update relation chunk tracking storage. Upsert the migrated rows BEFORE
+    # deleting the old keys: on RPC-backed KV storages each call commits
+    # independently, so the reverse order opened a crash window in which every
+    # migrated relation row was lost — turning curated rows absent and
+    # re-arming the stale source_id reseed (#3609). A key can be both old and
+    # new (relations already attached to an existing target keep their key),
+    # so only keys outside the new key set are deleted; deleting them after
+    # the upsert would drop the rows just written.
     if relation_chunks_storage is not None and all_relations:
-        if old_relation_keys_to_delete:
-            await relation_chunks_storage.delete(old_relation_keys_to_delete)
-
         if relation_chunk_tracking:
             updates = {}
             for storage_key, chunk_ids in relation_chunk_tracking.items():
@@ -1820,6 +1824,14 @@ async def _merge_entities_impl(
             logger.info(
                 f"Entity Merge: {len(updates)} relation chunk tracking records updated"
             )
+
+        stale_relation_keys = [
+            key
+            for key in dict.fromkeys(old_relation_keys_to_delete)
+            if key not in relation_chunk_tracking
+        ]
+        if stale_relation_keys:
+            await relation_chunks_storage.delete(stale_relation_keys)
 
     # 7. Update relationship vector representations
     logger.debug(
@@ -2000,19 +2012,38 @@ async def _merge_entities_impl(
         if target_exists:
             entities_to_process.append(target_entity)
 
+        # Pre-merge node data captured in steps 1-2, BEFORE step 5 overwrote
+        # the target node with the merged payload (whose source_id unions
+        # every input's contribution and must not be attributed to any single
+        # input entity).
+        pre_merge_node_data = dict(source_entities_data)
+        if target_exists:
+            pre_merge_node_data[target_entity] = existing_target_entity_data
+
         # Process all entities in order with unified logic. Row presence by
-        # schema, never list truthiness (see has_chunk_tracking_row): a
-        # curated-empty row contributes no chunk ids but still asserts
-        # authority, so the target must end up with a present row rather than
-        # an absent one — an absent row would let the next edit reseed the
-        # merged node's tracking from its possibly-stale graph source_id.
+        # schema, never list truthiness (see has_chunk_tracking_row) — and
+        # decided PER INPUT ENTITY: one entity's curated-empty row asserts
+        # only that THAT entity tracks no chunks, never that another input's
+        # unknown (absent/malformed) row is empty too. An input without a
+        # usable row falls back to its own pre-merge graph source_id, exactly
+        # as a single-entity edit would; folding such an input into an
+        # authoritative empty target row would silently discard its
+        # attribution with no later recovery path (the empty row is
+        # authoritative from then on).
         for entity_name in entities_to_process:
             stored = await entity_chunks_storage.get_by_id(entity_name)
             if has_chunk_tracking_row(stored):
                 any_row_present = True
                 chunk_ids = [cid for cid in stored.get("chunk_ids", []) if cid]
-                if chunk_ids:
-                    all_chunk_id_lists.append(chunk_ids)
+            else:
+                node_source_id = (pre_merge_node_data.get(entity_name) or {}).get(
+                    "source_id"
+                ) or ""
+                chunk_ids = [
+                    cid for cid in node_source_id.split(GRAPH_FIELD_SEP) if cid
+                ]
+            if chunk_ids:
+                all_chunk_id_lists.append(chunk_ids)
 
         # Merge chunk_ids with ordered deduplication (preserves order, source entities first)
         merged_chunk_ids = []
@@ -2026,9 +2057,14 @@ async def _merge_entities_impl(
         # Update target entity's chunk tracking BEFORE deleting the source
         # rows: on RPC-backed KV storages each call commits independently, so
         # the reverse order opens a crash window in which the merged
-        # attribution exists under no key at all. Skip the write only when no
-        # source had a row (nothing known — leave the target absent/unknown).
-        if merged_chunk_ids or any_row_present:
+        # attribution exists under no key at all. Write only when at least
+        # one input had a usable row: a present row is what licenses an
+        # authoritative target row (the source_id fallbacks above only fill
+        # in the other inputs' contributions within that write). With no row
+        # present the merged attribution is entirely unknown, and the target
+        # row stays absent — fabricating one would promote UNKNOWN to
+        # authoritative.
+        if any_row_present:
             await entity_chunks_storage.upsert(
                 {
                     target_entity: {
