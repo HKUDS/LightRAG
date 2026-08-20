@@ -10,8 +10,9 @@
     "documents": "文档",
     "knowledgeGraph": "知识图谱",
     "retrieval": "检索",
-    "api": "API",
+    "apiDocs": "API 文档",
     "projectRepository": "项目仓库",
+    "appSettings": "设置",
     "logout": "退出登录",
     "frontendNeedsRebuild": "前端代码需重新构建",
     "themeToggle": {
@@ -485,9 +486,6 @@
       "enableRerank": "启用重排",
       "enableRerankTooltip": "为检索到的文本块启用重排。如果为True但未配置重排模型，将发出警告。默认为True。"
     }
-  },
-  "apiSite": {
-    "loading": "正在加载 API 文档..."
   },
   "apiKeyAlert": {
     "title": "需要 API Key",

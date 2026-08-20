@@ -39,6 +39,7 @@ from lightrag.constants import (
     PARSER_ENGINE_DOCLING,
     PARSER_ENGINE_MINERU,
     PARSER_ENGINE_NATIVE,
+    PROCESS_OPTION_CHUNK_CUSTOM,
     PROCESS_OPTION_CHUNK_FIXED,
     PROCESS_OPTION_CHUNK_PARAGRAH,
     PROCESS_OPTION_CHUNK_RECURSIVE,
@@ -134,6 +135,7 @@ _ALL_CHUNK_SELECTORS = frozenset(
         PROCESS_OPTION_CHUNK_RECURSIVE,
         PROCESS_OPTION_CHUNK_VECTOR,
         PROCESS_OPTION_CHUNK_PARAGRAH,
+        PROCESS_OPTION_CHUNK_CUSTOM,
     }
 )
 
@@ -157,6 +159,7 @@ _CHUNK_PARAM_SPECS: tuple[ParamSpec, ...] = (
                 PROCESS_OPTION_CHUNK_FIXED,
                 PROCESS_OPTION_CHUNK_RECURSIVE,
                 PROCESS_OPTION_CHUNK_PARAGRAH,
+                PROCESS_OPTION_CHUNK_CUSTOM,
             }
         ),
         min_value=0,
@@ -197,7 +200,7 @@ def parse_chunk_params(
 
     ``text`` is the raw text inside ``(...)`` (parameter separators only —
     no surrounding parens).  ``selector`` is the chunk char the block is
-    attached to (``F``/``R``/``V``/``P``).  Returns ``(canonical_dict,
+    attached to (``F``/``R``/``V``/``P``/``C``).  Returns ``(canonical_dict,
     errors)``; ``errors`` is empty iff the block is fully valid.  Aliases are
     normalised to their canonical name in the returned dict.
 
@@ -320,7 +323,7 @@ def chunk_param_overlap_error(params: Mapping[str, Any]) -> str | None:
 # ---------------------------------------------------------------------------
 # Engine parameters (Phase 2) — per-file params attached to the engine token,
 # e.g. ``mineru(page_range=1-3,language=en)`` / ``docling(force_ocr=true)``.
-# Keyed by engine name (unlike chunk params, which are keyed by F/R/V/P).
+# Keyed by engine name (unlike chunk params, which are keyed by F/R/V/P/C).
 # ---------------------------------------------------------------------------
 
 _BOOL_TRUE = frozenset({"1", "true", "yes", "on", "t", "y"})
@@ -335,7 +338,7 @@ class EngineParamSpec:
     """Declares one tunable engine parameter (Phase 2).
 
     Separate from the chunk :class:`ParamSpec` (which requires a ``targets``
-    set of F/R/V/P selectors that is meaningless for engines).  ``kind`` is one
+    set of F/R/V/P/C selectors that is meaningless for engines).  ``kind`` is one
     of ``"str"`` / ``"enum"`` / ``"bool"``.  ``is_list`` marks a repeated-key
     parameter (``page_range``) whose canonical value is a comma-joined string.
     ``enum_values`` constrains an ``"enum"`` parameter.

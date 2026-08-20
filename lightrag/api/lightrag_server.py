@@ -1307,6 +1307,48 @@ def _build_scheduling_status(pipeline_snapshot: dict, ingress_counts: dict) -> d
     }
 
 
+def _create_llm_model_kwargs(binding: str, args, llm_timeout: int) -> dict:
+    """
+    Create LLM model kwargs based on binding type.
+    Uses lazy import for binding-specific options.
+    """
+    if binding == "lollms":
+        return {
+            "timeout": llm_timeout,
+            # "options" is an Ollama-only payload; lollms_model_if_cache()
+            # never reads it. Pin it to an empty dict instead of deriving it
+            # from OllamaLLMOptions.options_dict(args), which only happens to
+            # return {} because its arguments are registered for the ollama
+            # binding alone.
+            "options": {},
+            "api_key": args.llm_binding_api_key,
+            # lollms_model_if_cache()'s parameter is named base_url, not
+            # host -- unlike ollama's AsyncClient(host=...). Passing "host"
+            # here would silently land in its **kwargs and never be read.
+            "base_url": args.llm_binding_host,
+        }
+    if binding == "ollama":
+        try:
+            from lightrag.llm.binding_options import OllamaLLMOptions
+
+            options = OllamaLLMOptions.options_dict(args)
+        except ImportError as e:
+            raise Exception(f"Failed to import {binding} options: {e}")
+        # Imported lazily (the module installs the ollama package on import)
+        # and only for the binding that actually forwards think= -- lollms
+        # never reaches the ollama client.
+        from lightrag.llm.ollama import ensure_think_supported
+
+        ensure_think_supported(options, context="the base LLM binding")
+        return {
+            "timeout": llm_timeout,
+            "options": options,
+            "api_key": args.llm_binding_api_key,
+            "host": args.llm_binding_host,
+        }
+    return {}
+
+
 def create_app(args):
     # Check frontend build first and get status
     webui_assets_exist, is_frontend_outdated = check_frontend_build()
@@ -1463,6 +1505,13 @@ def create_app(args):
             if shutdown_cancel is not None:
                 raise shutdown_cancel
 
+    # Single switch for every interactive API documentation surface: /docs,
+    # /docs/oauth2-redirect, /redoc, /openapi.json and the /static/swagger-ui
+    # mount. All five must stay conditioned on this one flag (issue #3666,
+    # RFC #3671) — a route audit that special-cases only the APIRoutes would
+    # diverge from the real route table.
+    api_docs_enabled = bool(getattr(args, "enable_api_docs", True))
+
     base_description = (
         "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
     )
@@ -1481,9 +1530,9 @@ def create_app(args):
         "title": "LightRAG Server API",
         "description": swagger_description,
         "version": __api_version__,
-        "openapi_url": "/openapi.json",
+        "openapi_url": "/openapi.json" if api_docs_enabled else None,
         "docs_url": None,  # custom endpoint for offline Swagger support
-        "redoc_url": "/redoc",
+        "redoc_url": "/redoc" if api_docs_enabled else None,
         "root_path": api_prefix if api_prefix else None,
         "lifespan": lifespan,
     }
@@ -1802,33 +1851,6 @@ def create_app(args):
                 return create_optimized_openai_llm_func(config_cache, args, llm_timeout)
         except ImportError as e:
             raise Exception(f"Failed to import {binding} LLM binding: {e}")
-
-    def create_llm_model_kwargs(binding: str, args, llm_timeout: int) -> dict:
-        """
-        Create LLM model kwargs based on binding type.
-        Uses lazy import for binding-specific options.
-        """
-        if binding in ["lollms", "ollama"]:
-            try:
-                from lightrag.llm.binding_options import OllamaLLMOptions
-
-                options = OllamaLLMOptions.options_dict(args)
-            except ImportError as e:
-                raise Exception(f"Failed to import {binding} options: {e}")
-            if binding == "ollama":
-                # Imported lazily (the module installs the ollama package on
-                # import) and only for the binding that actually forwards
-                # think= -- lollms never reaches the ollama client.
-                from lightrag.llm.ollama import ensure_think_supported
-
-                ensure_think_supported(options, context="the base LLM binding")
-            return {
-                "host": args.llm_binding_host,
-                "timeout": llm_timeout,
-                "options": options,
-                "api_key": args.llm_binding_api_key,
-            }
-        return {}
 
     def resolve_role_llm_settings(
         role: str, override_meta: dict | None = None
@@ -2322,7 +2344,7 @@ def create_app(args):
             embedding_chunk_overlap_token_size=int(
                 args.embedding_chunk_overlap_token_size
             ),
-            llm_model_kwargs=create_llm_model_kwargs(
+            llm_model_kwargs=_create_llm_model_kwargs(
                 args.llm_binding, args, llm_timeout
             ),
             embedding_func=embedding_func,
@@ -2398,29 +2420,50 @@ def create_app(args):
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
     app.include_router(ollama_api.router, prefix="/api")
 
-    # Custom Swagger UI endpoint for offline support
-    @app.get("/docs", include_in_schema=False)
-    async def custom_swagger_ui_html(request: Request):
-        """Custom Swagger UI HTML with local static files"""
-        response = get_swagger_ui_html(
-            openapi_url=app.openapi_url,
-            title=app.title + " - Swagger UI",
-            oauth2_redirect_url="/docs/oauth2-redirect",
-            swagger_js_url="/static/swagger-ui/swagger-ui-bundle.js",
-            swagger_css_url="/static/swagger-ui/swagger-ui.css",
-            swagger_favicon_url="/static/swagger-ui/favicon-32x32.png",
-            swagger_ui_parameters=app.swagger_ui_parameters,
-        )
-        html = response.body.decode("utf-8")
-        html = _inject_swagger_theme(
-            html, request.query_params.get("theme", "auto").lower()
-        )
-        return HTMLResponse(content=html)
+    if api_docs_enabled:
+        # Custom Swagger UI endpoint for offline support
+        @app.get("/docs", include_in_schema=False)
+        async def custom_swagger_ui_html(request: Request):
+            """Custom Swagger UI HTML with local static files"""
+            response = get_swagger_ui_html(
+                openapi_url=app.openapi_url,
+                title=app.title + " - Swagger UI",
+                oauth2_redirect_url="/docs/oauth2-redirect",
+                swagger_js_url="/static/swagger-ui/swagger-ui-bundle.js",
+                swagger_css_url="/static/swagger-ui/swagger-ui.css",
+                swagger_favicon_url="/static/swagger-ui/favicon-32x32.png",
+                swagger_ui_parameters=app.swagger_ui_parameters,
+            )
+            html = response.body.decode("utf-8")
+            html = _inject_swagger_theme(
+                html, request.query_params.get("theme", "auto").lower()
+            )
+            return HTMLResponse(content=html)
 
-    @app.get("/docs/oauth2-redirect", include_in_schema=False)
-    async def swagger_ui_redirect():
-        """OAuth2 redirect for Swagger UI"""
-        return get_swagger_ui_oauth2_redirect_html()
+        @app.get("/docs/oauth2-redirect", include_in_schema=False)
+        async def swagger_ui_redirect():
+            """OAuth2 redirect for Swagger UI"""
+            return get_swagger_ui_oauth2_redirect_html()
+
+    def service_info_response(request: Request) -> JSONResponse:
+        """Fixed JSON fallback when neither the WebUI nor /docs can be served.
+
+        HTTP 200 with a root_path-aware health_url, so multi-site deployments
+        behind LIGHTRAG_API_PREFIX get a correct absolute path (RFC #3671).
+        """
+        root = request.scope.get("root_path", "")
+        return JSONResponse(
+            {
+                "status": "healthy",
+                "service": "LightRAG Server",
+                "api_version": api_version_display,
+                "message": (
+                    "WebUI assets are not bundled and API docs are disabled "
+                    "(ENABLE_API_DOCS=false)."
+                ),
+                "health_url": f"{root}/health",
+            }
+        )
 
     @app.get("/")
     async def redirect_to_webui(request: Request):
@@ -2428,13 +2471,16 @@ def create_app(args):
 
         Prepend the ASGI root_path so that, behind a reverse proxy, the
         absolute redirect target keeps the configured prefix instead of
-        bypassing it.
+        bypassing it. With docs disabled and no WebUI there is no page to
+        redirect to, so answer with the JSON service info instead of a 404.
         """
         root = request.scope.get("root_path", "")
         if webui_assets_exist:
             return RedirectResponse(url=f"{root}{webui_path}/")
-        else:
+        elif api_docs_enabled:
             return RedirectResponse(url=f"{root}/docs")
+        else:
+            return service_info_response(request)
 
     @app.get("/auth-status")
     async def get_auth_status():
@@ -2571,6 +2617,7 @@ def create_app(args):
                         "example": {
                             "status": "healthy",
                             "webui_available": True,
+                            "api_docs_available": True,
                             "working_directory": "/path/to/working/dir",
                             "input_directory": "/path/to/input/dir",
                             "configuration": {
@@ -2673,6 +2720,10 @@ def create_app(args):
                 "core_version": core_version,
                 "api_version": api_version_display,
                 "webui_available": webui_assets_exist,
+                # Whether /docs, /redoc and /openapi.json are served — same
+                # liveness tier as webui_available: the state is trivially
+                # probeable by requesting /docs, so it leaks nothing.
+                "api_docs_available": api_docs_enabled,
                 "webui_title": webui_title,
                 "webui_description": webui_description,
                 "pipeline_busy": pipeline_busy,
@@ -2872,7 +2923,7 @@ def create_app(args):
 
     # Mount Swagger UI static files for offline support
     swagger_static_dir = Path(__file__).parent / "static" / "swagger-ui"
-    if swagger_static_dir.exists():
+    if api_docs_enabled and swagger_static_dir.exists():
         app.mount(
             "/static/swagger-ui",
             StaticFiles(directory=swagger_static_dir),
@@ -2898,7 +2949,13 @@ def create_app(args):
         @app.get(webui_path)
         @app.get(f"{webui_path}/")
         async def webui_redirect_to_docs(request: Request):
-            """Redirect WebUI path to /docs when WebUI is not available."""
+            """Redirect WebUI path to /docs when WebUI is not available.
+
+            With docs disabled there is no page to redirect to, so answer
+            with the JSON service info instead of a 404.
+            """
+            if not api_docs_enabled:
+                return service_info_response(request)
             root = request.scope.get("root_path", "")
             return RedirectResponse(url=f"{root}/docs")
 

@@ -124,6 +124,10 @@ export type LightragStatus = {
   update_status?: Record<string, any>
   core_version?: string
   api_version?: string
+  webui_available?: boolean
+  /** Whether /docs, /redoc and /openapi.json are served. Absent on older
+   * backends, which always expose them (see apiDocsCapability in state.ts). */
+  api_docs_available?: boolean
   auth_mode?: 'enabled' | 'disabled'
   server_mode?: 'uvicorn' | 'gunicorn'
   workers?: number

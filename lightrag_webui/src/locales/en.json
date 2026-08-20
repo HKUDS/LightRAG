@@ -10,8 +10,9 @@
     "documents": "Documents",
     "knowledgeGraph": "Knowledge Graph",
     "retrieval": "Retrieval",
-    "api": "API",
+    "apiDocs": "API Documentation",
     "projectRepository": "Project Repository",
+    "appSettings": "Settings",
     "logout": "Logout",
     "frontendNeedsRebuild": "Frontend needs rebuild",
     "themeToggle": {
@@ -485,9 +486,6 @@
       "enableRerank": "Enable Rerank",
       "enableRerankTooltip": "Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True."
     }
-  },
-  "apiSite": {
-    "loading": "Loading API Documentation..."
   },
   "apiKeyAlert": {
     "title": "API Key is required",
