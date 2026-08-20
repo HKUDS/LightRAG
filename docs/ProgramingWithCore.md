@@ -1169,8 +1169,10 @@ contract before writing graph or vector data; invalid Python API inputs raise
 the complete post-edit shape, so `source_id` and `weight` can be changed
 together. Existing legacy relations are repaired upward when extraction adds
 evidence, an entity rename rewrites their endpoints, an unrelated relation edit
-rewrites the row, or a relation is rebuilt from surviving chunks (document purge
-and resume, or `lightrag-rebuild-vdb`).
+rewrites the row, or a relation is rebuilt from surviving chunks (document
+purge, resume, and custom-chunk rollback). `lightrag-rebuild-vdb` is not such a
+repair point: it mirrors each graph edge into the vector storage field for
+field, copying the stored weight verbatim without touching the graph.
 
 A rebuild re-derives the relation from the extraction results cached for the
 surviving chunks, so — like the rebuilt description and keywords — the weight is

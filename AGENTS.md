@@ -128,8 +128,9 @@ Entity merges use `max(all input weights, distinct merged real source IDs)`.
 Extraction merges and entity-rename rewrites are repair points for legacy rows:
 they must lift an undersized stored weight to the current evidence floor while
 preserving any larger explicit boost. Rebuilds from surviving chunks
-(`_rebuild_single_relationship`, reached by document purge/resume and
-`lightrag-rebuild-vdb`) are a repair point for the floor only: they re-derive
+(`_rebuild_single_relationship`, reached only through `_purge_kg_contributions`
+-> `rebuild_knowledge_from_chunks`, i.e. document purge, resume, and
+custom-chunk rollback) are a repair point for the floor only: they re-derive
 weight from the surviving cached fragments and then lift it to the surviving
 evidence count, so weight tracks evidence down as purge removes chunks and an
 explicit boost is not carried across — exactly as the rebuilt description and

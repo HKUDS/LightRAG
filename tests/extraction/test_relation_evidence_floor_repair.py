@@ -1,9 +1,10 @@
 """Regression tests: the two remaining relation-weight-contract gaps left by the
 evidence-floor change (#3676 follow-up).
 
-1. ``_rebuild_single_relationship`` (document purge/resume and
-   ``lightrag-rebuild-vdb``) wrote ``sum(cached fragment weights)`` alongside the
-   full surviving chunk list with no floor. Cached fragments only exist for those
+1. ``_rebuild_single_relationship`` (reached from ``_purge_kg_contributions``
+   via ``rebuild_knowledge_from_chunks``: document purge, resume, custom-chunk
+   rollback) wrote ``sum(cached fragment weights)`` alongside the full surviving
+   chunk list with no floor. Cached fragments only exist for those
    surviving chunks whose extraction cache is still present -- none at all on the
    degraded/structural-fallback path -- so the rebuilt weight could land below
    the edge's own evidence count, minting exactly the rows ``aedit_relation``
