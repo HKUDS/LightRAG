@@ -75,6 +75,8 @@ async def hf_model_if_cache(
     messages.extend(history_messages)
     messages.append({"role": "user", "content": prompt})
     kwargs.pop("hashing_kv", None)
+    max_tokens = kwargs.pop("max_tokens", 512)
+    max_new_tokens = kwargs.pop("max_new_tokens", max_tokens)
     input_prompt = ""
     try:
         input_prompt = hf_tokenizer.apply_chat_template(
@@ -110,10 +112,16 @@ async def hf_model_if_cache(
 
     input_ids = hf_tokenizer(
         input_prompt, return_tensors="pt", padding=True, truncation=True
-    ).to("cuda")
+    )
+    # Move to wherever the model actually is, rather than assuming CUDA.
+    # hf_model is loaded with device_map="auto" (see initialize_hf_model),
+    # so hf_model.device already reflects accelerate's placement.
     inputs = {k: v.to(hf_model.device) for k, v in input_ids.items()}
     output = hf_model.generate(
-        **input_ids, max_new_tokens=512, num_return_sequences=1, early_stopping=True
+        **inputs,
+        max_new_tokens=max_new_tokens,
+        num_return_sequences=1,
+        early_stopping=True,
     )
     response_text = hf_tokenizer.decode(
         output[0][len(inputs["input_ids"][0]) :], skip_special_tokens=True
