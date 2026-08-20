@@ -143,7 +143,9 @@ def install_fake_transformers_and_torch(monkeypatch, host_has_cuda):
     monkeypatch.setattr(pm, "is_installed", lambda name: True)
 
 
-def make_hf_module(monkeypatch, *, model_device, host_has_cuda, prompt_ids=(11, 12, 13)):
+def make_hf_module(
+    monkeypatch, *, model_device, host_has_cuda, prompt_ids=(11, 12, 13)
+):
     install_fake_transformers_and_torch(monkeypatch, host_has_cuda)
     sys.modules.pop("lightrag.llm.hf", None)
     hf_module = importlib.import_module("lightrag.llm.hf")
@@ -151,7 +153,9 @@ def make_hf_module(monkeypatch, *, model_device, host_has_cuda, prompt_ids=(11, 
     fake_model = FakeModel(model_device)
     fake_tokenizer = FakeTokenizer(prompt_ids, host_has_cuda)
     monkeypatch.setattr(
-        hf_module, "initialize_hf_model", lambda model_name: (fake_model, fake_tokenizer)
+        hf_module,
+        "initialize_hf_model",
+        lambda model_name: (fake_model, fake_tokenizer),
     )
     return hf_module, fake_model, fake_tokenizer
 
