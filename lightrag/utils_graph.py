@@ -1745,13 +1745,12 @@ async def _merge_entities_impl(
                 },
                 filter_none_only=True,  # Use relation behavior: only filter None
             )
-            # weight tracks distinct-source count elsewhere (operate.py's
-            # _merge_edges_then_upsert). The "max" strategy above already put
-            # the correct floor in merged_relation["weight"]; lift it to the
-            # distinct-source count instead of overwriting it outright, so an
-            # explicit or FIFO-truncated weight never regresses below what it
-            # already was (merged weight must be monotonic: never below either
-            # input's own weight).
+            # Every distinct non-empty source contributes a baseline evidence
+            # count of 1. An explicit weight may boost that baseline, but must
+            # never reduce it. The "max" strategy above preserves the strongest
+            # input weight; lift that value to the merged evidence-count floor.
+            # This also keeps FIFO-truncated weights monotonic when the visible
+            # graph source_id contains fewer IDs than the accumulated weight.
             distinct_sources = [
                 s
                 for s in merged_relation.get("source_id", "").split(GRAPH_FIELD_SEP)

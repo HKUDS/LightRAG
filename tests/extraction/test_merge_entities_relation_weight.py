@@ -177,6 +177,34 @@ class _ExplicitWeightGraphStorage(_MergeGraphStorage):
         }
 
 
+class _SourcedLowWeightGraphStorage(_MergeGraphStorage):
+    """Legacy/permissive input below the evidence-count floor.
+
+    Each distinct non-empty source contributes a baseline weight of 1. These
+    explicit values are therefore invalid under the unified relation-weight
+    contract, and entity merge must normalize the resulting edge upward.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.edges = {
+            ("A", "C"): {
+                "description": "A relates to C",
+                "keywords": "k1",
+                "source_id": "manual-a",
+                "weight": 0.25,
+                "file_path": "docA.txt",
+            },
+            ("B", "C"): {
+                "description": "B relates to C",
+                "keywords": "k2",
+                "source_id": "manual-b",
+                "weight": 0.5,
+                "file_path": "docB.txt",
+            },
+        }
+
+
 @pytest.mark.asyncio
 async def test_merge_entities_relation_weight_never_regresses_below_max_input():
     graph = _ExplicitWeightGraphStorage()
@@ -201,3 +229,31 @@ async def test_merge_entities_relation_weight_never_regresses_below_max_input():
     vdb_payload = relationships_vdb.upserts[-1]
     persisted = next(iter(vdb_payload.values()))
     assert persisted["weight"] == 10.0
+
+
+@pytest.mark.asyncio
+async def test_merge_entities_lifts_sourced_low_weight_to_evidence_floor():
+    graph = _SourcedLowWeightGraphStorage()
+    entities_vdb = _DummyVectorStorage()
+    relationships_vdb = _DummyVectorStorage()
+
+    await utils_graph._merge_entities_impl(
+        chunk_entity_relation_graph=graph,
+        entities_vdb=entities_vdb,
+        relationships_vdb=relationships_vdb,
+        source_entities=["A", "B"],
+        target_entity="AB",
+    )
+
+    merged_edge = graph.edges[("AB", "C")]
+    assert set(merged_edge["source_id"].split(GRAPH_FIELD_SEP)) == {
+        "manual-a",
+        "manual-b",
+    }
+    # Both inputs are below the contract's one-per-source baseline. The merge
+    # intentionally normalizes the edge to its two-source evidence floor.
+    assert merged_edge["weight"] == 2.0
+
+    vdb_payload = relationships_vdb.upserts[-1]
+    persisted = next(iter(vdb_payload.values()))
+    assert persisted["weight"] == 2.0
