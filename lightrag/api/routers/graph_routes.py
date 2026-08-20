@@ -137,7 +137,12 @@ class RelationCreateRequest(BaseModel):
     )
     relation_data: Dict[str, Any] = Field(
         ...,
-        description="Dictionary containing relationship properties. Common fields include 'description', 'keywords', and 'weight'.",
+        description=(
+            "Relationship properties. Weight is the distinct-source evidence "
+            "floor plus an optional boost and cannot be below the number of "
+            "distinct real source_id values. Omit source_id for a source-less "
+            "non-negative fractional weight."
+        ),
         examples=[
             {
                 "description": "Elon Musk is the CEO of Tesla",
@@ -483,7 +488,10 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 target ID and updated data. Only description, keywords,
                 source_id and file_path (strings) and weight (number) are
                 accepted in updated_data; any other key or a value of the wrong
-                shape is rejected with 400.
+                shape is rejected with 400. The complete updated relation must
+                keep weight at or above its distinct-source evidence count;
+                set source_id to an empty string in the same edit before
+                assigning a smaller fractional weight.
 
         Returns:
             Dict: Updated relation information
@@ -610,8 +618,11 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             relation_data (dict): Relationship properties including:
                 - description (str): Textual description of the relationship
                 - keywords (str): Comma-separated keywords describing the relationship type
-                - source_id (str): Related chunk_id from which the description originates
-                - weight (float): Relationship strength/importance (default: 1.0)
+                - source_id (str): Distinct evidence chunk IDs separated by <SEP>;
+                  omit for a source-less relation
+                - weight (float): Evidence-count floor plus an optional importance
+                  boost (default: 1.0); must be non-negative and no smaller than
+                  the number of distinct real source IDs
                 - Additional custom properties as needed
 
         Response Schema:
@@ -623,8 +634,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                     "tgt_id": "Tesla",
                     "description": "Elon Musk is the CEO of Tesla",
                     "keywords": "CEO, founder",
-                    "source_id": "chunk-123<SEP>chunk-456"
-                    "weight": 1.0,
+                    "source_id": "chunk-123<SEP>chunk-456",
+                    "weight": 2.0,
                     ... (other relationship properties)
                 }
             }
@@ -642,6 +653,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 "relation_data": {
                     "description": "Elon Musk is the CEO of Tesla",
                     "keywords": "CEO, founder",
+                    "source_id": "chunk-123",
                     "weight": 1.0
                 }
             }

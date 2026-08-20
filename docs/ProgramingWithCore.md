@@ -1108,7 +1108,8 @@ product = rag.create_entity("Gmail", {
 relation = rag.create_relation("Google", "Gmail", {
     "description": "Google develops and operates Gmail.",
     "keywords": "develops operates service",
-    "weight": 2.0
+    "source_id": "chunk-google-gmail",
+    "weight": 1.5
 })
 ```
 
@@ -1144,6 +1145,52 @@ endpoints of every relationship before writing any custom KG data.
 `merge_entities` resolves existing exact legacy source/target names first and
 otherwise uses normalized names. The target may be an existing entity or a
 new normalized name created by the merge.
+
+### Relation Weight Contract
+
+Relation `weight` has an evidence-count floor. Each distinct real ID in the
+`source_id` field contributes one unit of evidence, and a larger explicit
+weight is an optional importance boost:
+
+```text
+weight >= len(distinct real source IDs)
+```
+
+Multiple source IDs use the `<SEP>` separator. Empty values and the historical
+no-source placeholders `manual_creation` and `UNKNOWN` are not evidence. When
+a relation has no real source IDs, its evidence count is zero, so a
+non-negative fractional weight is valid. When creating a source-less relation,
+omit `source_id`; when editing an existing relation, set `source_id` to an
+empty string in the same edit that lowers the weight.
+
+`create_relation`, `edit_relation`, and `insert_custom_kg` validate this
+contract before writing graph or vector data; invalid Python API inputs raise
+`ValueError` and the REST graph API returns HTTP 400. Relation edits validate
+the complete post-edit shape, so `source_id` and `weight` can be changed
+together. Existing legacy relations are repaired upward when extraction adds
+evidence, an entity rename rewrites their endpoints, an unrelated relation edit
+rewrites the row, or a relation is rebuilt from surviving chunks (document
+purge, resume, and custom-chunk rollback). `lightrag-rebuild-vdb` is not such a
+repair point: it mirrors each graph edge into the vector storage field for
+field, copying the stored weight verbatim without touching the graph.
+
+A rebuild re-derives the relation from the extraction results cached for the
+surviving chunks, so — like the rebuilt description and keywords — the weight is
+recomputed rather than preserved: it becomes the summed fragment weights lifted
+to the surviving evidence count. Weight therefore follows evidence downward as a
+purge removes chunks, and an importance boost applied through `edit_relation`
+does not survive a rebuild that finds cached fragments. When no cached fragment
+survives, the rebuild keeps the stored weight.
+
+When entity merging redirects multiple relations onto the same endpoint, the
+result is:
+
+```text
+merged weight = max(all input weights, distinct merged real source IDs)
+```
+
+This preserves a larger manual boost while preventing the merged weight from
+falling below its evidence count.
 
 All operations are available in both synchronous and asynchronous versions. Async versions have the prefix "a" (e.g., `acreate_entity`, `aedit_relation`).
 
@@ -1331,7 +1378,8 @@ When merging entities:
 - Duplicate relationships are intelligently merged
 - Self-relationships (loops) are prevented
 - Source entities are removed after merging
-- Relationship weights and attributes are preserved
+- Relationship attributes are merged, and each resulting weight is the larger
+  of every input weight and the distinct merged real-source count
 
 
 ## Troubleshooting

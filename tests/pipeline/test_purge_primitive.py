@@ -734,3 +734,119 @@ async def test_best_effort_rebuild_keeps_historical_behavior():
     )
     # Tracking narrowed to the surviving source.
     assert rag.entity_chunks.data["ALICE"]["chunk_ids"] == ["c2"]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_purge_keeps_legacy_placeholders_out_of_relation_tracking():
+    """#3676 follow-up: a legacy relation carries the no-evidence placeholder
+    ``manual_creation`` in both its tracking row and its edge ``source_id``.
+    Purging one of its real chunks must not write that placeholder back into
+    ``relation_chunks`` -- the authoritative chunk list, where a later purge or
+    audit would read it as a real surviving chunk.
+
+    Both write points are exercised here: the stage-2 tracking update computed
+    from ``remaining_sources`` (nothing subtracts a placeholder -- it is not one
+    of the deleted chunk IDs) and the stage-6 rebuild that rewrites the same row
+    and the edge.
+    """
+    graph = _Graph(
+        nodes={
+            "ALICE": _node("ALICE", ["c1", "c2"]),
+            "BOB": _node("BOB", ["c1", "c2"]),
+        },
+        edges={("ALICE", "BOB"): _edge(["manual_creation", "c1", "c2"])},
+    )
+    tracking_key = make_relation_chunk_key("ALICE", "BOB")
+    rag = _make_rag(
+        graph=graph,
+        relation_chunks=_KV(
+            {tracking_key: {"chunk_ids": ["manual_creation", "c1", "c2"]}}
+        ),
+        text_chunks=_KV(
+            {
+                "c2": {
+                    "content": "alice knows bob",
+                    "file_path": "base.txt",
+                    "llm_cache_list": ["cache-c2"],
+                }
+            }
+        ),
+        llm_cache=_KV(
+            {
+                "cache-c2": {
+                    "cache_type": "extract",
+                    "chunk_id": "c2",
+                    "return": '{"entities": [], "relationships": [{"source": "ALICE", "target": "BOB", "description": "Alice knows Bob", "keywords": "knows", "strength": 1}]}',
+                    "create_time": 1,
+                }
+            }
+        ),
+    )
+    status, lock = _status()
+
+    await rag._purge_kg_contributions(
+        "d1",
+        ["c1"],
+        candidate_entities=[],
+        candidate_relations=[("ALICE", "BOB")],
+        patch_only=True,
+        rebuild_policy="rollback",
+        pipeline_status=status,
+        pipeline_status_lock=lock,
+    )
+
+    assert rag.relation_chunks.data[tracking_key]["chunk_ids"] == ["c2"]
+    assert rag.relation_chunks.data[tracking_key]["count"] == 1
+    assert graph.edges[("ALICE", "BOB")]["source_id"] == "c2"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_purge_tracking_update_is_placeholder_free_before_the_rebuild(
+    monkeypatch,
+):
+    """Isolates the stage-2 tracking write from the stage-6 rebuild that would
+    otherwise overwrite it. The rebuild spans LLM summaries, so a placeholder
+    written into the authoritative row at stage 2 would be readable for that whole
+    window, and a crash inside it would leave the row poisoned until the purge is
+    retried."""
+    graph = _Graph(
+        nodes={
+            "ALICE": _node("ALICE", ["c1", "c2"]),
+            "BOB": _node("BOB", ["c1", "c2"]),
+        },
+        edges={("ALICE", "BOB"): _edge(["manual_creation", "c1", "c2"])},
+    )
+    tracking_key = make_relation_chunk_key("ALICE", "BOB")
+    rag = _make_rag(
+        graph=graph,
+        relation_chunks=_KV(
+            {tracking_key: {"chunk_ids": ["manual_creation", "c1", "c2"]}}
+        ),
+        text_chunks=_KV({"c2": {"content": "x", "llm_cache_list": []}}),
+    )
+
+    async def rebuild_boom(*args, **kwargs):
+        raise RuntimeError("rebuild boom")
+
+    monkeypatch.setattr(operate_module, "rebuild_knowledge_from_chunks", rebuild_boom)
+    monkeypatch.setattr("lightrag.lightrag.rebuild_knowledge_from_chunks", rebuild_boom)
+    status, lock = _status()
+
+    with pytest.raises(Exception, match="Failed to rebuild knowledge graph"):
+        await rag._purge_kg_contributions(
+            "d1",
+            ["c1"],
+            candidate_entities=[],
+            candidate_relations=[("ALICE", "BOB")],
+            patch_only=True,
+            rebuild_policy="rollback",
+            pipeline_status=status,
+            pipeline_status_lock=lock,
+        )
+
+    # Chunks are still present (the failure is retryable), and the authoritative
+    # row already holds only real surviving chunks.
+    assert rag.text_chunks.deleted == []
+    assert rag.relation_chunks.data[tracking_key]["chunk_ids"] == ["c2"]

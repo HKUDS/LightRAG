@@ -48,6 +48,11 @@ DEFAULT_HEADING_LEVEL_MAX_CHARS = 80
 # Separator for: description, source_id and relation-key fields(Can not be changed after data inserted)
 GRAPH_FIELD_SEP = "<SEP>"
 
+# Historical placeholders written when a manually-created relation did not
+# provide a real source. They remain readable for compatibility but are not
+# evidence and therefore do not contribute to the relation weight floor.
+RELATION_NO_EVIDENCE_SOURCE_IDS = frozenset({"manual_creation", "UNKNOWN"})
+
 # Query and retrieval configuration defaults
 DEFAULT_TOP_K = 40
 DEFAULT_CHUNK_TOP_K = 20
