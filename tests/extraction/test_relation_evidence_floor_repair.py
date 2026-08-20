@@ -197,14 +197,38 @@ async def test_rebuild_lifts_weight_when_fragment_cache_is_partial():
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_rebuild_preserves_a_larger_explicit_boost():
-    """Over-repair guard: the floor lifts an undersized weight, it never lowers a
-    legitimate importance boost."""
+async def test_degraded_rebuild_preserves_a_larger_explicit_boost():
+    """Over-repair guard for the degraded path: with no fragment to re-derive
+    from, ``weights`` is seeded with the stored scalar, so the floor lifts an
+    undersized weight but never lowers a legitimate importance boost."""
     graph = await _graph_with_edge(weight=10.0, source_id="c1")
 
     edge = await _rebuild(graph, ["c1", "c2"], {})
 
     assert edge["weight"] == 10.0
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_cached_rebuild_rederives_weight_instead_of_keeping_the_boost():
+    """Scope boundary of the floor (deliberate, documented behavior): once cached
+    fragments exist the rebuild re-derives weight from them -- as it re-derives
+    description and keywords -- so weight follows evidence down after a purge and
+    an ``edit_relation`` boost is not carried across. Folding the stored scalar
+    into the floor's ``max`` would freeze weight at its pre-purge value forever,
+    because the scalar cannot be decomposed into evidence and boost."""
+    graph = await _graph_with_edge(weight=10.0, source_id="c1")
+
+    edge = await _rebuild(
+        graph,
+        ["c1", "c2"],
+        {
+            "c1": {("A", "B"): [_fragment(1.0)]},
+            "c2": {("A", "B"): [_fragment(1.0)]},
+        },
+    )
+
+    assert edge["weight"] == 2.0
 
 
 @pytest.mark.offline

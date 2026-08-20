@@ -1172,6 +1172,14 @@ evidence, an entity rename rewrites their endpoints, an unrelated relation edit
 rewrites the row, or a relation is rebuilt from surviving chunks (document purge
 and resume, or `lightrag-rebuild-vdb`).
 
+A rebuild re-derives the relation from the extraction results cached for the
+surviving chunks, so — like the rebuilt description and keywords — the weight is
+recomputed rather than preserved: it becomes the summed fragment weights lifted
+to the surviving evidence count. Weight therefore follows evidence downward as a
+purge removes chunks, and an importance boost applied through `edit_relation`
+does not survive a rebuild that finds cached fragments. When no cached fragment
+survives, the rebuild keeps the stored weight.
+
 When entity merging redirects multiple relations onto the same endpoint, the
 result is:
 

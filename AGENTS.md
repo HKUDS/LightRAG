@@ -125,13 +125,20 @@ evidence count, creation callers omit `source_id`, while edit callers set it to
 an empty string in the same operation.
 
 Entity merges use `max(all input weights, distinct merged real source IDs)`.
-Extraction merges, entity-rename rewrites, and rebuilds from surviving chunks
-are repair points for legacy rows: they must lift an undersized stored weight to
-the current evidence floor while preserving any larger explicit boost. Relation
-chunk tracking is the authoritative chunk list, so the no-source placeholders
-must never be written into it. Keep this contract synchronized across
-the core API docstrings, REST graph documentation, `ProgramingWithCore.md`, and
-custom-KG examples whenever relation write behavior changes.
+Extraction merges and entity-rename rewrites are repair points for legacy rows:
+they must lift an undersized stored weight to the current evidence floor while
+preserving any larger explicit boost. Rebuilds from surviving chunks
+(`_rebuild_single_relationship`, reached by document purge/resume and
+`lightrag-rebuild-vdb`) are a repair point for the floor only: they re-derive
+weight from the surviving cached fragments and then lift it to the surviving
+evidence count, so weight tracks evidence down as purge removes chunks and an
+explicit boost is not carried across — exactly as the rebuilt description and
+keywords replace their edited values. The degraded path, having no fragments to
+re-derive from, keeps the stored weight instead. Relation chunk tracking is the
+authoritative chunk list, so the no-source placeholders must never be written
+into it. Keep this contract synchronized across the core API docstrings, REST
+graph documentation, `ProgramingWithCore.md`, and custom-KG examples whenever
+relation write behavior changes.
 
 The offline remedy for a document with no proof is `audit_kg_integrity(..., apply=True)` (`lightrag/tools/kg_integrity_repair.py`): it rebuilds anchors from surviving chunk provenance, and — because it enumerates the **whole** graph, which the hot paths never do — it can additionally certify that a document appearing nowhere in that scan owns nothing, writing it the empty anchor rows that are the normal proof for such a document (`anchorless_docs` in the report). Absence is only ever concluded from the completed scan; a document that does own graph objects is repaired with its real names, never blanked.
 

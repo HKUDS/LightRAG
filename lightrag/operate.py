@@ -2132,9 +2132,18 @@ async def _rebuild_single_relationship(
     # becomes the edge's source_id, while cached fragments only cover those
     # surviving chunks whose extraction cache is still present (none at all on the
     # degraded path). Their summed weight can therefore under-count the evidence
-    # and mint exactly the rows relation edits later refuse. Repair upward, keeping
-    # any larger importance boost. Count the post-limit list, matching
-    # _merge_edges_then_upsert and the source_id actually stored on the edge.
+    # and mint exactly the rows relation edits later refuse. Count the post-limit
+    # list, matching _merge_edges_then_upsert and the source_id actually stored on
+    # the edge.
+    #
+    # This is a floor, not boost preservation: a rebuild that found fragments
+    # re-derives weight from them, exactly as it re-derives description and
+    # keywords, so weight follows evidence DOWN as a purge removes chunks and an
+    # edit_relation boost is not carried across. Folding the stored scalar into
+    # the max would freeze weight at its pre-purge value forever, since the
+    # scalar cannot be decomposed into evidence and boost. The degraded path has
+    # nothing to re-derive from, so it seeds ``weights`` with the stored value
+    # above and the boost survives there.
     rebuilt_evidence_count = len(
         {
             chunk_id
