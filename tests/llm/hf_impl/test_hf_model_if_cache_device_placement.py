@@ -225,3 +225,28 @@ async def test_prompt_length_slicing_excludes_prompt_tokens(monkeypatch):
     full_output = fake_model.received_kwargs is not None
     assert full_output
     assert result == "decoded:[901, 902]"  # prompt ids [1..5] sliced off
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("generation_kwargs", "expected_max_new_tokens"),
+    [
+        ({}, 512),
+        ({"max_tokens": 37}, 37),
+        ({"max_new_tokens": 41}, 41),
+        ({"max_tokens": 37, "max_new_tokens": 41}, 41),
+    ],
+)
+async def test_generation_token_limit_precedence(
+    monkeypatch, generation_kwargs, expected_max_new_tokens
+):
+    """The HF-native setting wins over LightRAG's generic alias, while
+    preserving the existing 512-token default when neither is supplied."""
+    hf_module, fake_model, _ = make_hf_module(
+        monkeypatch, model_device="cpu", host_has_cuda=False
+    )
+
+    await hf_module.hf_model_if_cache("fake-model", "hello world", **generation_kwargs)
+
+    assert fake_model.received_kwargs["max_new_tokens"] == expected_max_new_tokens
+    assert "max_tokens" not in fake_model.received_kwargs
