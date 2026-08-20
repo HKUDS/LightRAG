@@ -98,6 +98,16 @@ _DUPLICATE_KEY_CODE = 11000
 # migration's progress cadence).
 _EDGE_MIGRATION_PROGRESS_INTERVAL = 50_000
 
+# Ceiling on how many same-depth candidates get a degree lookup before the
+# max_nodes cap in the bidirectional BFS. node_degrees_batch binds the whole
+# list into two `$in` arrays, and one hub can put 100k neighbours in a single
+# level -- an array that size inflates the command document and forces the
+# planner through a huge index-bounds list for a ranking that only decides the
+# order of candidates max_nodes will mostly discard anyway. (Deliberately not
+# shared with the OpenSearch constant of the same value: that one is derived
+# from index.max_terms_count / search.max_buckets, this one from $in size.)
+_GRAPH_DEGREE_RANK_MAX_CANDIDATES = 8192
+
 
 def _canonical_edge_endpoints(
     source_node_id: str, target_node_id: str
@@ -2887,7 +2897,12 @@ class MongoGraphStorage(BaseGraphStorage):
         if depth > max_depth:
             return result
 
-        cursor = self.collection.find({"_id": {"$in": node_labels}})
+        # Project away source_ids: ranking materialises the WHOLE level before
+        # the cap can discard any of it (the pre-ranking loop could stop at the
+        # first node past max_nodes), and source_ids is the one unbounded field
+        # on the document. The wildcard path feeds _construct_graph_node from a
+        # {"source_ids": 0} cursor already, so it is provably not needed here.
+        cursor = self.collection.find({"_id": {"$in": node_labels}}, {"source_ids": 0})
 
         # node_labels can name the same node twice (reached by two edges of the
         # previous level); a duplicate reaching the admission loop would spend a
@@ -2907,7 +2922,10 @@ class MongoGraphStorage(BaseGraphStorage):
         # contract binds which nodes survive, not their order.
         if len(level_nodes) > 1 and len(result.nodes) + len(level_nodes) > max_nodes:
             level_degrees = await self.node_degrees_batch(
-                [node["_id"] for node in level_nodes]
+                [
+                    node["_id"]
+                    for node in level_nodes[:_GRAPH_DEGREE_RANK_MAX_CANDIDATES]
+                ]
             )
             level_nodes.sort(
                 key=lambda node: (-level_degrees.get(node["_id"], 0), node["_id"])

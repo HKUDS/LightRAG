@@ -132,3 +132,85 @@ async def test_bfs_level_that_fits_keeps_every_node():
 
     assert sorted(node.id for node in result.nodes) == ["A", "X", "Y", "Z"]
     assert result.is_truncated is False
+
+
+@pytest.mark.asyncio
+async def test_bfs_level_fetch_projects_away_source_ids():
+    """Ranking has to materialise the WHOLE level before the cap can discard
+    any of it -- the pre-ranking loop could stop at the first node past
+    ``max_nodes``. ``source_ids`` is the one unbounded field on a node
+    document, so an unprojected level fetch turns a hub into O(level) memory
+    of chunk provenance nobody reads: ``_construct_graph_node`` does not use
+    it, which is why the wildcard path already projects it away."""
+    storage = _make_storage()
+
+    await storage.get_knowledge_subgraph_bidirectional_bfs(
+        "A", 0, max_depth=1, max_nodes=3
+    )
+
+    assert storage.collection.find.call_args_list
+    for call in storage.collection.find.call_args_list:
+        # args[1:] rather than args[1]: an unprojected call must fail this on
+        # the projection it did not send, not on an IndexError.
+        assert call.args[1:] == ({"source_ids": 0},)
+
+
+@pytest.mark.asyncio
+async def test_bfs_degree_lookup_is_capped_on_a_single_wide_level():
+    """One hub puts every neighbour on a single level, and
+    ``node_degrees_batch`` binds that whole list into two ``$in`` arrays. The
+    ranking only decides the order of candidates ``max_nodes`` mostly discards,
+    so it carries a ceiling rather than growing with the graph."""
+    # Wider than the ceiling the implementation applies, stated as a literal so
+    # an uncapped lookup fails on the candidate count it actually sent rather
+    # than on an import of the constant that bounds it.
+    width = 8692
+    neighbours = [f"n{i}" for i in range(width)]
+    edges = [{"source_node_id": "A", "target_node_id": n} for n in neighbours]
+    real_ids = {"A", *neighbours}
+
+    storage = _make_storage()
+    storage.collection = SimpleNamespace(
+        find=Mock(
+            side_effect=lambda query, projection=None: _AsyncCursor(
+                [
+                    {"_id": nid, "entity_type": "person"}
+                    for nid in query["_id"]["$in"]
+                    if nid in real_ids
+                ]
+            )
+        )
+    )
+
+    def _find_edges(query):
+        if "$or" in query:
+            ids = set(query["$or"][0]["source_node_id"]["$in"])
+            return _AsyncCursor(
+                [
+                    e
+                    for e in edges
+                    if e["source_node_id"] in ids or e["target_node_id"] in ids
+                ]
+            )
+        ids = set(query["$and"][0]["source_node_id"]["$in"])
+        return _AsyncCursor(
+            [
+                e
+                for e in edges
+                if e["source_node_id"] in ids and e["target_node_id"] in ids
+            ]
+        )
+
+    storage.edge_collection = SimpleNamespace(find=Mock(side_effect=_find_edges))
+    storage.node_degrees_batch = AsyncMock(return_value={})
+
+    await storage.get_knowledge_subgraph_bidirectional_bfs(
+        "A", 0, max_depth=1, max_nodes=1000
+    )
+
+    ranked = storage.node_degrees_batch.await_args.args[0]
+    assert len(ranked) < width
+
+    from lightrag.kg.mongo_impl import _GRAPH_DEGREE_RANK_MAX_CANDIDATES
+
+    assert len(ranked) == _GRAPH_DEGREE_RANK_MAX_CANDIDATES
