@@ -327,12 +327,13 @@ _EDGE_ID_CANONICAL_META_FLAG = "edge_id_canonical_v1"
 _EDGE_MIGRATION_PROGRESS_INTERVAL = 50_000
 
 # Ceiling on how many same-depth candidates get a degree lookup before the
-# max_nodes cap. node_degrees_batch puts the whole list in two `terms` clauses
-# and asks for 2x its length in buckets per aggregation, so an unbounded level
-# (one hub with 100k neighbours reaches that at depth 1) breaches OpenSearch's
-# default index.max_terms_count / search.max_buckets of 65536 and turns a
-# truncated subgraph into a failed request. 8192 keeps both well inside the
-# defaults while still ranking far more candidates than max_nodes admits.
+# max_nodes cap. node_degrees_batch puts the whole list in four `terms` clauses
+# (two in the query, two in the aggregation filters) and asks for one bucket per
+# id in each of its two aggregations, so an unbounded level (one hub with 100k
+# neighbours reaches that at depth 1) breaches OpenSearch's default
+# index.max_terms_count / search.max_buckets of 65536 and turns a truncated
+# subgraph into a failed request. 8192 keeps both well inside the defaults while
+# still ranking far more candidates than max_nodes admits.
 _GRAPH_DEGREE_RANK_MAX_CANDIDATES = 8192
 
 
@@ -3942,18 +3943,37 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         ]
                     }
                 },
+                # Each aggregation is wrapped in a `filter` so its bucket keys
+                # are structurally confined to the requested ids. Without it the
+                # `should` query admits any edge whose OTHER endpoint matched, so
+                # `source_node_id` can take as many distinct values as the level
+                # has neighbours -- far past any bucket budget derived from
+                # len(node_ids). `terms` returns the top `size` buckets by
+                # doc_count, so the overflow silently drops the LOW-degree
+                # requested nodes, which then rank as degree 0 and fall back to
+                # label order. Confined keys make `size: len(node_ids)` exact.
                 "aggs": {
                     "source_degrees": {
-                        "terms": {
-                            "field": "source_node_id",
-                            "size": len(node_ids) * 2,
-                        }
+                        "filter": {"terms": {"source_node_id": node_ids}},
+                        "aggs": {
+                            "ids": {
+                                "terms": {
+                                    "field": "source_node_id",
+                                    "size": len(node_ids),
+                                }
+                            }
+                        },
                     },
                     "target_degrees": {
-                        "terms": {
-                            "field": "target_node_id",
-                            "size": len(node_ids) * 2,
-                        }
+                        "filter": {"terms": {"target_node_id": node_ids}},
+                        "aggs": {
+                            "ids": {
+                                "terms": {
+                                    "field": "target_node_id",
+                                    "size": len(node_ids),
+                                }
+                            }
+                        },
                     },
                 },
             }
@@ -3963,16 +3983,15 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             # quadratic and blocks the event loop for seconds.
             requested = set(node_ids)
             result = {}
-            for bucket in response["aggregations"]["source_degrees"]["buckets"]:
-                if bucket["key"] in requested:
-                    result[bucket["key"]] = (
-                        result.get(bucket["key"], 0) + bucket["doc_count"]
-                    )
-            for bucket in response["aggregations"]["target_degrees"]["buckets"]:
-                if bucket["key"] in requested:
-                    result[bucket["key"]] = (
-                        result.get(bucket["key"], 0) + bucket["doc_count"]
-                    )
+            for agg_name in ("source_degrees", "target_degrees"):
+                buckets = response["aggregations"][agg_name]["ids"]["buckets"]
+                for bucket in buckets:
+                    # The filter above already confines the keys; this stays as
+                    # cheap defense against a stray key reaching the sum.
+                    if bucket["key"] in requested:
+                        result[bucket["key"]] = (
+                            result.get(bucket["key"], 0) + bucket["doc_count"]
+                        )
             return result
         except OpenSearchException as e:
             if _is_missing_index_error(e):
@@ -4988,6 +5007,12 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         if len(discovered_nodes) > max_nodes:
             remaining = max_nodes - 1
             for depth in sorted(levels):
+                # No slots left: this level and every deeper one are sliced off
+                # whole by `ranked[: max_nodes - 1]` below, so ranking them
+                # cannot change the output. Also covers max_nodes <= 1, where
+                # nothing but start_label is ever admitted.
+                if remaining <= 0:
+                    break
                 level = levels[depth]
                 if len(level) > remaining:
                     degrees = await self.node_degrees_batch(
@@ -5126,7 +5151,14 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             # level edge query asks for `size: 10000`, so a level can carry up
             # to ~20k endpoints, past both `index.max_terms_count` and the
             # bucket budget the degree aggregations request.
-            if len(real_docs) > 1 and len(seen_nodes) + len(real_docs) > max_nodes:
+            # Gate on the slots actually left rather than on level overflow
+            # alone: once the cap is full nothing here can be admitted, so the
+            # ranking would buy an aggregation over up to
+            # _GRAPH_DEGREE_RANK_MAX_CANDIDATES ids and change no output. The
+            # mget above stays unconditional -- a full-cap level still has to
+            # resolve real nodes to report truncation honestly.
+            remaining = max_nodes - len(seen_nodes)
+            if 0 < remaining < len(real_docs):
                 level_degrees = await self.node_degrees_batch(
                     [
                         doc["_id"]
@@ -5149,6 +5181,14 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 result.nodes.append(
                     self._construct_graph_node(doc["_id"], doc["_source"])
                 )
+
+            # Truncation is already proven, so the next level cannot admit
+            # anything and its edge query + mget would buy nothing. Note the
+            # condition: breaking on `len(seen_nodes) >= max_nodes` instead
+            # would skip the probe that turns an exact fill into a truthful
+            # is_truncated, which is exactly the level this loop must still see.
+            if truncated_by_cap:
+                break
 
             current_level = [doc["_id"] for doc in new_docs]
 

@@ -56,17 +56,33 @@ def _search_side_effect(edges):
                 if e["source_node_id"] in ids or e["target_node_id"] in ids
             ]
 
-            def _buckets(field):
-                return [
+            # Faithful `terms` semantics, which is what makes this stub able to
+            # tell the two aggregation shapes apart: buckets are ordered by
+            # doc_count and only the top `size` are returned. A key that falls
+            # off the end is indistinguishable from a key with no edges at all.
+            def _agg(name, field):
+                spec = body["aggs"][name]
+                docs, filtered = matching, "filter" in spec
+                if filtered:
+                    allowed = set(spec["filter"]["terms"][field])
+                    docs = [e for e in matching if e[field] in allowed]
+                    inner = spec["aggs"]["ids"]["terms"]
+                else:
+                    inner = spec["terms"]
+                counts = Counter(e[field] for e in docs)
+                buckets = [
                     {"key": key, "doc_count": count}
-                    for key, count in Counter(e[field] for e in matching).items()
+                    for key, count in counts.most_common(inner["size"])
                 ]
+                return (
+                    {"ids": {"buckets": buckets}} if filtered else {"buckets": buckets}
+                )
 
             return {
                 "hits": {"hits": []},
                 "aggregations": {
-                    "source_degrees": {"buckets": _buckets("source_node_id")},
-                    "target_degrees": {"buckets": _buckets("target_node_id")},
+                    "source_degrees": _agg("source_degrees", "source_node_id"),
+                    "target_degrees": _agg("target_degrees", "target_node_id"),
                 },
             }
         if "should" in bool_query:
@@ -223,3 +239,84 @@ async def test_bfs_degree_lookup_is_capped_on_a_single_wide_level():
 
     ranked = storage.node_degrees_batch.await_args.args[0]
     assert len(ranked) == _GRAPH_DEGREE_RANK_MAX_CANDIDATES
+
+
+@pytest.mark.asyncio
+async def test_degree_aggregation_confines_its_buckets_to_the_requested_ids():
+    """``node_degrees_batch`` must not lose a requested LOW-degree node.
+
+    The ``should`` query admits an edge when EITHER endpoint matches, so
+    ``source_node_id`` can take as many distinct values as the level has
+    neighbours. A bucket budget derived from ``len(node_ids)`` cannot cover
+    that, and ``terms`` drops the smallest counts first -- exactly the nodes
+    the ranking is trying to place last. They came back absent, scored 0, and
+    the level silently reverted to label order.
+
+    Here H is requested and busy, L is requested and quiet, and 50 unrequested
+    sources each outrank L on doc_count. Under the old ``size: 2 * len(ids)``
+    budget over unconfined keys, L falls off the end.
+    """
+    edges = [
+        {"source_node_id": f"s{i}", "target_node_id": "H"}
+        for i in range(50)
+        for _ in range(2)
+    ]
+    edges.append({"source_node_id": "L", "target_node_id": "t"})
+
+    storage = _make_storage()
+    storage.client.search = AsyncMock(side_effect=_search_side_effect(edges))
+
+    degrees = await storage.node_degrees_batch(["L", "H"])
+
+    assert degrees["L"] == 1
+    assert degrees["H"] == 100
+
+
+@pytest.mark.asyncio
+async def test_bfs_skips_the_degree_lookup_once_the_cap_is_full():
+    """A level reached with zero slots left must not pay for a ranking.
+
+    ``max_nodes`` lands exactly on the end of the first level, so the second
+    level is discovered (it still has to be, to report truncation truthfully)
+    but can admit nothing. Gating on level overflow alone ran an aggregation
+    over the whole level to order nodes that were all about to be discarded.
+    """
+    storage = _make_storage()
+    storage.node_degrees_batch = AsyncMock(return_value={})
+
+    result = await storage.get_knowledge_graph("A", max_depth=3, max_nodes=4)
+
+    storage.node_degrees_batch.assert_not_awaited()
+    assert sorted(node.id for node in result.nodes) == ["A", "X", "Y", "Z"]
+    assert result.is_truncated is True
+
+
+@pytest.mark.asyncio
+async def test_bfs_stops_expanding_once_truncation_is_proven():
+    """Past a proven cutoff there is nothing left to discover, so the next
+    level's edge search and mget are pure cost. The cut keys off
+    ``truncated_by_cap`` rather than a full ``seen_nodes`` on purpose: an exact
+    fill has to keep probing, which is what the test above pins."""
+    storage = _make_storage()
+
+    await storage.get_knowledge_graph("A", max_depth=3, max_nodes=3)
+
+    # Two mgets: the start-node resolution and the one level that was
+    # expanded. A third would mean the loop probed past a proven cutoff.
+    assert storage.client.mget.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_ppl_skips_the_degree_lookup_when_no_slots_remain():
+    """``max_nodes=1`` admits the start node and nothing else, so every level
+    is sliced off whole by ``ranked[: max_nodes - 1]``. The scan still walked
+    into the first level and ranked it."""
+    edges = [(1, {"source_node_id": "A", "target_node_id": f"n{i}"}) for i in range(5)]
+    storage = _make_ppl_storage(edges, {"A"} | {f"n{i}" for i in range(5)})
+    storage.node_degrees_batch = AsyncMock(return_value={})
+
+    result = await storage.get_knowledge_graph("A", max_depth=2, max_nodes=1)
+
+    storage.node_degrees_batch.assert_not_awaited()
+    assert [node.id for node in result.nodes] == ["A"]
+    assert result.is_truncated is True

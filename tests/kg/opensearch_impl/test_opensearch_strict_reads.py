@@ -663,17 +663,26 @@ def _bfs_search_side_effect(edges: list):
                 if e["source_node_id"] in ids or e["target_node_id"] in ids
             ]
 
-            def _buckets(field):
-                counts = Counter(e[field] for e in matching)
-                return [
-                    {"key": key, "doc_count": count} for key, count in counts.items()
-                ]
+            def _buckets(name, field):
+                # The degree aggregations are `filter`-wrapped so their bucket
+                # keys cannot escape the requested ids; mirror both the filter
+                # and the nested "ids" level here.
+                allowed = set(body["aggs"][name]["filter"]["terms"][field])
+                counts = Counter(e[field] for e in matching if e[field] in allowed)
+                return {
+                    "ids": {
+                        "buckets": [
+                            {"key": key, "doc_count": count}
+                            for key, count in counts.items()
+                        ]
+                    }
+                }
 
             return {
                 "hits": {"hits": []},
                 "aggregations": {
-                    "source_degrees": {"buckets": _buckets("source_node_id")},
-                    "target_degrees": {"buckets": _buckets("target_node_id")},
+                    "source_degrees": _buckets("source_degrees", "source_node_id"),
+                    "target_degrees": _buckets("target_degrees", "target_node_id"),
                 },
             }
         if "should" in bool_query:

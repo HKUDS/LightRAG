@@ -231,8 +231,8 @@ def _make_client():
                 "status_counts": {"buckets": []},
                 "src": {"buckets": []},
                 "tgt": {"buckets": []},
-                "source_degrees": {"buckets": []},
-                "target_degrees": {"buckets": []},
+                "source_degrees": {"ids": {"buckets": []}},
+                "target_degrees": {"ids": {"buckets": []}},
             },
         }
     )
@@ -2276,12 +2276,18 @@ class TestGraphStorage:
             return_value={
                 "hits": {"hits": [], "total": {"value": 0}},
                 "aggregations": {
-                    "source_degrees": {"buckets": [{"key": "A", "doc_count": 2}]},
+                    # Each degree aggregation is a `filter` wrapping the terms
+                    # agg, so its buckets sit one level down under "ids".
+                    "source_degrees": {
+                        "ids": {"buckets": [{"key": "A", "doc_count": 2}]}
+                    },
                     "target_degrees": {
-                        "buckets": [
-                            {"key": "A", "doc_count": 1},
-                            {"key": "B", "doc_count": 3},
-                        ]
+                        "ids": {
+                            "buckets": [
+                                {"key": "A", "doc_count": 1},
+                                {"key": "B", "doc_count": 3},
+                            ]
+                        }
                     },
                     "status_counts": {"buckets": []},
                     "src": {"buckets": []},
@@ -3780,12 +3786,14 @@ class TestGraphPPLDetection:
             "hits": {"hits": []},
             "aggregations": {
                 "source_degrees": {
-                    "buckets": [
-                        {"key": "C", "doc_count": 5},
-                        {"key": "B", "doc_count": 1},
-                    ]
+                    "ids": {
+                        "buckets": [
+                            {"key": "C", "doc_count": 5},
+                            {"key": "B", "doc_count": 1},
+                        ]
+                    }
                 },
-                "target_degrees": {"buckets": [{"key": "D", "doc_count": 1}]},
+                "target_degrees": {"ids": {"buckets": [{"key": "D", "doc_count": 1}]}},
             },
         }
 
