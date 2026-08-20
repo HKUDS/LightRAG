@@ -32,6 +32,7 @@ from lightrag import utils_graph
 from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.kg.networkx_impl import NetworkXStorage
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
+from lightrag.utils import make_relation_chunk_key
 
 pytestmark = pytest.mark.offline
 
@@ -350,6 +351,82 @@ class TestRelationWeightEvidenceFloor:
         edge = await rag.graph.get_edge("REL_A", "REL_B")
         assert edge["source_id"] == ""
         assert edge["weight"] == 0.25
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("legacy_source_id", ["manual_creation", "UNKNOWN"])
+    async def test_edit_clears_legacy_tracking_when_source_is_removed(
+        self, rag, legacy_source_id
+    ):
+        await self._create_endpoints(rag)
+        await rag.create_relation(
+            "REL_A", "REL_B", source_id=legacy_source_id, weight=0.25
+        )
+        storage_key = make_relation_chunk_key("REL_A", "REL_B")
+        await rag.relation_chunks.upsert(
+            {
+                storage_key: {
+                    "chunk_ids": [legacy_source_id],
+                    "count": 1,
+                }
+            }
+        )
+
+        await rag.edit_relation(
+            "REL_A",
+            "REL_B",
+            {"source_id": "", "weight": 0.25},
+        )
+
+        edge = await rag.graph.get_edge("REL_A", "REL_B")
+        assert edge["source_id"] == ""
+        assert rag.relation_chunks.records[storage_key] == {
+            "chunk_ids": [],
+            "count": 0,
+        }
+
+    @pytest.mark.asyncio
+    async def test_unrelated_edit_cleans_legacy_tracking_placeholder(self, rag):
+        await self._create_endpoints(rag)
+        await rag.create_relation(
+            "REL_A", "REL_B", source_id="manual_creation", weight=0.25
+        )
+        storage_key = make_relation_chunk_key("REL_A", "REL_B")
+        await rag.relation_chunks.upsert(
+            {
+                storage_key: {
+                    "chunk_ids": ["manual_creation"],
+                    "count": 1,
+                }
+            }
+        )
+
+        await rag.edit_relation(
+            "REL_A", "REL_B", {"description": "updated description"}
+        )
+
+        edge = await rag.graph.get_edge("REL_A", "REL_B")
+        assert edge["source_id"] == "manual_creation"
+        assert edge["weight"] == 0.25
+        assert rag.relation_chunks.records[storage_key] == {
+            "chunk_ids": [],
+            "count": 0,
+        }
+
+    @pytest.mark.asyncio
+    async def test_unrelated_edit_preserves_authoritative_empty_tracking(self, rag):
+        await self._create_endpoints(rag)
+        await rag.create_relation("REL_A", "REL_B", source_id="chunk-1", weight=1.0)
+        storage_key = make_relation_chunk_key("REL_A", "REL_B")
+        await rag.relation_chunks.upsert({storage_key: {"chunk_ids": [], "count": 0}})
+
+        await rag.edit_relation(
+            "REL_A", "REL_B", {"description": "updated description"}
+        )
+
+        assert rag.relation_chunks.records[storage_key] == {
+            "chunk_ids": [],
+            "count": 0,
+        }
 
     @pytest.mark.asyncio
     async def test_unrelated_edit_repairs_legacy_weight_below_floor(self, rag):

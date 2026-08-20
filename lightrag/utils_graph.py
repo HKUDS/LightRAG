@@ -1233,9 +1233,9 @@ async def aedit_relation(
             # Update vector database
             await relationships_vdb.upsert(relation_data)
 
-            # 4. Update relation_chunks_storage in two scenarios:
-            #    - source_id has changed (edit scenario)
-            #    - relation_chunks_storage has no existing data (migration/initialization scenario)
+            # 4. Synchronize relation chunk tracking after source edits, when
+            #    tracking is missing, or when a legacy row still contains a
+            #    historical no-evidence placeholder.
             if relation_chunks_storage is not None:
                 from .utils import (
                     make_relation_chunk_key,
@@ -1246,10 +1246,19 @@ async def aedit_relation(
 
                 # Check if storage has existing data
                 stored_data = await relation_chunks_storage.get_by_id(storage_key)
-                has_stored_data = (
-                    stored_data
-                    and isinstance(stored_data, dict)
-                    and stored_data.get("chunk_ids")
+                stored_chunk_ids_value = (
+                    stored_data.get("chunk_ids")
+                    if isinstance(stored_data, dict)
+                    else None
+                )
+                has_stored_data = isinstance(stored_chunk_ids_value, list)
+                stored_chunk_ids = (
+                    [cid for cid in stored_chunk_ids_value if cid]
+                    if has_stored_data
+                    else []
+                )
+                tracking_has_legacy_placeholder = any(
+                    cid in RELATION_NO_EVIDENCE_SOURCE_IDS for cid in stored_chunk_ids
                 )
 
                 # Get old and new source_id
@@ -1260,15 +1269,20 @@ async def aedit_relation(
                 new_chunk_ids = relation_evidence_source_ids(new_source_id)
 
                 source_id_changed = set(new_chunk_ids) != set(old_chunk_ids)
+                raw_source_id_changed = new_source_id != old_source_id
 
-                # Update if: source_id changed OR storage has no data
-                if source_id_changed or not has_stored_data:
+                if (
+                    source_id_changed
+                    or raw_source_id_changed
+                    or tracking_has_legacy_placeholder
+                    or not has_stored_data
+                ):
                     # Get existing full chunk_ids from storage
                     existing_full_chunk_ids = []
                     if has_stored_data:
                         existing_full_chunk_ids = [
                             cid
-                            for cid in stored_data.get("chunk_ids", [])
+                            for cid in stored_chunk_ids
                             if cid and cid not in RELATION_NO_EVIDENCE_SOURCE_IDS
                         ]
 
