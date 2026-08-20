@@ -3491,7 +3491,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         update_storage = False
         try:
-            from lightrag.utils_graph import validate_relation_weight
+            from lightrag.utils_graph import (
+                relation_evidence_source_ids,
+                validate_relation_weight,
+            )
 
             def _normalize_custom_kg_entity_name(value: Any, *, field: str) -> str:
                 if not isinstance(value, str):
@@ -3550,10 +3553,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         "tgt_id must be different entities"
                     )
                 source_id = relationship_data.get("source_id", "")
+                # This is still a custom-KG alias rather than the graph edge's
+                # persisted source_id. Validate its shape now, but defer the
+                # evidence floor until chunk_to_source_map resolves the alias.
+                relation_evidence_source_ids(source_id)
                 normalized_relationship_data["source_id"] = source_id
                 normalized_relationship_data["weight"] = validate_relation_weight(
                     relationship_data.get("weight", 1.0),
-                    source_id,
+                    "",
                     context=f"Custom KG relationships[{index}]",
                 )
                 normalized_relationships.append(normalized_relationship_data)

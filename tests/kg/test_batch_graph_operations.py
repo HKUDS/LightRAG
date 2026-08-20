@@ -474,6 +474,39 @@ class TestAinsertCustomKgBatchPath:
 
     @pytest.mark.offline
     @pytest.mark.asyncio
+    async def test_ainsert_custom_kg_uses_unknown_floor_for_unmatched_alias(self):
+        """An unmatched alias persists as UNKNOWN and contributes no evidence."""
+        from lightrag import LightRAG
+
+        custom_kg = self._make_custom_kg()
+        relationship = custom_kg["relationships"][0]
+        relationship["source_id"] = "missing-alias"
+        relationship["weight"] = 0.5
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rag = LightRAG(
+                working_dir=tmp,
+                llm_model_func=AsyncMock(return_value=""),
+                embedding_func=mock_embedding_func,
+            )
+            await rag.initialize_storages()
+
+            rag.entities_vdb.upsert = AsyncMock()
+            rag.relationships_vdb.upsert = AsyncMock()
+            rag.relationships_vdb.delete = AsyncMock()
+            rag.text_chunks.upsert = AsyncMock()
+            rag.doc_status.upsert = AsyncMock()
+
+            await rag.ainsert_custom_kg(custom_kg)
+
+            edge = await rag.chunk_entity_relation_graph.get_edge("EntityA", "EntityB")
+            assert edge["source_id"] == "UNKNOWN"
+            assert edge["weight"] == 0.5
+
+            await rag.finalize_storages()
+
+    @pytest.mark.offline
+    @pytest.mark.asyncio
     async def test_ainsert_custom_kg_allows_source_less_fractional_weight(self):
         from lightrag import LightRAG
 
