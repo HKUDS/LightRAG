@@ -200,3 +200,26 @@ async def test_ppl_degree_lookup_is_capped_on_a_single_wide_level():
 
     ranked = storage.node_degrees_batch.await_args.args[0]
     assert len(ranked) == _GRAPH_DEGREE_RANK_MAX_CANDIDATES
+
+
+@pytest.mark.asyncio
+async def test_bfs_degree_lookup_is_capped_on_a_single_wide_level():
+    """The non-PPL path needs the same ceiling, and it binds harder there: the
+    per-level edge query asks for ``size: 10000``, so one hub can put ~20k
+    endpoints in a level -- past both ``index.max_terms_count`` and the bucket
+    budget the two degree aggregations request."""
+    from lightrag.kg.opensearch_impl import _GRAPH_DEGREE_RANK_MAX_CANDIDATES
+
+    width = _GRAPH_DEGREE_RANK_MAX_CANDIDATES + 500
+    neighbours = [f"n{i}" for i in range(width)]
+    edges = [{"source_node_id": "A", "target_node_id": n} for n in neighbours]
+
+    storage = _make_storage()
+    storage.client.search = AsyncMock(side_effect=_search_side_effect(edges))
+    storage.client.mget = AsyncMock(side_effect=_mget_side_effect({"A", *neighbours}))
+    storage.node_degrees_batch = AsyncMock(return_value={})
+
+    await storage.get_knowledge_graph("A", max_depth=1, max_nodes=1000)
+
+    ranked = storage.node_degrees_batch.await_args.args[0]
+    assert len(ranked) == _GRAPH_DEGREE_RANK_MAX_CANDIDATES

@@ -3958,14 +3958,18 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 },
             }
             response = await self.client.search(index=self._edges_index, body=body)
+            # Membership against a set: callers now pass whole BFS levels here
+            # (thousands of ids), and a list scan per bucket makes this loop
+            # quadratic and blocks the event loop for seconds.
+            requested = set(node_ids)
             result = {}
             for bucket in response["aggregations"]["source_degrees"]["buckets"]:
-                if bucket["key"] in node_ids:
+                if bucket["key"] in requested:
                     result[bucket["key"]] = (
                         result.get(bucket["key"], 0) + bucket["doc_count"]
                     )
             for bucket in response["aggregations"]["target_degrees"]["buckets"]:
-                if bucket["key"] in node_ids:
+                if bucket["key"] in requested:
                     result[bucket["key"]] = (
                         result.get(bucket["key"], 0) + bucket["doc_count"]
                     )
@@ -5118,9 +5122,16 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             # contract's ranking before the cap reads it. Only an overflowing
             # level pays: a level that fits is admitted whole, and the contract
             # binds which nodes survive, not their order.
+            # The candidate cap matters more here than on the PPL path: the
+            # level edge query asks for `size: 10000`, so a level can carry up
+            # to ~20k endpoints, past both `index.max_terms_count` and the
+            # bucket budget the degree aggregations request.
             if len(real_docs) > 1 and len(seen_nodes) + len(real_docs) > max_nodes:
                 level_degrees = await self.node_degrees_batch(
-                    [doc["_id"] for doc in real_docs]
+                    [
+                        doc["_id"]
+                        for doc in real_docs[:_GRAPH_DEGREE_RANK_MAX_CANDIDATES]
+                    ]
                 )
                 real_docs.sort(
                     key=lambda doc: (-level_degrees.get(doc["_id"], 0), doc["_id"])
