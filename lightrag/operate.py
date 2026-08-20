@@ -55,6 +55,7 @@ from lightrag.utils import (
     apply_source_ids_limit,
     merge_source_ids,
     make_relation_chunk_key,
+    has_chunk_tracking_row,
     _cooperative_yield,
     wait_tasks_with_drain,
     performance_timing_log,
@@ -2415,16 +2416,22 @@ async def _merge_nodes_then_upsert(
         new_source_ids = [dp["source_id"] for dp in nodes_data if dp.get("source_id")]
 
         existing_full_source_ids = []
+        has_tracking_row = False
         if entity_chunks_storage is not None:
             stored_chunks = await entity_chunks_storage.get_by_id(entity_name)
-            if stored_chunks and isinstance(stored_chunks, dict):
+            # Row presence by schema, never list truthiness (see
+            # has_chunk_tracking_row): a present-but-empty row is authoritative
+            # and must NOT be reseeded from the graph node's source_id, which is
+            # a truncated view that may still name purged chunks.
+            has_tracking_row = has_chunk_tracking_row(stored_chunks)
+            if has_tracking_row:
                 existing_full_source_ids = [
                     chunk_id
                     for chunk_id in stored_chunks.get("chunk_ids", [])
                     if chunk_id
                 ]
 
-        if not existing_full_source_ids:
+        if not has_tracking_row:
             existing_full_source_ids = [
                 chunk_id for chunk_id in already_source_ids if chunk_id
             ]
@@ -2774,16 +2781,22 @@ async def _merge_edges_then_upsert(
 
         storage_key = make_relation_chunk_key(src_id, tgt_id)
         existing_full_source_ids = []
+        has_tracking_row = False
         if relation_chunks_storage is not None:
             stored_chunks = await relation_chunks_storage.get_by_id(storage_key)
-            if stored_chunks and isinstance(stored_chunks, dict):
+            # Row presence by schema, never list truthiness (see
+            # has_chunk_tracking_row): a present-but-empty row is authoritative
+            # and must NOT be reseeded from the graph edge's source_id, which is
+            # a truncated view that may still name purged chunks.
+            has_tracking_row = has_chunk_tracking_row(stored_chunks)
+            if has_tracking_row:
                 existing_full_source_ids = [
                     chunk_id
                     for chunk_id in stored_chunks.get("chunk_ids", [])
                     if chunk_id
                 ]
 
-        if not existing_full_source_ids:
+        if not has_tracking_row:
             existing_full_source_ids = [
                 chunk_id for chunk_id in already_source_ids if chunk_id
             ]
@@ -3136,19 +3149,25 @@ async def _merge_edges_then_upsert(
 
                 # 1. Get existing full source_ids from entity_chunks_storage
                 existing_full_source_ids = []
+                has_tracking_row = False
                 if entity_chunks_storage is not None:
                     stored_chunks = await entity_chunks_storage.get_by_id(
                         need_insert_id
                     )
-                    if stored_chunks and isinstance(stored_chunks, dict):
+                    # Row presence by schema, never list truthiness (see
+                    # has_chunk_tracking_row): a present-but-empty row is
+                    # authoritative and must NOT be reseeded from the graph
+                    # node's possibly-stale source_id.
+                    has_tracking_row = has_chunk_tracking_row(stored_chunks)
+                    if has_tracking_row:
                         existing_full_source_ids = [
                             chunk_id
                             for chunk_id in stored_chunks.get("chunk_ids", [])
                             if chunk_id
                         ]
 
-                # If not in entity_chunks_storage, get from graph database
-                if not existing_full_source_ids:
+                # If no tracking row exists at all, fall back to graph database
+                if not has_tracking_row:
                     if existing_node.get("source_id"):
                         existing_full_source_ids = existing_node["source_id"].split(
                             GRAPH_FIELD_SEP
