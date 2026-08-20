@@ -160,7 +160,7 @@ from lightrag.utils_pipeline import (
     normalize_document_file_path,
     require_doc_status_record,
 )
-from lightrag.constants import GRAPH_FIELD_SEP
+from lightrag.constants import GRAPH_FIELD_SEP, RELATION_NO_EVIDENCE_SOURCE_IDS
 from lightrag.exceptions import (
     IndexFlushError,
     KGPurgeOperationConflictError,
@@ -5501,10 +5501,23 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 for edge_tuple, remaining in relation_chunk_updates.items():
                     if not remaining:
                         continue
+                    # relation_chunks is the authoritative chunk list, so the
+                    # historical no-evidence placeholders must not be written
+                    # into it. `remaining` inherits them from a legacy tracking
+                    # row or edge source_id (nothing subtracts them -- they are
+                    # not deleted chunk IDs). The stage-6 rebuild writes the same
+                    # rows filtered the same way; filtering here too keeps the
+                    # authoritative row clean across the whole purge, including
+                    # the summary-bearing rebuild window and a crash inside it.
+                    tracked = [
+                        chunk_id
+                        for chunk_id in remaining
+                        if chunk_id not in RELATION_NO_EVIDENCE_SOURCE_IDS
+                    ]
                     storage_key = make_relation_chunk_key(*edge_tuple)
                     relation_upsert_payload[storage_key] = {
-                        "chunk_ids": remaining,
-                        "count": len(remaining),
+                        "chunk_ids": tracked,
+                        "count": len(tracked),
                         "updated_at": current_time,
                     }
                 if relation_upsert_payload:

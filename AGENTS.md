@@ -125,9 +125,13 @@ evidence count, creation callers omit `source_id`, while edit callers set it to
 an empty string in the same operation.
 
 Entity merges use `max(all input weights, distinct merged real source IDs)`.
-Extraction merges and entity-rename rewrites are repair points for legacy rows:
-they must lift an undersized stored weight to the current evidence floor while
-preserving any larger explicit boost. Rebuilds from surviving chunks
+Every extraction merge or entity-rename rewrite that rewrites the edge is a
+repair point for legacy rows: it must lift an undersized stored weight to the
+current evidence floor while preserving any larger explicit boost. Repair is
+opportunistic, not a sweep: `_merge_edges_then_upsert`'s KEEP-cap skip branch
+returns the stored edge without writing the graph or the vector record, so a
+legacy row there stays undersized until a merge, an unrelated relation edit, or
+a rebuild rewrites it. Rebuilds from surviving chunks
 (`_rebuild_single_relationship`, reached only through `_purge_kg_contributions`
 -> `rebuild_knowledge_from_chunks`, i.e. document purge, resume, and
 custom-chunk rollback) are a repair point for the floor only: they re-derive

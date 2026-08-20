@@ -2015,9 +2015,24 @@ async def _rebuild_single_relationship(
 
     # Same as _rebuild_single_entity: chunk_ids reach this function already
     # split and non-empty, so no merge_source_ids() normalization is needed.
-    normalized_chunk_ids = chunk_ids
+    #
+    # Drop the historical no-evidence placeholders here, once, for BOTH writes
+    # below: this list becomes the authoritative relation_chunks row, and its
+    # post-limit form becomes the edge's source_id. Purge carries a placeholder
+    # in from a legacy tracking row or edge source_id (it is not one of the
+    # deleted chunk IDs, so nothing subtracts it), and a later purge or audit
+    # would read it back out of tracking as a real surviving chunk.
+    normalized_chunk_ids = [
+        chunk_id
+        for chunk_id in chunk_ids
+        if chunk_id and chunk_id not in RELATION_NO_EVIDENCE_SOURCE_IDS
+    ]
 
-    if relation_chunks_storage is not None and normalized_chunk_ids:
+    # Keyed on the INPUT being non-empty, not on the filtered result: a row whose
+    # only entry was a placeholder must be rewritten EMPTY -- authoritative "this
+    # relation tracks no chunks" under the presence model -- rather than left
+    # holding the placeholder because the write was skipped.
+    if relation_chunks_storage is not None and chunk_ids:
         storage_key = make_relation_chunk_key(src, tgt)
         await relation_chunks_storage.upsert(
             {
@@ -2144,14 +2159,9 @@ async def _rebuild_single_relationship(
     # scalar cannot be decomposed into evidence and boost. The degraded path has
     # nothing to re-derive from, so it seeds ``weights`` with the stored value
     # above and the boost survives there.
-    rebuilt_evidence_count = len(
-        {
-            chunk_id
-            for chunk_id in limited_chunk_ids
-            if chunk_id and chunk_id not in RELATION_NO_EVIDENCE_SOURCE_IDS
-        }
-    )
-    weight = max(float(weight), float(rebuilt_evidence_count))
+    # limited_chunk_ids is derived from the placeholder-filtered list above, so
+    # every entry here already counts as real evidence.
+    weight = max(float(weight), float(len(set(limited_chunk_ids))))
 
     # Generate final description from relations or fallback to current
     if degraded:

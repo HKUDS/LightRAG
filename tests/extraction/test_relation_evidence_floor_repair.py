@@ -17,6 +17,12 @@ evidence-floor change (#3676 follow-up).
    the authoritative chunk list -- where purge and audit read them back as real
    surviving chunks.
 
+3. ``_rebuild_single_relationship`` had the same leak: it filtered the
+   placeholders out of the weight count only, while the unfiltered chunk list
+   went into both the tracking row and the edge's ``source_id``. The end-to-end
+   purge path for this is pinned in
+   ``tests/pipeline/test_purge_primitive.py``.
+
 Both run against in-memory duck-typed stores: no DB, no LLM.
 """
 
@@ -311,3 +317,73 @@ async def test_merge_repairs_a_tracking_row_that_already_holds_a_placeholder():
     edge = await graph.get_edge("A", "B")
     assert edge["source_id"] == GRAPH_FIELD_SEP.join(["c1", "c2"])
     assert edge["weight"] >= 2.0
+
+
+# --- 3. no placeholder may enter rebuild provenance ------------------------
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize("placeholder", sorted(RELATION_NO_EVIDENCE_SOURCE_IDS))
+async def test_rebuild_keeps_placeholders_out_of_tracking_and_source_id(placeholder):
+    """Purge hands the rebuild the surviving chunk list verbatim, and a legacy
+    relation's list carries a no-evidence placeholder (nothing subtracts it: it is
+    not one of the deleted chunk IDs). Neither the authoritative tracking row nor
+    the rebuilt edge may keep it, and every real chunk must survive in order."""
+    graph = await _graph_with_edge(weight=1.0, source_id=placeholder)
+    storage_key = make_relation_chunk_key("A", "B")
+    tracking = _MemKV({storage_key: {"chunk_ids": [placeholder, "c1"]}})
+
+    await _rebuild_single_relationship(
+        knowledge_graph_inst=graph,
+        relationships_vdb=_MemVdb(),
+        entities_vdb=_MemVdb(),
+        src="A",
+        tgt="B",
+        chunk_ids=[placeholder, "c1", "c2"],
+        chunk_relationships={"c1": {("A", "B"): [_fragment(1.0)]}},
+        llm_response_cache=_MemKV(),
+        global_config=_cfg(),
+        relation_chunks_storage=tracking,
+        structural_fallback=True,
+    )
+
+    assert tracking.data[storage_key]["chunk_ids"] == ["c1", "c2"]
+    assert tracking.data[storage_key]["count"] == 2
+    edge = await graph.get_edge("A", "B")
+    assert edge["source_id"] == GRAPH_FIELD_SEP.join(["c1", "c2"])
+    # Floor still applies to what actually landed on the edge.
+    assert edge["weight"] == 2.0
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_rebuild_rewrites_an_all_placeholder_row_empty():
+    """A row whose only entry is a placeholder must be rewritten EMPTY --
+    authoritative "this relation tracks no chunks" under the presence model --
+    not left holding the placeholder because the write was skipped for an empty
+    filtered list."""
+    graph = await _graph_with_edge(weight=0.5, source_id="manual_creation")
+    storage_key = make_relation_chunk_key("A", "B")
+    tracking = _MemKV({storage_key: {"chunk_ids": ["manual_creation"]}})
+
+    await _rebuild_single_relationship(
+        knowledge_graph_inst=graph,
+        relationships_vdb=_MemVdb(),
+        entities_vdb=_MemVdb(),
+        src="A",
+        tgt="B",
+        chunk_ids=["manual_creation"],
+        chunk_relationships={},
+        llm_response_cache=_MemKV(),
+        global_config=_cfg(),
+        relation_chunks_storage=tracking,
+        structural_fallback=True,
+    )
+
+    assert tracking.data[storage_key]["chunk_ids"] == []
+    assert tracking.data[storage_key]["count"] == 0
+    edge = await graph.get_edge("A", "B")
+    assert edge["source_id"] == ""
+    # No evidence left, so the floor is 0 and the source-less weight stands.
+    assert edge["weight"] == 0.5
