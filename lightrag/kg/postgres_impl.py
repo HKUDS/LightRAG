@@ -410,6 +410,12 @@ def _dollar_quote(s: str, tag_prefix: str = "AGE") -> str:
             return f"{wrapper}{s}{wrapper}"
 
 
+# PostgreSQL's `name` type (NAMEDATALEN - 1). Graph and label names are stored
+# as `name`, so anything longer is clipped on the way in and lookups have to
+# clip the value they compare against.
+_PG_NAME_MAX_BYTES = 63
+
+
 class PostgreSQLDB:
     def __init__(self, config: dict[str, Any], **kwargs: Any):
         self.host = config["host"]
@@ -455,6 +461,12 @@ class PostgreSQLDB:
 
         # Guard concurrent pool resets
         self._pool_reconnect_lock = asyncio.Lock()
+
+        # AGE graphs this process has already confirmed to exist.  Graph
+        # creation is one-time DDL, not connection session state, so it must
+        # not ride along on every AGE operation (issue #1866).
+        self._ensured_age_graphs: set[str] = set()
+        self._age_graph_ensure_lock = asyncio.Lock()
 
         self._transient_exceptions = TRANSIENT_DB_EXCEPTIONS
 
@@ -1211,28 +1223,96 @@ class PostgreSQLDB:
             # rather than returning.
             logger.warning(f"Could not create AGE extension: {e}")
 
-    @staticmethod
-    async def configure_age(connection: asyncpg.Connection, graph_name: str) -> None:
-        """Set the Apache AGE environment and creates a graph if it does not exist.
+    async def configure_age(
+        self, connection: asyncpg.Connection, graph_name: str
+    ) -> None:
+        """Prepare a pooled connection for Apache AGE access.
 
-        This method:
-        - Sets the PostgreSQL `search_path` to include `ag_catalog`, ensuring that Apache AGE functions can be used without specifying the schema.
-        - Attempts to create a new graph with the provided `graph_name` if it does not already exist.
-        - Silently ignores errors related to the graph already existing.
+        Two very different things are needed before an AGE statement can run,
+        and they have very different lifetimes:
 
+        - ``SET search_path`` is genuine session state.  ``_reset_connection``
+          deliberately runs ``RESET ALL`` on every pool release so an AGE
+          search_path never leaks into a non-AGE checkout, which means it has
+          to be re-applied on every checkout.
+        - The graph itself is one-time DDL.  Creating it here unconditionally
+          made PostgreSQL log an ERROR/STATEMENT pair for *every* graph read
+          and write, because the server writes its log entry before the client
+          ever sees the error and can swallow it (issue #1866).  Graph
+          existence is now handled by :meth:`_ensure_age_graph`, which reaches
+          the database at most once per process.
         """
-        try:
-            await connection.execute(  # type: ignore
-                'SET search_path = ag_catalog, "$user", public'
+        await connection.execute(  # type: ignore
+            'SET search_path = ag_catalog, "$user", public'
+        )
+        await self._ensure_age_graph(connection, graph_name)
+
+    async def _ensure_age_graph(
+        self, connection: asyncpg.Connection, graph_name: str
+    ) -> None:
+        """Create the AGE graph if it does not exist, at most once per process.
+
+        Steady state is a set membership test and no SQL at all.  On a miss the
+        graph is looked up in ``ag_catalog.ag_graph`` and ``create_graph()`` is
+        only issued when it is genuinely absent, so a running server stops
+        producing "graph already exists" errors entirely.
+
+        Apache AGE takes no lock before its own existence check (see
+        ``create_graph_internal`` upstream), so concurrent first-time creation
+        can still race past the lookup.  Both known outcomes are tolerated:
+
+        - ``InvalidSchemaNameError`` (3F000) — AGE reports "graph already
+          exists" with ``ERRCODE_UNDEFINED_SCHEMA``.
+        - ``UniqueViolationError`` (23505) — the loser of the ``ag_graph``
+          name index race.
+
+        The graph is recorded as ensured only once it is known to exist.  A
+        transient failure must leave the cache untouched, otherwise a graph
+        that was never created would be assumed present for the lifetime of
+        the process and every later operation would fail with 3F000.
+        """
+        if graph_name in self._ensured_age_graphs:
+            return
+
+        async with self._age_graph_ensure_lock:
+            # A concurrent task may have ensured the graph while we waited.
+            if graph_name in self._ensured_age_graphs:
+                return
+
+            # The parameter has to be truncated the same way the stored value
+            # was.  PostgreSQL's `name` type holds 63 bytes, and create_graph()
+            # below passes the name as a literal, which PostgreSQL silently
+            # clips -- so a workspace long enough to overflow is stored clipped
+            # and would never match an untruncated comparison.  Casting the
+            # bind parameter straight to `name` is not an option: for a
+            # parameter (unlike a literal) PostgreSQL raises 42622
+            # "identifier too long" instead of clipping.  left() is safe
+            # because _get_workspace_graph_name() reduces the name to
+            # [A-Za-z0-9_], where one character is one byte.
+            exists = await connection.fetchval(  # type: ignore
+                "SELECT 1 FROM ag_catalog.ag_graph "
+                f"WHERE name = left($1, {_PG_NAME_MAX_BYTES})::name",
+                graph_name,
             )
-            await connection.execute(  # type: ignore
-                f"select create_graph('{graph_name}')"
-            )
-        except (
-            asyncpg.exceptions.InvalidSchemaNameError,
-            asyncpg.exceptions.UniqueViolationError,
-        ):
-            pass
+            if exists is None:
+                try:
+                    await connection.execute(  # type: ignore
+                        f"select create_graph('{graph_name}')"
+                    )
+                    logger.info(f"PostgreSQL, AGE graph created: {graph_name}")
+                except (
+                    asyncpg.exceptions.InvalidSchemaNameError,
+                    asyncpg.exceptions.UniqueViolationError,
+                ) as e:
+                    # Lost the creation race: the graph exists now, which is
+                    # all this method promises.
+                    logger.debug(
+                        "PostgreSQL, AGE graph %s concurrently created elsewhere: %r",
+                        graph_name,
+                        e,
+                    )
+
+            self._ensured_age_graphs.add(graph_name)
 
     async def configure_vchordrq(self, connection: asyncpg.Connection) -> None:
         """Configure VCHORDRQ extension for vector similarity search.
@@ -7287,24 +7367,59 @@ class PGGraphStorage(BaseGraphStorage):
 
             await self.db._run_with_retry(_do_configure_age_extension)
 
-            # Execute each statement separately and ignore errors
+            # Only create the labels that are actually missing. create_vlabel /
+            # create_elabel have no IF NOT EXISTS form, so calling them for an
+            # existing label makes PostgreSQL log an ERROR on every startup
+            # (issue #1866). with_age=True here also guarantees the graph
+            # itself exists before we read its labels.
+            existing_labels = await self.db.query(
+                "SELECT l.name::text AS name "
+                "FROM ag_catalog.ag_label l "
+                "JOIN ag_catalog.ag_graph g ON l.graph = g.graphid "
+                f"WHERE g.name = left($1, {_PG_NAME_MAX_BYTES})::name",
+                [self.graph_name],
+                multirows=True,
+                with_age=True,
+                graph_name=self.graph_name,
+            )
+            present_labels = {row["name"] for row in existing_labels or []}
+
+            # Execute each statement separately and ignore errors.
+            #
+            # create_graph() is deliberately absent: every statement below runs
+            # with with_age=True, and the first one to do so has already had
+            # PostgreSQLDB._ensure_age_graph() create the graph. Repeating it
+            # here would only add one more "graph already exists" line to the
+            # PostgreSQL log (issue #1866).
+            #
+            # The index statements carry IF NOT EXISTS for the same reason: a
+            # plain CREATE INDEX on an existing index is an ERROR the server
+            # logs before the client can ignore it, while IF NOT EXISTS
+            # downgrades it to a NOTICE that never reaches the log.
             queries = [
-                f"SELECT create_graph('{self.graph_name}')",
-                f"SELECT create_vlabel('{self.graph_name}', 'base');",
-                f"SELECT create_elabel('{self.graph_name}', 'DIRECTED');",
-                # f'CREATE INDEX CONCURRENTLY vertex_p_idx ON {self.graph_name}."_ag_label_vertex" (id)',
-                f'CREATE INDEX CONCURRENTLY vertex_idx_node_id ON {self.graph_name}."_ag_label_vertex" (ag_catalog.agtype_access_operator(properties, \'"entity_id"\'::agtype))',
-                # f'CREATE INDEX CONCURRENTLY edge_p_idx ON {self.graph_name}."_ag_label_edge" (id)',
-                f'CREATE INDEX CONCURRENTLY edge_sid_idx ON {self.graph_name}."_ag_label_edge" (start_id)',
-                f'CREATE INDEX CONCURRENTLY edge_eid_idx ON {self.graph_name}."_ag_label_edge" (end_id)',
-                f'CREATE INDEX CONCURRENTLY edge_seid_idx ON {self.graph_name}."_ag_label_edge" (start_id,end_id)',
-                f'CREATE INDEX CONCURRENTLY directed_p_idx ON {self.graph_name}."DIRECTED" (id)',
-                f'CREATE INDEX CONCURRENTLY directed_eid_idx ON {self.graph_name}."DIRECTED" (end_id)',
-                f'CREATE INDEX CONCURRENTLY directed_sid_idx ON {self.graph_name}."DIRECTED" (start_id)',
-                f'CREATE INDEX CONCURRENTLY directed_seid_idx ON {self.graph_name}."DIRECTED" (start_id,end_id)',
-                f'CREATE INDEX CONCURRENTLY entity_p_idx ON {self.graph_name}."base" (id)',
-                f'CREATE INDEX CONCURRENTLY entity_idx_node_id ON {self.graph_name}."base" (ag_catalog.agtype_access_operator(properties, \'"entity_id"\'::agtype))',
-                f'CREATE INDEX CONCURRENTLY entity_node_id_gin_idx ON {self.graph_name}."base" using gin(properties)',
+                *(
+                    [f"SELECT create_vlabel('{self.graph_name}', 'base');"]
+                    if "base" not in present_labels
+                    else []
+                ),
+                *(
+                    [f"SELECT create_elabel('{self.graph_name}', 'DIRECTED');"]
+                    if "DIRECTED" not in present_labels
+                    else []
+                ),
+                # f'CREATE INDEX CONCURRENTLY IF NOT EXISTS vertex_p_idx ON {self.graph_name}."_ag_label_vertex" (id)',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS vertex_idx_node_id ON {self.graph_name}."_ag_label_vertex" (ag_catalog.agtype_access_operator(properties, \'"entity_id"\'::agtype))',
+                # f'CREATE INDEX CONCURRENTLY IF NOT EXISTS edge_p_idx ON {self.graph_name}."_ag_label_edge" (id)',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS edge_sid_idx ON {self.graph_name}."_ag_label_edge" (start_id)',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS edge_eid_idx ON {self.graph_name}."_ag_label_edge" (end_id)',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS edge_seid_idx ON {self.graph_name}."_ag_label_edge" (start_id,end_id)',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS directed_p_idx ON {self.graph_name}."DIRECTED" (id)',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS directed_eid_idx ON {self.graph_name}."DIRECTED" (end_id)',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS directed_sid_idx ON {self.graph_name}."DIRECTED" (start_id)',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS directed_seid_idx ON {self.graph_name}."DIRECTED" (start_id,end_id)',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS entity_p_idx ON {self.graph_name}."base" (id)',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS entity_idx_node_id ON {self.graph_name}."base" (ag_catalog.agtype_access_operator(properties, \'"entity_id"\'::agtype))',
+                f'CREATE INDEX CONCURRENTLY IF NOT EXISTS entity_node_id_gin_idx ON {self.graph_name}."base" using gin(properties)',
                 f'ALTER TABLE {self.graph_name}."DIRECTED" CLUSTER ON directed_sid_idx',
             ]
 

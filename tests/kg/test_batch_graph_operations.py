@@ -387,6 +387,158 @@ class TestAinsertCustomKgBatchPath:
 
     @pytest.mark.offline
     @pytest.mark.asyncio
+    async def test_ainsert_custom_kg_rejects_sourced_weight_below_floor(self):
+        """Weight validation must finish before the first storage mutation."""
+        from lightrag import LightRAG
+
+        custom_kg = self._make_custom_kg()
+        custom_kg["relationships"][0]["weight"] = 0.5
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rag = LightRAG(
+                working_dir=tmp,
+                llm_model_func=AsyncMock(return_value=""),
+                embedding_func=mock_embedding_func,
+            )
+            await rag.initialize_storages()
+
+            graph = rag.chunk_entity_relation_graph
+            graph.upsert_nodes_batch = AsyncMock()
+            graph.upsert_edges_batch = AsyncMock()
+            rag.chunks_vdb.upsert = AsyncMock()
+            rag.entities_vdb.upsert = AsyncMock()
+            rag.relationships_vdb.upsert = AsyncMock()
+            rag.text_chunks.upsert = AsyncMock()
+            rag._insert_done_with_cleanup = AsyncMock()
+
+            with pytest.raises(
+                ValueError, match=r"Custom KG relationships\[0\].*evidence count 1"
+            ):
+                await rag.ainsert_custom_kg(custom_kg)
+
+            graph.upsert_nodes_batch.assert_not_awaited()
+            graph.upsert_edges_batch.assert_not_awaited()
+            rag.chunks_vdb.upsert.assert_not_awaited()
+            rag.entities_vdb.upsert.assert_not_awaited()
+            rag.relationships_vdb.upsert.assert_not_awaited()
+            rag.text_chunks.upsert.assert_not_awaited()
+            rag._insert_done_with_cleanup.assert_not_awaited()
+
+            await rag.finalize_storages()
+
+    @pytest.mark.offline
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source_alias", ["UNKNOWN", "manual_creation"])
+    async def test_ainsert_custom_kg_validates_mapped_source_before_writes(
+        self, source_alias
+    ):
+        """A no-source marker can still resolve to a real custom-KG chunk."""
+        from lightrag import LightRAG
+
+        custom_kg = self._make_custom_kg()
+        custom_kg["chunks"][0]["source_id"] = source_alias
+        custom_kg["relationships"][0]["source_id"] = source_alias
+        custom_kg["relationships"][0]["weight"] = 0.5
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rag = LightRAG(
+                working_dir=tmp,
+                llm_model_func=AsyncMock(return_value=""),
+                embedding_func=mock_embedding_func,
+            )
+            await rag.initialize_storages()
+
+            graph = rag.chunk_entity_relation_graph
+            graph.upsert_nodes_batch = AsyncMock()
+            graph.upsert_edges_batch = AsyncMock()
+            rag.chunks_vdb.upsert = AsyncMock()
+            rag.entities_vdb.upsert = AsyncMock()
+            rag.relationships_vdb.upsert = AsyncMock()
+            rag.text_chunks.upsert = AsyncMock()
+            rag._insert_done_with_cleanup = AsyncMock()
+
+            with pytest.raises(
+                ValueError, match=r"Custom KG relationships\[0\].*evidence count 1"
+            ):
+                await rag.ainsert_custom_kg(custom_kg)
+
+            graph.upsert_nodes_batch.assert_not_awaited()
+            graph.upsert_edges_batch.assert_not_awaited()
+            rag.chunks_vdb.upsert.assert_not_awaited()
+            rag.entities_vdb.upsert.assert_not_awaited()
+            rag.relationships_vdb.upsert.assert_not_awaited()
+            rag.text_chunks.upsert.assert_not_awaited()
+            rag._insert_done_with_cleanup.assert_not_awaited()
+
+            await rag.finalize_storages()
+
+    @pytest.mark.offline
+    @pytest.mark.asyncio
+    async def test_ainsert_custom_kg_uses_unknown_floor_for_unmatched_alias(self):
+        """An unmatched alias persists as UNKNOWN and contributes no evidence."""
+        from lightrag import LightRAG
+
+        custom_kg = self._make_custom_kg()
+        relationship = custom_kg["relationships"][0]
+        relationship["source_id"] = "missing-alias"
+        relationship["weight"] = 0.5
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rag = LightRAG(
+                working_dir=tmp,
+                llm_model_func=AsyncMock(return_value=""),
+                embedding_func=mock_embedding_func,
+            )
+            await rag.initialize_storages()
+
+            rag.entities_vdb.upsert = AsyncMock()
+            rag.relationships_vdb.upsert = AsyncMock()
+            rag.relationships_vdb.delete = AsyncMock()
+            rag.text_chunks.upsert = AsyncMock()
+            rag.doc_status.upsert = AsyncMock()
+
+            await rag.ainsert_custom_kg(custom_kg)
+
+            edge = await rag.chunk_entity_relation_graph.get_edge("EntityA", "EntityB")
+            assert edge["source_id"] == "UNKNOWN"
+            assert edge["weight"] == 0.5
+
+            await rag.finalize_storages()
+
+    @pytest.mark.offline
+    @pytest.mark.asyncio
+    async def test_ainsert_custom_kg_allows_source_less_fractional_weight(self):
+        from lightrag import LightRAG
+
+        custom_kg = self._make_custom_kg()
+        relationship = custom_kg["relationships"][0]
+        relationship.pop("source_id")
+        relationship["weight"] = 0.5
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rag = LightRAG(
+                working_dir=tmp,
+                llm_model_func=AsyncMock(return_value=""),
+                embedding_func=mock_embedding_func,
+            )
+            await rag.initialize_storages()
+
+            rag.entities_vdb.upsert = AsyncMock()
+            rag.relationships_vdb.upsert = AsyncMock()
+            rag.relationships_vdb.delete = AsyncMock()
+            rag.text_chunks.upsert = AsyncMock()
+            rag.doc_status.upsert = AsyncMock()
+
+            await rag.ainsert_custom_kg(custom_kg)
+
+            edge = await rag.chunk_entity_relation_graph.get_edge("EntityA", "EntityB")
+            assert edge["source_id"] == ""
+            assert edge["weight"] == 0.5
+
+            await rag.finalize_storages()
+
+    @pytest.mark.offline
+    @pytest.mark.asyncio
     async def test_ainsert_custom_kg_canonicalizes_file_paths_before_upsert(self):
         """custom KG ingestion normalizes file names before touching storage."""
         from lightrag import LightRAG

@@ -859,16 +859,40 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         Order the labels by code point (SQL ``COLLATE "C"``, not a locale
         collation) so every backend agrees with Python's ``str`` comparison.
 
-        **Scope: the ``*`` whole-graph ranking on every backend.** The rule
-        should govern the non-wildcard path too -- a BFS level that overflows
-        ``max_nodes`` faces the same tie, and it decides both which neighbours
-        survive and which get expanded next -- but today only
-        :class:`~lightrag.kg.networkx_impl.NetworkXStorage` and
-        :class:`~lightrag.kg.pgtable_impl.PGTableGraphStorage` order their BFS
-        levels that way. Neo4j, Memgraph, Mongo and OpenSearch admit same-depth
-        nodes in traversal order, so their non-wildcard cutoff is still
-        ingestion-order dependent. Tracked in issue #3612; a new backend should
-        implement both paths rather than match that gap.
+        **Scope: the ``*`` whole-graph ranking.** The non-wildcard path -- BFS
+        expansion from a start ``node_label`` -- is deliberately NOT bound by
+        it, and a backend that admits same-depth nodes in traversal order there
+        is compliant. Only one level of that path could ever be affected: once
+        ``max_nodes`` is filled no deeper level contributes a node at all, so
+        the rule would decide nothing beyond which same-depth neighbours of the
+        single straddling level survive.
+
+        Buying that decision is not worth its price. The only caller is the
+        graph view (``GET /graphs``), whose consumer treats ``nodes`` and
+        ``edges`` as sets: the WebUI recomputes each node's degree from the
+        returned edges to size it and never reads the order a backend produced.
+        Against that, ranking a level requires seeing the whole level AND its
+        global degrees before the cap, which on a graph database costs the
+        traversal's early exit (the cap can no longer stop the expansion), a
+        degree count over the entire reached neighbourhood, and -- once the
+        surviving set is no longer the traversal's own subgraph -- a second,
+        unbounded relationship match to rebuild the edges. Those are real
+        query-plan costs paid on every truncated view, in exchange for a
+        marginally better neighbour choice in one level that the consumer
+        cannot distinguish.
+
+        Level-internal admission order is therefore backend-defined. Backends
+        where the ranking is a local sort pay approximately nothing and do
+        apply it: :class:`~lightrag.kg.networkx_impl.NetworkXStorage` and
+        :class:`~lightrag.kg.pgtable_impl.PGTableGraphStorage` order every
+        level, while ``MongoGraphStorage`` (default ``bidirectional`` mode) and
+        :class:`~lightrag.kg.opensearch_impl.OpenSearchGraphStorage` rank the
+        level straddling the cap, gated on overflow so a subgraph that fits
+        pays nothing at all. Neo4j, Memgraph and ``PGGraphStorage`` (Apache AGE)
+        admit in traversal order. A new backend should rank its levels where
+        its query language makes that free, and is under no obligation to
+        reshape a traversal to achieve it.
+        This is the resolution of issue #3612, not an outstanding gap in it.
 
         **Known deviation -- PGGraphStorage (Apache AGE)** ranks the ``*`` view
         on ``degree DESC, v.id ASC``, the internal vertex id, not the label.

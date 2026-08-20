@@ -6205,6 +6205,25 @@ def subtract_source_ids(
     ]
 
 
+def has_chunk_tracking_row(stored_data: Any) -> bool:
+    """Return True when a chunk-tracking KV row is present and structurally usable.
+
+    Presence is defined by schema — a dict carrying a ``chunk_ids`` list — never
+    by list truthiness. A persisted row of ``{"chunk_ids": [], "count": 0}`` is
+    authoritative ("this object tracks no chunks") and must be distinguished
+    from an absent row or a legacy/partial shape (``{}``, ``{"count": 0}``,
+    ``{"chunk_ids": null}``), which mean UNKNOWN. Only in the UNKNOWN case may a
+    caller fall back to the graph object's ``source_id`` — a truncated view that
+    can still name chunks a previous purge already pruned (see
+    ``compute_incremental_chunk_ids``); reseeding a present-but-empty row from
+    it resurrects stale attribution (issue #3609).
+    """
+
+    return isinstance(stored_data, dict) and isinstance(
+        stored_data.get("chunk_ids"), list
+    )
+
+
 def make_relation_chunk_key(src: str, tgt: str) -> str:
     """Create a deterministic storage key for relation chunk tracking."""
 
