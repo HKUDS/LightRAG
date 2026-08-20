@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lightrag-mcp-server"
+version = "0.1.0"
+description = "FastMCP tools for the LightRAG API"
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=2.0.0",
+    "httpx>=0.28.1",
+]
+
+[tool.setuptools]
+py-modules = ["server"]
+
+[project.scripts]
+lightrag-mcp = "server:mcp.run"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
