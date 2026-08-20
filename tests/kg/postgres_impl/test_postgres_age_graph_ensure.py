@@ -26,7 +26,7 @@ import pytest
 from lightrag.kg.postgres_impl import PGGraphStorage, PostgreSQLDB
 
 SEARCH_PATH_SQL = 'SET search_path = ag_catalog, "$user", public'
-GRAPH_LOOKUP_SQL = "SELECT 1 FROM ag_catalog.ag_graph WHERE name::text = $1"
+GRAPH_LOOKUP_SQL = "SELECT 1 FROM ag_catalog.ag_graph WHERE name = left($1, 63)::name"
 
 
 def _make_db() -> PostgreSQLDB:
@@ -353,6 +353,99 @@ async def test_initialize_label_lookup_is_scoped_to_this_graph(monkeypatch):
     sql, params = db.query.await_args.args[0], db.query.await_args.args[1]
     assert "ag_catalog.ag_label" in sql
     assert "ag_catalog.ag_graph" in sql
+    # $1::name so PostgreSQL truncates the parameter the same way AGE did when
+    # it stored the graph name; name::text = $1 would never match a graph name
+    # longer than 63 bytes.
+    assert "g.name = left($1, 63)::name" in sql
+    assert "name::text = $1" not in sql
     assert params == ["space1_chunk_entity_relation"]
     assert db.query.await_args.kwargs["with_age"] is True
     assert db.query.await_args.kwargs["graph_name"] == "space1_chunk_entity_relation"
+
+
+# ---------------------------------------------------------------------------
+# Long graph names.  PostgreSQL's `name` type truncates at 63 bytes and AGE
+# stores graph names as `name`, so both catalog lookups must cast the
+# *parameter* to `name` rather than the stored value to `text`.  Comparing an
+# untruncated text parameter never matches, which would silently reinstate the
+# per-process create_graph and per-startup create_*label errors this PR removes.
+# ---------------------------------------------------------------------------
+
+# A workspace long enough that "<workspace>_chunk_entity_relation" exceeds 63 bytes.
+LONG_GRAPH_NAME = (
+    "verylongworkspacename_that_exceeds_the_limit_abcdefghij_chunk_entity_relation"
+)
+
+
+def test_long_graph_name_is_actually_over_the_identifier_limit():
+    """Guard the premise of the tests below."""
+    assert len(LONG_GRAPH_NAME.encode("utf-8")) > 63
+
+
+@pytest.mark.asyncio
+async def test_graph_lookup_casts_the_parameter_not_the_column():
+    db = _make_db()
+    conn = FakeConnection(graph_exists=True)
+
+    await db.configure_age(conn, LONG_GRAPH_NAME)
+
+    ((sql, args),) = conn.fetched
+    # left($1, 63), not $1::name: PostgreSQL raises 42622 "identifier too long"
+    # when a *bind parameter* is cast to name, while the literal AGE was given
+    # is clipped silently. The comparison has to clip the same way.
+    assert "name = left($1, 63)::name" in sql
+    assert "$1::name" not in sql
+    assert "name::text" not in sql
+    assert args == (LONG_GRAPH_NAME,)
+
+
+@pytest.mark.asyncio
+async def test_existing_long_named_graph_is_not_recreated():
+    """The truncation bug's user-visible symptom: one create_graph per process."""
+    db = _make_db()
+    conn = FakeConnection(graph_exists=True)
+
+    await db.configure_age(conn, LONG_GRAPH_NAME)
+
+    assert conn.create_graph_statements == []
+
+
+@pytest.mark.asyncio
+async def test_initialize_label_lookup_casts_the_parameter(monkeypatch):
+    monkeypatch.setattr(
+        "lightrag.kg.postgres_impl.get_data_init_lock", lambda: _null_lock()
+    )
+    storage, db = _make_graph_storage(["base", "DIRECTED"])
+    storage.workspace = "verylongworkspacename_that_exceeds_the_limit_abcdefghij"
+
+    await storage.initialize()
+
+    sql = db.query.await_args.args[0]
+    assert "g.name = left($1, 63)::name" in sql
+    assert db.query.await_args.args[1] == [LONG_GRAPH_NAME]
+    # And with both labels reported present, neither is recreated.
+    statements = [call.args[0] for call in db.execute.await_args_list]
+    assert not [s for s in statements if "create_vlabel" in s or "create_elabel" in s]
+
+
+def test_name_limit_constant_matches_postgres_namedatalen():
+    """NAMEDATALEN - 1. Both catalog lookups clip to this."""
+    from lightrag.kg.postgres_impl import _PG_NAME_MAX_BYTES
+
+    assert _PG_NAME_MAX_BYTES == 63
+
+
+def test_graph_names_are_ascii_so_bytes_equal_characters():
+    """left() clips by character; that is only equivalent for single-byte names.
+
+    _get_workspace_graph_name() guarantees it by reducing both the workspace and
+    the namespace to [A-Za-z0-9_].
+    """
+    storage = PGGraphStorage.__new__(PGGraphStorage)
+    storage.workspace = "工作区 with spaces/and-punct"
+    storage.namespace = "chunk_entity_relation"
+
+    name = storage._get_workspace_graph_name()
+
+    assert name.isascii(), name
+    assert len(name) == len(name.encode("utf-8"))

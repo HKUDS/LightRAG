@@ -410,6 +410,12 @@ def _dollar_quote(s: str, tag_prefix: str = "AGE") -> str:
             return f"{wrapper}{s}{wrapper}"
 
 
+# PostgreSQL's `name` type (NAMEDATALEN - 1). Graph and label names are stored
+# as `name`, so anything longer is clipped on the way in and lookups have to
+# clip the value they compare against.
+_PG_NAME_MAX_BYTES = 63
+
+
 class PostgreSQLDB:
     def __init__(self, config: dict[str, Any], **kwargs: Any):
         self.host = config["host"]
@@ -1273,8 +1279,19 @@ class PostgreSQLDB:
             if graph_name in self._ensured_age_graphs:
                 return
 
+            # The parameter has to be truncated the same way the stored value
+            # was.  PostgreSQL's `name` type holds 63 bytes, and create_graph()
+            # below passes the name as a literal, which PostgreSQL silently
+            # clips -- so a workspace long enough to overflow is stored clipped
+            # and would never match an untruncated comparison.  Casting the
+            # bind parameter straight to `name` is not an option: for a
+            # parameter (unlike a literal) PostgreSQL raises 42622
+            # "identifier too long" instead of clipping.  left() is safe
+            # because _get_workspace_graph_name() reduces the name to
+            # [A-Za-z0-9_], where one character is one byte.
             exists = await connection.fetchval(  # type: ignore
-                "SELECT 1 FROM ag_catalog.ag_graph WHERE name::text = $1",
+                "SELECT 1 FROM ag_catalog.ag_graph "
+                f"WHERE name = left($1, {_PG_NAME_MAX_BYTES})::name",
                 graph_name,
             )
             if exists is None:
@@ -7359,7 +7376,7 @@ class PGGraphStorage(BaseGraphStorage):
                 "SELECT l.name::text AS name "
                 "FROM ag_catalog.ag_label l "
                 "JOIN ag_catalog.ag_graph g ON l.graph = g.graphid "
-                "WHERE g.name::text = $1",
+                f"WHERE g.name = left($1, {_PG_NAME_MAX_BYTES})::name",
                 [self.graph_name],
                 multirows=True,
                 with_age=True,
