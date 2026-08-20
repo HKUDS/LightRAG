@@ -89,6 +89,7 @@ from lightrag.constants import (
     DEFAULT_SUMMARY_LANGUAGE,
     SOURCE_IDS_LIMIT_METHOD_KEEP,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
+    RELATION_NO_EVIDENCE_SOURCE_IDS,
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
     DEFAULT_MAX_FILE_PATHS,
     DEFAULT_ENTITY_NAME_MAX_LENGTH,
@@ -2889,6 +2890,17 @@ async def _merge_edges_then_upsert(
             ]
             + already_weights
         )
+        # Repair legacy/manual rows that predate the shared weight contract:
+        # every distinct real source contributes a baseline of 1, while an
+        # existing larger weight remains an optional importance boost.
+        evidence_count = len(
+            {
+                source
+                for source in source_ids
+                if source and source not in RELATION_NO_EVIDENCE_SOURCE_IDS
+            }
+        )
+        weight = max(float(weight), float(evidence_count))
 
         # 6.2 Finalize keywords by merging existing and new keywords
         all_keywords = set()

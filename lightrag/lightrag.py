@@ -3470,6 +3470,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Entity names and relationship endpoints are normalized with the same
         contract used by document extraction before any storage write begins.
+        A relationship weight is bounded below by its number of distinct real
+        evidence sources. Explicit weights may boost that baseline; omit the
+        relationship ``source_id`` to use a fractional source-less weight.
 
         .. warning:: (issue #3400 Phase 5 — direct-writer audit)
            This path is OUTSIDE the document-level recovery guarantee. It has
@@ -3488,6 +3491,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         update_storage = False
         try:
+            from lightrag.utils_graph import validate_relation_weight
 
             def _normalize_custom_kg_entity_name(value: Any, *, field: str) -> str:
                 if not isinstance(value, str):
@@ -3545,6 +3549,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         f"'{normalized_relationship_data['src_id']}': src_id and "
                         "tgt_id must be different entities"
                     )
+                source_id = relationship_data.get("source_id", "")
+                normalized_relationship_data["source_id"] = source_id
+                normalized_relationship_data["weight"] = validate_relation_weight(
+                    relationship_data.get("weight", 1.0),
+                    source_id,
+                    context=f"Custom KG relationships[{index}]",
+                )
                 normalized_relationships.append(normalized_relationship_data)
 
             # Insert chunks into vector storage
@@ -3726,8 +3737,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 for relationship_data in deduped_relationships.values():
                     src_id = relationship_data["src_id"]
                     tgt_id = relationship_data["tgt_id"]
-                    source_chunk_id = relationship_data.get("source_id", "UNKNOWN")
-                    source_id = chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
+                    source_chunk_id = relationship_data["source_id"]
+                    source_id = (
+                        chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
+                        if source_chunk_id
+                        else ""
+                    )
                     file_path = normalize_document_file_path(
                         relationship_data.get("file_path", "custom_kg")
                     )
@@ -3757,7 +3772,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     normalized_src_id, normalized_tgt_id = sorted((src_id, tgt_id))
 
                     edge_data = {
-                        "weight": relationship_data.get("weight", 1.0),
+                        "weight": relationship_data["weight"],
                         "description": relationship_data["description"],
                         "keywords": relationship_data["keywords"],
                         "source_id": source_id,
@@ -3773,7 +3788,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             "description": relationship_data["description"],
                             "keywords": relationship_data["keywords"],
                             "source_id": source_id,
-                            "weight": relationship_data.get("weight", 1.0),
+                            "weight": relationship_data["weight"],
                             "file_path": file_path,
                             "created_at": int(time.time()),
                         }
@@ -3981,7 +3996,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             "tgt_id": str,           # Target entity name
                             "description": str,      # Relationship description
                             "keywords": str,         # Relationship keywords
-                            "weight": float,         # Relationship strength
+                            "weight": float,         # Evidence floor plus optional boost
                             "source_id": str,        # Source chunk references
                             "file_path": str,        # Origin file path
                             "created_at": str,       # Creation timestamp
@@ -6625,7 +6640,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Args:
             source_entity: Name of the source entity
             target_entity: Name of the target entity
-            updated_data: Dictionary containing updated attributes, e.g. {"description": "new description", "keywords": "new keywords"}
+            updated_data: Dictionary containing updated attributes. The final
+                relation must satisfy ``weight >=`` its distinct real source
+                count; set ``source_id`` to an empty string in the same edit to
+                use a smaller fractional weight.
 
         Returns:
             Dictionary containing updated relation information
@@ -6700,7 +6718,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Args:
             source_entity: Name of the source entity
             target_entity: Name of the target entity
-            relation_data: Dictionary containing relation attributes, e.g. {"description": "description", "keywords": "keywords"}
+            relation_data: Dictionary containing relation attributes. ``weight``
+                is the evidence-count floor plus an optional boost. It must be
+                at least the distinct real ``source_id`` count. Omit
+                ``source_id`` to create a source-less fractional-weight edge.
 
         Returns:
             Dictionary containing created relation information
@@ -6739,6 +6760,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Merges multiple source entities into a target entity, handling all relationships,
         and updating both the knowledge graph and vector database.
+
+        Redirected relations that collapse onto the same endpoint use
+        ``max(input weights, distinct merged evidence sources)`` so neither an
+        explicit boost nor the evidence-count floor regresses.
 
         Args:
             source_entities: List of source entity names to merge

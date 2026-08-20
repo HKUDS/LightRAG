@@ -29,6 +29,7 @@ from copy import deepcopy
 import pytest
 
 from lightrag import utils_graph
+from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.kg.networkx_impl import NetworkXStorage
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
 
@@ -258,6 +259,125 @@ class TestRelationEditWritePathStaysHealthy:
         assert "poc_nested" not in await rag.graph.get_edge("REL_A", "REL_B")
         await rag.create_entity("AFTER")
         assert "AFTER" in rag.graphml_text()
+
+
+class TestRelationWeightEvidenceFloor:
+    @staticmethod
+    async def _create_endpoints(rag):
+        await rag.create_entity("REL_A")
+        await rag.create_entity("REL_B")
+
+    @pytest.mark.asyncio
+    async def test_create_rejects_weight_below_distinct_source_count(self, rag):
+        await self._create_endpoints(rag)
+
+        with pytest.raises(ValueError, match="distinct-source evidence count 2"):
+            await rag.create_relation(
+                "REL_A",
+                "REL_B",
+                source_id=GRAPH_FIELD_SEP.join(["chunk-1", "chunk-2"]),
+                weight=1.5,
+            )
+
+        assert not await rag.graph.has_edge("REL_A", "REL_B")
+
+    @pytest.mark.asyncio
+    async def test_source_less_relation_allows_fractional_weight(self, rag):
+        await self._create_endpoints(rag)
+
+        await rag.create_relation("REL_A", "REL_B", source_id="", weight=0.25)
+
+        edge = await rag.graph.get_edge("REL_A", "REL_B")
+        assert edge["source_id"] == ""
+        assert edge["weight"] == 0.25
+        assert rag.relation_chunks.records == {}
+
+    @pytest.mark.asyncio
+    async def test_create_rejects_negative_source_less_weight(self, rag):
+        await self._create_endpoints(rag)
+
+        with pytest.raises(ValueError, match="distinct-source evidence count 0"):
+            await rag.create_relation("REL_A", "REL_B", source_id="", weight=-0.25)
+
+        assert not await rag.graph.has_edge("REL_A", "REL_B")
+
+    @pytest.mark.asyncio
+    async def test_distinct_real_sources_define_floor_and_chunk_tracking(self, rag):
+        await self._create_endpoints(rag)
+        source_id = GRAPH_FIELD_SEP.join(
+            ["chunk-1", "chunk-1", "manual_creation", "UNKNOWN"]
+        )
+
+        await rag.create_relation("REL_A", "REL_B", source_id=source_id, weight=1.0)
+
+        edge = await rag.graph.get_edge("REL_A", "REL_B")
+        assert edge["source_id"] == source_id
+        tracking = next(iter(rag.relation_chunks.records.values()))
+        assert tracking == {"chunk_ids": ["chunk-1"], "count": 1}
+
+    @pytest.mark.asyncio
+    async def test_edit_validates_source_and_weight_together(self, rag):
+        await self._create_endpoints(rag)
+        await rag.create_relation("REL_A", "REL_B", source_id="", weight=0.25)
+
+        with pytest.raises(ValueError, match="distinct-source evidence count 1"):
+            await rag.edit_relation("REL_A", "REL_B", {"source_id": "chunk-1"})
+
+        unchanged = await rag.graph.get_edge("REL_A", "REL_B")
+        assert unchanged["source_id"] == ""
+        assert unchanged["weight"] == 0.25
+
+        await rag.edit_relation(
+            "REL_A",
+            "REL_B",
+            {"source_id": "chunk-1", "weight": 1.0},
+        )
+        updated = await rag.graph.get_edge("REL_A", "REL_B")
+        assert updated["source_id"] == "chunk-1"
+        assert updated["weight"] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_edit_can_remove_sources_before_lowering_weight(self, rag):
+        await self._create_endpoints(rag)
+        await rag.create_relation("REL_A", "REL_B", weight=1.0)
+
+        await rag.edit_relation(
+            "REL_A",
+            "REL_B",
+            {"source_id": "", "weight": 0.25},
+        )
+
+        edge = await rag.graph.get_edge("REL_A", "REL_B")
+        assert edge["source_id"] == ""
+        assert edge["weight"] == 0.25
+
+    @pytest.mark.asyncio
+    async def test_unrelated_edit_repairs_legacy_weight_below_floor(self, rag):
+        await self._create_endpoints(rag)
+        await rag.create_relation("REL_A", "REL_B", weight=1.0)
+        legacy = await rag.graph.get_edge("REL_A", "REL_B")
+        legacy["weight"] = 0.25
+        await rag.graph.upsert_edge("REL_A", "REL_B", legacy)
+
+        await rag.edit_relation(
+            "REL_A", "REL_B", {"description": "updated description"}
+        )
+
+        repaired = await rag.graph.get_edge("REL_A", "REL_B")
+        assert repaired["weight"] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_entity_rename_repairs_legacy_relation_weight(self, rag):
+        await self._create_endpoints(rag)
+        await rag.create_relation("REL_A", "REL_B", weight=1.0)
+        legacy = await rag.graph.get_edge("REL_A", "REL_B")
+        legacy["weight"] = 0.25
+        await rag.graph.upsert_edge("REL_A", "REL_B", legacy)
+
+        await rag.edit_entity("REL_A", {"entity_name": "RENAMED_A"})
+
+        repaired = await rag.graph.get_edge("RENAMED_A", "REL_B")
+        assert repaired["weight"] == 1.0
 
 
 class TestEntityCreateWritePathStaysHealthy:

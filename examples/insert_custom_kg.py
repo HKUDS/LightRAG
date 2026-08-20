@@ -58,6 +58,9 @@ custom_kg = {
         },
     ],
     "relationships": [
+        # Each real source_id contributes an evidence-count floor of 1.0.
+        # Larger values are optional boosts; omit source_id for a source-less
+        # non-negative fractional weight.
         {
             "src_id": "CompanyA",
             "tgt_id": "ProductX",
@@ -71,7 +74,7 @@ custom_kg = {
             "tgt_id": "UniversityB",
             "description": "PersonA works at UniversityB",
             "keywords": "employment, affiliation",
-            "weight": 0.9,
+            "weight": 1.25,
             "source_id": "Source2",
         },
         {
@@ -79,7 +82,7 @@ custom_kg = {
             "tgt_id": "EventY",
             "description": "EventY is hosted in CityC",
             "keywords": "host, location",
-            "weight": 0.8,
+            "weight": 1.0,
             "source_id": "Source3",
         },
     ],
