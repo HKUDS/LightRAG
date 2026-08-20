@@ -125,9 +125,11 @@ evidence count, creation callers omit `source_id`, while edit callers set it to
 an empty string in the same operation.
 
 Entity merges use `max(all input weights, distinct merged real source IDs)`.
-Extraction merges and entity-rename rewrites are repair points for legacy rows:
-they must lift an undersized stored weight to the current evidence floor while
-preserving any larger explicit boost. Keep this contract synchronized across
+Extraction merges, entity-rename rewrites, and rebuilds from surviving chunks
+are repair points for legacy rows: they must lift an undersized stored weight to
+the current evidence floor while preserving any larger explicit boost. Relation
+chunk tracking is the authoritative chunk list, so the no-source placeholders
+must never be written into it. Keep this contract synchronized across
 the core API docstrings, REST graph documentation, `ProgramingWithCore.md`, and
 custom-KG examples whenever relation write behavior changes.
 

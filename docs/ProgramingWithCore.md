@@ -1168,8 +1168,9 @@ contract before writing graph or vector data; invalid Python API inputs raise
 `ValueError` and the REST graph API returns HTTP 400. Relation edits validate
 the complete post-edit shape, so `source_id` and `weight` can be changed
 together. Existing legacy relations are repaired upward when extraction adds
-evidence, an entity rename rewrites their endpoints, or an unrelated relation
-edit rewrites the row.
+evidence, an entity rename rewrites their endpoints, an unrelated relation edit
+rewrites the row, or a relation is rebuilt from surviving chunks (document purge
+and resume, or `lightrag-rebuild-vdb`).
 
 When entity merging redirects multiple relations onto the same endpoint, the
 result is:

@@ -2127,6 +2127,21 @@ async def _rebuild_single_relationship(
     )
 
     weight = sum(weights) if weights else current_relationship.get("weight", 1.0)
+    # A rebuilt relation must not fall below its evidence floor: limited_chunk_ids
+    # becomes the edge's source_id, while cached fragments only cover those
+    # surviving chunks whose extraction cache is still present (none at all on the
+    # degraded path). Their summed weight can therefore under-count the evidence
+    # and mint exactly the rows relation edits later refuse. Repair upward, keeping
+    # any larger importance boost. Count the post-limit list, matching
+    # _merge_edges_then_upsert and the source_id actually stored on the edge.
+    rebuilt_evidence_count = len(
+        {
+            chunk_id
+            for chunk_id in limited_chunk_ids
+            if chunk_id and chunk_id not in RELATION_NO_EVIDENCE_SOURCE_IDS
+        }
+    )
+    weight = max(float(weight), float(rebuilt_evidence_count))
 
     # Generate final description from relations or fallback to current
     if degraded:
@@ -2778,15 +2793,26 @@ async def _merge_edges_then_upsert(
         if relation_chunks_storage is not None:
             stored_chunks = await relation_chunks_storage.get_by_id(storage_key)
             if stored_chunks and isinstance(stored_chunks, dict):
+                # relation_chunks is the authoritative chunk list, so a historical
+                # no-evidence placeholder must never enter it: purge and audit
+                # would read it back as a real surviving chunk. Filter it out of
+                # BOTH baselines -- the stored row (repairing a legacy row on this
+                # merge) and the legacy edge's own source_id below. A stored row
+                # holding nothing but a placeholder is only repaired when this
+                # merge contributes at least one real source, since the upsert
+                # below is skipped for an empty list; extraction fragments always
+                # carry their chunk key, so that combination does not arise.
                 existing_full_source_ids = [
                     chunk_id
                     for chunk_id in stored_chunks.get("chunk_ids", [])
-                    if chunk_id
+                    if chunk_id and chunk_id not in RELATION_NO_EVIDENCE_SOURCE_IDS
                 ]
 
         if not existing_full_source_ids:
             existing_full_source_ids = [
-                chunk_id for chunk_id in already_source_ids if chunk_id
+                chunk_id
+                for chunk_id in already_source_ids
+                if chunk_id and chunk_id not in RELATION_NO_EVIDENCE_SOURCE_IDS
             ]
 
         # 2. Merge new source ids with existing ones
