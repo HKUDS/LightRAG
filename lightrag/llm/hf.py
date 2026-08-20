@@ -219,11 +219,26 @@ async def hf_embed(
 
     # Perform inference
     with torch.no_grad():
+        attention_mask = encoded_texts["attention_mask"]
         outputs = embed_model(
             input_ids=encoded_texts["input_ids"],
-            attention_mask=encoded_texts["attention_mask"],
+            attention_mask=attention_mask,
         )
-        embeddings = outputs.last_hidden_state.mean(dim=1)
+        # Plain .mean(dim=1) counts padding-token hidden states, so the same
+        # text's embedding shifts depending on what else is in the batch.
+        # Weight by attention_mask instead. The reduction runs in float32
+        # regardless of the model's own dtype: accumulating in fp16/bf16
+        # risks the summed hidden states overflowing to infinity on long
+        # inputs, and token counts above ~2048 (fp16) or ~256 (bf16) can't
+        # be represented exactly, biasing the mean. clamp_min(1) keeps a
+        # fully-masked row finite (all-padding input) rather than dividing
+        # by zero. The result is cast back to the original hidden-state
+        # dtype so output dtype behaviour is unchanged.
+        mask = attention_mask.unsqueeze(-1).to(torch.float32)
+        hidden_fp32 = outputs.last_hidden_state.to(torch.float32)
+        summed = (hidden_fp32 * mask).sum(dim=1)
+        counts = mask.sum(dim=1).clamp_min(1)
+        embeddings = (summed / counts).to(outputs.last_hidden_state.dtype)
 
     # Convert embeddings to NumPy
     if embeddings.dtype == torch.bfloat16:

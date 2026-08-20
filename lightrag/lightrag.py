@@ -5357,6 +5357,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 graph_sources: list[str] = []
                 if self.entity_chunks:
                     stored_chunks = await self.entity_chunks.get_by_id(node_label)
+                    # NOTE(#3609): this deliberately keeps truthiness semantics and
+                    # does NOT distinguish a present-but-empty tracking row from an
+                    # absent one. Here an empty `existing_sources` falls back to the
+                    # graph `source_id` below; treating a present-empty row as
+                    # authoritative (as the edit paths now do) would instead route
+                    # the object into `entities_to_delete`, a deletion-behavior
+                    # change that needs its own issue + tests before being applied.
                     if stored_chunks and isinstance(stored_chunks, dict):
                         existing_sources = [
                             chunk_id
@@ -5422,6 +5429,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 if self.relation_chunks:
                     storage_key = make_relation_chunk_key(src, tgt)
                     stored_chunks = await self.relation_chunks.get_by_id(storage_key)
+                    # NOTE(#3609): as with the entity branch above, truthiness is
+                    # kept here on purpose — a present-but-empty relation tracking
+                    # row falls back to the graph `source_id` rather than being
+                    # treated as authoritative "tracks no chunks". Changing that is a
+                    # deletion-behavior change and belongs in its own issue + tests.
                     if stored_chunks and isinstance(stored_chunks, dict):
                         existing_sources = [
                             chunk_id
