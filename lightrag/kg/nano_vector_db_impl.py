@@ -162,22 +162,39 @@ class NanoVectorDBStorage(BaseVectorStorage):
         stage deletes the stale forward/reverse rows once per relation — so an
         eager delete copied the whole matrix per merged relation.
 
-        Deferring also keeps a delete from being lost across writers. The
-        removal used to be applied to ``self._client`` while still unsaved;
-        because ``index_done_callback`` reloads unconditionally when another
-        process has committed — and a reload *replaces* ``self._client`` — the
-        row could reappear. A queued id is applied *after* that reload, so it
-        survives.
+        Two buffers, because the flush and the save can fail independently:
+            * ``_pending_deletes`` — queued, not applied to ``self._client``.
+            * ``_unsaved_deletes`` — applied to ``self._client`` but not yet
+              on disk, kept as ``id -> the row's __created_at__``. This is a
+              redo log, not a pending buffer.
 
-        The read-your-writes paths treat a queued id as absent: ``get_by_id``
-        / ``get_by_ids`` / ``get_vectors_by_ids`` consult ``_pending_deletes``
-        after ``_pending_upserts``, and an ``upsert`` for the same id cancels
-        the queued delete (``client.upsert`` overwrites the row in place).
+        The redo log exists because a removal that reached ``self._client``
+        can still be undone: if the save fails, ``index_done_callback``'s
+        unconditional reload replaces ``self._client`` with the on-disk
+        snapshot and the row returns. Replaying the log after that reload
+        removes it again, so the reload stays lossless for deletes. (Upserts
+        have no equivalent log — ``_pending_upserts`` is cleared once the rows
+        materialize — so a materialized-but-unsaved upsert is still dropped by
+        the same reload; see issue #3688.)
+
+        A replay matches on ``__created_at__``, not on the id alone. Ids are
+        content hashes, so another writer can publish a *new* row under an id
+        we removed; deleting by id would destroy it. Note the timestamp is
+        whole-second, so two writes inside one second are indistinguishable.
+        Ids that matched no row are not logged at all — there is nothing to
+        persist for them, and replaying them could only hit a row they were
+        never meant to touch. The log is cleared once a save lands.
+
+        The read-your-writes paths treat both buffers as absent: ``get_by_id``
+        / ``get_by_ids`` / ``get_vectors_by_ids`` consult them after
+        ``_pending_upserts``, and an ``upsert`` for the same id cancels a
+        queued delete (``client.upsert`` overwrites the row in place).
         ``query`` and ``client_storage`` are unchanged: they read the
         materialized index, so a queued delete still surfaces there until the
         flush — the same contract the Qdrant and PostgreSQL buffers document.
-        Queued ids are in-memory only: like pending upserts they are dropped
-        by ``drop`` and lost on a crash before the flush.
+
+        Both buffers are in-memory only: they are dropped by ``drop`` and lost
+        on a crash before the flush.
     """
 
     def __post_init__(self):
@@ -236,6 +253,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # call, and the merge stage deletes once per relation, so deferring
         # turns O(relations) full-matrix copies into one per flush.
         self._pending_deletes: set[str] = set()
+        # Removals already applied to self._client but not yet on disk, kept
+        # as id -> the row's __created_at__ so a replay after a reload only
+        # removes the same row again, never a newer one written meanwhile.
+        self._unsaved_deletes: dict[str, Any] = {}
         # True when self._client has materialized changes that have not been
         # successfully saved to disk yet. This lets finalize retry a save even
         # after a previous flush cleared the pending buffer.
@@ -352,6 +373,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 # delete first would be redundant work. Mirrors the
                 # PG/Qdrant buffers.
                 self._pending_deletes.discard(doc_id)
+                self._unsaved_deletes.pop(doc_id, None)
                 self._pending_upserts[doc_id] = _PendingNanoDoc(record=record)
 
     async def _flush_pending_locked(self) -> None:
@@ -362,30 +384,44 @@ class NanoVectorDBStorage(BaseVectorStorage):
         operates on ``self._client`` directly. Embedding runs inside the lock
         on purpose (see class docstring, *Deferred-embedding protocol*).
 
-        Failure handling: queued deletes are applied first and are not
-        replayed (they already landed on ``self._client``). If embedding then
-        raises or the returned count does not match, the exception propagates
-        and ``_pending_upserts`` is left intact so the next flush retries; no
-        *upsert* is written to ``self._client``.
+        Failure handling: if embedding raises or the returned count does not
+        match, the exception propagates and both buffers are left intact so
+        the next flush retries; no upsert is written to ``self._client``.
         """
-        if not self._pending_upserts and not self._pending_deletes:
+        if (
+            not self._pending_upserts
+            and not self._pending_deletes
+            and not self._unsaved_deletes
+        ):
             return
 
-        # Apply all deferred deletes in ONE batched call BEFORE
-        # materializing upserts — one np.delete matrix copy per flush
-        # instead of one per relation/entity. Ordering guarantees a
-        # deleted-then-reinserted id ends up with exactly the new row.
-        if self._pending_deletes:
-            delete_ids = list(self._pending_deletes)
-            before_count = len(self._client)
-            self._client.delete(delete_ids)
-            deleted_count = before_count - len(self._client)
-            self._pending_deletes.clear()
-            if deleted_count:
+        # One batched delete before the upserts materialize: one matrix copy
+        # per flush instead of one per relation, and a deleted-then-reinserted
+        # id keeps only the new row. The queue survives until a save persists
+        # the removal, so a failed save can replay it (see the class
+        # docstring); ids that matched nothing have nothing to persist.
+        if self._pending_deletes or self._unsaved_deletes:
+            queued = len(self._pending_deletes)
+            storage = self._client._NanoVectorDB__storage
+            # A queued id removes whatever row is there; a replayed one only
+            # removes the row it removed before, so a newer row that another
+            # writer committed under the same id survives.
+            matched = {
+                dp["__id__"]: dp.get("__created_at__")
+                for dp in storage["data"]
+                if dp["__id__"] in self._pending_deletes
+                or self._unsaved_deletes.get(dp["__id__"], object())
+                == dp.get("__created_at__")
+            }
+            if matched:
+                self._client.delete(list(matched))
                 self._client_dirty = True
+            self._unsaved_deletes.update(matched)
+            self._pending_deletes.clear()
             logger.info(
                 f"[{self.workspace}] {self.namespace} flush: applied "
-                f"{deleted_count} deferred deletes ({len(delete_ids)} queued)"
+                f"{len(matched)} deferred deletes ({queued} queued, "
+                f"{len(self._unsaved_deletes)} awaiting save)"
             )
 
         if not self._pending_upserts:
@@ -718,10 +754,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
         if self._storage_lock is None:
             self._pending_upserts.clear()
             self._pending_deletes.clear()
+            self._unsaved_deletes.clear()
             return
         async with self._storage_lock:
             self._pending_upserts.clear()
             self._pending_deletes.clear()
+            self._unsaved_deletes.clear()
 
     async def index_done_callback(self) -> bool:
         """Flush deferred embeddings, commit to disk, and notify other processes.
@@ -757,6 +795,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             # True (if only the save failed) for a later retry.
             await self._flush_pending_locked()
             self._save_to_disk_locked()
+            self._unsaved_deletes.clear()  # the removals are durable now
             await set_all_update_flags(self.namespace, workspace=self.workspace)
             self.storage_updated.value = False
             self._client_dirty = False
@@ -786,7 +825,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             pending = self._pending_upserts.get(id)
             if pending is not None:
                 return self._format_record(pending.record)
-            if id in self._pending_deletes:
+            if id in self._pending_deletes or id in self._unsaved_deletes:
                 return None
 
         client = await self._get_client()
@@ -816,7 +855,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 pending = self._pending_upserts.get(requested_id)
                 if pending is not None:
                     result_map[str(requested_id)] = self._format_record(pending.record)
-                elif requested_id in self._pending_deletes:
+                elif (
+                    requested_id in self._pending_deletes
+                    or requested_id in self._unsaved_deletes
+                ):
                     continue  # queued for deferred delete and not re-upserted -> treat as absent
                 else:
                     remaining.append(requested_id)
@@ -857,7 +899,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
             for requested_id in ids:
                 pending = self._pending_upserts.get(requested_id)
                 if pending is None:
-                    if requested_id in self._pending_deletes:
+                    if (
+                        requested_id in self._pending_deletes
+                        or requested_id in self._unsaved_deletes
+                    ):
                         continue  # queued for deferred delete and not re-upserted -> treat as absent
                     remaining.append(requested_id)
                 elif pending.vector is not None:
@@ -932,6 +977,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 # along with the data.
                 self._pending_upserts.clear()
                 self._pending_deletes.clear()
+                self._unsaved_deletes.clear()
 
                 # delete _client_file_name
                 if os.path.exists(self._client_file_name):
@@ -978,10 +1024,11 @@ class NanoVectorDBStorage(BaseVectorStorage):
             if (
                 not self._pending_upserts
                 and not self._pending_deletes
+                and not self._unsaved_deletes
                 and not self._client_dirty
             ):
                 return
-            if self._pending_upserts or self._pending_deletes:
+            if self._pending_upserts or self._pending_deletes or self._unsaved_deletes:
                 # Only reload when we have nothing un-persisted in self._client.
                 # A dirty client carries successfully-flushed-but-unsaved rows
                 # from a prior index_done_callback; reloading would silently
@@ -996,6 +1043,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 # reload for no reason.
                 return
             self._save_to_disk_locked()
+            self._unsaved_deletes.clear()  # the removals are durable now
             await set_all_update_flags(self.namespace, workspace=self.workspace)
             self.storage_updated.value = False
             self._client_dirty = False

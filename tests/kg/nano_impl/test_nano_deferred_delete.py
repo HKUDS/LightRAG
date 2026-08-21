@@ -12,6 +12,8 @@ no live model or network. They mirror the deferred-embedding protocol tests
 in ``test_nano_deferred_embedding.py``.
 """
 
+import time
+
 import numpy as np
 import pytest
 
@@ -299,3 +301,164 @@ async def test_unflushed_deletes_roll_back_like_pending_upserts(tmp_path):
     reloaded = _make_storage(tmp_path)
     await reloaded.initialize()
     assert (await reloaded.get_by_id("id1"))["content"] == "alpha"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_delete_survives_a_failed_save_then_a_concurrent_commit(tmp_path):
+    """Regression: the queue is retained until a save persists the removal.
+
+    Clearing the queue as soon as the delete lands on ``self._client`` leaves
+    nothing to replay if the save then fails: ``index_done_callback``'s next
+    unconditional reload replaces the client with the on-disk snapshot and the
+    row returns. Retaining the ids means the reload picks up the other
+    writer's rows and the replay removes ours on top, so neither is lost.
+    """
+    writer = _make_storage(tmp_path)
+    other = _make_storage(tmp_path)
+    await writer.initialize()
+    await other.initialize()
+
+    await _seed(writer, {"id1": "alpha", "id2": "beta"})
+    await writer.delete(["id1"])
+
+    # The flush applies the delete, then the save fails.
+    original_save = writer._save_to_disk_locked
+    writer._save_to_disk_locked = lambda: (_ for _ in ()).throw(OSError("disk full"))
+    with pytest.raises(OSError):
+        await writer.index_done_callback()
+    assert set(writer._unsaved_deletes) == {"id1"}, "retained until the save lands"
+    assert writer._client_dirty is True
+
+    writer._save_to_disk_locked = original_save
+
+    # Another writer commits, so the next flush reloads and would otherwise
+    # resurrect id1.
+    await other.upsert({"id3": {"content": "gamma"}})
+    assert await other.index_done_callback() is True
+    assert writer.storage_updated.value is True
+
+    assert await writer.index_done_callback() is True
+    assert writer._unsaved_deletes == {}, "a durable save clears the redo log"
+
+    reader = _make_storage(tmp_path)
+    await reader.initialize()
+    assert await reader.get_by_id("id1") is None, "delete must not be resurrected"
+    assert (await reader.get_by_id("id2"))["content"] == "beta"
+    assert (await reader.get_by_id("id3"))["content"] == "gamma", (
+        "the other writer's rows must survive the replay"
+    )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_queue_of_absent_ids_is_not_retained(tmp_path):
+    """A flush that matched nothing on a clean client has nothing to persist,
+    so it must not leave the ids resident."""
+    storage = _make_storage(tmp_path)
+    await storage.initialize()
+    await _seed(storage, {"id1": "alpha"})
+
+    await storage.delete(["never-inserted"])
+    await storage.index_done_callback()
+
+    assert storage._pending_deletes == set()
+    assert storage._unsaved_deletes == {}, "an id that matched nothing is not retained"
+    assert storage._client_dirty is False
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_replay_does_not_remove_a_newer_row_under_the_same_id(tmp_path):
+    """The redo log removes the row it removed before, not whatever is there.
+
+    Ids are content hashes, so two writers can legitimately produce the same
+    id. Deleting by id alone would destroy a row another writer committed
+    after our delete. The guard compares ``__created_at__``, which
+    ``upsert`` stamps at whole-second resolution, so the sleep here is what
+    a real rewrite gets for free.
+    """
+    writer = _make_storage(tmp_path)
+    other = _make_storage(tmp_path)
+    await writer.initialize()
+    await other.initialize()
+
+    await _seed(writer, {"id1": "old"})
+
+    original_save = writer._save_to_disk_locked
+    writer._save_to_disk_locked = lambda: (_ for _ in ()).throw(OSError("disk full"))
+    await writer.delete(["id1"])
+    with pytest.raises(OSError):
+        await writer.index_done_callback()
+    writer._save_to_disk_locked = original_save
+
+    # Another writer publishes a fresh row under the same id.
+    time.sleep(1.1)
+    await other.upsert({"id1": {"content": "new"}})
+    assert await other.index_done_callback() is True
+
+    await writer.index_done_callback()
+
+    reader = _make_storage(tmp_path)
+    await reader.initialize()
+    row = await reader.get_by_id("id1")
+    assert row is not None and row["content"] == "new", (
+        "a replay must not remove a row written after the delete"
+    )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_an_id_that_matched_nothing_is_never_replayed(tmp_path):
+    """Ids that removed no row carry no removal, so they must not linger and
+    fire against a row that appears later."""
+    writer = _make_storage(tmp_path)
+    other = _make_storage(tmp_path)
+    await writer.initialize()
+    await other.initialize()
+    await _seed(writer, {"seed": "s"})
+
+    original_save = writer._save_to_disk_locked
+    writer._save_to_disk_locked = lambda: (_ for _ in ()).throw(OSError("disk full"))
+    await writer.upsert({"other": {"content": "o"}})
+    with pytest.raises(OSError):
+        await writer.index_done_callback()  # client is now dirty
+    await writer.delete(["ghost"])  # matches nothing
+    with pytest.raises(OSError):
+        await writer.index_done_callback()
+    writer._save_to_disk_locked = original_save
+
+    assert "ghost" not in writer._unsaved_deletes
+
+    await other.upsert({"ghost": {"content": "created later"}})
+    assert await other.index_done_callback() is True
+    await writer.index_done_callback()
+
+    reader = _make_storage(tmp_path)
+    await reader.initialize()
+    row = await reader.get_by_id("ghost")
+    assert row is not None and row["content"] == "created later"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_repeated_failed_saves_do_not_re_delete_each_time(tmp_path):
+    """A retry whose rows are already gone must not rebuild the matrix again."""
+    storage = _make_storage(tmp_path)
+    await storage.initialize()
+    await _seed(storage, {"id1": "alpha", "id2": "beta"})
+
+    calls: list[list[str]] = []
+    _spy_client_delete(storage, calls)
+
+    original_save = storage._save_to_disk_locked
+    storage._save_to_disk_locked = lambda: (_ for _ in ()).throw(OSError("disk full"))
+    await storage.delete(["id1"])
+    for _ in range(4):
+        with pytest.raises(OSError):
+            await storage.index_done_callback()
+    storage._save_to_disk_locked = original_save
+    await storage.index_done_callback()
+
+    assert len(calls) == 1, f"one matrix rebuild, not one per retry: {calls}"
+    assert await storage.get_by_id("id1") is None
