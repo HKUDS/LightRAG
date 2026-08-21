@@ -506,6 +506,7 @@ LightRAG 在农业、计算机科学、法律和混合等领域均显著优于 N
 | 文档 | 内容 |
 |---|---|
 | [RoleSpecificLLMConfiguration-zh.md](./docs/RoleSpecificLLMConfiguration-zh.md) | 按角色（`EXTRACT` / `QUERY` / `KEYWORD` / `VLM`）配置 LLM 与 VLM |
+| [LLMProviderOptions.md](./docs/LLMProviderOptions.md) | provider 生成参数完整参考（`OPENAI_LLM_*`、`OLLAMA_LLM_*`、`GEMINI_LLM_*`、`BEDROCK_LLM_*`、`*_EMBEDDING_*`，英文） |
 | [AsymmetricEmbedding.md](./docs/AsymmetricEmbedding.md) | 查询/文档非对称 embedding（`EMBEDDING_ASYMMETRIC`）与各模型的前缀 |
 | [MilvusConfigurationGuide.md](./docs/MilvusConfigurationGuide.md) | 通过 `vector_db_storage_cls_kwargs` 调整 Milvus 索引参数 |
 
