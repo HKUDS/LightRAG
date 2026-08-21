@@ -506,6 +506,7 @@ Entries marked 🇨🇳 also ship a Chinese translation as `*-zh.md` in the same
 | Document | What it covers |
 |---|---|
 | [RoleSpecificLLMConfiguration.md](./docs/RoleSpecificLLMConfiguration.md) [🇨🇳](./docs/RoleSpecificLLMConfiguration-zh.md) | Per-role (`EXTRACT` / `QUERY` / `KEYWORD` / `VLM`) LLM and VLM configuration |
+| [LLMProviderOptions.md](./docs/LLMProviderOptions.md) | Complete reference for provider generation options (`OPENAI_LLM_*`, `OLLAMA_LLM_*`, `GEMINI_LLM_*`, `BEDROCK_LLM_*`, `*_EMBEDDING_*`) |
 | [AsymmetricEmbedding.md](./docs/AsymmetricEmbedding.md) | Query/document asymmetric embedding (`EMBEDDING_ASYMMETRIC`) and per-model prefixes |
 | [MilvusConfigurationGuide.md](./docs/MilvusConfigurationGuide.md) | Tuning Milvus index parameters through `vector_db_storage_cls_kwargs` |
 
