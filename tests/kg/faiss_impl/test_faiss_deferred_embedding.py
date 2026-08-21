@@ -9,8 +9,9 @@ live model or network. They mirror the protocol proven for
 - ``test_reupsert_after_flush_replaces_single_fid`` — Faiss has no in-place
   upsert; verify the rebuild keeps a single fid per custom id.
 - ``test_index_done_callback_save_failure_raises`` — flush succeeds, save IO
-  fails: pending is empty, ``_index_dirty`` stays True, the materialized index
-  is preserved for a finalize retry.
+  fails: the replay log is retained, ``_index_dirty`` stays True, and a
+  later commit can reload a foreign snapshot without re-embedding
+  (issue #3688).
 - ``test_reload_warns_on_index_meta_skew`` — ``index > meta`` on-disk skew
   (from a crash between the two atomic_writes) is logged on reload but **not**
   auto-repaired.
@@ -422,7 +423,8 @@ async def test_finalize_retries_save_after_flush_failure(tmp_path):
     with pytest.raises(OSError, match="boom"):
         await storage.finalize()
 
-    assert storage._pending_upserts == {}
+    assert "id1" in storage._pending_upserts
+    assert storage._pending_upserts["id1"].vector is not None
     assert storage._index_dirty is True
 
     await storage.finalize()
@@ -472,8 +474,8 @@ async def test_reupsert_after_flush_replaces_single_fid(tmp_path):
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_index_done_callback_save_failure_raises(tmp_path):
-    """Save failure in index_done_callback must propagate, leave pending empty
-    (flush already succeeded), and keep _index_dirty=True so finalize retries."""
+    """Save failure in index_done_callback must propagate, keep the replay
+    log (so a later reload can re-apply), and keep _index_dirty=True."""
     embed = _CountingEmbed()
     storage = _make_storage(tmp_path, embed)
     await storage.initialize()
@@ -490,7 +492,10 @@ async def test_index_done_callback_save_failure_raises(tmp_path):
     with pytest.raises(OSError, match="save boom"):
         await storage.index_done_callback()
 
-    assert storage._pending_upserts == {}, "flush succeeded so pending is empty"
+    assert "id1" in storage._pending_upserts, (
+        "unsaved flush is retained as a replay log"
+    )
+    assert storage._pending_upserts["id1"].vector is not None
     assert storage._index_dirty is True, "save failure preserves dirty for retry"
     assert storage._index.ntotal == 1, "materialized state is preserved"
     _assert_consistent(storage)
@@ -799,7 +804,8 @@ async def test_drop_pending_does_not_rollback_materialized(tmp_path):
     await storage.initialize()
 
     # Flush id1 into the index, then fail the save so it stays
-    # materialized-but-unsaved (dirty) and the pending buffer is emptied.
+    # materialized-but-unsaved (dirty). The pending buffer is retained as a
+    # replay log until a durable save (issue #3688).
     await storage.upsert({"id1": {"content": "alpha"}})
 
     def fail_save():
@@ -808,7 +814,10 @@ async def test_drop_pending_does_not_rollback_materialized(tmp_path):
     storage._save_faiss_index = fail_save
     with pytest.raises(OSError, match="save boom"):
         await storage.index_done_callback()
-    assert storage._pending_upserts == {}, "flush succeeded so pending is empty"
+    assert "id1" in storage._pending_upserts, (
+        "unsaved flush is retained as a replay log"
+    )
+    assert storage._pending_upserts["id1"].vector is not None
     assert storage._index_dirty is True
     assert storage._index.ntotal == 1, "id1 materialized, not saved"
 
@@ -822,3 +831,101 @@ async def test_drop_pending_does_not_rollback_materialized(tmp_path):
     assert storage._index.ntotal == 1, "materialized id1 NOT rolled back"
     assert storage._index_dirty is True, "still dirty for a later save retry"
     _assert_consistent(storage)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_index_done_replays_unsaved_upsert_after_foreign_commit(tmp_path):
+    """Issue #3688: a failed save must not lose our upserts when another
+    writer commits and the next index_done_callback reloads from disk."""
+    ours_embed = _CountingEmbed()
+    foreign_embed = _CountingEmbed()
+    ours = _make_storage(tmp_path, ours_embed)
+    foreign = _make_storage(tmp_path, foreign_embed)
+    await ours.initialize()
+    await foreign.initialize()
+
+    await ours.upsert({"ours": {"content": "ours-content"}})
+
+    original_save = ours._save_faiss_index
+
+    def fail_save():
+        raise OSError("save boom")
+
+    ours._save_faiss_index = fail_save
+    with pytest.raises(OSError, match="save boom"):
+        await ours.index_done_callback()
+    ours._save_faiss_index = original_save
+
+    assert "ours" in ours._pending_upserts
+    assert ours._pending_upserts["ours"].vector is not None
+    embed_after_fail = ours_embed.call_count
+
+    await foreign.upsert({"theirs": {"content": "theirs-content"}})
+    assert await foreign.index_done_callback() is True
+    assert ours.storage_updated.value is True
+
+    assert await ours.index_done_callback() is True
+    assert ours_embed.call_count == embed_after_fail, "replay must not re-embed"
+    assert ours._pending_upserts == {}
+
+    reader = _make_storage(tmp_path, ours_embed)
+    await reader.initialize()
+    rows = await reader.get_by_ids(["ours", "theirs"])
+    assert [row["id"] for row in rows] == ["ours", "theirs"]
+    _assert_consistent(reader)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_index_done_replays_unsaved_delete_after_foreign_commit(tmp_path):
+    """Issue #3688: an applied-but-unsaved delete must survive a foreign
+    commit's reload."""
+    embed = _CountingEmbed()
+    ours = _make_storage(tmp_path, embed)
+    foreign = _make_storage(tmp_path, embed)
+    await ours.initialize()
+    await foreign.initialize()
+
+    await ours.upsert(
+        {"keep": {"content": "keep-me"}, "gone": {"content": "delete-me"}}
+    )
+    assert await ours.index_done_callback() is True
+
+    original_save = ours._save_faiss_index
+
+    def fail_save():
+        raise OSError("save boom")
+
+    await ours.delete(["gone"])
+    assert "gone" in ours._pending_deletes
+    ours._save_faiss_index = fail_save
+    with pytest.raises(OSError, match="save boom"):
+        await ours.index_done_callback()
+    ours._save_faiss_index = original_save
+
+    await foreign.upsert({"theirs": {"content": "theirs-content"}})
+    assert await foreign.index_done_callback() is True
+
+    assert await ours.index_done_callback() is True
+    assert ours._pending_deletes == set()
+
+    reader = _make_storage(tmp_path, embed)
+    await reader.initialize()
+    assert await reader.get_by_id("gone") is None
+    assert (await reader.get_by_id("keep"))["id"] == "keep"
+    assert (await reader.get_by_id("theirs"))["id"] == "theirs"
+    _assert_consistent(reader)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_delete_that_matches_nothing_is_not_retained(tmp_path):
+    embed = _CountingEmbed()
+    storage = _make_storage(tmp_path, embed)
+    await storage.initialize()
+
+    await storage.delete(["missing"])
+
+    assert storage._pending_deletes == set()
+    assert storage._index_dirty is False
