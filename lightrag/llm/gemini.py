@@ -301,6 +301,7 @@ async def gemini_complete_if_cache(
     generation_config: dict[str, Any] | None = None,
     timeout: int | None = None,
     image_inputs: list[Any] | None = None,
+    max_tokens: int | None = None,
     **_: Any,
 ) -> str | AsyncIterator[str]:
     """
@@ -346,6 +347,9 @@ async def gemini_complete_if_cache(
         hashing_kv: Storage interface (for interface parity with other bindings).
         enable_cot: Whether to include Chain of Thought content in the response.
         timeout: Request timeout in seconds (will be converted to milliseconds for Gemini API).
+        max_tokens: Optional generic output-length cap, mapped to Gemini's
+            native ``max_output_tokens`` generation-config field when the
+            caller has not set a native value themselves.
         **_: Additional keyword arguments (ignored).
 
     Returns:
@@ -390,6 +394,15 @@ async def gemini_complete_if_cache(
         prompt_sections.append(history_block)
     prompt_sections.append(f"[user] {prompt}")
     combined_prompt = "\n".join(prompt_sections)
+
+    # Generic output-length knob: map LightRAG's provider-agnostic max_tokens
+    # to Gemini's native config field, with an explicitly configured native
+    # max_output_tokens taking precedence (#3695, same contract as the
+    # ollama/lmdeploy/hf bindings).
+    if max_tokens is not None:
+        generation_config = dict(generation_config or {})
+        if generation_config.get("max_output_tokens") is None:
+            generation_config["max_output_tokens"] = max_tokens
 
     config_obj = _build_generation_config(
         generation_config,
