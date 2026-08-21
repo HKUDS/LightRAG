@@ -182,10 +182,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
         unflushed pending data is intentionally not queryable.
 
         A flush failure (embedding error, count mismatch, or save IO
-        error) raises through ``index_done_callback``; the pending buffer
-        is preserved on flush failure, and if only the save failed
-        ``_index_dirty`` stays ``True`` so a subsequent ``finalize``
-        retries the save without re-embedding.
+        error) raises through ``index_done_callback``. The pending buffer
+        is a **replay log**: it is not cleared until the save is durable.
+        If only the save failed, ``_index_dirty`` stays ``True`` and the
+        buffered docs keep their already-normalized vectors so a later
+        commit can reload a foreign snapshot and re-apply our ops without
+        re-embedding (issue #3688).
 
     Non-pipeline write paths:
         The pipeline ``busy`` gate serializes ``upsert`` / ``delete`` /
@@ -241,15 +243,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # Maps <int faiss_id> → metadata (including your original ID).
         self._id_to_meta = {}
 
-        # Minimal pending area for deferred embedding: custom-id -> _PendingFaissDoc.
-        # Holds only records not yet embedded+materialized into self._index;
-        # it never duplicates rows already added to the Faiss index. Flushed
-        # under _storage_lock by _flush_pending_locked().
+        # Replay log for deferred embedding: custom-id -> _PendingFaissDoc.
+        # Cleared only after a durable save (issue #3688).
         self._pending_upserts: dict[str, _PendingFaissDoc] = {}
+        # Custom ids whose materialized delete has not been saved yet.
+        self._pending_deletes: set[str] = set()
         # True when self._index / self._id_to_meta have materialized changes
-        # that have not been successfully saved to disk yet. This lets
-        # finalize retry a save even after a previous flush cleared the
-        # pending buffer (see _flush_pending_locked / index_done_callback).
+        # that have not been successfully saved to disk yet.
         self._index_dirty = False
 
         # Sweep orphan tmp siblings left behind by hard kills mid-save.
@@ -303,6 +303,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         self._id_to_meta = {}
         self._load_faiss_index()
         self.storage_updated.value = False
+        self._replay_pending_deletes_locked()
         return True
 
     async def _get_index(self):
@@ -378,6 +379,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # may have cached (content-version change -> must re-embed new content).
         async with self._storage_lock:
             for doc_id, record in pending:
+                self._pending_deletes.discard(doc_id)
                 self._pending_upserts[doc_id] = _PendingFaissDoc(record=record)
 
     async def query(
@@ -498,10 +500,15 @@ class FaissVectorDBStorage(BaseVectorStorage):
             # Use the find-all variant so legacy/corrupt stores with
             # duplicate __id__ rows still get fully cleaned.
             to_remove: list[int] = []
+            matched_ids: list[str] = []
             for cid in ids:
-                to_remove.extend(self._find_faiss_ids_by_custom_id(cid))
+                fids = self._find_faiss_ids_by_custom_id(cid)
+                if fids:
+                    matched_ids.append(cid)
+                    to_remove.extend(fids)
             if to_remove:
                 self._remove_faiss_ids_locked(to_remove)
+                self._pending_deletes.update(matched_ids)
                 self._index_dirty = True
 
         logger.debug(
@@ -569,9 +576,15 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 if meta.get("src_id") == entity_name
                 or meta.get("tgt_id") == entity_name
             ]
-            if relations:
-                self._remove_faiss_ids_locked(relations)
-                self._index_dirty = True
+        if relations:
+            deleted_custom_ids = []
+            for fid in relations:
+                meta = self._id_to_meta.get(fid)
+                if meta is not None and "__id__" in meta:
+                    deleted_custom_ids.append(meta["__id__"])
+            self._remove_faiss_ids_locked(relations)
+            self._pending_deletes.update(deleted_custom_ids)
+            self._index_dirty = True
 
             # Materialized rebuild succeeded — safe to prune matching
             # buffered upserts (their records carry src_id / tgt_id from
@@ -772,17 +785,8 @@ class FaissVectorDBStorage(BaseVectorStorage):
             self._id_to_meta[fid] = record
 
         self._index_dirty = True
-
-        # Clear only the entries we just flushed. Today the non-reentrant
-        # _storage_lock locks out concurrent upserts for the entire flush
-        # (including the asyncio.gather await), so the `is pdoc` identity
-        # check is always True — it's kept as defensive scaffolding so that
-        # if the lock scope is ever relaxed (e.g. embedding moved outside the
-        # lock), a concurrent upsert that re-set vector=None would not be
-        # silently dropped here.
-        for doc_id, pdoc in pending_items:
-            if self._pending_upserts.get(doc_id) is pdoc:
-                del self._pending_upserts[doc_id]
+        # Keep `_pending_upserts` as a replay log until `_commit_locked`
+        # observes a durable save (issue #3688).
 
     def _save_faiss_index(self):
         """Atomically persist ``self._index`` + ``self._id_to_meta`` to disk.
@@ -894,6 +898,39 @@ class FaissVectorDBStorage(BaseVectorStorage):
             self._index = faiss.IndexFlatIP(self._dim)
             self._id_to_meta = {}
 
+    def _replay_pending_deletes_locked(self) -> None:
+        """Re-apply unmatched-save deletes onto the current index.
+
+        Precondition: the caller already holds ``_storage_lock``. Invoked
+        after a foreign-commit reload replaces ``self._index``. Deletes are
+        idempotent. The set is cleared only after a durable save.
+        """
+        if not self._pending_deletes:
+            return
+        to_remove: list[int] = []
+        for cid in self._pending_deletes:
+            to_remove.extend(self._find_faiss_ids_by_custom_id(cid))
+        if not to_remove:
+            return
+        self._remove_faiss_ids_locked(to_remove)
+        self._index_dirty = True
+
+    async def _commit_locked(self) -> None:
+        """Reload if needed, replay unsaved ops, save, then drop the replay log.
+
+        Precondition: the caller already holds ``_storage_lock``. Pending is
+        a replay log, not a work queue drained before the save is durable
+        (issue #3688).
+        """
+        self._reload_index_from_disk_locked(for_write=True)
+        await self._flush_pending_locked()
+        self._save_faiss_index()
+        self._pending_upserts.clear()
+        self._pending_deletes.clear()
+        await set_all_update_flags(self.namespace, workspace=self.workspace)
+        self.storage_updated.value = False
+        self._index_dirty = False
+
     async def drop_pending_index_ops(self) -> None:
         """Discard buffered upserts on an aborting batch.
 
@@ -916,9 +953,11 @@ class FaissVectorDBStorage(BaseVectorStorage):
         """
         if self._storage_lock is None:
             self._pending_upserts.clear()
+            self._pending_deletes.clear()
             return
         async with self._storage_lock:
             self._pending_upserts.clear()
+            self._pending_deletes.clear()
 
     async def index_done_callback(self) -> bool:
         """Flush deferred embeddings, commit to disk, and notify other processes.
@@ -933,14 +972,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
                kept, ``_index_dirty`` is not touched, nothing is written to
                the index.
             3. ``_save_faiss_index`` atomically writes ``.index`` and
-               ``.meta.json``. A failure here **also raises**;
-               ``_pending_upserts`` is already empty (flush succeeded) and
-               ``_index_dirty`` stays ``True`` so a later ``finalize``
-               retries the save without re-embedding.
-            4. ``set_all_update_flags`` flips every registered process's
-               ``storage_updated`` flag, then we immediately reset our own
-               flag to ``False`` so the writer does not self-reload on the
-               next call to ``_get_index``.
+               ``.meta.json``. A failure here **also raises**; the replay
+               log is left intact and ``_index_dirty`` stays ``True`` so a
+               later commit can reload a foreign snapshot and re-apply our
+               ops (issue #3688).
+            4. On success the replay log is cleared, ``set_all_update_flags``
+               flips every registered process's ``storage_updated`` flag, and
+               we immediately reset our own flag to ``False``.
 
         Either failure surfaces loudly through ``_insert_done`` so the
         caller can abort the document batch instead of silently losing
@@ -948,17 +986,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         effectively always ``True`` on the success path.
         """
         async with self._storage_lock:
-            self._reload_index_from_disk_locked(for_write=True)
-
-            # Flush + save both raise on failure (embedding mismatch / save IO
-            # error). The exception propagates out of the lock so _insert_done
-            # aborts the batch; pending stays intact and _index_dirty stays
-            # True (if only the save failed) for a later retry.
-            await self._flush_pending_locked()
-            self._save_faiss_index()
-            await set_all_update_flags(self.namespace, workspace=self.workspace)
-            self.storage_updated.value = False
-            self._index_dirty = False
+            await self._commit_locked()
             return True
 
     @staticmethod
@@ -1128,6 +1156,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             async with self._storage_lock:
                 # Discard buffered (unflushed) upserts along with the data.
                 self._pending_upserts.clear()
+                self._pending_deletes.clear()
 
                 # Reset the index
                 self._index = faiss.IndexFlatIP(self._dim)
@@ -1160,33 +1189,26 @@ class FaissVectorDBStorage(BaseVectorStorage):
     async def finalize(self):
         """Flush any buffered upserts and persist before shutdown (safety net).
 
-        Normally ``index_done_callback`` has already drained the pending
-        buffer and synced to disk, but two paths land here with work to do:
+        Normally ``index_done_callback`` has already committed. Two paths
+        still land here with work to do:
 
-        - **Pending upserts only** (no prior ``index_done_callback``): flush
-          and save. We reload first so a stale process picks up other
-          writers' commits before merging its pending buffer in.
+        - **Pending upserts only** (no prior commit): flush and save. Reload
+          first so a stale process picks up other writers' commits, then
+          merge the replay log.
         - **Unsaved materialized changes** (``_index_dirty=True``): an
-          earlier ``index_done_callback`` flushed pending into ``self._index``
-          but its save raised. Skip the reload — reloading would drop those
-          materialized-but-unsaved rows — and just retry the save.
+          earlier commit flushed into ``self._index`` but its save raised.
+          The replay log is still populated, so we can reload a foreign
+          commit and re-apply our ops instead of skipping the reload
+          (issue #3688).
 
-        Flush / save failures propagate (same contract as
-        ``index_done_callback``); a partially flushed buffer is preserved
-        for a future retry.
+        Flush / save failures propagate; the replay log is preserved for a
+        future retry.
         """
         async with self._storage_lock:
-            if not self._pending_upserts and not self._index_dirty:
+            if (
+                not self._pending_upserts
+                and not self._pending_deletes
+                and not self._index_dirty
+            ):
                 return
-            if self._pending_upserts:
-                # Only reload when we have nothing un-persisted in self._index.
-                # A dirty index carries successfully-flushed-but-unsaved rows
-                # from a prior index_done_callback; reloading would silently
-                # drop them.
-                if not self._index_dirty:
-                    self._reload_index_from_disk_locked(for_write=True)
-                await self._flush_pending_locked()
-            self._save_faiss_index()
-            await set_all_update_flags(self.namespace, workspace=self.workspace)
-            self.storage_updated.value = False
-            self._index_dirty = False
+            await self._commit_locked()
