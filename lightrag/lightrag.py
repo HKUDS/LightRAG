@@ -551,6 +551,31 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         ],
         Union[List[Dict[str, Any]], Awaitable[List[Dict[str, Any]]]],
     ] = field(default_factory=lambda: chunking_by_token_size)
+
+    kg_extraction_validator: Callable | None = field(default=None)
+    """
+    Optional per-chunk extraction-quality hook, run BEFORE merge (#3691).
+
+    Called once per chunk with ``(chunk_key, chunk_text, maybe_nodes,
+    maybe_edges)`` and must return a possibly-filtered
+    ``(maybe_nodes, maybe_edges)`` pair of the same shapes. ``None`` (the
+    default) leaves the pipeline byte-identical. Synchronous or async.
+
+    **Where it runs.** After entity/relation extraction and before
+    ``merge_nodes_and_edges`` — junk that the hook drops never enters the
+    knowledge graph, the vector stores, or any ``source_id`` chain, which is
+    the whole point: post-merge cleanup (delete + purge + re-ingest) cannot
+    unwind a polluted ``source_id`` list cheaply.
+
+    **What users do inside**: drop junk entities (column headers, single
+    letters), drop relations whose endpoints are missing from the entity
+    set, reject non-grounded names absent from ``chunk_text``, write audit
+    logs of reject reasons.
+
+    **Also runs** on the custom-chunk ingest path in ``apipeline_enqueue_...``
+    / ainsert_custom_chunks, so every path that merges extraction results
+    passes through the same hook.
+    """
     """
     Legacy chunking-function customization point. Synchronous or async.
 

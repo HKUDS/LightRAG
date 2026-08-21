@@ -4,6 +4,7 @@ from functools import partial
 from pathlib import Path
 
 import asyncio
+import inspect
 import json
 import logging
 import re
@@ -3933,6 +3934,11 @@ async def extract_entities(
     # Extraction-scoped truncation tally; see _publish_truncation_summary below.
     stage_tally = TokenLimitTruncationTally()
 
+    # Optional per-chunk extraction-quality hook (#3691); None leaves the
+    # pipeline unchanged. Applied at every chunk result — see
+    # _process_single_content's return path.
+    kg_extraction_validator = global_config.get("kg_extraction_validator")
+
     use_llm_func: callable = global_config["role_llm_funcs"]["extract"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
     # Cap on the gleaning LLM call's combined input (system + history user
@@ -4321,6 +4327,20 @@ async def extract_entities(
                 cache_keys_collector,
                 "entity_extraction",
             )
+
+        # Optional extraction-quality hook (#3691): the LAST word before the
+        # merge. Whatever the validator drops never reaches
+        # merge_nodes_and_edges, the vector stores, or any source_id chain.
+        if kg_extraction_validator is not None:
+            validated = kg_extraction_validator(
+                chunk_key,
+                chunk_dp.get("content", "") or "",
+                maybe_nodes,
+                maybe_edges,
+            )
+            if inspect.isawaitable(validated):
+                validated = await validated
+            maybe_nodes, maybe_edges = validated
 
         processed_chunks += 1
         entities_count = len(maybe_nodes)
