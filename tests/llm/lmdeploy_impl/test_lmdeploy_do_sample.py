@@ -85,6 +85,36 @@ async def test_do_sample_forwarded_unchanged_on_modern_lmdeploy(
 
 
 @pytest.mark.parametrize(
+    ("generation_kwargs", "expected_max_new_tokens"),
+    [
+        pytest.param({}, 512, id="omitted-defaults-to-512"),
+        pytest.param({"max_tokens": 37}, 37, id="generic-max-tokens"),
+        pytest.param({"max_new_tokens": 41}, 41, id="native-max-new-tokens"),
+        pytest.param(
+            {"max_tokens": 37, "max_new_tokens": 41},
+            41,
+            id="native-value-takes-precedence",
+        ),
+    ],
+)
+async def test_generation_token_limit_precedence(
+    monkeypatch, generation_kwargs, expected_max_new_tokens
+):
+    """The native setting wins over LightRAG's generic alias."""
+    captured = _install_fake_lmdeploy(monkeypatch, less_than_0_6_0=False)
+
+    result = await lmdeploy_model_if_cache(
+        model="lmdeploy-model",
+        prompt="hello",
+        **generation_kwargs,
+    )
+
+    assert result == "{}"
+    assert captured["max_new_tokens"] == expected_max_new_tokens
+    assert "max_tokens" not in captured
+
+
+@pytest.mark.parametrize(
     "do_sample_kwarg",
     [
         pytest.param({}, id="omitted"),
