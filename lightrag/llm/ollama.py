@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 import os
 import re
 import warnings
@@ -197,7 +197,16 @@ async def _ollama_model_if_cache(
         logger.debug("enable_cot=True is not supported for ollama and will be ignored.")
     stream = True if kwargs.get("stream") else False
 
-    kwargs.pop("max_tokens", None)
+    max_tokens = kwargs.pop("max_tokens", None)
+    if max_tokens is not None:
+        options = kwargs.get("options")
+        if options is None:
+            kwargs["options"] = {"num_predict": max_tokens}
+        elif isinstance(options, Mapping):
+            if options.get("num_predict") is None:
+                kwargs["options"] = {**options, "num_predict": max_tokens}
+        elif isinstance(options, ollama.Options) and options.num_predict is None:
+            kwargs["options"] = options.model_copy(update={"num_predict": max_tokens})
     # Deprecation shims: map legacy boolean flags to response_format only when
     # an explicit response_format was not supplied by the caller.
     if kwargs.get("response_format") is None:
