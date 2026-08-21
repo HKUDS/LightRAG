@@ -100,11 +100,14 @@ async def lollms_model_if_cache(
     )
 
     # Extract lollms specific parameters
+    n_predict = kwargs.get("n_predict")
+    if n_predict is None:
+        n_predict = kwargs.get("max_tokens")
     request_data = {
         "prompt": prompt,
         "model_name": model,
         "personality": kwargs.get("personality", -1),
-        "n_predict": kwargs.get("n_predict", None),
+        "n_predict": n_predict,
         "stream": stream,
         "temperature": kwargs.get("temperature", 1.0),
         "top_k": kwargs.get("top_k", 50),
