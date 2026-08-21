@@ -107,7 +107,7 @@
     "typescript-eslint": "^8.67.0",
     "tailwindcss": "^4.3.3",
     "tailwindcss-animate": "^1.0.7",
-    "typescript": "~6.0.3",
+    "typescript": "~7.0.2",
     "vite": "^8.2.1"
   }
 }
