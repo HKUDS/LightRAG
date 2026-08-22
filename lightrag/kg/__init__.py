@@ -6,6 +6,7 @@ STORAGE_IMPLEMENTATIONS = {
             "PGKVStorage",
             "MongoKVStorage",
             "OpenSearchKVStorage",
+            "LanceDBKVStorage",
         ],
         "required_methods": ["get_by_id", "upsert"],
     },
@@ -18,6 +19,7 @@ STORAGE_IMPLEMENTATIONS = {
             "MongoGraphStorage",
             "MemgraphStorage",
             "OpenSearchGraphStorage",
+            "LanceDBGraphStorage",
         ],
         "required_methods": ["upsert_node", "upsert_edge"],
     },
@@ -31,6 +33,7 @@ STORAGE_IMPLEMENTATIONS = {
             "QdrantVectorDBStorage",
             "MongoVectorDBStorage",
             "OpenSearchVectorDBStorage",
+            "LanceDBVectorStorage",
             # "ChromaVectorDBStorage",
         ],
         "required_methods": ["query", "upsert"],
@@ -42,6 +45,7 @@ STORAGE_IMPLEMENTATIONS = {
             "PGDocStatusStorage",
             "MongoDocStatusStorage",
             "OpenSearchDocStatusStorage",
+            "LanceDBDocStatusStorage",
         ],
         "required_methods": ["get_docs_by_status"],
     },
@@ -116,6 +120,12 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
     "OpenSearchVectorDBStorage": [
         "OPENSEARCH_HOSTS",
     ],
+    # LanceDB Storage Implementations (embedded, no required env vars;
+    # LANCEDB_URI defaults to <working_dir>/lancedb)
+    "LanceDBKVStorage": [],
+    "LanceDBVectorStorage": [],
+    "LanceDBGraphStorage": [],
+    "LanceDBDocStatusStorage": [],
 }
 
 # Storage implementation module mapping
@@ -147,6 +157,20 @@ STORAGES = {
     "OpenSearchDocStatusStorage": ".kg.opensearch_impl",
     "OpenSearchGraphStorage": ".kg.opensearch_impl",
     "OpenSearchVectorDBStorage": ".kg.opensearch_impl",
+    "LanceDBKVStorage": ".kg.lancedb_impl",
+    "LanceDBVectorStorage": ".kg.lancedb_impl",
+    "LanceDBGraphStorage": ".kg.lancedb_impl",
+    "LanceDBDocStatusStorage": ".kg.lancedb_impl",
+}
+
+# Embedded storages whose write serialization is per-process; running them
+# under multiple workers (gunicorn) can commit duplicate rows. Launchers
+# check membership here instead of hard-coding implementation names.
+MULTIPROCESS_UNSAFE_STORAGES = {
+    "LanceDBKVStorage",
+    "LanceDBVectorStorage",
+    "LanceDBGraphStorage",
+    "LanceDBDocStatusStorage",
 }
 
 
