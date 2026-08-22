@@ -707,8 +707,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
         newly embedded vectors go through ``faiss.normalize_L2``.
 
         Failure handling:
-            * Queued deletes are applied first and are not replayed on a
-              later retry (they already landed on ``self._index``).
+            * Queued deletes are applied first; a delete batch that lands on
+              ``self._index`` is not replayed on a later retry, while one
+              whose rebuild raises stays queued for the retry.
             * Embedding error / count mismatch → raises before any mutation
               to ``self._index`` / ``self._id_to_meta``; ``_pending_upserts``
               is left intact and ``self._index_dirty`` is not touched.
@@ -741,10 +742,15 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 for fid, meta in self._id_to_meta.items()
                 if meta.get("__id__") in queued
             ]
-            self._pending_deletes = set()
+            # Clear the queue only after the rebuild succeeds: if
+            # ``_remove_faiss_ids_locked`` raises (FAISS rebuild failure),
+            # the tombstones must survive so the next
+            # ``index_done_callback`` retry re-applies them instead of
+            # persisting the stale rows as if the deletes had happened.
             if to_remove:
                 self._remove_faiss_ids_locked(to_remove)
                 self._index_dirty = True
+            self._pending_deletes = set()
             logger.info(
                 f"[{self.workspace}] {self.namespace} flush: applied "
                 f"{len(to_remove)} deferred vector deletes"

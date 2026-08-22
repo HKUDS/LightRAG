@@ -210,3 +210,45 @@ async def test_drop_pending_index_ops_discards_queued_deletes(tmp_path):
     assert (await storage.get_by_id("keep")) is not None, (
         "an aborted batch must discard its queued deletes"
     )
+
+
+@pytest.mark.asyncio
+async def test_failed_delete_rebuild_keeps_tombstones_for_retry(
+    tmp_path, monkeypatch
+):
+    """A FAISS rebuild failure during the delete pass must not consume the
+    queued tombstones: the next ``index_done_callback`` retry re-applies them
+    instead of persisting the stale rows as if they were deleted."""
+    embed = _CountingEmbed()
+    storage = await _make_storage(tmp_path, embed)
+    await _upsert_and_flush(storage, {"x": {"content": "ex"}, "y": {"content": "wy"}})
+    assert len(storage._id_to_meta) == 2
+
+    await storage.delete(["x", "y"])
+
+    def failing_rebuild(fid_list):
+        raise RuntimeError("faiss rebuild boom")
+
+    monkeypatch.setattr(storage, "_remove_faiss_ids_locked", failing_rebuild)
+
+    with pytest.raises(RuntimeError, match="faiss rebuild boom"):
+        await storage.index_done_callback()
+
+    assert storage._pending_deletes == {"x", "y"}, (
+        "tombstones must survive a failed rebuild so the retry re-applies them"
+    )
+    assert len(storage._id_to_meta) == 2, "rows must still be materialized"
+    assert storage._index_dirty is False, "nothing landed, so nothing to save"
+
+    monkeypatch.undo()
+
+    # The retry succeeds and the deletes land exactly once.
+    assert await storage.index_done_callback() is True
+    assert storage._pending_deletes == set()
+    assert len(storage._id_to_meta) == 0
+    assert await storage.get_by_ids(["x", "y"]) == [None, None]
+
+    reloaded = await _make_storage(tmp_path, _CountingEmbed())
+    assert await reloaded.get_by_ids(["x", "y"]) == [None, None], (
+        "the retried deletes must be persisted to disk"
+    )
