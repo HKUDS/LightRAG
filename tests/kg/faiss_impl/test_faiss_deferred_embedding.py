@@ -422,13 +422,14 @@ async def test_finalize_retries_save_after_flush_failure(tmp_path):
     with pytest.raises(OSError, match="boom"):
         await storage.finalize()
 
-    assert storage._pending_upserts == {}
+    assert "id1" in storage._pending_upserts, "replay record kept (#3688)"
     assert storage._index_dirty is True
 
     await storage.finalize()
 
     assert save_calls == 2
     assert storage._index_dirty is False
+    assert storage._pending_upserts == {}, "successful retry drains the buffer"
 
     reader = _make_storage(tmp_path, embed)
     await reader.initialize()
@@ -472,8 +473,9 @@ async def test_reupsert_after_flush_replaces_single_fid(tmp_path):
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_index_done_callback_save_failure_raises(tmp_path):
-    """Save failure in index_done_callback must propagate, leave pending empty
-    (flush already succeeded), and keep _index_dirty=True so finalize retries."""
+    """Save failure in index_done_callback must propagate, keep the pending
+    buffer as the replay record (#3688), and keep _index_dirty=True so
+    finalize retries."""
     embed = _CountingEmbed()
     storage = _make_storage(tmp_path, embed)
     await storage.initialize()
@@ -490,7 +492,9 @@ async def test_index_done_callback_save_failure_raises(tmp_path):
     with pytest.raises(OSError, match="save boom"):
         await storage.index_done_callback()
 
-    assert storage._pending_upserts == {}, "flush succeeded so pending is empty"
+    assert "id1" in storage._pending_upserts, (
+        "pending survives the failed save as the replay record (#3688)"
+    )
     assert storage._index_dirty is True, "save failure preserves dirty for retry"
     assert storage._index.ntotal == 1, "materialized state is preserved"
     _assert_consistent(storage)
@@ -501,6 +505,7 @@ async def test_index_done_callback_save_failure_raises(tmp_path):
     await storage.finalize()
     assert embed.call_count == embed_before, "save retry must not re-embed"
     assert storage._index_dirty is False
+    assert storage._pending_upserts == {}, "successful retry drains the buffer"
 
     reader = _make_storage(tmp_path, embed)
     await reader.initialize()
@@ -808,7 +813,7 @@ async def test_drop_pending_does_not_rollback_materialized(tmp_path):
     storage._save_faiss_index = fail_save
     with pytest.raises(OSError, match="save boom"):
         await storage.index_done_callback()
-    assert storage._pending_upserts == {}, "flush succeeded so pending is empty"
+    assert "id1" in storage._pending_upserts, "replay record kept (#3688)"
     assert storage._index_dirty is True
     assert storage._index.ntotal == 1, "id1 materialized, not saved"
 
@@ -818,7 +823,10 @@ async def test_drop_pending_does_not_rollback_materialized(tmp_path):
 
     await storage.drop_pending_index_ops()
 
-    assert storage._pending_upserts == {}, "pending id2 dropped"
+    # drop discards BOTH buffered entries (id2 and id1's replay record);
+    # id1 itself survives because it was already materialized and stays
+    # dirty for the next save retry.
+    assert storage._pending_upserts == {}, "pending buffer dropped"
     assert storage._index.ntotal == 1, "materialized id1 NOT rolled back"
     assert storage._index_dirty is True, "still dirty for a later save retry"
     _assert_consistent(storage)

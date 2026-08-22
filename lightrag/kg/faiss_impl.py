@@ -773,16 +773,15 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
         self._index_dirty = True
 
-        # Clear only the entries we just flushed. Today the non-reentrant
-        # _storage_lock locks out concurrent upserts for the entire flush
-        # (including the asyncio.gather await), so the `is pdoc` identity
-        # check is always True — it's kept as defensive scaffolding so that
-        # if the lock scope is ever relaxed (e.g. embedding moved outside the
-        # lock), a concurrent upsert that re-set vector=None would not be
-        # silently dropped here.
-        for doc_id, pdoc in pending_items:
-            if self._pending_upserts.get(doc_id) is pdoc:
-                del self._pending_upserts[doc_id]
+        # NOTE: the flushed entries are intentionally NOT removed from
+        # ``_pending_upserts`` here — the CALLER clears them once the
+        # subsequent save succeeds. Until then the pending buffer is the
+        # replay record for the materialized-but-unsaved rows: if the save
+        # raises and another process commits, the next callback's
+        # reload-from-disk replaces ``self._index`` / ``self._id_to_meta``,
+        # and re-running this flush against the reloaded snapshot rebuilds
+        # exactly these rows (remove-by-custom-id + re-add is idempotent).
+        # Clearing here instead would silently drop them (#3688).
 
     def _save_faiss_index(self):
         """Atomically persist ``self._index`` + ``self._id_to_meta`` to disk.
@@ -954,8 +953,14 @@ class FaissVectorDBStorage(BaseVectorStorage):
             # error). The exception propagates out of the lock so _insert_done
             # aborts the batch; pending stays intact and _index_dirty stays
             # True (if only the save failed) for a later retry.
+            flushed_ids = list(self._pending_upserts.keys())
             await self._flush_pending_locked()
             self._save_faiss_index()
+            # The save succeeded: the replay record is no longer needed.
+            # (All upserts run under this same non-reentrant lock, so the
+            # snapshot above is exactly what this flush materialized.)
+            for doc_id in flushed_ids:
+                self._pending_upserts.pop(doc_id, None)
             await set_all_update_flags(self.namespace, workspace=self.workspace)
             self.storage_updated.value = False
             self._index_dirty = False
@@ -1185,8 +1190,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 # drop them.
                 if not self._index_dirty:
                     self._reload_index_from_disk_locked(for_write=True)
+                flushed_ids = list(self._pending_upserts.keys())
                 await self._flush_pending_locked()
+            else:
+                flushed_ids = []
             self._save_faiss_index()
+            for doc_id in flushed_ids:
+                self._pending_upserts.pop(doc_id, None)
             await set_all_update_flags(self.namespace, workspace=self.workspace)
             self.storage_updated.value = False
             self._index_dirty = False
