@@ -782,6 +782,40 @@ class BedrockLLMOptions(BindingOptions):
 
 
 # =============================================================================
+# Cloudflare Workers AI Options Classes
+# =============================================================================
+@dataclass
+class CloudflareLLMOptions(BindingOptions):
+    """Options for Cloudflare Workers AI text generation."""
+
+    _binding_name: ClassVar[str] = "cloudflare_llm"
+
+    temperature: float = DEFAULT_TEMPERATURE
+    max_tokens: int | None = None
+    top_p: float = 1.0
+    top_k: int | None = None
+    repetition_penalty: float | None = None
+    seed: int | None = None
+
+    _help: ClassVar[dict[str, str]] = {
+        "temperature": "Controls randomness in output generation (0.0-2.0)",
+        "max_tokens": "Maximum number of tokens to generate",
+        "top_p": "Nucleus sampling probability threshold (0.0-1.0)",
+        "top_k": "Top-k sampling threshold",
+        "repetition_penalty": "Penalty for repeating tokens (typically 1.0-2.0)",
+        "seed": "Random seed for reproducible outputs",
+    }
+
+
+@dataclass
+class CloudflareEmbeddingOptions(BindingOptions):
+    """Options for Cloudflare Workers AI text embeddings."""
+
+    _binding_name: ClassVar[str] = "cloudflare_embedding"
+
+
+
+# =============================================================================
 # Main Section - For Testing and Sample Generation
 # =============================================================================
 #
