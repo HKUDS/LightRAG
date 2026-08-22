@@ -196,6 +196,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
         published by another writer, which no content-based identity can tell
         from the row we deleted.
 
+        Being replayable is also what lets ``finalize`` reload before it
+        retries a delete-only save: without the log it had to skip the reload
+        to protect the unsaved removal, and saved a pre-commit snapshot over
+        another writer's rows. Materialized upserts still need that
+        protection (``_unsaved_upserts``), because nothing replays them.
+
         Ids that matched no row are not logged at all — there is nothing to
         persist for them, and replaying them could only hit a row they were
         never meant to touch. The log is cleared once a save lands, and an
@@ -285,6 +291,11 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # successfully saved to disk yet. This lets finalize retry a save even
         # after a previous flush cleared the pending buffer.
         self._client_dirty = False
+        # True when part of that unsaved state is materialized *upserts*.
+        # Those rows exist nowhere else, so a reload would drop them; removals
+        # do not need the same protection because _unsaved_deletes replays
+        # them. finalize uses this to decide whether reloading is safe.
+        self._unsaved_upserts = False
 
     async def initialize(self):
         """Initialize storage data"""
@@ -529,6 +540,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         self._client.upsert(datas=list_data)
         self._client_dirty = True
+        self._unsaved_upserts = True
 
         # Clear only the entries we just flushed (an upsert that arrived after
         # the snapshot would have re-set vector=None and must not be dropped).
@@ -878,6 +890,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             await set_all_update_flags(self.namespace, workspace=self.workspace)
             self.storage_updated.value = False
             self._client_dirty = False
+            self._unsaved_upserts = False
             return True
 
     @staticmethod
@@ -1067,6 +1080,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                     storage_file=self._client_file_name,
                 )
                 self._client_dirty = False
+                self._unsaved_upserts = False
 
                 # Notify other processes that data has been updated
                 await set_all_update_flags(self.namespace, workspace=self.workspace)
@@ -1090,10 +1104,15 @@ class NanoVectorDBStorage(BaseVectorStorage):
         - **Pending upserts only** (no prior ``index_done_callback``): flush
           and save. We reload first so a stale process picks up other writers'
           commits before merging its pending buffer in.
-        - **Unsaved materialized changes** (``_client_dirty=True``): an earlier
-          ``index_done_callback`` flushed pending into ``self._client`` but
-          its save raised. Skip the reload — reloading would drop those
-          materialized-but-unsaved rows — and just retry the save.
+        - **Unsaved materialized upserts** (``_unsaved_upserts=True``): an
+          earlier ``index_done_callback`` materialized rows into
+          ``self._client`` but its save raised. Skip the reload — those rows
+          exist nowhere else — and just retry the save.
+        - **Unsaved removals only** (``_client_dirty`` set by deletes alone):
+          reloading is safe and necessary here. ``_unsaved_deletes`` replays
+          the removals on top of the snapshot, whereas skipping the reload
+          would write our pre-commit snapshot over another writer's durable
+          rows.
 
         Flush / save failures propagate (same contract as
         ``index_done_callback``); a partially flushed buffer is preserved for
@@ -1108,11 +1127,13 @@ class NanoVectorDBStorage(BaseVectorStorage):
             ):
                 return
             if self._pending_upserts or self._pending_deletes or self._unsaved_deletes:
-                # Only reload when we have nothing un-persisted in self._client.
-                # A dirty client carries successfully-flushed-but-unsaved rows
-                # from a prior index_done_callback; reloading would silently
-                # drop them.
-                if not self._client_dirty:
+                # Reload unless self._client carries unsaved *upserts*: those
+                # rows exist nowhere else, so a reload would silently drop
+                # them. Unsaved removals are not a reason to skip it —
+                # _unsaved_deletes replays them on top of whatever the other
+                # writer committed, while skipping would save our pre-commit
+                # snapshot over their durable rows.
+                if not self._unsaved_upserts:
                     self._reload_client_from_disk_locked(for_write=True)
                 await self._flush_pending_locked()
             if not self._client_dirty:
@@ -1126,3 +1147,4 @@ class NanoVectorDBStorage(BaseVectorStorage):
             await set_all_update_flags(self.namespace, workspace=self.workspace)
             self.storage_updated.value = False
             self._client_dirty = False
+            self._unsaved_upserts = False

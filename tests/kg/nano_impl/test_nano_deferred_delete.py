@@ -666,3 +666,73 @@ async def test_eager_entity_delete_is_replayed_across_a_reload(tmp_path):
     await reader.initialize()
     assert await reader.get_by_id(entity_id) is None
     assert (await reader.get_by_id("id2"))["content"] == "beta"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_finalize_reloads_before_retrying_a_delete_only_save(tmp_path):
+    """A delete-only dirty client must not save over a foreign commit.
+
+    ``finalize`` skips the reload when ``self._client`` holds unsaved rows,
+    because a reload would drop them. A removal is not such a row: the redo
+    log replays it after the reload. Skipping anyway wrote our pre-commit
+    snapshot over the other writer's durable rows — here id3 disappeared and
+    the file was left holding id2 alone.
+    """
+    writer = _make_storage(tmp_path)
+    other = _make_storage(tmp_path)
+    await writer.initialize()
+    await other.initialize()
+    await _seed(writer, {"id1": "alpha", "id2": "beta"})
+
+    await writer.delete(["id1"])
+    restore = _make_save_fail(writer)
+    with pytest.raises(OSError):
+        await writer.index_done_callback()
+    restore()
+    assert writer._client_dirty is True
+    assert writer._unsaved_upserts is False, "the dirty state is removals only"
+
+    # Another writer commits after our failed save.
+    await other.upsert({"id3": {"content": "gamma"}})
+    assert await other.index_done_callback() is True
+
+    await writer.finalize()
+
+    reader = _make_storage(tmp_path)
+    await reader.initialize()
+    assert await reader.get_by_id("id1") is None, "our removal must still land"
+    assert (await reader.get_by_id("id2"))["content"] == "beta"
+    assert (await reader.get_by_id("id3"))["content"] == "gamma", (
+        "the other writer's commit must survive finalize"
+    )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_finalize_still_protects_unsaved_upserts_from_the_reload(tmp_path):
+    """The other half of the same guard: materialized-but-unsaved *rows* exist
+    nowhere else, so finalize must keep skipping the reload for them."""
+    writer = _make_storage(tmp_path)
+    other = _make_storage(tmp_path)
+    await writer.initialize()
+    await other.initialize()
+    await _seed(writer, {"id1": "alpha"})
+
+    await writer.upsert({"id2": {"content": "beta"}})
+    restore = _make_save_fail(writer)
+    with pytest.raises(OSError):
+        await writer.index_done_callback()
+    restore()
+    assert writer._unsaved_upserts is True
+
+    await other.upsert({"id3": {"content": "gamma"}})
+    assert await other.index_done_callback() is True
+
+    await writer.finalize()
+
+    reader = _make_storage(tmp_path)
+    await reader.initialize()
+    assert (await reader.get_by_id("id2"))["content"] == "beta", (
+        "a reload would have dropped the only copy of this row"
+    )
