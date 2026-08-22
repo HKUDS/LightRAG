@@ -212,13 +212,27 @@ class NanoVectorDBStorage(BaseVectorStorage):
         off the merge hot path — but their removals are applied-and-unsaved
         just the same, so they are recorded in the log too.
 
-        The read-your-writes paths treat both buffers as absent: ``get_by_id``
-        / ``get_by_ids`` / ``get_vectors_by_ids`` consult them after
-        ``_pending_upserts``. An ``upsert`` cancels a *queued* delete for the
-        same id (``client.upsert`` overwrites the row in place, so applying it
-        first would be redundant work) but never the redo log: the buffered
-        row may be discarded by an aborting batch before it materializes, and
-        dropping the entry then would leave the reload nothing to replay.
+        The two buffers are scoped differently, and deliberately so.
+        ``_pending_deletes`` holds a *request*: the caller named an id, so the
+        flush removes whatever row carries that id — the by-id contract every
+        server-backed backend implements, and the one purge relies on to leave
+        nothing behind. Version-scoping a request would silently skip a delete
+        the caller asked for, and pinning the version at ``delete`` time would
+        also put back the per-call ``O(rows)`` lookup this protocol exists to
+        remove. ``_unsaved_deletes`` holds a *record* of a removal that already
+        happened, so it is version-scoped: replaying it must not remove a row
+        that has since taken the id's place.
+
+        The read-your-writes paths mirror both rules. ``get_by_id`` /
+        ``get_by_ids`` / ``get_vectors_by_ids`` consult the buffers after
+        ``_pending_upserts``: a queued id reads as absent, while a logged one
+        hides only the row the entry names — a replacement the replay would
+        preserve stays readable. An ``upsert`` cancels a *queued* delete for
+        the same id (``client.upsert`` overwrites the row in place, so
+        applying it first would be redundant work) but never the redo log: the
+        buffered row may be discarded by an aborting batch before it
+        materializes, and dropping the entry then would leave the reload
+        nothing to replay.
         ``query`` and ``client_storage`` are unchanged: they read the
         materialized index, so a queued delete still surfaces there until the
         flush — the same contract the Qdrant and PostgreSQL buffers document.
@@ -646,6 +660,16 @@ class NanoVectorDBStorage(BaseVectorStorage):
             materialize. Reads already report a queued id as absent, so the
             deferral is invisible to callers.
 
+            The request is scoped to the **id**, not to the row version
+            present when it was made: the flush removes whatever row carries
+            the id, exactly as the eager call and the server-backed backends
+            do. If another writer rewrites the row inside the deferral window,
+            that rewrite is what gets removed. Skipping it instead would leave
+            purge with vectors it was told to delete — worse than the race it
+            would avoid, and only reachable by breaking the single-writer
+            invariant above. The redo log is version-scoped precisely because
+            it is not a request; see the protocol section.
+
         Persistence:
             Changes are in-memory only; cross-process visibility requires a
             subsequent ``index_done_callback``. In ``lightrag.py`` this is
@@ -902,6 +926,16 @@ class NanoVectorDBStorage(BaseVectorStorage):
             "created_at": dp.get("__created_at__"),
         }
 
+    def _matches_redo_entry(self, dp: dict[str, Any], fingerprint: str | None) -> bool:
+        """True when a materialized row is the one a redo entry removed.
+
+        ``fingerprint`` is the value snapshotted from ``_unsaved_deletes``
+        under the lock (``None`` when the id is not logged). A row that no
+        longer matches took the id's place after the removal, and the replay
+        deliberately preserves it — so the read paths must show it.
+        """
+        return fingerprint is not None and fingerprint == self._row_fingerprint(dp)
+
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID (read-your-writes against the pending buffer).
 
@@ -911,20 +945,22 @@ class NanoVectorDBStorage(BaseVectorStorage):
         Returns:
             The vector data if found, or None if not found
         """
-        # Read-your-writes: a buffered upsert is visible before its flush;
-        # an id queued for deferred delete (and not re-upserted) reads as absent.
+        # Read-your-writes: a buffered upsert is visible before its flush; a
+        # queued delete makes the id read as absent; a logged one hides only
+        # the row version it removed (see *Deferred-delete protocol*).
         async with self._storage_lock:
             pending = self._pending_upserts.get(id)
             if pending is not None:
                 return self._format_record(pending.record)
-            if id in self._pending_deletes or id in self._unsaved_deletes:
+            if id in self._pending_deletes:
                 return None
+            logged = self._unsaved_deletes.get(id)
 
         client = await self._get_client()
         result = client.get([id])
-        if result:
-            return self._format_record(result[0])
-        return None
+        if not result or self._matches_redo_entry(result[0], logged):
+            return None
+        return self._format_record(result[0])
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """Get multiple vector data by their IDs (read-your-writes), preserving order.
@@ -942,23 +978,27 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # only query the materialized client for the remaining ids.
         result_map: dict[str, dict[str, Any]] = {}
         remaining: list[str] = []
+        logged: dict[str, str] = {}
         async with self._storage_lock:
             for requested_id in ids:
                 pending = self._pending_upserts.get(requested_id)
                 if pending is not None:
                     result_map[str(requested_id)] = self._format_record(pending.record)
-                elif (
-                    requested_id in self._pending_deletes
-                    or requested_id in self._unsaved_deletes
-                ):
-                    continue  # queued for deferred delete and not re-upserted -> treat as absent
+                elif requested_id in self._pending_deletes:
+                    continue  # queued delete, no newer upsert -> absent
                 else:
+                    # A logged id still goes to the client: only the removed
+                    # row version is hidden, not one written in its place.
+                    if requested_id in self._unsaved_deletes:
+                        logged[requested_id] = self._unsaved_deletes[requested_id]
                     remaining.append(requested_id)
 
         if remaining:
             client = await self._get_client()
             for dp in client.get(remaining):
                 if not dp:
+                    continue
+                if self._matches_redo_entry(dp, logged.get(dp.get("__id__"))):
                     continue
                 record = self._format_record(dp)
                 key = record.get("id")
@@ -986,16 +1026,18 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         vectors_dict: dict[str, list[float]] = {}
         remaining: list[str] = []
+        logged: dict[str, str] = {}
         async with self._storage_lock:
             to_embed: list[tuple[str, _PendingNanoDoc]] = []
             for requested_id in ids:
                 pending = self._pending_upserts.get(requested_id)
                 if pending is None:
-                    if (
-                        requested_id in self._pending_deletes
-                        or requested_id in self._unsaved_deletes
-                    ):
-                        continue  # queued for deferred delete and not re-upserted -> treat as absent
+                    if requested_id in self._pending_deletes:
+                        continue  # queued delete, no newer upsert -> absent
+                    # A logged id still goes to the client: only the removed
+                    # row version is hidden, not one written in its place.
+                    if requested_id in self._unsaved_deletes:
+                        logged[requested_id] = self._unsaved_deletes[requested_id]
                     remaining.append(requested_id)
                 elif pending.vector is not None:
                     vectors_dict[requested_id] = pending.vector.astype(
@@ -1030,7 +1072,11 @@ class NanoVectorDBStorage(BaseVectorStorage):
         if remaining:
             client = await self._get_client()
             for result in client.get(remaining):
-                if result and "vector" in result and "__id__" in result:
+                if not result:
+                    continue
+                if self._matches_redo_entry(result, logged.get(result.get("__id__"))):
+                    continue
+                if "vector" in result and "__id__" in result:
                     # Decompress vector data (Base64 + zlib + Float16 compressed)
                     decoded = base64.b64decode(result["vector"])
                     decompressed = zlib.decompress(decoded)

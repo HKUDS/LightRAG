@@ -736,3 +736,93 @@ async def test_finalize_still_protects_unsaved_upserts_from_the_reload(tmp_path)
     assert (await reader.get_by_id("id2"))["content"] == "beta", (
         "a reload would have dropped the only copy of this row"
     )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_reads_expose_a_row_written_over_a_logged_delete(tmp_path):
+    """A redo entry hides the row it removed, not the id.
+
+    The replay deliberately preserves a row another writer put in place after
+    our removal, so suppressing reads on id membership alone contradicted it:
+    a live row stayed invisible until some later save cleared the log.
+    """
+    writer = _make_storage(tmp_path)
+    other = _make_storage(tmp_path)
+    await writer.initialize()
+    await other.initialize()
+    await _seed(writer, {"id1": "old", "id2": "beta"})
+
+    await writer.delete(["id1"])
+    restore = _make_save_fail(writer)
+    with pytest.raises(OSError):
+        await writer.index_done_callback()
+    restore()
+    assert set(writer._unsaved_deletes) == {"id1"}
+
+    # Another writer publishes a different row under the same id.
+    await other.upsert({"id1": {"content": "replacement"}})
+    assert await other.index_done_callback() is True
+
+    assert (await writer.get_by_id("id1"))["content"] == "replacement"
+    assert (await writer.get_by_ids(["id1"]))[0]["content"] == "replacement"
+    assert "id1" in await writer.get_vectors_by_ids(["id1"])
+
+    # And the replay still leaves it alone.
+    assert await writer.index_done_callback() is True
+    reader = _make_storage(tmp_path)
+    await reader.initialize()
+    assert (await reader.get_by_id("id1"))["content"] == "replacement"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_reads_still_hide_the_row_a_redo_entry_names(tmp_path):
+    """The other half: while the removed row itself is back (a reload after a
+    failed save), every read path must still report it as absent."""
+    storage = _make_storage(tmp_path)
+    await storage.initialize()
+    await _seed(storage, {"id1": "alpha", "id2": "beta"})
+
+    await storage.delete(["id1"])
+    restore = _make_save_fail(storage)
+    with pytest.raises(OSError):
+        await storage.index_done_callback()
+    restore()
+
+    storage.storage_updated.value = True  # next read reloads id1 back in
+
+    assert await storage.get_by_id("id1") is None
+    assert (await storage.get_by_ids(["id1", "id2"]))[0] is None
+    assert "id1" not in await storage.get_vectors_by_ids(["id1", "id2"])
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_a_queued_delete_is_scoped_to_the_id_not_the_row(tmp_path):
+    """A queued delete is a *request*: the flush removes whatever row carries
+    the id, as the eager call and the server-backed backends do.
+
+    Version-scoping it would silently skip a delete the caller asked for —
+    purge would leave vectors behind — and pinning the version at ``delete``
+    time would put back the per-call ``O(rows)`` lookup this protocol removes.
+    The redo log is version-scoped because it records a completed removal
+    rather than a request; see the two tests above.
+    """
+    writer = _make_storage(tmp_path)
+    other = _make_storage(tmp_path)
+    await writer.initialize()
+    await other.initialize()
+    await _seed(writer, {"id1": "old", "id2": "beta"})
+
+    await writer.delete(["id1"])  # queued, nothing touched yet
+
+    await other.upsert({"id1": {"content": "rewritten"}})
+    assert await other.index_done_callback() is True
+
+    assert await writer.index_done_callback() is True
+
+    reader = _make_storage(tmp_path)
+    await reader.initialize()
+    assert await reader.get_by_id("id1") is None, "the id was asked to go"
+    assert (await reader.get_by_id("id2"))["content"] == "beta"
