@@ -24,7 +24,7 @@ from lightrag.kg.shared_storage import (  # noqa: E402
     initialize_share_data,
     finalize_share_data,
 )
-from lightrag.utils import EmbeddingFunc  # noqa: E402
+from lightrag.utils import EmbeddingFunc, compute_mdhash_id  # noqa: E402
 
 DIM = 8
 
@@ -462,3 +462,133 @@ async def test_repeated_failed_saves_do_not_re_delete_each_time(tmp_path):
 
     assert len(calls) == 1, f"one matrix rebuild, not one per retry: {calls}"
     assert await storage.get_by_id("id1") is None
+
+
+def _make_save_fail(storage):
+    """Make ``_save_to_disk_locked`` raise; returns a restore callable."""
+    original = storage._save_to_disk_locked
+
+    def boom():
+        raise OSError("disk full")
+
+    storage._save_to_disk_locked = boom
+
+    def restore():
+        storage._save_to_disk_locked = original
+
+    return restore
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_redo_log_reads_as_absent_while_the_save_is_pending(tmp_path):
+    """A reload can bring the row back between the failed save and the replay;
+    the read-your-writes paths must not resurrect it either."""
+    storage = _make_storage(tmp_path)
+    await storage.initialize()
+    await _seed(storage, {"id1": "alpha", "id2": "beta"})
+
+    await storage.delete(["id1"])
+    restore = _make_save_fail(storage)
+    with pytest.raises(OSError):
+        await storage.index_done_callback()
+    restore()
+    assert set(storage._unsaved_deletes) == {"id1"}
+
+    # Simulate another writer's commit: the next client read reloads the
+    # on-disk snapshot, which still holds id1.
+    storage.storage_updated.value = True
+
+    assert await storage.get_by_id("id1") is None
+    assert (await storage.get_by_ids(["id1", "id2"]))[0] is None
+    assert "id1" not in await storage.get_vectors_by_ids(["id1", "id2"])
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_upsert_cancels_the_redo_log_entry_for_the_same_id(tmp_path):
+    """An upsert that materialized *after* a logged delete must not be removed
+    by a later replay of that id.
+
+    ``__created_at__`` alone cannot separate the two: ``upsert`` stamps it at
+    whole-second resolution, so a rewrite inside the same second as the
+    deleted row carries the same timestamp. Cancelling the log entry at
+    ``upsert`` time is what makes this deterministic.
+    """
+    storage = _make_storage(tmp_path)
+    await storage.initialize()
+    await _seed(storage, {"id1": "old"})
+
+    await storage.delete(["id1"])
+    restore = _make_save_fail(storage)
+    with pytest.raises(OSError):
+        await storage.index_done_callback()
+    assert set(storage._unsaved_deletes) == {"id1"}
+
+    await storage.upsert({"id1": {"content": "new"}})
+    assert storage._unsaved_deletes == {}, "the newest write wins"
+
+    # Materialize the upsert on a still-failing save, so a surviving log entry
+    # would replay one flush *after* the new row landed.
+    with pytest.raises(OSError):
+        await storage.index_done_callback()
+    restore()
+    assert await storage.index_done_callback() is True
+
+    reader = _make_storage(tmp_path)
+    await reader.initialize()
+    assert (await reader.get_by_id("id1"))["content"] == "new"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_aborting_batch_keeps_the_redo_log(tmp_path):
+    """``drop_pending_index_ops`` discards buffered work, but a removal that
+    already reached ``self._client`` is a materialized change — the class the
+    docstring declines to roll back — so its redo log entry must survive."""
+    storage = _make_storage(tmp_path)
+    await storage.initialize()
+    await _seed(storage, {"id1": "alpha", "id2": "beta"})
+
+    await storage.delete(["id1"])
+    restore = _make_save_fail(storage)
+    with pytest.raises(OSError):
+        await storage.index_done_callback()
+
+    await storage.drop_pending_index_ops()
+    assert set(storage._unsaved_deletes) == {"id1"}, "applied removal stays replayable"
+
+    # A foreign commit resurrects id1 on the next reload; the replay must
+    # remove it again before the save.
+    storage.storage_updated.value = True
+    restore()
+    assert await storage.index_done_callback() is True
+
+    reader = _make_storage(tmp_path)
+    await reader.initialize()
+    assert await reader.get_by_id("id1") is None
+    assert (await reader.get_by_id("id2"))["content"] == "beta"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_eager_entity_delete_is_replayed_across_a_reload(tmp_path):
+    """``delete_entity`` / ``delete_entity_relation`` stay eager, but their
+    removals are applied-and-unsaved too, so they join the same redo log."""
+    storage = _make_storage(tmp_path)
+    await storage.initialize()
+    entity_id = compute_mdhash_id("Alice", prefix="ent-")
+    await _seed(storage, {entity_id: "alice", "id2": "beta"})
+
+    await storage.delete_entity("Alice")
+    assert set(storage._unsaved_deletes) == {entity_id}
+    assert storage._client_dirty is True
+
+    # A foreign commit resurrects the row on the next reload.
+    storage.storage_updated.value = True
+    assert await storage.index_done_callback() is True
+
+    reader = _make_storage(tmp_path)
+    await reader.initialize()
+    assert await reader.get_by_id(entity_id) is None
+    assert (await reader.get_by_id("id2"))["content"] == "beta"

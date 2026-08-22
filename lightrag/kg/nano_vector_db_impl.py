@@ -183,7 +183,13 @@ class NanoVectorDBStorage(BaseVectorStorage):
         whole-second, so two writes inside one second are indistinguishable.
         Ids that matched no row are not logged at all — there is nothing to
         persist for them, and replaying them could only hit a row they were
-        never meant to touch. The log is cleared once a save lands.
+        never meant to touch. The log is cleared once a save lands, and an
+        aborting batch keeps it: ``drop_pending_index_ops`` discards buffered
+        work, not removals that already reached ``self._client``.
+
+        ``delete_entity`` / ``delete_entity_relation`` stay eager — they are
+        off the merge hot path — but their removals are applied-and-unsaved
+        just the same, so they are recorded in the log too.
 
         The read-your-writes paths treat both buffers as absent: ``get_by_id``
         / ``get_by_ids`` / ``get_vectors_by_ids`` consult them after
@@ -630,10 +636,15 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
                 # Materialized side first so a failure leaves the
                 # pending buffer intact for the caller's retry path.
-                if self._client.get([entity_id]):
+                existing = self._client.get([entity_id])
+                if existing:
                     self._client.delete([entity_id])
-                    # Drop any redundant queued delete; this call covered it.
+                    # This removal is applied-but-unsaved like a flushed one,
+                    # so it goes in the redo log too (a queued request for the
+                    # same id is now redundant). Without it the same failed
+                    # save + reload resurrects the row.
                     self._pending_deletes.discard(entity_id)
+                    self._unsaved_deletes[entity_id] = existing[0].get("__created_at__")
                     self._client_dirty = True
                     deleted = True
                 else:
@@ -692,16 +703,20 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 # Use .get() for src_id / tgt_id so rows from foreign
                 # namespaces without those keys silently don't match.
                 storage = getattr(self._client, "_NanoVectorDB__storage")
-                ids_to_delete = [
-                    dp["__id__"]
+                rows_to_delete = {
+                    dp["__id__"]: dp.get("__created_at__")
                     for dp in storage["data"]
                     if dp.get("src_id") == entity_name
                     or dp.get("tgt_id") == entity_name
-                ]
+                }
+                ids_to_delete = list(rows_to_delete)
                 if ids_to_delete:
                     self._client.delete(ids_to_delete)
-                    # Drop redundant queued deletes; this call covered them.
+                    # Applied-but-unsaved: record the removals in the redo log
+                    # (queued requests for the same ids are now redundant), or
+                    # a failed save plus a reload resurrects the rows.
                     self._pending_deletes.difference_update(ids_to_delete)
+                    self._unsaved_deletes.update(rows_to_delete)
                     self._client_dirty = True
 
                 # Materialized delete succeeded — safe to prune matching
@@ -750,16 +765,24 @@ class NanoVectorDBStorage(BaseVectorStorage):
         writes are dropped anyway. Rolling back only FAISS/Nano would add an
         inconsistent, non-load-bearing "FAILED == clean" guarantee, so it is
         deliberately omitted.
+
+        Deletes split along that same line. ``_pending_deletes`` is buffered
+        work and is discarded; ``_unsaved_deletes`` is the redo log of
+        removals that already reached ``self._client``, so it is **kept** —
+        dropping it would neither restore the rows nor keep them gone, it
+        would only make the removal fragile again, which is the exact state
+        this log exists to end. The idempotent-reprocessing argument above is
+        also weaker here: an upsert is re-issued by any reprocess of the
+        document, while a delete is re-issued only if the reprocess reaches
+        the same merge.
         """
         if self._storage_lock is None:
             self._pending_upserts.clear()
             self._pending_deletes.clear()
-            self._unsaved_deletes.clear()
             return
         async with self._storage_lock:
             self._pending_upserts.clear()
             self._pending_deletes.clear()
-            self._unsaved_deletes.clear()
 
     async def index_done_callback(self) -> bool:
         """Flush deferred embeddings, commit to disk, and notify other processes.
