@@ -1,7 +1,9 @@
 import asyncio
 import base64
+import json
 import os
 import zlib
+from hashlib import md5
 from typing import Any, final
 from dataclasses import dataclass
 import numpy as np
@@ -165,8 +167,8 @@ class NanoVectorDBStorage(BaseVectorStorage):
         Two buffers, because the flush and the save can fail independently:
             * ``_pending_deletes`` — queued, not applied to ``self._client``.
             * ``_unsaved_deletes`` — applied to ``self._client`` but not yet
-              on disk, kept as ``id -> the row's __created_at__``. This is a
-              redo log, not a pending buffer.
+              on disk, kept as ``id -> a fingerprint of the removed row``.
+              This is a redo log, not a pending buffer.
 
         The redo log exists because a removal that reached ``self._client``
         can still be undone: if the save fails, ``index_done_callback``'s
@@ -177,10 +179,23 @@ class NanoVectorDBStorage(BaseVectorStorage):
         materialize — so a materialized-but-unsaved upsert is still dropped by
         the same reload; see issue #3688.)
 
-        A replay matches on ``__created_at__``, not on the id alone. Ids are
-        content hashes, so another writer can publish a *new* row under an id
-        we removed; deleting by id would destroy it. Note the timestamp is
-        whole-second, so two writes inside one second are indistinguishable.
+        A replay matches on the row, not on the id alone. Ids are content
+        hashes, so another writer can publish a *new* row under an id we
+        removed, and deleting by id would destroy it. The log therefore stores
+        ``_row_fingerprint`` of the row it removed — a digest of the whole
+        stored record, stable across a save/reload — and a replay removes only
+        a row that still matches it. A whole-second ``__created_at__`` is not
+        enough on its own: ``upsert`` stamps ``int(time.time())``, so a rewrite
+        inside the same second as the removed row carries the same timestamp.
+
+        One case the fingerprint cannot separate is a row that is *identical*
+        to the one removed. Materializing such a row drops the redo entry
+        (bottom of ``_flush_pending_locked``) — and that is exactly the case
+        where dropping it costs nothing, since a resurrection would restore
+        the row that is present anyway. What remains is a byte-identical row
+        published by another writer, which no content-based identity can tell
+        from the row we deleted.
+
         Ids that matched no row are not logged at all — there is nothing to
         persist for them, and replaying them could only hit a row they were
         never meant to touch. The log is cleared once a save lands, and an
@@ -193,8 +208,11 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         The read-your-writes paths treat both buffers as absent: ``get_by_id``
         / ``get_by_ids`` / ``get_vectors_by_ids`` consult them after
-        ``_pending_upserts``, and an ``upsert`` for the same id cancels a
-        queued delete (``client.upsert`` overwrites the row in place).
+        ``_pending_upserts``. An ``upsert`` cancels a *queued* delete for the
+        same id (``client.upsert`` overwrites the row in place, so applying it
+        first would be redundant work) but never the redo log: the buffered
+        row may be discarded by an aborting batch before it materializes, and
+        dropping the entry then would leave the reload nothing to replay.
         ``query`` and ``client_storage`` are unchanged: they read the
         materialized index, so a queued delete still surfaces there until the
         flush — the same contract the Qdrant and PostgreSQL buffers document.
@@ -260,9 +278,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # turns O(relations) full-matrix copies into one per flush.
         self._pending_deletes: set[str] = set()
         # Removals already applied to self._client but not yet on disk, kept
-        # as id -> the row's __created_at__ so a replay after a reload only
-        # removes the same row again, never a newer one written meanwhile.
-        self._unsaved_deletes: dict[str, Any] = {}
+        # as id -> _row_fingerprint(removed row) so a replay after a reload
+        # only removes that row again, never a newer one written meanwhile.
+        self._unsaved_deletes: dict[str, str] = {}
         # True when self._client has materialized changes that have not been
         # successfully saved to disk yet. This lets finalize retry a save even
         # after a previous flush cleared the pending buffer.
@@ -377,10 +395,31 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 # A fresh upsert supersedes a queued delete for the same id:
                 # client.upsert overwrites the row in place, so applying the
                 # delete first would be redundant work. Mirrors the
-                # PG/Qdrant buffers.
+                # PG/Qdrant buffers. The redo log is deliberately NOT touched
+                # here: this row may never materialize (an aborting batch
+                # drops it), and the fingerprint already keeps a replay off a
+                # row written under the same id.
                 self._pending_deletes.discard(doc_id)
-                self._unsaved_deletes.pop(doc_id, None)
                 self._pending_upserts[doc_id] = _PendingNanoDoc(record=record)
+
+    @staticmethod
+    def _row_fingerprint(dp: dict[str, Any]) -> str:
+        """Identify one *version* of a stored row.
+
+        The redo log has to name the exact row it removed so a replay after a
+        reload cannot hit a newer row another writer published under the same
+        (content-hash) id. The digest covers the whole stored record — id,
+        timestamp, content, the base64 vector, every meta field — and is
+        stable across a save/reload round-trip: sorted keys make key order
+        irrelevant, tuples and lists both render as JSON arrays, and the
+        default ``ensure_ascii`` keeps the output encodable whatever the
+        record holds.
+
+        ``__vector__`` never reaches here — ``NanoVectorDB.upsert`` strips it
+        into the matrix before the record is stored.
+        """
+        canonical = json.dumps(dp, sort_keys=True, default=str)
+        return md5(canonical.encode("utf-8")).hexdigest()
 
     async def _flush_pending_locked(self) -> None:
         """Embed pending docs and materialize them into ``self._client``.
@@ -408,17 +447,19 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # docstring); ids that matched nothing have nothing to persist.
         if self._pending_deletes or self._unsaved_deletes:
             queued = len(self._pending_deletes)
-            storage = self._client._NanoVectorDB__storage
+            storage = getattr(self._client, "_NanoVectorDB__storage")
             # A queued id removes whatever row is there; a replayed one only
-            # removes the row it removed before, so a newer row that another
-            # writer committed under the same id survives.
-            matched = {
-                dp["__id__"]: dp.get("__created_at__")
-                for dp in storage["data"]
-                if dp["__id__"] in self._pending_deletes
-                or self._unsaved_deletes.get(dp["__id__"], object())
-                == dp.get("__created_at__")
-            }
+            # removes the row version it removed before, so anything written
+            # under that id since — by another writer or by us — survives.
+            matched: dict[str, str] = {}
+            for dp in storage["data"]:
+                doc_id = dp["__id__"]
+                if doc_id in self._pending_deletes:
+                    matched[doc_id] = self._row_fingerprint(dp)
+                elif doc_id in self._unsaved_deletes:
+                    fingerprint = self._row_fingerprint(dp)
+                    if fingerprint == self._unsaved_deletes[doc_id]:
+                        matched[doc_id] = fingerprint
             if matched:
                 self._client.delete(list(matched))
                 self._client_dirty = True
@@ -494,6 +535,19 @@ class NanoVectorDBStorage(BaseVectorStorage):
         for doc_id, pdoc in pending_items:
             if self._pending_upserts.get(doc_id) is pdoc:
                 del self._pending_upserts[doc_id]
+
+        if self._unsaved_deletes:
+            # A row we just wrote can be indistinguishable from one we removed
+            # (same id, same bytes) — the single case the fingerprint cannot
+            # separate, and the one case where dropping the redo entry costs
+            # nothing: a resurrection would restore the row that is present
+            # now. Only rows written just above can match here; a resurrected
+            # one was already removed by the replay at the top of this flush.
+            storage = getattr(self._client, "_NanoVectorDB__storage")
+            for dp in storage["data"]:
+                logged = self._unsaved_deletes.get(dp["__id__"])
+                if logged is not None and logged == self._row_fingerprint(dp):
+                    del self._unsaved_deletes[dp["__id__"]]
 
     def _save_to_disk_locked(self) -> None:
         """Atomically persist ``self._client`` and notify other processes.
@@ -644,7 +698,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
                     # same id is now redundant). Without it the same failed
                     # save + reload resurrects the row.
                     self._pending_deletes.discard(entity_id)
-                    self._unsaved_deletes[entity_id] = existing[0].get("__created_at__")
+                    self._unsaved_deletes[entity_id] = self._row_fingerprint(
+                        existing[0]
+                    )
                     self._client_dirty = True
                     deleted = True
                 else:
@@ -704,7 +760,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 # namespaces without those keys silently don't match.
                 storage = getattr(self._client, "_NanoVectorDB__storage")
                 rows_to_delete = {
-                    dp["__id__"]: dp.get("__created_at__")
+                    dp["__id__"]: self._row_fingerprint(dp)
                     for dp in storage["data"]
                     if dp.get("src_id") == entity_name
                     or dp.get("tgt_id") == entity_name

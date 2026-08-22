@@ -12,13 +12,12 @@ no live model or network. They mirror the deferred-embedding protocol tests
 in ``test_nano_deferred_embedding.py``.
 """
 
-import time
-
 import numpy as np
 import pytest
 
 nano_vectordb = pytest.importorskip("nano_vectordb")
 
+import lightrag.kg.nano_vector_db_impl as nano_impl  # noqa: E402
 from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage  # noqa: E402
 from lightrag.kg.shared_storage import (  # noqa: E402
     initialize_share_data,
@@ -374,9 +373,10 @@ async def test_replay_does_not_remove_a_newer_row_under_the_same_id(tmp_path):
 
     Ids are content hashes, so two writers can legitimately produce the same
     id. Deleting by id alone would destroy a row another writer committed
-    after our delete. The guard compares ``__created_at__``, which
-    ``upsert`` stamps at whole-second resolution, so the sleep here is what
-    a real rewrite gets for free.
+    after our delete. The guard compares a fingerprint of the whole stored
+    row, so it holds however close together the two writes land — there is
+    deliberately no sleep here, and a whole-second ``__created_at__`` would
+    not survive this test.
     """
     writer = _make_storage(tmp_path)
     other = _make_storage(tmp_path)
@@ -392,8 +392,8 @@ async def test_replay_does_not_remove_a_newer_row_under_the_same_id(tmp_path):
         await writer.index_done_callback()
     writer._save_to_disk_locked = original_save
 
-    # Another writer publishes a fresh row under the same id.
-    time.sleep(1.1)
+    # Another writer publishes a fresh row under the same id, inside the same
+    # second as the row we removed.
     await other.upsert({"id1": {"content": "new"}})
     assert await other.index_done_callback() is True
 
@@ -506,14 +506,14 @@ async def test_redo_log_reads_as_absent_while_the_save_is_pending(tmp_path):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_upsert_cancels_the_redo_log_entry_for_the_same_id(tmp_path):
-    """An upsert that materialized *after* a logged delete must not be removed
-    by a later replay of that id.
+async def test_a_rewrite_after_a_logged_delete_survives_the_replay(tmp_path):
+    """Buffering an upsert must not cancel the redo entry, and the replay must
+    not remove the row that upsert wrote.
 
-    ``__created_at__`` alone cannot separate the two: ``upsert`` stamps it at
-    whole-second resolution, so a rewrite inside the same second as the
-    deleted row carries the same timestamp. Cancelling the log entry at
-    ``upsert`` time is what makes this deterministic.
+    Both halves matter and pull in opposite directions. Cancelling at
+    ``upsert`` time loses the entry while the replacement row does not exist
+    yet (see ``test_abort_after_a_rewrite_keeps_the_redo_entry``); keeping it
+    without a row-level guard deletes the replacement on the next flush.
     """
     storage = _make_storage(tmp_path)
     await storage.initialize()
@@ -526,10 +526,12 @@ async def test_upsert_cancels_the_redo_log_entry_for_the_same_id(tmp_path):
     assert set(storage._unsaved_deletes) == {"id1"}
 
     await storage.upsert({"id1": {"content": "new"}})
-    assert storage._unsaved_deletes == {}, "the newest write wins"
+    assert set(storage._unsaved_deletes) == {"id1"}, (
+        "a buffered row that may never materialize must not clear the log"
+    )
 
-    # Materialize the upsert on a still-failing save, so a surviving log entry
-    # would replay one flush *after* the new row landed.
+    # Materialize the rewrite on a still-failing save, so the replay runs one
+    # flush *after* the new row landed.
     with pytest.raises(OSError):
         await storage.index_done_callback()
     restore()
@@ -538,6 +540,78 @@ async def test_upsert_cancels_the_redo_log_entry_for_the_same_id(tmp_path):
     reader = _make_storage(tmp_path)
     await reader.initialize()
     assert (await reader.get_by_id("id1"))["content"] == "new"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_abort_after_a_rewrite_keeps_the_redo_entry(tmp_path):
+    """An aborting batch drops the buffered rewrite, so the redo entry it
+    would have superseded has to still be there.
+
+    Cancelling the entry when the upsert is *buffered* leaves this state with
+    nothing to replay: the removal is only in the unsaved client, the
+    replacement row was discarded, and the next reload restores the original.
+    """
+    storage = _make_storage(tmp_path)
+    await storage.initialize()
+    await _seed(storage, {"id1": "old", "id2": "beta"})
+
+    await storage.delete(["id1"])
+    restore = _make_save_fail(storage)
+    with pytest.raises(OSError):
+        await storage.index_done_callback()
+
+    await storage.upsert({"id1": {"content": "new"}})  # never materializes
+    await storage.drop_pending_index_ops()
+    assert set(storage._unsaved_deletes) == {"id1"}
+
+    storage.storage_updated.value = True  # foreign commit -> reload
+    restore()
+    assert await storage.index_done_callback() is True
+
+    reader = _make_storage(tmp_path)
+    await reader.initialize()
+    assert await reader.get_by_id("id1") is None, "the removal must not be undone"
+    assert (await reader.get_by_id("id2"))["content"] == "beta"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_a_rewrite_identical_to_the_removed_row_drops_the_redo_entry(
+    tmp_path, monkeypatch
+):
+    """The one case the fingerprint cannot separate: a rewrite byte-identical
+    to the removed row. Materializing it must retire the entry, or the next
+    replay deletes the row we just wrote.
+
+    ``__created_at__`` is part of the record, so identity needs both the same
+    content and the same whole second — frozen here rather than raced for.
+    """
+    monkeypatch.setattr(nano_impl.time, "time", lambda: 1_700_000_000.0)
+
+    storage = _make_storage(tmp_path)
+    await storage.initialize()
+    await _seed(storage, {"id1": "same", "id2": "beta"})
+
+    await storage.delete(["id1"])
+    restore = _make_save_fail(storage)
+    with pytest.raises(OSError):
+        await storage.index_done_callback()
+    assert set(storage._unsaved_deletes) == {"id1"}
+
+    await storage.upsert({"id1": {"content": "same"}})
+    with pytest.raises(OSError):
+        await storage.index_done_callback()
+    assert storage._unsaved_deletes == {}, (
+        "an identical row makes the entry moot, and keeping it would delete it"
+    )
+
+    restore()
+    assert await storage.index_done_callback() is True
+
+    reader = _make_storage(tmp_path)
+    await reader.initialize()
+    assert (await reader.get_by_id("id1"))["content"] == "same"
 
 
 @pytest.mark.offline
