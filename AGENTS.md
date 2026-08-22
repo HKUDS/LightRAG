@@ -112,6 +112,39 @@ A document can legitimately own nothing: `skip_kg` (`process_options` `'!'`) ski
 
 **Chunk tracking outranks graph `source_id`.** Within a surviving entity or relation, the `entity_chunks` / `relation_chunks` row is the authoritative chunk list; the graph node's `source_id` is only a truncated view of it (`apply_source_ids_limit`) and may legitimately still name chunks a previous purge already pruned — `_purge_kg_contributions` reads tracking first, falls back to `source_id` only when the row is absent, and its `graph_references_deleted_chunks` branch exists to repair exactly that lag. So code that folds a `source_id` delta back into tracking must append genuine additions only: restoring an ID that is in the graph but not in tracking writes stale attribution into the authoritative store, and a later purge would rebuild or retain KG objects from chunks that no longer exist. `compute_incremental_chunk_ids` carries this rule and `tests/utils/test_compute_incremental_chunk_ids.py` pins it. Genuinely missing attribution is repaired by `audit_kg_integrity`, never by the incremental path.
 
+### Relation weight contract
+
+Relation `weight` is bounded below by the number of distinct real IDs in the
+graph edge's `source_id`; a larger value is an optional importance boost.
+Empty IDs and the legacy no-source placeholders `manual_creation` and
+`UNKNOWN` do not count as evidence. A source-less relation may therefore use
+any non-negative fractional weight. Public ingress paths (`create_relation`,
+`edit_relation`, and `insert_custom_kg`) must validate the complete relation
+before the first storage mutation. To request a weight below the current
+evidence count, creation callers omit `source_id`, while edit callers set it to
+an empty string in the same operation.
+
+Entity merges use `max(all input weights, distinct merged real source IDs)`.
+Every extraction merge or entity-rename rewrite that rewrites the edge is a
+repair point for legacy rows: it must lift an undersized stored weight to the
+current evidence floor while preserving any larger explicit boost. Repair is
+opportunistic, not a sweep: `_merge_edges_then_upsert`'s KEEP-cap skip branch
+returns the stored edge without writing the graph or the vector record, so a
+legacy row there stays undersized until a merge, an unrelated relation edit, or
+a rebuild rewrites it. Rebuilds from surviving chunks
+(`_rebuild_single_relationship`, reached only through `_purge_kg_contributions`
+-> `rebuild_knowledge_from_chunks`, i.e. document purge, resume, and
+custom-chunk rollback) are a repair point for the floor only: they re-derive
+weight from the surviving cached fragments and then lift it to the surviving
+evidence count, so weight tracks evidence down as purge removes chunks and an
+explicit boost is not carried across — exactly as the rebuilt description and
+keywords replace their edited values. The degraded path, having no fragments to
+re-derive from, keeps the stored weight instead. Relation chunk tracking is the
+authoritative chunk list, so the no-source placeholders must never be written
+into it. Keep this contract synchronized across the core API docstrings, REST
+graph documentation, `ProgramingWithCore.md`, and custom-KG examples whenever
+relation write behavior changes.
+
 The offline remedy for a document with no proof is `audit_kg_integrity(..., apply=True)` (`lightrag/tools/kg_integrity_repair.py`): it rebuilds anchors from surviving chunk provenance, and — because it enumerates the **whole** graph, which the hot paths never do — it can additionally certify that a document appearing nowhere in that scan owns nothing, writing it the empty anchor rows that are the normal proof for such a document (`anchorless_docs` in the report). Absence is only ever concluded from the completed scan; a document that does own graph objects is repaired with its real names, never blanked.
 
 ### Query Modes

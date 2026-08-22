@@ -231,8 +231,8 @@ def _make_client():
                 "status_counts": {"buckets": []},
                 "src": {"buckets": []},
                 "tgt": {"buckets": []},
-                "source_degrees": {"buckets": []},
-                "target_degrees": {"buckets": []},
+                "source_degrees": {"ids": {"buckets": []}},
+                "target_degrees": {"ids": {"buckets": []}},
             },
         }
     )
@@ -2276,12 +2276,18 @@ class TestGraphStorage:
             return_value={
                 "hits": {"hits": [], "total": {"value": 0}},
                 "aggregations": {
-                    "source_degrees": {"buckets": [{"key": "A", "doc_count": 2}]},
+                    # Each degree aggregation is a `filter` wrapping the terms
+                    # agg, so its buckets sit one level down under "ids".
+                    "source_degrees": {
+                        "ids": {"buckets": [{"key": "A", "doc_count": 2}]}
+                    },
                     "target_degrees": {
-                        "buckets": [
-                            {"key": "A", "doc_count": 1},
-                            {"key": "B", "doc_count": 3},
-                        ]
+                        "ids": {
+                            "buckets": [
+                                {"key": "A", "doc_count": 1},
+                                {"key": "B", "doc_count": 3},
+                            ]
+                        }
                     },
                     "status_counts": {"buckets": []},
                     "src": {"buckets": []},
@@ -3693,9 +3699,19 @@ class TestGraphPPLDetection:
             assert result.nodes[0].id == "A"
 
     @pytest.mark.asyncio
-    async def test_ppl_bfs_truncates_nodes_by_depth_then_weight(
+    async def test_ppl_bfs_ranks_same_depth_nodes_by_degree_then_id(
         self, global_config, embed_func, mock_client
     ):
+        """A BFS level that overflows ``max_nodes`` must give up its slots by
+        degree descending, then id ascending -- the BaseGraphStorage contract.
+
+        ``_edge_rank_key`` settles which depth a node is reached at, but its
+        second term is the edge weight, so same-depth nodes used to be admitted
+        in the order their edges happened to sort. Here C and D are both reached
+        at depth 1 and only one slot is left: the high-weight edge belongs to D,
+        the higher degree to C, so the two rules disagree and the assertion
+        below picks the ranking rather than the edge property.
+        """
         mock_client.transport = AsyncMock()
         ppl_response = {
             "schema": [
@@ -3730,59 +3746,61 @@ class TestGraphPPLDetection:
         }
         mock_client.transport.perform_request = AsyncMock(return_value=ppl_response)
         mock_client.mget = AsyncMock(
-            side_effect=[
+            side_effect=_mget_by_ids_side_effect(
                 {
-                    "docs": [
-                        {
-                            "_id": "A",
-                            "found": True,
-                            "_source": {"entity_type": "person"},
-                        }
-                    ]
-                },
-                {
-                    "docs": [
-                        {
-                            "_id": "B",
-                            "found": True,
-                            "_source": {"entity_type": "person"},
-                        },
-                        {
-                            "_id": "D",
-                            "found": True,
-                            "_source": {"entity_type": "person"},
-                        },
-                    ]
-                },
-            ]
-        )
-        mock_client.search = AsyncMock(
-            return_value={
-                "hits": {
-                    "hits": [
-                        {
-                            "_id": "e1",
-                            "_source": {
-                                "source_node_id": "A",
-                                "target_node_id": "B",
-                                "relationship": "knows",
-                            },
-                            "sort": [1],
-                        },
-                        {
-                            "_id": "e2",
-                            "_source": {
-                                "source_node_id": "B",
-                                "target_node_id": "D",
-                                "relationship": "knows",
-                            },
-                            "sort": [2],
-                        },
-                    ],
-                    "total": {"value": 2},
+                    "A": {"entity_type": "person"},
+                    "B": {"entity_type": "person"},
+                    "C": {"entity_type": "person"},
+                    "D": {"entity_type": "person"},
                 }
-            }
+            )
         )
+
+        edge_hits = {
+            "hits": {
+                "hits": [
+                    {
+                        "_id": "e1",
+                        "_source": {
+                            "source_node_id": "A",
+                            "target_node_id": "B",
+                            "relationship": "knows",
+                        },
+                        "sort": [1],
+                    },
+                    {
+                        "_id": "e2",
+                        "_source": {
+                            "source_node_id": "A",
+                            "target_node_id": "C",
+                            "relationship": "knows",
+                        },
+                        "sort": [2],
+                    },
+                ],
+                "total": {"value": 2},
+            }
+        }
+        # C outranks D on degree while D owns the heavier edge.
+        degree_aggs = {
+            "hits": {"hits": []},
+            "aggregations": {
+                "source_degrees": {
+                    "ids": {
+                        "buckets": [
+                            {"key": "C", "doc_count": 5},
+                            {"key": "B", "doc_count": 1},
+                        ]
+                    }
+                },
+                "target_degrees": {"ids": {"buckets": [{"key": "D", "doc_count": 1}]}},
+            },
+        }
+
+        async def _search(index=None, body=None, **kwargs):
+            return degree_aggs if "aggs" in (body or {}) else edge_hits
+
+        mock_client.search = AsyncMock(side_effect=_search)
 
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
@@ -3790,11 +3808,11 @@ class TestGraphPPLDetection:
 
             result = await s.get_knowledge_graph("A", max_depth=2, max_nodes=3)
 
-            assert [node.id for node in result.nodes] == ["A", "B", "D"]
+            assert sorted(node.id for node in result.nodes) == ["A", "B", "C"]
             assert result.is_truncated is True
             assert {(edge.source, edge.target) for edge in result.edges} == {
                 ("A", "B"),
-                ("B", "D"),
+                ("A", "C"),
             }
 
     @pytest.mark.asyncio

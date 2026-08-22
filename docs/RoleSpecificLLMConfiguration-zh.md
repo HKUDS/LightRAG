@@ -100,6 +100,10 @@ VLM_GEMINI_LLM_TEMPERATURE=0.2
 | `bedrock` | `BEDROCK_LLM_*` | `EXTRACT_BEDROCK_LLM_MAX_TOKENS` |
 | `gemini` | `GEMINI_LLM_*` | `VLM_GEMINI_LLM_THINKING_CONFIG` |
 
+本文只讲角色前缀与继承规则。`{FIELD}` 部分——每个前缀下可用的全部参数、类型、取值语法，
+以及各 provider 驱动实际如何使用这些参数——见
+[LLM and Embedding Provider Options Reference](./LLMProviderOptions.md)（英文技术参考）。
+
 ## 继承规则
 
 ### 同一个 provider 内覆盖

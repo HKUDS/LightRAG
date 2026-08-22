@@ -506,6 +506,7 @@ LightRAG は、農業、コンピュータサイエンス、法律、混合ド�
 | ドキュメント | 内容 |
 |---|---|
 | [RoleSpecificLLMConfiguration.md](./docs/RoleSpecificLLMConfiguration.md) [🇨🇳](./docs/RoleSpecificLLMConfiguration-zh.md) | ロール別（`EXTRACT` / `QUERY` / `KEYWORD` / `VLM`）の LLM・VLM 設定 |
+| [LLMProviderOptions.md](./docs/LLMProviderOptions.md) | provider 生成オプションの完全リファレンス（`OPENAI_LLM_*`、`OLLAMA_LLM_*`、`GEMINI_LLM_*`、`BEDROCK_LLM_*`、`*_EMBEDDING_*`、英語） |
 | [AsymmetricEmbedding.md](./docs/AsymmetricEmbedding.md) | クエリ／文書の非対称 embedding（`EMBEDDING_ASYMMETRIC`）とモデルごとのプレフィックス |
 | [MilvusConfigurationGuide.md](./docs/MilvusConfigurationGuide.md) | `vector_db_storage_cls_kwargs` を通じた Milvus インデックスパラメータのチューニング |
 

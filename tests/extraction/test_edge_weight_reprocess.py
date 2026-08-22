@@ -238,6 +238,33 @@ async def test_edge_weight_adds_new_source_when_chunks_store_is_ahead():
 
 @pytest.mark.offline
 @pytest.mark.asyncio
+async def test_edge_merge_repairs_legacy_weight_below_evidence_floor():
+    g = await _edge_graph_with_nodes()
+    cfg = _cfg()
+    g.edges[("A", "B")] = _rel("c1", weight=0.25)
+
+    await _merge_edges_then_upsert("A", "B", [_rel("c2")], g, _MemVdb(), _MemVdb(), cfg)
+
+    edge = await g.get_edge("A", "B")
+    assert set(edge["source_id"].split(GRAPH_FIELD_SEP)) == {"c1", "c2"}
+    assert edge["weight"] == 2.0
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_legacy_no_source_marker_does_not_raise_evidence_floor():
+    g = await _edge_graph_with_nodes()
+    cfg = _cfg()
+    g.edges[("A", "B")] = _rel("manual_creation", weight=0.25)
+
+    await _merge_edges_then_upsert("A", "B", [_rel("c1")], g, _MemVdb(), _MemVdb(), cfg)
+
+    edge = await g.get_edge("A", "B")
+    assert edge["weight"] == 1.25
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
 async def test_edge_weight_not_double_counted_on_reversed_refeed():
     """Undirected edge: stored as (A,B) from c1, then re-fed reversed as (B,A)
     from the SAME c1. get_edge is symmetric, so the edge's own source_ids see c1

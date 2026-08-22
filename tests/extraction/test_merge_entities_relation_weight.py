@@ -150,12 +150,12 @@ async def test_merge_entities_relation_weight_matches_distinct_source_count():
 
 
 class _ExplicitWeightGraphStorage(_MergeGraphStorage):
-    """Both edges carry the same single manual source_id (no per-chunk
-    provenance), with explicit weights of 10 and 8 -- the shape produced by
-    a hand-created relation, or by pipeline accumulation once
-    SOURCE_IDS_LIMIT_METHOD=FIFO has truncated source_id below the true
-    contribution count. len(distinct_sources) collapses to 1 here, which
-    must never win over the higher input weight."""
+    """Both edges carry the legacy no-source marker and explicit boosts.
+
+    ``manual_creation`` was historically synthesized when callers omitted a
+    source. It contributes no evidence floor, while the strongest explicit
+    weight must still survive the merge.
+    """
 
     def __init__(self):
         super().__init__()
@@ -205,6 +205,27 @@ class _SourcedLowWeightGraphStorage(_MergeGraphStorage):
         }
 
 
+class _LegacySourceLessLowWeightGraphStorage(_ExplicitWeightGraphStorage):
+    def __init__(self):
+        super().__init__()
+        self.edges[("A", "C")]["weight"] = 0.25
+        self.edges[("B", "C")]["weight"] = 0.5
+
+
+class _SingleSourcedLowWeightGraphStorage(_MergeGraphStorage):
+    def __init__(self):
+        super().__init__()
+        self.edges = {
+            ("A", "C"): {
+                "description": "A relates to C",
+                "keywords": "k1",
+                "source_id": GRAPH_FIELD_SEP.join(["chunk-1", "chunk-2"]),
+                "weight": 0.25,
+                "file_path": "docA.txt",
+            }
+        }
+
+
 @pytest.mark.asyncio
 async def test_merge_entities_relation_weight_never_regresses_below_max_input():
     graph = _ExplicitWeightGraphStorage()
@@ -221,14 +242,32 @@ async def test_merge_entities_relation_weight_never_regresses_below_max_input():
 
     merged_edge = graph.edges[("AB", "C")]
 
-    # Deduplicated source_id collapses both edges to the single shared
-    # "manual_creation" marker, so len(distinct_sources) == 1 -- but the
-    # merged weight must stay at max(10.0, 8.0) == 10.0, never drop to 1.
+    # The legacy marker contributes no evidence, while the explicit boost is
+    # monotonic and therefore stays at max(10.0, 8.0) == 10.0.
     assert merged_edge["weight"] == 10.0
 
     vdb_payload = relationships_vdb.upserts[-1]
     persisted = next(iter(vdb_payload.values()))
     assert persisted["weight"] == 10.0
+
+
+@pytest.mark.asyncio
+async def test_merge_entities_preserves_legacy_source_less_fractional_weight():
+    graph = _LegacySourceLessLowWeightGraphStorage()
+    entities_vdb = _DummyVectorStorage()
+    relationships_vdb = _DummyVectorStorage()
+
+    await utils_graph._merge_entities_impl(
+        chunk_entity_relation_graph=graph,
+        entities_vdb=entities_vdb,
+        relationships_vdb=relationships_vdb,
+        source_entities=["A", "B"],
+        target_entity="AB",
+    )
+
+    merged_edge = graph.edges[("AB", "C")]
+    assert merged_edge["source_id"] == "manual_creation"
+    assert merged_edge["weight"] == 0.5
 
 
 @pytest.mark.asyncio
@@ -253,6 +292,28 @@ async def test_merge_entities_lifts_sourced_low_weight_to_evidence_floor():
     # Both inputs are below the contract's one-per-source baseline. The merge
     # intentionally normalizes the edge to its two-source evidence floor.
     assert merged_edge["weight"] == 2.0
+
+    vdb_payload = relationships_vdb.upserts[-1]
+    persisted = next(iter(vdb_payload.values()))
+    assert persisted["weight"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_merge_entities_lifts_first_redirected_relation_to_evidence_floor():
+    graph = _SingleSourcedLowWeightGraphStorage()
+    entities_vdb = _DummyVectorStorage()
+    relationships_vdb = _DummyVectorStorage()
+
+    await utils_graph._merge_entities_impl(
+        chunk_entity_relation_graph=graph,
+        entities_vdb=entities_vdb,
+        relationships_vdb=relationships_vdb,
+        source_entities=["A"],
+        target_entity="AB",
+    )
+
+    redirected_edge = graph.edges[("AB", "C")]
+    assert redirected_edge["weight"] == 2.0
 
     vdb_payload = relationships_vdb.upserts[-1]
     persisted = next(iter(vdb_payload.values()))

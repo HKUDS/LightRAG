@@ -1,4 +1,5 @@
 import pytest
+from collections import Counter
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -82,6 +83,23 @@ def _make_edge_find_side_effect(edges: list):
         )
 
     return _find
+
+
+def _make_edge_aggregate_side_effect(edges: list):
+    """Mock ``edge_collection.aggregate`` for the two ``node_degrees_batch``
+    pipelines -- outbound grouped on ``source_node_id``, inbound on
+    ``target_node_id`` -- which is how the BFS ranks a depth level."""
+
+    async def _aggregate(pipeline, **kwargs):
+        match = pipeline[0]["$match"]
+        field = "source_node_id" if "source_node_id" in match else "target_node_id"
+        ids = set(match[field]["$in"])
+        counts = Counter(e[field] for e in edges if e[field] in ids)
+        return _AsyncCursor(
+            [{"_id": key, "degree": count} for key, count in counts.items()]
+        )
+
+    return _aggregate
 
 
 class TestMongoGraphStorage:
@@ -380,6 +398,9 @@ class TestMongoGraphStorage:
         storage.edge_collection.find = Mock(
             side_effect=_make_edge_find_side_effect(edges)
         )
+        storage.edge_collection.aggregate = AsyncMock(
+            side_effect=_make_edge_aggregate_side_effect(edges)
+        )
 
         result = await storage.get_knowledge_subgraph_bidirectional_bfs(
             "A", 0, max_depth=2, max_nodes=3
@@ -406,6 +427,9 @@ class TestMongoGraphStorage:
         storage.edge_collection.find = Mock(
             side_effect=_make_edge_find_side_effect(edges)
         )
+        storage.edge_collection.aggregate = AsyncMock(
+            side_effect=_make_edge_aggregate_side_effect(edges)
+        )
 
         result = await storage.get_knowledge_subgraph_bidirectional_bfs(
             "A", 0, max_depth=2, max_nodes=4
@@ -431,6 +455,9 @@ class TestMongoGraphStorage:
         storage.edge_collection.find = Mock(
             side_effect=_make_edge_find_side_effect(edges)
         )
+        storage.edge_collection.aggregate = AsyncMock(
+            side_effect=_make_edge_aggregate_side_effect(edges)
+        )
 
         result = await storage._bidirectional_bfs_nodes(
             ["A"], set(), KnowledgeGraph(), depth=0, max_depth=1, max_nodes=2
@@ -454,6 +481,9 @@ class TestMongoGraphStorage:
         )
         storage.edge_collection.find = Mock(
             side_effect=_make_edge_find_side_effect(edges)
+        )
+        storage.edge_collection.aggregate = AsyncMock(
+            side_effect=_make_edge_aggregate_side_effect(edges)
         )
 
         result = await storage.get_knowledge_subgraph_bidirectional_bfs(

@@ -100,6 +100,10 @@ Common provider prefixes:
 | `bedrock` | `BEDROCK_LLM_*` | `EXTRACT_BEDROCK_LLM_MAX_TOKENS` |
 | `gemini` | `GEMINI_LLM_*` | `VLM_GEMINI_LLM_THINKING_CONFIG` |
 
+This guide covers the role prefix and the inheritance rules. For the `{FIELD}` half —
+every option each prefix accepts, its type, its value syntax, and what the provider
+driver does with it — see [LLM and Embedding Provider Options Reference](./LLMProviderOptions.md).
+
 ## Inheritance Rules
 
 ### Overrides Within the Same Provider
