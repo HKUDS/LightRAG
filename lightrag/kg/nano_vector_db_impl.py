@@ -145,9 +145,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
         ``client_storage`` see only data already materialized into
         ``self._client`` — unflushed pending data is intentionally not
         queryable. A flush failure (embedding error, count mismatch, or save
-        IO error) raises through ``index_done_callback``; the pending buffer
-        is preserved, and if only the save failed ``_client_dirty`` stays
-        ``True`` so a subsequent ``finalize`` retries the save.
+        IO error) raises through ``index_done_callback``. The pending buffer
+        is a **replay log**: it is not cleared until the save is durable.
+        If only the save failed, ``_client_dirty`` stays ``True`` and the
+        buffered docs keep their already-computed vectors so a later
+        ``index_done_callback`` / ``finalize`` can reload a foreign commit
+        and re-apply our ops without re-embedding (issue #3688).
     """
 
     def __post_init__(self):
@@ -195,14 +198,17 @@ class NanoVectorDBStorage(BaseVectorStorage):
             storage_file=self._client_file_name,
         )
 
-        # Minimal pending area for deferred embedding: id -> _PendingNanoDoc.
-        # Holds only records not yet embedded+materialized into self._client;
-        # it never duplicates rows already written to the client. Flushed
-        # under _storage_lock by _flush_pending_locked().
+        # Replay log for deferred embedding: id -> _PendingNanoDoc.
+        # Cleared only after a durable save (issue #3688). After a successful
+        # flush the same ids also live in self._client; read-your-writes
+        # still prefer this buffer and both views describe the same content.
         self._pending_upserts: dict[str, _PendingNanoDoc] = {}
+        # Custom ids whose materialized delete has not been saved yet.
+        # Replayed after a foreign-commit reload; cleared after a durable save.
+        # A delete that matched nothing is not retained.
+        self._pending_deletes: set[str] = set()
         # True when self._client has materialized changes that have not been
-        # successfully saved to disk yet. This lets finalize retry a save even
-        # after a previous flush cleared the pending buffer.
+        # successfully saved to disk yet.
         self._client_dirty = False
 
     async def initialize(self):
@@ -241,6 +247,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             storage_file=self._client_file_name,
         )
         self.storage_updated.value = False
+        self._replay_pending_deletes_locked()
         return True
 
     async def _get_client(self):
@@ -311,6 +318,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # have cached (content-version change -> must re-embed new content).
         async with self._storage_lock:
             for doc_id, record in pending:
+                self._pending_deletes.discard(doc_id)
                 self._pending_upserts[doc_id] = _PendingNanoDoc(record=record)
 
     async def _flush_pending_locked(self) -> None:
@@ -383,12 +391,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         self._client.upsert(datas=list_data)
         self._client_dirty = True
-
-        # Clear only the entries we just flushed (an upsert that arrived after
-        # the snapshot would have re-set vector=None and must not be dropped).
-        for doc_id, pdoc in pending_items:
-            if self._pending_upserts.get(doc_id) is pdoc:
-                del self._pending_upserts[doc_id]
+        # Keep `_pending_upserts` as a replay log until `_commit_locked`
+        # observes a durable save. Clearing here is what #3688's silent
+        # drop is: a later unconditional reload has nothing to re-apply.
 
     def _save_to_disk_locked(self) -> None:
         """Atomically persist ``self._client`` and notify other processes.
@@ -483,19 +488,17 @@ class NanoVectorDBStorage(BaseVectorStorage):
             async with self._storage_lock:
                 self._reload_client_from_disk_locked(for_write=True)
 
-                for doc_id in ids:
-                    self._pending_upserts.pop(doc_id, None)
+            matched_ids: list[str] = []
+            for doc_id in ids:
+                self._pending_upserts.pop(doc_id, None)
+                if self._client.get([doc_id]):
+                    matched_ids.append(doc_id)
 
-                # Record count before deletion
-                before_count = len(self._client)
-
-                self._client.delete(ids)
-
-                # Calculate actual deleted count
-                after_count = len(self._client)
-                deleted_count = before_count - after_count
-                if deleted_count:
-                    self._client_dirty = True
+            if matched_ids:
+                self._client.delete(matched_ids)
+                self._pending_deletes.update(matched_ids)
+                self._client_dirty = True
+            deleted_count = len(matched_ids)
 
             logger.debug(
                 f"[{self.workspace}] Successfully deleted {deleted_count} vectors from {self.namespace}"
@@ -538,6 +541,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 # pending buffer intact for the caller's retry path.
                 if self._client.get([entity_id]):
                     self._client.delete([entity_id])
+                    self._pending_deletes.add(entity_id)
                     self._client_dirty = True
                     deleted = True
                 else:
@@ -602,9 +606,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
                     if dp.get("src_id") == entity_name
                     or dp.get("tgt_id") == entity_name
                 ]
-                if ids_to_delete:
-                    self._client.delete(ids_to_delete)
-                    self._client_dirty = True
+            if ids_to_delete:
+                self._client.delete(ids_to_delete)
+                self._pending_deletes.update(ids_to_delete)
+                self._client_dirty = True
 
                 # Materialized delete succeeded — safe to prune matching
                 # buffered upserts so a subsequent flush won't re-upsert
@@ -636,9 +641,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
     async def drop_pending_index_ops(self) -> None:
         """Discard buffered upserts on an aborting batch.
 
-        Only the pending buffer is dropped; records already materialized into
-        ``self._client`` by a prior ``_flush_pending_locked`` whose save step
-        then failed (``_client_dirty=True``) are intentionally NOT rolled back.
+        Only the pending replay log is dropped; records already materialized
+        into ``self._client`` by a prior ``_flush_pending_locked`` whose save
+        step then failed (``_client_dirty=True``) are intentionally NOT
+        rolled back. Clearing the log means a later foreign-commit reload
+        cannot re-apply those ops; that is the abort contract — the file is
+        reprocessed and upserts are keyed by deterministic ids.
 
         The pipeline treats each file as an atomic unit: an abort marks the
         affected documents FAILED and the whole file is reprocessed on the
@@ -655,9 +663,55 @@ class NanoVectorDBStorage(BaseVectorStorage):
         """
         if self._storage_lock is None:
             self._pending_upserts.clear()
+            self._pending_deletes.clear()
             return
         async with self._storage_lock:
             self._pending_upserts.clear()
+            self._pending_deletes.clear()
+
+    def _replay_pending_deletes_locked(self) -> None:
+        """Re-apply unmatched-save deletes onto the current ``self._client``.
+
+        Precondition: the caller already holds ``_storage_lock``. Used after a
+        foreign-commit reload, which replaces the in-memory store and would
+        otherwise resurrect rows whose delete was applied but never saved.
+        Deletes are idempotent: a replayed id that is no longer present is a
+        no-op. The set is **not** cleared here — that happens only after a
+        durable save in ``_commit_locked``.
+        """
+        if not self._pending_deletes:
+            return
+        ids = [doc_id for doc_id in self._pending_deletes if self._client.get([doc_id])]
+        if not ids:
+            return
+        self._client.delete(ids)
+        self._client_dirty = True
+
+    async def _commit_locked(self) -> None:
+        """Reload if needed, replay unsaved ops, save, then drop the replay log.
+
+        Precondition: the caller already holds ``_storage_lock``.
+
+        Order:
+        1. Reload if another process committed (wholesale client replace).
+        2. If we reloaded, replay pending deletes onto that snapshot.
+        3. Flush pending upserts into ``self._client`` (vectors already on
+           a replayed doc are reused; no re-embed).
+        4. Atomically save. On failure the exception propagates, the replay
+           log is left intact, and ``_client_dirty`` stays ``True``.
+        5. On success, clear the replay log and notify other processes.
+
+        This is the #3688 contract: pending is a replay log, not a work
+        queue that is drained before the save is durable.
+        """
+        self._reload_client_from_disk_locked(for_write=True)
+        await self._flush_pending_locked()
+        self._save_to_disk_locked()
+        self._pending_upserts.clear()
+        self._pending_deletes.clear()
+        await set_all_update_flags(self.namespace, workspace=self.workspace)
+        self.storage_updated.value = False
+        self._client_dirty = False
 
     async def index_done_callback(self) -> bool:
         """Flush deferred embeddings, commit to disk, and notify other processes.
@@ -672,12 +726,13 @@ class NanoVectorDBStorage(BaseVectorStorage):
             3. ``_save_to_disk_locked`` (``atomic_write``) lays a tmp file
                beside the target and renames it into place — readers either
                see the previous file in full or the new file in full, never a
-               torn write. A failure here **also raises**; ``_client_dirty``
-               stays ``True`` so a later ``finalize`` retries the save.
-            4. ``set_all_update_flags`` flips every registered process's
-               ``storage_updated`` flag, then we immediately reset our own
-               flag to ``False`` so the writer does not self-reload on the
-               next call to ``_get_client``.
+               torn write. A failure here **also raises**; the replay log
+               (pending upserts and deletes) is left intact and
+               ``_client_dirty`` stays ``True`` so a later commit can reload
+               a foreign snapshot and re-apply our ops (issue #3688).
+            4. On success the replay log is cleared, ``set_all_update_flags``
+               flips every registered process's ``storage_updated`` flag, and
+               we immediately reset our own flag to ``False``.
 
         Either failure surfaces loudly through ``_insert_done`` so the caller
         can abort the document batch instead of silently losing vectors. The
@@ -685,17 +740,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         ``True`` on the success path.
         """
         async with self._storage_lock:
-            self._reload_client_from_disk_locked(for_write=True)
-
-            # Flush + save both raise on failure (embedding mismatch / save IO
-            # error). The exception propagates out of the lock so _insert_done
-            # aborts the batch; pending stays intact and _client_dirty stays
-            # True (if only the save failed) for a later retry.
-            await self._flush_pending_locked()
-            self._save_to_disk_locked()
-            await set_all_update_flags(self.namespace, workspace=self.workspace)
-            self.storage_updated.value = False
-            self._client_dirty = False
+            await self._commit_locked()
             return True
 
     @staticmethod
@@ -859,6 +904,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             async with self._storage_lock:
                 # Discard buffered (unflushed) upserts along with the data.
                 self._pending_upserts.clear()
+                self._pending_deletes.clear()
 
                 # delete _client_file_name
                 if os.path.exists(self._client_file_name):
@@ -886,33 +932,26 @@ class NanoVectorDBStorage(BaseVectorStorage):
     async def finalize(self):
         """Flush any buffered upserts and persist before shutdown (safety net).
 
-        Normally ``index_done_callback`` has already drained the pending buffer
-        and synced to disk, but two paths land here with work to do:
+        Normally ``index_done_callback`` has already committed. Two paths
+        still land here with work to do:
 
-        - **Pending upserts only** (no prior ``index_done_callback``): flush
-          and save. We reload first so a stale process picks up other writers'
-          commits before merging its pending buffer in.
-        - **Unsaved materialized changes** (``_client_dirty=True``): an earlier
-          ``index_done_callback`` flushed pending into ``self._client`` but
-          its save raised. Skip the reload — reloading would drop those
-          materialized-but-unsaved rows — and just retry the save.
+        - **Pending upserts only** (no prior commit): flush and save. Reload
+          first so a stale process picks up other writers' commits, then
+          merge the replay log.
+        - **Unsaved materialized changes** (``_client_dirty=True``): an
+          earlier commit flushed into ``self._client`` but its save raised.
+          The replay log is still populated, so we can reload a foreign
+          commit and re-apply our ops instead of skipping the reload
+          (issue #3688).
 
-        Flush / save failures propagate (same contract as
-        ``index_done_callback``); a partially flushed buffer is preserved for
-        a future retry.
+        Flush / save failures propagate; the replay log is preserved for a
+        future retry.
         """
         async with self._storage_lock:
-            if not self._pending_upserts and not self._client_dirty:
+            if (
+                not self._pending_upserts
+                and not self._pending_deletes
+                and not self._client_dirty
+            ):
                 return
-            if self._pending_upserts:
-                # Only reload when we have nothing un-persisted in self._client.
-                # A dirty client carries successfully-flushed-but-unsaved rows
-                # from a prior index_done_callback; reloading would silently
-                # drop them.
-                if not self._client_dirty:
-                    self._reload_client_from_disk_locked(for_write=True)
-                await self._flush_pending_locked()
-            self._save_to_disk_locked()
-            await set_all_update_flags(self.namespace, workspace=self.workspace)
-            self.storage_updated.value = False
-            self._client_dirty = False
+            await self._commit_locked()
