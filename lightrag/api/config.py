@@ -16,6 +16,7 @@ from lightrag.llm.binding_options import (
     OllamaEmbeddingOptions,
     OllamaLLMOptions,
     OpenAILLMOptions,
+    OpenAIResponsesLLMOptions,
 )
 from lightrag.base import OllamaServerInfos
 import sys
@@ -81,6 +82,7 @@ def get_default_host(binding_type: str) -> str:
         "lollms": os.getenv("LLM_BINDING_HOST", "http://localhost:9600"),
         "azure_openai": os.getenv("AZURE_OPENAI_ENDPOINT", "https://api.openai.com/v1"),
         "openai": os.getenv("LLM_BINDING_HOST", "https://api.openai.com/v1"),
+        "openai_responses": os.getenv("LLM_BINDING_HOST", "https://api.openai.com/v1"),
         # Let boto3 select the regional Bedrock endpoint unless the user
         # explicitly overrides LLM_BINDING_HOST / EMBEDDING_BINDING_HOST.
         "bedrock": os.getenv("LLM_BINDING_HOST", "DEFAULT_BEDROCK_ENDPOINT"),
@@ -503,6 +505,7 @@ def parse_args() -> argparse.Namespace:
             "ollama",
             "openai",
             "openai-ollama",
+            "openai_responses",
             "azure_openai",
             "bedrock",
             "gemini",
@@ -556,6 +559,8 @@ def parse_args() -> argparse.Namespace:
         OllamaLLMOptions.add_args(parser)
     elif llm_binding_value in ["openai", "azure_openai"]:
         OpenAILLMOptions.add_args(parser)
+    elif llm_binding_value == "openai_responses":
+        OpenAIResponsesLLMOptions.add_args(parser)
     elif llm_binding_value == "gemini":
         GeminiLLMOptions.add_args(parser)
     elif llm_binding_value == "bedrock":
@@ -806,7 +811,7 @@ def parse_args() -> argparse.Namespace:
                 f"VLM_PROCESS_ENABLE=true but the effective VLM binding "
                 f"'{effective_vlm_binding}' does not support image inputs. "
                 "Configure VLM_LLM_BINDING (or LLM_BINDING) to one of: "
-                "openai, azure_openai, gemini, bedrock, ollama."
+                "openai, openai_responses, azure_openai, gemini, bedrock, ollama."
             )
 
     # Add environment variables that were previously read directly
