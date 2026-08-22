@@ -131,9 +131,7 @@ async def test_fresh_upsert_supersedes_queued_delete(tmp_path):
     assert record is not None
     assert record["content"] == "new"
     # Exactly one materialized row for the custom id.
-    matches = [
-        m for m in storage._id_to_meta.values() if m.get("__id__") == "row"
-    ]
+    matches = [m for m in storage._id_to_meta.values() if m.get("__id__") == "row"]
     assert len(matches) == 1
 
 
@@ -181,7 +179,9 @@ async def test_dequeued_delete_survives_reload_from_disk(tmp_path):
 
     # Another process commits a newer snapshot...
     other = await _make_storage(tmp_path, _CountingEmbed())
-    await _upsert_and_flush(other, {"shared": {"content": "v2"}, "extra": {"content": "e"}})
+    await _upsert_and_flush(
+        other, {"shared": {"content": "v2"}, "extra": {"content": "e"}}
+    )
     # ...and this process's storage_updated flag flips, as set_all_update_flags
     # would have done, so index_done_callback reloads before flushing.
     storage.storage_updated.value = True
@@ -213,9 +213,7 @@ async def test_drop_pending_index_ops_discards_queued_deletes(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_failed_delete_rebuild_keeps_tombstones_for_retry(
-    tmp_path, monkeypatch
-):
+async def test_failed_delete_rebuild_keeps_tombstones_for_retry(tmp_path, monkeypatch):
     """A FAISS rebuild failure during the delete pass must not consume the
     queued tombstones: the next ``index_done_callback`` retry re-applies them
     instead of persisting the stale rows as if they were deleted."""
