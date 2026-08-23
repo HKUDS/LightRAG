@@ -315,8 +315,10 @@ async def openai_responses_complete_if_cache(
 
     Returns:
         The completion text, or an async iterator of text chunks when
-        streaming. Token-limit-truncated output is wrapped in
-        ``TruncatedResponse`` so the cache layer skips persisting it.
+        streaming. Token-limit-truncated non-streaming output is wrapped in
+        ``TruncatedResponse`` so the cache layer skips persisting it; a
+        truncated stream logs a warning instead, since chunks already yielded
+        cannot be re-wrapped.
 
     Raises:
         InvalidResponseError: The response carried no usable text.
@@ -430,9 +432,17 @@ async def _stream_response(
     Responses emits typed events rather than ``choices[].delta`` chunks, so COT
     state is driven by event *type* instead of by which delta field is
     populated.
+
+    Truncation: a stream that exhausts ``max_output_tokens`` terminates with
+    ``response.incomplete`` rather than ``response.completed``. Partial output
+    is kept and a warning logged; a truncated stream that yielded nothing
+    raises ``EmptyTruncatedResponseError``, matching the non-streaming path's
+    rule that budget exhaustion with no usable text is non-retryable.
     """
     cot_active = False
     body_text_seen = False
+    reasoning_text_seen = False
+    truncated = False
     final_usage = None
     closing_via_generator_exit = False
 
@@ -440,11 +450,16 @@ async def _stream_response(
         async for event in response:
             event_type = getattr(event, "type", "") or ""
 
-            if event_type == "response.completed":
-                completed = getattr(event, "response", None)
-                usage = getattr(completed, "usage", None)
+            if event_type in ("response.completed", "response.incomplete"):
+                # Exhausting max_output_tokens terminates the stream with
+                # `response.incomplete` instead of `response.completed`. Both
+                # carry the terminal usage; only the latter is a clean finish.
+                terminal = getattr(event, "response", None)
+                usage = getattr(terminal, "usage", None)
                 if usage is not None:
                     final_usage = usage
+                if event_type == "response.incomplete":
+                    truncated = _is_truncated(terminal)
                 continue
 
             if event_type == "response.reasoning_summary_text.delta":
@@ -458,6 +473,7 @@ async def _stream_response(
                     cot_active = True
                 if r"\u" in delta:
                     delta = safe_unicode_decode(delta.encode("utf-8"))
+                reasoning_text_seen = True
                 yield delta
                 continue
 
@@ -484,10 +500,44 @@ async def _stream_response(
             yield "</think>"
             cot_active = False
 
+        # Account usage before any validation raises: the request consumed its
+        # budget whether or not the output turned out to be usable.
         if token_tracker and final_usage is not None:
             counts = _usage_counts(final_usage)
             token_tracker.add_usage(counts)
             logger.debug(f"Streaming token usage (from API): {counts}")
+
+        if truncated:
+            if body_text_seen or reasoning_text_seen:
+                # Partial output already reached the consumer, so raising here
+                # would discard text it can still salvage. Mirrors the
+                # non-streaming path, which returns partial content wrapped in
+                # TruncatedResponse - a wrapper a generator cannot apply to
+                # chunks it has already yielded.
+                logger.warning(
+                    "OpenAI Responses stream truncated by token limit, "
+                    "returning partial content"
+                )
+            else:
+                output_tokens = getattr(final_usage, "output_tokens", None)
+                usage_details = getattr(final_usage, "output_tokens_details", None)
+                reasoning_tokens = getattr(usage_details, "reasoning_tokens", None)
+                hint = empty_length_truncated_hint(
+                    "consider raising max_output_tokens or lowering reasoning effort",
+                    reasoning_consumed_budget=bool(reasoning_tokens),
+                )
+                error_message = (
+                    "Received empty content from OpenAI Responses stream "
+                    "(status=incomplete, incomplete_reason=max_output_tokens, "
+                    f"output_tokens={output_tokens if output_tokens is not None else 'n/a'}, "
+                    f"reasoning_tokens={reasoning_tokens if reasoning_tokens is not None else 'n/a'}"
+                    f"): {hint}"
+                )
+                logger.error(error_message)
+                # Budget exhaustion is deterministic for a given prompt and
+                # budget, so it raises the non-retryable type rather than
+                # buying two more full-budget generations.
+                raise EmptyTruncatedResponseError(error_message)
     except GeneratorExit:
         # Consumer disconnected: the finally block must not yield, or cleanup
         # aborts with "async generator ignored GeneratorExit".

@@ -432,3 +432,97 @@ async def test_streaming_records_usage_from_completed_event(monkeypatch):
     await _collect(result)
 
     assert recorded == [{"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}]
+
+
+async def test_streaming_records_usage_from_incomplete_event(monkeypatch):
+    stream = _FakeStream(
+        [
+            _delta("response.output_text.delta", "partial"),
+            SimpleNamespace(
+                type="response.incomplete",
+                response=SimpleNamespace(
+                    status="incomplete",
+                    incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+                    usage=_usage(3, 4),
+                ),
+            ),
+        ]
+    )
+    _patch_client(monkeypatch, stream)
+    recorded: list[dict[str, int]] = []
+    tracker = SimpleNamespace(add_usage=recorded.append)
+
+    result = await openai_responses_complete_if_cache(
+        "gpt-5.6", "hi", stream=True, token_tracker=tracker
+    )
+
+    assert await _collect(result) == "partial", "partial output is kept"
+    assert recorded == [{"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}]
+
+
+async def test_streaming_empty_truncation_raises_non_retryable(monkeypatch):
+    stream = _FakeStream(
+        [
+            SimpleNamespace(
+                type="response.incomplete",
+                response=SimpleNamespace(
+                    status="incomplete",
+                    incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+                    usage=_usage(3, 120, reasoning_tokens=120),
+                ),
+            ),
+        ]
+    )
+    _patch_client(monkeypatch, stream)
+
+    result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
+
+    with pytest.raises(EmptyTruncatedResponseError):
+        await _collect(result)
+
+
+async def test_streaming_incomplete_without_budget_reason_does_not_raise(monkeypatch):
+    """`response.incomplete` also covers non-budget stops (e.g. content filter),
+    which are not token-limit truncation and must not take the raise path."""
+    stream = _FakeStream(
+        [
+            SimpleNamespace(
+                type="response.incomplete",
+                response=SimpleNamespace(
+                    status="incomplete",
+                    incomplete_details=SimpleNamespace(reason="content_filter"),
+                    usage=_usage(3, 0),
+                ),
+            ),
+        ]
+    )
+    _patch_client(monkeypatch, stream)
+
+    result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
+
+    assert await _collect(result) == ""
+
+
+async def test_streaming_reasoning_only_truncation_is_not_treated_as_empty(monkeypatch):
+    """Reasoning text already reached the consumer inside <think>, so the
+    stream ends normally rather than raising."""
+    stream = _FakeStream(
+        [
+            _delta("response.reasoning_summary_text.delta", "thinking"),
+            SimpleNamespace(
+                type="response.incomplete",
+                response=SimpleNamespace(
+                    status="incomplete",
+                    incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+                    usage=_usage(3, 9, reasoning_tokens=9),
+                ),
+            ),
+        ]
+    )
+    _patch_client(monkeypatch, stream)
+
+    result = await openai_responses_complete_if_cache(
+        "gpt-5.6", "hi", stream=True, enable_cot=True
+    )
+
+    assert await _collect(result) == "<think>thinking</think>"
