@@ -512,3 +512,61 @@ async def test_finalize_skips_save_when_flush_changes_nothing(tmp_path):
     assert watcher.storage_updated.value is False, (
         "a no-op finalize must not broadcast a reload to other processes"
     )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_replay_removes_every_duplicate_row_under_one_id(tmp_path, monkeypatch):
+    """``delete`` is find-all: it removes every row carrying the id, which a
+    legacy / corrupt store can have several of (``_find_faiss_ids_by_custom_id``
+    exists for exactly that). The redo log must therefore name every removed
+    version — with one fingerprint per id the unlogged duplicates survive the
+    replay and get persisted by the retry, silently undoing part of a delete
+    that reported success."""
+    embed = _CountingEmbed()
+    storage = await _make_storage(tmp_path, embed)
+
+    # Hand-craft the corrupt state: two fids share "dup", different metadata.
+    matrix = np.array([[1.0] * DIM, [2.0] * DIM], dtype=np.float32)
+    faiss.normalize_L2(matrix)
+    storage._index.add(matrix)
+    storage._id_to_meta[0] = {
+        "__id__": "dup",
+        "__created_at__": 1,
+        "content": "v1",
+        "__vector__": matrix[0].tolist(),
+    }
+    storage._id_to_meta[1] = {
+        "__id__": "dup",
+        "__created_at__": 1,
+        "content": "v2",
+        "__vector__": matrix[1].tolist(),
+    }
+    assert await storage.index_done_callback() is True
+    assert len(storage._find_faiss_ids_by_custom_id("dup")) == 2
+
+    # Flush removes both, the save fails: both versions are applied-unsaved.
+    await storage.delete(["dup"])
+    _fail_save(storage, monkeypatch)
+    with pytest.raises(OSError, match="transient disk error"):
+        await storage.index_done_callback()
+    assert storage._find_faiss_ids_by_custom_id("dup") == []
+    assert len(storage._unsaved_deletes["dup"]) == 2, (
+        "every removed version must be logged, not just the last one"
+    )
+    monkeypatch.undo()
+
+    # Another writer commits, so the retry reloads and both rows come back.
+    other = await _make_storage(tmp_path, _CountingEmbed())
+    await _upsert_and_flush(other, {"extra": {"content": "unrelated"}})
+
+    assert await storage.index_done_callback() is True
+    assert storage._find_faiss_ids_by_custom_id("dup") == [], (
+        "the replay must remove every duplicate, not just one"
+    )
+
+    reloaded = await _make_storage(tmp_path, _CountingEmbed())
+    assert reloaded._find_faiss_ids_by_custom_id("dup") == [], (
+        "no duplicate may be persisted by the retry"
+    )
+    assert (await reloaded.get_by_id("extra")) is not None
