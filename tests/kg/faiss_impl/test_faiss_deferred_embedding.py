@@ -189,9 +189,15 @@ async def test_delete_cancels_pending_and_removes_materialized(tmp_path):
     await storage.delete(["id1", "id2"])
 
     assert "id2" not in storage._pending_upserts, "delete cancels pending upsert"
-    assert storage._index.ntotal == 0, "delete removes the materialized row"
+    # Materialized removal is deferred: one batched rebuild at flush time
+    # instead of one per delete call (#3681). Read-your-writes hides the row.
+    assert storage._index.ntotal == 1, "materialized row survives until the flush"
+    assert {"id1", "id2"} <= storage._pending_deletes
     assert await storage.get_by_id("id1") is None
     assert await storage.get_by_id("id2") is None
+
+    assert await storage.index_done_callback() is True
+    assert storage._index.ntotal == 0, "flush removes the materialized row"
     _assert_consistent(storage)
 
 
@@ -222,6 +228,10 @@ async def test_stale_client_reload_still_flushes_pending_upsert(tmp_path):
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_delete_reloads_stale_client_before_mutating(tmp_path):
+    """The stale-writer interplay with deferred deletes: the reload happens
+    inside ``index_done_callback`` (before the flush applies the queued
+    delete), so the delete lands on top of the other writer's committed
+    snapshot instead of being silently reverted by it."""
     embed = _CountingEmbed()
     writer = _make_storage(tmp_path, embed)
     stale_deleter = _make_storage(tmp_path, embed)
@@ -233,8 +243,8 @@ async def test_delete_reloads_stale_client_before_mutating(tmp_path):
     assert stale_deleter.storage_updated.value is True
 
     await stale_deleter.delete(["id1"])
-    assert stale_deleter.storage_updated.value is False
     assert await stale_deleter.index_done_callback() is True
+    assert stale_deleter.storage_updated.value is False
 
     reader = _make_storage(tmp_path, embed)
     await reader.initialize()
@@ -663,6 +673,10 @@ async def test_reupsert_cleans_duplicate_custom_id_rows(tmp_path):
     assert len(storage._find_faiss_ids_by_custom_id("dup")) == 3
 
     await storage.delete(["dup"])
+    assert storage._find_faiss_ids_by_custom_id("dup") == [0, 1, 2], (
+        "queued delete does not mutate the materialized index"
+    )
+    assert await storage.index_done_callback() is True
     assert storage._find_faiss_ids_by_custom_id("dup") == []
     assert storage._index.ntotal == 0
     _assert_consistent(storage)
@@ -673,7 +687,9 @@ async def test_reupsert_cleans_duplicate_custom_id_rows(tmp_path):
 async def test_delete_propagates_errors(tmp_path, monkeypatch):
     """Faiss ``delete`` must NOT swallow errors — the caller (document
     deletion / status update path) needs to abort if vectors weren't
-    actually removed. This intentionally diverges from Nano."""
+    actually removed. With deferred deletes the destructive work moved to
+    the flush, so the abort surfaces from ``index_done_callback``; this
+    intentionally diverges from Nano."""
     embed = _CountingEmbed()
     storage = _make_storage(tmp_path, embed)
     await storage.initialize()
@@ -684,13 +700,17 @@ async def test_delete_propagates_errors(tmp_path, monkeypatch):
     def boom(_self, _fids):
         raise RuntimeError("rebuild boom")
 
-    # _remove_faiss_ids_locked is what delete calls under the hood.
+    # _remove_faiss_ids_locked is what the flush calls under the hood to
+    # apply the queued deletes.
     monkeypatch.setattr(
         FaissVectorDBStorage, "_remove_faiss_ids_locked", boom, raising=True
     )
 
+    await storage.delete(["id1"])
+    assert "id1" in storage._pending_deletes
+
     with pytest.raises(RuntimeError, match="rebuild boom"):
-        await storage.delete(["id1"])
+        await storage.index_done_callback()
 
 
 @pytest.mark.offline
