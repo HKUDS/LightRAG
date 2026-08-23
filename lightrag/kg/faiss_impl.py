@@ -744,31 +744,46 @@ class FaissVectorDBStorage(BaseVectorStorage):
             if meta.get("__id__") == custom_id
         ]
 
-    def _remove_faiss_ids_locked(self, fid_list) -> None:
-        """Remove a list of internal Faiss IDs by rebuilding the index.
+    def _rebuild_index_locked(
+        self, drop_fids, add_records: list[dict[str, Any]] = ()
+    ) -> None:
+        """Rebuild the index without ``drop_fids`` and with ``add_records``.
 
         Precondition: the caller must already hold ``_storage_lock``. This
         is synchronous (no ``await``) because every step — dict scan,
         ``IndexFlatIP`` re-init, ``index.add`` — is synchronous, and the
         single critical section guarantees ``self._index`` and
         ``self._id_to_meta`` flip together. Because ``IndexFlatIP`` has no
-        in-place removal API, we collect the kept vectors and rebuild.
+        in-place update API, a change to any existing row means rebuilding.
+
+        Both halves in one call, deliberately. An overwrite is "drop the row
+        the id had, write the row it has now", and doing that as two index
+        operations means a failure between them lands one half without the
+        other: remove-then-add can leave the id with no row at all, and
+        add-then-remove can leave it with two rows of different vintages,
+        where the read paths return the stale one. Neither state is
+        reachable through ``NanoVectorDBStorage``, whose client updates an
+        existing id in place, and neither should be reachable here.
+
+        So the replacement is assembled locally and swapped in only once its
+        ``add`` has succeeded: either the whole change lands or nothing does,
+        leaving both structures exactly as they were for the caller's retry
+        or reload. ``add_records`` must already carry ``__vector__``.
 
         Callers that mutate via this helper are responsible for setting
         ``self._index_dirty = True`` themselves (skipped here so a no-op
-        call — empty intersection between ``fid_list`` and current ids —
-        does not falsely mark the storage dirty).
+        call does not falsely mark the storage dirty).
         """
-        if not fid_list:
+        if not drop_fids and not add_records:
             return
 
-        fid_set = set(fid_list)
-        keep_fids = [fid for fid in self._id_to_meta if fid not in fid_set]
+        drop_set = set(drop_fids)
+        vectors: list[list[float]] = []
+        new_id_to_meta: dict[int, dict[str, Any]] = {}
 
-        vectors_to_keep = []
-        new_id_to_meta = {}
-        for old_fid in keep_fids:
-            vec_meta = self._id_to_meta[old_fid]
+        for old_fid, vec_meta in self._id_to_meta.items():
+            if old_fid in drop_set:
+                continue
             if "__vector__" in vec_meta:
                 vec = vec_meta["__vector__"]
             elif old_fid < self._index.ntotal:
@@ -780,15 +795,31 @@ class FaissVectorDBStorage(BaseVectorStorage):
                     f"no vector and fid exceeds index size ({self._index.ntotal})"
                 )
                 continue
-            new_fid = len(vectors_to_keep)
-            vectors_to_keep.append(vec)
-            new_id_to_meta[new_fid] = vec_meta
+            new_id_to_meta[len(vectors)] = vec_meta
+            vectors.append(vec)
 
-        self._index = faiss.IndexFlatIP(self._dim)
-        if vectors_to_keep:
-            arr = np.array(vectors_to_keep, dtype=np.float32)
-            self._index.add(arr)
+        # Appended after the survivors, which is where a plain index.add
+        # would have put them — so fid ordering is unchanged.
+        for record in add_records:
+            new_id_to_meta[len(vectors)] = record
+            vectors.append(record["__vector__"])
+
+        new_index = faiss.IndexFlatIP(self._dim)
+        if vectors:
+            new_index.add(np.array(vectors, dtype=np.float32))
+        self._index = new_index
         self._id_to_meta = new_id_to_meta
+
+    def _remove_faiss_ids_locked(self, fid_list) -> None:
+        """Remove a list of internal Faiss IDs by rebuilding the index.
+
+        Thin wrapper over :py:meth:`_rebuild_index_locked` for the delete
+        paths, which drop rows without writing any. Same preconditions and
+        the same all-or-nothing guarantee.
+        """
+        if not fid_list:
+            return
+        self._rebuild_index_locked(fid_list)
 
     @staticmethod
     def _row_fingerprint(meta: dict[str, Any]) -> str:
@@ -837,17 +868,15 @@ class FaissVectorDBStorage(BaseVectorStorage):
             * Embedding error / count mismatch → raises before any mutation
               to ``self._index`` / ``self._id_to_meta``; ``_pending_upserts``
               is left intact and ``self._index_dirty`` is not touched.
-            * Rebuild / ``index.add`` failure → raises mid-write. The
-              materialized state may already be partially mutated (e.g.
-              ``_remove_faiss_ids_locked`` ran and dropped the prior fids
-              for re-upserted ids), but ``_index_dirty`` is **not** set
-              because we deliberately treat ``_pending_upserts`` as the
-              source of truth on this path: pending stays intact, and the
-              next ``finalize`` call re-enters ``_flush_pending_locked``,
-              which will rebuild the affected rows from the cached vectors
-              and re-add them — self-healing without re-embedding. The
-              dirty flag is reserved for "materialized but unsaved",
-              which is only true after ``index.add`` completes.
+            * Materialization failure (``index.add``, or the rebuild an
+              overwrite goes through) → raises with ``self._index`` and
+              ``self._id_to_meta`` exactly as they were: the upsert phase
+              mutates them through a single all-or-nothing operation, so
+              there is no half-applied overwrite to persist or repair.
+              ``_index_dirty`` and ``_unsaved_upserts`` are set only after
+              it succeeds, and ``_pending_upserts`` stays intact, so the
+              next ``finalize`` re-enters here and re-applies from the
+              cached vectors — self-healing without re-embedding.
         """
         if (
             not self._pending_upserts
@@ -954,25 +983,38 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 pdoc.vector = arr[i].copy()
 
         # All pending vectors are now non-None and already-normalized float32.
-        # Remove every existing fid in self._id_to_meta whose custom id is
-        # being re-upserted (find-all so duplicate __id__ rows from a legacy /
-        # corrupt store still get fully cleaned), then add the new vectors in
-        # a single batch.
+        # Note which existing fids the re-upserted ids occupy (find-all so
+        # duplicate __id__ rows from a legacy / corrupt store still get fully
+        # cleaned).
         existing_fids: list[int] = []
         for doc_id, _ in pending_items:
             existing_fids.extend(self._find_faiss_ids_by_custom_id(doc_id))
-        self._remove_faiss_ids_locked(existing_fids)
 
         matrix = np.vstack([pdoc.vector for _, pdoc in pending_items]).astype(
             np.float32
         )
-        start_idx = self._index.ntotal
-        self._index.add(matrix)
+        records = []
         for i, (_, pdoc) in enumerate(pending_items):
-            fid = start_idx + i
-            record = pdoc.record
-            record["__vector__"] = matrix[i].tolist()
-            self._id_to_meta[fid] = record
+            pdoc.record["__vector__"] = matrix[i].tolist()
+            records.append(pdoc.record)
+
+        if existing_fids:
+            # An overwrite: drop the rows those ids had and write the ones
+            # they have now, in a single rebuild. Splitting it into an add
+            # and a removal would let a failure land one half — a missing
+            # row one way round, two rows of different vintages the other —
+            # and neither is reachable through the Nano backend, whose
+            # client updates an existing id in place. This is also one pass
+            # cheaper than adding and then rebuilding to clean up.
+            self._rebuild_index_locked(existing_fids, records)
+        else:
+            # Nothing is being superseded, so appending cannot leave a
+            # half-applied overwrite behind — and it avoids an O(rows)
+            # rebuild on the path that does not need one.
+            start_idx = self._index.ntotal
+            self._index.add(matrix)
+            for i, record in enumerate(records):
+                self._id_to_meta[start_idx + i] = record
 
         self._index_dirty = True
         self._unsaved_upserts = True
