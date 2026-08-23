@@ -2,6 +2,7 @@ import glob
 import os
 import time
 import asyncio
+from hashlib import md5
 from typing import Any, final
 import json
 import numpy as np
@@ -251,11 +252,25 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # docstring). An eager delete rebuilt the whole IndexFlatIP per call
         # and the merge stage deletes once per relation (#3681).
         self._pending_deletes: set[str] = set()
+        # Redo log: removals already applied to self._index / self._id_to_meta
+        # but not yet on disk, kept as custom id -> _row_fingerprint(removed
+        # row). If a save fails and a reload replaces the in-memory state with
+        # the on-disk snapshot, the removed rows come back; replaying this log
+        # after the reload removes them again. The fingerprint (not the bare
+        # id) ensures a replay only removes the row version it removed before,
+        # never a newer row another writer published under the same
+        # content-hash id. Cleared once a save lands. See delete's docstring.
+        self._unsaved_deletes: dict[str, str] = {}
         # True when self._index / self._id_to_meta have materialized changes
         # that have not been successfully saved to disk yet. This lets
         # finalize retry a save even after a previous flush cleared the
         # pending buffer (see _flush_pending_locked / index_done_callback).
         self._index_dirty = False
+        # True when part of that unsaved state is materialized *upserts*.
+        # Those rows exist nowhere else, so a reload would drop them (see
+        # finalize); removals do not need the same protection because
+        # _unsaved_deletes replays them on top of the reloaded snapshot.
+        self._unsaved_upserts = False
 
         # Sweep orphan tmp siblings left behind by hard kills mid-save.
         # The meta file also needs an extra pattern: legacy versions of this
@@ -498,6 +513,50 @@ class FaissVectorDBStorage(BaseVectorStorage):
         ``self._index`` / ``self._id_to_meta`` — the row could silently
         reappear. A queued id is applied *after* that reload, so it survives.
 
+        Two buffers, because the flush and the save can fail independently
+        (the same protocol Nano documents, #3680):
+
+            * ``_pending_deletes`` — queued, not applied to the index yet.
+            * ``_unsaved_deletes`` — applied to the index but not yet on
+              disk, kept as ``id -> a fingerprint of the removed row``.
+              This is a redo log, not a pending buffer.
+
+        The redo log exists because a removal that reached ``self._index``
+        can still be undone: if the save fails, the next
+        ``index_done_callback``'s unconditional reload replaces the in-memory
+        state with the on-disk snapshot and the row returns. Replaying the
+        log after that reload removes it again, so the reload stays lossless
+        for deletes. (Upserts have no equivalent log — a materialized-but-
+        unsaved upsert is still dropped by the same reload; ``finalize``
+        protects those by skipping the reload instead, via
+        ``_unsaved_upserts``.)
+
+        A replay matches on the row, not on the id alone. Ids are content
+        hashes, so another writer can publish a *new* row under an id we
+        removed, and deleting by id would destroy it. The log therefore
+        stores ``_row_fingerprint`` of the row it removed and a replay
+        removes only a row that still matches it. The two buffers are scoped
+        differently on purpose: ``_pending_deletes`` holds a *request* — the
+        flush removes whatever row carries that id, the by-id contract purge
+        relies on — while ``_unsaved_deletes`` holds a *record* of a removal
+        that already happened, so replaying it must not remove a row that
+        has since taken the id's place.
+
+        The read-your-writes paths mirror both rules: a queued id reads as
+        absent, while a logged one hides only the row the entry names — a
+        replacement the replay would preserve stays readable. An ``upsert``
+        cancels a *queued* delete for the same id but never touches the redo
+        log: the buffered row may be discarded by an aborting batch before
+        it materializes, and dropping the entry then would leave the reload
+        nothing to replay. Ids that matched no row are not logged at all.
+        The log is cleared once a save lands; an aborting batch keeps it
+        (``drop_pending_index_ops`` discards buffered work, not removals
+        that already reached the index). ``delete_entity_relation`` stays
+        eager — it is off the merge hot path — but its removals are
+        applied-and-unsaved just the same, so they are recorded in the log
+        too. Both buffers are in-memory only: they are dropped by ``drop``
+        and lost on a crash before the flush.
+
         Persistence:
             Queued ids are in-memory only: they land on the index at the next
             ``index_done_callback`` / ``finalize`` flush and are lost on a
@@ -588,7 +647,18 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 or meta.get("tgt_id") == entity_name
             ]
             if relations:
+                # Applied-but-unsaved like a flushed delete: record the
+                # removals in the redo log (queued requests for the same
+                # ids are now redundant), or a failed save plus a reload
+                # resurrects the rows.
+                removed = {
+                    meta["__id__"]: self._row_fingerprint(meta)
+                    for meta in (self._id_to_meta[fid] for fid in relations)
+                    if meta.get("__id__") is not None
+                }
                 self._remove_faiss_ids_locked(relations)
+                self._pending_deletes.difference_update(removed)
+                self._unsaved_deletes.update(removed)
                 self._index_dirty = True
 
             # Materialized rebuild succeeded — safe to prune matching
@@ -692,6 +762,31 @@ class FaissVectorDBStorage(BaseVectorStorage):
             self._index.add(arr)
         self._id_to_meta = new_id_to_meta
 
+    @staticmethod
+    def _row_fingerprint(meta: dict[str, Any]) -> str:
+        """Identify one *version* of a stored row.
+
+        The redo log has to name the exact row it removed so a replay after
+        a reload cannot hit a newer row another writer published under the
+        same (content-hash) id. The digest covers the stored metadata record
+        — id, timestamp, every meta field — **excluding** ``__vector__``:
+        ``_save_faiss_index`` strips the vector from ``.meta.json`` and
+        ``_load_faiss_index`` / ``_remove_faiss_ids_locked`` re-attach it
+        lazily (``index.reconstruct``), so its presence on a row is not
+        stable across a save/reload round-trip and including it would make
+        the same row stop matching its own log entry. Everything else
+        round-trips through ``json.dump``/``json.load`` unchanged; sorted
+        keys make key order irrelevant and ``default=str`` keeps the dump
+        total. The vector adds no identity anyway — it is a deterministic
+        function of the content already covered by the digest.
+        """
+        canonical = json.dumps(
+            {k: v for k, v in meta.items() if k != "__vector__"},
+            sort_keys=True,
+            default=str,
+        )
+        return md5(canonical.encode("utf-8")).hexdigest()
+
     async def _flush_pending_locked(self) -> None:
         """Embed pending docs and materialize them into ``self._index`` + ``self._id_to_meta``.
 
@@ -707,9 +802,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
         newly embedded vectors go through ``faiss.normalize_L2``.
 
         Failure handling:
-            * Queued deletes are applied first; a delete batch that lands on
-              ``self._index`` is not replayed on a later retry, while one
-              whose rebuild raises stays queued for the retry.
+            * Queued deletes are applied first; one that lands on
+              ``self._index`` moves into the ``_unsaved_deletes`` redo log
+              (replayed after any reload until a save persists it), while
+              one whose rebuild raises stays queued for the retry.
             * Embedding error / count mismatch → raises before any mutation
               to ``self._index`` / ``self._id_to_meta``; ``_pending_upserts``
               is left intact and ``self._index_dirty`` is not touched.
@@ -725,7 +821,11 @@ class FaissVectorDBStorage(BaseVectorStorage):
               dirty flag is reserved for "materialized but unsaved",
               which is only true after ``index.add`` completes.
         """
-        if not self._pending_upserts and not self._pending_deletes:
+        if (
+            not self._pending_upserts
+            and not self._pending_deletes
+            and not self._unsaved_deletes
+        ):
             return
 
         # Apply every deferred delete in ONE pass + ONE index rebuild —
@@ -734,15 +834,26 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # (upsert also cancels the queued delete, but a delete queued after
         # the upsert must still win over the *materialized* stale row).
         # One scan of ``_id_to_meta`` for the whole queued set instead of
-        # one full scan per deleted id (#3681).
-        if self._pending_deletes:
-            queued = self._pending_deletes
-            to_remove = [
-                fid
-                for fid, meta in self._id_to_meta.items()
-                if meta.get("__id__") in queued
-            ]
-            # Clear the queue only after the rebuild succeeds: if
+        # one full scan per deleted id (#3681). A queued id removes whatever
+        # row carries it; a replayed one (redo log, after a reload undid an
+        # unsaved removal) only removes the row version it removed before,
+        # so anything written under that id since — by another writer or by
+        # us — survives.
+        if self._pending_deletes or self._unsaved_deletes:
+            queued = len(self._pending_deletes)
+            matched: dict[str, str] = {}
+            to_remove: list[int] = []
+            for fid, meta in self._id_to_meta.items():
+                doc_id = meta.get("__id__")
+                if doc_id in self._pending_deletes:
+                    to_remove.append(fid)
+                    matched[doc_id] = self._row_fingerprint(meta)
+                elif doc_id in self._unsaved_deletes:
+                    fingerprint = self._row_fingerprint(meta)
+                    if fingerprint == self._unsaved_deletes[doc_id]:
+                        to_remove.append(fid)
+                        matched[doc_id] = fingerprint
+            # Consume the queue only after the rebuild succeeds: if
             # ``_remove_faiss_ids_locked`` raises (FAISS rebuild failure),
             # the tombstones must survive so the next
             # ``index_done_callback`` retry re-applies them instead of
@@ -750,10 +861,15 @@ class FaissVectorDBStorage(BaseVectorStorage):
             if to_remove:
                 self._remove_faiss_ids_locked(to_remove)
                 self._index_dirty = True
+            # Removals that landed move into the redo log until a save
+            # persists them; ids that matched no row have nothing to
+            # persist and are not logged at all.
+            self._unsaved_deletes.update(matched)
             self._pending_deletes = set()
             logger.info(
                 f"[{self.workspace}] {self.namespace} flush: applied "
-                f"{len(to_remove)} deferred vector deletes"
+                f"{len(to_remove)} deferred vector deletes ({queued} queued, "
+                f"{len(self._unsaved_deletes)} awaiting save)"
             )
 
         if not self._pending_upserts:
@@ -824,6 +940,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             self._id_to_meta[fid] = record
 
         self._index_dirty = True
+        self._unsaved_upserts = True
 
         # Clear only the entries we just flushed. Today the non-reentrant
         # _storage_lock locks out concurrent upserts for the entire flush
@@ -835,6 +952,19 @@ class FaissVectorDBStorage(BaseVectorStorage):
         for doc_id, pdoc in pending_items:
             if self._pending_upserts.get(doc_id) is pdoc:
                 del self._pending_upserts[doc_id]
+
+        if self._unsaved_deletes:
+            # A row we just wrote can be indistinguishable from one we
+            # removed (same id, same fingerprint) — the single case the
+            # fingerprint cannot separate, and the one case where dropping
+            # the redo entry costs nothing: a resurrection would restore the
+            # row that is present now. Only rows written just above can
+            # match here; a resurrected one was already removed by the
+            # replay at the top of this flush.
+            for meta in self._id_to_meta.values():
+                logged = self._unsaved_deletes.get(meta.get("__id__"))
+                if logged is not None and logged == self._row_fingerprint(meta):
+                    del self._unsaved_deletes[meta.get("__id__")]
 
     def _save_faiss_index(self):
         """Atomically persist ``self._index`` + ``self._id_to_meta`` to disk.
@@ -965,6 +1095,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
         writes are dropped anyway. Rolling back only FAISS/Nano would add an
         inconsistent, non-load-bearing "FAILED == clean" guarantee, so it is
         deliberately omitted.
+
+        Deletes split along that same line. ``_pending_deletes`` is buffered
+        work and is discarded; ``_unsaved_deletes`` is the redo log of
+        removals that already reached ``self._index``, so it is **kept** —
+        dropping it would neither restore the rows nor keep them gone, it
+        would only make the removal fragile again, which is the exact state
+        this log exists to end.
         """
         if self._storage_lock is None:
             self._pending_upserts.clear()
@@ -1010,9 +1147,11 @@ class FaissVectorDBStorage(BaseVectorStorage):
             # True (if only the save failed) for a later retry.
             await self._flush_pending_locked()
             self._save_faiss_index()
+            self._unsaved_deletes.clear()  # the removals are durable now
             await set_all_update_flags(self.namespace, workspace=self.workspace)
             self.storage_updated.value = False
             self._index_dirty = False
+            self._unsaved_upserts = False
             return True
 
     @staticmethod
@@ -1024,6 +1163,18 @@ class FaissVectorDBStorage(BaseVectorStorage):
             "created_at": dp.get("__created_at__"),
         }
 
+    def _matches_redo_entry(
+        self, meta: dict[str, Any], fingerprint: str | None
+    ) -> bool:
+        """True when a materialized row is the one a redo entry removed.
+
+        ``fingerprint`` is the value snapshotted from ``_unsaved_deletes``
+        under the lock (``None`` when the id is not logged). A row that no
+        longer matches took the id's place after the removal, and the replay
+        deliberately preserves it — so the read paths must show it.
+        """
+        return fingerprint is not None and fingerprint == self._row_fingerprint(meta)
+
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID (read-your-writes against the pending buffer).
 
@@ -1034,20 +1185,24 @@ class FaissVectorDBStorage(BaseVectorStorage):
             The vector data if found, or None if not found
         """
         # Read-your-writes: a buffered upsert is visible before its flush,
-        # and a queued delete hides the materialized row.
+        # a queued delete hides the materialized row, and a redo-log entry
+        # hides only the row version it removed (see _matches_redo_entry).
         async with self._storage_lock:
             pending = self._pending_upserts.get(id)
             if pending is not None:
                 return self._format_record(pending.record)
             if id in self._pending_deletes:
                 return None
+            logged = self._unsaved_deletes.get(id)
 
         await self._get_index()  # reload-if-stale
         fid = self._find_faiss_id_by_custom_id(id)
         if fid is None:
             return None
         metadata = self._id_to_meta.get(fid)
-        return self._format_record(metadata) if metadata else None
+        if not metadata or self._matches_redo_entry(metadata, logged):
+            return None
+        return self._format_record(metadata)
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """Get multiple vector data by their IDs (read-your-writes), preserving order.
@@ -1063,10 +1218,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
             return []
 
         # Read-your-writes: serve buffered upserts from the pending area,
-        # hide ids with a queued delete, and only query the materialized
-        # index for the remaining ids.
+        # hide ids with a queued delete (a redo-log entry hides only the row
+        # version it removed), and only query the materialized index for the
+        # remaining ids.
         result_map: dict[str, dict[str, Any]] = {}
         remaining: list[str] = []
+        logged: dict[str, str] = {}
         async with self._storage_lock:
             for requested_id in ids:
                 pending = self._pending_upserts.get(requested_id)
@@ -1075,6 +1232,8 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 elif requested_id in self._pending_deletes:
                     continue
                 else:
+                    if requested_id in self._unsaved_deletes:
+                        logged[requested_id] = self._unsaved_deletes[requested_id]
                     remaining.append(requested_id)
 
         if remaining:
@@ -1084,7 +1243,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 if fid is None:
                     continue
                 metadata = self._id_to_meta.get(fid)
-                if metadata:
+                if metadata and not self._matches_redo_entry(metadata, logged.get(cid)):
                     result_map[str(cid)] = self._format_record(metadata)
 
         return [result_map.get(str(requested_id)) for requested_id in ids]
@@ -1109,6 +1268,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
         vectors_dict: dict[str, list[float]] = {}
         remaining: list[str] = []
+        logged: dict[str, str] = {}
         async with self._storage_lock:
             to_embed: list[tuple[str, _PendingFaissDoc]] = []
             for requested_id in ids:
@@ -1118,6 +1278,8 @@ class FaissVectorDBStorage(BaseVectorStorage):
                         # Queued delete: the materialized row (if any) is
                         # about to go away — report it as absent.
                         continue
+                    if requested_id in self._unsaved_deletes:
+                        logged[requested_id] = self._unsaved_deletes[requested_id]
                     remaining.append(requested_id)
                 elif pending.vector is not None:
                     vectors_dict[requested_id] = pending.vector.astype(
@@ -1158,6 +1320,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 if fid is None or fid not in self._id_to_meta:
                     continue
                 metadata = self._id_to_meta[fid]
+                if self._matches_redo_entry(metadata, logged.get(cid)):
+                    # Redo-log entry: this is the row version an unsaved
+                    # delete removed — report it as absent.
+                    continue
                 if "__vector__" in metadata:
                     vectors_dict[cid] = metadata["__vector__"]
 
@@ -1190,10 +1356,11 @@ class FaissVectorDBStorage(BaseVectorStorage):
         """
         try:
             async with self._storage_lock:
-                # Discard buffered (unflushed) upserts and queued deletes
-                # along with the data.
+                # Discard buffered (unflushed) upserts, queued deletes and
+                # the redo log along with the data.
                 self._pending_upserts.clear()
                 self._pending_deletes.clear()
+                self._unsaved_deletes.clear()
 
                 # Reset the index
                 self._index = faiss.IndexFlatIP(self._dim)
@@ -1208,6 +1375,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 self._id_to_meta = {}
                 self._load_faiss_index()
                 self._index_dirty = False
+                self._unsaved_upserts = False
 
                 # Notify other processes
                 await set_all_update_flags(self.namespace, workspace=self.workspace)
@@ -1227,15 +1395,20 @@ class FaissVectorDBStorage(BaseVectorStorage):
         """Flush buffered upserts/deletes and persist before shutdown (safety net).
 
         Normally ``index_done_callback`` has already drained the pending
-        buffers and synced to disk, but two paths land here with work to do:
+        buffers and synced to disk, but three paths land here with work to do:
 
         - **Pending upserts/deletes only** (no prior ``index_done_callback``): flush
           and save. We reload first so a stale process picks up other
           writers' commits before merging its pending buffers in.
-        - **Unsaved materialized changes** (``_index_dirty=True``): an
-          earlier ``index_done_callback`` flushed pending into ``self._index``
-          but its save raised. Skip the reload — reloading would drop those
-          materialized-but-unsaved rows — and just retry the save.
+        - **Unsaved materialized upserts** (``_unsaved_upserts=True``): an
+          earlier ``index_done_callback`` materialized rows into
+          ``self._index`` but its save raised. Skip the reload — those rows
+          exist nowhere else — and just retry the save.
+        - **Unsaved removals only** (``_index_dirty`` set by deletes alone):
+          reloading is safe and necessary here. ``_unsaved_deletes`` replays
+          the removals on top of the snapshot, whereas skipping the reload
+          would write our pre-commit snapshot over another writer's durable
+          rows.
 
         Flush / save failures propagate (same contract as
         ``index_done_callback``); a partially flushed buffer is preserved
@@ -1245,18 +1418,29 @@ class FaissVectorDBStorage(BaseVectorStorage):
             if (
                 not self._pending_upserts
                 and not self._pending_deletes
+                and not self._unsaved_deletes
                 and not self._index_dirty
             ):
                 return
-            if self._pending_upserts or self._pending_deletes:
-                # Only reload when we have nothing un-persisted in self._index.
-                # A dirty index carries successfully-flushed-but-unsaved rows
-                # from a prior index_done_callback; reloading would silently
-                # drop them.
-                if not self._index_dirty:
+            if self._pending_upserts or self._pending_deletes or self._unsaved_deletes:
+                # Reload unless self._index carries unsaved *upserts*: those
+                # rows exist nowhere else, so a reload would silently drop
+                # them. Unsaved removals are not a reason to skip it —
+                # _unsaved_deletes replays them on top of whatever the other
+                # writer committed, while skipping would save our pre-commit
+                # snapshot over their durable rows.
+                if not self._unsaved_upserts:
                     self._reload_index_from_disk_locked(for_write=True)
                 await self._flush_pending_locked()
+            if not self._index_dirty:
+                # The flush changed nothing (e.g. every queued delete
+                # targeted an id that is not in the index). Saving here
+                # would rewrite both files and flag every other process
+                # for a full reload for no reason.
+                return
             self._save_faiss_index()
+            self._unsaved_deletes.clear()  # the removals are durable now
             await set_all_update_flags(self.namespace, workspace=self.workspace)
             self.storage_updated.value = False
             self._index_dirty = False
+            self._unsaved_upserts = False

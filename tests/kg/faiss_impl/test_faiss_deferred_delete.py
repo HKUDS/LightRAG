@@ -8,6 +8,13 @@ index per merged relation — quadratic ingestion, the same defect #3679
 profiled on Nano (#3680 fixed it there). Deferring also keeps a delete from
 being lost when ``index_done_callback`` reloads a newer on-disk snapshot from
 another writer.
+
+The second half of this file covers the ``_unsaved_deletes`` redo log (the
+same protocol #3680 ships for Nano): a removal that reached ``self._index``
+but not the disk is replayed after any reload, so a failed save followed by
+another writer's commit cannot silently resurrect the row — and the replay
+matches on a row *fingerprint*, never the bare id, so a newer row another
+writer published under the same content-hash id survives the replay.
 """
 
 import numpy as np
@@ -48,7 +55,9 @@ class _CountingEmbed:
         )
 
 
-async def _make_storage(tmp_path, embed: _CountingEmbed) -> FaissVectorDBStorage:
+async def _make_storage(
+    tmp_path, embed: _CountingEmbed, meta_fields: set[str] | None = None
+) -> FaissVectorDBStorage:
     storage = FaissVectorDBStorage(
         namespace="test_vectors",
         workspace="ws",
@@ -58,7 +67,7 @@ async def _make_storage(tmp_path, embed: _CountingEmbed) -> FaissVectorDBStorage
             "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.2},
         },
         embedding_func=EmbeddingFunc(embedding_dim=DIM, max_token_size=512, func=embed),
-        meta_fields={"content"},
+        meta_fields=meta_fields or {"content"},
     )
     await storage.initialize()
     return storage
@@ -243,6 +252,9 @@ async def test_failed_delete_rebuild_keeps_tombstones_for_retry(tmp_path, monkey
     assert storage._pending_deletes == {"x", "y"}, (
         "tombstones must survive a failed rebuild so the retry re-applies them"
     )
+    assert storage._unsaved_deletes == {}, (
+        "a failed rebuild must not record removals that never happened"
+    )
     assert len(storage._id_to_meta) == 2, "rows must still be materialized"
     assert storage._index_dirty is False, "nothing landed, so nothing to save"
 
@@ -257,4 +269,246 @@ async def test_failed_delete_rebuild_keeps_tombstones_for_retry(tmp_path, monkey
     reloaded = await _make_storage(tmp_path, _CountingEmbed())
     assert await reloaded.get_by_ids(["x", "y"]) == [None, None], (
         "the retried deletes must be persisted to disk"
+    )
+
+
+def _fail_save(storage, monkeypatch):
+    """Make the next save(s) raise, simulating a transient IO failure."""
+
+    def boom():
+        raise OSError("transient disk error")
+
+    monkeypatch.setattr(storage, "_save_faiss_index", boom)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_delete_survives_a_concurrent_commit_by_another_writer(
+    tmp_path, monkeypatch
+):
+    """The redo-log case: a delete that was APPLIED but whose save failed
+    must survive the unconditional reload inside the retry
+    ``index_done_callback``. Without ``_unsaved_deletes`` the reload replaces
+    the index with the on-disk snapshot, the row silently resurrects, and
+    the retry save persists it."""
+    embed = _CountingEmbed()
+    storage = await _make_storage(tmp_path, embed)
+    await _upsert_and_flush(storage, {"victim": {"content": "to be deleted"}})
+
+    # Flush applies the delete, the save fails: applied-but-unsaved.
+    await storage.delete(["victim"])
+    _fail_save(storage, monkeypatch)
+    with pytest.raises(OSError, match="transient disk error"):
+        await storage.index_done_callback()
+    assert storage._pending_deletes == set(), "the queue was consumed by the flush"
+    assert "victim" in storage._unsaved_deletes, (
+        "the applied removal must be recorded in the redo log"
+    )
+    monkeypatch.undo()
+
+    # Another writer commits, flipping this process's storage_updated flag.
+    other = await _make_storage(tmp_path, _CountingEmbed())
+    await _upsert_and_flush(other, {"extra": {"content": "unrelated"}})
+    assert storage.storage_updated.value is True
+
+    # The retry reloads (resurrecting the row in memory), replays the log,
+    # and persists the removal.
+    assert await storage.index_done_callback() is True
+    assert await storage.get_by_id("victim") is None
+    assert storage._unsaved_deletes == {}, "a landed save clears the redo log"
+
+    reloaded = await _make_storage(tmp_path, _CountingEmbed())
+    assert await reloaded.get_by_id("victim") is None, (
+        "the delete must not resurrect on disk"
+    )
+    assert (await reloaded.get_by_id("extra")) is not None, (
+        "the other writer's row must be preserved"
+    )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_replay_preserves_a_newer_row_under_the_same_id(tmp_path, monkeypatch):
+    """A replay matches on the row fingerprint, never the bare id: when
+    another writer publishes a NEW row under an id whose removal is in the
+    redo log, the replay must keep it — ids are content hashes, so this is a
+    legitimate successor row, not the one we removed."""
+    embed = _CountingEmbed()
+    storage = await _make_storage(tmp_path, embed)
+    await _upsert_and_flush(storage, {"shared": {"content": "v1"}})
+
+    await storage.delete(["shared"])
+    _fail_save(storage, monkeypatch)
+    with pytest.raises(OSError, match="transient disk error"):
+        await storage.index_done_callback()
+    monkeypatch.undo()
+
+    # Another writer publishes a successor row under the same id.
+    other = await _make_storage(tmp_path, _CountingEmbed())
+    await _upsert_and_flush(other, {"shared": {"content": "v2"}})
+    assert storage.storage_updated.value is True
+
+    # Read paths hide only the row the redo entry names — the successor is
+    # already readable (the read reload pulls it in) before any flush.
+    record = await storage.get_by_id("shared")
+    assert record is not None and record["content"] == "v2", (
+        "a redo entry must not hide a successor row it would not replay over"
+    )
+
+    assert await storage.index_done_callback() is True
+    record = await storage.get_by_id("shared")
+    assert record is not None and record["content"] == "v2", (
+        "the replay must not remove the successor row"
+    )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_finalize_reloads_before_retrying_a_delete_only_save(
+    tmp_path, monkeypatch
+):
+    """A delete-only dirty state is replayable, so finalize reloads before
+    the retry save. Skipping the reload would write this process's
+    pre-commit snapshot over rows another writer committed meanwhile."""
+    embed = _CountingEmbed()
+    storage = await _make_storage(tmp_path, embed)
+    await _upsert_and_flush(storage, {"victim": {"content": "to be deleted"}})
+
+    await storage.delete(["victim"])
+    _fail_save(storage, monkeypatch)
+    with pytest.raises(OSError, match="transient disk error"):
+        await storage.index_done_callback()
+    monkeypatch.undo()
+
+    other = await _make_storage(tmp_path, _CountingEmbed())
+    await _upsert_and_flush(other, {"extra": {"content": "committed meanwhile"}})
+
+    await storage.finalize()
+
+    reloaded = await _make_storage(tmp_path, _CountingEmbed())
+    assert (await reloaded.get_by_id("extra")) is not None, (
+        "the delete-only retry save must not clobber the other writer's row"
+    )
+    assert await reloaded.get_by_id("victim") is None, (
+        "the removal must still be persisted"
+    )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_abort_keeps_the_redo_log(tmp_path, monkeypatch):
+    """``drop_pending_index_ops`` discards buffered work, not removals that
+    already reached the index: the redo log survives an aborting batch so a
+    later reload still cannot resurrect the applied delete."""
+    embed = _CountingEmbed()
+    storage = await _make_storage(tmp_path, embed)
+    await _upsert_and_flush(storage, {"victim": {"content": "to be deleted"}})
+
+    await storage.delete(["victim"])
+    _fail_save(storage, monkeypatch)
+    with pytest.raises(OSError, match="transient disk error"):
+        await storage.index_done_callback()
+    monkeypatch.undo()
+
+    await storage.drop_pending_index_ops()
+    assert "victim" in storage._unsaved_deletes, (
+        "an abort must not discard the redo log"
+    )
+
+    other = await _make_storage(tmp_path, _CountingEmbed())
+    await _upsert_and_flush(other, {"extra": {"content": "unrelated"}})
+
+    await storage.finalize()
+    reloaded = await _make_storage(tmp_path, _CountingEmbed())
+    assert await reloaded.get_by_id("victim") is None
+    assert (await reloaded.get_by_id("extra")) is not None
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_eager_entity_relation_removal_survives_reload(tmp_path, monkeypatch):
+    """``delete_entity_relation`` stays eager, so its removals are
+    applied-but-unsaved the moment it returns — they must be in the redo log
+    or the same failed-save + reload sequence resurrects them."""
+    embed = _CountingEmbed()
+    storage = await _make_storage(
+        tmp_path, embed, meta_fields={"content", "src_id", "tgt_id"}
+    )
+    await _upsert_and_flush(
+        storage,
+        {"rel-1": {"content": "r1", "src_id": "E", "tgt_id": "F"}},
+    )
+
+    await storage.delete_entity_relation("E")
+    assert "rel-1" in storage._unsaved_deletes, (
+        "eager removals must be recorded in the redo log"
+    )
+    _fail_save(storage, monkeypatch)
+    with pytest.raises(OSError, match="transient disk error"):
+        await storage.index_done_callback()
+    monkeypatch.undo()
+
+    other = await _make_storage(tmp_path, _CountingEmbed())
+    await _upsert_and_flush(other, {"extra": {"content": "unrelated"}})
+
+    assert await storage.index_done_callback() is True
+    reloaded = await _make_storage(tmp_path, _CountingEmbed())
+    assert await reloaded.get_by_id("rel-1") is None, (
+        "the eager removal must not resurrect on disk"
+    )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_identical_reupsert_drops_the_redo_entry(tmp_path, monkeypatch):
+    """Materializing a row indistinguishable from the one a redo entry
+    removed (same id, same fingerprint) drops the entry — the one case the
+    fingerprint cannot separate, and the one case where dropping costs
+    nothing, since a resurrection would restore the row that is present."""
+    import lightrag.kg.faiss_impl as faiss_impl_module
+
+    monkeypatch.setattr(faiss_impl_module.time, "time", lambda: 1_700_000_000.0)
+
+    embed = _CountingEmbed()
+    storage = await _make_storage(tmp_path, embed)
+    await _upsert_and_flush(storage, {"row": {"content": "same"}})
+
+    # Flush applies the delete but the save fails -> redo entry for "row".
+    await storage.delete(["row"])
+    _fail_save(storage, monkeypatch)
+    with pytest.raises(OSError, match="transient disk error"):
+        await storage.index_done_callback()
+    assert "row" in storage._unsaved_deletes
+
+    # Re-upsert the byte-identical row (same frozen timestamp): the next
+    # flush materializes it and must drop the now-pointless redo entry.
+    await storage.upsert({"row": {"content": "same"}})
+    with pytest.raises(OSError, match="transient disk error"):
+        await storage.index_done_callback()
+    assert "row" not in storage._unsaved_deletes, (
+        "a materialized identical row must drop the redo entry"
+    )
+    record = await storage.get_by_id("row")
+    assert record is not None and record["content"] == "same"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_finalize_skips_save_when_flush_changes_nothing(tmp_path):
+    """Queued deletes that match no row leave nothing to persist: finalize
+    must not rewrite both files and broadcast a reload to every other
+    process for a no-op."""
+    embed = _CountingEmbed()
+    storage = await _make_storage(tmp_path, embed)
+    await _upsert_and_flush(storage, {"keep": {"content": "kept"}})
+
+    watcher = await _make_storage(tmp_path, _CountingEmbed())
+    assert watcher.storage_updated.value is False
+
+    await storage.delete(["ghost"])  # matches nothing
+    await storage.finalize()
+
+    assert storage._pending_deletes == set()
+    assert watcher.storage_updated.value is False, (
+        "a no-op finalize must not broadcast a reload to other processes"
     )
