@@ -458,3 +458,290 @@ async def test_drop_pending_does_not_rollback_materialized(tmp_path):
     assert storage._pending_upserts == {}, "pending id2 dropped"
     assert len(storage._client) == 1, "materialized id1 NOT rolled back"
     assert storage._client_dirty is True, "still dirty for a later save retry"
+
+
+# ---------------------------------------------------------------------------
+# Upsert redo log: materialized-but-unsaved rows survive a foreign-commit
+# reload (issue #3688). Mirrors the _unsaved_deletes coverage in
+# test_nano_deferred_delete.py.
+# ---------------------------------------------------------------------------
+
+
+def _make_save_fail(storage):
+    """Make ``_save_to_disk_locked`` raise; returns a restore callable."""
+    original = storage._save_to_disk_locked
+
+    def boom():
+        raise OSError("disk full")
+
+    storage._save_to_disk_locked = boom
+
+    def restore():
+        storage._save_to_disk_locked = original
+
+    return restore
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_index_done_replays_unsaved_upsert_after_foreign_commit(tmp_path):
+    """Fix-proof for issue #3688 (the retry-via-callback half).
+
+    Chain: flush materializes id2 and its save fails -> another writer
+    commits id3 -> the retry's reload replaces ``self._client`` with the
+    foreign snapshot. Without the redo log nothing replays id2 and the
+    following save silently loses it; with the log both rows land — and the
+    replay reuses the cached vector, so the retry embeds nothing.
+    """
+    embed = _CountingEmbed()
+    writer = _make_storage(tmp_path, embed)
+    other = _make_storage(tmp_path, _CountingEmbed())
+    await writer.initialize()
+    await other.initialize()
+
+    await writer.upsert({"id2": {"content": "beta"}})
+    restore = _make_save_fail(writer)
+    with pytest.raises(OSError, match="disk full"):
+        await writer.index_done_callback()
+    restore()
+    assert writer._pending_upserts == {}, "flush succeeded so pending is empty"
+    assert writer._unsaved_upserts, "the flushed doc moved into the redo log"
+    calls_after_failure = embed.call_count
+
+    # Another writer commits, flagging `writer` as stale.
+    await other.upsert({"id3": {"content": "gamma"}})
+    assert await other.index_done_callback() is True
+    assert writer.storage_updated.value is True
+
+    assert await writer.index_done_callback() is True
+    assert embed.call_count == calls_after_failure, "replay must not re-embed"
+    assert not writer._unsaved_upserts, "durable save clears the redo log"
+
+    reader = _make_storage(tmp_path, _CountingEmbed())
+    await reader.initialize()
+    assert (await reader.get_by_id("id2"))["content"] == "beta", (
+        "the reload dropped the materialized-but-unsaved row and nothing "
+        "replayed it (issue #3688)"
+    )
+    assert (await reader.get_by_id("id3"))["content"] == "gamma"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_reads_serve_an_unsaved_upsert_after_a_foreign_reload(tmp_path):
+    """Read-your-writes across the failed-save window: a foreign commit makes
+    the next ``_get_client`` reload drop the unsaved row from ``self._client``,
+    so the read paths must serve it from the redo log until the replay."""
+    embed = _CountingEmbed()
+    writer = _make_storage(tmp_path, embed)
+    other = _make_storage(tmp_path, _CountingEmbed())
+    await writer.initialize()
+    await other.initialize()
+
+    await writer.upsert({"id2": {"content": "beta"}})
+    restore = _make_save_fail(writer)
+    with pytest.raises(OSError):
+        await writer.index_done_callback()
+    restore()
+
+    await other.upsert({"id3": {"content": "gamma"}})
+    assert await other.index_done_callback() is True
+
+    # Each read triggers the reload-if-stale path internally.
+    got = await writer.get_by_id("id2")
+    assert got is not None and got["content"] == "beta"
+    by_ids = await writer.get_by_ids(["id2", "id3"])
+    assert by_ids[0] is not None and by_ids[0]["content"] == "beta"
+    assert by_ids[1] is not None and by_ids[1]["content"] == "gamma"
+    vectors = await writer.get_vectors_by_ids(["id2"])
+    assert "id2" in vectors and len(vectors["id2"]) == DIM
+    assert embed.call_count == 1, "the logged vector is reused, never re-embedded"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_replay_overwrites_a_foreign_row_under_the_same_id(tmp_path):
+    """Ids are content hashes, so a same-id foreign row is a rewrite of the
+    same logical record; our applied-but-unsaved write is the newer intent
+    and the replay puts it back on top."""
+    embed = _CountingEmbed()
+    writer = _make_storage(tmp_path, embed)
+    other = _make_storage(tmp_path, _CountingEmbed())
+    await writer.initialize()
+    await other.initialize()
+
+    await writer.upsert({"idX": {"content": "ours"}})
+    restore = _make_save_fail(writer)
+    with pytest.raises(OSError):
+        await writer.index_done_callback()
+    restore()
+
+    await other.upsert({"idX": {"content": "theirs"}})
+    assert await other.index_done_callback() is True
+
+    assert await writer.index_done_callback() is True
+
+    reader = _make_storage(tmp_path, _CountingEmbed())
+    await reader.initialize()
+    assert (await reader.get_by_id("idX"))["content"] == "ours"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_delete_after_a_failed_save_evicts_the_redo_entry(tmp_path):
+    """A ``delete`` for an id whose row is applied-but-unsaved must win: the
+    redo entry is evicted, or the replay would resurrect the row the delete
+    just took out."""
+    embed = _CountingEmbed()
+    writer = _make_storage(tmp_path, embed)
+    other = _make_storage(tmp_path, _CountingEmbed())
+    await writer.initialize()
+    await other.initialize()
+
+    await writer.upsert({"id1": {"content": "alpha"}, "id2": {"content": "beta"}})
+    restore = _make_save_fail(writer)
+    with pytest.raises(OSError):
+        await writer.index_done_callback()
+    restore()
+    assert "id2" in writer._unsaved_upserts
+
+    await writer.delete(["id2"])
+    assert "id2" not in writer._unsaved_upserts, "delete evicts the redo entry"
+
+    # Force the reload path before the retry.
+    await other.upsert({"id3": {"content": "gamma"}})
+    assert await other.index_done_callback() is True
+
+    assert await writer.index_done_callback() is True
+
+    reader = _make_storage(tmp_path, _CountingEmbed())
+    await reader.initialize()
+    assert await reader.get_by_id("id2") is None, "replay must not resurrect id2"
+    assert (await reader.get_by_id("id1"))["content"] == "alpha"
+    assert (await reader.get_by_id("id3"))["content"] == "gamma"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_delete_entity_evicts_the_upsert_redo_entry(tmp_path):
+    """The eager ``delete_entity`` path evicts unconditionally: after a
+    foreign reload the unsaved row is not in ``self._client`` (nothing for
+    the materialized delete to hit), yet a surviving redo entry would replay
+    it at the next flush."""
+    from lightrag.utils import compute_mdhash_id
+
+    embed = _CountingEmbed()
+    writer = _make_storage(tmp_path, embed)
+    other = _make_storage(tmp_path, _CountingEmbed())
+    await writer.initialize()
+    await other.initialize()
+
+    entity_id = compute_mdhash_id("EntityA", prefix="ent-")
+    await writer.upsert({entity_id: {"content": "entity row"}})
+    restore = _make_save_fail(writer)
+    with pytest.raises(OSError):
+        await writer.index_done_callback()
+    restore()
+    assert entity_id in writer._unsaved_upserts
+
+    # Foreign commit first, so delete_entity's own reload drops the row
+    # before its materialized-side lookup runs (`existing` is empty).
+    await other.upsert({"id3": {"content": "gamma"}})
+    assert await other.index_done_callback() is True
+
+    await writer.delete_entity("EntityA")
+    assert entity_id not in writer._unsaved_upserts
+
+    assert await writer.index_done_callback() is True
+
+    reader = _make_storage(tmp_path, _CountingEmbed())
+    await reader.initialize()
+    assert await reader.get_by_id(entity_id) is None
+    assert (await reader.get_by_id("id3"))["content"] == "gamma"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_delete_entity_relation_evicts_matching_redo_upserts(tmp_path):
+    """Same rule for the relation sweep: the src/tgt predicate prunes the redo
+    log unconditionally, because after a foreign reload the unsaved relation
+    rows are invisible to the materialized scan."""
+
+    def make(tmp, embed):
+        return NanoVectorDBStorage(
+            namespace="test_relations",
+            workspace="ws",
+            global_config={
+                "working_dir": str(tmp),
+                "embedding_batch_num": 32,
+                "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.2},
+            },
+            embedding_func=EmbeddingFunc(
+                embedding_dim=DIM, max_token_size=512, func=embed
+            ),
+            meta_fields={"content", "src_id", "tgt_id"},
+        )
+
+    writer = make(tmp_path, _CountingEmbed())
+    other = make(tmp_path, _CountingEmbed())
+    await writer.initialize()
+    await other.initialize()
+
+    await writer.upsert(
+        {
+            "r1": {"content": "rel1", "src_id": "A", "tgt_id": "B"},
+            "r2": {"content": "rel2", "src_id": "X", "tgt_id": "Y"},
+        }
+    )
+    restore = _make_save_fail(writer)
+    with pytest.raises(OSError):
+        await writer.index_done_callback()
+    restore()
+    assert "r1" in writer._unsaved_upserts and "r2" in writer._unsaved_upserts
+
+    await other.upsert({"id3": {"content": "gamma"}})
+    assert await other.index_done_callback() is True
+
+    await writer.delete_entity_relation("A")
+    assert "r1" not in writer._unsaved_upserts, "incident redo entry evicted"
+    assert "r2" in writer._unsaved_upserts, "unrelated redo entry preserved"
+
+    assert await writer.index_done_callback() is True
+
+    reader = make(tmp_path, _CountingEmbed())
+    await reader.initialize()
+    assert await reader.get_by_id("r1") is None
+    assert (await reader.get_by_id("r2"))["content"] == "rel2"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_aborting_batch_keeps_the_upsert_redo_log(tmp_path):
+    """``drop_pending_index_ops`` discards buffered work, not the redo log:
+    the logged rows already reached ``self._client`` (the class the abort
+    path intentionally does not roll back), so they must still survive a
+    foreign-commit reload."""
+    embed = _CountingEmbed()
+    writer = _make_storage(tmp_path, embed)
+    other = _make_storage(tmp_path, _CountingEmbed())
+    await writer.initialize()
+    await other.initialize()
+
+    await writer.upsert({"id1": {"content": "alpha"}})
+    restore = _make_save_fail(writer)
+    with pytest.raises(OSError):
+        await writer.index_done_callback()
+    restore()
+
+    await writer.drop_pending_index_ops()
+    assert writer._unsaved_upserts, "abort keeps the redo log"
+
+    await other.upsert({"id2": {"content": "beta"}})
+    assert await other.index_done_callback() is True
+
+    assert await writer.index_done_callback() is True
+
+    reader = _make_storage(tmp_path, _CountingEmbed())
+    await reader.initialize()
+    assert (await reader.get_by_id("id1"))["content"] == "alpha"
+    assert (await reader.get_by_id("id2"))["content"] == "beta"
