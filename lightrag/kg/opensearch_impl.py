@@ -326,6 +326,36 @@ _EDGE_ID_CANONICAL_META_FLAG = "edge_id_canonical_v1"
 # watching a large-index reindex see liveness and an X/total denominator.
 _EDGE_MIGRATION_PROGRESS_INTERVAL = 50_000
 
+# Multi-valued keyword field on the edge document holding BOTH endpoint ids, so
+# one terms aggregation yields true undirected degree in a single bucket per
+# entity. See _edge_endpoints and issue #3613.
+_EDGE_ENDPOINTS_FIELD = "endpoints"
+
+# Index _meta flag marking that every edge doc carries _EDGE_ENDPOINTS_FIELD.
+# Until it is set, degree ranking falls back to the legacy endpoint-pair
+# aggregations, whose candidate set is approximate.
+_EDGE_ENDPOINTS_META_FLAG = "edge_endpoints_v1"
+
+# Painless backfill for legacy edge docs written before `endpoints` existed.
+# Mirrors _edge_endpoints: both ids, deduplicated for a self-loop. A doc with
+# no endpoint ids is left untouched -- there is nothing to derive the value
+# from, and it is unreachable from the ranking either way.
+_EDGE_ENDPOINTS_BACKFILL_SCRIPT = (
+    "def s = ctx._source.source_node_id; "
+    "def t = ctx._source.target_node_id; "
+    "if (s == null || t == null) { ctx.op = 'noop'; return; } "
+    "ctx._source.endpoints = s.equals(t) ? [s] : [s, t];"
+)
+
+# Multiplier applied to a terms aggregation's `size` to derive `shard_size`.
+# A terms agg asks each shard for its own top `shard_size` buckets and merges
+# them, so a bucket outside a shard's local top-N contributes nothing and the
+# merged doc_count can be short. Over-fetching per shard shrinks that error;
+# the response's doc_count_error_upper_bound reports what is left. Irrelevant
+# at the single-shard default (OPENSEARCH_NUMBER_OF_SHARDS=1), where a terms
+# agg is exact.
+_DEGREE_AGG_SHARD_SIZE_FACTOR = 4
+
 # Ceiling on how many same-depth candidates get a degree lookup before the
 # max_nodes cap. node_degrees_batch puts the whole list in four `terms` clauses
 # (two in the query, two in the aggregation filters) and asks for one bucket per
@@ -350,6 +380,23 @@ def _canonical_edge_id(source_node_id: str, target_node_id: str) -> str:
     """
     lo, hi = sorted((source_node_id, target_node_id))
     return compute_mdhash_id(f"{lo}-{hi}", prefix="edge-")
+
+
+def _edge_endpoints(source_node_id: str, target_node_id: str) -> list[str]:
+    """Both endpoint ids of an edge, deduplicated, for ``endpoints``.
+
+    A terms aggregation over this field buckets by VALUE and counts DOCUMENTS,
+    so each edge contributes exactly one to each distinct endpoint's bucket:
+    one aggregation, one bucket per entity, holding true undirected degree.
+    That is what makes the wildcard ranking's candidate set complete — the
+    legacy pair of per-field aggregations each returned only its own top-N, so
+    an entity outside both never reached the sort (#3613).
+
+    A self-loop stores a single value, matching :meth:`node_degree`, which
+    counts the loop's one document once. (The legacy pair of aggregations
+    counted it twice, on both the source and the target side.)
+    """
+    return list(dict.fromkeys((source_node_id, target_node_id)))
 
 
 def _edge_source_id_list(doc: dict[str, Any]) -> list[str]:
@@ -3158,6 +3205,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     _nodes_dirty: bool = field(default=False, init=False)
     _edges_dirty: bool = field(default=False, init=False)
     _ppl_graphlookup_available: bool = field(default=False, init=False)
+    _edge_endpoints_ready: bool = field(default=False, init=False)
 
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
         super().__init__(
@@ -3188,6 +3236,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 self.client = await ClientManager.get_client()
             await self._create_indices_if_not_exist()
             await self._migrate_edges_to_canonical_id_if_needed()
+            await self._ensure_edge_endpoints_ready()
             self._indices_ready = True
             self._nodes_dirty = False
             self._edges_dirty = False
@@ -3319,6 +3368,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         "properties": {
                             "source_node_id": {"type": "keyword"},
                             "target_node_id": {"type": "keyword"},
+                            _EDGE_ENDPOINTS_FIELD: {"type": "keyword"},
                             "relationship": {"type": "keyword"},
                             "description": {"type": "text"},
                             "weight": {"type": "float"},
@@ -3337,6 +3387,10 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     },
                 }
                 await self.client.indices.create(index=self._edges_index, body=body)
+                # Created from the current mapping and holding no documents, so
+                # every edge it will ever have carries `endpoints` from its
+                # first write: exact degree ranking with no backfill.
+                self._edge_endpoints_ready = True
                 logger.info(
                     f"[{self.workspace}] Created edges index: {self._edges_index}"
                 )
@@ -3602,6 +3656,185 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 f"{self._edges_index}: {e}; aborting startup"
             )
             raise
+
+    async def _ensure_edge_endpoints_ready(self) -> None:
+        """Land the ``endpoints`` mapping and backfill it on legacy edge docs.
+
+        Degree ranking reads a single terms aggregation over ``endpoints``
+        (see :func:`_edge_endpoints`), which only works once every edge
+        document carries the field. Sets :attr:`_edge_endpoints_ready` when
+        that is true for the whole index; until then the ranking paths keep
+        using the legacy endpoint-pair aggregations.
+
+        **Degrades, does not fail startup.** Unlike the canonical-edge-id
+        migration next door, which has no correct fallback, this one does: the
+        legacy aggregations are exactly the behaviour that shipped before, so a
+        cluster that cannot complete the backfill (permissions, a transport
+        error, a huge index mid-reindex) keeps serving the approximate ranking
+        rather than refusing to start. Every subsequent ``initialize`` retries.
+
+        Idempotent via an index ``_meta`` flag, so a completed backfill costs
+        one mapping read per startup rather than a rescan.
+        """
+        if self._edge_endpoints_ready:
+            return
+        try:
+            if not await self.client.indices.exists(index=self._edges_index):
+                # No index yet: _create_indices_if_not_exist will build it from
+                # the current mapping and flag it ready.
+                return
+
+            mapping = await self.client.indices.get_mapping(index=self._edges_index)
+            index_mapping = mapping.get(self._edges_index, {}).get("mappings", {})
+            meta = index_mapping.get("_meta", {})
+            if meta.get(_EDGE_ENDPOINTS_META_FLAG):
+                self._edge_endpoints_ready = True
+                return
+
+            if _EDGE_ENDPOINTS_FIELD not in index_mapping.get("properties", {}):
+                # Explicit keyword mapping: the index is `dynamic: true`, and a
+                # dynamically mapped string array becomes `text` with a
+                # `.keyword` subfield, which cannot be aggregated under the
+                # bare field name.
+                await self.client.indices.put_mapping(
+                    index=self._edges_index,
+                    body={"properties": {_EDGE_ENDPOINTS_FIELD: {"type": "keyword"}}},
+                )
+                logger.info(
+                    f"[{self.workspace}] Added {_EDGE_ENDPOINTS_FIELD} mapping to "
+                    f"{self._edges_index}"
+                )
+
+            # Only docs the ranking could ever use: one missing an endpoint id
+            # cannot be given an `endpoints` value and must not hold the flag
+            # back forever.
+            missing_query = {
+                "bool": {
+                    "must": [
+                        {"exists": {"field": "source_node_id"}},
+                        {"exists": {"field": "target_node_id"}},
+                    ],
+                    "must_not": [{"exists": {"field": _EDGE_ENDPOINTS_FIELD}}],
+                }
+            }
+            remaining = (
+                await self.client.count(
+                    index=self._edges_index, body={"query": missing_query}
+                )
+            )["count"]
+            if remaining:
+                logger.info(
+                    f"[{self.workspace}] Backfilling {_EDGE_ENDPOINTS_FIELD} on "
+                    f"{remaining} edge docs in {self._edges_index}"
+                )
+                # conflicts=proceed: a concurrent writer's version bump is not a
+                # failure here, because that writer's own doc already carries
+                # `endpoints`. The recount below is what decides completeness.
+                await self.client.update_by_query(
+                    index=self._edges_index,
+                    body={
+                        "query": missing_query,
+                        "script": {
+                            "lang": "painless",
+                            "source": _EDGE_ENDPOINTS_BACKFILL_SCRIPT,
+                        },
+                    },
+                    conflicts="proceed",
+                    refresh=True,
+                    wait_for_completion=True,
+                )
+                remaining = (
+                    await self.client.count(
+                        index=self._edges_index, body={"query": missing_query}
+                    )
+                )["count"]
+                if remaining:
+                    logger.warning(
+                        f"[{self.workspace}] {remaining} edge docs in "
+                        f"{self._edges_index} still lack {_EDGE_ENDPOINTS_FIELD}; "
+                        f"degree ranking stays on the legacy approximate "
+                        f"aggregations and the backfill retries on next startup"
+                    )
+                    return
+
+            await self.client.indices.put_mapping(
+                index=self._edges_index,
+                body={"_meta": {**meta, _EDGE_ENDPOINTS_META_FLAG: True}},
+            )
+            self._edge_endpoints_ready = True
+            logger.info(
+                f"[{self.workspace}] {_EDGE_ENDPOINTS_FIELD} ready on "
+                f"{self._edges_index}; degree ranking is exact"
+            )
+        except OpenSearchException as e:
+            logger.warning(
+                f"[{self.workspace}] Could not prepare {_EDGE_ENDPOINTS_FIELD} on "
+                f"{self._edges_index}: {e}; degree ranking stays on the legacy "
+                f"approximate aggregations"
+            )
+
+    async def _degree_map_from_edge_index(self, size: int) -> dict[str, int]:
+        """Undirected degree per entity, for the top ``size`` candidates.
+
+        With ``endpoints`` backfilled this is one terms aggregation returning
+        one bucket per entity, so the candidate set is the true global top
+        ``size`` by undirected degree.
+
+        Without it, it falls back to the legacy union of two per-field
+        aggregations. That union is approximate in the way issue #3613
+        describes: each side returns only its own top-N, so an entity whose
+        in- and out-degree both fall outside their respective lists is absent
+        from the map however high its total degree is. Callers get the same
+        shape either way; only the completeness of the candidate set differs.
+
+        ``size`` is the candidate budget. The single aggregation spends it
+        exactly — one bucket per entity — while the fallback asks each side for
+        ``size``, so the pool it unions is never smaller than the one that
+        shipped for either caller.
+        """
+        if self._edge_endpoints_ready:
+            body = {
+                "size": 0,
+                "aggs": {
+                    "degrees": {
+                        "terms": {
+                            "field": _EDGE_ENDPOINTS_FIELD,
+                            "size": size,
+                            "shard_size": size * _DEGREE_AGG_SHARD_SIZE_FACTOR,
+                        }
+                    }
+                },
+            }
+            response = await self.client.search(index=self._edges_index, body=body)
+            agg = response["aggregations"]["degrees"]
+            error_bound = agg.get("doc_count_error_upper_bound") or 0
+            if error_bound:
+                # Non-zero only on a multi-shard index whose per-shard top-N
+                # over-fetch still was not enough. Surfaced rather than hidden:
+                # the ranking is usable, the degrees are just not exact.
+                logger.warning(
+                    f"[{self.workspace}] Degree aggregation on "
+                    f"{self._edges_index} is approximate "
+                    f"(doc_count_error_upper_bound={error_bound}); consider "
+                    f"fewer shards for an exact ranking"
+                )
+            return {bucket["key"]: bucket["doc_count"] for bucket in agg["buckets"]}
+
+        body = {
+            "size": 0,
+            "aggs": {
+                "src": {"terms": {"field": "source_node_id", "size": size}},
+                "tgt": {"terms": {"field": "target_node_id", "size": size}},
+            },
+        }
+        response = await self.client.search(index=self._edges_index, body=body)
+        degree_map: dict[str, int] = {}
+        for agg_name in ("src", "tgt"):
+            for bucket in response["aggregations"][agg_name]["buckets"]:
+                degree_map[bucket["key"]] = (
+                    degree_map.get(bucket["key"], 0) + bucket["doc_count"]
+                )
+        return degree_map
 
     async def _merge_into_canonical_edge(
         self, canonical_id: str, reverse_docs: list[tuple[str, dict[str, Any]]]
@@ -4145,6 +4378,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             doc = {k: v for k, v in edge_data.items() if k != "_id"}
             doc["source_node_id"] = source_node_id
             doc["target_node_id"] = target_node_id
+            doc[_EDGE_ENDPOINTS_FIELD] = _edge_endpoints(source_node_id, target_node_id)
             if edge_data.get("source_id", ""):
                 doc["source_ids"] = edge_data["source_id"].split(GRAPH_FIELD_SEP)
 
@@ -4321,6 +4555,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 doc = {k: v for k, v in edge_data.items() if k != "_id"}
                 doc["source_node_id"] = src
                 doc["target_node_id"] = tgt
+                doc[_EDGE_ENDPOINTS_FIELD] = _edge_endpoints(src, tgt)
                 if edge_data.get("source_id", ""):
                     doc["source_ids"] = edge_data["source_id"].split(GRAPH_FIELD_SEP)
                 edge_id = _canonical_edge_id(src, tgt)
@@ -4810,34 +5045,11 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             result.is_truncated = total > max_nodes
 
             if result.is_truncated:
-                # Get top nodes by degree
-                body = {
-                    "size": 0,
-                    "aggs": {
-                        "src": {
-                            "terms": {
-                                "field": "source_node_id",
-                                "size": max_nodes,
-                            }
-                        },
-                        "tgt": {
-                            "terms": {
-                                "field": "target_node_id",
-                                "size": max_nodes,
-                            }
-                        },
-                    },
-                }
-                resp = await self.client.search(index=self._edges_index, body=body)
-                degree_map = {}
-                for bucket in resp["aggregations"]["src"]["buckets"]:
-                    degree_map[bucket["key"]] = (
-                        degree_map.get(bucket["key"], 0) + bucket["doc_count"]
-                    )
-                for bucket in resp["aggregations"]["tgt"]["buckets"]:
-                    degree_map[bucket["key"]] = (
-                        degree_map.get(bucket["key"], 0) + bucket["doc_count"]
-                    )
+                # Twice max_nodes candidates, the same headroom the legacy union
+                # of two per-field aggregations happened to give: the cutoff is
+                # applied below only AFTER dangling endpoints are dropped, and
+                # the refill pass needs ranked ids past the cutoff to draw from.
+                degree_map = await self._degree_map_from_edge_index(max_nodes * 2)
                 # Degree descending, then label ascending — the BaseGraphStorage
                 # tie-break, and the same ordering get_popular_labels uses.
                 # Sorting on the degree alone is stable, so the equal-degree
@@ -4845,14 +5057,12 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 # order: which entities the caller saw depended on how the
                 # buckets happened to come back.
                 #
-                # Exact WITHIN degree_map, which is itself approximate, so the
-                # ranking on this backend is too (#3613). Each aggregation above
-                # returns only its own top max_nodes buckets, so an entity whose
-                # in- and out-degree each fall outside their respective top-N
-                # never reaches this sort however high its undirected degree is;
-                # and terms aggregations are count-approximate across shards, so
-                # the degrees themselves can be off. Neither is fixable here --
-                # the data the sort would need never reaches the client.
+                # Exact once `endpoints` is backfilled: one bucket per entity
+                # holding true undirected degree, so the candidate set is the
+                # global top by degree rather than a union of two separately
+                # truncated top-N lists (#3613). On an index still awaiting the
+                # backfill, _degree_map_from_edge_index falls back to that union
+                # and the ranking stays approximate in the documented way.
                 ranked_ids = sorted(
                     degree_map, key=lambda label: (-degree_map[label], label)
                 )
@@ -5371,30 +5581,16 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             return []
         try:
             await self._refresh_graph_indices_if_dirty(refresh_edges=True)
-            body = {
-                "size": 0,
-                "aggs": {
-                    "src": {"terms": {"field": "source_node_id", "size": limit * 2}},
-                    "tgt": {"terms": {"field": "target_node_id", "size": limit * 2}},
-                },
-            }
-            response = await self.client.search(index=self._edges_index, body=body)
             # Keyed on edge ENDPOINTS, so an id with edge documents but no node
             # document (a dangling endpoint, only reachable as a data-quality
             # defect — the write path materializes both endpoints) also surfaces
             # here. Left in deliberately: confirming every ranked id against the
             # node index costs a round trip on every call, and the worst case is
             # a picker entry whose entity lookup comes back empty, which the
-            # client reports rather than crashes on.
-            degree_map = {}
-            for bucket in response["aggregations"]["src"]["buckets"]:
-                degree_map[bucket["key"]] = (
-                    degree_map.get(bucket["key"], 0) + bucket["doc_count"]
-                )
-            for bucket in response["aggregations"]["tgt"]["buckets"]:
-                degree_map[bucket["key"]] = (
-                    degree_map.get(bucket["key"], 0) + bucket["doc_count"]
-                )
+            # client reports rather than crashes on. Keeping the legacy union's
+            # `limit * 2` headroom covers the dangling ids the slice below then
+            # spends slots on.
+            degree_map = await self._degree_map_from_edge_index(limit * 2)
             # Ties break on the label, ascending — the ordering the SQL and
             # Cypher backends use, rather than aggregation bucket order.
             sorted_labels = sorted(
