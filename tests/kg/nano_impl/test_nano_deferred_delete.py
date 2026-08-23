@@ -691,7 +691,7 @@ async def test_finalize_reloads_before_retrying_a_delete_only_save(tmp_path):
         await writer.index_done_callback()
     restore()
     assert writer._client_dirty is True
-    assert writer._unsaved_upserts is False, "the dirty state is removals only"
+    assert not writer._unsaved_upserts, "the dirty state is removals only"
 
     # Another writer commits after our failed save.
     await other.upsert({"id3": {"content": "gamma"}})
@@ -710,9 +710,15 @@ async def test_finalize_reloads_before_retrying_a_delete_only_save(tmp_path):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_finalize_still_protects_unsaved_upserts_from_the_reload(tmp_path):
-    """The other half of the same guard: materialized-but-unsaved *rows* exist
-    nowhere else, so finalize must keep skipping the reload for them."""
+async def test_finalize_replays_unsaved_upserts_after_a_foreign_commit(tmp_path):
+    """The upsert half of the same trade-off, closed by the redo log (#3688).
+
+    Before the log, finalize skipped the reload while ``_unsaved_upserts``
+    was set (the materialized rows existed nowhere else), and its save wrote
+    our pre-commit snapshot over the other writer's durable rows — id3
+    disappeared. Now the log replays our rows after the reload, so both
+    sides survive.
+    """
     writer = _make_storage(tmp_path)
     other = _make_storage(tmp_path)
     await writer.initialize()
@@ -724,7 +730,7 @@ async def test_finalize_still_protects_unsaved_upserts_from_the_reload(tmp_path)
     with pytest.raises(OSError):
         await writer.index_done_callback()
     restore()
-    assert writer._unsaved_upserts is True
+    assert writer._unsaved_upserts, "the flushed doc moved into the redo log"
 
     await other.upsert({"id3": {"content": "gamma"}})
     assert await other.index_done_callback() is True
@@ -734,7 +740,10 @@ async def test_finalize_still_protects_unsaved_upserts_from_the_reload(tmp_path)
     reader = _make_storage(tmp_path)
     await reader.initialize()
     assert (await reader.get_by_id("id2"))["content"] == "beta", (
-        "a reload would have dropped the only copy of this row"
+        "the redo log must replay our row on top of the reloaded snapshot"
+    )
+    assert (await reader.get_by_id("id3"))["content"] == "gamma", (
+        "the other writer's commit must survive finalize"
     )
 
 
