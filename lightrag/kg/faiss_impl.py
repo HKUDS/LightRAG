@@ -754,6 +754,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
         ``self._id_to_meta`` flip together. Because ``IndexFlatIP`` has no
         in-place removal API, we collect the kept vectors and rebuild.
 
+        That "flip together" holds on the failure path too: the replacement
+        index is built locally and swapped in only once its ``add`` has
+        succeeded, so a raise leaves both structures exactly as they were
+        and the caller's own recovery (retry, or a reload) has consistent
+        state to work from.
+
         Callers that mutate via this helper are responsible for setting
         ``self._index_dirty = True`` themselves (skipped here so a no-op
         call — empty intersection between ``fid_list`` and current ids —
@@ -784,10 +790,16 @@ class FaissVectorDBStorage(BaseVectorStorage):
             vectors_to_keep.append(vec)
             new_id_to_meta[new_fid] = vec_meta
 
-        self._index = faiss.IndexFlatIP(self._dim)
+        # Build the replacement fully before it becomes visible. Assigning
+        # self._index first and then adding to it means a failing add leaves
+        # an empty index behind a full _id_to_meta — a skew that reads as
+        # "every row is unbacked" and, once persisted, drops all of them on
+        # the next load.
+        new_index = faiss.IndexFlatIP(self._dim)
         if vectors_to_keep:
             arr = np.array(vectors_to_keep, dtype=np.float32)
-            self._index.add(arr)
+            new_index.add(arr)
+        self._index = new_index
         self._id_to_meta = new_id_to_meta
 
     @staticmethod

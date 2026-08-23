@@ -931,3 +931,64 @@ async def test_flush_cleanup_failure_leaves_a_duplicate_not_a_hole(
     record = await storage.get_by_id("keep")
     assert record is not None and record["content"] == "v3"
     _assert_consistent(storage)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_rebuild_failure_leaves_index_and_meta_untouched(tmp_path, monkeypatch):
+    """``_remove_faiss_ids_locked`` promises that ``_index`` and
+    ``_id_to_meta`` flip together; this pins that the promise survives the
+    failure path, where the two are actually assigned.
+
+    Building the replacement index in place — assigning ``self._index`` and
+    only then adding to it — left an empty index behind a full
+    ``_id_to_meta`` when the add raised. Every row then reads as unbacked,
+    and because the cleanup runs after the flush has marked the index dirty
+    with unsaved upserts, ``finalize`` skips the reload and persists it: the
+    whole namespace is dropped on the next load.
+    """
+    embed = _CountingEmbed()
+    storage = _make_storage(tmp_path, embed)
+    await storage.initialize()
+    await storage.upsert({f"row{i}": {"content": f"c{i}"} for i in range(4)})
+    assert await storage.index_done_callback() is True
+    _assert_consistent(storage)
+
+    # Overwrite one row, so the flush runs its superseded-row cleanup.
+    await storage.upsert({"row0": {"content": "new"}})
+
+    # Fail the add of the index the cleanup builds — not the helper itself,
+    # which is where the damage actually happened. During a flush the only
+    # IndexFlatIP constructed is the cleanup's, so the first one is it.
+    real_cls = faiss.IndexFlatIP
+    built = {"n": 0}
+
+    def failing_factory(dim):
+        index = real_cls(dim)
+        built["n"] += 1
+        if built["n"] == 1:
+
+            def boom(_arr):
+                raise RuntimeError("cleanup rebuild add boom")
+
+            index.add = boom
+        return index
+
+    monkeypatch.setattr(faiss, "IndexFlatIP", failing_factory)
+    with pytest.raises(RuntimeError, match="cleanup rebuild add boom"):
+        await storage.index_done_callback()
+    monkeypatch.undo()
+
+    _assert_consistent(storage)
+
+    # The batch aborts and a later save commits whatever the index holds.
+    await storage.drop_pending_index_ops()
+    await storage.finalize()
+
+    reloaded = _make_storage(tmp_path, _CountingEmbed())
+    await reloaded.initialize()
+    for i in range(4):
+        assert await reloaded.get_by_id(f"row{i}") is not None, (
+            f"row{i} must survive a failed cleanup rebuild"
+        )
+    _assert_consistent(reloaded)
