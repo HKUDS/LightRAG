@@ -548,6 +548,22 @@ class FaissVectorDBStorage(BaseVectorStorage):
         that already happened, so replaying it must not remove a row that
         has since taken the id's place.
 
+        **Boundary of that guarantee.** Successor preservation is only as
+        sharp as content-based identity, and one case it cannot resolve is a
+        successor *identical* to the row removed. ``__created_at__`` does not
+        break the tie — ``upsert`` stamps ``int(time.time())``, so a rewrite
+        inside the same second carries the same timestamp. Where we are the
+        ones re-materializing such a row the flush drops the redo entry (see
+        the bottom of ``_flush_pending_locked``), which costs nothing: a
+        resurrection would only restore the row that is present anyway. What
+        remains is a byte-identical row published by *another writer*, which
+        no content-based identity can tell from the row we deleted, so the
+        replay removes it. Distinguishing it would take a per-write
+        generation persisted in the record — a storage-format change, and a
+        divergence from the Nano protocol this mirrors — for a case that
+        already presupposes the *Single writer* invariant above being
+        violated (see class docstring, *Concurrency invariants*).
+
         The read-your-writes paths mirror both rules: a queued id reads as
         absent, while a logged one hides only the row the entry names — a
         replacement the replay would preserve stays readable. An ``upsert``
