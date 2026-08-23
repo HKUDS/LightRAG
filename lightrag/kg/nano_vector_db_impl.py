@@ -606,14 +606,17 @@ class NanoVectorDBStorage(BaseVectorStorage):
                     if dp.get("src_id") == entity_name
                     or dp.get("tgt_id") == entity_name
                 ]
-            if ids_to_delete:
-                self._client.delete(ids_to_delete)
-                self._pending_deletes.update(ids_to_delete)
-                self._client_dirty = True
+                if ids_to_delete:
+                    self._client.delete(ids_to_delete)
+                    self._pending_deletes.update(ids_to_delete)
+                    self._client_dirty = True
 
-                # Materialized delete succeeded — safe to prune matching
+                # Materialized side is settled — safe to prune matching
                 # buffered upserts so a subsequent flush won't re-upsert
-                # the just-deleted relations.
+                # the just-deleted relations. Unconditional: an entity
+                # whose relations exist only in the pending buffer has
+                # nothing materialized to delete but still needs those
+                # buffered upserts cancelled.
                 pending_ids = [
                     doc_id
                     for doc_id, pdoc in self._pending_upserts.items()

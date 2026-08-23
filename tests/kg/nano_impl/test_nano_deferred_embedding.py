@@ -65,6 +65,22 @@ def _make_storage(tmp_path, embed: _CountingEmbed) -> NanoVectorDBStorage:
     )
 
 
+def _make_relation_storage(tmp_path, embed: _CountingEmbed) -> NanoVectorDBStorage:
+    """Storage whose meta_fields carry src_id / tgt_id, as the relationships
+    vdb does — required by ``delete_entity_relation``."""
+    return NanoVectorDBStorage(
+        namespace="test_relations",
+        workspace="ws",
+        global_config={
+            "working_dir": str(tmp_path),
+            "embedding_batch_num": 32,
+            "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.2},
+        },
+        embedding_func=EmbeddingFunc(embedding_dim=DIM, max_token_size=512, func=embed),
+        meta_fields={"content", "src_id", "tgt_id"},
+    )
+
+
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_upsert_defers_embedding_to_index_done_callback(tmp_path):
@@ -272,17 +288,7 @@ async def test_finalize_flushes_pending(tmp_path):
 @pytest.mark.asyncio
 async def test_delete_entity_relation_cancels_pending(tmp_path):
     embed = _CountingEmbed()
-    storage = NanoVectorDBStorage(
-        namespace="test_relations",
-        workspace="ws",
-        global_config={
-            "working_dir": str(tmp_path),
-            "embedding_batch_num": 32,
-            "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.2},
-        },
-        embedding_func=EmbeddingFunc(embedding_dim=DIM, max_token_size=512, func=embed),
-        meta_fields={"content", "src_id", "tgt_id"},
-    )
+    storage = _make_relation_storage(tmp_path, embed)
     await storage.initialize()
 
     # Materialize r1 (A->B), leave r2 (A->C) and r3 (X->Y) as pending.
@@ -547,5 +553,44 @@ async def test_delete_that_matches_nothing_is_not_retained(tmp_path):
 
     await storage.delete(["missing"])
 
+    assert storage._pending_deletes == set()
+    assert storage._client_dirty is False
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_delete_entity_relation_cancels_pending_only(tmp_path):
+    """An entity whose relations exist only in the pending buffer has nothing
+    materialized to delete; the buffered upserts must still be cancelled."""
+    embed = _CountingEmbed()
+    storage = _make_relation_storage(tmp_path, embed)
+    await storage.initialize()
+
+    await storage.upsert(
+        {
+            "r1": {"content": "rel1", "src_id": "A", "tgt_id": "B"},
+            "r2": {"content": "rel2", "src_id": "X", "tgt_id": "Y"},
+        }
+    )
+
+    await storage.delete_entity_relation("A")
+
+    assert "r1" not in storage._pending_upserts, "incident pending entry cancelled"
+    assert "r2" in storage._pending_upserts, "unrelated pending entry preserved"
+    assert embed.call_count == 0, "cancelling pending relations embeds nothing"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_delete_entity_relation_without_any_relations(tmp_path):
+    """adelete_by_entity calls this unconditionally, including for entities the
+    graph reports no edges for. It must be a no-op, not an error."""
+    embed = _CountingEmbed()
+    storage = _make_relation_storage(tmp_path, embed)
+    await storage.initialize()
+
+    await storage.delete_entity_relation("A")
+
+    assert storage._pending_upserts == {}
     assert storage._pending_deletes == set()
     assert storage._client_dirty is False

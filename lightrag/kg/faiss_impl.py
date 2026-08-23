@@ -576,19 +576,22 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 if meta.get("src_id") == entity_name
                 or meta.get("tgt_id") == entity_name
             ]
-        if relations:
-            deleted_custom_ids = []
-            for fid in relations:
-                meta = self._id_to_meta.get(fid)
-                if meta is not None and "__id__" in meta:
-                    deleted_custom_ids.append(meta["__id__"])
-            self._remove_faiss_ids_locked(relations)
-            self._pending_deletes.update(deleted_custom_ids)
-            self._index_dirty = True
+            if relations:
+                deleted_custom_ids = []
+                for fid in relations:
+                    meta = self._id_to_meta.get(fid)
+                    if meta is not None and "__id__" in meta:
+                        deleted_custom_ids.append(meta["__id__"])
+                self._remove_faiss_ids_locked(relations)
+                self._pending_deletes.update(deleted_custom_ids)
+                self._index_dirty = True
 
-            # Materialized rebuild succeeded — safe to prune matching
+            # Materialized side is settled — safe to prune matching
             # buffered upserts (their records carry src_id / tgt_id from
-            # the relationships vdb meta_fields).
+            # the relationships vdb meta_fields). Unconditional: an entity
+            # whose relations exist only in the pending buffer has nothing
+            # materialized to rebuild but still needs those buffered
+            # upserts cancelled.
             pending_ids = [
                 doc_id
                 for doc_id, pdoc in self._pending_upserts.items()
