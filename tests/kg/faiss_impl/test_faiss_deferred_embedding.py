@@ -849,12 +849,13 @@ async def test_drop_pending_does_not_rollback_materialized(tmp_path):
 async def test_flush_add_failure_leaves_the_superseded_row_intact(
     tmp_path, monkeypatch
 ):
-    """The flush materializes an overwrite by adding the new row and only
-    then dropping the row it supersedes. The reverse order was not
-    crash-equivalent: a failure in between left the old row gone and the new
-    one never written, and since an aborting batch discards
-    ``_pending_upserts`` — the only remaining copy of that vector — anything
-    that later persisted the index made the loss permanent.
+    """A failure while preparing the overwrite must leave the row the id
+    already had.
+
+    The flush used to drop that row first and add the replacement after, so a
+    failure in between left the id with nothing. An aborting batch then
+    discards ``_pending_upserts``, which held the only remaining copy of the
+    vector, and the next save committed the hole.
 
     The batch has to carry a delete as well as the overwrite: that is what
     marks the index dirty, and a dirty index is what makes the later save go
@@ -896,36 +897,62 @@ async def test_flush_add_failure_leaves_the_superseded_row_intact(
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_flush_cleanup_failure_leaves_a_duplicate_not_a_hole(
-    tmp_path, monkeypatch
-):
-    """If the superseded-row cleanup itself fails, the new row is already in
-    the index, so the worst case is a duplicate ``__id__`` — a shape this
-    storage tolerates and collapses on the next re-upsert — never a missing
-    vector."""
+async def test_overwrite_is_one_rebuild_and_all_or_nothing(tmp_path, monkeypatch):
+    """An overwrite goes through a single rebuild that both drops the row the
+    id had and writes the row it has now.
+
+    Two properties, and they are the same property. It is *one* operation, so
+    a failure cannot land one half — no missing row, no two rows of different
+    vintages — and it is one *rebuild*, not an append followed by a cleanup
+    rebuild, so it does not cost an extra O(rows) pass either.
+    """
     embed = _CountingEmbed()
     storage = _make_storage(tmp_path, embed)
     await storage.initialize()
-    await storage.upsert({"keep": {"content": "v1"}})
+    await storage.upsert({"keep": {"content": "v1"}, "other": {"content": "o"}})
     assert await storage.index_done_callback() is True
 
-    await storage.upsert({"keep": {"content": "v2"}})
+    rebuilds = []
+    original = storage._rebuild_index_locked
 
-    def boom(_fids):
+    def counting(drop_fids, add_records=()):
+        rebuilds.append((list(drop_fids), len(add_records)))
+        return original(drop_fids, add_records)
+
+    monkeypatch.setattr(storage, "_rebuild_index_locked", counting)
+    await storage.upsert({"keep": {"content": "v2"}})
+    assert await storage.index_done_callback() is True
+    monkeypatch.undo()
+
+    assert len(rebuilds) == 1, "an overwrite is a single rebuild"
+    assert rebuilds[0][1] == 1, "the new row is written by that same rebuild"
+    assert len(storage._find_faiss_ids_by_custom_id("keep")) == 1
+    record = await storage.get_by_id("keep")
+    assert record is not None and record["content"] == "v2"
+    _assert_consistent(storage)
+
+    # Now fail that rebuild: neither half may land.
+    await storage.upsert({"keep": {"content": "v3"}})
+
+    def boom(_drop_fids, _add_records=()):
         raise RuntimeError("faiss rebuild boom")
 
-    monkeypatch.setattr(storage, "_remove_faiss_ids_locked", boom)
+    monkeypatch.setattr(storage, "_rebuild_index_locked", boom)
     with pytest.raises(RuntimeError, match="faiss rebuild boom"):
         await storage.index_done_callback()
     monkeypatch.undo()
 
     fids = storage._find_faiss_ids_by_custom_id("keep")
-    assert len(fids) == 2, "both the old and the new row are present"
-    assert storage._index_dirty is True, "the new row is real and must be saved"
+    assert len(fids) == 1, "a failed overwrite must not leave a second row"
+    assert storage._id_to_meta[fids[0]]["content"] == "v2", (
+        "the row the id had must be intact"
+    )
+    assert storage._index_dirty is False, "nothing landed, so nothing to save"
     _assert_consistent(storage)
 
-    # The next successful flush collapses the duplicates.
-    await storage.upsert({"keep": {"content": "v3"}})
+    # The read paths still show the buffered v3 — the retry is pending, not
+    # lost — and a successful retry applies it exactly once.
+    assert "keep" in storage._pending_upserts
     assert await storage.index_done_callback() is True
     assert len(storage._find_faiss_ids_by_custom_id("keep")) == 1
     record = await storage.get_by_id("keep")
@@ -935,17 +962,46 @@ async def test_flush_cleanup_failure_leaves_a_duplicate_not_a_hole(
 
 @pytest.mark.offline
 @pytest.mark.asyncio
+async def test_insert_only_flush_does_not_rebuild(tmp_path, monkeypatch):
+    """Nothing is superseded when every id is new, so the flush appends
+    instead of rebuilding — the O(rows) pass belongs to overwrites only."""
+    embed = _CountingEmbed()
+    storage = _make_storage(tmp_path, embed)
+    await storage.initialize()
+    await storage.upsert({f"row{i}": {"content": f"c{i}"} for i in range(3)})
+    assert await storage.index_done_callback() is True
+
+    rebuilds = []
+    original = storage._rebuild_index_locked
+
+    def counting(drop_fids, add_records=()):
+        rebuilds.append(list(drop_fids))
+        return original(drop_fids, add_records)
+
+    monkeypatch.setattr(storage, "_rebuild_index_locked", counting)
+    await storage.upsert({"fresh": {"content": "brand new"}})
+    assert await storage.index_done_callback() is True
+    monkeypatch.undo()
+
+    assert rebuilds == [], "an insert-only flush must not rebuild the index"
+    assert storage._index.ntotal == 4
+    record = await storage.get_by_id("fresh")
+    assert record is not None and record["content"] == "brand new"
+    _assert_consistent(storage)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
 async def test_rebuild_failure_leaves_index_and_meta_untouched(tmp_path, monkeypatch):
-    """``_remove_faiss_ids_locked`` promises that ``_index`` and
-    ``_id_to_meta`` flip together; this pins that the promise survives the
-    failure path, where the two are actually assigned.
+    """``_rebuild_index_locked`` promises that ``_index`` and ``_id_to_meta``
+    flip together; this pins that the promise survives the failure path,
+    where the two are actually assigned.
 
     Building the replacement index in place — assigning ``self._index`` and
     only then adding to it — left an empty index behind a full
     ``_id_to_meta`` when the add raised. Every row then reads as unbacked,
-    and because the cleanup runs after the flush has marked the index dirty
-    with unsaved upserts, ``finalize`` skips the reload and persists it: the
-    whole namespace is dropped on the next load.
+    and once anything persisted that state the whole namespace was dropped
+    on the next load.
     """
     embed = _CountingEmbed()
     storage = _make_storage(tmp_path, embed)
@@ -954,12 +1010,12 @@ async def test_rebuild_failure_leaves_index_and_meta_untouched(tmp_path, monkeyp
     assert await storage.index_done_callback() is True
     _assert_consistent(storage)
 
-    # Overwrite one row, so the flush runs its superseded-row cleanup.
+    # Overwrite one row, so the flush goes through a rebuild.
     await storage.upsert({"row0": {"content": "new"}})
 
-    # Fail the add of the index the cleanup builds — not the helper itself,
-    # which is where the damage actually happened. During a flush the only
-    # IndexFlatIP constructed is the cleanup's, so the first one is it.
+    # Fail the add of the index the rebuild constructs — not the helper
+    # itself, since inside it is where the damage happened. During a flush
+    # the only IndexFlatIP built is the rebuild's, so the first one is it.
     real_cls = faiss.IndexFlatIP
     built = {"n": 0}
 
@@ -969,17 +1025,21 @@ async def test_rebuild_failure_leaves_index_and_meta_untouched(tmp_path, monkeyp
         if built["n"] == 1:
 
             def boom(_arr):
-                raise RuntimeError("cleanup rebuild add boom")
+                raise RuntimeError("rebuild add boom")
 
             index.add = boom
         return index
 
     monkeypatch.setattr(faiss, "IndexFlatIP", failing_factory)
-    with pytest.raises(RuntimeError, match="cleanup rebuild add boom"):
+    with pytest.raises(RuntimeError, match="rebuild add boom"):
         await storage.index_done_callback()
     monkeypatch.undo()
 
     _assert_consistent(storage)
+    assert len(storage._find_faiss_ids_by_custom_id("row0")) == 1, (
+        "a failed overwrite leaves the id one row — the one it already had, "
+        "not that row plus the replacement"
+    )
 
     # The batch aborts and a later save commits whatever the index holds.
     await storage.drop_pending_index_ops()
@@ -989,6 +1049,6 @@ async def test_rebuild_failure_leaves_index_and_meta_untouched(tmp_path, monkeyp
     await reloaded.initialize()
     for i in range(4):
         assert await reloaded.get_by_id(f"row{i}") is not None, (
-            f"row{i} must survive a failed cleanup rebuild"
+            f"row{i} must survive a failed rebuild"
         )
     _assert_consistent(reloaded)
