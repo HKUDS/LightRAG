@@ -692,17 +692,20 @@ class FaissVectorDBStorage(BaseVectorStorage):
             * Embedding error / count mismatch → raises before any mutation
               to ``self._index`` / ``self._id_to_meta``; ``_pending_upserts``
               is left intact and ``self._index_dirty`` is not touched.
-            * Rebuild / ``index.add`` failure → raises mid-write. The
-              materialized state may already be partially mutated (e.g.
-              ``_remove_faiss_ids_locked`` ran and dropped the prior fids
-              for re-upserted ids), but ``_index_dirty`` is **not** set
-              because we deliberately treat ``_pending_upserts`` as the
-              source of truth on this path: pending stays intact, and the
-              next ``finalize`` call re-enters ``_flush_pending_locked``,
-              which will rebuild the affected rows from the cached vectors
-              and re-add them — self-healing without re-embedding. The
-              dirty flag is reserved for "materialized but unsaved",
-              which is only true after ``index.add`` completes.
+            * ``index.add`` failure → raises before anything is removed
+              (see the add-before-remove ordering below), so the index is
+              exactly as it was. ``_index_dirty`` is not set and
+              ``_pending_upserts`` stays intact, so the next ``finalize``
+              re-enters here and re-adds from the cached vectors —
+              self-healing without re-embedding.
+            * ``_remove_faiss_ids_locked`` failure (the superseded-row
+              cleanup, which runs last) → raises with the new rows already
+              added, leaving duplicate ``__id__`` rows. That state is safe
+              to persist: duplicates are a tolerated shape here (the
+              find-all read and delete helpers exist for exactly it) and
+              the next re-upsert of the id collapses them. ``_index_dirty``
+              is already ``True`` and the rows are real, so the save must
+              go ahead.
         """
         if not self._pending_upserts:
             return
@@ -751,15 +754,22 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 pdoc.vector = arr[i].copy()
 
         # All pending vectors are now non-None and already-normalized float32.
-        # Remove every existing fid in self._id_to_meta whose custom id is
-        # being re-upserted (find-all so duplicate __id__ rows from a legacy /
-        # corrupt store still get fully cleaned), then add the new vectors in
-        # a single batch.
+        # Note which existing fids the re-upserted ids occupy (find-all so
+        # duplicate __id__ rows from a legacy / corrupt store still get fully
+        # cleaned). This has to happen BEFORE the add, or the rows we are
+        # about to write would match their own ids and be removed again.
         existing_fids: list[int] = []
         for doc_id, _ in pending_items:
             existing_fids.extend(self._find_faiss_ids_by_custom_id(doc_id))
-        self._remove_faiss_ids_locked(existing_fids)
 
+        # Add first, drop the superseded rows after. The reverse order — the
+        # one this used to use — is not crash-equivalent: a failure between
+        # the removal and the add left the old row gone and the new one never
+        # written, and since an aborting batch discards _pending_upserts, the
+        # vector it was the only remaining copy of was lost for good once
+        # anything persisted the index (the delete half of a mixed flush is
+        # enough to mark it dirty). Adding first means a failure can only
+        # leave a duplicate, never a hole.
         matrix = np.vstack([pdoc.vector for _, pdoc in pending_items]).astype(
             np.float32
         )
@@ -772,6 +782,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
             self._id_to_meta[fid] = record
 
         self._index_dirty = True
+
+        # Superseded rows last. The rebuild keeps every fid not named here,
+        # so the rows just added (all >= start_idx) survive it.
+        self._remove_faiss_ids_locked(existing_fids)
 
         # Clear only the entries we just flushed. Today the non-reentrant
         # _storage_lock locks out concurrent upserts for the entire flush

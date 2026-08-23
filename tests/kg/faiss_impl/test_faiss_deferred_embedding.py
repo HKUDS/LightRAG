@@ -822,3 +822,92 @@ async def test_drop_pending_does_not_rollback_materialized(tmp_path):
     assert storage._index.ntotal == 1, "materialized id1 NOT rolled back"
     assert storage._index_dirty is True, "still dirty for a later save retry"
     _assert_consistent(storage)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_flush_add_failure_leaves_the_superseded_row_intact(
+    tmp_path, monkeypatch
+):
+    """The flush materializes an overwrite by adding the new row and only
+    then dropping the row it supersedes. The reverse order was not
+    crash-equivalent: a failure in between left the old row gone and the new
+    one never written, and since an aborting batch discards
+    ``_pending_upserts`` — the only remaining copy of that vector — anything
+    that later persisted the index made the loss permanent.
+
+    The batch has to carry a delete as well as the overwrite: that is what
+    marks the index dirty, and a dirty index is what makes the later save go
+    ahead and commit the hole.
+    """
+    embed = _CountingEmbed()
+    storage = _make_storage(tmp_path, embed)
+    await storage.initialize()
+    await storage.upsert({"doomed": {"content": "x"}, "keep": {"content": "v1"}})
+    assert await storage.index_done_callback() is True
+    _assert_consistent(storage)
+
+    # A mixed batch: one delete, one overwrite of an existing row.
+    await storage.delete(["doomed"])
+    await storage.upsert({"keep": {"content": "v2"}})
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("faiss add boom")
+
+    monkeypatch.setattr(np, "vstack", boom)
+    with pytest.raises(RuntimeError, match="faiss add boom"):
+        await storage.index_done_callback()
+    monkeypatch.undo()
+    _assert_consistent(storage)
+
+    # The pipeline aborts the batch, discarding the buffered replacement —
+    # the only remaining copy of that vector — and a later save persists
+    # whatever the index holds.
+    await storage.drop_pending_index_ops()
+    await storage.finalize()
+
+    reloaded = _make_storage(tmp_path, _CountingEmbed())
+    await reloaded.initialize()
+    survivor = await reloaded.get_by_id("keep")
+    assert survivor is not None, "an aborted overwrite must not delete the row"
+    assert survivor["content"] == "v1"
+    assert await reloaded.get_by_id("doomed") is None, "the delete still applies"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_flush_cleanup_failure_leaves_a_duplicate_not_a_hole(
+    tmp_path, monkeypatch
+):
+    """If the superseded-row cleanup itself fails, the new row is already in
+    the index, so the worst case is a duplicate ``__id__`` — a shape this
+    storage tolerates and collapses on the next re-upsert — never a missing
+    vector."""
+    embed = _CountingEmbed()
+    storage = _make_storage(tmp_path, embed)
+    await storage.initialize()
+    await storage.upsert({"keep": {"content": "v1"}})
+    assert await storage.index_done_callback() is True
+
+    await storage.upsert({"keep": {"content": "v2"}})
+
+    def boom(_fids):
+        raise RuntimeError("faiss rebuild boom")
+
+    monkeypatch.setattr(storage, "_remove_faiss_ids_locked", boom)
+    with pytest.raises(RuntimeError, match="faiss rebuild boom"):
+        await storage.index_done_callback()
+    monkeypatch.undo()
+
+    fids = storage._find_faiss_ids_by_custom_id("keep")
+    assert len(fids) == 2, "both the old and the new row are present"
+    assert storage._index_dirty is True, "the new row is real and must be saved"
+    _assert_consistent(storage)
+
+    # The next successful flush collapses the duplicates.
+    await storage.upsert({"keep": {"content": "v3"}})
+    assert await storage.index_done_callback() is True
+    assert len(storage._find_faiss_ids_by_custom_id("keep")) == 1
+    record = await storage.get_by_id("keep")
+    assert record is not None and record["content"] == "v3"
+    _assert_consistent(storage)
