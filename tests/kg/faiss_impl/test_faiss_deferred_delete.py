@@ -69,6 +69,7 @@ async def _upsert_and_flush(storage: FaissVectorDBStorage, data: dict) -> None:
     assert await storage.index_done_callback() is True
 
 
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_delete_is_deferred_until_one_batched_flush(tmp_path, monkeypatch):
     embed = _CountingEmbed()
@@ -102,6 +103,7 @@ async def test_delete_is_deferred_until_one_batched_flush(tmp_path, monkeypatch)
     assert await storage.get_by_ids([f"rel-{i}" for i in range(4)]) == [None] * 4
 
 
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_delete_cancels_pending_upsert_without_embedding(tmp_path):
     embed = _CountingEmbed()
@@ -117,6 +119,7 @@ async def test_delete_cancels_pending_upsert_without_embedding(tmp_path):
     assert await storage.get_by_id("doomed") is None
 
 
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_fresh_upsert_supersedes_queued_delete(tmp_path):
     embed = _CountingEmbed()
@@ -135,6 +138,7 @@ async def test_fresh_upsert_supersedes_queued_delete(tmp_path):
     assert len(matches) == 1
 
 
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_read_your_writes_hides_queued_deletes(tmp_path):
     embed = _CountingEmbed()
@@ -153,6 +157,7 @@ async def test_read_your_writes_hides_queued_deletes(tmp_path):
     assert "b" in await storage.get_vectors_by_ids(["a", "b"])
 
 
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_finalize_applies_deletes_without_upserts(tmp_path):
     embed = _CountingEmbed()
@@ -168,6 +173,7 @@ async def test_finalize_applies_deletes_without_upserts(tmp_path):
     )
 
 
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_dequeued_delete_survives_reload_from_disk(tmp_path):
     """The lost-delete-across-writers case: a queued id applies after the
@@ -197,6 +203,7 @@ async def test_dequeued_delete_survives_reload_from_disk(tmp_path):
     )
 
 
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_drop_pending_index_ops_discards_queued_deletes(tmp_path):
     embed = _CountingEmbed()
@@ -212,6 +219,7 @@ async def test_drop_pending_index_ops_discards_queued_deletes(tmp_path):
     )
 
 
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_failed_delete_rebuild_keeps_tombstones_for_retry(tmp_path, monkeypatch):
     """A FAISS rebuild failure during the delete pass must not consume the
