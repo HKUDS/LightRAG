@@ -145,7 +145,7 @@ async def test_reupsert_after_get_vectors_clears_cached_vector(tmp_path):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_delete_cancels_pending_and_removes_materialized(tmp_path):
+async def test_delete_cancels_pending_and_defers_materialized_removal(tmp_path):
     embed = _CountingEmbed()
     storage = _make_storage(tmp_path, embed)
     await storage.initialize()
@@ -158,9 +158,15 @@ async def test_delete_cancels_pending_and_removes_materialized(tmp_path):
     await storage.delete(["id1", "id2"])
 
     assert "id2" not in storage._pending_upserts, "delete cancels pending upsert"
-    assert len(storage._client) == 0, "delete removes the materialized row immediately"
+    # Materialized removal is deferred: the row stays in the client until the
+    # next flush (one batched np.delete per flush instead of one full matrix
+    # copy per call), but reads must already report the id as absent.
+    assert len(storage._client) == 1, "materialized removal deferred to flush"
     assert await storage.get_by_id("id1") is None
     assert await storage.get_by_id("id2") is None
+
+    await storage.index_done_callback()
+    assert len(storage._client) == 0, "flush applies the queued delete"
 
 
 @pytest.mark.offline
@@ -188,7 +194,7 @@ async def test_stale_client_reload_still_flushes_pending_upsert(tmp_path):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_delete_reloads_stale_client_before_mutating(tmp_path):
+async def test_delete_on_stale_client_applies_after_reload_at_flush(tmp_path):
     embed = _CountingEmbed()
     writer = _make_storage(tmp_path, embed)
     stale_deleter = _make_storage(tmp_path, embed)
@@ -199,9 +205,13 @@ async def test_delete_reloads_stale_client_before_mutating(tmp_path):
     assert await writer.index_done_callback() is True
     assert stale_deleter.storage_updated.value is True
 
+    # delete() only queues the id, so the stale flag stays set; the flush
+    # reloads the latest on-disk snapshot first and then applies the queued
+    # delete, landing it on the row the writer committed.
     await stale_deleter.delete(["id1"])
-    assert stale_deleter.storage_updated.value is False
+    assert stale_deleter.storage_updated.value is True
     assert await stale_deleter.index_done_callback() is True
+    assert stale_deleter.storage_updated.value is False
 
     reader = _make_storage(tmp_path, embed)
     await reader.initialize()
