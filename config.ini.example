@@ -19,6 +19,10 @@ keep_alive = true
 uri = mongodb+srv://name:password@your-cluster-address
 database = lightrag
 
+[documentdb]
+uri = mongodb://localhost:10260/
+database = lightrag
+
 [redis]
 uri=redis://localhost:6379/1
 

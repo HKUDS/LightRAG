@@ -11,6 +11,7 @@ This tool migrates LightRAG's LLM response cache between different KV storage im
 3. **PGKVStorage** - PostgreSQL database storage
 4. **MongoKVStorage** - MongoDB database storage
 5. **OpenSearchKVStorage** - OpenSearch index storage
+6. **DocumentDBKVStorage** - DocumentDB database storage
 
 ## Cache Types
 
@@ -49,8 +50,9 @@ Supported KV Storage Types:
 [3] PGKVStorage
 [4] MongoKVStorage
 [5] OpenSearchKVStorage
+[6] DocumentDBKVStorage
 
-Select Source storage type (1-5) (Press Enter to exit): 1
+Select Source storage type (1-6) (Press Enter to exit): 1
 ```
 
 **Note**: You can press Enter or type `0` at any storage selection prompt to exit gracefully.
@@ -93,6 +95,10 @@ Counting cache records...
   ```
   Counting MongoDB documents... (took 1.8s)
   ```
+- **DocumentDB**: Uses the MongoDB-compatible count_documents() path
+   ```
+   Counting MongoDB documents... (took 1.8s)
+   ```
 - **OpenSearchKVStorage**: PIT-based scan with timing shown when noticeable
   ```
   Scanning OpenSearch documents... (took 1.5s)
@@ -108,8 +114,9 @@ Available Storage Types for Target (source: JsonKVStorage excluded):
 [2] PGKVStorage
 [3] MongoKVStorage
 [4] OpenSearchKVStorage
+[5] DocumentDBKVStorage
 
-Select Target storage type (1-4) (Press Enter or 0 to exit): 1
+Select Target storage type (1-5) (Press Enter or 0 to exit): 1
 ```
 
 **Important Notes:**
@@ -219,6 +226,7 @@ The tool retrieves workspace in the following priority order:
 1. **Storage-specific workspace environment variables**
    - PGKVStorage: `POSTGRES_WORKSPACE`
    - MongoKVStorage: `MONGODB_WORKSPACE`
+   - DocumentDBKVStorage: `DOCUMENTDB_WORKSPACE`
    - RedisKVStorage: `REDIS_WORKSPACE`
    - OpenSearchKVStorage: `OPENSEARCH_WORKSPACE`
 
@@ -242,6 +250,7 @@ For large datasets, the tool implements storage-specific pagination strategies:
 - **RedisKVStorage**: Cursor-based SCAN with pipeline batching (1000 keys/batch)
 - **PGKVStorage**: SQL LIMIT/OFFSET pagination (1000 records/batch)
 - **MongoKVStorage**: Cursor streaming with batch_size (1000 documents/batch)
+- **DocumentDBKVStorage**: MongoDB-compatible cursor streaming with batch_size (1000 documents/batch)
 - **OpenSearchKVStorage**: PIT + `search_after` scan of the KV index (1000 documents/batch)
 
 This ensures the tool can handle millions of cache records without memory issues.
@@ -254,6 +263,7 @@ The tool uses optimized filtering methods for different storage types:
 - **RedisKVStorage**: SCAN command with namespace-prefixed patterns + pipeline for bulk GET
 - **PGKVStorage**: SQL LIKE queries with proper field mapping (id, return_value, etc.)
 - **MongoKVStorage**: MongoDB regex queries on `_id` field with cursor streaming
+- **DocumentDBKVStorage**: MongoDB-compatible regex queries on `_id` with cursor streaming
 - **OpenSearchKVStorage**: Full-index scan with `_id` prefix filtering and `_source` passthrough
 
 ## Error Handling & Resilience
@@ -349,6 +359,13 @@ POSTGRES_DATABASE=your_database
 ```bash
 MONGO_URI=mongodb://root:root@localhost:27017/
 MONGO_DATABASE=LightRAG
+```
+
+#### DocumentDBKVStorage
+
+```bash
+DOCUMENTDB_URI=mongodb://user:password@localhost:10260/?tls=true&tlsAllowInvalidCertificates=true
+DOCUMENTDB_DATABASE=LightRAG
 ```
 
 #### OpenSearchKVStorage

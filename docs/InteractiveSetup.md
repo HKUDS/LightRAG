@@ -20,7 +20,7 @@ You do not need to call the underlying shell script directly.
 The setup wizard helps you configure LightRAG in three parts:
 
 - `env-base` sets up the LLM, embedding model, and optional reranker.
-- `env-storage` adds or changes storage backends such as PostgreSQL, Neo4j, Redis, Milvus, Qdrant, MongoDB, or Memgraph.
+- `env-storage` adds or changes storage backends such as PostgreSQL, Neo4j, Redis, Milvus, Qdrant, MongoDB, DocumentDB, or Memgraph.
 - `env-server` sets server host and port, WebUI labels, authentication, API keys, and SSL.
 
 You can rerun each step later. The wizard loads your existing `.env` and shows current values as defaults, so you only need to change what is different.
@@ -148,6 +148,7 @@ make env-storage
 - If you choose the wizard-managed Docker MongoDB service, the wizard now provisions MongoDB Atlas Local, so `MongoVectorDBStorage` can run against the local Docker deployment. The generated host-side `MONGO_URI` uses `?directConnection=true`.
 - If you do not use the wizard-managed Docker MongoDB service, provide an external Atlas-capable MongoDB endpoint for `MONGO_URI`, such as a `mongodb+srv://` Atlas cluster URI or an Atlas Local `mongodb://...?...directConnection=true` URI.
 - For external `mongodb://...?...directConnection=true` URIs, the wizard can only validate the URI format. It cannot determine statically whether the target deployment actually provides Atlas Search / Vector Search support.
+- DocumentDB is configured as an externally managed service through `DOCUMENTDB_URI` and `DOCUMENTDB_DATABASE`; the wizard does not add a DocumentDB container to `docker-compose.final.yml`.
 
 **What gets written**
 

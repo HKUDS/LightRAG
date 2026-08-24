@@ -2,7 +2,7 @@
 
 ## Overview
 
-This tool cleans up LightRAG's LLM query cache from KV storage implementations. It specifically targets query caches generated during RAG query operations (modes: `mix`, `hybrid`, `local`, `global`), including both query and keywords caches.
+This tool cleans up LightRAG's LLM query cache from KV storage implementations. It specifically targets query caches generated during RAG query operations (modes: `mix`, `hybrid`, `local`, `global`, `naive`), including both query and keywords caches.
 
 ## Supported Storage Types
 
@@ -11,16 +11,18 @@ This tool cleans up LightRAG's LLM query cache from KV storage implementations. 
 3. **PGKVStorage** - PostgreSQL database storage
 4. **MongoKVStorage** - MongoDB database storage
 5. **OpenSearchKVStorage** - OpenSearch index storage
+6. **DocumentDBKVStorage** - DocumentDB database storage
 
 ## Cache Types
 
 The tool cleans up the following query cache types:
 
-### Query Cache Modes (4 types)
+### Query Cache Modes (5 types)
 - `mix:*` - Mixed mode query caches
 - `hybrid:*` - Hybrid mode query caches
 - `local:*` - Local mode query caches
 - `global:*` - Global mode query caches
+- `naive:*` - Naive vector-only query caches
 
 ### Cache Content Types (2 types)
 - `*:query:*` - Query result caches
@@ -75,8 +77,9 @@ Supported KV Storage Types:
 [3] PGKVStorage
 [4] MongoKVStorage
 [5] OpenSearchKVStorage
+[6] DocumentDBKVStorage
 
-Select storage type (1-5) (Press Enter to exit): 1
+Select storage type (1-6) (Press Enter to exit): 1
 ```
 
 **Note**: You can press Enter or type `0` at any prompt to exit gracefully.
@@ -302,6 +305,7 @@ The tool retrieves workspace in the following priority order:
 1. **Storage-specific workspace environment variables**
    - PGKVStorage: `POSTGRES_WORKSPACE`
    - MongoKVStorage: `MONGODB_WORKSPACE`
+   - DocumentDBKVStorage: `DOCUMENTDB_WORKSPACE`
    - RedisKVStorage: `REDIS_WORKSPACE`
    - OpenSearchKVStorage: `OPENSEARCH_WORKSPACE`
 
@@ -335,7 +339,7 @@ The tool retrieves workspace in the following priority order:
 - Efficient server-side bulk deletion
 - Uses LIKE patterns for mode/type matching
 
-#### MongoDB
+#### MongoDB / DocumentDB
 - Multiple deleteMany operations (one per pattern)
 - Regex-based document matching
 - Returns exact deletion counts
@@ -361,7 +365,7 @@ cursor, keys = await redis.scan(cursor, match=pattern)
 WHERE id LIKE 'mix:query:%' OR id LIKE 'mix:keywords:%'
 ```
 
-**MongoDB:**
+**MongoDB / DocumentDB:**
 ```python
 # Regex queries on _id field
 {"_id": {"$regex": "^mix:query:"}}
@@ -475,6 +479,13 @@ POSTGRES_DATABASE=your_database
 ```bash
 MONGO_URI=mongodb://root:root@localhost:27017/
 MONGO_DATABASE=LightRAG
+```
+
+#### DocumentDBKVStorage
+
+```bash
+DOCUMENTDB_URI=mongodb://user:password@localhost:10260/?tls=true&tlsAllowInvalidCertificates=true
+DOCUMENTDB_DATABASE=LightRAG
 ```
 
 #### OpenSearchKVStorage
