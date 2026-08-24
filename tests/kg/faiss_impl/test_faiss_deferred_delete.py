@@ -460,11 +460,15 @@ async def test_eager_entity_relation_removal_survives_reload(tmp_path, monkeypat
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_identical_reupsert_drops_the_redo_entry(tmp_path, monkeypatch):
-    """Materializing a row indistinguishable from the one a redo entry
-    removed (same id, same fingerprint) drops the entry — the one case the
-    fingerprint cannot separate, and the one case where dropping costs
-    nothing, since a resurrection would restore the row that is present."""
+async def test_identical_reupsert_survives_the_delete_replay(tmp_path, monkeypatch):
+    """A re-upsert with the same content in the same whole second as the row a
+    redo entry removed used to be indistinguishable from it, so materializing
+    it had to drop the entry or the next replay would delete the fresh row.
+    ``__write_seq__`` separates the two versions: the entry may stay, it names
+    only the version it removed, and the re-upsert survives a replay.
+
+    The clock is frozen so ``__created_at__`` cannot be what separates them.
+    """
     import lightrag.kg.faiss_impl as faiss_impl_module
 
     monkeypatch.setattr(faiss_impl_module.time, "time", lambda: 1_700_000_000.0)
@@ -480,16 +484,25 @@ async def test_identical_reupsert_drops_the_redo_entry(tmp_path, monkeypatch):
         await storage.index_done_callback()
     assert "row" in storage._unsaved_deletes
 
-    # Re-upsert the byte-identical row (same frozen timestamp): the next
-    # flush materializes it and must drop the now-pointless redo entry.
+    # Re-upsert the same content (same frozen timestamp): a distinct row
+    # version, so the entry keeps naming the removed one and hides nothing.
     await storage.upsert({"row": {"content": "same"}})
     with pytest.raises(OSError, match="transient disk error"):
         await storage.index_done_callback()
-    assert "row" not in storage._unsaved_deletes, (
-        "a materialized identical row must drop the redo entry"
+    assert "row" in storage._unsaved_deletes, (
+        "the entry names the removed version, which the re-upsert is not"
     )
     record = await storage.get_by_id("row")
     assert record is not None and record["content"] == "same"
+
+    # The reload resurrects the removed version: the delete replay must take
+    # it out again and the upsert replay must keep the re-upserted row.
+    storage.storage_updated.value = True
+    monkeypatch.undo()  # also unfreezes the clock; the replay stamps nothing
+    assert await storage.index_done_callback() is True
+    record = await storage.get_by_id("row")
+    assert record is not None and record["content"] == "same"
+    assert len(storage._id_to_meta) == 1, "exactly one row per id"
 
 
 @pytest.mark.offline
@@ -512,6 +525,60 @@ async def test_finalize_skips_save_when_flush_changes_nothing(tmp_path):
     assert watcher.storage_updated.value is False, (
         "a no-op finalize must not broadcast a reload to other processes"
     )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_reads_show_the_duplicate_a_delete_replay_preserves(
+    tmp_path, monkeypatch
+):
+    """Fix-proof (PR #3709 review): the read paths resolved an id through the
+    first matching fid, so when a corrupt store holds several rows under one id
+    and the redo entry names only some of them, a matching first duplicate hid
+    the whole id — including the row the replay deliberately preserves."""
+    embed = _CountingEmbed()
+    storage = await _make_storage(tmp_path, embed)
+    await _upsert_and_flush(storage, {"dup": {"content": "removed"}})
+    removed_row = dict(storage._id_to_meta[0])
+
+    # The delete lands on the index and the save fails: the entry names this
+    # one version.
+    await storage.delete(["dup"])
+    _fail_save(storage, monkeypatch)
+    with pytest.raises(OSError, match="transient disk error"):
+        await storage.index_done_callback()
+    assert storage._unsaved_deletes["dup"] == {storage._row_fingerprint(removed_row)}
+    monkeypatch.undo()
+
+    # A reload from a corrupt snapshot: the removed version comes back at the
+    # FIRST fid, beside a newer row the entry does not name.
+    matrix = np.zeros((2, DIM), dtype=np.float32)
+    matrix[0][0] = 1.0
+    matrix[1][1] = 1.0
+    storage._index.add(matrix)
+    storage._id_to_meta[0] = {**removed_row, "__vector__": matrix[0].tolist()}
+    storage._id_to_meta[1] = {
+        "__id__": "dup",
+        "__created_at__": removed_row["__created_at__"] + 5,
+        "content": "survivor",
+        "__vector__": matrix[1].tolist(),
+    }
+
+    got = await storage.get_by_id("dup")
+    assert got is not None and got["content"] == "survivor", (
+        "the entry hides only the version it removed; a row it does not name "
+        "took the id's place and the replay preserves it"
+    )
+    assert (await storage.get_by_ids(["dup"]))[0]["content"] == "survivor"
+    vectors = await storage.get_vectors_by_ids(["dup"])
+    assert vectors["dup"][1] == pytest.approx(1.0), (
+        "the vector must come from the surviving row, not the removed one"
+    )
+
+    # And the flush does exactly what the reads reported.
+    assert await storage.index_done_callback() is True
+    assert storage._find_faiss_ids_by_custom_id("dup") == [0], "one row survives"
+    assert (await storage.get_by_id("dup"))["content"] == "survivor"
 
 
 @pytest.mark.offline

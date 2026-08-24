@@ -577,15 +577,16 @@ async def test_abort_after_a_rewrite_keeps_the_redo_entry(tmp_path):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_a_rewrite_identical_to_the_removed_row_drops_the_redo_entry(
+async def test_a_rewrite_identical_in_content_survives_the_delete_replay(
     tmp_path, monkeypatch
 ):
-    """The one case the fingerprint cannot separate: a rewrite byte-identical
-    to the removed row. Materializing it must retire the entry, or the next
-    replay deletes the row we just wrote.
+    """A rewrite with the same content in the same whole second as the removed
+    row used to be indistinguishable from it, so materializing it had to retire
+    the redo entry or the next replay would delete the row just written.
+    ``__write_seq__`` separates the two versions: the entry may stay, it names
+    only the version it removed, and the rewrite survives a replay.
 
-    ``__created_at__`` is part of the record, so identity needs both the same
-    content and the same whole second — frozen here rather than raced for.
+    The clock is frozen so ``__created_at__`` cannot be what separates them.
     """
     monkeypatch.setattr(nano_impl.time, "time", lambda: 1_700_000_000.0)
 
@@ -602,16 +603,23 @@ async def test_a_rewrite_identical_to_the_removed_row_drops_the_redo_entry(
     await storage.upsert({"id1": {"content": "same"}})
     with pytest.raises(OSError):
         await storage.index_done_callback()
-    assert storage._unsaved_deletes == {}, (
-        "an identical row makes the entry moot, and keeping it would delete it"
+    assert set(storage._unsaved_deletes) == {"id1"}, (
+        "the entry names the removed version, which the rewrite is not"
+    )
+    assert (await storage.get_by_id("id1"))["content"] == "same", (
+        "the rewrite must be readable — the entry hides only the removed row"
     )
 
+    # Force the reload that resurrects the removed version before the retry:
+    # the delete replay must take it out again and keep the rewrite.
+    storage.storage_updated.value = True
     restore()
     assert await storage.index_done_callback() is True
 
     reader = _make_storage(tmp_path)
     await reader.initialize()
     assert (await reader.get_by_id("id1"))["content"] == "same"
+    assert len(reader._client) == 2, "exactly one row per id"
 
 
 @pytest.mark.offline
@@ -691,7 +699,7 @@ async def test_finalize_reloads_before_retrying_a_delete_only_save(tmp_path):
         await writer.index_done_callback()
     restore()
     assert writer._client_dirty is True
-    assert writer._unsaved_upserts is False, "the dirty state is removals only"
+    assert not writer._unsaved_upserts, "the dirty state is removals only"
 
     # Another writer commits after our failed save.
     await other.upsert({"id3": {"content": "gamma"}})
@@ -710,9 +718,15 @@ async def test_finalize_reloads_before_retrying_a_delete_only_save(tmp_path):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_finalize_still_protects_unsaved_upserts_from_the_reload(tmp_path):
-    """The other half of the same guard: materialized-but-unsaved *rows* exist
-    nowhere else, so finalize must keep skipping the reload for them."""
+async def test_finalize_replays_unsaved_upserts_after_a_foreign_commit(tmp_path):
+    """The upsert half of the same trade-off, closed by the redo log (#3688).
+
+    Before the log, finalize skipped the reload while ``_unsaved_upserts``
+    was set (the materialized rows existed nowhere else), and its save wrote
+    our pre-commit snapshot over the other writer's durable rows — id3
+    disappeared. Now the log replays our rows after the reload, so both
+    sides survive.
+    """
     writer = _make_storage(tmp_path)
     other = _make_storage(tmp_path)
     await writer.initialize()
@@ -724,7 +738,7 @@ async def test_finalize_still_protects_unsaved_upserts_from_the_reload(tmp_path)
     with pytest.raises(OSError):
         await writer.index_done_callback()
     restore()
-    assert writer._unsaved_upserts is True
+    assert writer._unsaved_upserts, "the flushed doc moved into the redo log"
 
     await other.upsert({"id3": {"content": "gamma"}})
     assert await other.index_done_callback() is True
@@ -734,7 +748,10 @@ async def test_finalize_still_protects_unsaved_upserts_from_the_reload(tmp_path)
     reader = _make_storage(tmp_path)
     await reader.initialize()
     assert (await reader.get_by_id("id2"))["content"] == "beta", (
-        "a reload would have dropped the only copy of this row"
+        "the redo log must replay our row on top of the reloaded snapshot"
+    )
+    assert (await reader.get_by_id("id3"))["content"] == "gamma", (
+        "the other writer's commit must survive finalize"
     )
 
 
