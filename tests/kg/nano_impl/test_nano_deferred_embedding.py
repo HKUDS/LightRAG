@@ -8,6 +8,7 @@ live model or network. They mirror the protocol proven for
 """
 
 import contextlib
+import json
 import time
 from unittest.mock import patch
 
@@ -17,6 +18,7 @@ import pytest
 nano_vectordb = pytest.importorskip("nano_vectordb")  # noqa: F841
 
 from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage  # noqa: E402
+from lightrag.kg.write_seq import WRITE_SEQ_FIELD  # noqa: E402
 from lightrag.kg.shared_storage import (  # noqa: E402
     initialize_share_data,
     finalize_share_data,
@@ -576,15 +578,23 @@ async def test_reads_serve_an_unsaved_upsert_after_a_foreign_reload(tmp_path):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_replay_overwrites_a_foreign_row_under_the_same_id(tmp_path):
-    """Ids are content hashes, so a same-id foreign row is a rewrite of the
-    same logical record; our applied-but-unsaved write is the newer intent
-    and the replay puts it back on top."""
+async def test_replay_overwrites_an_older_foreign_row_under_the_same_id(tmp_path):
+    """Ids are content hashes, so a same-id stored row is an older version of
+    the same logical record; our applied-but-unsaved write is the newer intent
+    and the replay puts it back on top of the reloaded snapshot.
+
+    The foreign row is committed *before* our write on purpose: written after
+    it, it would be the newer version and the replay would rightly decline
+    (see ``test_same_second_tie_is_broken_by_the_write_sequence``).
+    """
     embed = _CountingEmbed()
     writer = _make_storage(tmp_path, embed)
     other = _make_storage(tmp_path, _CountingEmbed())
     await writer.initialize()
     await other.initialize()
+
+    await other.upsert({"idX": {"content": "theirs"}})
+    assert await other.index_done_callback() is True
 
     await writer.upsert({"idX": {"content": "ours"}})
     restore = _make_save_fail(writer)
@@ -592,7 +602,9 @@ async def test_replay_overwrites_a_foreign_row_under_the_same_id(tmp_path):
         await writer.index_done_callback()
     restore()
 
-    await other.upsert({"idX": {"content": "theirs"}})
+    # A foreign commit forces the reload that drops our materialized row and
+    # brings the older idX back; the replay has to put ours on top again.
+    await other.upsert({"idZ": {"content": "unrelated"}})
     assert await other.index_done_callback() is True
 
     assert await writer.index_done_callback() is True
@@ -600,6 +612,7 @@ async def test_replay_overwrites_a_foreign_row_under_the_same_id(tmp_path):
     reader = _make_storage(tmp_path, _CountingEmbed())
     await reader.initialize()
     assert (await reader.get_by_id("idX"))["content"] == "ours"
+    assert (await reader.get_by_id("idZ"))["content"] == "unrelated"
 
 
 @pytest.mark.offline
@@ -930,12 +943,78 @@ async def test_reads_prefer_a_strictly_newer_foreign_row(tmp_path):
     assert embed.call_count == 1, "reads must not re-embed to answer this"
 
 
+def _strip_write_seq_on_disk(storage) -> None:
+    """Rewrite the persisted rows as a pre-``__write_seq__`` store would.
+
+    The token is stamped by ``upsert``, so a store written by an older version
+    carries none. Removing it from the committed snapshot is the only way to
+    reach the documented fallback: a same-second pair the token cannot order.
+    """
+    with open(storage._client_file_name, encoding="utf-8") as f:
+        snapshot = json.load(f)
+    stripped = [row.pop(WRITE_SEQ_FIELD, None) for row in snapshot["data"]]
+    assert any(token is not None for token in stripped), (
+        "the token must reach the committed snapshot, or the replay's ordering "
+        "guard loses its tiebreaker across a reload"
+    )
+    with open(storage._client_file_name, "w", encoding="utf-8") as f:
+        json.dump(snapshot, f)
+
+
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_same_second_tie_still_replays(tmp_path):
-    """Stability: the ordering guard is strict (``>``), so a foreign row
-    stamped in the same whole second as the logged one is still overwritten
-    by the replay — the pre-existing issue-#3688 behavior."""
+async def test_same_second_tie_is_broken_by_the_write_sequence(tmp_path):
+    """Fix-proof (PR #3709 review): ordering was whole seconds only, and
+    ``upsert`` stamps ``int(time.time())`` — so a superseding writer that
+    committed inside the same second as the logged row tied, the strict ``>``
+    fell through to "replay", and the stale redo record overwrote a durable
+    newer row. ``__write_seq__`` orders the two writes inside that second."""
+    writer = _make_storage(tmp_path, _CountingEmbed())
+    other = _make_storage(tmp_path, _CountingEmbed())
+    await writer.initialize()
+    await other.initialize()
+
+    frozen = int(time.time())
+    with _frozen_clock(frozen):
+        await writer.upsert({"idX": {"content": "ours-stale"}})
+        restore = _make_save_fail(writer)
+        with pytest.raises(OSError):
+            await writer.index_done_callback()
+        restore()
+
+        # Same whole second, but written after ours: a higher write sequence.
+        await other.upsert({"idX": {"content": "theirs-newer"}})
+    assert await other.index_done_callback() is True
+
+    logged = writer._unsaved_upserts["idX"].record
+    resident = other._client.get(["idX"])[0]
+    assert logged["__created_at__"] == resident["__created_at__"], (
+        "the scenario under test is a same-second pair"
+    )
+    assert resident[WRITE_SEQ_FIELD] > logged[WRITE_SEQ_FIELD]
+
+    # Reads must agree with the decision the flush is about to make.
+    assert (await writer.get_by_id("idX"))["content"] == "theirs-newer"
+
+    assert await writer.index_done_callback() is True
+    assert "idX" not in writer._unsaved_upserts, (
+        "a superseded redo entry must be dropped"
+    )
+
+    reader = _make_storage(tmp_path, _CountingEmbed())
+    await reader.initialize()
+    assert (await reader.get_by_id("idX"))["content"] == "theirs-newer", (
+        "the replay reverted a row committed later in the same second"
+    )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_same_second_tie_without_a_write_sequence_still_replays(tmp_path):
+    """Stability: a row written before ``__write_seq__`` existed carries none,
+    and a missing token must not read as "older" (that would let the replay
+    overwrite any legacy row). Such a same-second pair stays a tie and keeps
+    the pre-token behavior — the replay proceeds."""
     writer = _make_storage(tmp_path, _CountingEmbed())
     other = _make_storage(tmp_path, _CountingEmbed())
     await writer.initialize()
@@ -950,7 +1029,8 @@ async def test_same_second_tie_still_replays(tmp_path):
         restore()
 
         await other.upsert({"idX": {"content": "theirs"}})
-    assert await other.index_done_callback() is True
+        assert await other.index_done_callback() is True
+        _strip_write_seq_on_disk(other)
 
     assert await writer.index_done_callback() is True
 

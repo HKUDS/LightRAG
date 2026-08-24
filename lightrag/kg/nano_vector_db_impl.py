@@ -24,20 +24,22 @@ from .shared_storage import (
     get_update_flag,
     set_all_update_flags,
 )
+from .write_seq import WRITE_SEQ_FIELD, next_write_seq, row_is_strictly_newer
 
 
 @dataclass
 class _PendingNanoDoc:
     """A buffered upsert waiting for deferred embedding and materialization.
 
-    ``record`` holds ``__id__`` / ``__created_at__`` plus the ``meta_fields``
-    (which always include ``content`` for the entity/relation/chunk vdbs), so
-    the content needed for deferred embedding lives in the record itself — no
-    separate copy is kept. ``vector`` starts as ``None`` and is filled either
-    during the lock-held flush or by a lazy ``get_vectors_by_ids`` embedding;
-    once set it is reused by the next flush instead of re-calling the model.
-    The compressed ``vector`` / raw ``__vector__`` keys are added to ``record``
-    only at flush time, right before ``client.upsert``.
+    ``record`` holds ``__id__`` / ``__created_at__`` / ``__write_seq__`` plus
+    the ``meta_fields`` (which always include ``content`` for the
+    entity/relation/chunk vdbs), so the content needed for deferred embedding
+    lives in the record itself — no separate copy is kept. ``vector`` starts as
+    ``None`` and is filled either during the lock-held flush or by a lazy
+    ``get_vectors_by_ids`` embedding; once set it is reused by the next flush
+    instead of re-calling the model. The compressed ``vector`` / raw
+    ``__vector__`` keys are added to ``record`` only at flush time, right
+    before ``client.upsert``.
     """
 
     record: dict[str, Any]
@@ -193,13 +195,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
         enough on its own: ``upsert`` stamps ``int(time.time())``, so a rewrite
         inside the same second as the removed row carries the same timestamp.
 
-        One case the fingerprint cannot separate is a row that is *identical*
-        to the one removed. Materializing such a row drops the redo entry
-        (bottom of ``_flush_pending_locked``) — and that is exactly the case
-        where dropping it costs nothing, since a resurrection would restore
-        the row that is present anyway. What remains is a byte-identical row
-        published by another writer, which no content-based identity can tell
-        from the row we deleted.
+        A rewrite *identical* in content to the row removed is still a
+        distinct row version: every write also stamps its own
+        ``__write_seq__`` token (see ``write_seq``), so it fingerprints
+        differently and the replay preserves it — whether we wrote it or
+        another writer did. Only a row written before the token existed is
+        indistinguishable from the row we removed, and the replay removes it.
 
         Being replayable is also what lets ``finalize`` reload before it
         retries a save: without the logs it had to choose between skipping
@@ -216,10 +217,13 @@ class NanoVectorDBStorage(BaseVectorStorage):
         The upsert replay is scoped by the redo entry itself: an id whose
         stored row already fingerprints equal to the logged record has
         nothing to redo. Any *other* row under that id is ordered against
-        ours by ``__created_at__``: a strictly newer one is left alone and
-        our redo entry is dropped (another writer legitimately superseded us
-        — reverting it would undo a completed reprocess), while an older one
-        or a whole-second tie is overwritten by ours. A removal request
+        ours by ``__created_at__`` and then by the ``__write_seq__`` token
+        that breaks a whole-second tie: a strictly newer one is left alone
+        and our redo entry is dropped (another writer legitimately
+        superseded us — reverting it would undo a completed reprocess),
+        while an older one is overwritten by ours. Only a tie no token can
+        break — one of the two rows written before the token existed —
+        still falls back to being overwritten by the replay. A removal request
         evicts the id's redo entry (``delete`` / ``delete_entity`` /
         ``delete_entity_relation``), or the replay would resurrect the row
         the removal just took out.
@@ -426,13 +430,19 @@ class NanoVectorDBStorage(BaseVectorStorage):
         if not data:
             return
 
+        # One timestamp and one write-sequence token for the whole batch: both
+        # order *writes*, and the redo-log comparison only ever puts rows from
+        # two different writes side by side. The token breaks the whole-second
+        # ties __created_at__ leaves open (see write_seq).
         current_time = int(time.time())
+        write_seq = next_write_seq()
         pending = [
             (
                 k,
                 {
                     "__id__": k,
                     "__created_at__": current_time,
+                    WRITE_SEQ_FIELD: write_seq,
                     **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
                 },
             )
@@ -462,11 +472,11 @@ class NanoVectorDBStorage(BaseVectorStorage):
         The redo log has to name the exact row it removed so a replay after a
         reload cannot hit a newer row another writer published under the same
         (content-hash) id. The digest covers the whole stored record — id,
-        timestamp, content, the base64 vector, every meta field — and is
-        stable across a save/reload round-trip: sorted keys make key order
-        irrelevant, tuples and lists both render as JSON arrays, and the
-        default ``ensure_ascii`` keeps the output encodable whatever the
-        record holds.
+        timestamp, ``__write_seq__``, content, the base64 vector, every meta
+        field — and is stable across a save/reload round-trip: sorted keys
+        make key order irrelevant, tuples and lists both render as JSON
+        arrays, and the default ``ensure_ascii`` keeps the output encodable
+        whatever the record holds.
 
         ``__vector__`` never reaches here — ``NanoVectorDB.upsert`` strips it
         into the matrix before the record is stored.
@@ -543,13 +553,11 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # genuinely newer row under the same (content-hash) id, and then
         # turn out not to have been dead after all and reach this replay.
         # Overwriting that newer row with our stale one would revert a
-        # completed reprocess. `__created_at__` is a same-clock, same-host
-        # int-seconds timestamp (both backends stamp it in `upsert`), so a
-        # resident row strictly newer than the logged one is left alone; a
-        # tie (same second) still replays, same as before this guard — see
-        # _row_fingerprint's docstring on why a whole-second timestamp
-        # cannot be used to detect two rows as *equal*, which is a different
-        # question from ordering two rows known to differ.
+        # completed reprocess. Ordering runs through
+        # `_resident_supersedes_redo`, which the read paths use too: whole
+        # seconds first (`__created_at__`), then `__write_seq__` as the
+        # same-second tiebreaker, so a resident row written after ours is
+        # left alone even when both landed inside the same second.
         if self._unsaved_upserts:
             storage = getattr(self._client, "_NanoVectorDB__storage")
             present = {
@@ -572,9 +580,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                         pdoc.record
                     ):
                         continue
-                    if resident.get("__created_at__", 0) > pdoc.record.get(
-                        "__created_at__", 0
-                    ):
+                    if self._resident_supersedes_redo(resident, pdoc.record):
                         superseded.append(doc_id)
                         continue
                 record = pdoc.record
@@ -674,18 +680,15 @@ class NanoVectorDBStorage(BaseVectorStorage):
             if self._pending_upserts.get(doc_id) is pdoc:
                 del self._pending_upserts[doc_id]
 
-        if self._unsaved_deletes:
-            # A row we just wrote can be indistinguishable from one we removed
-            # (same id, same bytes) — the single case the fingerprint cannot
-            # separate, and the one case where dropping the redo entry costs
-            # nothing: a resurrection would restore the row that is present
-            # now. Only rows written just above can match here; a resurrected
-            # one was already removed by the replay at the top of this flush.
-            storage = getattr(self._client, "_NanoVectorDB__storage")
-            for dp in storage["data"]:
-                logged = self._unsaved_deletes.get(dp["__id__"])
-                if logged is not None and logged == self._row_fingerprint(dp):
-                    del self._unsaved_deletes[dp["__id__"]]
+        # No reconciliation pass against `_unsaved_deletes` follows. A row we
+        # just wrote used to be able to fingerprint equal to one we removed
+        # (same id, same bytes, same whole second), which would have made the
+        # replay delete it — so the entry was dropped here. `__write_seq__`
+        # rules that out: every upsert stamps its own token, so a rewrite is a
+        # distinct row version and the entry names only the version it removed.
+        # Keeping it removes and hides nothing that exists, and it is still
+        # needed — a reload resurrecting the removed version is taken out again
+        # by the replay at the top of the next flush, rewrite preserved.
 
     def _save_to_disk_locked(self) -> None:
         """Atomically persist ``self._client`` and notify other processes.
@@ -738,7 +741,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         )
         results = [
             {
-                **{k: v for k, v in dp.items() if k != "vector"},
+                **{k: v for k, v in dp.items() if k not in ("vector", WRITE_SEQ_FIELD)},
                 "id": dp["__id__"],
                 "distance": dp["__metrics__"],
                 "created_at": dp.get("__created_at__"),
@@ -1064,7 +1067,11 @@ class NanoVectorDBStorage(BaseVectorStorage):
     def _format_record(dp: dict[str, Any]) -> dict[str, Any]:
         """Shape a stored/pending record into the public read result."""
         return {
-            **{k: v for k, v in dp.items() if k not in ("vector", "__vector__")},
+            **{
+                k: v
+                for k, v in dp.items()
+                if k not in ("vector", "__vector__", WRITE_SEQ_FIELD)
+            },
             "id": dp.get("__id__"),
             "created_at": dp.get("__created_at__"),
         }
@@ -1087,15 +1094,14 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         The read paths must agree with what the next flush's replay will
         actually do, or read-your-writes reports a row the replay is about to
-        decline to restore. Both use the same rule: a resident row is only
-        preferred when it is **strictly** newer by ``__created_at__``. An
-        absent row, an equal timestamp (whole-second tie), or an older one all
-        leave the logged record as the answer, matching the replay's own
-        ordering guard in ``_flush_pending_locked``.
+        decline to restore, so both go through this one rule: a resident row is
+        preferred only when it was written **strictly** after the logged one —
+        by ``__created_at__``, then by the ``__write_seq__`` token that breaks
+        a whole-second tie (see ``write_seq``). An absent row, an older one, or
+        a tie no token can break (either side written before the token existed)
+        all leave the logged record as the answer.
         """
-        if resident is None:
-            return False
-        return resident.get("__created_at__", 0) > redo_record.get("__created_at__", 0)
+        return row_is_strictly_newer(resident, redo_record)
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID (read-your-writes against the pending buffer).

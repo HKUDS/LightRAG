@@ -460,11 +460,15 @@ async def test_eager_entity_relation_removal_survives_reload(tmp_path, monkeypat
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_identical_reupsert_drops_the_redo_entry(tmp_path, monkeypatch):
-    """Materializing a row indistinguishable from the one a redo entry
-    removed (same id, same fingerprint) drops the entry — the one case the
-    fingerprint cannot separate, and the one case where dropping costs
-    nothing, since a resurrection would restore the row that is present."""
+async def test_identical_reupsert_survives_the_delete_replay(tmp_path, monkeypatch):
+    """A re-upsert with the same content in the same whole second as the row a
+    redo entry removed used to be indistinguishable from it, so materializing
+    it had to drop the entry or the next replay would delete the fresh row.
+    ``__write_seq__`` separates the two versions: the entry may stay, it names
+    only the version it removed, and the re-upsert survives a replay.
+
+    The clock is frozen so ``__created_at__`` cannot be what separates them.
+    """
     import lightrag.kg.faiss_impl as faiss_impl_module
 
     monkeypatch.setattr(faiss_impl_module.time, "time", lambda: 1_700_000_000.0)
@@ -480,16 +484,25 @@ async def test_identical_reupsert_drops_the_redo_entry(tmp_path, monkeypatch):
         await storage.index_done_callback()
     assert "row" in storage._unsaved_deletes
 
-    # Re-upsert the byte-identical row (same frozen timestamp): the next
-    # flush materializes it and must drop the now-pointless redo entry.
+    # Re-upsert the same content (same frozen timestamp): a distinct row
+    # version, so the entry keeps naming the removed one and hides nothing.
     await storage.upsert({"row": {"content": "same"}})
     with pytest.raises(OSError, match="transient disk error"):
         await storage.index_done_callback()
-    assert "row" not in storage._unsaved_deletes, (
-        "a materialized identical row must drop the redo entry"
+    assert "row" in storage._unsaved_deletes, (
+        "the entry names the removed version, which the re-upsert is not"
     )
     record = await storage.get_by_id("row")
     assert record is not None and record["content"] == "same"
+
+    # The reload resurrects the removed version: the delete replay must take
+    # it out again and the upsert replay must keep the re-upserted row.
+    storage.storage_updated.value = True
+    monkeypatch.undo()  # also unfreezes the clock; the replay stamps nothing
+    assert await storage.index_done_callback() is True
+    record = await storage.get_by_id("row")
+    assert record is not None and record["content"] == "same"
+    assert len(storage._id_to_meta) == 1, "exactly one row per id"
 
 
 @pytest.mark.offline

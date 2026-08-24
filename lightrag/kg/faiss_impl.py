@@ -18,6 +18,7 @@ from .shared_storage import (
     get_update_flag,
     set_all_update_flags,
 )
+from .write_seq import WRITE_SEQ_FIELD, next_write_seq, row_is_strictly_newer
 
 # You must manually install faiss-cpu or faiss-gpu before using FAISS vector db
 import faiss  # type: ignore
@@ -27,13 +28,14 @@ import faiss  # type: ignore
 class _PendingFaissDoc:
     """A buffered upsert waiting for deferred embedding and materialization.
 
-    ``record`` holds ``__id__`` / ``__created_at__`` plus the ``meta_fields``
-    (which always include ``content`` for the entity/relation/chunk vdbs), so
-    the content needed for deferred embedding lives in the record itself — no
-    separate copy is kept. ``vector`` starts as ``None`` and is filled either
-    during the lock-held flush or by a lazy ``get_vectors_by_ids`` embedding;
-    once set it is always an **already-L2-normalized float32 1D ndarray**, so
-    the next flush can ``vstack`` and ``index.add`` without re-normalizing.
+    ``record`` holds ``__id__`` / ``__created_at__`` / ``__write_seq__`` plus
+    the ``meta_fields`` (which always include ``content`` for the
+    entity/relation/chunk vdbs), so the content needed for deferred embedding
+    lives in the record itself — no separate copy is kept. ``vector`` starts as
+    ``None`` and is filled either during the lock-held flush or by a lazy
+    ``get_vectors_by_ids`` embedding; once set it is always an
+    **already-L2-normalized float32 1D ndarray**, so the next flush can
+    ``vstack`` and ``index.add`` without re-normalizing.
     ``__vector__`` is materialized into the metadata dict only at flush time,
     right before ``self._index.add``.
     """
@@ -190,13 +192,14 @@ class FaissVectorDBStorage(BaseVectorStorage):
         ``True``: a later commit or ``finalize`` reloads whatever another
         writer committed meanwhile and replays the logged rows on top —
         without re-embedding (issue #3688). A logged row is *not* replayed
-        over a row the other writer committed with a strictly newer
-        ``__created_at__``: that writer legitimately superseded us (a
-        reprocess of the same document under the same content-hash id), and
-        the redo entry is dropped instead. The read paths apply the same
-        ordering rule, so read-your-writes never reports a row the replay is
-        about to decline to restore. The log is cleared only once a save
-        lands.
+        over a row the other writer committed strictly later — by
+        ``__created_at__``, then by the ``__write_seq__`` token that breaks a
+        whole-second tie (see ``write_seq``): that writer legitimately
+        superseded us (a reprocess of the same document under the same
+        content-hash id), and the redo entry is dropped instead. The read
+        paths apply the same ordering rule, so read-your-writes never reports
+        a row the replay is about to decline to restore. The log is cleared
+        only once a save lands.
 
     Non-pipeline write paths:
         The pipeline ``busy`` gate serializes ``upsert`` / ``delete`` /
@@ -394,13 +397,19 @@ class FaissVectorDBStorage(BaseVectorStorage):
         if not data:
             return
 
+        # One timestamp and one write-sequence token for the whole batch: both
+        # order *writes*, and the redo-log comparison only ever puts rows from
+        # two different writes side by side. The token breaks the whole-second
+        # ties __created_at__ leaves open (see write_seq).
         current_time = int(time.time())
+        write_seq = next_write_seq()
         pending = [
             (
                 k,
                 {
                     "__id__": k,
                     "__created_at__": current_time,
+                    WRITE_SEQ_FIELD: write_seq,
                     **{mf: v[mf] for mf in self.meta_fields if mf in v},
                 },
             )
@@ -471,8 +480,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 # callers, so we silently skip — the skew was already warned
                 # about at load time.
                 continue
-            # Filter out __vector__ from query results to avoid returning large vector data
-            filtered_meta = {k: v for k, v in meta.items() if k != "__vector__"}
+            # Filter out __vector__ from query results to avoid returning large
+            # vector data; __write_seq__ is storage bookkeeping, not payload.
+            filtered_meta = {
+                k: v
+                for k, v in meta.items()
+                if k not in ("__vector__", WRITE_SEQ_FIELD)
+            }
             results.append(
                 {
                     **filtered_meta,
@@ -564,20 +578,18 @@ class FaissVectorDBStorage(BaseVectorStorage):
         has since taken the id's place.
 
         **Boundary of that guarantee.** Successor preservation is only as
-        sharp as content-based identity, and one case it cannot resolve is a
-        successor *identical* to the row removed. ``__created_at__`` does not
-        break the tie — ``upsert`` stamps ``int(time.time())``, so a rewrite
-        inside the same second carries the same timestamp. Where we are the
-        ones re-materializing such a row the flush drops the redo entry (see
-        the bottom of ``_flush_pending_locked``), which costs nothing: a
-        resurrection would only restore the row that is present anyway. What
-        remains is a byte-identical row published by *another writer*, which
-        no content-based identity can tell from the row we deleted, so the
-        replay removes it. Distinguishing it would take a per-write
-        generation persisted in the record — a storage-format change, and a
-        divergence from the Nano protocol this mirrors — for a case that
-        already presupposes the *Single writer* invariant above being
-        violated (see class docstring, *Concurrency invariants*).
+        sharp as content-based identity, and the case it has to resolve is a
+        successor *identical* in content to the row removed.
+        ``__created_at__`` does not break that tie — ``upsert`` stamps
+        ``int(time.time())``, so a rewrite inside the same second carries the
+        same timestamp — but ``__write_seq__`` does: every ``upsert`` stamps
+        its own token into the record (see ``write_seq``), so a successor
+        written by another writer, or by us, fingerprints differently and the
+        replay preserves it. What remains is a row written before the token
+        existed, which no content-based identity can tell from the row we
+        deleted, so the replay removes it — a case that already presupposes
+        the *Single writer* invariant above being violated (see class
+        docstring, *Concurrency invariants*).
 
         The read-your-writes paths mirror both rules: a queued id reads as
         absent, while a logged one hides only the row the entry names — a
@@ -859,7 +871,8 @@ class FaissVectorDBStorage(BaseVectorStorage):
         The redo log has to name the exact row it removed so a replay after
         a reload cannot hit a newer row another writer published under the
         same (content-hash) id. The digest covers the stored metadata record
-        — id, timestamp, every meta field — **excluding** ``__vector__``:
+        — id, timestamp, ``__write_seq__``, every meta field — **excluding**
+        ``__vector__``:
         ``_save_faiss_index`` strips the vector from ``.meta.json`` and
         ``_load_faiss_index`` / ``_remove_faiss_ids_locked`` re-attach it
         lazily (``index.reconstruct``), so its presence on a row is not
@@ -987,13 +1000,11 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # genuinely newer row under the same (content-hash) id, and then
         # turn out not to have been dead after all and reach this replay.
         # Overwriting that newer row with our stale one would revert a
-        # completed reprocess. `__created_at__` is a same-clock, same-host
-        # int-seconds timestamp (both backends stamp it in `upsert`), so a
-        # resident row strictly newer than the logged one is left alone; a
-        # tie (same second) still replays, same as before this guard — see
-        # _row_fingerprint's docstring on why a whole-second timestamp
-        # cannot be used to detect two rows as *equal*, which is a different
-        # question from ordering two rows known to differ.
+        # completed reprocess. Ordering runs through
+        # `_resident_supersedes_redo`, which the read paths use too: whole
+        # seconds first (`__created_at__`), then `__write_seq__` as the
+        # same-second tiebreaker, so a resident row written after ours is
+        # left alone even when both landed inside the same second.
         if self._unsaved_upserts:
             drop_fids: list[int] = []
             replay_records: list[dict[str, Any]] = []
@@ -1007,12 +1018,11 @@ class FaissVectorDBStorage(BaseVectorStorage):
                     self._row_fingerprint(self._id_to_meta[fids[0]]) == fingerprint
                 ):
                     continue
-                logged_at = pdoc.record.get("__created_at__", 0)
                 # Find-all: any resident row under this id being strictly
                 # newer blocks the replay, since the rebuild below would drop
                 # every one of them.
                 if any(
-                    self._id_to_meta[fid].get("__created_at__", 0) > logged_at
+                    self._resident_supersedes_redo(self._id_to_meta[fid], pdoc.record)
                     for fid in fids
                 ):
                     superseded.append(doc_id)
@@ -1143,22 +1153,15 @@ class FaissVectorDBStorage(BaseVectorStorage):
             if self._pending_upserts.get(doc_id) is pdoc:
                 del self._pending_upserts[doc_id]
 
-        if self._unsaved_deletes:
-            # A row we just wrote can be indistinguishable from one we
-            # removed (same id, same fingerprint) — the single case the
-            # fingerprint cannot separate, and the one case where dropping
-            # the redo entry costs nothing: a resurrection would restore the
-            # row that is present now. Only rows written just above can
-            # match here; a resurrected one was already removed by the
-            # replay at the top of this flush.
-            for meta in self._id_to_meta.values():
-                doc_id = meta.get("__id__")
-                logged = self._unsaved_deletes.get(doc_id)
-                if logged is None:
-                    continue
-                logged.discard(self._row_fingerprint(meta))
-                if not logged:
-                    del self._unsaved_deletes[doc_id]
+        # No reconciliation pass against `_unsaved_deletes` follows. A row we
+        # just wrote used to be able to fingerprint equal to one we removed
+        # (same id, same content, same whole second), which would have made the
+        # replay delete it — so the entry was dropped here. `__write_seq__`
+        # rules that out: every upsert stamps its own token, so a rewrite is a
+        # distinct row version and the entry names only the version it removed.
+        # Keeping it removes and hides nothing that exists, and it is still
+        # needed — a reload resurrecting the removed version is taken out again
+        # by the replay at the top of the next flush, rewrite preserved.
 
     def _save_faiss_index(self):
         """Atomically persist ``self._index`` + ``self._id_to_meta`` to disk.
@@ -1360,7 +1363,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
     def _format_record(dp: dict[str, Any]) -> dict[str, Any]:
         """Shape a stored/pending record into the public read result."""
         return {
-            **{k: v for k, v in dp.items() if k != "__vector__"},
+            **{k: v for k, v in dp.items() if k not in ("__vector__", WRITE_SEQ_FIELD)},
             "id": dp.get("__id__"),
             "created_at": dp.get("__created_at__"),
         }
@@ -1387,15 +1390,14 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
         The read paths must agree with what the next flush's replay will
         actually do, or read-your-writes reports a row the replay is about to
-        decline to restore. Both use the same rule: a resident row is only
-        preferred when it is **strictly** newer by ``__created_at__``. An
-        absent row, an equal timestamp (whole-second tie), or an older one all
-        leave the logged record as the answer, matching the replay's own
-        ordering guard in ``_flush_pending_locked``.
+        decline to restore, so both go through this one rule: a resident row is
+        preferred only when it was written **strictly** after the logged one —
+        by ``__created_at__``, then by the ``__write_seq__`` token that breaks
+        a whole-second tie (see ``write_seq``). An absent row, an older one, or
+        a tie no token can break (either side written before the token existed)
+        all leave the logged record as the answer.
         """
-        if resident is None:
-            return False
-        return resident.get("__created_at__", 0) > redo_record.get("__created_at__", 0)
+        return row_is_strictly_newer(resident, redo_record)
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID (read-your-writes against the pending buffer).

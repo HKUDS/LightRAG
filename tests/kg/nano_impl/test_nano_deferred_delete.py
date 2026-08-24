@@ -577,15 +577,16 @@ async def test_abort_after_a_rewrite_keeps_the_redo_entry(tmp_path):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_a_rewrite_identical_to_the_removed_row_drops_the_redo_entry(
+async def test_a_rewrite_identical_in_content_survives_the_delete_replay(
     tmp_path, monkeypatch
 ):
-    """The one case the fingerprint cannot separate: a rewrite byte-identical
-    to the removed row. Materializing it must retire the entry, or the next
-    replay deletes the row we just wrote.
+    """A rewrite with the same content in the same whole second as the removed
+    row used to be indistinguishable from it, so materializing it had to retire
+    the redo entry or the next replay would delete the row just written.
+    ``__write_seq__`` separates the two versions: the entry may stay, it names
+    only the version it removed, and the rewrite survives a replay.
 
-    ``__created_at__`` is part of the record, so identity needs both the same
-    content and the same whole second — frozen here rather than raced for.
+    The clock is frozen so ``__created_at__`` cannot be what separates them.
     """
     monkeypatch.setattr(nano_impl.time, "time", lambda: 1_700_000_000.0)
 
@@ -602,16 +603,23 @@ async def test_a_rewrite_identical_to_the_removed_row_drops_the_redo_entry(
     await storage.upsert({"id1": {"content": "same"}})
     with pytest.raises(OSError):
         await storage.index_done_callback()
-    assert storage._unsaved_deletes == {}, (
-        "an identical row makes the entry moot, and keeping it would delete it"
+    assert set(storage._unsaved_deletes) == {"id1"}, (
+        "the entry names the removed version, which the rewrite is not"
+    )
+    assert (await storage.get_by_id("id1"))["content"] == "same", (
+        "the rewrite must be readable — the entry hides only the removed row"
     )
 
+    # Force the reload that resurrects the removed version before the retry:
+    # the delete replay must take it out again and keep the rewrite.
+    storage.storage_updated.value = True
     restore()
     assert await storage.index_done_callback() is True
 
     reader = _make_storage(tmp_path)
     await reader.initialize()
     assert (await reader.get_by_id("id1"))["content"] == "same"
+    assert len(reader._client) == 2, "exactly one row per id"
 
 
 @pytest.mark.offline
