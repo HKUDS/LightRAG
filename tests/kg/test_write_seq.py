@@ -57,7 +57,20 @@ def test_a_newer_second_wins_regardless_of_the_token():
 def test_the_token_breaks_a_same_second_tie():
     assert row_is_strictly_newer(_row(100, 2), _row(100, 1)) is True
     assert row_is_strictly_newer(_row(100, 1), _row(100, 2)) is False
-    assert row_is_strictly_newer(_row(100, 1), _row(100, 1)) is False
+
+
+@pytest.mark.offline
+def test_equal_tokens_from_two_processes_stay_a_tie():
+    """The bump that keeps tokens distinct is process-local, so two processes
+    reading one clock tick stamp the *same* token — reachable only on a coarse
+    clock, and only by two writers racing on one id (which the backends'
+    single-writer invariant excludes). Pin that such a pair resolves to the
+    pre-token behavior rather than to an arbitrary winner: ordering it would
+    take a generation shared across processes."""
+    ours = _row(100, 5)
+    theirs = _row(100, 5)  # a second process, same clock tick
+    assert row_is_strictly_newer(theirs, ours) is False
+    assert row_is_strictly_newer(ours, theirs) is False
 
 
 @pytest.mark.offline

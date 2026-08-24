@@ -24,16 +24,32 @@ process handed out, so it is:
   for our own successive writes;
 * **comparable across processes** sharing a store — they share one host clock,
   the same assumption ``__created_at__`` already makes for the whole-second
-  comparison.
+  comparison. Comparable, not totally ordered: two processes reading one clock
+  tick stamp the same token (third limit below).
 
-Two limits are deliberately left in place and documented on the comparison
-helpers rather than papered over:
+Three limits are deliberately left in place rather than papered over; each
+resolves to the pre-token behavior (the tie replays), and the comparison
+helper repeats them where they bite:
 
 * it orders *stamp* time, not *commit* time — a writer that stamps late and
   commits early is still ordered by when it stamped, which is the intent
   order the supersede rule wants;
 * a row written before this field existed carries none, so a comparison
-  involving such a row falls back to the whole-second behavior.
+  involving such a row falls back to the whole-second behavior;
+* the bump is monotonic **within one process**, so two processes reading the
+  same clock tick get the *same* token and their tokens tie. That window is
+  one tick wide, not one second: on Linux ``time.time_ns()`` is
+  ``clock_gettime(CLOCK_REALTIME)`` at 1ns resolution, so the tie needs the
+  same nanosecond; where it is genuinely reachable is Windows before Python
+  3.13, whose ``time.time()`` reads ``GetSystemTimeAsFileTime`` (~15.6ms
+  granularity). Reaching it also takes two processes writing the *same id*
+  inside that tick, which the backends' *Single writer per workspace*
+  invariant excludes — and the sequential dead-process handoff the supersede
+  rule exists for puts the two stamps a detection interval apart, far wider
+  than a tick. Closing it for real would take a totally ordered generation
+  shared across processes (a counter in ``shared_storage``, one RPC per
+  upsert batch); folding the pid into the token would only hide the tie
+  behind an arbitrary winner, so neither is done here.
 """
 
 import threading
@@ -77,6 +93,12 @@ def row_is_strictly_newer(candidate: dict | None, reference: dict, /) -> bool:
     token a same-second pair therefore stays a tie, which resolves to False —
     the pre-token behavior (the replay proceeds, the read paths serve the
     logged record).
+
+    Equal tokens resolve to False for the same reason, and are not only a
+    same-write artifact: the bump that keeps tokens distinct is process-local,
+    so two processes reading one clock tick stamp the same token (see the
+    module docstring for how narrow and invariant-violating that is). Ordering
+    them would take a generation shared across processes.
     """
     if candidate is None:
         return False

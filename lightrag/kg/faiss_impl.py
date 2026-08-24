@@ -1394,8 +1394,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
         preferred only when it was written **strictly** after the logged one —
         by ``__created_at__``, then by the ``__write_seq__`` token that breaks
         a whole-second tie (see ``write_seq``). An absent row, an older one, or
-        a tie no token can break (either side written before the token existed)
-        all leave the logged record as the answer.
+        a tie no token can break — either side written before the token
+        existed, or two processes stamping inside one clock tick, since the
+        bump that keeps tokens distinct is process-local — all leave the logged
+        record as the answer.
         """
         return row_is_strictly_newer(resident, redo_record)
 
