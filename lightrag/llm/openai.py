@@ -1066,7 +1066,16 @@ async def openai_embed(
                 truncated_texts.append(text)
                 continue
 
-            tokens = encoding.encode(text)
+            # disallowed_special=() is required, not an optimization: tiktoken
+            # defaults to disallowed_special=ALL and raises ValueError as soon as
+            # the text merely CONTAINS a literal special-token string such as
+            # "<|endoftext|>". Since this encode runs for every non-empty text
+            # once truncation is enabled, one chunk of user content quoting that
+            # marker -- common in documentation, notes, or captured model output
+            # -- failed the whole embedding batch regardless of its length. The
+            # markers must be encoded as ordinary text, exactly as
+            # Tokenizer.encode does for every other tokenizing path.
+            tokens = encoding.encode(text, disallowed_special=())
             if len(tokens) > max_token_size:
                 truncated_tokens = tokens[:max_token_size]
                 truncated_texts.append(encoding.decode(truncated_tokens))
