@@ -189,8 +189,14 @@ class FaissVectorDBStorage(BaseVectorStorage):
         (record + cached normalized vector) and ``_index_dirty`` stays
         ``True``: a later commit or ``finalize`` reloads whatever another
         writer committed meanwhile and replays the logged rows on top —
-        without re-embedding (issue #3688). The log is cleared only once
-        a save lands.
+        without re-embedding (issue #3688). A logged row is *not* replayed
+        over a row the other writer committed with a strictly newer
+        ``__created_at__``: that writer legitimately superseded us (a
+        reprocess of the same document under the same content-hash id), and
+        the redo entry is dropped instead. The read paths apply the same
+        ordering rule, so read-your-writes never reports a row the replay is
+        about to decline to restore. The log is cleared only once a save
+        lands.
 
     Non-pipeline write paths:
         The pipeline ``busy`` gate serializes ``upsert`` / ``delete`` /
@@ -973,9 +979,25 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # the logged row; one whose stored row already fingerprints equal to
         # the logged record (no reload happened, or an earlier retry
         # replayed it) has nothing to redo.
+        #
+        # A row that fingerprints *differently* is not automatically stale:
+        # under the pipeline's dead-process recovery, the process that
+        # materialized this redo entry can be declared dead, superseded by a
+        # new writer that reprocesses the same document and commits a
+        # genuinely newer row under the same (content-hash) id, and then
+        # turn out not to have been dead after all and reach this replay.
+        # Overwriting that newer row with our stale one would revert a
+        # completed reprocess. `__created_at__` is a same-clock, same-host
+        # int-seconds timestamp (both backends stamp it in `upsert`), so a
+        # resident row strictly newer than the logged one is left alone; a
+        # tie (same second) still replays, same as before this guard — see
+        # _row_fingerprint's docstring on why a whole-second timestamp
+        # cannot be used to detect two rows as *equal*, which is a different
+        # question from ordering two rows known to differ.
         if self._unsaved_upserts:
             drop_fids: list[int] = []
             replay_records: list[dict[str, Any]] = []
+            superseded: list[str] = []
             for doc_id, pdoc in self._unsaved_upserts.items():
                 if doc_id in self._pending_upserts:
                     continue
@@ -985,18 +1007,43 @@ class FaissVectorDBStorage(BaseVectorStorage):
                     self._row_fingerprint(self._id_to_meta[fids[0]]) == fingerprint
                 ):
                     continue
+                logged_at = pdoc.record.get("__created_at__", 0)
+                # Find-all: any resident row under this id being strictly
+                # newer blocks the replay, since the rebuild below would drop
+                # every one of them.
+                if any(
+                    self._id_to_meta[fid].get("__created_at__", 0) > logged_at
+                    for fid in fids
+                ):
+                    superseded.append(doc_id)
+                    continue
                 # Replace whatever rows the id has now (find-all, same as
                 # the pending materialization below) with our logged row.
                 drop_fids.extend(fids)
                 record = pdoc.record
                 record["__vector__"] = pdoc.vector.tolist()
                 replay_records.append(record)
+            # Evicted after the loop, never inside it (mutating the dict
+            # under iteration raises). A superseded entry must leave the log
+            # rather than linger: it would be rescanned by every later flush
+            # and, worse, keep poisoning the read paths, which serve the
+            # logged record for any id still present here.
+            for doc_id in superseded:
+                del self._unsaved_upserts[doc_id]
             if replay_records:
                 self._rebuild_index_locked(drop_fids, replay_records)
                 self._index_dirty = True
                 logger.info(
                     f"[{self.workspace}] {self.namespace} flush: replayed "
                     f"{len(replay_records)} unsaved upserts after a reload"
+                )
+            if superseded:
+                # No dirty flag: dropping a redo entry touches the index not
+                # at all, so there is nothing new to persist.
+                logger.info(
+                    f"[{self.workspace}] {self.namespace} flush: {len(superseded)} "
+                    "unsaved upserts superseded by a strictly newer row "
+                    "committed under the same id, redo entries dropped"
                 )
 
         if not self._pending_upserts:
@@ -1332,6 +1379,24 @@ class FaissVectorDBStorage(BaseVectorStorage):
         """
         return fingerprints is not None and self._row_fingerprint(meta) in fingerprints
 
+    @staticmethod
+    def _resident_supersedes_redo(
+        resident: dict[str, Any] | None, redo_record: dict[str, Any]
+    ) -> bool:
+        """True when a materialized row wins over a pending upsert-redo entry.
+
+        The read paths must agree with what the next flush's replay will
+        actually do, or read-your-writes reports a row the replay is about to
+        decline to restore. Both use the same rule: a resident row is only
+        preferred when it is **strictly** newer by ``__created_at__``. An
+        absent row, an equal timestamp (whole-second tie), or an older one all
+        leave the logged record as the answer, matching the replay's own
+        ordering guard in ``_flush_pending_locked``.
+        """
+        if resident is None:
+            return False
+        return resident.get("__created_at__", 0) > redo_record.get("__created_at__", 0)
+
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID (read-your-writes against the pending buffer).
 
@@ -1350,20 +1415,24 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 return self._format_record(pending.record)
             if id in self._pending_deletes:
                 return None
+            # Applied-but-unsaved row. A reload may have dropped it from the
+            # index, in which case the next flush replays it and it is the row
+            # this id resolves to — but another writer may also have committed
+            # a strictly newer row under the same (content-hash) id, which the
+            # replay deliberately preserves. So this cannot answer on its own:
+            # consult the index and let the same ordering rule the replay uses
+            # pick the winner.
             redo = self._unsaved_upserts.get(id)
-            if redo is not None:
-                # Applied-but-unsaved row: a reload may have dropped it from
-                # the index, but the next flush replays it, so it is the row
-                # this id resolves to.
-                return self._format_record(redo.record)
             snapshot = self._unsaved_deletes.get(id)
             logged = set(snapshot) if snapshot is not None else None
 
         await self._get_index()  # reload-if-stale
         fid = self._find_faiss_id_by_custom_id(id)
-        if fid is None:
-            return None
-        metadata = self._id_to_meta.get(fid)
+        metadata = self._id_to_meta.get(fid) if fid is not None else None
+        if redo is not None:
+            if self._resident_supersedes_redo(metadata, redo.record):
+                return self._format_record(metadata)
+            return self._format_record(redo.record)
         if not metadata or self._matches_redo_entry(metadata, logged):
             return None
         return self._format_record(metadata)
@@ -1388,6 +1457,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         result_map: dict[str, dict[str, Any]] = {}
         remaining: list[str] = []
         logged: dict[str, set[str]] = {}
+        redo_docs: dict[str, _PendingFaissDoc] = {}
         async with self._storage_lock:
             for requested_id in ids:
                 pending = self._pending_upserts.get(requested_id)
@@ -1398,10 +1468,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 else:
                     redo = self._unsaved_upserts.get(requested_id)
                     if redo is not None:
-                        # Served from the redo log, never from the index: a
-                        # reload may have replaced the row with a stale
-                        # foreign one the replay will overwrite.
-                        result_map[str(requested_id)] = self._format_record(redo.record)
+                        # Still queried against the index: the replay only
+                        # restores the logged row when no strictly newer row
+                        # was committed under the id meanwhile, so the index
+                        # is needed to apply the same ordering rule below.
+                        redo_docs[requested_id] = redo
+                        remaining.append(requested_id)
                         continue
                     if requested_id in self._unsaved_deletes:
                         logged[requested_id] = set(self._unsaved_deletes[requested_id])
@@ -1411,9 +1483,14 @@ class FaissVectorDBStorage(BaseVectorStorage):
             await self._get_index()  # reload-if-stale
             for cid in remaining:
                 fid = self._find_faiss_id_by_custom_id(cid)
-                if fid is None:
+                metadata = self._id_to_meta.get(fid) if fid is not None else None
+                redo = redo_docs.get(cid)
+                if redo is not None:
+                    if self._resident_supersedes_redo(metadata, redo.record):
+                        result_map[str(cid)] = self._format_record(metadata)
+                    else:
+                        result_map[str(cid)] = self._format_record(redo.record)
                     continue
-                metadata = self._id_to_meta.get(fid)
                 if metadata and not self._matches_redo_entry(metadata, logged.get(cid)):
                     result_map[str(cid)] = self._format_record(metadata)
 
@@ -1440,6 +1517,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         vectors_dict: dict[str, list[float]] = {}
         remaining: list[str] = []
         logged: dict[str, set[str]] = {}
+        redo_docs: dict[str, _PendingFaissDoc] = {}
         async with self._storage_lock:
             to_embed: list[tuple[str, _PendingFaissDoc]] = []
             for requested_id in ids:
@@ -1451,13 +1529,14 @@ class FaissVectorDBStorage(BaseVectorStorage):
                         continue
                     redo = self._unsaved_upserts.get(requested_id)
                     if redo is not None:
-                        # Served from the redo log, never from the index: a
-                        # reload may have replaced the row with a stale
-                        # foreign one the replay will overwrite. The cached
-                        # vector is always set once a doc reaches the log.
-                        vectors_dict[requested_id] = redo.vector.astype(
-                            np.float32
-                        ).tolist()
+                        # Still queried against the index: the replay only
+                        # restores the logged row when no strictly newer row
+                        # was committed under the id meanwhile, so the index
+                        # is needed to apply the same ordering rule below.
+                        # The cached vector is always set once a doc reaches
+                        # the log, so the redo branch can always answer.
+                        redo_docs[requested_id] = redo
+                        remaining.append(requested_id)
                         continue
                     if requested_id in self._unsaved_deletes:
                         logged[requested_id] = set(self._unsaved_deletes[requested_id])
@@ -1498,9 +1577,19 @@ class FaissVectorDBStorage(BaseVectorStorage):
             await self._get_index()  # reload-if-stale
             for cid in remaining:
                 fid = self._find_faiss_id_by_custom_id(cid)
-                if fid is None or fid not in self._id_to_meta:
+                metadata = self._id_to_meta.get(fid) if fid is not None else None
+                redo = redo_docs.get(cid)
+                if redo is not None:
+                    if (
+                        self._resident_supersedes_redo(metadata, redo.record)
+                        and "__vector__" in metadata
+                    ):
+                        vectors_dict[cid] = metadata["__vector__"]
+                    else:
+                        vectors_dict[cid] = redo.vector.astype(np.float32).tolist()
                     continue
-                metadata = self._id_to_meta[fid]
+                if metadata is None:
+                    continue
                 if self._matches_redo_entry(metadata, logged.get(cid)):
                     # Redo-log entry: this is the row version an unsaved
                     # delete removed — report it as absent.
@@ -1589,6 +1678,15 @@ class FaissVectorDBStorage(BaseVectorStorage):
           the reload would write our pre-commit snapshot over another
           writer's durable rows (issue #3688).
 
+        ``_index_dirty`` can be ``True`` while all four buffers are empty —
+        e.g. a materialized-but-unsaved upsert whose id is then ``delete()``-d
+        (evicting its redo entry) inside a batch that itself aborts
+        (``drop_pending_index_ops`` discards the now-queued pending delete,
+        by design; see its docstring). Nothing here names that row for replay
+        any more, but that is exactly why the reload below must still run:
+        without it, this branch would save the stale in-memory snapshot
+        straight over whatever another writer committed in the meantime.
+
         Flush / save failures propagate (same contract as
         ``index_done_callback``); a partially flushed buffer is preserved
         for a future retry.
@@ -1607,14 +1705,24 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 or self._pending_deletes
                 or self._unsaved_deletes
                 or self._unsaved_upserts
+                or self._index_dirty
             ):
                 # Reload so a stale process picks up other writers' commits
                 # before the flush merges the pending buffers in and replays
                 # the redo logs on top. Unsaved materialized changes are no
                 # longer a reason to skip this: both logs replay after the
                 # reload, whereas skipping used to save our pre-commit
-                # snapshot over the other writer's durable rows.
-                self._reload_index_from_disk_locked(for_write=True)
+                # snapshot over the other writer's durable rows. This must
+                # fire even when all four buffers are empty (see the
+                # docstring note above) — a bare ``_index_dirty`` still means
+                # self._index may be stale relative to disk.
+                if self._reload_index_from_disk_locked(for_write=True):
+                    # The reload just replaced self._index with the fresh
+                    # on-disk snapshot, so any prior materialized change is
+                    # gone with it; nothing is dirty relative to this new
+                    # baseline until the flush below applies something on
+                    # top of it.
+                    self._index_dirty = False
                 await self._flush_pending_locked()
             if not self._index_dirty:
                 # The flush changed nothing (e.g. every queued delete

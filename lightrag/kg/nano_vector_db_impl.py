@@ -206,17 +206,27 @@ class NanoVectorDBStorage(BaseVectorStorage):
         the reload (saving a pre-commit snapshot over another writer's rows)
         and reloading (dropping its own unsaved changes). With both logs —
         ``_unsaved_deletes`` for removals, ``_unsaved_upserts`` for rows —
-        every retry path reloads first and replays on top, lossless in both
-        directions.
+        every retry path reloads first and replays on top. The reload is
+        unconditional: ``finalize`` runs it even when both logs are empty and
+        only the dirty flag is set, since a bare dirty flag still means the
+        in-memory state may be stale relative to disk. What a replay
+        deliberately does *not* restore is a row another writer has since
+        superseded with a strictly newer one.
 
         The upsert replay is scoped by the redo entry itself: an id whose
         stored row already fingerprints equal to the logged record has
-        nothing to redo, while any other row under that id — including one
-        another writer published meanwhile — is overwritten by ours, the
-        correct outcome for content-hash ids. A removal request evicts the
-        id's redo entry (``delete`` / ``delete_entity`` /
+        nothing to redo. Any *other* row under that id is ordered against
+        ours by ``__created_at__``: a strictly newer one is left alone and
+        our redo entry is dropped (another writer legitimately superseded us
+        — reverting it would undo a completed reprocess), while an older one
+        or a whole-second tie is overwritten by ours. A removal request
+        evicts the id's redo entry (``delete`` / ``delete_entity`` /
         ``delete_entity_relation``), or the replay would resurrect the row
         the removal just took out.
+
+        The read paths apply that same ordering rule rather than answering
+        from the log alone, so read-your-writes never reports a row the
+        replay is about to decline to restore.
 
         Ids that matched no row are not logged at all — there is nothing to
         persist for them, and replaying them could only hit a row they were
@@ -525,31 +535,72 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # below and supersedes the logged row; one whose stored row already
         # fingerprints equal to the logged record (no reload happened, or an
         # earlier retry replayed it) has nothing to redo.
+        #
+        # A row that fingerprints *differently* is not automatically stale:
+        # under the pipeline's dead-process recovery, the process that
+        # materialized this redo entry can be declared dead, superseded by a
+        # new writer that reprocesses the same document and commits a
+        # genuinely newer row under the same (content-hash) id, and then
+        # turn out not to have been dead after all and reach this replay.
+        # Overwriting that newer row with our stale one would revert a
+        # completed reprocess. `__created_at__` is a same-clock, same-host
+        # int-seconds timestamp (both backends stamp it in `upsert`), so a
+        # resident row strictly newer than the logged one is left alone; a
+        # tie (same second) still replays, same as before this guard — see
+        # _row_fingerprint's docstring on why a whole-second timestamp
+        # cannot be used to detect two rows as *equal*, which is a different
+        # question from ordering two rows known to differ.
         if self._unsaved_upserts:
             storage = getattr(self._client, "_NanoVectorDB__storage")
             present = {
-                dp["__id__"]: self._row_fingerprint(dp)
+                dp["__id__"]: dp
                 for dp in storage["data"]
                 if dp["__id__"] in self._unsaved_upserts
             }
             replay_data = []
+            superseded: list[str] = []
             for doc_id, pdoc in self._unsaved_upserts.items():
                 if doc_id in self._pending_upserts:
                     continue
-                # Fingerprint BEFORE re-attaching __vector__: the digest
-                # covers every record key, and the stored row never carries
-                # __vector__ (client.upsert strips it into the matrix).
-                if present.get(doc_id) == self._row_fingerprint(pdoc.record):
-                    continue
+                resident = present.get(doc_id)
+                if resident is not None:
+                    # Fingerprint BEFORE re-attaching __vector__: the digest
+                    # covers every record key, and the stored row never
+                    # carries __vector__ (client.upsert strips it into the
+                    # matrix).
+                    if self._row_fingerprint(resident) == self._row_fingerprint(
+                        pdoc.record
+                    ):
+                        continue
+                    if resident.get("__created_at__", 0) > pdoc.record.get(
+                        "__created_at__", 0
+                    ):
+                        superseded.append(doc_id)
+                        continue
                 record = pdoc.record
                 record["__vector__"] = pdoc.vector
                 replay_data.append(record)
+            # Evicted after the loop, never inside it (mutating the dict
+            # under iteration raises). A superseded entry must leave the log
+            # rather than linger: it would be rescanned by every later flush
+            # and, worse, keep poisoning the read paths, which serve the
+            # logged record for any id still present here.
+            for doc_id in superseded:
+                del self._unsaved_upserts[doc_id]
             if replay_data:
                 self._client.upsert(datas=replay_data)
                 self._client_dirty = True
                 logger.info(
                     f"[{self.workspace}] {self.namespace} flush: replayed "
                     f"{len(replay_data)} unsaved upserts after a reload"
+                )
+            if superseded:
+                # No dirty flag: dropping a redo entry touches self._client
+                # not at all, so there is nothing new to persist.
+                logger.info(
+                    f"[{self.workspace}] {self.namespace} flush: {len(superseded)} "
+                    "unsaved upserts superseded by a strictly newer row "
+                    "committed under the same id, redo entries dropped"
                 )
 
         if not self._pending_upserts:
@@ -1028,6 +1079,24 @@ class NanoVectorDBStorage(BaseVectorStorage):
         """
         return fingerprint is not None and fingerprint == self._row_fingerprint(dp)
 
+    @staticmethod
+    def _resident_supersedes_redo(
+        resident: dict[str, Any] | None, redo_record: dict[str, Any]
+    ) -> bool:
+        """True when a materialized row wins over a pending upsert-redo entry.
+
+        The read paths must agree with what the next flush's replay will
+        actually do, or read-your-writes reports a row the replay is about to
+        decline to restore. Both use the same rule: a resident row is only
+        preferred when it is **strictly** newer by ``__created_at__``. An
+        absent row, an equal timestamp (whole-second tie), or an older one all
+        leave the logged record as the answer, matching the replay's own
+        ordering guard in ``_flush_pending_locked``.
+        """
+        if resident is None:
+            return False
+        return resident.get("__created_at__", 0) > redo_record.get("__created_at__", 0)
+
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID (read-your-writes against the pending buffer).
 
@@ -1046,19 +1115,26 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 return self._format_record(pending.record)
             if id in self._pending_deletes:
                 return None
+            # Applied-but-unsaved row. A reload may have dropped it from
+            # self._client, in which case the next flush replays it and it is
+            # the row this id resolves to — but another writer may also have
+            # committed a strictly newer row under the same (content-hash) id,
+            # which the replay deliberately preserves. So this cannot answer
+            # on its own: consult the client and let the same ordering rule
+            # the replay uses pick the winner.
             redo = self._unsaved_upserts.get(id)
-            if redo is not None:
-                # Applied-but-unsaved row: a reload may have dropped it from
-                # self._client, but the next flush replays it, so it is the
-                # row this id resolves to.
-                return self._format_record(redo.record)
             logged = self._unsaved_deletes.get(id)
 
         client = await self._get_client()
         result = client.get([id])
-        if not result or self._matches_redo_entry(result[0], logged):
+        resident = result[0] if result else None
+        if redo is not None:
+            if self._resident_supersedes_redo(resident, redo.record):
+                return self._format_record(resident)
+            return self._format_record(redo.record)
+        if resident is None or self._matches_redo_entry(resident, logged):
             return None
-        return self._format_record(result[0])
+        return self._format_record(resident)
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """Get multiple vector data by their IDs (read-your-writes), preserving order.
@@ -1077,6 +1153,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         result_map: dict[str, dict[str, Any]] = {}
         remaining: list[str] = []
         logged: dict[str, str] = {}
+        redo_docs: dict[str, _PendingNanoDoc] = {}
         async with self._storage_lock:
             for requested_id in ids:
                 pending = self._pending_upserts.get(requested_id)
@@ -1087,10 +1164,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 else:
                     redo = self._unsaved_upserts.get(requested_id)
                     if redo is not None:
-                        # Served from the redo log, never from the client: a
-                        # reload may have replaced the row with a stale
-                        # foreign one the replay will overwrite.
-                        result_map[str(requested_id)] = self._format_record(redo.record)
+                        # Still queried against the client: the replay only
+                        # restores the logged row when no strictly newer row
+                        # was committed under the id meanwhile, so the client
+                        # is needed to apply the same ordering rule below.
+                        redo_docs[requested_id] = redo
+                        remaining.append(requested_id)
                         continue
                     # A logged id still goes to the client: only the removed
                     # row version is hidden, not one written in its place.
@@ -1100,15 +1179,27 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         if remaining:
             client = await self._get_client()
+            resident_map: dict[str, dict[str, Any]] = {}
             for dp in client.get(remaining):
                 if not dp:
                     continue
-                if self._matches_redo_entry(dp, logged.get(dp.get("__id__"))):
+                doc_id = dp.get("__id__")
+                if doc_id is not None:
+                    resident_map[str(doc_id)] = dp
+                if doc_id in redo_docs:
+                    continue  # resolved against the redo entry below
+                if self._matches_redo_entry(dp, logged.get(doc_id)):
                     continue
                 record = self._format_record(dp)
                 key = record.get("id")
                 if key is not None:
                     result_map[str(key)] = record
+            for requested_id, redo in redo_docs.items():
+                resident = resident_map.get(str(requested_id))
+                if self._resident_supersedes_redo(resident, redo.record):
+                    result_map[str(requested_id)] = self._format_record(resident)
+                else:
+                    result_map[str(requested_id)] = self._format_record(redo.record)
 
         return [result_map.get(str(requested_id)) for requested_id in ids]
 
@@ -1132,6 +1223,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         vectors_dict: dict[str, list[float]] = {}
         remaining: list[str] = []
         logged: dict[str, str] = {}
+        redo_docs: dict[str, _PendingNanoDoc] = {}
         async with self._storage_lock:
             to_embed: list[tuple[str, _PendingNanoDoc]] = []
             for requested_id in ids:
@@ -1141,13 +1233,14 @@ class NanoVectorDBStorage(BaseVectorStorage):
                         continue  # queued delete, no newer upsert -> absent
                     redo = self._unsaved_upserts.get(requested_id)
                     if redo is not None:
-                        # Served from the redo log, never from the client: a
-                        # reload may have replaced the row with a stale
-                        # foreign one the replay will overwrite. The cached
-                        # vector is always set once a doc reaches the log.
-                        vectors_dict[requested_id] = redo.vector.astype(
-                            np.float32
-                        ).tolist()
+                        # Still queried against the client: the replay only
+                        # restores the logged row when no strictly newer row
+                        # was committed under the id meanwhile, so the client
+                        # is needed to apply the same ordering rule below.
+                        # The cached vector is always set once a doc reaches
+                        # the log, so the redo branch can always answer.
+                        redo_docs[requested_id] = redo
+                        remaining.append(requested_id)
                         continue
                     # A logged id still goes to the client: only the removed
                     # row version is hidden, not one written in its place.
@@ -1186,10 +1279,16 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         if remaining:
             client = await self._get_client()
+            resident_map: dict[str, dict[str, Any]] = {}
             for result in client.get(remaining):
                 if not result:
                     continue
-                if self._matches_redo_entry(result, logged.get(result.get("__id__"))):
+                doc_id = result.get("__id__")
+                if doc_id is not None:
+                    resident_map[str(doc_id)] = result
+                if doc_id in redo_docs:
+                    continue  # resolved against the redo entry below
+                if self._matches_redo_entry(result, logged.get(doc_id)):
                     continue
                 if "vector" in result and "__id__" in result:
                     # Decompress vector data (Base64 + zlib + Float16 compressed)
@@ -1198,6 +1297,18 @@ class NanoVectorDBStorage(BaseVectorStorage):
                     vector_f16 = np.frombuffer(decompressed, dtype=np.float16)
                     vector_f32 = vector_f16.astype(np.float32).tolist()
                     vectors_dict[result["__id__"]] = vector_f32
+            for requested_id, redo in redo_docs.items():
+                resident = resident_map.get(str(requested_id))
+                if (
+                    self._resident_supersedes_redo(resident, redo.record)
+                    and "vector" in resident
+                ):
+                    decoded = base64.b64decode(resident["vector"])
+                    decompressed = zlib.decompress(decoded)
+                    vector_f16 = np.frombuffer(decompressed, dtype=np.float16)
+                    vectors_dict[requested_id] = vector_f16.astype(np.float32).tolist()
+                else:
+                    vectors_dict[requested_id] = redo.vector.astype(np.float32).tolist()
 
         return vectors_dict
 
@@ -1274,6 +1385,15 @@ class NanoVectorDBStorage(BaseVectorStorage):
           reload would write our pre-commit snapshot over another writer's
           durable rows (issue #3688).
 
+        ``_client_dirty`` can be ``True`` while all four buffers are empty —
+        e.g. a materialized-but-unsaved upsert whose id is then ``delete()``-d
+        (evicting its redo entry) inside a batch that itself aborts
+        (``drop_pending_index_ops`` discards the now-queued pending delete,
+        by design; see its docstring). Nothing here names that row for replay
+        any more, but that is exactly why the reload below must still run:
+        without it, this branch would save the stale in-memory snapshot
+        straight over whatever another writer committed in the meantime.
+
         Flush / save failures propagate (same contract as
         ``index_done_callback``); a partially flushed buffer is preserved for
         a future retry.
@@ -1292,14 +1412,24 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 or self._pending_deletes
                 or self._unsaved_deletes
                 or self._unsaved_upserts
+                or self._client_dirty
             ):
                 # Reload so a stale process picks up other writers' commits
                 # before the flush merges the pending buffer in and replays
                 # the redo logs on top. Unsaved materialized changes are no
                 # longer a reason to skip this: both logs replay after the
                 # reload, whereas skipping used to save our pre-commit
-                # snapshot over the other writer's durable rows.
-                self._reload_client_from_disk_locked(for_write=True)
+                # snapshot over the other writer's durable rows. This must
+                # fire even when all four buffers are empty (see the
+                # docstring note above) — a bare ``_client_dirty`` still
+                # means self._client may be stale relative to disk.
+                if self._reload_client_from_disk_locked(for_write=True):
+                    # The reload just replaced self._client with the fresh
+                    # on-disk snapshot, so any prior materialized change is
+                    # gone with it; nothing is dirty relative to this new
+                    # baseline until the flush below applies something on
+                    # top of it.
+                    self._client_dirty = False
                 await self._flush_pending_locked()
             if not self._client_dirty:
                 # The flush changed nothing (e.g. every queued delete targeted

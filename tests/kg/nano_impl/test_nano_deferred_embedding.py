@@ -7,6 +7,10 @@ live model or network. They mirror the protocol proven for
 ``OpenSearchVectorDBStorage`` (issue #2785).
 """
 
+import contextlib
+import time
+from unittest.mock import patch
+
 import numpy as np
 import pytest
 
@@ -49,6 +53,18 @@ class _CountingEmbed:
                 for t in texts
             ]
         )
+
+
+@contextlib.contextmanager
+def _frozen_clock(stamp: int):
+    """Pin the ``__created_at__`` the storage stamps inside the block.
+
+    ``upsert`` records ``int(time.time())``, and the replay's ordering guard
+    compares those whole seconds, so a test needs an explicit clock to make one
+    row strictly newer than another (or to force a same-second tie).
+    """
+    with patch("lightrag.kg.nano_vector_db_impl.time.time", return_value=stamp):
+        yield
 
 
 def _make_storage(tmp_path, embed: _CountingEmbed) -> NanoVectorDBStorage:
@@ -783,3 +799,161 @@ async def test_repeated_failed_saves_do_not_re_upsert_each_time(tmp_path):
     assert not storage._unsaved_upserts
     assert embed.call_count == 1
     assert (await storage.get_by_id("id1"))["content"] == "alpha"
+
+
+# ---------------------------------------------------------------------------
+# finalize must reload even when only the dirty flag is set, and a replay must
+# not revert a strictly newer foreign commit (PR #3709 review follow-ups).
+# ---------------------------------------------------------------------------
+
+
+async def _strand_dirty_with_empty_buffers(writer):
+    """Reach ``_client_dirty=True`` with all four buffers empty.
+
+    A flush materializes two rows and its save fails, so both sit in the redo
+    log. ``delete`` then evicts their redo entries and queues pending deletes;
+    the batch aborts, and ``drop_pending_index_ops`` discards those queued
+    deletes by design. Nothing now names the still-materialized rows for
+    replay, which is exactly the state in which skipping the reload would save
+    a stale snapshot over another writer's commit.
+    """
+    await writer.upsert({"idX": {"content": "ours-x"}, "idY": {"content": "ours-y"}})
+    restore = _make_save_fail(writer)
+    with pytest.raises(OSError):
+        await writer.index_done_callback()
+    restore()
+
+    await writer.delete(["idX", "idY"])
+    await writer.drop_pending_index_ops()
+
+    assert writer._client_dirty is True
+    assert not writer._pending_upserts
+    assert not writer._pending_deletes
+    assert not writer._unsaved_deletes
+    assert not writer._unsaved_upserts
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_finalize_reloads_when_only_the_dirty_flag_is_set(tmp_path):
+    """Fix-proof: ``finalize`` gated its reload on the four buffers, so a
+    bare ``_client_dirty`` saved the pre-commit snapshot without reloading —
+    dropping the foreign row and persisting the two explicitly deleted ones.
+    """
+    writer = _make_storage(tmp_path, _CountingEmbed())
+    other = _make_storage(tmp_path, _CountingEmbed())
+    await writer.initialize()
+    await other.initialize()
+
+    await _strand_dirty_with_empty_buffers(writer)
+
+    await other.upsert({"foreign": {"content": "theirs"}})
+    assert await other.index_done_callback() is True
+
+    await writer.finalize()
+
+    reader = _make_storage(tmp_path, _CountingEmbed())
+    await reader.initialize()
+    foreign = await reader.get_by_id("foreign")
+    assert foreign is not None, (
+        "finalize saved its stale pre-commit snapshot over the foreign commit"
+    )
+    assert foreign["content"] == "theirs"
+    assert await reader.get_by_id("idX") is None, "explicitly deleted row resurrected"
+    assert await reader.get_by_id("idY") is None, "explicitly deleted row resurrected"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_replay_declines_a_strictly_newer_foreign_row(tmp_path):
+    """Fix-proof: the replay overwrote whatever row the id had, so a writer
+    that was superseded (its document reprocessed by a new writer under the
+    same content-hash id) reverted that newer commit on its next flush."""
+    writer = _make_storage(tmp_path, _CountingEmbed())
+    other = _make_storage(tmp_path, _CountingEmbed())
+    await writer.initialize()
+    await other.initialize()
+
+    await writer.upsert({"idX": {"content": "ours-stale"}})
+    restore = _make_save_fail(writer)
+    with pytest.raises(OSError):
+        await writer.index_done_callback()
+    restore()
+    assert "idX" in writer._unsaved_upserts
+
+    # The superseding writer commits a strictly newer row under the same id.
+    with _frozen_clock(int(time.time()) + 60):
+        await other.upsert({"idX": {"content": "theirs-newer"}})
+    assert await other.index_done_callback() is True
+
+    assert await writer.index_done_callback() is True
+    assert "idX" not in writer._unsaved_upserts, (
+        "a superseded redo entry must be dropped, or it is rescanned by every "
+        "later flush and keeps poisoning the read paths"
+    )
+
+    reader = _make_storage(tmp_path, _CountingEmbed())
+    await reader.initialize()
+    assert (await reader.get_by_id("idX"))["content"] == "theirs-newer", (
+        "the replay reverted a strictly newer commit"
+    )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_reads_prefer_a_strictly_newer_foreign_row(tmp_path):
+    """Fix-proof: the read paths short-circuited on the redo log before
+    consulting the client, so they reported a row the replay is about to
+    decline to restore."""
+    embed = _CountingEmbed()
+    writer = _make_storage(tmp_path, embed)
+    other = _make_storage(tmp_path, _CountingEmbed())
+    await writer.initialize()
+    await other.initialize()
+
+    await writer.upsert({"idX": {"content": "ours-stale"}})
+    restore = _make_save_fail(writer)
+    with pytest.raises(OSError):
+        await writer.index_done_callback()
+    restore()
+
+    with _frozen_clock(int(time.time()) + 60):
+        await other.upsert({"idX": {"content": "theirs-newer"}})
+    assert await other.index_done_callback() is True
+
+    got = await writer.get_by_id("idX")
+    assert got is not None and got["content"] == "theirs-newer"
+    by_ids = await writer.get_by_ids(["idX"])
+    assert by_ids[0] is not None and by_ids[0]["content"] == "theirs-newer"
+    vectors = await writer.get_vectors_by_ids(["idX"])
+    assert "idX" in vectors and len(vectors["idX"]) == DIM
+    assert embed.call_count == 1, "reads must not re-embed to answer this"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_same_second_tie_still_replays(tmp_path):
+    """Stability: the ordering guard is strict (``>``), so a foreign row
+    stamped in the same whole second as the logged one is still overwritten
+    by the replay — the pre-existing issue-#3688 behavior."""
+    writer = _make_storage(tmp_path, _CountingEmbed())
+    other = _make_storage(tmp_path, _CountingEmbed())
+    await writer.initialize()
+    await other.initialize()
+
+    frozen = int(time.time())
+    with _frozen_clock(frozen):
+        await writer.upsert({"idX": {"content": "ours"}})
+        restore = _make_save_fail(writer)
+        with pytest.raises(OSError):
+            await writer.index_done_callback()
+        restore()
+
+        await other.upsert({"idX": {"content": "theirs"}})
+    assert await other.index_done_callback() is True
+
+    assert await writer.index_done_callback() is True
+
+    reader = _make_storage(tmp_path, _CountingEmbed())
+    await reader.initialize()
+    assert (await reader.get_by_id("idX"))["content"] == "ours"
