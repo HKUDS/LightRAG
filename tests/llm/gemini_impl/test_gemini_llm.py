@@ -464,3 +464,81 @@ async def test_gemini_counts_usage_before_the_empty_truncated_raise(
         "the exhausted request's tokens vanished from usage accounting "
         "because the raise preceded token_tracker.add_usage"
     )
+
+
+def _make_capturing_client(fake_response):
+    captured: dict = {}
+
+    async def _fake_generate_content(**kwargs):
+        captured.update(kwargs)
+        return fake_response
+
+    client = SimpleNamespace(
+        aio=SimpleNamespace(
+            models=SimpleNamespace(generate_content=_fake_generate_content)
+        )
+    )
+    return client, captured
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("generation_kwargs", "expected_max_output_tokens"),
+    [
+        pytest.param({"max_tokens": 37}, 37, id="generic-limit-maps-to-native-field"),
+        pytest.param(
+            {"max_tokens": 37, "generation_config": {"temperature": 0.2}},
+            37,
+            id="generic-limit-preserves-other-generation-config",
+        ),
+        pytest.param(
+            {"generation_config": {"max_output_tokens": 41}},
+            41,
+            id="native-limit-is-preserved",
+        ),
+        pytest.param(
+            {"max_tokens": 37, "generation_config": {"max_output_tokens": 41}},
+            41,
+            id="native-limit-takes-precedence",
+        ),
+    ],
+)
+async def test_gemini_max_tokens_alias_precedence(
+    monkeypatch, request, generation_kwargs, expected_max_output_tokens
+):
+    """LightRAG's generic max_tokens kwarg reaches Gemini's native config field."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    fake_client, captured = _make_capturing_client(
+        _make_fake_gemini_response(regular_text="ok")
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    await gemini_module.gemini_complete_if_cache(
+        model="gemini-model", prompt="hi", api_key="test-key", **generation_kwargs
+    )
+
+    assert captured["config"].kwargs.get("max_output_tokens") == (
+        expected_max_output_tokens
+    )
+    if "temperature" in generation_kwargs.get("generation_config", {}):
+        assert captured["config"].kwargs.get("temperature") == generation_kwargs[
+            "generation_config"
+        ].get("temperature")
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_no_max_tokens_builds_no_config(monkeypatch, request):
+    """Absent both the generic and native knobs, no config object is sent at all."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    fake_client, captured = _make_capturing_client(
+        _make_fake_gemini_response(regular_text="ok")
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    await gemini_module.gemini_complete_if_cache(
+        model="gemini-model", prompt="hi", api_key="test-key"
+    )
+
+    assert "config" not in captured
