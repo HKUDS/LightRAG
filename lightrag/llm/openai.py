@@ -624,6 +624,17 @@ async def openai_complete_if_cache(
                     try:
                         yield "</think>"
                         cot_active = False
+                    except GeneratorExit:
+                        # Consumer disconnect while closing COT on the error
+                        # path. GeneratorExit is a BaseException, so neither
+                        # the handler below nor the co-sibling ``except
+                        # GeneratorExit`` above sees it. Without this clause
+                        # the finally block yields into a closing generator,
+                        # aclose() raises "async generator ignored
+                        # GeneratorExit", and the frame is abandoned before
+                        # the stream and the client are ever closed.
+                        closing_via_generator_exit = True
+                        raise
                     except Exception as close_error:
                         logger.warning(
                             f"Failed to close COT tag during exception handling: {close_error}"
