@@ -529,6 +529,60 @@ async def test_finalize_skips_save_when_flush_changes_nothing(tmp_path):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
+async def test_reads_show_the_duplicate_a_delete_replay_preserves(
+    tmp_path, monkeypatch
+):
+    """Fix-proof (PR #3709 review): the read paths resolved an id through the
+    first matching fid, so when a corrupt store holds several rows under one id
+    and the redo entry names only some of them, a matching first duplicate hid
+    the whole id — including the row the replay deliberately preserves."""
+    embed = _CountingEmbed()
+    storage = await _make_storage(tmp_path, embed)
+    await _upsert_and_flush(storage, {"dup": {"content": "removed"}})
+    removed_row = dict(storage._id_to_meta[0])
+
+    # The delete lands on the index and the save fails: the entry names this
+    # one version.
+    await storage.delete(["dup"])
+    _fail_save(storage, monkeypatch)
+    with pytest.raises(OSError, match="transient disk error"):
+        await storage.index_done_callback()
+    assert storage._unsaved_deletes["dup"] == {storage._row_fingerprint(removed_row)}
+    monkeypatch.undo()
+
+    # A reload from a corrupt snapshot: the removed version comes back at the
+    # FIRST fid, beside a newer row the entry does not name.
+    matrix = np.zeros((2, DIM), dtype=np.float32)
+    matrix[0][0] = 1.0
+    matrix[1][1] = 1.0
+    storage._index.add(matrix)
+    storage._id_to_meta[0] = {**removed_row, "__vector__": matrix[0].tolist()}
+    storage._id_to_meta[1] = {
+        "__id__": "dup",
+        "__created_at__": removed_row["__created_at__"] + 5,
+        "content": "survivor",
+        "__vector__": matrix[1].tolist(),
+    }
+
+    got = await storage.get_by_id("dup")
+    assert got is not None and got["content"] == "survivor", (
+        "the entry hides only the version it removed; a row it does not name "
+        "took the id's place and the replay preserves it"
+    )
+    assert (await storage.get_by_ids(["dup"]))[0]["content"] == "survivor"
+    vectors = await storage.get_vectors_by_ids(["dup"])
+    assert vectors["dup"][1] == pytest.approx(1.0), (
+        "the vector must come from the surviving row, not the removed one"
+    )
+
+    # And the flush does exactly what the reads reported.
+    assert await storage.index_done_callback() is True
+    assert storage._find_faiss_ids_by_custom_id("dup") == [0], "one row survives"
+    assert (await storage.get_by_id("dup"))["content"] == "survivor"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
 async def test_replay_removes_every_duplicate_row_under_one_id(tmp_path, monkeypatch):
     """``delete`` is find-all: it removes every row carrying the id, which a
     legacy / corrupt store can have several of (``_find_faiss_ids_by_custom_id``

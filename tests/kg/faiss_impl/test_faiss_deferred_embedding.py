@@ -1614,6 +1614,76 @@ async def test_same_second_tie_is_broken_by_the_write_sequence(tmp_path):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
+async def test_reads_compare_every_duplicate_row_before_serving_a_redo_entry(tmp_path):
+    """Fix-proof (PR #3709 review): the read paths resolved an id through the
+    first matching fid, while the replay checks every fid and declines when
+    *any* resident row is newer. In a legacy / corrupt store holding several
+    rows under one id, an older first duplicate made the reads serve the redo
+    record the next flush is about to refuse to restore."""
+    storage = _make_storage(tmp_path, _CountingEmbed())
+    other = _make_storage(tmp_path, _CountingEmbed())
+    await storage.initialize()
+    await other.initialize()
+
+    # Hand-craft the corrupt state: two fids share "dup", the FIRST one older
+    # than the row we are about to log, the second newer. Distinct one-hot
+    # vectors — constant vectors would normalize to the same unit vector.
+    matrix = np.zeros((2, DIM), dtype=np.float32)
+    matrix[0][0] = 1.0
+    matrix[1][1] = 1.0
+    storage._index.add(matrix)
+    storage._id_to_meta[0] = {
+        "__id__": "dup",
+        "__created_at__": 1,
+        "content": "v1-older",
+        "__vector__": matrix[0].tolist(),
+    }
+    storage._id_to_meta[1] = {
+        "__id__": "dup",
+        "__created_at__": 3,
+        "content": "v2-newer",
+        "__vector__": matrix[1].tolist(),
+    }
+    assert await storage.index_done_callback() is True
+
+    # Our write lands between the two, and its save fails -> redo entry.
+    with _frozen_clock(2):
+        await storage.upsert({"dup": {"content": "ours-stale"}})
+    restore = _make_save_fail(storage)
+    with pytest.raises(OSError):
+        await storage.index_done_callback()
+    restore()
+    assert "dup" in storage._unsaved_upserts
+
+    # A foreign commit forces the reload that brings both duplicates back.
+    await other.upsert({"unrelated": {"content": "other"}})
+    assert await other.index_done_callback() is True
+
+    got = await storage.get_by_id("dup")
+    fids = storage._find_faiss_ids_by_custom_id("dup")
+    assert len(fids) == 2, "the scenario under test is a duplicated id"
+    assert storage._id_to_meta[fids[0]]["__created_at__"] == 1, (
+        "the first matching fid must be the older row, or the old first-match "
+        "lookup would have agreed with the replay by accident"
+    )
+    assert got["content"] == "v2-newer", (
+        "a newer duplicate blocks the replay, so the reads must not serve the "
+        "redo record"
+    )
+    assert (await storage.get_by_ids(["dup"]))[0]["content"] == "v2-newer"
+    vectors = await storage.get_vectors_by_ids(["dup"])
+    assert vectors["dup"][1] == pytest.approx(1.0), (
+        "the vector must come from the resident row that blocks the replay"
+    )
+
+    # And the flush does exactly what the reads reported.
+    assert await storage.index_done_callback() is True
+    assert "dup" not in storage._unsaved_upserts
+    assert (await storage.get_by_id("dup"))["content"] == "v2-newer"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
 async def test_same_second_tie_without_a_write_sequence_still_replays(tmp_path):
     """Stability: a row written before ``__write_seq__`` existed carries none,
     and a missing token must not read as "older" (that would let the replay

@@ -197,9 +197,11 @@ class FaissVectorDBStorage(BaseVectorStorage):
         whole-second tie (see ``write_seq``): that writer legitimately
         superseded us (a reprocess of the same document under the same
         content-hash id), and the redo entry is dropped instead. The read
-        paths apply the same ordering rule, so read-your-writes never reports
-        a row the replay is about to decline to restore. The log is cleared
-        only once a save lands.
+        paths apply the same ordering rule over the same find-all row set
+        (``_resolve_resident_rows``), so read-your-writes never reports a row
+        the replay is about to decline to restore — not even in a corrupt
+        store where one id carries several rows. The log is cleared only once
+        a save lands.
 
     Non-pipeline write paths:
         The pipeline ``busy`` gate serializes ``upsert`` / ``delete`` /
@@ -758,28 +760,65 @@ class FaissVectorDBStorage(BaseVectorStorage):
     # Internal helper methods
     # --------------------------------------------------------------------------------
 
-    def _find_faiss_id_by_custom_id(self, custom_id: str):
-        """Return the first Faiss internal ID matching ``custom_id``, or ``None``.
+    def _resolve_resident_rows(
+        self,
+        custom_ids: set[str],
+        logged: dict[str, set[str]] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Resolve the materialized row each requested id reads as.
 
-        Adequate for read paths (any of N duplicate rows would carry the same
-        ``__id__`` so returning one is fine semantically). Write paths that
-        need to remove **all** duplicates — flush overwrite, ``delete`` —
-        must use :py:meth:`_find_faiss_ids_by_custom_id` (plural) instead.
+        Find-all rather than first-match, in **one** scan of
+        ``self._id_to_meta`` for the whole requested set. A legacy /
+        corrupted store can hold several rows under one id (see
+        ``_find_faiss_ids_by_custom_id``), and the read paths do not just
+        pick a row any more — they *compare* it, against an upsert-redo
+        entry's record and against the fingerprints an unsaved delete
+        removed. Answering from an arbitrary duplicate would disagree with
+        the next flush, which applies both rules across **every** fid the id
+        maps to: it declines a replay when *any* resident row is newer, and
+        removes exactly the row versions a delete entry names.
+
+        So a row an unsaved delete removed is skipped (``logged``, per id —
+        the replay will take it out, and a row matching none of the
+        fingerprints took the id's place and must stay visible), and of the
+        rest the newest wins. In a healthy store this is the id's only row.
         """
-        for fid, meta in self._id_to_meta.items():
-            if meta.get("__id__") == custom_id:
-                return fid
-        return None
+        if not custom_ids:
+            return {}
+        resolved: dict[str, dict[str, Any]] = {}
+        for meta in self._id_to_meta.values():
+            doc_id = meta.get("__id__")
+            if doc_id not in custom_ids:
+                continue
+            if self._matches_redo_entry(
+                meta, logged.get(doc_id) if logged is not None else None
+            ):
+                continue
+            current = resolved.get(doc_id)
+            if current is None or row_is_strictly_newer(meta, current):
+                resolved[doc_id] = meta
+        return resolved
+
+    def _resolve_resident_row(
+        self, custom_id: str, logged: set[str] | None = None
+    ) -> dict[str, Any] | None:
+        """Single-id form of :py:meth:`_resolve_resident_rows`."""
+        return self._resolve_resident_rows(
+            {custom_id}, {custom_id: logged} if logged is not None else None
+        ).get(custom_id)
 
     def _find_faiss_ids_by_custom_id(self, custom_id: str) -> list[int]:
         """Return **every** Faiss internal ID whose metadata's ``__id__`` matches.
 
         In a healthy store every custom id maps to at most one fid (each flush
         rebuilds the index without the prior fid before adding the new one).
-        This plural variant exists to defend against legacy / externally
-        corrupted stores where multiple fids share a ``__id__`` — a re-upsert
-        or ``delete`` using only the first match would leave stale duplicates
-        behind. Used by ``_flush_pending_locked`` and ``delete``.
+        This variant exists to defend against legacy / externally corrupted
+        stores where multiple fids share a ``__id__`` — a re-upsert or
+        ``delete`` touching only the first match would leave stale duplicates
+        behind, and a read *comparing* only the first would disagree with what
+        the flush then does. Used by ``_flush_pending_locked``, ``delete``, and
+        the read paths' ``_resolve_resident_rows``; there is deliberately no
+        first-match variant left.
         """
         return [
             fid
@@ -1431,13 +1470,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
             logged = set(snapshot) if snapshot is not None else None
 
         await self._get_index()  # reload-if-stale
-        fid = self._find_faiss_id_by_custom_id(id)
-        metadata = self._id_to_meta.get(fid) if fid is not None else None
         if redo is not None:
-            if self._resident_supersedes_redo(metadata, redo.record):
-                return self._format_record(metadata)
+            resident = self._resolve_resident_row(id)
+            if self._resident_supersedes_redo(resident, redo.record):
+                return self._format_record(resident)
             return self._format_record(redo.record)
-        if not metadata or self._matches_redo_entry(metadata, logged):
+        metadata = self._resolve_resident_row(id, logged)
+        if metadata is None:
             return None
         return self._format_record(metadata)
 
@@ -1485,9 +1524,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
         if remaining:
             await self._get_index()  # reload-if-stale
+            # One scan for the whole batch; ids with a redo entry are never in
+            # ``logged`` (a removal evicts the entry), so both rules can be
+            # resolved in the same pass.
+            resolved = self._resolve_resident_rows(set(remaining), logged)
             for cid in remaining:
-                fid = self._find_faiss_id_by_custom_id(cid)
-                metadata = self._id_to_meta.get(fid) if fid is not None else None
+                metadata = resolved.get(cid)
                 redo = redo_docs.get(cid)
                 if redo is not None:
                     if self._resident_supersedes_redo(metadata, redo.record):
@@ -1495,7 +1537,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                     else:
                         result_map[str(cid)] = self._format_record(redo.record)
                     continue
-                if metadata and not self._matches_redo_entry(metadata, logged.get(cid)):
+                if metadata is not None:
                     result_map[str(cid)] = self._format_record(metadata)
 
         return [result_map.get(str(requested_id)) for requested_id in ids]
@@ -1579,9 +1621,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
         if remaining:
             await self._get_index()  # reload-if-stale
+            # One scan for the whole batch. A row an unsaved delete removed is
+            # already filtered out here — it is the version the replay takes
+            # out, so it reads as absent.
+            resolved = self._resolve_resident_rows(set(remaining), logged)
             for cid in remaining:
-                fid = self._find_faiss_id_by_custom_id(cid)
-                metadata = self._id_to_meta.get(fid) if fid is not None else None
+                metadata = resolved.get(cid)
                 redo = redo_docs.get(cid)
                 if redo is not None:
                     if (
@@ -1593,10 +1638,6 @@ class FaissVectorDBStorage(BaseVectorStorage):
                         vectors_dict[cid] = redo.vector.astype(np.float32).tolist()
                     continue
                 if metadata is None:
-                    continue
-                if self._matches_redo_entry(metadata, logged.get(cid)):
-                    # Redo-log entry: this is the row version an unsaved
-                    # delete removed — report it as absent.
                     continue
                 if "__vector__" in metadata:
                     vectors_dict[cid] = metadata["__vector__"]
