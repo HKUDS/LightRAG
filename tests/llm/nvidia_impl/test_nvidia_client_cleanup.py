@@ -11,6 +11,7 @@ via ``.func.__wrapped__`` to bypass the ``EmbeddingFunc`` and tenacity
 ``@retry`` wrappers.
 """
 
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -67,3 +68,24 @@ async def test_client_closed_on_error():
 
     fake.embeddings.create.assert_awaited_once()
     fake.close.assert_awaited()
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_explicit_api_key_is_request_local(monkeypatch):
+    """An explicit NVIDIA key must not replace the process-wide OpenAI key."""
+    monkeypatch.setenv("OPENAI_API_KEY", "shared-openai-key")
+    fake = _FakeAsyncOpenAI(create=AsyncMock(return_value=_make_response()))
+
+    with patch(
+        "lightrag.llm.nvidia_openai.AsyncOpenAI", return_value=fake
+    ) as client_cls:
+        await nvidia_openai_embed.func.__wrapped__(
+            texts=["hello"], api_key="request-nvidia-key"
+        )
+
+    client_cls.assert_called_once_with(
+        base_url="https://integrate.api.nvidia.com/v1",
+        api_key="request-nvidia-key",
+    )
+    assert os.environ["OPENAI_API_KEY"] == "shared-openai-key"
