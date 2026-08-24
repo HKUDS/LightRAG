@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -7,6 +7,7 @@ pytest.importorskip("pymongo", reason="pymongo is required for DocumentDB tests"
 
 from lightrag.kg.documentdb_impl import (
     DocumentDBClientManager,
+    DocumentDBDocStatusStorage,
     DocumentDBGraphStorage,
     DocumentDBKVStorage,
     DocumentDBVectorDBStorage,
@@ -54,6 +55,31 @@ def test_documentdb_workspace_override(monkeypatch):
 
     assert storage.workspace == "documentdb_space"
     assert storage.final_namespace == "documentdb_space_full_docs"
+
+
+@pytest.mark.asyncio
+async def test_documentdb_file_path_pagination_omits_query_collation():
+    cursor = MagicMock()
+    cursor.sort.return_value = cursor
+    cursor.skip.return_value = cursor
+    cursor.limit.return_value = cursor
+    cursor.to_list = AsyncMock(return_value=[])
+
+    collection = SimpleNamespace(
+        count_documents=AsyncMock(return_value=0),
+        find=MagicMock(return_value=cursor),
+    )
+    storage = DocumentDBDocStatusStorage.__new__(DocumentDBDocStatusStorage)
+    storage._data = collection
+
+    documents, total_count = await storage.get_docs_paginated(
+        sort_field="file_path"
+    )
+
+    assert documents == []
+    assert total_count == 0
+    cursor.sort.assert_called_once_with([("file_path", -1)])
+    cursor.collation.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -98,6 +98,11 @@ async def test_documentdb_all_storage_types() -> None:
         status_row = await doc_status.get_by_id("doc-1")
         assert status_row is not None
         assert status_row["status"] == DocStatus.PROCESSED.value
+        paginated_docs, total_count = await doc_status.get_docs_paginated(
+            sort_field="file_path"
+        )
+        assert total_count == 1
+        assert [doc_id for doc_id, _ in paginated_docs] == ["doc-1"]
 
         await graph.upsert_node(
             "Alice", {"entity_type": "person", "description": "Researcher"}

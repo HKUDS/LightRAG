@@ -606,6 +606,7 @@ class _MongoDocStatusStorageBase(DocStatusStorage):
     client_manager: ClassVar[type[ClientManager]] = ClientManager
     workspace_env_var: ClassVar[str] = "MONGODB_WORKSPACE"
     supports_collation_indexes: ClassVar[bool] = True
+    supports_query_collation: ClassVar[bool] = True
 
     # Bounded upper limit on the sample of conflicting doc IDs surfaced by the
     # source-conflict listing/repair APIs — never materialize the whole set.
@@ -1068,7 +1069,7 @@ class _MongoDocStatusStorageBase(DocStatusStorage):
         sort_criteria = [(sort_field, sort_direction_value)]
 
         # Query for paginated data with Chinese collation for file_path sorting
-        if sort_field == "file_path":
+        if sort_field == "file_path" and self.supports_query_collation:
             # Use Chinese collation for pinyin sorting
             cursor = (
                 self._data.find(query_filter)

@@ -49,6 +49,7 @@ class DocumentDBDocStatusStorage(
     """DocumentDB-backed document status storage."""
 
     supports_collation_indexes: ClassVar[bool] = False
+    supports_query_collation: ClassVar[bool] = False
 
 
 @final
