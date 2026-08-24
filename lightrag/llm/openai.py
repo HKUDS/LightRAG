@@ -31,6 +31,8 @@ from lightrag.utils import (
     empty_length_truncated_hint,
     logger,
     TruncatedResponse,
+    Tokenizer,
+    TokenBudgetError,
 )
 
 from lightrag.api import __api_version__
@@ -1046,22 +1048,45 @@ async def openai_embed(
         texts = [document_prefix + text for text in texts]
     # Apply text truncation if max_token_size is provided
     if max_token_size is not None and max_token_size > 0:
-        encoding = _get_tiktoken_encoding_for_model(model)
+        # Wrap the resolved encoding in LightRAG's verified tokenizer instead of
+        # slicing the raw token list: Tokenizer.encode treats special-token
+        # strings such as "<|endoftext|>" as ordinary text, and
+        # truncate_by_token_limit returns a character-boundary prefix whose token
+        # count is independently re-verified. The base class is used rather than
+        # TiktokenTokenizer because the latter resolves the encoding from the
+        # model name itself and raises ValueError for the deployment / gateway
+        # names this binding accepts; its decode_with_offsets fast path only pays
+        # off across the many windows of a split, not a single truncate. The BPE
+        # table is already memoized by _get_tiktoken_encoding_for_model.
+        tokenizer = Tokenizer(
+            model_name=model, tokenizer=_get_tiktoken_encoding_for_model(model)
+        )
         truncated_texts = []
         truncation_count = 0
 
-        for text in texts:
+        for index, text in enumerate(texts):
             if not text:
                 truncated_texts.append(text)
                 continue
 
-            tokens = encoding.encode(text)
-            if len(tokens) > max_token_size:
-                truncated_tokens = tokens[:max_token_size]
-                truncated_texts.append(encoding.decode(truncated_tokens))
+            try:
+                span = tokenizer.truncate_by_token_limit(text, max_token_size)
+            except TokenBudgetError as e:
+                # Only reachable when a single Unicode code point does not fit
+                # the budget -- surfaced rather than swallowed, matching
+                # _truncate_vdb_content.
+                logger.error(
+                    f"Embedding input {index + 1}/{len(texts)} cannot fit "
+                    f"token limit {max_token_size}: {e}"
+                )
+                raise
+
+            if span.end < len(text):
+                truncated_texts.append(text[span.start : span.end])
                 truncation_count += 1
                 logger.debug(
-                    f"Text truncated from {len(tokens)} to {max_token_size} tokens"
+                    f"Text truncated to {span.token_count} tokens "
+                    f"(limit {max_token_size}, {len(text) - span.end} chars dropped)"
                 )
             else:
                 truncated_texts.append(text)
