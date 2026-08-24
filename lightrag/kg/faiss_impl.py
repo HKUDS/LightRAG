@@ -192,9 +192,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
         ``True``: a later commit or ``finalize`` reloads whatever another
         writer committed meanwhile and replays the logged rows on top —
         without re-embedding (issue #3688). A logged row is *not* replayed
-        over a row the other writer committed strictly later — by
-        ``__created_at__``, then by the ``__write_seq__`` token that breaks a
-        whole-second tie (see ``write_seq``): that writer legitimately
+        over a row the other writer committed strictly later — by the
+        ``__write_seq__`` token, or by whole-second ``__created_at__`` when a
+        row predates it (see ``write_seq``): that writer legitimately
         superseded us (a reprocess of the same document under the same
         content-hash id), and the redo entry is dropped instead. The read
         paths apply the same ordering rule over the same find-all row set
@@ -1040,10 +1040,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # turn out not to have been dead after all and reach this replay.
         # Overwriting that newer row with our stale one would revert a
         # completed reprocess. Ordering runs through
-        # `_resident_supersedes_redo`, which the read paths use too: whole
-        # seconds first (`__created_at__`), then `__write_seq__` as the
-        # same-second tiebreaker, so a resident row written after ours is
-        # left alone even when both landed inside the same second.
+        # `_resident_supersedes_redo`, which the read paths use too:
+        # `__write_seq__` decides whenever both rows carry it, whole seconds
+        # only when one predates the token, so a resident row written after
+        # ours is left alone even when both landed inside the same second.
         if self._unsaved_upserts:
             drop_fids: list[int] = []
             replay_records: list[dict[str, Any]] = []
@@ -1431,12 +1431,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
         actually do, or read-your-writes reports a row the replay is about to
         decline to restore, so both go through this one rule: a resident row is
         preferred only when it was written **strictly** after the logged one —
-        by ``__created_at__``, then by the ``__write_seq__`` token that breaks
-        a whole-second tie (see ``write_seq``). An absent row, an older one, or
-        a tie no token can break — either side written before the token
-        existed, or two processes stamping inside one clock tick, since the
-        bump that keeps tokens distinct is process-local — all leave the logged
-        record as the answer.
+        by the ``__write_seq__`` token when both rows carry one, falling back
+        to whole-second ``__created_at__`` when either predates it (see
+        ``write_seq``). An absent row, an older one, or a tie no token can
+        break — either side written before the token existed, or two processes
+        stamping inside one clock tick, since the bump that keeps tokens
+        distinct is process-local — all leave the logged record as the answer.
         """
         return row_is_strictly_newer(resident, redo_record)
 

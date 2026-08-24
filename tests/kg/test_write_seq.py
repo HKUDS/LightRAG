@@ -3,9 +3,10 @@
 ``__created_at__`` is whole seconds (``int(time.time())``), so two writes
 inside the same second tie — and a tie used to resolve as "the redo replay
 proceeds", letting a stale record overwrite a genuinely newer durable row
-(PR #3709 review). ``lightrag.kg.write_seq`` is the tiebreaker; these tests pin
-its two guarantees: the token never repeats or regresses, and the comparison
-falls back to the pre-token behavior only when a token is genuinely absent.
+(PR #3709 review). ``lightrag.kg.write_seq`` replaces it as the ordering
+field; these tests pin its guarantees: the token never repeats or regresses,
+it decides whenever both rows carry it, and the comparison falls back to whole
+seconds — the pre-token behavior, ties included — only when a row predates it.
 """
 
 import pytest
@@ -46,11 +47,24 @@ def test_a_frozen_or_backwards_clock_still_yields_ordered_tokens(monkeypatch):
 
 
 @pytest.mark.offline
-def test_a_newer_second_wins_regardless_of_the_token():
-    """The token is only a tiebreaker: it must never outrank whole seconds, or
-    a row from a process whose tokens happen to run high would win outright."""
-    assert row_is_strictly_newer(_row(101, 1), _row(100, 999)) is True
-    assert row_is_strictly_newer(_row(100, 999), _row(101, 1)) is False
+def test_the_token_decides_when_both_rows_carry_one():
+    """Fix-proof (PR #3709 review): whole seconds used to be compared first,
+    so a clock stepped backward across a second boundary made the *later* write
+    carry the *smaller* ``__created_at__`` and be declared older — its higher
+    token never read. That discarded the guarantee ``next_write_seq`` exists
+    for, and let a stale redo row replay over a newer durable one."""
+    stepped_back = _row(99, 501)  # written after, on a clock stepped backward
+    ours = _row(100, 500)
+    assert row_is_strictly_newer(stepped_back, ours) is True
+    assert row_is_strictly_newer(ours, stepped_back) is False
+
+
+@pytest.mark.offline
+def test_whole_seconds_decide_only_when_a_row_predates_the_token():
+    """The fallback still orders a legacy row against a tokened one, and a
+    newer second wins there — it is the only evidence such a pair has."""
+    assert row_is_strictly_newer(_row(101), _row(100, 999)) is True
+    assert row_is_strictly_newer(_row(100, 999), _row(101)) is False
 
 
 @pytest.mark.offline
@@ -80,7 +94,6 @@ def test_a_missing_token_is_not_read_as_older():
     overwrite it, so such a same-second pair stays a tie (False)."""
     assert row_is_strictly_newer(_row(100), _row(100, 5)) is False
     assert row_is_strictly_newer(_row(100, 5), _row(100)) is False
-    assert row_is_strictly_newer(_row(101), _row(100, 5)) is True
 
 
 @pytest.mark.offline

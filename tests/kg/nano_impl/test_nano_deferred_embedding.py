@@ -18,6 +18,7 @@ import pytest
 nano_vectordb = pytest.importorskip("nano_vectordb")  # noqa: F841
 
 from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage  # noqa: E402
+from lightrag.kg import write_seq  # noqa: E402
 from lightrag.kg.write_seq import WRITE_SEQ_FIELD  # noqa: E402
 from lightrag.kg.shared_storage import (  # noqa: E402
     initialize_share_data,
@@ -1037,3 +1038,51 @@ async def test_same_second_tie_without_a_write_sequence_still_replays(tmp_path):
     reader = _make_storage(tmp_path, _CountingEmbed())
     await reader.initialize()
     assert (await reader.get_by_id("idX"))["content"] == "ours"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_a_backward_clock_step_does_not_revert_a_newer_commit(
+    tmp_path, monkeypatch
+):
+    """Fix-proof (PR #3709 review): ordering compared whole seconds first, so a
+    clock stepped backward across a second boundary between our stamp and the
+    superseding writer's gave the *newer* row the *smaller* ``__created_at__``
+    — declared older, its higher token never read — and the stale redo row
+    replayed over a durable commit."""
+    writer = _make_storage(tmp_path, _CountingEmbed())
+    other = _make_storage(tmp_path, _CountingEmbed())
+    await writer.initialize()
+    await other.initialize()
+
+    monkeypatch.setattr(write_seq, "_last_seq", 0)
+    with patch.object(write_seq.time, "time_ns", return_value=1_000):
+        with _frozen_clock(100):
+            await writer.upsert({"idX": {"content": "ours-stale"}})
+    restore = _make_save_fail(writer)
+    with pytest.raises(OSError):
+        await writer.index_done_callback()
+    restore()
+
+    # The clock steps back a full second before the superseding write.
+    with patch.object(write_seq.time, "time_ns", return_value=1_001):
+        with _frozen_clock(99):
+            await other.upsert({"idX": {"content": "theirs-newer"}})
+    assert await other.index_done_callback() is True
+
+    logged = writer._unsaved_upserts["idX"].record
+    resident = other._client.get(["idX"])[0]
+    assert resident["__created_at__"] < logged["__created_at__"], (
+        "the scenario under test is a backward step across a second boundary"
+    )
+    assert resident[WRITE_SEQ_FIELD] > logged[WRITE_SEQ_FIELD]
+
+    assert (await writer.get_by_id("idX"))["content"] == "theirs-newer"
+    assert await writer.index_done_callback() is True
+    assert "idX" not in writer._unsaved_upserts
+
+    reader = _make_storage(tmp_path, _CountingEmbed())
+    await reader.initialize()
+    assert (await reader.get_by_id("idX"))["content"] == "theirs-newer", (
+        "the replay reverted a commit the clock step made look older"
+    )

@@ -217,13 +217,13 @@ class NanoVectorDBStorage(BaseVectorStorage):
         The upsert replay is scoped by the redo entry itself: an id whose
         stored row already fingerprints equal to the logged record has
         nothing to redo. Any *other* row under that id is ordered against
-        ours by ``__created_at__`` and then by the ``__write_seq__`` token
-        that breaks a whole-second tie: a strictly newer one is left alone
-        and our redo entry is dropped (another writer legitimately
-        superseded us — reverting it would undo a completed reprocess),
-        while an older one is overwritten by ours. Only a tie no token can
-        break — one of the two rows written before the token existed —
-        still falls back to being overwritten by the replay. A removal request
+        ours by the ``__write_seq__`` token, or by whole-second
+        ``__created_at__`` when one of them predates it: a strictly newer one
+        is left alone and our redo entry is dropped (another writer
+        legitimately superseded us — reverting it would undo a completed
+        reprocess), while an older one is overwritten by ours. Only a tie no
+        token can break — one of the two rows written before the token
+        existed — still falls back to being overwritten by the replay. A removal request
         evicts the id's redo entry (``delete`` / ``delete_entity`` /
         ``delete_entity_relation``), or the replay would resurrect the row
         the removal just took out.
@@ -554,10 +554,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # turn out not to have been dead after all and reach this replay.
         # Overwriting that newer row with our stale one would revert a
         # completed reprocess. Ordering runs through
-        # `_resident_supersedes_redo`, which the read paths use too: whole
-        # seconds first (`__created_at__`), then `__write_seq__` as the
-        # same-second tiebreaker, so a resident row written after ours is
-        # left alone even when both landed inside the same second.
+        # `_resident_supersedes_redo`, which the read paths use too:
+        # `__write_seq__` decides whenever both rows carry it, whole seconds
+        # only when one predates the token, so a resident row written after
+        # ours is left alone even when both landed inside the same second.
         if self._unsaved_upserts:
             storage = getattr(self._client, "_NanoVectorDB__storage")
             present = {
@@ -1096,12 +1096,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
         actually do, or read-your-writes reports a row the replay is about to
         decline to restore, so both go through this one rule: a resident row is
         preferred only when it was written **strictly** after the logged one —
-        by ``__created_at__``, then by the ``__write_seq__`` token that breaks
-        a whole-second tie (see ``write_seq``). An absent row, an older one, or
-        a tie no token can break — either side written before the token
-        existed, or two processes stamping inside one clock tick, since the
-        bump that keeps tokens distinct is process-local — all leave the logged
-        record as the answer.
+        by the ``__write_seq__`` token when both rows carry one, falling back
+        to whole-second ``__created_at__`` when either predates it (see
+        ``write_seq``). An absent row, an older one, or a tie no token can
+        break — either side written before the token existed, or two processes
+        stamping inside one clock tick, since the bump that keeps tokens
+        distinct is process-local — all leave the logged record as the answer.
         """
         return row_is_strictly_newer(resident, redo_record)
 
