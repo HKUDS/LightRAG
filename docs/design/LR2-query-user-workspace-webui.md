@@ -3,11 +3,11 @@
 - 状态：设计草案（2026-08-24）
 - 适用范围：LightRAG Server（`lightrag/api/`）+ WebUI（`lightrag_webui/`）
 - 产品入口：日常查询端点 `/workspace`；后台管理端点 `/webui`
-- 关键约束：查询入口只提供知识库问答，不暴露查询参数、文档管理或知识图谱管理能力；复用 `ChatMessage.tsx` 及从现有查询页抽出的共享会话能力，不复用后台页面壳；完整支持移动端；欢迎内容和 Logo 通过只读、多语言 UI Bundle 定制
+- 关键约束：查询入口只提供知识库问答，不暴露查询参数、文档管理、知识图谱管理或 API 文档入口；即使 WebUI 资源缺失也不得跳转或引导到 API 文档；复用 `ChatMessage.tsx` 及从现有查询页抽出的共享会话能力，不复用后台页面壳；完整支持移动端；欢迎内容和 Logo 通过只读、多语言 UI Bundle 定制
 
 ## TL;DR
 
-新增与 `/webui` 并存的 `/workspace` WebUI 入口。同一份前端构建产物根据服务端注入的入口模式渲染两种应用壳：`admin` 模式保留现有文档、知识图谱和查询页面，`workspace` 模式渲染独立的 `WorkspaceQueryView`。两个查询页面共同复用 `ChatMessage.tsx` 和抽出的查询会话、消息滚动、输入操作能力，但分别拥有自己的页面布局。访问 `/workspace` 的未登录用户先看到可定制欢迎页，登录后返回 `/workspace`；访问 `/webui` 的用户登录后仍返回 `/webui`。工作区查询空白页中央显示可定制 Logo 和欢迎词，返回查询内容后 Logo 和欢迎词消失。定制内容以多语言 UI Bundle 提供：构建产物携带内置默认 Bundle，生产环境可通过 `UI_TEMPLATES_DIR` 指向外部只读 Bundle；Server 启动时完整校验并生成不可变快照，前端通过公开 API 按语言读取内容和带内容哈希的资源 URL。
+新增与 `/webui` 并存的 `/workspace` WebUI 入口。同一份前端构建产物根据服务端注入的入口模式渲染两种应用壳：`admin` 模式保留现有文档、知识图谱和查询页面，`workspace` 模式渲染独立的 `WorkspaceQueryView`。两个查询页面共同复用 `ChatMessage.tsx` 和抽出的查询会话、消息滚动、输入操作能力，但分别拥有自己的页面布局。访问 `/workspace` 的未登录用户先看到可定制欢迎页，登录后返回 `/workspace`；访问 `/webui` 的用户登录后仍返回 `/webui`。`/workspace` 在正常页面和资源缺失降级态都不显示、跳转或引导到 API 文档。工作区查询空白页中央显示可定制 Logo 和欢迎词，返回查询内容后 Logo 和欢迎词消失。定制内容以多语言 UI Bundle 提供：构建产物携带内置默认 Bundle，生产环境可通过 `UI_TEMPLATES_DIR` 指向外部只读 Bundle；Server 启动时完整校验并生成不可变快照，前端通过公开 API 按语言读取内容和带内容哈希的资源 URL。
 
 > **术语边界**：本文件中的 `/workspace` 只是“面向日常查询用户的 WebUI URL”，不代表 [服务端多工作空间方案](./LR2-multi-workspace-phase1.md) 中的知识库 `workspace` ID，也不新增知识库选择、数据隔离或多租户语义。后续若同时启用多工作空间能力，二者应分别命名为“查询入口”和“知识库工作区”，避免在代码和文案中混用。
 
@@ -118,7 +118,8 @@ interface RuntimeConfig {
 - 前端不得通过 `window.location.pathname.includes(...)` 猜入口模式；`uiMode` 是唯一权威来源。
 - 静态资源继续使用内容哈希和长期缓存；两个入口的 `index.html` 均不得缓存，并分别注入正确的 `uiPrefix`。
 - 不复制 `webui` 构建目录，不增加第二套 Vite 构建流程。
-- WebUI 资源未打包时，`/workspace` 与 `/webui` 遵循同一降级原则：API 文档可用则跳转 API 文档，否则返回现有服务信息 JSON；不得出现一个入口可用、另一个入口静默 404 的状态。
+- WebUI 资源未打包时，两个入口仍必须显式注册，但采用与各自定位一致的降级行为：`/webui` 保持现有逻辑，API 文档可用时可跳转到 API 文档，否则返回服务信息 JSON；`/workspace` 和 `/workspace/` 无论 `ENABLE_API_DOCS` 是否开启，都只返回固定的查询入口不可用服务信息 JSON，不得重定向到 `/docs`、`/redoc` 或其它 API 文档页面，响应也不得包含 API 文档链接或引导文案。
+- 当 `WEBUI_DEFAULT_ENTRY=workspace` 且 WebUI 资源未打包时，根路径 `/` 必须进入上述 `/workspace` 降级分支，不能因 API 文档可用而改跳 API 文档。两个入口都不得静默 404；“共享同一资源可用性”不等于“共享同一降级目标”。
 
 ### 5.3 前端路由
 
@@ -201,9 +202,9 @@ interface RuntimeConfig {
 
 ```text
 RetrievalView (后台布局) ─┐
-                          ├─ shared query session
+                         ├─ shared query session
 WorkspaceQueryView ──────┘   ├─ message list ── ChatMessage
-                              └─ query composer
+                             └─ query composer
 
 RetrievalView ─────────────── QuerySettings
 WorkspaceQueryView ────────── WorkspaceEmptyState
@@ -534,7 +535,7 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 | --- | --- |
 | Server mount | 同一静态目录挂载 `/webui` 与 `/workspace`，两者均支持 `root_path` |
 | Runtime config | 每个 mount 注入唯一 `uiMode` 和正确 `uiPrefix` |
-| 根路径/降级 | `WEBUI_DEFAULT_ENTRY` 默认 `webui`；选择 `workspace` 时保留 `root_path`；无资源时两个入口一致降级 |
+| 根路径/降级 | `WEBUI_DEFAULT_ENTRY` 默认 `webui`；选择 `workspace` 时保留 `root_path`；无资源时 `/webui` 可沿用 API 文档降级，`/workspace` 只返回无 API 文档链接或引导的固定服务信息 JSON；根路径选择 `workspace` 时遵循后者 |
 | 健康状态 | 保留 `webui_available` 语义，并新增或明确 `workspace_available`；两者由同一资源检查结果派生，不能各自漂移 |
 | UI 定制加载 | 从内置或 `UI_TEMPLATES_DIR` 构造一个只读快照；绝不修改 WebUI 构建目录 |
 | 定制读取 API | 公开端点只返回当前 locale 内容和 manifest 引用资源，并正确处理前缀、ETag、内容哈希与安全响应头 |
@@ -561,12 +562,14 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 | 认证关闭 | 首次访问 `/workspace/` 并点击进入 | 获取 guest token 后进入查询页 |
 | 恶意回跳 | 提交外部 URL 或路径穿越 return target | 拒绝该值并回当前模式默认页 |
 | API 前缀 | 在 `/site01` 下完成以上流程 | 所有资源和跳转保留 `/site01` |
+| 查询入口资源缺失、API 文档开启 | 打开 `/workspace` 或 `/workspace/` | 返回固定的查询入口不可用服务信息 JSON；不重定向、不链接或引导到 API 文档 |
+| 查询入口资源缺失、根路径选择查询入口 | 设置 `WEBUI_DEFAULT_ENTRY=workspace` 后打开 `/` | 进入 `/workspace` 降级分支；即使 API 文档开启也不进入 API 文档 |
 
 ### 12.2 查询功能
 
 - `/workspace` 只渲染独立的 `WorkspaceQueryView`，不挂载 `RetrievalView` 或 `QuerySettings`。
 - `RetrievalView` 与 `WorkspaceQueryView` 复用同一个查询会话控制层、消息列表、输入操作层和 `ChatMessage`，不存在复制的流式/停止/历史状态机。
-- 不存在 `QuerySettings` DOM、后台 Tab、文档/图谱入口或隐藏移动端参数抽屉。
+- 不存在 `QuerySettings` DOM、后台 Tab、文档/图谱/API 文档入口或隐藏移动端参数抽屉。
 - 输入 `/mix what is RAG` 时整段作为普通问题提交，不覆盖 mode。
 - 请求携带当前浏览器中 `/webui` 保存的合法 `top_k`、`mode`、`user_prompt` 等参数；工作区不能编辑或临时覆盖它们。
 - 流式答案、停止、复制、清空、引用、思考区、公式、Mermaid、滚动跟随与现有后台查询页功能一致。
@@ -608,8 +611,9 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 
 ### 13.2 后端测试
 
-- `/webui`、`/workspace` 双 mount 的资源检查、尾斜杠、缓存头和无资源降级。
+- `/webui`、`/workspace` 双 mount 的资源检查、尾斜杠、缓存头和无资源降级；覆盖 `ENABLE_API_DOCS=true/false`，断言资源缺失时 `/workspace` 两种尾斜杠形式都不重定向到 API 文档，响应不包含 API 文档 URL 或引导文案。
 - `WEBUI_DEFAULT_ENTRY` 的默认值、两个合法枚举、非法值拒绝及 `root_path` 重定向。
+- WebUI 资源缺失且 `WEBUI_DEFAULT_ENTRY=workspace` 时，根路径在 `ENABLE_API_DOCS=true/false` 下都进入查询入口的固定 JSON 降级响应，不被 API 文档可用性改写。
 - 不设置、设置和组合 `LIGHTRAG_API_PREFIX` 时的运行时配置注入与重定向。
 - 内置/外部 Bundle 加载、严格 manifest Schema、全部支持语言、locale 规范化、显式 fallback、fallback 环和完整 Bundle 原子校验。
 - 路径穿越、绝对路径、符号链接逃逸、未引用文件、文件超限、MIME 不匹配和 SVG 响应头。
