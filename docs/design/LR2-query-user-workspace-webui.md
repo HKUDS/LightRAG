@@ -7,7 +7,7 @@
 
 ## TL;DR
 
-新增与 `/webui` 并存的 `/workspace` WebUI 入口。同一次前端构建产出两个 HTML 入口：`index.html` 保留现有文档、知识图谱和查询页面，`workspace.html` 渲染独立的 `WorkspaceQueryView`。入口身份就是被加载的那个入口产物，运行时不存在“入口模式”标志。两个查询页面共同复用 `ChatMessage.tsx` 和抽出的查询会话、消息滚动、输入操作能力，但分别拥有自己的页面布局。访问 `/workspace` 的未登录用户先看到可定制欢迎页，登录后返回 `/workspace`；访问 `/webui` 的用户登录后仍返回 `/webui`。`/workspace` 在正常页面和资源缺失降级态都不显示、跳转或引导到 API 文档。工作区查询空白页中央显示可定制 Logo 和欢迎词，返回查询内容后 Logo 和欢迎词消失。定制内容以多语言 UI Bundle 提供：构建产物携带内置默认 Bundle，生产环境可通过 `UI_TEMPLATES_DIR` 指向外部只读 Bundle；Server 启动时完整校验并生成不可变快照，前端通过公开 API 按语言读取内容和带内容哈希的资源 URL。
+新增与 `/webui` 并存的 `/workspace` WebUI 入口。同一次前端构建产出两个 HTML 入口：`index.html` 保留现有文档、知识图谱和查询页面，`workspace.html` 渲染独立的 `WorkspaceQueryView`。入口身份就是被加载的那个入口产物，运行时不存在“入口模式”标志。两个查询页面共同复用 `ChatMessage.tsx` 和抽出的查询会话、消息滚动、输入操作能力，但分别拥有自己的页面布局。访问 `/workspace` 的未登录用户先看到可定制欢迎页，登录后返回 `/workspace`；访问 `/webui` 的用户登录后仍返回 `/webui`。`/workspace` 在正常页面和资源缺失降级态都不显示、跳转或引导到 API 文档。工作区查询空白页中央显示可定制 Logo 和欢迎词，返回查询内容后 Logo 和欢迎词消失。定制内容默认由前端 i18n 资源与打包 Logo 提供，服务端不携带内置 Bundle；生产环境可通过 `UI_TEMPLATES_DIR` 指向外部只读的多语言 UI Bundle，Server 启动时完整校验并生成不可变快照，前端通过公开 API 按语言读取内容和带内容哈希的资源 URL。未配置该变量即为「无定制」，是常态而非降级。
 
 > **术语边界**：本文件中的 `/workspace` 只是“面向日常查询用户的 WebUI URL”，不代表 [服务端多工作空间方案](./LR2-multi-workspace-phase1.md) 中的知识库 `workspace` ID，也不新增知识库选择、数据隔离或多租户语义。后续若同时启用多工作空间能力，二者应分别命名为“查询入口”和“知识库工作区”，避免在代码和文案中混用。
 >
@@ -47,7 +47,7 @@
 - `/workspace` 页面不存在文档管理、图谱管理、API 文档入口和查询参数侧栏。
 - 从 `/workspace` 发起登录的用户登录后返回 `/workspace`；从 `/webui` 发起登录的用户登录后返回 `/webui`。
 - 在 320 px 宽度下无页面级横向滚动，输入框和发送/停止按钮始终可操作，软键盘弹出后当前输入区仍可见。
-- customization 处于 active 状态（即 `workspace.html` 存在）时：未设置 `UI_TEMPLATES_DIR` 使用内置默认 Bundle，显式设置的外部 Bundle 通过完整校验后才能启动，避免定制内容部分生效而造成品牌或语言混用。inactive 时该子系统整体不初始化，见 §8.4。
+- 未设置 `UI_TEMPLATES_DIR` 时显示前端默认的品牌内容，无需任何配置；显式设置时，外部 Bundle 必须通过完整校验才能启动，避免定制内容部分生效而造成品牌或语言混用（§8.4）。
 
 ## 3. 非目标
 
@@ -436,13 +436,20 @@ WorkspaceQueryView ────────── WorkspaceEmptyState
 
 ### 8.1 总体方案与唯一配置入口
 
-定制内容采用“内置默认 UI Bundle + 外部完整覆盖 Bundle”的模型，而不是在 Server 启动时把客户文件复制到或覆盖前端构建目录。
+定制内容采用“前端内置默认内容 + 外部完整覆盖 Bundle”的模型，而不是在 Server 启动时把客户文件复制到或覆盖前端构建目录。
 
 | 项目 | 位置/配置 | 说明 |
 | --- | --- | --- |
-| 内置默认源文件 | `lightrag_webui/public/ui_defaults/` | 随前端源码维护，覆盖当前 WebUI 全部语言 |
-| 内置默认构建产物 | `lightrag/api/webui/ui_defaults/` | 由 Vite 构建自动复制并随 PyPI/容器发布；Server 不修改该目录 |
+| 默认文案 | `lightrag_webui/src/locales/*.json` | 走现有 i18n 流程，天然覆盖当前 WebUI 全部语言；不经服务端 |
+| 默认 Logo | `lightrag_webui/src/assets/` 下以模块方式 import | 由 Vite 加内容哈希后随前端产物发布；不经服务端 |
 | 生产定制目录 | `UI_TEMPLATES_DIR` | 可选，指向打包目录之外的完整 UI Bundle；建议以只读卷挂载 |
+
+**服务端不携带任何内置 Bundle。** §8.8 本来就要求前端具备一条「拿不到定制内容时渲染自身默认内容」的路径，因此一份服务端内置 Bundle 只是同一件事的第二套实现——它同时把 `ui_defaults/` 的构建复制、打包、原始路径拒绝规则、11 语言的服务端维护，以及「内置 Bundle 缺失是否阻止启动」这一整串交叉判断带了进来。把默认内容留在前端，这些全部消失，而用户可见结果不变；额外收益是默认文案进入现有 i18n 翻译流程，而不是一份没有翻译工作流的服务端资源。
+
+由此得到两条贯穿本节的边界：
+
+- **`UI_TEMPLATES_DIR` 是 customization 子系统存在与否的唯一开关。** 未设置即「无定制」，是常态而非故障；设置了就必须完整可用。
+- **customization 与 `/workspace` 产物可用性完全正交。** Bundle 校验是纯文件读取，不依赖 `workspace.html`；两者不存在需要联合判断的交叉状态，因此不存在 active/inactive 概念。
 
 生产部署示例：
 
@@ -518,10 +525,10 @@ ui_templates/
 
 - Locale key 使用 BCP 47 风格的连字符形式，例如 `zh-TW`，不在 Bundle 中使用前端内部的 `zh_TW`（前端 i18n 资源键与 `src/locales/*.json` 文件名用的是下划线形式）。规范化必须有**单一咽喉**：前端在发起 customization 请求时把内部标识转成连字符形式，Server 只接受连字符形式并拒绝下划线值。不得两侧各写一份转换。
 - 每个声明的 locale 必须同时提供 `welcome`、`query_empty` 和非空 `logo_alt`。
-- `brand.logo` 是所有语言共享的默认 Logo；locale 条目可选的 `logo` 覆盖该语言的 Logo，以满足不同语言使用不同品牌图的需求。
+- **`brand.logo` 必填**，是所有语言共享的默认 Logo；locale 条目可选的 `logo` 覆盖该语言的 Logo，以满足不同语言使用不同品牌图的需求。不展示任何 Logo 的 Bundle 必须显式写 `"logo": null`，**不得省略该字段**——省略在过去会静默落到 LightRAG 内置 Logo，产出「客户文案 + LightRAG 图标」这种比语言错配更糟的品牌事故。取消内置 Bundle 后服务端已无可回落的对象，把它定成必填是为了让这个空档在 Schema 层就不可表达，而不是留给实现去猜。
 - `fallbacks` 是可选的显式有序映射，解析**非递归**：source 可以不是 `locales` 的成员（正是为了处理 Bundle 未覆盖的受支持语言），但每个 target 必须是已声明的 locale。因为只查一层且 target 必然存在，环在结构上不可能出现，故**不做环检测**——上一版要求的“不能出现环”是在“target 必须存在”前提下永远为真的空条款。
 - 未在 manifest 中引用的文件不对外提供，也不参与 revision 计算。
-- 内置默认 Bundle 必须至少覆盖当前 WebUI 的 `en`、`zh`、`zh-TW`、`fr`、`ar`、`ru`、`ja`、`de`、`uk`、`ko`、`vi`。
+- 外部 Bundle **允许只覆盖部分语言**，未覆盖的语言按 §8.3 整体回退到该 Bundle 自己的 `default_locale`。全部受支持语言（`en`、`zh`、`zh-TW`、`fr`、`ar`、`ru`、`ja`、`de`、`uk`、`ko`、`vi`）的默认内容由前端 i18n 资源覆盖，不是 Bundle 的义务。
 
 `WEBUI_TITLE` 和 `WEBUI_DESCRIPTION` 继续是部署级、非本地化的站点标题和描述，由现有 Server 配置拥有；它们不在 manifest 中重复定义。欢迎正文、查询空白态正文和 `logo_alt` 由多语言 Bundle 提供。若未来需要本地化站点标题，应另行扩展 Schema，不能同时维护两个权威来源。
 
@@ -543,32 +550,34 @@ Server 在匹配前对 `requested_locale` 做 BCP 47 规范化：校验格式与
 
 按 §8.3 的前两步，`requested_locale` 通常已被规范化为当前 WebUI 支持的语言之一；`fallbacks` 主要服务于两类情形：Bundle 未覆盖某个受支持语言（例如只翻译了部分语言的客户 Bundle），以及直接调用配置端点时传入的任意 BCP 47 值。
 
-不自动进行区域或书写系统推断，例如不能自行断言 `zh-HK → zh`，因为部署方可能希望它回退到 `zh-TW`。外部 Bundle 缺少用户所选语言时，必须回退到外部 Bundle 自己的默认语言，不能逐字段混入 LightRAG 内置 Bundle，否则同一页面可能出现客户 Logo、LightRAG 文案或语言错配。
+不自动进行区域或书写系统推断，例如不能自行断言 `zh-HK → zh`，因为部署方可能希望它回退到 `zh-TW`。
+
+**原子性规则（取消内置 Bundle 后必须重新表述）**：过去这条规则的对手方是「LightRAG 内置 Bundle」，服务端侧的逐字段混用现在已不可能；新的混用面移到了前端。规则改为：
+
+> Bundle 一旦激活，某个 locale 的**完整表示只能来自该 Bundle 自身**——缺语言时整体回退到它的 `default_locale`，缺字段在启动校验阶段就已被拒绝。**前端默认内容只在两种情形下整体使用：未配置 `UI_TEMPLATES_DIR`，以及 customization 请求硬失败**（§8.8）。任何情况下都不得把 Bundle 内容与前端默认内容逐字段拼接。
+
+具体到最容易发生的一例：Bundle 提供了 `welcome.md` 却没提供 Logo 时，**不得**回落到 LightRAG 默认 Logo；这由 §8.2 的 `brand.logo` 必填在 Schema 层拦住。
 
 阿拉伯语等 RTL 布局方向从系统维护的可信 locale 注册表推导，不允许模板提供 CSS 或任意 `dir` 值。
 
 ### 8.4 Server 启动快照与失败语义
 
-Server 启动时构造不可变的 `UICustomizationSnapshot`：
+Server 启动时按以下规则构造 customization 状态：
 
-0. **先按 §5.2 独立检查两个 HTML 产物。** 内置 Bundle 位于 WebUI 构建产物中，旧构建目录通常既没有 `workspace.html` 也没有 `ui_defaults/`；若不先做这一判断，“内置 Bundle 缺失即阻止启动”会让本该只降级查询入口的场景变成整个 Server 起不来，与 §5.2 的独立可用性判断直接冲突。
-1. `workspace.html` 缺失时，customization 子系统**整体不初始化**：不加载内置 Bundle，`/workspace` 进入固定 JSON 降级，后台照常可用。此时即使显式设置了 `UI_TEMPLATES_DIR` 也不校验、不 fail-fast，只输出一条明确的启动告警（`workspace unavailable; customization inactive; UI_TEMPLATES_DIR ignored`）——理由与上一条同源：不让一个无法被提供的子系统拖垮仍然可用的后台。补齐构建产物并重启后，下列 fail-fast 语义原样恢复。
-2. `workspace.html` 存在时，始终加载并校验随构建发布的内置默认 Bundle；此时内置 Bundle 才是强制启动依赖，其错误属于发布缺陷，应阻止启动。
-3. 未设置 `UI_TEMPLATES_DIR` 时，直接激活内置 Bundle 快照。
-4. 显式设置 `UI_TEMPLATES_DIR` 时，从该目录读取并完整校验一个外部 Bundle；全部通过后再原子激活它。
-5. 外部 Bundle 的 manifest、任一已声明 locale 或任一被引用资源缺失、不可读、超限或格式非法时，Server 启动失败并给出可操作但不泄露敏感内容的错误；不得悄悄改用默认 Bundle。
-6. 不把外部文件复制到 `lightrag/api/webui/ui_defaults/`，也不修改 Python 包、容器镜像或前端构建产物。
+1. **未设置 `UI_TEMPLATES_DIR`（默认形态）**：不存在任何 Bundle，customization 快照为空。这不是故障，不产生告警，也不影响任何端点的可用性——`/ui/customization` 照常注册并返回「无定制」表示（§8.5），前端渲染自身默认内容。
+2. **显式设置 `UI_TEMPLATES_DIR`**：从该目录读取并**完整校验**一个外部 Bundle，全部通过后原子激活为不可变的 `UICustomizationSnapshot`。
+3. manifest、任一已声明 locale、任一被引用资源缺失、不可读、超限或格式非法时，**Server 启动失败**并给出可操作但不泄露敏感内容的错误；不得悄悄改用前端默认内容——那正是运维以为客户品牌已生效、实际展示 LightRAG 内容的失效模式。
+4. 不修改 Python 包、容器镜像或前端构建产物；外部目录只以只读方式加载为内存快照。
 
-customization **inactive** 时的对外契约（与上面第 1 步一一对应）：
+**校验与 `workspace.html` 是否存在完全正交。** Bundle 校验是纯文件读取，不依赖前端产物；即便查询入口按 §5.2 进入降级，“你显式配置的 Bundle 是坏的”依然是真话，静默忽略只会让运维在补齐构建产物之后才发现配错了。因此这里没有 active/inactive 状态，没有需要联合判断的交叉项，`/health` 也不新增任何 customization 字段。
 
-- `/ui/customization` 配置端点与资源端点一律返回 **503**，而不是 404。它们是已注册的路由、只是子系统暂不可用；404 会与“未知资源被拒绝”混淆，让运维分不清是配置错了还是产物缺了。
-- `/health` **不新增字段**：inactive 当且仅当 `workspace_available=false`，二者按 §8.4 第 1 步严格 1:1，再加一个字段只会制造两个可能漂移的真相源。
-- 启动日志输出 `workspace unavailable; customization inactive`，**不得**尝试打印不存在的 Bundle source 或 revision。
-- 由此把 §11.2 中原先悬置的问题定死：**`bundle_revision` 与 Bundle 来源只出现在受认证的 `/health` 与启动日志中**，不进入公开 liveness 层，也不因 active/inactive 而改变归属。
+这条规则相对上一版收紧了一个组合：**已配置 `UI_TEMPLATES_DIR`、Bundle 非法、且恰好使用了陈旧构建目录的部署会整体启动失败。** 明确接受——失败信息是准确的，且陈旧构建目录本身不会凭空注入这个环境变量，触发面比上一版要防的场景窄得多。而上一版为覆盖该场景引入的整套 active/inactive、503 契约与 `UI_TEMPLATES_DIR ignored` 告警，其真正成因是「内置 Bundle 是每个正常部署都存在的强制依赖」；这一前提已经不存在。
 
 启动快照包含已解析的文案、资源字节、MIME、内容哈希、locale revision 和 bundle revision。请求阶段不重新读取磁盘，多个 worker 各自从同一只读目录构造相同快照。修改 `UI_TEMPLATES_DIR` 中的内容后需要重启所有 Server worker；本期不做文件监听或热重载。
 
 模板文件单个限制为 64 KiB，Logo 单个限制为 2 MiB。具体限制应集中定义并在运维文档中说明。
+
+**示例 Bundle 作为文档资产提供。** 取消内置 Bundle 后，客户失去了一份可照着改的参照物。补偿方式是在仓库文档目录中放一份 example bundle：它是纯文档，服务端不加载、不打包进运行时，也不参与任何校验或缓存路径。
 
 ### 8.5 公开读取 API
 
@@ -607,6 +616,25 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 
 其中 `brand.title` 和 `brand.description` 只映射现有 `WEBUI_TITLE` / `WEBUI_DESCRIPTION`，manifest 不能覆盖它们。API 不返回 Bundle 根目录、绝对文件路径或其它 Server 配置。
 
+**未配置 Bundle 时的返回形态**。默认部署没有 Bundle，前端在启动时无从预知这一点，因此必须发起这次请求；它的响应是常态而非故障：
+
+```json
+{
+  "customized": false,
+  "brand": {
+    "title": "LightRAG",
+    "description": "Simple and Fast RAG"
+  }
+}
+```
+
+规则：
+
+- 两种情形**统一返回 200**，Bundle 激活时 `customized` 为 `true` 并附带上面的完整表示。前端只判这一个布尔，`false` 即整体渲染自身默认内容（§8.3 原子性规则）。
+- 不使用 404 或 503 表达「没有定制」。404 会与 §8.7 的「未知资源被拒绝」混淆，503 则暗示一个暂时不可用、稍后会恢复的子系统——而未配置 `UI_TEMPLATES_DIR` 是一个稳定且正确的终态。
+- 资源端点 `/ui/customization/assets/...` 在无 Bundle 时不存在任何合法 `asset_hash`，一律按 §8.7 的未知资源处理，返回 404。
+- `brand.title` / `brand.description` 在两种情形下都返回，因为它们来自 `WEBUI_TITLE` / `WEBUI_DESCRIPTION` 而不是 Bundle。
+
 ### 8.6 Revision、资源标识与缓存失效
 
 缓存模型区分以下四个概念：
@@ -615,7 +643,7 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 | --- | --- | --- |
 | `asset_id` | 稳定的语义标识，例如 `brand-logo` | 资源角色变化时才变，不作为缓存失效值 |
 | `asset_hash` | 资源原始字节的 SHA-256 | Logo 等资源内容变化时改变，并进入 URL |
-| `bundle_revision` | 整个已激活 Bundle 的确定性摘要 | 任一 manifest、文案或被引用资源变化时改变；用于健康状态和日志 |
+| `bundle_revision` | 整个已激活 Bundle 的确定性摘要 | 任一 manifest、文案或被引用资源变化时改变；用于健康状态和日志。无 Bundle 时不存在 |
 | locale `revision` | 当前 locale API 表示的确定性摘要 | 该 locale 最终返回的文案、Logo、替代文本、方向或部署级标题/描述变化时改变 |
 
 缓存规则：
@@ -625,10 +653,11 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - 只修改日语文案时，日语 locale revision 和 bundle revision 改变；中文 locale revision 及未变化的 Logo URL 保持不变。
 - 修改 `WEBUI_TITLE` 或 `WEBUI_DESCRIPTION` 时，所有 locale revision 改变，但 bundle revision、asset hash 和 Logo URL 不变。
 - 修改外部 `UI_TEMPLATES_DIR` 内容并重启后，Server 重新计算上述摘要；文案靠 ETag 失效，资源靠 URL 中的 `asset_hash` 失效。
-- 修改 `lightrag_webui/public/ui_defaults/` 后，必须重新构建并部署 WebUI；新 Server 以相同算法加载新默认 Bundle，因此缓存失效机制完全相同。
-- 前端和页面模板不得直接引用 `/ui_defaults/logo.svg` 等 Vite public 固定路径；否则文件名不带内容哈希，浏览器或 CDN 可能继续使用旧资源。所有可定制资源均经上述资源 API 访问。
+- **默认内容不经本节机制**：前端默认文案随 JS chunk 走 Vite 的内容哈希，默认 Logo 以模块方式 import 后同样带哈希，两者都由既有的 `assets/` 长期 immutable 策略覆盖，无需服务端参与。
+- 因此 `lightrag_webui/public/logo.svg` 若要作为默认 Logo 使用，**必须先移到 `src/assets/` 并以模块方式 import**。留在 `public/` 下的文件名不带内容哈希，浏览器或 CDN 会在版本更新后继续使用旧图——这正是本节要避免的失效模式。
+- Bundle 提供的可定制资源一律经上述资源 API 访问，不得由前端拼接任何 Bundle 路径。
 
-`bundle_revision` 和激活来源（`builtin`/`custom`）可写入启动日志与健康信息，但不得暴露服务器目录。若配置中含 locale 列表，可公开返回语言标识，但不返回文件结构。
+`bundle_revision` 可写入启动日志与认证后的健康信息，但不得暴露服务器目录。取消内置 Bundle 后不再存在 `builtin`/`custom` 两种来源：要么有一个外部 Bundle，要么没有 Bundle，日志相应地只需表达这一件事。若配置中含 locale 列表，可公开返回语言标识，但不返回文件结构。
 
 摘要计算必须跨进程、平台和重启保持确定性：manifest 先按约定进行规范化序列化，引用路径按规范化后的相对路径排序，再将路径、内容字节和必要的响应元数据纳入 SHA-256；locale `revision` 对最终响应表示计算，并排除 `revision` 字段自身。多个 worker 对相同输入必须得到相同结果。
 
@@ -637,7 +666,6 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - manifest 使用严格 Schema，拒绝未知字段、错误类型、重复或非法 locale，以及非法的 fallback source/target、空数组、数组内重复项和不存在的 target。按 §8.2 的单层解析不做环检测。
 - 所有相对路径必须解析后仍位于 Bundle 根目录内；拒绝绝对路径、`..` 穿越以及通过符号链接逃逸根目录。
 - 只读取并公开 manifest 明确引用的文件。
-- 由于 Vite 会把 `public/ui_defaults/` 复制到静态构建目录，Server 的静态文件处理必须显式拒绝直接访问 `ui_defaults/` 原始路径；内置内容也只能通过 customization API 暴露，避免绕过 manifest 与响应头策略。
 - Markdown 禁用原始 HTML、脚本、iframe、表单和事件属性；链接只允许明确的安全 scheme，并为新窗口链接添加 `noopener noreferrer`。
 - Logo 支持 PNG、JPEG、WebP 和 SVG，按实际内容校验 MIME，不只信任扩展名。
 - 自定义 SVG 仅作为 `<img>` 资源加载，不以内联 DOM 注入；资源响应设置正确的 `Content-Type`、`X-Content-Type-Options: nosniff` 和限制性 CSP。
@@ -651,8 +679,10 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - 应用启动时并行请求认证状态和当前 locale 的 customization 配置，避免串行增加首屏时间。
 - 用户切换语言时重新请求该 locale；新响应成功前保留当前完整内容，成功后一次性切换 Logo、替代文本和两处文案，不能逐字段闪烁。
 - 定制快照仅缓存在当前页面内存中，不写入 localStorage，避免部署更新后长期残留旧内容。
-- 配置请求暂时失败时可以保留本页面内最近一次成功快照并提供重试；首次加载失败时显示前端最小安全默认内容，登录和查询操作仍可使用。
+- 配置请求暂时失败时可以保留本页面内最近一次成功快照并提供重试；首次加载失败时显示前端默认内容，登录和查询操作仍可使用。
 - 主题或语言切换不能绕过 Server 返回的资源 URL，也不能直接拼接 Bundle 路径。
+- **首屏不得先渲染前端默认内容再被 Bundle 内容替换。** 请求未完成期间显示 loading 占位（与 §10 第一条一致）；只有在响应明确为 `customized: false` 或请求硬失败时才落到前端默认内容。否则配置了 Bundle 的部署会在每次首屏看到一次 LightRAG 默认内容闪过——这与 §8.3 的原子性规则是同一条要求在时间维度上的表达。
+- 前端默认内容必须走**与 Bundle 内容相同的渲染器与 `customization` sanitize 档位**（§8.7），否则「有无 Bundle」会带来可观察的渲染行为差异，且默认路径会失去 allow-list 保护。
 
 ### 8.9 欢迎页行为
 
@@ -672,7 +702,7 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - Logo 保持宽高比，桌面端最大边 120 px，手机端最大边 88 px；不得挤压输入区。
 - 欢迎词使用当前 locale 解析后的 `query_empty` 内容，内容居中但长段落保持可读行宽。
 - 发送第一条问题后空白态消失；清空消息后重新出现。
-- Logo 加载失败时隐藏破损图片并继续显示欢迎词。
+- Logo 加载失败时隐藏破损图片并继续显示欢迎词；Bundle 显式声明 `"logo": null` 时同样只显示欢迎词，布局不留空位。
 - 后台 `/webui` 的查询空白态保持现有行为，除非后续另行决定统一品牌展示。
 
 ## 9. 移动端要求
@@ -704,11 +734,11 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 
 - 欢迎页、登录页和查询页均提供明确的 loading 状态，初始化期间不闪现后台页面。
 - 查询失败沿用现有消息内错误展示；401 与普通查询错误分流，不把认证失效渲染成模型回答失败。
-- customization API 的临时请求或渲染失败只影响定制内容，不影响登录和查询；显式配置的外部 Bundle 若在启动校验阶段失败，则 Server 按 §8.4 fail-fast。收到 503（子系统 inactive）时前端回落到最小安全默认内容，与请求失败同路处理，不向用户暴露内部状态。
+- customization API 的临时请求或渲染失败只影响定制内容，不影响登录和查询；显式配置的外部 Bundle 若在启动校验阶段失败，则 Server 按 §8.4 fail-fast。收到 `customized: false` 或请求硬失败时，前端整体回落到自身默认内容，不向用户暴露内部状态。
 - 所有页面支持键盘导航和可见焦点；颜色对比满足 WCAG 2.1 AA 的常见文本要求。
 - Logo 使用有意义的替代文本；纯装饰图标标记为隐藏。
 - `prefers-reduced-motion` 下减少非必要动画。
-- 当前 WebUI 的全部语言继续可选，前端不对自定义 Markdown 做运行时机器翻译。覆盖要求分两档：**内置 Bundle 必须覆盖全部受支持语言**；**外部 Bundle 允许只覆盖部分语言**。无论哪一档，每个**已声明**的 locale 都必须字段完整（§8.2），未覆盖的语言按 §8.3 的显式 fallback 与 `default_locale` **整体**回退，不做逐字段拼接。
+- 当前 WebUI 的全部语言继续可选，前端不对自定义 Markdown 做运行时机器翻译。默认内容由前端 i18n 资源覆盖全部受支持语言；**外部 Bundle 允许只覆盖部分语言**，但每个**已声明**的 locale 都必须字段完整（§8.2），未覆盖的语言按 §8.3 的显式 fallback 与 `default_locale` **整体**回退到该 Bundle 内部，不做逐字段拼接，也不与前端默认内容混用。
 
 ## 11. 兼容性与系统同步
 
@@ -723,7 +753,7 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - 升级影响面：根部署（`LIGHTRAG_API_PREFIX` 为空）与直连端口部署的用户**完整保留**已保存的参数、历史与 `apiKey`，因为它们的 `<ns>` 本就是空命名空间。单实例、非空前缀的部署会丢失这些站点作用域状态并需重新录入一次 `apiKey`；登录态不受影响（`LIGHTRAG-API-TOKEN` 仍在 origin 级）。这是不猜测归属所付的代价，见 §7.4。
 - 带前缀站点的后端版本、标题与描述缓存在升级后重新请求一次，用户无感。`LIGHTRAG-PREVIOUS-USER` 随其余 legacy 状态一并迁入空命名空间：根部署站点因此不会把刚迁过来的历史误清；带前缀站点没有该记录，其首次登录会执行一次保守的历史清理，而此时历史本就为空，是空操作。
 - 当前 `WEBUI_TITLE` / `WEBUI_DESCRIPTION` 继续作为部署级、非本地化站点标题和描述，同时可供查询入口页头使用；欢迎页和空白态正文由 UI Bundle 拥有。
-- customization active 时：未设置 `UI_TEMPLATES_DIR` 的部署自动使用打包的 `ui_defaults`，升级无需新增配置；显式设置该变量的部署必须提供符合当前 Schema 的完整 Bundle。inactive 时（`workspace.html` 缺失）该变量被忽略并告警，不阻止启动。
+- 未设置 `UI_TEMPLATES_DIR` 的部署升级后自动显示前端默认品牌内容，无需新增配置；显式设置该变量的部署必须提供符合当前 Schema 的完整 Bundle，否则启动失败（与 `workspace.html` 是否存在无关，§8.4）。
 - 根路径 `/` 默认仍跳转 `/webui`；只有显式配置 `LIGHTRAG_DEFAULT_UI=workspace` 时才跳转 `/workspace`。
 - 构建产物新增 `workspace.html`。用新服务端配旧构建目录时后台仍完整可用，只有查询入口进入不可用降级分支（§5.2）。
 
@@ -740,13 +770,13 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 | 前端入口分流 | 两个入口各自组合自己的 router 与应用壳；工作区入口的**首屏静态依赖闭包**不含图谱/文档管理，mermaid 改为动态 import；品牌链接改为 `href="./"`；共享导航单例（含图谱重置适配器）由入口 bootstrap 显式配置 |
 | 客户端状态存储 | 按 §7.4 的完整盘点表逐键归类：只有认证凭据及其伴随项留在 origin 级，其余站点相关状态一律按 `apiPrefix` 分区；`querySettings` 独立 persist key（仅后台运行期可写），两份查询历史各自独立；迁移复用既有版本链（抽为无副作用纯模块）、目标命名空间静态固定为空命名空间因而无需任何锁、新键优先、先写全部再清理、部分失败可重试；迁移模块是入口文件的第一个静态 import；工作区监听本命名空间的 `storage` 事件重新 hydrate 参数 |
 | 根路径/降级 | `LIGHTRAG_DEFAULT_UI` 默认 `webui`，env + CLI 双通道，非法值启动期 fail-fast（含 env 取值）；选择 `workspace` 时保留 `root_path`；无资源时 `/webui` 可沿用 API 文档降级，`/workspace` 只返回无 API 文档链接或引导的固定服务信息 JSON；根路径遵循所选入口自己的降级分支，不改投另一入口 |
-| 健康状态 | 保留 `webui_available` 语义，并新增 `workspace_available`；两者由**各自产物**的检查结果派生，且**都留在 `/health` 的公开 liveness 层**——`webui_available` 今天就是匿名可见的 liveness 信号，把它挪进认证层会破坏既有契约，而两个入口是否挂载本就可由请求该路径直接探得。文件系统路径、Bundle 目录、`bundle_revision` 与 Bundle 来源只在认证层与启动日志中出现（§8.4）；customization 是否 active 由 `workspace_available` 表达，不新增字段 |
-| UI 定制加载 | 从内置或 `UI_TEMPLATES_DIR` 构造一个只读快照；绝不修改 WebUI 构建目录 |
-| 定制读取 API | 公开端点只返回当前 locale 内容和 manifest 引用资源，并正确处理前缀、ETag、内容哈希与安全响应头 |
-| 启动日志 | 同时打印后台和查询入口的实际带前缀 URL，以及 customization 来源、bundle revision 和校验结果；不打印服务端目录 |
+| 健康状态 | 保留 `webui_available` 语义，并新增 `workspace_available`；两者由**各自产物**的检查结果派生，且**都留在 `/health` 的公开 liveness 层**——`webui_available` 今天就是匿名可见的 liveness 信号，把它挪进认证层会破坏既有契约，而两个入口是否挂载本就可由请求该路径直接探得。文件系统路径、Bundle 目录与 `bundle_revision` 只在认证层与启动日志中出现（§8.4）；customization 不新增任何 `/health` 字段，它与两个入口的可用性正交 |
+| UI 定制加载 | 仅当设置 `UI_TEMPLATES_DIR` 时从该目录构造一个只读快照；未设置即无定制，由前端渲染自身默认内容；绝不修改 WebUI 构建目录 |
+| 定制读取 API | 公开端点只返回当前 locale 内容和 manifest 引用资源，并正确处理前缀、ETag、内容哈希与安全响应头；无 Bundle 时统一返回 200 `customized: false`，不使用 404/503 表达该状态（§8.5） |
+| 启动日志 | 同时打印后台和查询入口的实际带前缀 URL；配置了 Bundle 时打印 bundle revision 与校验结果，未配置时打印一行「无定制」；不打印服务端目录 |
 | 登录导航 | 所有登录成功、退出、401、guest token 更新路径继续只经 `navigate()` 完成（入口由挂载路径天然保留），未登录默认页由各入口自己的路由表定义 |
-| 打包 | PyPI/容器仍只打包一份 `lightrag/api/webui` 产物，其中包含完整的内置 `ui_defaults` |
-| 文档 | 更新 Server/WebUI 启动文档、`env.example`、Bundle Schema、Docker 只读挂载示例和多站点部署说明；[多站点部署文档](../MultiSiteDeployment.md) 中描述 `webuiPrefix` 注入与 `/` 降级链路的段落需同步 |
+| 打包 | PyPI/容器仍只打包一份 `lightrag/api/webui` 产物；不新增任何服务端默认内容目录。默认 Logo 需从 `public/` 移入 `src/assets/` 以获得 Vite 内容哈希（§8.6）。示例 Bundle 只作为文档资产提供，不进运行时 |
+| 文档 | 更新 Server/WebUI 启动文档、`env.example`、Bundle Schema、示例 Bundle、Docker 只读挂载示例和多站点部署说明；[多站点部署文档](../MultiSiteDeployment.md) 中描述 `webuiPrefix` 注入与 `/` 降级链路的段落需同步 |
 | 路由审计 | 将 `/workspace` mount 和公开 customization/config 面加入完整路由/mount 清单。注意多工作空间方案会引入 `/workspaces*` 管理端点，与本入口的 `/workspace/` 仅差一个字母——不构成前缀冲突，但清单与运维文档中并排出现时需分别标注用途 |
 
 两个入口现在各有自己的构建产物，因此 `webui_available` 与 `workspace_available` 是两个独立的检查结果，而不是同一个布尔的两个视图；`/health` 必须能表达“后台可用、查询入口缺失”这一真实状态。这不等于引入产品级开关：本期没有“关闭查询入口”的配置，未来若增加，再单独设计其默认值和健康语义。
@@ -794,16 +824,16 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 
 ### 12.3 定制化
 
-- 未设置 `UI_TEMPLATES_DIR` 时，所有支持语言均显示内置 Logo、欢迎页和查询欢迎词。
-- 指向合法完整 Bundle 并重启后，欢迎页与空白态按当前语言显示客户内容，无需重建前端，也不修改 `lightrag/api/webui/ui_defaults/`。
-- customization 处于 active 状态时，显式配置的 Bundle 出现 manifest Schema 错误、缺少默认语言、非法或不存在的 fallback target、文件缺失/超限、路径逃逸或 Logo MIME 不匹配时，Server 启动失败并报告错误，不发生内置与客户内容的逐字段混用。
-- 精确语言不存在时按 manifest 显式 fallback、再按外部 Bundle 自己的 `default_locale` 回退；不会回退到内置 Bundle。
+- 未设置 `UI_TEMPLATES_DIR` 时，所有支持语言均显示前端默认 Logo、欢迎页和查询欢迎词；`/ui/customization` 返回 200 `customized: false`，不产生任何告警。
+- 指向合法完整 Bundle 并重启后，欢迎页与空白态按当前语言显示客户内容，无需重建前端，也不修改任何构建产物。
+- 显式配置的 Bundle 出现 manifest Schema 错误、缺少默认语言、缺少 `brand.logo`、非法或不存在的 fallback target、文件缺失/超限、路径逃逸或 Logo MIME 不匹配时，Server 启动失败并报告错误；**该行为与 `workspace.html` 是否存在无关**。
+- 精确语言不存在时按 manifest 显式 fallback、再按外部 Bundle 自己的 `default_locale` 回退；**不会回落到前端默认内容**，也不与之逐字段拼接。
+- Bundle 激活时首屏不出现「前端默认内容闪过再被客户内容替换」；请求未完成期间显示 loading 占位。
 - 用户切换语言后，欢迎页和空白态使用相同解析结果原子更新，RTL 方向正确，切换过程中不出现跨语言字段混合。
 - 模板中的 `<script>`、事件属性、iframe 和危险 URL 不执行。
-- customization inactive 时，配置端点与资源端点返回 503 而非 404，前端回落到最小安全默认内容且查询功能不受影响。
 - customization API 支持 locale ETag/304；文案变化后对应 locale revision 改变，未变化的 locale 可继续 304。
 - Logo 字节变化后 `asset_hash` 和资源 URL 改变；仅文案变化时 `asset_id` 和未修改 Logo URL 保持稳定。
-- 修改内置 `ui_defaults` 并重新构建/部署后，也通过相同的 revision 与 asset hash 机制使缓存失效。
+- 默认 Logo 与默认文案随前端产物的内容哈希失效，不经 customization API；`public/` 下不存在被直接引用的可定制资源。
 - 浏览器响应、健康信息和日志不暴露模板/Logo 的服务端绝对路径或文件内容之外的配置。
 
 ### 12.4 移动端
@@ -847,6 +877,7 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - 两个页面的流式完成、失败、停止、清空、历史持久化和卸载清理使用同一组共享层测试（历史存储由测试注入，不由共享层选择）。
 - 空白态首次显示、发送后隐藏、清空后恢复。
 - customization 加载失败、语言切换原子更新、RTL、fallback 测试。
+- `customized: false` 响应下整体渲染前端默认内容；Bundle 响应下不出现「默认内容先渲染再被替换」（请求未完成期间为 loading 占位）；断言两条路径经过同一渲染器与 `customization` sanitize 档位。
 - Markdown 安全渲染需分档断言：`customization` 档对原始 HTML 直接丢弃（而非净化后保留），`chat` 档维持现有 `chatMarkdownSanitizeSchema` 行为不回归。
 
 ### 13.2 后端测试
@@ -858,14 +889,15 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - `LIGHTRAG_DEFAULT_UI` 的默认值、两个合法枚举、非法值拒绝（命令行与环境变量两条通道都必须拒绝）及 `root_path` 重定向。
 - 查询入口产物缺失且 `LIGHTRAG_DEFAULT_UI=workspace` 时，根路径在 `ENABLE_API_DOCS=true/false` 下都进入查询入口的固定 JSON 降级响应，既不被 API 文档可用性改写，也不改投 `/webui/`。
 - 不设置、设置和组合 `LIGHTRAG_API_PREFIX` 时的运行时配置注入与重定向。
-- 内置/外部 Bundle 加载、严格 manifest Schema、全部支持语言、locale 规范化（含大小写归一与下划线拒绝）、单层显式 fallback 与 `default_locale` 兜底、完整 Bundle 原子校验。
-- 只存在 `index.html` 时，即使 `ui_defaults/` 缺失或显式设置了非法的 `UI_TEMPLATES_DIR`，Server 仍正常启动，后台可用，`/workspace` 降级，并输出 customization inactive 告警；补齐 `workspace.html` 后同样的非法配置重新变为启动失败。
-- customization inactive 时配置端点与资源端点返回 503（非 404），`/health` 不新增字段且 `workspace_available=false`，启动日志不打印 Bundle source 或 revision。
+- 外部 Bundle 加载、严格 manifest Schema（含 `brand.logo` 必填与显式 `null` 的接受）、locale 规范化（含大小写归一与下划线拒绝）、单层显式 fallback 与 `default_locale` 兜底、完整 Bundle 原子校验。
+- 未设置 `UI_TEMPLATES_DIR` 时：配置端点返回 200 且 `customized=false` 并携带 `brand.title` / `brand.description`，资源端点对任意 `asset_hash` 返回 404，启动无告警。
+- **正交性测试**：`workspace.html` 存在与否 × `UI_TEMPLATES_DIR` 未设置/合法/非法，六种组合下 customization 的行为只由后一维决定——非法配置在两种产物状态下都启动失败，合法配置在两种产物状态下都成功加载，未设置时都无告警。
+- `/health` 不含任何 customization 字段。
 - 路径穿越、绝对路径、符号链接逃逸、未引用文件、文件超限、MIME 不匹配和 SVG 响应头。
 - customization 配置端点的 locale ETag/304、部署前缀，以及资源端点的 `asset_hash`、长期 immutable 缓存和未知资源拒绝。
 - 分别修改单一语言文案、共享 Logo、`WEBUI_TITLE`，验证 locale revision、bundle revision 和 asset hash 的变化边界。
 - `/health` 中两个入口可用性字段与实际 mount 一致。
-- 实际 `app.routes` 审计包含两个 mount 和公开 customization/config 面，并验证原始 `ui_defaults/` URL 被拒绝。
+- 实际 `app.routes` 审计包含两个 mount 和公开 customization/config 面。
 
 ### 13.3 浏览器验证
 
@@ -895,7 +927,7 @@ cd ..
 2. **入口感知认证**：两个入口各自的 router 与未登录默认页，欢迎页路由，共享导航单例的 bootstrap 配置，登录/退出/401/guest 全链路只经 `navigate()`。
 3. **客户端状态边界**：按 §7.4 盘点表分区站点作用域存储，把迁移模块置为入口文件的第一个静态 import、把 v1→v21 链抽为纯模块并复用、实现目标静态固定为空命名空间的无锁迁移、`storage` 事件重新 hydrate；收紧 token 本地校验；解耦导航核心与图谱 store（重置适配器），`ChatMessage` 的 mermaid 改为动态 import。这一步不引入新页面，可独立在 `/webui` 上验证无回归。
 4. **查询共享层与工作区 UI**：从 `RetrievalView` 抽出查询会话、消息列表和输入操作层（历史存储由页面注入）；新增复用 `ChatMessage` 的 `WorkspaceQueryView`、空白态和精简应用壳；工作区入口只 import 查询所需模块，品牌链接改为 `href="./"`；保持后台页面行为不变。
-5. **多语言品牌定制**：默认 Bundle、严格 manifest、外部只读 Bundle 启动快照、locale/fallback、公开读取 API、revision/asset hash 缓存、安全渲染和运维文档。
+5. **多语言品牌定制**：前端默认内容（i18n 文案 + 移入 `src/assets/` 的默认 Logo）、严格 manifest、外部只读 Bundle 启动快照、locale/fallback、公开读取 API（含无 Bundle 时的 `customized: false`）、revision/asset hash 缓存、安全渲染、示例 Bundle 与运维文档。
 6. **移动端收口**：响应式布局、safe-area/软键盘、真实浏览器回归和无障碍检查。
 
 每个 PR 都必须保持 `/webui` 可用，不能等最后一个 PR 才恢复后台入口。
@@ -932,13 +964,15 @@ cd ..
 | 复用聊天的 Markdown sanitize schema | 为脚注保留的 `rehypeRaw` 被带进未登录可见的欢迎页 | `chat` / `customization` 两档显式分离 |
 | 原始 HTML 模板 | XSS、钓鱼表单或布局劫持 | 受限 Markdown，系统拥有操作控件 |
 | 启动时复制客户文件覆盖构建目录 | 只读容器/PyPI 安装不可写，多 worker 竞态，升级后残留旧文件 | 外部目录只读加载为内存快照，构建产物永不修改 |
-| 显式错误配置被静默回退 | 运维误以为客户品牌已生效，实际展示 LightRAG 默认内容 | customization active 时：未配置用默认 Bundle，显式配置校验失败即启动失败；inactive 时忽略并告警 |
-| 内置 Bundle 强依赖压垮旧构建 | 旧构建目录无 `ui_defaults/`，Server 直接起不来，连后台都用不了 | 先判产物：查询入口缺失即 customization 整体不初始化，只告警不 fail-fast |
-| 对每个字段独立回退 | 同页混合客户/内置品牌或不同语言 | 以完整 Bundle 和 locale 表示为原子单位加载与切换 |
+| 显式错误配置被静默回退 | 运维误以为客户品牌已生效，实际展示 LightRAG 默认内容 | 未配置 `UI_TEMPLATES_DIR` 即无定制；显式配置校验失败即启动失败，且与前端产物状态无关 |
+| 服务端内置一份默认 Bundle | 与 §8.8 必需的前端默认路径构成同一件事的两套实现，并连带 `ui_defaults/` 打包、原始路径拒绝规则、11 语言服务端维护，以及「内置 Bundle 缺失是否阻止启动」这一整串交叉判断 | 默认内容留在前端 i18n 与 Vite 资源；服务端只认外部 Bundle，customization 与 `/workspace` 可用性正交 |
+| Bundle 缺 Logo 时回落到默认 Logo | 客户文案配 LightRAG 图标，比语言错配更糟 | `brand.logo` 必填，不展示须显式写 `null`；Schema 层即不可表达 |
+| 首屏先渲染前端默认再被 Bundle 替换 | 配置了 Bundle 的部署每次首屏闪一次 LightRAG 内容 | 请求未完成期间显示 loading 占位，只在 `customized: false` 或硬失败时落到前端默认 |
+| 对每个字段独立回退 | 同页混合客户/前端默认品牌或不同语言 | 以完整 Bundle 和 locale 表示为原子单位加载与切换 |
 | 用稳定文件名直接缓存 Logo | 客户替换文件后浏览器/CDN 继续展示旧图 | `asset_id` 保持语义稳定，内容 SHA-256 进入资源 URL |
 | 自动猜测区域语言回退 | `zh-HK` 等语言回退到错误书写体系 | 只做精确匹配、manifest 显式 fallback 和默认语言回退 |
 | customization API 变成任意文件读取 | 未登录攻击者读取 Server 文件 | 严格 manifest、根目录约束、拒绝 symlink 逃逸且只提供已引用资源 |
-| Logo/模板响应或渲染失败导致白屏 | 日常入口不可用 | 前端最小安全默认内容、错误隔离和重试，不阻断认证/查询交互 |
+| Logo/模板响应或渲染失败导致白屏 | 日常入口不可用 | 整体回落到前端默认内容、错误隔离和重试，不阻断认证/查询交互 |
 | 把“后台入口”当成授权 | 用户可直接调用管理 API | 明确 UI 分流不是安全边界，API 继续强制授权 |
 | `workspace` 术语与多工作空间冲突 | 代码、文档和用户理解混乱 | UI 层称“查询入口”，数据层保留 workspace ID；`/workspace/`（WebUI 入口）与 `/workspaces*`（管理端点）在路由清单中分别标注 |
 | 静默继承 `LIGHTRAG-WORKSPACE` 头 | 多工作空间启用后，查询用户不知道自己在问哪个知识库 | 多工作空间落地时页头只读显示当前知识库名（§7.3） |
