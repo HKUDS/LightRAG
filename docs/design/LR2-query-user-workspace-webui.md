@@ -1,6 +1,6 @@
 # PRD：面向查询用户的独立 WebUI 入口
 
-- 状态：设计草案（2026-08-24；2026-08-25 按代码核对评审修订，同日改为双 HTML 入口方案）
+- 状态：评审通过（2026-08-24；2026-08-25 改为双 HTML 入口方案; 2026-08-26评审通过）
 - 适用范围：LightRAG Server（`lightrag/api/`）+ WebUI（`lightrag_webui/`）
 - 产品入口：日常查询端点 `/workspace`；后台管理端点 `/webui`
 - 关键约束：查询入口只提供知识库问答，不暴露查询参数、文档管理、知识图谱管理或 API 文档入口；即使 WebUI 资源缺失也不得跳转或引导到 API 文档；复用 `ChatMessage.tsx` 及从现有查询页抽出的共享会话能力，不复用后台页面壳；完整支持移动端；欢迎内容和 Logo 通过只读、多语言 UI Bundle 定制
@@ -348,6 +348,18 @@ WorkspaceQueryView ────────── WorkspaceEmptyState
 “写入方”一列描述的是**运行期**权限。一次性迁移是唯一例外，它可以由任一入口执行并写入其涉及的全部新键，包括 `webui-retrieval-history`（见下文迁移语义第 6 条）。
 
 **新键必须按站点分区。** localStorage 按 origin 隔离而**不按路径**隔离，而项目明确支持同一 host 下的多站点部署（`https://host/site01/webui/` 与 `https://host/site02/webui/`，见[多站点部署文档](../MultiSiteDeployment.md)）。若沿用固定键名，site01 的查询参数会被 site02 的工作区使用，两个站点的历史相互可见并相互覆盖。`<ns>` 取 `normalizeApiPrefix()` 的返回值（根部署为空串，故键形如 `lightrag::query-settings-storage`——双冒号是有意保留的，使键形状统一、解析无歧义）。同一站点的 `/webui` 与 `/workspace` 共用同一命名空间；`storage` 事件处理器只响应本命名空间的键。
+
+**`<ns>` 是服务实例的属性，不是 URL 的属性——因此它是精确判别式，而非保守近似。** 注入给前端的 `apiPrefix` 由 `lightrag/api/lightrag_server.py` 在创建 app 时从该实例自己的 `LIGHTRAG_API_PREFIX` 烘焙而成（`normalize_api_prefix(args.api_prefix)`），既不逐请求从浏览器 URL 推导，也不读取 `X-Forwarded-Prefix`（该头在 `lightrag/` 中无任何消费者，多站点文档里那行只是给 nginx 侧的惯例声明）。由此：
+
+| 部署形态 | 注入的 `apiPrefix` | `<ns>` | 结果 |
+| --- | --- | --- | --- |
+| 两实例、两前缀（多站点文档形态，`:9621` / `:9622`） | `/site01` / `/site02` | 不同 | 按预期隔离 |
+| 同一实例被挂在两个反向代理 location 下 | 都是该实例配置的同一个值 | **相同** | 状态共享，不会被无谓劈成两份 |
+| 单实例根部署 | `""` | `lightrag::…` | 与今天等价 |
+
+第二行是这个取值方式的关键收益：隔离只在**后端确实不同**时发生。若把 `<ns>` 取自浏览器路径，同一个知识库经两条 location 访问就会被拆成两份历史与两份 API key，用户须重复配置——那才是过度隔离。
+
+唯一的 `<ns>` 碰撞边界是**两个不同实例都用空前缀挂在同一 origin 下**。该部署今天就已不可用：SPA 会把 API 调用发往 origin 根的 `/documents/...`，任一 location 都路由不到。它不是本方案引入的新失败模式，而正是多站点文档要求每个实例配置自己前缀的原因，故不额外设防。
 
 **划界规则**：凡取值语义依赖于“哪个站点、哪个后端”的状态一律进入站点命名空间；只有与后端完全无关的纯展示偏好才留在 origin 级共享。
 
