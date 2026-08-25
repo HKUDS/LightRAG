@@ -6,11 +6,10 @@ import asyncio
 import os
 from typing import ClassVar, final
 
-from pymongo.errors import PyMongoError
-
 from ..utils import logger
 from .mongo_impl import (
     ClientManager,
+    PyMongoError,
     _MongoDocStatusStorageBase,
     _MongoGraphStorageBase,
     _MongoKVStorageBase,
