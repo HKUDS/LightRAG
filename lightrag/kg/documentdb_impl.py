@@ -54,6 +54,8 @@ class DocumentDBDocStatusStorage(
 class DocumentDBGraphStorage(_DocumentDBStorageMixin, _MongoGraphStorageBase):
     """DocumentDB-backed graph storage using native ``$graphLookup``."""
 
+    label_search_uses_atlas: ClassVar[bool] = False
+
     async def create_search_index_if_not_exists(self) -> None:
         # DocumentDB does not implement Atlas createSearchIndexes. Entity lookup
         # already falls back to the Mongo protocol regex path when no index exists.

@@ -109,6 +109,25 @@ async def test_documentdb_edge_migration_uses_partial_unique_index():
 
 
 @pytest.mark.asyncio
+async def test_documentdb_label_search_goes_directly_to_regex():
+    storage = DocumentDBGraphStorage.__new__(DocumentDBGraphStorage)
+    storage.collection = SimpleNamespace(
+        count_documents=AsyncMock(return_value=1),
+    )
+    storage._try_atlas_text_search = AsyncMock()
+    storage._try_atlas_autocomplete_search = AsyncMock()
+    storage._try_atlas_compound_search = AsyncMock()
+    storage._fallback_regex_search = AsyncMock(return_value=["Alpha"])
+
+    assert await storage.search_labels(" alpha ", limit=5) == ["Alpha"]
+
+    storage._fallback_regex_search.assert_awaited_once_with("alpha", 5)
+    storage._try_atlas_text_search.assert_not_awaited()
+    storage._try_atlas_autocomplete_search.assert_not_awaited()
+    storage._try_atlas_compound_search.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_documentdb_vector_index_uses_create_indexes_command():
     storage = DocumentDBVectorDBStorage.__new__(DocumentDBVectorDBStorage)
     storage.workspace = "test"
