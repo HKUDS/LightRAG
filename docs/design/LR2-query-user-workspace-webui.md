@@ -1,6 +1,6 @@
 # PRD：面向查询用户的独立 WebUI 入口
 
-- 状态：设计草案（2026-08-24）
+- 状态：设计草案（2026-08-24，2026-08-25 按代码核对评审修订）
 - 适用范围：LightRAG Server（`lightrag/api/`）+ WebUI（`lightrag_webui/`）
 - 产品入口：日常查询端点 `/workspace`；后台管理端点 `/webui`
 - 关键约束：查询入口只提供知识库问答，不暴露查询参数、文档管理、知识图谱管理或 API 文档入口；即使 WebUI 资源缺失也不得跳转或引导到 API 文档；复用 `ChatMessage.tsx` 及从现有查询页抽出的共享会话能力，不复用后台页面壳；完整支持移动端；欢迎内容和 Logo 通过只读、多语言 UI Bundle 定制
@@ -10,6 +10,8 @@
 新增与 `/webui` 并存的 `/workspace` WebUI 入口。同一份前端构建产物根据服务端注入的入口模式渲染两种应用壳：`admin` 模式保留现有文档、知识图谱和查询页面，`workspace` 模式渲染独立的 `WorkspaceQueryView`。两个查询页面共同复用 `ChatMessage.tsx` 和抽出的查询会话、消息滚动、输入操作能力，但分别拥有自己的页面布局。访问 `/workspace` 的未登录用户先看到可定制欢迎页，登录后返回 `/workspace`；访问 `/webui` 的用户登录后仍返回 `/webui`。`/workspace` 在正常页面和资源缺失降级态都不显示、跳转或引导到 API 文档。工作区查询空白页中央显示可定制 Logo 和欢迎词，返回查询内容后 Logo 和欢迎词消失。定制内容以多语言 UI Bundle 提供：构建产物携带内置默认 Bundle，生产环境可通过 `UI_TEMPLATES_DIR` 指向外部只读 Bundle；Server 启动时完整校验并生成不可变快照，前端通过公开 API 按语言读取内容和带内容哈希的资源 URL。
 
 > **术语边界**：本文件中的 `/workspace` 只是“面向日常查询用户的 WebUI URL”，不代表 [服务端多工作空间方案](./LR2-multi-workspace-phase1.md) 中的知识库 `workspace` ID，也不新增知识库选择、数据隔离或多租户语义。后续若同时启用多工作空间能力，二者应分别命名为“查询入口”和“知识库工作区”，避免在代码和文案中混用。
+>
+> 两者不存在 URL 命名空间冲突：多工作空间按 `LIGHTRAG-WORKSPACE` 请求头（Ollama 面按 model tag）选择知识库，数据面 URL 不按工作区分区，只有管理端点在路径里带 ID（`/workspaces*`）。因此本入口占用 `/workspace/` 不会挡住多工作空间的任何路由形态。真正需要处理的是**请求头的静默继承**，见 §7.3 末段。
 
 ---
 
@@ -21,7 +23,7 @@
 - 知识图谱浏览与编辑；
 - 知识库查询及完整查询参数配置。
 
-普通知识库用户的主要任务只是提问和阅读答案。现有界面会向这类用户暴露大量无关操作，增加学习成本，也容易让“日常使用入口”和“知识库维护入口”混在一起。与此同时，当前登录成功、认证失效后的跳转固定指向应用根路由，不能可靠保留用户原本进入的是查询入口还是后台入口。
+普通知识库用户的主要任务只是提问和阅读答案。现有界面会向这类用户暴露大量无关操作，增加学习成本，也容易让“日常使用入口”和“知识库维护入口”混在一起。与此同时，现有前端只有一个应用壳：`AppRouter` 在未认证时一律导航到 `#/login`，没有“入口”这个概念，因此无法区分“未登录的查询用户应看到欢迎页”和“未登录的管理员应看到登录页”。需要澄清的是，这不是一个“跳转丢失入口”的问题——WebUI 使用 `HashRouter`，全部导航走 `navigate()` 只改写 hash 而不改写路径，所以在双挂载下入口天然保留（见 §6.1）。真正缺的是让路由守卫知道“当前是哪个入口”的权威信号。
 
 因此需要在不复制查询实现、不破坏现有 `/webui` 的前提下，增加一个职责单一、可品牌定制、适合手机使用的查询入口。
 
@@ -33,9 +35,9 @@
 2. 将现有 `/webui` 明确定位为后台管理入口，并保持其现有功能和直接链接可用。
 3. 新增独立的 `WorkspaceQueryView` 页面，直接复用 `ChatMessage.tsx`，并从 `RetrievalView.tsx` 抽取共享的查询会话、流式响应、停止、复制、清空、历史记录、输入和滚动跟随能力，不维护第二套查询状态机。
 4. 查询入口不显示、也不接受面向用户的查询参数覆盖；查询请求沿用同一浏览器中 `/webui` 保存的查询配置，未配置时使用现有前端默认值。
-5. 登录、退出和认证失效流程保留入口来源，登录后回到原入口。
+5. 登录、退出和认证失效流程始终停留在当前入口；未登录默认页按入口区分（查询入口为欢迎页，后台为登录页）。
 6. 未登录的查询用户先看到可定制欢迎页；查询空白态显示可定制 Logo 和欢迎词；返回查询内容后 Logo 和欢迎词消失，仅显示查询历史。
-7. 在主流手机宽度和软键盘场景下完成提问、阅读流式答案、复制、停止和清空操作。
+7. 在主流手机宽度和软键盘场景下完成提问、阅读流式答案、复制、停止和清空操作；查询入口的首屏只加载查询所需代码，不下载图谱与文档管理模块。
 8. 根路径 `/` 的现有默认跳转继续使用 `/webui`，可以通过环境变量改为 `/workspace`。
 9. 欢迎页和查询空白态支持当前 WebUI 的全部语言，并允许部署方在不重建前端的情况下替换整套多语言文案与品牌资源。
 
@@ -108,7 +110,7 @@ interface RuntimeConfig {
   apiPrefix: string
   uiPrefix: string       // 当前入口的完整前缀，尾部带 /
   uiMode: UIMode
-  webuiPrefix: string    // 兼容现有 /webui 使用者，迁移期保留
+  webuiPrefix: string    // 仅用于确实需要显式指向后台的场景；本期没有这类场景
 }
 ```
 
@@ -117,7 +119,11 @@ interface RuntimeConfig {
 - `uiMode='admin'` 渲染现有 `App`；`uiMode='workspace'` 渲染精简的查询应用壳。
 - 前端不得通过 `window.location.pathname.includes(...)` 猜入口模式；`uiMode` 是唯一权威来源。
 - 静态资源继续使用内容哈希和长期缓存；两个入口的 `index.html` 均不得缓存，并分别注入正确的 `uiPrefix`。
+- 注入内容必须按 mount 实例参数化。现有实现把运行时配置预渲染成一个模块级常量字符串（`runtime_config_script`）供单一 `SmartStaticFiles` 使用；双挂载后两个实例必须各自持有自己的 payload，否则两个入口会静默共用同一个 `uiMode`，且症状只在第二个入口出现。
+- **现有 `webuiPrefix` 的全部消费点必须迁移到 `uiPrefix`。** 当前它只被两处使用，且都是页头的品牌 logo 链接（`App.tsx`、`SiteHeader.tsx` 中的 `<a href={webuiPrefix}>`）。若工作区页头复用同一组件而不迁移，查询用户点一下品牌标识就会被送到 `/webui/`——一次完整的跨入口泄漏，而 §12.1 的路由矩阵抓不到它。保留 `webuiPrefix` 字段只是为了不破坏运行时配置的既有形状，不代表保留其现有用法。
 - 不复制 `webui` 构建目录，不增加第二套 Vite 构建流程。
+- **两个应用壳必须按 `uiMode` 分别懒加载（`React.lazy`），工作区壳不得静态依赖 `GraphViewer`、`DocumentManager` 或 `RetrievalView`。** 当前 `App.tsx` 把这三者全部静态 import，构建出的入口 chunk 约 3.2 MB（未压缩，另含 cytoscape、mermaid 等图形依赖），一个只想提问的移动端用户要下载整个后台应用才能看到输入框，与 §9 的移动端定位直接冲突。代码分割与本节的“单构建产物”不矛盾：仍然是一次 Vite 构建、一个输出目录、两个挂载点，只是 chunk 按入口分裂。
+- 开发环境必须能选择 `uiMode`。`vite.config.ts` 的运行时配置注入插件目前只产出 `apiPrefix` / `webuiPrefix`，而本节禁止用 pathname 猜模式，因此 `bun run dev` 下没有任何途径开发或调试工作区模式——而 §13.3 的移动端真实浏览器验证必然跑在 dev server 上。插件需支持 `VITE_DEV_UI_MODE`（默认 `admin`）并注入 `uiMode` 与 `uiPrefix`。
 - WebUI 资源未打包时，两个入口仍必须显式注册，但采用与各自定位一致的降级行为：`/webui` 保持现有逻辑，API 文档可用时可跳转到 API 文档，否则返回服务信息 JSON；`/workspace` 和 `/workspace/` 无论 `ENABLE_API_DOCS` 是否开启，都只返回固定的查询入口不可用服务信息 JSON，不得重定向到 `/docs`、`/redoc` 或其它 API 文档页面，响应也不得包含 API 文档链接或引导文案。
 - 当 `WEBUI_DEFAULT_ENTRY=workspace` 且 WebUI 资源未打包时，根路径 `/` 必须进入上述 `/workspace` 降级分支，不能因 API 文档可用而改跳 API 文档。两个入口都不得静默 404；“共享同一资源可用性”不等于“共享同一降级目标”。
 
@@ -128,35 +134,38 @@ interface RuntimeConfig {
 | 模式 | SPA 路由 | 说明 |
 | --- | --- | --- |
 | `workspace` | `#/welcome` | 公开欢迎页 |
-| `workspace` | `#/login` | 登录页，携带可信回跳目标 |
+| `workspace` | `#/login` | 登录页，成功后经 `navigate('/')` 落回本入口 `#/` |
 | `workspace` | `#/` | 受保护的查询主界面 |
 | `admin` | `#/login` | 现有后台登录页 |
 | `admin` | `#/` | 现有后台主界面 |
 
 未知 hash 路由应回到当前入口的默认页，不得跨入口跳转。
 
-## 6. 登录与回跳
+## 6. 登录与入口保留
 
-### 6.1 “从哪里来，回哪里去”
+### 6.1 入口由挂载路径天然保留
 
-回跳目标至少包含入口类型，不再把所有成功路径写死为 `navigate('/')`：
+WebUI 使用 `HashRouter`，全部导航都经 react-router 的 `navigate()` 完成，只改写 hash 而不改写路径；现有代码中不存在任何 `location.href=` / `location.replace` / `location.assign` 形式的硬跳转（唯一一处 `window.location` 是 `AppRouter` 对 `hash` 的读取）。因此在双挂载下，`navigate('/')` 在 `/workspace/#/login` 上落回的是 `/workspace/#/`，在 `/webui/#/login` 上落回的是 `/webui/#/`——**保留入口不需要额外机制，现有写死的相对路径恰恰就是保留入口的实现**。
+
+本节要求的是每条路径在正确的入口内落到正确的页面：
 
 - 从 `/workspace` 欢迎页进入登录页，成功后返回 `/workspace/#/`。
 - 从 `/webui` 进入登录页，成功后返回 `/webui/#/`。
 - 已登录用户直接访问任一入口时留在该入口。
-- 日常查询端点发生 token 失效时，保存 `/workspace` 为回跳入口并进入欢迎页；用户重新登录后回到查询页面。
-- 后台管理端点发生 token 失效时，保存 `/webui` 为回跳入口并进入后台登录页。
+- 日常查询端点发生 token 失效时进入 `/workspace` 的欢迎页；用户重新登录后回到查询页面。
+- 后台管理端点发生 token 失效时进入 `/webui` 的后台登录页。
 - 退出登录后回到当前入口的未登录默认页：查询入口回欢迎页，后台入口回登录页。
 
-### 6.2 回跳目标安全规则
+### 6.2 不引入回跳参数
 
-回跳参数不能形成开放重定向：
+既然入口由挂载路径天然保留，本方案**不引入任何承载回跳目标的 URL 参数或持久化状态**，因此也不存在开放重定向面：
 
-1. 只接受当前部署 `root_path` 下的 `/workspace/`、`/webui/` 及其已注册内部 hash 路由。
-2. 拒绝带 scheme、host、`//`、反斜杠、编码后路径穿越或未知入口的值。
-3. 无有效回跳目标时，按当前 `uiMode` 回到其默认页。
-4. 回跳状态使用结构化值保存，例如 `{ mode, route }`；不得把未经解析的完整 URL 直接传给 `window.location`。
-5. 登录请求失败不消费回跳目标；用户重试成功后仍回到原入口。
+1. 未登录时的默认页由注入的 `uiMode` 决定：`workspace` → `#/welcome`，`admin` → `#/login`。这是 `uiMode` 需要存在的真正原因。
+2. 未知或非法的 hash 路由回落到当前入口的默认页，不跨入口跳转。
+3. 任何导航都必须经 `navigate()` 完成。改写路径的硬跳转（`window.location.href` / `location.replace` / `location.assign`）与带路径的 `<a href>` 是仅有的两类能让页面离开当前挂载点的途径：前者一律禁止，后者受 §5.2 的 `uiPrefix` 迁移约束与 §12.1 的品牌链接验收管辖。
+4. 登录请求失败不改变当前路由；用户重试成功后仍留在原入口。
+
+若未来确有跨入口回跳需求（本期没有任何用户故事需要它），再单独设计结构化的 `{ mode, route }` 状态并对已注册 hash 路由做白名单校验；无论如何都不得把未经解析的 URL 字符串交给 `window.location`。
 
 ### 6.3 认证未启用时
 
@@ -215,7 +224,7 @@ WorkspaceQueryView ────────── WorkspaceEmptyState
 - 当前由 `ChatMessage.tsx` 导出的 `MessageWithError` 属于两个页面和会话控制层共同使用的领域模型，应迁移到独立的 retrieval types 模块，再由 `ChatMessage` 和共享层共同 import；不能让无 UI 的会话控制层反向依赖消息渲染组件。
 - 查询会话控制层通过显式策略接收“是否允许 mode 前缀”等页面差异，不得自行读取 `uiMode` 或后台 `currentTab`；这样共享状态机保持单一，入口差异仍由页面组合层决定。
 - `RetrievalView` 保持后台页面定位，继续渲染当前 `QuerySettings`，继续支持现有查询参数和 `/mode` 输入前缀。
-- `WorkspaceQueryView` 不渲染 `QuerySettings`，也不解析 `/naive`、`/local`、`/global`、`/hybrid`、`/mix`、`/bypass` 等参数覆盖前缀；以 `/` 开头的普通问题按普通文本提交。
+- `WorkspaceQueryView` 不渲染 `QuerySettings`，也不解析 `/naive`、`/local`、`/global`、`/hybrid`、`/mix`、`/bypass` 等参数覆盖前缀；以 `/` 开头的普通问题按普通文本提交。**输入前缀解析是两个页面在请求侧的唯一差异**（§7.3 的等价性约束由此成立）。
 - `WorkspaceQueryView` 始终把消息区域视为活跃；不得读取后台 `currentTab` 决定 Markdown、Mermaid 或动画是否更新。
 - 两个页面必须通过同一个请求序列化和流式状态机发起查询，不能各自维护一份近似实现。
 
@@ -234,22 +243,35 @@ WorkspaceQueryView ────────── WorkspaceEmptyState
 }
 ```
 
-上例只用于说明参数来源，不固定具体数值。规则如下：
+上例只用于说明参数来源，不固定具体数值。
+
+**核心规则是请求体等价性**：
+
+> 给定同一份 `querySettings` 和同一段消息历史，`WorkspaceQueryView` 与 `RetrievalView` 必须产生**完全相同**的请求体，包括 `mode`、`conversation_history` 以及 bypass 模式下的默认历史轮数。工作区不引入任何模式钳制、字段过滤或 history 特判。
+
+这条约束取代逐字段列举规则：它更强、更容易测（一条“两个页面对同一份 `querySettings` 产生逐字段相等的请求体”的测试即可覆盖全部 mode），也直接兑现 §7.2 末尾“两个页面必须通过同一个请求序列化和流式状态机发起查询”的架构目标。派生规则如下：
 
 - 同一浏览器 profile 中，管理员在 `/webui` 保存的新参数从下一次 `/workspace` 查询开始生效；工作区本身只读这些参数。
 - 从未访问或配置过 `/webui` 时，使用现有 settings store 的前端默认值。
 - 这是浏览器本地配置共享，不是 Server 全局配置，也不跨设备同步。若未来需要运维统一控制所有查询用户的参数，应另行设计服务端查询 profile，不能把 localStorage 描述成全局策略。
-- serializer 只发送 `QueryRequest` 接受的字段；`history_turns` 等纯前端字段应转换为相应的 `conversation_history`，不得作为未知字段原样发送。
-- 工作区禁止通过输入前缀临时覆盖 mode，但不篡改或重置 `/webui` 已保存的 mode。
+- serializer 发送的字段以**服务端** `QueryRequest` 模型的声明为准。注意前端 TS 的 `QueryRequest` 类型里还留着 `history_turns`，而服务端没有这个字段（pydantic 默认 `extra='ignore'`，今天它被静默丢弃）：`history_turns` 的职责是决定往 `conversation_history` 里放几轮，展开后应从请求体中剥离。这是对共享 serializer 的清理，两个入口同时受益，需有回归测试钉住。
+- 工作区禁止通过输入前缀临时覆盖 mode，但**不钳制也不篡改**继承到的 mode 值。
 - stream 继续决定调用 `/query` 或 `/query/stream`；无论选择哪一条，两个页面必须走相同的请求和错误处理路径。
 
+**mode 继承是全量的，包括 `bypass`。** `bypass` 是后台参数侧栏 mode 下拉框中的一个可选项，会被持久化并由工作区继承。管理员选中它之后，工作区的行为与 `/webui` 完全一致：跳过知识检索直接问 LLM（无引用），共享 serializer 中“`bypass` 且 `history_turns=0` 时取 3 轮”的既有逻辑照常生效，因而该模式下会带上最近 3 轮对话并绕过服务端答案缓存。这是有意为之的一致性，不是缺陷；但由于工作区用户看不到也改不了 mode，运维文档必须写明**后台的 mode 选择同时决定查询入口的行为**。
+
+除 `bypass` 外的全部模式，前端 `history_turns` 被固定为 0（store 中无 UI 控件且迁移强制归零），因此工作区与 `/webui` 一样发送空 `conversation_history`，答案缓存正常生效。
+
 本期保持现有查询会话语义，不借本功能改变 conversation history、答案缓存或引用格式。
+
+**与服务端多工作空间的前置约定**：[多工作空间方案](./LR2-multi-workspace-phase1.md) 按 `LIGHTRAG-WORKSPACE` 请求头选择知识库，并在前端统一请求层注入该头——这一层被两个入口共用。按本节的继承口径，工作区会继承 `/webui` 选中的知识库，而 §3 又规定工作区不提供选择器，用户将无从知道自己在问哪个库。因此多工作空间落地时，§7.1 的精简页头**必须只读显示当前知识库名称**（显示不等于选择，不违反 §3）。该头缺失时服务端会落到默认工作区，所以在多工作空间启用前，本期无需任何改动。
 
 ### 7.4 查询历史
 
 - 沿用现有按浏览器保存的查询历史和“切换登录用户时清空历史”规则。
 - `/workspace` 与 `/webui` 的查询页面可共享同一用户的消息历史，以便管理员和查询入口之间延续同一会话展示。
 - 共享消息历史和浏览器级查询参数；工作区请求始终遵循 §7.3，且不提供参数编辑入口。
+- 共享的意图是**展示层的会话延续**。需要记录的连带影响：在 `bypass` 模式下 `conversation_history` 正是从这份共享历史切片而来，因此同一浏览器中管理员在 `/webui` 的调试提问会进入查询入口下一次提问的 LLM 上下文。影响面仅限同时使用两个入口的人（实际即管理员本人），且清空会话即可复位，本期接受。
 - token 失效、欢迎页和重新登录过程不得提前清空当前用户历史；如果登录成不同用户，则沿用现有规则清空。
 
 ## 8. 欢迎页与空白态定制
@@ -308,7 +330,7 @@ ui_templates/
   "schema_version": 1,
   "default_locale": "en",
   "fallbacks": {
-    "zh-HK": ["zh-TW", "en"]
+    "ko": ["en"]
   },
   "brand": {
     "logo": "assets/logo.svg"
@@ -336,7 +358,7 @@ ui_templates/
 
 规则如下：
 
-- Locale key 使用 BCP 47 风格的连字符形式，例如 `zh-TW`，不在 Bundle 中使用前端内部的 `zh_TW`；前端/Server 边界负责规范化。
+- Locale key 使用 BCP 47 风格的连字符形式，例如 `zh-TW`，不在 Bundle 中使用前端内部的 `zh_TW`（前端 i18n 资源键与 `src/locales/*.json` 文件名用的是下划线形式）。规范化必须有**单一咽喉**：前端在发起 customization 请求时把内部标识转成连字符形式，Server 只接受连字符形式并拒绝下划线值。不得两侧各写一份转换。
 - 每个声明的 locale 必须同时提供 `welcome`、`query_empty` 和非空 `logo_alt`。
 - `brand.logo` 是所有语言共享的默认 Logo；locale 条目可选的 `logo` 覆盖该语言的 Logo，以满足不同语言使用不同品牌图的需求。
 - `fallbacks` 是可选的显式有序映射。所有目标必须存在，且不能出现环。
@@ -358,6 +380,8 @@ Server 对目标语言按以下顺序解析模板：
 1. 精确匹配 locale；
 2. manifest 中该 locale 的显式 `fallbacks` 顺序；
 3. 当前 Bundle 的 `default_locale`。
+
+按 §8.3 的前两步，`requested_locale` 通常已被规范化为当前 WebUI 支持的语言之一；`fallbacks` 主要服务于两类情形：Bundle 未覆盖某个受支持语言（例如只翻译了部分语言的客户 Bundle），以及直接调用配置端点时传入的任意 BCP 47 值。
 
 不自动进行区域或书写系统推断，例如不能自行断言 `zh-HK → zh`，因为部署方可能希望它回退到 `zh-TW`。外部 Bundle 缺少用户所选语言时，必须回退到外部 Bundle 自己的默认语言，不能逐字段混入 LightRAG 内置 Bundle，否则同一页面可能出现客户 Logo、LightRAG 文案或语言错配。
 
@@ -448,7 +472,8 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - Markdown 禁用原始 HTML、脚本、iframe、表单和事件属性；链接只允许明确的安全 scheme，并为新窗口链接添加 `noopener noreferrer`。
 - Logo 支持 PNG、JPEG、WebP 和 SVG，按实际内容校验 MIME，不只信任扩展名。
 - 自定义 SVG 仅作为 `<img>` 资源加载，不以内联 DOM 注入；资源响应设置正确的 `Content-Type`、`X-Content-Type-Options: nosniff` 和限制性 CSP。
-- 前端渲染仍需使用统一的受限 Markdown 组件。单个视图发生意外渲染错误时显示最小内置纯文本提示，不能让登录或查询页面白屏。
+- **定制内容使用独立的、比聊天更严格的 Markdown 档位，不得复用聊天的 sanitize schema。** 现有 `chatMarkdownSanitizeSchema`（`lightrag_webui/src/utils/markdownSanitizeSchema.ts`，为修复 GHSA-xpjq-3w4w-w5wr 引入）**刻意保留了 `rehypeRaw`**——脚注插件与内联格式化标签依赖原始 HTML，安全性由 allow-list 兜底。定制内容没有这些需求，且出现在未登录可见的欢迎页上，因此必须是不挂 `rehypeRaw`、直接 `skipHtml` 的独立档位。两档需在代码中显式命名（如 `chat` / `customization`），避免实现时因“统一”二字把 `rehypeRaw` 带进欢迎页。
+- 单个视图发生意外渲染错误时显示最小内置纯文本提示，不能让登录或查询页面白屏。
 - Bundle 是公开展示内容，运维文档必须提示不得在其中放入密钥、内部路径或其它敏感信息。
 - 公开 customization API 必须纳入路由和响应字段审计，不能演变为任意文件读取接口。
 
@@ -522,6 +547,7 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 
 - `/webui` URL、后台功能、现有书签和静态资源构建流程保持可用。
 - `RetrievalView` 继续只表示后台查询页；新增 `WorkspaceQueryView` 不改变现有调用方语义。
+- 一处有意的例外：共享 serializer 收紧后，`/webui` 的请求体不再携带 `history_turns`。该字段服务端从未声明、一直被静默丢弃，因此对服务端行为无影响，但属于可观测的请求体变化，需在变更记录中写明。
 - 现有 token、API key、guest token 和登录接口契约不变。
 - 当前 `WEBUI_TITLE` / `WEBUI_DESCRIPTION` 继续作为部署级、非本地化站点标题和描述，同时可供查询入口页头使用；欢迎页和空白态正文由 UI Bundle 拥有。
 - 未设置 `UI_TEMPLATES_DIR` 的部署自动使用打包的 `ui_defaults`；升级无需新增配置。显式设置该变量的部署必须提供符合当前 Schema 的完整 Bundle。
@@ -534,16 +560,17 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 | 面 | 要求 |
 | --- | --- |
 | Server mount | 同一静态目录挂载 `/webui` 与 `/workspace`，两者均支持 `root_path` |
-| Runtime config | 每个 mount 注入唯一 `uiMode` 和正确 `uiPrefix` |
+| Runtime config | 每个 mount 注入唯一 `uiMode` 和正确 `uiPrefix`；注入内容按 mount **实例参数化**，不得共用单一模块级常量；dev 插件支持 `VITE_DEV_UI_MODE` |
+| 前端入口分流 | 两个应用壳按 `uiMode` 懒加载；工作区壳不静态依赖图谱/文档管理；`webuiPrefix` 的既有消费点（品牌链接）迁移到 `uiPrefix` |
 | 根路径/降级 | `WEBUI_DEFAULT_ENTRY` 默认 `webui`；选择 `workspace` 时保留 `root_path`；无资源时 `/webui` 可沿用 API 文档降级，`/workspace` 只返回无 API 文档链接或引导的固定服务信息 JSON；根路径选择 `workspace` 时遵循后者 |
-| 健康状态 | 保留 `webui_available` 语义，并新增或明确 `workspace_available`；两者由同一资源检查结果派生，不能各自漂移 |
+| 健康状态 | 保留 `webui_available` 语义，并新增或明确 `workspace_available`；两者由同一资源检查结果派生，不能各自漂移。两个字段只出现在受认证的 `/health` 中，公开的 customization 端点不返回可用性信息 |
 | UI 定制加载 | 从内置或 `UI_TEMPLATES_DIR` 构造一个只读快照；绝不修改 WebUI 构建目录 |
 | 定制读取 API | 公开端点只返回当前 locale 内容和 manifest 引用资源，并正确处理前缀、ETag、内容哈希与安全响应头 |
 | 启动日志 | 同时打印后台和查询入口的实际带前缀 URL，以及 customization 来源、bundle revision 和校验结果；不打印服务端目录 |
-| 登录导航 | 所有登录成功、退出、401、guest token 更新路径保留入口来源 |
+| 登录导航 | 所有登录成功、退出、401、guest token 更新路径继续只经 `navigate()` 完成（入口由挂载路径天然保留），未登录默认页按 `uiMode` 分流 |
 | 打包 | PyPI/容器仍只打包一份 `lightrag/api/webui` 产物，其中包含完整的内置 `ui_defaults` |
 | 文档 | 更新 Server/WebUI 启动文档、`env.example`、Bundle Schema、Docker 只读挂载示例和多站点部署说明 |
-| 路由审计 | 将 `/workspace` mount 和公开 customization/config 面加入完整路由/mount 清单 |
+| 路由审计 | 将 `/workspace` mount 和公开 customization/config 面加入完整路由/mount 清单。注意多工作空间方案会引入 `/workspaces*` 管理端点，与本入口的 `/workspace/` 仅差一个字母——不构成前缀冲突，但清单与运维文档中并排出现时需分别标注用途 |
 
 `workspace_available` 不应拥有独立构建开关。两个入口共用一份构建产物，所以可用性必须由一个资源检查结果派生；未来若增加关闭查询入口的产品开关，再单独设计其默认值和健康语义。
 
@@ -557,10 +584,12 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 | 查询入口、已登录 | 打开 `/workspace/` | 直接显示查询页 |
 | 查询入口登录 | 欢迎页点击登录并成功 | 返回 `/workspace/#/` |
 | 后台登录 | 打开 `/webui/` 并成功登录 | 返回 `/webui/#/` |
-| 查询 token 失效 | 查询接口返回不可续期 401 | 保存查询入口，进入欢迎/登录流程；重登后回查询页 |
-| 后台 token 失效 | 后台接口返回不可续期 401 | 回后台登录；重登后回后台 |
+| 查询 token 失效 | 查询接口返回不可续期 401 | 停留在 `/workspace/`，进入欢迎/登录流程；重登后回查询页 |
+| 后台 token 失效 | 后台接口返回不可续期 401 | 停留在 `/webui/`，回后台登录；重登后回后台 |
 | 认证关闭 | 首次访问 `/workspace/` 并点击进入 | 获取 guest token 后进入查询页 |
-| 恶意回跳 | 提交外部 URL 或路径穿越 return target | 拒绝该值并回当前模式默认页 |
+| 未知 hash 路由 | 在任一入口访问未注册的 `#/xxx` | 回落到当前 `uiMode` 的默认页，不跨入口跳转 |
+| 无硬跳转 | 静态检查前端源码 | 不存在 `location.href=` / `location.replace` / `location.assign` 等改写路径的导航 |
+| 品牌链接 | 检查 `/workspace/` 页面内全部链接 | 不存在指向 `/webui` 的链接 |
 | API 前缀 | 在 `/site01` 下完成以上流程 | 所有资源和跳转保留 `/site01` |
 | 查询入口资源缺失、API 文档开启 | 打开 `/workspace` 或 `/workspace/` | 返回固定的查询入口不可用服务信息 JSON；不重定向、不链接或引导到 API 文档 |
 | 查询入口资源缺失、根路径选择查询入口 | 设置 `WEBUI_DEFAULT_ENTRY=workspace` 后打开 `/` | 进入 `/workspace` 降级分支；即使 API 文档开启也不进入 API 文档 |
@@ -572,6 +601,9 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - 不存在 `QuerySettings` DOM、后台 Tab、文档/图谱/API 文档入口或隐藏移动端参数抽屉。
 - 输入 `/mix what is RAG` 时整段作为普通问题提交，不覆盖 mode。
 - 请求携带当前浏览器中 `/webui` 保存的合法 `top_k`、`mode`、`user_prompt` 等参数；工作区不能编辑或临时覆盖它们。
+- **请求体等价性**：对同一份 `querySettings` 与同一段消息历史，两个页面产生逐字段相等的请求体。用例必须覆盖全部 mode，含 `mode='bypass'`（此时两侧都带最近 3 轮 `conversation_history`）与非 bypass 模式（此时两侧都带空 `conversation_history`）。
+- 两个页面的请求体均不含 `history_turns`。
+- 工作区首屏不加载图谱引擎与文档管理相关 chunk；记录并回归工作区首屏传输字节。
 - 流式答案、停止、复制、清空、引用、思考区、公式、Mermaid、滚动跟随与现有后台查询页功能一致。
 - 后台查询页仍显示查询参数，并保持现有 `/mode` 前缀行为。
 - `WEBUI_DEFAULT_ENTRY` 未设置时 `/` 仍进入 `/webui/`；设置为 `workspace` 时进入 `/workspace/`；非法值启动失败且不会成为重定向 URL。
@@ -601,13 +633,15 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 
 ### 13.1 前端单元测试
 
-- `AppRouter` 在 `admin/workspace × authenticated/anonymous × auth enabled/disabled` 下的路由矩阵。
-- 安全回跳解析器对合法前缀、外部 URL、双斜杠、编码路径穿越和未知 hash 的测试。
+- `AppRouter` 在 `admin/workspace × authenticated/anonymous × auth enabled/disabled` 下的路由矩阵（`uiMode` 由测试注入）。
+- 未知 hash 路由按 `uiMode` 回落到本入口默认页，不跨入口跳转。
 - `RetrievalView` 与 `WorkspaceQueryView` 的 DOM 差异，以及共享会话控制层的请求 payload 测试。
+- **请求体等价性测试**：参数化跑遍全部 mode，断言两个页面对同一份 `querySettings` 与同一段消息历史产生逐字段相等的请求体，并断言 `history_turns` 已被剥离。历史 fixture 是必需的——`bypass` 用例的请求体正是从它切片而来。这一条取代逐字段断言，覆盖 §7.3 的核心约束。
 - 工作区不解析 query mode 前缀，但读取后台持久化的合法 `querySettings`；未配置时使用前端默认值。
 - 两个页面的流式完成、失败、停止、清空、历史持久化和卸载清理使用同一组共享层测试。
 - 空白态首次显示、发送后隐藏、清空后恢复。
-- customization 加载失败、语言切换原子更新、RTL、fallback 和 Markdown 安全渲染测试。
+- customization 加载失败、语言切换原子更新、RTL、fallback 测试。
+- Markdown 安全渲染需分档断言：`customization` 档对原始 HTML 直接丢弃（而非净化后保留），`chat` 档维持现有 `chatMarkdownSanitizeSchema` 行为不回归。
 
 ### 13.2 后端测试
 
@@ -624,7 +658,7 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 
 ### 13.3 浏览器验证
 
-- 使用真实浏览器分别验证桌面 Chrome/Firefox 和移动端 Safari/Chrome。
+- 使用真实浏览器分别验证桌面 Chrome/Firefox 和移动端 Safari/Chrome。移动端验证跑在 dev server 上，需以 `VITE_DEV_UI_MODE=workspace` 启动。
 - 覆盖软键盘、触摸滚动、文本选择、流式增长、停止、复制、横竖屏切换和长 Markdown 内容。
 - Vite 开发环境使用 DOM selector 等待，不以长期连接下的 `networkidle` 作为完成条件。
 
@@ -646,9 +680,9 @@ cd ..
 
 建议按以下顺序拆分，确保每一步都可独立验证：
 
-1. **双入口基础设施**：统一 runtime config，Server 双 mount，`root_path`、健康状态、降级和打包测试。
-2. **入口感知认证**：安全回跳模型，欢迎页路由，登录/退出/401/guest 全链路保留入口。
-3. **查询共享层与工作区 UI**：从 `RetrievalView` 抽出查询会话、消息列表和输入操作层；新增复用 `ChatMessage` 的 `WorkspaceQueryView`、空白态和精简应用壳；保持后台页面行为不变。
+1. **双入口基础设施**：按 mount 实例参数化的 runtime config（含 `uiMode` / `uiPrefix` 与 dev 侧 `VITE_DEV_UI_MODE`），Server 双 mount，`root_path`、健康状态、降级和打包测试。
+2. **入口感知认证**：按 `uiMode` 分流未登录默认页，欢迎页路由，登录/退出/401/guest 全链路只经 `navigate()`。
+3. **查询共享层与工作区 UI**：从 `RetrievalView` 抽出查询会话、消息列表和输入操作层；新增复用 `ChatMessage` 的 `WorkspaceQueryView`、空白态和精简应用壳；两个壳按 `uiMode` 懒加载并把品牌链接迁到 `uiPrefix`；保持后台页面行为不变。
 4. **多语言品牌定制**：默认 Bundle、严格 manifest、外部只读 Bundle 启动快照、locale/fallback、公开读取 API、revision/asset hash 缓存、安全渲染和运维文档。
 5. **移动端收口**：响应式布局、safe-area/软键盘、真实浏览器回归和无障碍检查。
 
@@ -660,10 +694,14 @@ cd ..
 | --- | --- | --- |
 | 只复用 `ChatMessage` | 工作区仍会复制请求、流式、停止、历史和滚动状态机 | 同时抽取共享查询会话、消息列表和输入操作层 |
 | 给 `RetrievalView` 堆叠 variant 分支 | 千行组件同时承担后台与移动工作区两套布局 | 两个页面壳组合同一组共享能力 |
-| 只隐藏参数侧栏 | `/mode` 前缀仍可临时覆盖参数，或两个页面组装出不同请求 | 使用同一 serializer 读取持久化参数，并在工作区禁用前缀解析 |
+| 只隐藏参数侧栏 | `/mode` 前缀仍可临时覆盖参数，或两个页面组装出不同请求 | 使用同一 serializer 读取持久化参数，工作区禁用前缀解析，并以请求体等价性测试兜底 |
 | 用 URL 字符串猜模式 | API 前缀、代理改写或未来路径变更后误判 | Server 注入唯一 `uiMode` |
-| 登录固定回 `/` | 查询用户进入后台或管理员进入查询页 | 结构化、白名单校验的入口回跳状态 |
+| 运行时配置共用模块级常量 | 双挂载后两个入口静默共用同一 `uiMode`，症状只在第二个入口出现 | 注入 payload 按 mount 实例参数化 |
+| 品牌链接留在 `webuiPrefix` | 查询用户点 logo 被送到后台，路由矩阵抓不到 | 既有消费点全部迁至 `uiPrefix`，并加“页面内无 `/webui` 链接”验收 |
+| dev 环境无法选择 `uiMode` | 工作区模式无法开发、无法做移动端真实浏览器验证 | dev 注入插件支持 `VITE_DEV_UI_MODE` |
 | 两套静态构建 | 包体、版本和发布流程漂移 | 一次构建、同目录双挂载 |
+| 单构建产物被当成单一下载单元 | 移动端查询用户被迫下载约 3.2 MB 的完整后台应用 | 两个应用壳按 `uiMode` 懒加载；代码分割不引入第二套构建 |
+| 复用聊天的 Markdown sanitize schema | 为脚注保留的 `rehypeRaw` 被带进未登录可见的欢迎页 | `chat` / `customization` 两档显式分离 |
 | 原始 HTML 模板 | XSS、钓鱼表单或布局劫持 | 受限 Markdown，系统拥有操作控件 |
 | 启动时复制客户文件覆盖构建目录 | 只读容器/PyPI 安装不可写，多 worker 竞态，升级后残留旧文件 | 外部目录只读加载为内存快照，构建产物永不修改 |
 | 显式错误配置被静默回退 | 运维误以为客户品牌已生效，实际展示 LightRAG 默认内容 | 未配置时用默认 Bundle；显式配置校验失败时启动失败 |
@@ -673,7 +711,8 @@ cd ..
 | customization API 变成任意文件读取 | 未登录攻击者读取 Server 文件 | 严格 manifest、根目录约束、拒绝 symlink 逃逸且只提供已引用资源 |
 | Logo/模板响应或渲染失败导致白屏 | 日常入口不可用 | 前端最小安全默认内容、错误隔离和重试，不阻断认证/查询交互 |
 | 把“后台入口”当成授权 | 用户可直接调用管理 API | 明确 UI 分流不是安全边界，API 继续强制授权 |
-| `workspace` 术语与多工作空间冲突 | 代码、文档和用户理解混乱 | UI 层使用 `uiMode`/query workspace，数据层保留 workspace ID |
+| `workspace` 术语与多工作空间冲突 | 代码、文档和用户理解混乱 | UI 层使用 `uiMode`/query workspace，数据层保留 workspace ID；`/workspace/`（WebUI 入口）与 `/workspaces*`（管理端点）在路由清单中分别标注 |
+| 静默继承 `LIGHTRAG-WORKSPACE` 头 | 多工作空间启用后，查询用户不知道自己在问哪个知识库 | 多工作空间落地时页头只读显示当前知识库名（§7.3） |
 
 ## 16. 后续可选项
 
@@ -684,4 +723,5 @@ cd ..
 - 按用户/角色显示不同欢迎内容；
 - 运维品牌配置管理 UI；
 - 面向查询入口的独立域名、PWA、分享链接或会话云同步；
-- 查询入口与服务端多工作空间选择器集成。
+- 查询入口与服务端多工作空间**选择器**集成（只读显示当前知识库名不属于可选项，是多工作空间落地时的前置约束，见 §7.3）。
+- 为查询入口单独设计的多轮对话开关及配套的答案缓存策略（本期与 `/webui` 保持一致：仅 `bypass` 模式发送历史）。
