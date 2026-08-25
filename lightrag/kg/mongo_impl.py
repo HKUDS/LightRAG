@@ -1749,6 +1749,7 @@ class _MongoGraphStorageBase(BaseGraphStorage):
     edgeCollection: AsyncCollection = field(default=None)
     client_manager: ClassVar[type[ClientManager]] = ClientManager
     workspace_env_var: ClassVar[str] = "MONGODB_WORKSPACE"
+    label_search_uses_atlas: ClassVar[bool] = True
     edge_index_partial_filter: ClassVar[dict[str, Any] | None] = {
         "edge_lo": {"$exists": True, "$type": "string"},
         "edge_hi": {"$exists": True, "$type": "string"},
@@ -3599,6 +3600,9 @@ class _MongoGraphStorageBase(BaseGraphStorage):
             # report a transport blip as "no labels match".
             logger.error(f"[{self.workspace}] Error counting nodes: {e}")
             raise
+
+        if not self.label_search_uses_atlas:
+            return await self._fallback_regex_search(query_strip, limit)
 
         # Progressive search strategy
         search_methods = [

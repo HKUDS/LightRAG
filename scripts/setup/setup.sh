@@ -646,6 +646,7 @@ prepare_compose_runtime_overrides() {
     "LLM_BINDING_HOST" \
     "REDIS_URI" \
     "MONGO_URI" \
+    "DOCUMENTDB_URI" \
     "NEO4J_URI" \
     "MILVUS_URI" \
     "QDRANT_URL" \
