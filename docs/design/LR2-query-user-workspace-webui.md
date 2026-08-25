@@ -47,7 +47,7 @@
 - `/workspace` 页面不存在文档管理、图谱管理、API 文档入口和查询参数侧栏。
 - 从 `/workspace` 发起登录的用户登录后返回 `/workspace`；从 `/webui` 发起登录的用户登录后返回 `/webui`。
 - 在 320 px 宽度下无页面级横向滚动，输入框和发送/停止按钮始终可操作，软键盘弹出后当前输入区仍可见。
-- 未设置 `UI_TEMPLATES_DIR` 时使用内置默认 Bundle；显式设置的外部 Bundle 通过完整校验后才能启动，避免定制内容部分生效而造成品牌或语言混用。
+- customization 处于 active 状态（即 `workspace.html` 存在）时：未设置 `UI_TEMPLATES_DIR` 使用内置默认 Bundle，显式设置的外部 Bundle 通过完整校验后才能启动，避免定制内容部分生效而造成品牌或语言混用。inactive 时该子系统整体不初始化，见 §8.4。
 
 ## 3. 非目标
 
@@ -186,9 +186,7 @@ WebUI 使用 `HashRouter`，全部导航都经 react-router 的 `navigate()` 完
 
 若未来确有跨入口回跳需求（本期没有任何用户故事需要它），再单独设计结构化的 `{ mode, route }` 状态并对已注册 hash 路由做白名单校验；无论如何都不得把未经解析的 URL 字符串交给 `window.location`。
 
-### 6.3 认证未启用时
-
-当 Server 未配置账号认证时：
+### 6.3 未登录默认页与 guest 登录态
 
 判定口径统一为一句话：**“首次访问显示欢迎页”等价于“当前没有有效 token”**。guest token 是有效登录态，与普通用户 token 同等对待。
 
@@ -196,17 +194,32 @@ WebUI 使用 `HashRouter`，全部导航都经 react-router 的 `navigate()` 完
 | --- | --- |
 | 持有有效普通用户 token | 直接进入查询主界面 |
 | 持有有效 guest token（例如先访问过 `/webui`） | 直接进入查询主界面，不再展示欢迎页 |
-| 无 token 或 token 已失效，认证已关闭 | 展示欢迎页；点击后才发起 `/auth-status` 取 guest token |
-| 无 token 或 token 已失效，认证已启用 | 展示欢迎页；点击后进入登录页 |
+| 无有效 token，认证已关闭 | 展示欢迎页；点击后才激活 guest 登录态 |
+| 无有效 token，认证已启用 | 展示欢迎页；点击后进入登录页 |
 
-采用这一口径的原因是现有 auth store 的初始化本就以“localStorage 中是否存在可解析且未过期的 token”判定登录态（`stores/state.ts` 的 `initAuthState`），任何“guest 时仍显示欢迎页”的变体都要在 store 里额外区分 token 来源，为一次性的展示差异引入长期状态。
+采用这一口径是为了不在 auth store 里长期区分 token 来源：任何“持 guest token 时仍展示欢迎页”的变体，都要为一次性的展示差异引入一个必须长期维护的状态位。
 
-由此派生：
+**guest token 的获取与激活必须分开。** `/auth-status` 在认证关闭时**必然**同时返回 guest token，所以“启动时不请求 `/auth-status`”是做不到的（§8.8 还要求它与 customization 并行发起以压首屏时间）。要禁止的不是取，而是**激活与持久化**：
+
+1. 启动时调用 `/auth-status`，只读取 `auth_configured`。
+2. 响应若附带 guest token，在启动阶段**丢弃**——不调用 `login()`，不写 localStorage，不改 auth store。
+3. 用户点击“进入工作区”后再次调用 `/auth-status`，此时才写入 auth store 并进入查询主界面。
+
+否则欢迎页会被自己刚写入的 token 判定为已登录而跳过自己。
+
+其余保持现状：
 
 - 主按钮文案在认证关闭时为“进入工作区”而不是“登录”。
-- **启动阶段不得为了探测而预取 guest token。** 工作区在未登录时只调用 `/auth-status` 判断认证是否开启，取到的 guest token 在用户点击之前不得写入 auth store——否则欢迎页会被自己刚写入的 token 判定为已登录而被跳过。
 - `/webui` 保持现有自动 guest 登录行为。
 - guest token 续期和 401 重试沿用现有 API 客户端逻辑，但最终导航必须保留当前入口。
+
+**token 有效性判断必须收紧，这是本节成立的前提。** 现有 `initAuthState`（`stores/state.ts`）只检查 `LIGHTRAG-API-TOKEN` 是否**存在**，随后直接置 `isAuthenticated: true`；它虽然顺带算出了 `tokenExpiresAt`，却不用它来把关。因此格式损坏或早已过期的 token 同样会被判为已登录，上表“无有效 token”这一行在今天的代码里无法成立。要求：
+
+- 启动时对 token 做**本地**校验：JWT 结构可解析，且 `exp` 未过期。
+- 校验不通过即清除该 token 及其伴随的 localStorage 项，按“无有效 token”进入欢迎页（后台则进入登录页）。
+- 仅凭本地信息无法确认的情形（签名无效、服务端已吊销）仍由后续 401 纠正，本地校验不承担鉴权职责。
+
+这是共享认证层的改动，两个入口同时受益：`/webui` 今天会先渲染整个后台再被 401 打回，收紧后直接落到登录页。属于可观测的行为变化，需在变更记录中写明。
 
 ## 7. 查询主界面
 
@@ -326,16 +339,51 @@ WorkspaceQueryView ────────── WorkspaceEmptyState
 
 | localStorage key | 内容 | 写入方 |
 | --- | --- | --- |
-| `query-settings-storage` | `querySettings` | 仅 `/webui` |
-| `webui-retrieval-history` | 后台查询历史 | 仅 `/webui` |
-| `workspace-retrieval-history` | 工作区查询历史 | 仅 `/workspace` |
-| `settings-storage` | 语言、主题、图谱设置等其余部分 | 两个入口 |
+| `lightrag:<ns>:query-settings-storage` | `querySettings` | 仅 `/webui` |
+| `lightrag:<ns>:webui-retrieval-history` | 后台查询历史 | 仅 `/webui` |
+| `lightrag:<ns>:workspace-retrieval-history` | 工作区查询历史 | 仅 `/workspace` |
+| `lightrag:<ns>:site-settings` | `apiKey`、`userPromptHistory`、`queryLabel`、`backendMaxGraphNodes` 等站点相关状态 | 两个入口（按各自权限） |
+| `settings-storage`（保留） | 主题、语言及与后端无关的纯 UI 偏好 | 两个入口 |
+
+“写入方”一列描述的是**运行期**权限。一次性迁移是唯一例外，它可以由任一入口执行并写入其涉及的全部新键，包括 `webui-retrieval-history`（见下文迁移语义第 6 条）。
+
+**新键必须按站点分区。** localStorage 按 origin 隔离而**不按路径**隔离，而项目明确支持同一 host 下的多站点部署（`https://host/site01/webui/` 与 `https://host/site02/webui/`，见[多站点部署文档](../MultiSiteDeployment.md)）。若沿用固定键名，site01 的查询参数会被 site02 的工作区使用，两个站点的历史相互可见并相互覆盖。`<ns>` 取 `normalizeApiPrefix()` 的返回值（根部署为空串，故键形如 `lightrag::query-settings-storage`——双冒号是有意保留的，使键形状统一、解析无歧义）。同一站点的 `/webui` 与 `/workspace` 共用同一命名空间；`storage` 事件处理器只响应本命名空间的键。
+
+**划界规则**：凡取值语义依赖于“哪个站点、哪个后端”的状态一律进入站点命名空间；只有与后端完全无关的纯展示偏好才留在 origin 级共享。
+
+不能把 `settings-storage` 的其余部分当作无害。它的 persist 配置**没有 `partialize`**，整个 store 切片都会落盘，其中至少包含：
+
+| 字段 | 为什么必须分区 |
+| --- | --- |
+| `apiKey` | 被读出后作为 `X-API-Key` 附加到普通请求与流式请求。同源多站点下这意味着**把 site01 的凭据发给 site02**——这是凭据泄露，不是数据串用，即便两站同属一个运维方也不该是默认行为 |
+| `userPromptHistory` | 用户针对某个知识库写下的提示词，跨站点可见 |
+| `queryLabel` | 取自某个站点知识图谱的标签，在另一个站点无意义甚至误导 |
+| `backendMaxGraphNodes` | 由后端上报，跨站点串用会得到错误上限 |
+
+因此本期必须分区的集合是：`querySettings`、两份查询历史，**外加上表四项**。实现上可拆成两个 persist store（全局偏好 + 站点作用域），或采用等价机制；PRD 不规定具体形式，但规定划界。
+
+`LIGHTRAG-API-TOKEN` 仍是 origin 级共享，作为**明确记录的既有风险**留待后续处理——它不能再被用作“其余部分无害”的论据。`i18n.ts` 对 `settings-storage` 的直接读取不受影响，因为语言仍留在该键中。
 
 要求：
 
-- 拆分后 `/workspace` 的任何写入都不再触及 `query-settings-storage`，参数覆盖竞态从源头消失。`settings-storage` 中仍有的共享项（语言、主题）保留既有竞态；这些是低风险的展示偏好，本期不处理，但不得把 `querySettings` 留在其中。
+- 拆分后 `/workspace` 的任何写入都不再触及 `query-settings-storage`，参数覆盖竞态从源头消失。`settings-storage` 中剩下的主题/语言仍保留既有的整份写回竞态；这些是纯展示偏好，本期不处理。
 - 已打开的 `/workspace` 必须监听 `storage` 事件（或以等效方式重新 hydrate `query-settings-storage`），使 `/webui` 的新参数**从下一次查询开始生效**，无需刷新页面。不得在流式响应进行中途切换参数快照。
-- 升级迁移：现有 `settings-storage` 中的 `retrievalHistory` 迁移为**后台历史**，工作区历史初始为空；`querySettings` 迁出到新 key。迁移必须幂等，且在旧数据缺失时给出前端默认值。
+- 升级迁移由**两个入口共同调用的迁移器**完成，在任何依赖上述键的 store hydrate 之前执行，语义如下：
+
+  1. **版本规范化先行。** 现有 `settings-storage` 带有 v1 → v21 的逐级迁移链，直接“只接受 v21 envelope”会把从 v20 及更早版本升级的用户判为无旧数据，绕开既有迁移链并把参数与历史清回默认值。迁移器必须先**复用**（而非复制）现有 `migrate` 链把任意 ≤21 的 envelope 规范化到 v21，再执行拆分。
+  2. `version > 21`（回滚后再升级、或未知的更高版本）时**不读、不清理、不覆盖任何旧字段**，新键一律用默认值初始化——否则一次降级会永久破坏数据。
+  3. **只为不存在的新键写入迁移值**；新键一旦存在，其值永远优先，重复迁移绝不用旧数据覆盖它。
+  4. 先成功写入全部新键，**再**清理旧 envelope 中已迁出的字段并升级其版本号。
+  5. 部分失败时保留旧字段不清理，下次启动按同样规则重试；已写入的新键因第 3 条不会被二次覆盖。
+  6. `/workspace` **允许**执行这一次性迁移写入，且例外覆盖迁移实际涉及的**全部**新键（包括 `webui-retrieval-history`——workspace 先被打开时必然由它写入）。运行期对 `query-settings-storage` 仍严格只读。
+
+- **旧 origin 级历史的归属需要跨标签页互斥，幂等不足以保证。** 两个站点并发首次打开时，双方都可能读到旧历史、都发现自己的新键不存在、于是各自复制一份，旧历史同时进入两个命名空间，直接违反隔离不变式；单线程幂等测试发现不了它。协议如下：
+
+  1. 整个迁移序列在一把同源互斥锁内执行（`navigator.locks.request('lightrag:legacy-migration', …)`；不可用时降级为带所有者标识与时间戳的 localStorage claim 记录）。
+  2. 锁内先读 claim 记录：不存在则写入 `{ ns, state: 'claimed' }`；已存在且 `ns` 非本命名空间，则**本站点不迁移历史，直接从空历史开始**——旧数据的归属已经确定。
+  3. 复制历史到本命名空间成功后，把 claim 置为 `completed`，然后才清理旧字段。
+  4. 认领方在第 2、3 步之间崩溃：claim 停留在 `claimed`，旧字段未清理。恢复规则是**只有 claim 中记录的同一命名空间可以续做**；其它站点仍按第 2 步跳过。锁在标签页崩溃时由浏览器自动释放，不会形成死锁。
+  5. 认领方再也不被打开时，旧字段会长期残留。这是无害的遗留数据，不设超时抢占——抢占会让另一个站点在用户毫无感知的情况下继承一份来历不明的历史，代价大于收益。
 - 作用域始终是**同源、同一浏览器 profile**。它不跨设备、不跨浏览器、不跨域名同步，也不是 Server 全局配置。若未来需要运维统一控制所有查询用户的参数，应另行设计服务端 query profile，不能把 localStorage 描述成全局策略。
 - token 失效、欢迎页和重新登录过程不得提前清空当前用户历史；如果登录成不同用户，则沿用现有规则清空——该规则对两份历史分别独立生效。
 
@@ -466,6 +514,13 @@ Server 启动时构造不可变的 `UICustomizationSnapshot`：
 5. 外部 Bundle 的 manifest、任一已声明 locale 或任一被引用资源缺失、不可读、超限或格式非法时，Server 启动失败并给出可操作但不泄露敏感内容的错误；不得悄悄改用默认 Bundle。
 6. 不把外部文件复制到 `lightrag/api/webui/ui_defaults/`，也不修改 Python 包、容器镜像或前端构建产物。
 
+customization **inactive** 时的对外契约（与上面第 1 步一一对应）：
+
+- `/ui/customization` 配置端点与资源端点一律返回 **503**，而不是 404。它们是已注册的路由、只是子系统暂不可用；404 会与“未知资源被拒绝”混淆，让运维分不清是配置错了还是产物缺了。
+- `/health` **不新增字段**：inactive 当且仅当 `workspace_available=false`，二者按 §8.4 第 1 步严格 1:1，再加一个字段只会制造两个可能漂移的真相源。
+- 启动日志输出 `workspace unavailable; customization inactive`，**不得**尝试打印不存在的 Bundle source 或 revision。
+- 由此把 §11.2 中原先悬置的问题定死：**`bundle_revision` 与 Bundle 来源只出现在受认证的 `/health` 与启动日志中**，不进入公开 liveness 层，也不因 active/inactive 而改变归属。
+
 启动快照包含已解析的文案、资源字节、MIME、内容哈希、locale revision 和 bundle revision。请求阶段不重新读取磁盘，多个 worker 各自从同一只读目录构造相同快照。修改 `UI_TEMPLATES_DIR` 中的内容后需要重启所有 Server worker；本期不做文件监听或热重载。
 
 模板文件单个限制为 64 KiB，Logo 单个限制为 2 MiB。具体限制应集中定义并在运维文档中说明。
@@ -534,7 +589,7 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 
 ### 8.7 内容与资源安全
 
-- manifest 使用严格 Schema，拒绝未知字段、错误类型、重复或非法 locale、fallback 环和不存在的目标。
+- manifest 使用严格 Schema，拒绝未知字段、错误类型、重复或非法 locale，以及非法的 fallback source/target、空数组、数组内重复项和不存在的 target。按 §8.2 的单层解析不做环检测。
 - 所有相对路径必须解析后仍位于 Bundle 根目录内；拒绝绝对路径、`..` 穿越以及通过符号链接逃逸根目录。
 - 只读取并公开 manifest 明确引用的文件。
 - 由于 Vite 会把 `public/ui_defaults/` 复制到静态构建目录，Server 的静态文件处理必须显式拒绝直接访问 `ui_defaults/` 原始路径；内置内容也只能通过 customization API 暴露，避免绕过 manifest 与响应头策略。
@@ -604,11 +659,11 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 
 - 欢迎页、登录页和查询页均提供明确的 loading 状态，初始化期间不闪现后台页面。
 - 查询失败沿用现有消息内错误展示；401 与普通查询错误分流，不把认证失效渲染成模型回答失败。
-- customization API 的临时请求或渲染失败只影响定制内容，不影响登录和查询；显式配置的外部 Bundle 若在启动校验阶段失败，则 Server 按 §8.4 fail-fast。
+- customization API 的临时请求或渲染失败只影响定制内容，不影响登录和查询；显式配置的外部 Bundle 若在启动校验阶段失败，则 Server 按 §8.4 fail-fast。收到 503（子系统 inactive）时前端回落到最小安全默认内容，与请求失败同路处理，不向用户暴露内部状态。
 - 所有页面支持键盘导航和可见焦点；颜色对比满足 WCAG 2.1 AA 的常见文本要求。
 - Logo 使用有意义的替代文本；纯装饰图标标记为隐藏。
 - `prefers-reduced-motion` 下减少非必要动画。
-- 当前 WebUI 的全部语言继续可选；Bundle 为每种语言提供已经翻译完成的内容，前端不对自定义 Markdown 做运行时机器翻译。缺少精确语言时严格使用 §8.3 的显式回退规则。
+- 当前 WebUI 的全部语言继续可选，前端不对自定义 Markdown 做运行时机器翻译。覆盖要求分两档：**内置 Bundle 必须覆盖全部受支持语言**；**外部 Bundle 允许只覆盖部分语言**。无论哪一档，每个**已声明**的 locale 都必须字段完整（§8.2），未覆盖的语言按 §8.3 的显式 fallback 与 `default_locale` **整体**回退，不做逐字段拼接。
 
 ## 11. 兼容性与系统同步
 
@@ -617,10 +672,11 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - `/webui` URL、后台功能、现有书签和静态资源构建流程保持可用。
 - `RetrievalView` 继续只表示后台查询页；新增 `WorkspaceQueryView` 不改变现有调用方语义。
 - 一处有意的例外：共享 serializer 收紧后，`/webui` 的请求体不再携带 `history_turns`。该字段服务端从未声明、一直被静默丢弃，因此对服务端行为无影响，但属于可观测的请求体变化，需在变更记录中写明。
-- 现有 token、API key、guest token 和登录接口契约不变。
-- `settings-storage` 会被拆分（§7.4）：`querySettings` 迁出到独立 key，`retrievalHistory` 迁移为后台历史，工作区历史初始为空。迁移在前端 persist 层完成，须幂等且对缺失字段回落到默认值。
+- 现有 token、API key、guest token 和登录接口契约不变。服务端契约确实不变，但前端会新增**本地** token 有效性校验（§6.3）：过期或结构损坏的 token 不再先渲染应用再被 401 打回，而是直接进入欢迎页/登录页。这是两个入口共同受益的可观测行为变化。
+- `settings-storage` 会被拆分（§7.4）：`querySettings`、两份历史以及 `apiKey`、`userPromptHistory`、`queryLabel`、`backendMaxGraphNodes` 等站点相关状态迁出到按 `apiPrefix` 分区的新键，主题/语言等纯 UI 偏好留在原键。迁移在前端 persist 层完成，复用既有 v1→v21 版本链，须幂等、跨标签页互斥且对缺失字段回落到默认值。
+- 同源多站点部署的用户升级后，`apiKey` 需在每个站点各自重新填写一次——旧值只会被迁移到首个执行迁移的站点。这是修正凭据跨站点共享的必要代价，须在升级说明中写明。
 - 当前 `WEBUI_TITLE` / `WEBUI_DESCRIPTION` 继续作为部署级、非本地化站点标题和描述，同时可供查询入口页头使用；欢迎页和空白态正文由 UI Bundle 拥有。
-- 未设置 `UI_TEMPLATES_DIR` 的部署自动使用打包的 `ui_defaults`；升级无需新增配置。显式设置该变量的部署必须提供符合当前 Schema 的完整 Bundle。
+- customization active 时：未设置 `UI_TEMPLATES_DIR` 的部署自动使用打包的 `ui_defaults`，升级无需新增配置；显式设置该变量的部署必须提供符合当前 Schema 的完整 Bundle。inactive 时（`workspace.html` 缺失）该变量被忽略并告警，不阻止启动。
 - 根路径 `/` 默认仍跳转 `/webui`；只有显式配置 `LIGHTRAG_DEFAULT_UI=workspace` 时才跳转 `/workspace`。
 - 构建产物新增 `workspace.html`。用新服务端配旧构建目录时后台仍完整可用，只有查询入口进入不可用降级分支（§5.2）。
 
@@ -635,9 +691,9 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 | Runtime config | 两个 mount 注入逐字节相同的 `{ apiPrefix, webuiPrefix }`；模块级常量无需改造；运行时配置不含入口模式字段；dev 不引入模式开关 |
 | 跨入口 HTML | 每个 mount 只提供自己的索引文件（需覆写 Starlette 硬编码的 `index.html`）；另一入口的 HTML 返回 404，同入口显式文件名仍可用 |
 | 前端入口分流 | 两个入口各自组合自己的 router 与应用壳；工作区入口的**首屏静态依赖闭包**不含图谱/文档管理，mermaid 改为动态 import；品牌链接改为 `href="./"`；共享导航单例（含图谱重置适配器）由入口 bootstrap 显式配置 |
-| 客户端状态存储 | `querySettings` 拆出独立 persist key 供两个入口共享（仅后台可写），两份查询历史各自独立；旧 `settings-storage` 幂等迁移；工作区监听 `storage` 事件重新 hydrate 参数 |
+| 客户端状态存储 | `querySettings` 拆出独立 persist key 供两个入口共享（仅后台可写），两份查询历史各自独立；站点相关状态（含 `apiKey`、`userPromptHistory`、`queryLabel`、`backendMaxGraphNodes`）一并按 `apiPrefix` 分区；迁移复用既有版本链、在同源互斥锁内认领旧数据、新键优先、先写后清、部分失败可重试；工作区监听本命名空间的 `storage` 事件重新 hydrate 参数 |
 | 根路径/降级 | `LIGHTRAG_DEFAULT_UI` 默认 `webui`，env + CLI 双通道，非法值启动期 fail-fast（含 env 取值）；选择 `workspace` 时保留 `root_path`；无资源时 `/webui` 可沿用 API 文档降级，`/workspace` 只返回无 API 文档链接或引导的固定服务信息 JSON；根路径遵循所选入口自己的降级分支，不改投另一入口 |
-| 健康状态 | 保留 `webui_available` 语义，并新增 `workspace_available`；两者由**各自产物**的检查结果派生，且**都留在 `/health` 的公开 liveness 层**——`webui_available` 今天就是匿名可见的 liveness 信号，把它挪进认证层会破坏既有契约，而两个入口是否挂载本就可由请求该路径直接探得。文件系统路径、Bundle 目录等仍只在认证层返回；`bundle_revision` 与 Bundle 来源是否公开单独决定，不与可用性字段绑定 |
+| 健康状态 | 保留 `webui_available` 语义，并新增 `workspace_available`；两者由**各自产物**的检查结果派生，且**都留在 `/health` 的公开 liveness 层**——`webui_available` 今天就是匿名可见的 liveness 信号，把它挪进认证层会破坏既有契约，而两个入口是否挂载本就可由请求该路径直接探得。文件系统路径、Bundle 目录、`bundle_revision` 与 Bundle 来源只在认证层与启动日志中出现（§8.4）；customization 是否 active 由 `workspace_available` 表达，不新增字段 |
 | UI 定制加载 | 从内置或 `UI_TEMPLATES_DIR` 构造一个只读快照；绝不修改 WebUI 构建目录 |
 | 定制读取 API | 公开端点只返回当前 locale 内容和 manifest 引用资源，并正确处理前缀、ETag、内容哈希与安全响应头 |
 | 启动日志 | 同时打印后台和查询入口的实际带前缀 URL，以及 customization 来源、bundle revision 和校验结果；不打印服务端目录 |
@@ -692,10 +748,11 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 
 - 未设置 `UI_TEMPLATES_DIR` 时，所有支持语言均显示内置 Logo、欢迎页和查询欢迎词。
 - 指向合法完整 Bundle 并重启后，欢迎页与空白态按当前语言显示客户内容，无需重建前端，也不修改 `lightrag/api/webui/ui_defaults/`。
-- 显式配置的 Bundle 出现 manifest Schema 错误、缺少默认语言、fallback 环、文件缺失/超限、路径逃逸或 Logo MIME 不匹配时，Server 启动失败并报告错误，不发生内置与客户内容的逐字段混用。
+- customization 处于 active 状态时，显式配置的 Bundle 出现 manifest Schema 错误、缺少默认语言、非法或不存在的 fallback target、文件缺失/超限、路径逃逸或 Logo MIME 不匹配时，Server 启动失败并报告错误，不发生内置与客户内容的逐字段混用。
 - 精确语言不存在时按 manifest 显式 fallback、再按外部 Bundle 自己的 `default_locale` 回退；不会回退到内置 Bundle。
 - 用户切换语言后，欢迎页和空白态使用相同解析结果原子更新，RTL 方向正确，切换过程中不出现跨语言字段混合。
 - 模板中的 `<script>`、事件属性、iframe 和危险 URL 不执行。
+- customization inactive 时，配置端点与资源端点返回 503 而非 404，前端回落到最小安全默认内容且查询功能不受影响。
 - customization API 支持 locale ETag/304；文案变化后对应 locale revision 改变，未变化的 locale 可继续 304。
 - Logo 字节变化后 `asset_hash` 和资源 URL 改变；仅文案变化时 `asset_id` 和未修改 Logo URL 保持稳定。
 - 修改内置 `ui_defaults` 并重新构建/部署后，也通过相同的 revision 与 asset hash 机制使缓存失效。
@@ -717,11 +774,17 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - 未知 hash 路由回落到本入口自己的默认页，不跨入口跳转。
 - 共享导航单例在两种 bootstrap 配置下的 401 与退出目标分别为 `#/welcome` 和 `#/login`；未配置时不得静默沿用后台默认值。
 - 导航核心在未注册重置适配器时可独立工作，且其模块图不含 `stores/graph`；后台注册适配器后图谱清理照常触发。
-- §6.3 的 guest token 矩阵四种状态：有效普通 token、有效 guest token、无 token 且认证关闭、无 token 且认证开启；并断言欢迎页展示期间未向 auth store 写入预取的 guest token。
+- §6.3 的 guest token 矩阵四种状态：有效普通 token、有效 guest token、无有效 token 且认证关闭、无有效 token 且认证开启；并断言欢迎页展示期间 `/auth-status` 附带的 guest token 未被写入 auth store 或 localStorage。
+- **token 本地校验测试**必须直接钉住“非空即登录”这个旧行为，否则旧实现会连同新测试一起通过。用例：结构损坏（非三段式）、payload 非合法 Base64URL、payload 可解码但非 JSON、缺少 `exp`、`exp` 已过期、合法且未过期（唯一应判为已登录的一例）；并断言前五种情形下 token 及其伴随的 localStorage 项（`LIGHTRAG-LAST-TOKEN-RENEWAL` 等）都被清除、页面落到欢迎页/登录页。
+- 本地看似有效但服务端拒绝（签名无效或已吊销）时仍由 401 纠正，本地校验不得吞掉该路径。
 - `RetrievalView` 与 `WorkspaceQueryView` 的 DOM 差异，以及共享会话控制层的请求 payload 测试。
 - **serializer 等价性测试**：参数化跑遍全部 mode，断言共享 serializer 对同一份 `querySettings`、同一段显式传入的历史和同一个问题产生逐字段相等的请求体，并断言 `history_turns` 已被剥离。历史 fixture 是必需的——`bypass` 用例的请求体正是从它切片而来。
 - **状态隔离测试**：两个控制层实例注入不同历史存储后，各自的 `bypass` 请求体只含本存储的最近 3 轮；一侧 `clear()` 或 `abort()` 不改变另一侧的消息数组与流式状态。
-- **存储拆分与迁移测试**：`/workspace` 的历史写入不修改 `query-settings-storage`；`storage` 事件触发后重新 hydrate，下一次查询使用新参数、进行中的流式响应不换快照；从 v21 `settings-storage` 迁移后后台历史保留、工作区历史为空，且重复执行结果一致。
+- **存储拆分测试**：`/workspace` 的历史写入不修改 `query-settings-storage`；`storage` 事件触发后重新 hydrate，下一次查询使用新参数、进行中的流式响应不换快照；`storage` 事件中其它命名空间的键被忽略。
+- **迁移测试**：workspace 先打开、`/webui` 先打开、新键已存在（不得被旧值覆盖）、只成功写入部分新键后重试、重复执行结果一致、写入抛错后旧字段仍保留；两个不同 `apiPrefix` 命名空间之间互不可见；切换登录用户时两份历史都被清空。
+- **版本链测试**：从 v1、v6、v20、v21 各自升级后，查询参数与历史都不丢失（证明复用了既有迁移链而不是把旧版本判为无数据）；损坏 envelope 按无旧数据处理；`version > 21` 时旧字段不被读取也不被清理。
+- **并发认领测试**：交错执行两个命名空间的迁移，断言旧历史只进入其中一个；认领后、复制完成前中断，断言同一命名空间可续做而另一个命名空间从空历史开始且不清理旧字段；互斥原语不可用时的 localStorage claim 降级路径同样满足上述断言。
+- **站点作用域字段测试**：`apiKey`、`userPromptHistory`、`queryLabel`、`backendMaxGraphNodes` 在两个命名空间之间互不可见；site01 的请求头不携带 site02 的 `X-API-Key`。
 - 工作区不解析 query mode 前缀，但读取后台持久化的合法 `querySettings`；未配置时使用前端默认值。
 - 两个页面的流式完成、失败、停止、清空、历史持久化和卸载清理使用同一组共享层测试（历史存储由测试注入，不由共享层选择）。
 - 空白态首次显示、发送后隐藏、清空后恢复。
@@ -739,6 +802,7 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - 不设置、设置和组合 `LIGHTRAG_API_PREFIX` 时的运行时配置注入与重定向。
 - 内置/外部 Bundle 加载、严格 manifest Schema、全部支持语言、locale 规范化（含大小写归一与下划线拒绝）、单层显式 fallback 与 `default_locale` 兜底、完整 Bundle 原子校验。
 - 只存在 `index.html` 时，即使 `ui_defaults/` 缺失或显式设置了非法的 `UI_TEMPLATES_DIR`，Server 仍正常启动，后台可用，`/workspace` 降级，并输出 customization inactive 告警；补齐 `workspace.html` 后同样的非法配置重新变为启动失败。
+- customization inactive 时配置端点与资源端点返回 503（非 404），`/health` 不新增字段且 `workspace_available=false`，启动日志不打印 Bundle source 或 revision。
 - 路径穿越、绝对路径、符号链接逃逸、未引用文件、文件超限、MIME 不匹配和 SVG 响应头。
 - customization 配置端点的 locale ETag/304、部署前缀，以及资源端点的 `asset_hash`、长期 immutable 缓存和未知资源拒绝。
 - 分别修改单一语言文案、共享 Logo、`WEBUI_TITLE`，验证 locale revision、bundle revision 和 asset hash 的变化边界。
@@ -771,7 +835,7 @@ cd ..
 
 1. **双入口基础设施**：Vite 双 HTML 入口构建，Server 双 mount（各自的索引文件、跨入口 HTML 拒绝与独立产物检查），`LIGHTRAG_DEFAULT_UI` 与根路径跳转，`root_path`、健康状态、降级和打包测试。
 2. **入口感知认证**：两个入口各自的 router 与未登录默认页，欢迎页路由，共享导航单例的 bootstrap 配置，登录/退出/401/guest 全链路只经 `navigate()`。
-3. **客户端状态边界**：拆分 `query-settings-storage` 与两份查询历史存储，实现幂等迁移与 `storage` 事件重新 hydrate；解耦导航核心与图谱 store（重置适配器），`ChatMessage` 的 mermaid 改为动态 import。这一步不引入新页面，可独立在 `/webui` 上验证无回归。
+3. **客户端状态边界**：按 `apiPrefix` 分区站点作用域存储（查询参数、两份历史、`apiKey` 等），实现复用既有版本链、跨标签页互斥认领的迁移与 `storage` 事件重新 hydrate；收紧 token 本地校验；解耦导航核心与图谱 store（重置适配器），`ChatMessage` 的 mermaid 改为动态 import。这一步不引入新页面，可独立在 `/webui` 上验证无回归。
 4. **查询共享层与工作区 UI**：从 `RetrievalView` 抽出查询会话、消息列表和输入操作层（历史存储由页面注入）；新增复用 `ChatMessage` 的 `WorkspaceQueryView`、空白态和精简应用壳；工作区入口只 import 查询所需模块，品牌链接改为 `href="./"`；保持后台页面行为不变。
 5. **多语言品牌定制**：默认 Bundle、严格 manifest、外部只读 Bundle 启动快照、locale/fallback、公开读取 API、revision/asset hash 缓存、安全渲染和运维文档。
 6. **移动端收口**：响应式布局、safe-area/软键盘、真实浏览器回归和无障碍检查。
@@ -786,6 +850,11 @@ cd ..
 | 给 `RetrievalView` 堆叠 variant 分支 | 千行组件同时承担后台与移动工作区两套布局 | 两个页面壳组合同一组共享能力 |
 | 只隐藏参数侧栏 | `/mode` 前缀仍可临时覆盖参数，或两个页面组装出不同请求 | 使用同一 serializer 读取持久化参数，工作区禁用前缀解析，并以 serializer 等价性测试兜底 |
 | 共享历史 | 管理员的调试提问进入查询用户的展示与 `bypass` LLM 上下文 | 两份历史独立存储，共享层只接受注入的存储 |
+| 固定 localStorage 键名 | localStorage 只按 origin 隔离，同 host 多站点部署下查询参数、历史与 **`apiKey`** 互相串用——后者是把一个站点的凭据发给另一个站点 | 站点相关状态（含 `apiKey`、`userPromptHistory`、`queryLabel`、`backendMaxGraphNodes`）一律按 `apiPrefix` 分区，`storage` 事件只响应本命名空间 |
+| 迁移语义不完整 | 谁迁移、写入顺序、部分失败与重复执行未定义，升级后可能丢历史或用旧值覆盖新值 | 新键优先、先写新后清旧、部分失败保留旧字段重试 |
+| 并发首次打开两个站点 | 双方各自复制一份旧历史，隔离不变式被破坏，且幂等测试发现不了 | 迁移全序列在同源互斥锁内执行，配 claim 记录确定唯一归属 |
+| 只接受 v21 envelope | 从 v20 及更早升级的用户被判为无旧数据，参数与历史清回默认值 | 复用既有 v1→v21 迁移链先规范化再拆分；`version > 21` 一律不读不清 |
+| token 只判存在性 | 过期或损坏的 token 被判为已登录，欢迎页矩阵中的“无有效 token”一行无法成立 | 启动时本地校验 JWT 结构与 `exp`，不通过即清除并进入欢迎页；签名与吊销仍由 401 纠正 |
 | `querySettings` 与历史同 persist key | 工作区写入历史时整份写回，覆盖后台刚保存的参数 | 拆出 `query-settings-storage`，仅后台可写 |
 | 前端解析 pathname 判断入口 | API 前缀、代理改写或未来路径变更后误判 | 入口由加载的 HTML 产物决定，前端无需也不得解析路径 |
 | 两个 HTML 源文件不同步 | 某一入口缺运行时配置占位符，`apiPrefix` 静默为空，部署前缀下该入口全面 404 | 占位符与注入对两个 HTML 同等适用，并加构建产物断言 |
@@ -797,7 +866,7 @@ cd ..
 | 复用聊天的 Markdown sanitize schema | 为脚注保留的 `rehypeRaw` 被带进未登录可见的欢迎页 | `chat` / `customization` 两档显式分离 |
 | 原始 HTML 模板 | XSS、钓鱼表单或布局劫持 | 受限 Markdown，系统拥有操作控件 |
 | 启动时复制客户文件覆盖构建目录 | 只读容器/PyPI 安装不可写，多 worker 竞态，升级后残留旧文件 | 外部目录只读加载为内存快照，构建产物永不修改 |
-| 显式错误配置被静默回退 | 运维误以为客户品牌已生效，实际展示 LightRAG 默认内容 | 未配置时用默认 Bundle；显式配置校验失败时启动失败 |
+| 显式错误配置被静默回退 | 运维误以为客户品牌已生效，实际展示 LightRAG 默认内容 | customization active 时：未配置用默认 Bundle，显式配置校验失败即启动失败；inactive 时忽略并告警 |
 | 内置 Bundle 强依赖压垮旧构建 | 旧构建目录无 `ui_defaults/`，Server 直接起不来，连后台都用不了 | 先判产物：查询入口缺失即 customization 整体不初始化，只告警不 fail-fast |
 | 对每个字段独立回退 | 同页混合客户/内置品牌或不同语言 | 以完整 Bundle 和 locale 表示为原子单位加载与切换 |
 | 用稳定文件名直接缓存 Logo | 客户替换文件后浏览器/CDN 继续展示旧图 | `asset_id` 保持语义稳定，内容 SHA-256 进入资源 URL |
