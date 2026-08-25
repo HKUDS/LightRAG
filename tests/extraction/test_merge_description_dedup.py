@@ -229,6 +229,52 @@ async def test_node_merge_keeps_distinct_descriptions():
     assert len(frags) == 2
 
 
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_node_merge_unions_doc_ids():
+    graph = _MemGraph()
+    cfg = _config()
+
+    await _merge_nodes_then_upsert(
+        "ALICE",
+        [
+            {
+                "entity_name": "ALICE",
+                "entity_type": "person",
+                "description": "Alice is an engineer.",
+                "source_id": "chunk-1",
+                "doc_ids": "doc-1",
+                "file_path": "doc1.txt",
+                "timestamp": 1,
+            }
+        ],
+        graph,
+        None,
+        cfg,
+    )
+    await _merge_nodes_then_upsert(
+        "ALICE",
+        [
+            {
+                "entity_name": "ALICE",
+                "entity_type": "person",
+                "description": "Alice leads the platform team.",
+                "source_id": "chunk-2",
+                "doc_ids": "doc-2",
+                "file_path": "doc2.txt",
+                "timestamp": 2,
+            }
+        ],
+        graph,
+        None,
+        cfg,
+    )
+
+    assert graph.nodes["ALICE"]["doc_ids"] == GRAPH_FIELD_SEP.join(
+        ["doc-1", "doc-2"]
+    )
+
+
 # --- edge merge round-trip --------------------------------------------------
 
 
@@ -270,3 +316,72 @@ async def test_edge_reprocess_does_not_accumulate_description():
 
     assert counts == [1, 1, 1]
     assert _edge_fragments(graph, "ALICE", "ACME") == ["Alice works at Acme."]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_edge_merge_unions_doc_ids_and_updates_endpoints():
+    graph = _MemGraph()
+    graph.nodes["ALICE"] = {
+        "entity_type": "person",
+        "description": "x",
+        "source_id": "chunk-1",
+        "doc_ids": "doc-1",
+        "file_path": "doc1.txt",
+    }
+    graph.nodes["ACME"] = {
+        "entity_type": "organization",
+        "description": "y",
+        "source_id": "chunk-1",
+        "doc_ids": "doc-1",
+        "file_path": "doc1.txt",
+    }
+    cfg = _config()
+
+    await _merge_edges_then_upsert(
+        "ALICE",
+        "ACME",
+        [
+            {
+                "src_id": "ALICE",
+                "tgt_id": "ACME",
+                "description": "Alice works at Acme.",
+                "keywords": "employment",
+                "weight": 1.0,
+                "source_id": "chunk-1",
+                "doc_ids": "doc-1",
+                "file_path": "doc1.txt",
+                "timestamp": 1,
+            }
+        ],
+        graph,
+        None,
+        None,
+        cfg,
+    )
+    await _merge_edges_then_upsert(
+        "ALICE",
+        "ACME",
+        [
+            {
+                "src_id": "ALICE",
+                "tgt_id": "ACME",
+                "description": "Alice joined Acme after the merger.",
+                "keywords": "employment",
+                "weight": 1.0,
+                "source_id": "chunk-2",
+                "doc_ids": "doc-2",
+                "file_path": "doc2.txt",
+                "timestamp": 2,
+            }
+        ],
+        graph,
+        None,
+        None,
+        cfg,
+    )
+
+    expected_doc_ids = GRAPH_FIELD_SEP.join(["doc-1", "doc-2"])
+    assert graph.edges[("ALICE", "ACME")]["doc_ids"] == expected_doc_ids
+    assert graph.nodes["ALICE"]["doc_ids"] == expected_doc_ids
+    assert graph.nodes["ACME"]["doc_ids"] == expected_doc_ids

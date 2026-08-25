@@ -26,6 +26,13 @@ from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
+class TokenUsageResponse(BaseModel):
+    prompt_tokens: int = Field(description="Prompt tokens consumed")
+    completion_tokens: int = Field(description="Completion tokens consumed")
+    total_tokens: int = Field(description="Total tokens consumed")
+    call_count: int = Field(description="LLM call count for this request")
+
+
 class QueryRequest(BaseModel):
     query: str = Field(
         min_length=3,
@@ -256,6 +263,10 @@ class QueryResponse(BaseModel):
         default=None,
         description="Total server-side processing time in seconds (retrieval + LLM generation)",
     )
+    token_usage: Optional[TokenUsageResponse] = Field(
+        default=None,
+        description="Aggregated token usage for this query request",
+    )
 
 
 class QueryDataResponse(BaseModel):
@@ -266,6 +277,10 @@ class QueryDataResponse(BaseModel):
     )
     metadata: Dict[str, Any] = Field(
         description="Query metadata including mode, keywords, and processing information"
+    )
+    token_usage: Optional[TokenUsageResponse] = Field(
+        default=None,
+        description="Aggregated token usage for this query request",
     )
 
 
@@ -303,6 +318,10 @@ class StreamChunkResponse(BaseModel):
     response_time: Optional[float] = Field(
         default=None,
         description="Total server-side processing time in seconds (final metadata line when include_progress=True)",
+    )
+    token_usage: Optional[TokenUsageResponse] = Field(
+        default=None,
+        description="Aggregated token usage for this query request",
     )
 
 
@@ -535,6 +554,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             llm_response = result.get("llm_response", {})
             data = result.get("data", {})
             references = data.get("references", [])
+            token_usage = result.get("token_usage")
 
             # Get the non-streaming response content
             response_content = llm_response.get("content", "")
@@ -570,12 +590,14 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     response=response_content,
                     references=references,
                     response_time=response_time,
+                    token_usage=token_usage,
                 )
             else:
                 return QueryResponse(
                     response=response_content,
                     references=None,
                     response_time=response_time,
+                    token_usage=token_usage,
                 )
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}", exc_info=True)
@@ -600,6 +622,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         async def _generate():
             references = result.get("data", {}).get("references", [])
             llm_response = result.get("llm_response", {})
+            token_usage = result.get("token_usage")
 
             # Enrich references with chunk content if requested
             if include_references and include_chunk_content:
@@ -624,7 +647,9 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             if llm_response.get("is_streaming"):
                 # Streaming: references first, then response chunks
                 if include_references:
-                    yield f"{json.dumps({'references': references})}\n"
+                    yield f"{json.dumps({'references': references, 'token_usage': token_usage})}\n"
+                elif token_usage:
+                    yield f"{json.dumps({'token_usage': token_usage})}\n"
 
                 response_stream = llm_response.get("response_iterator")
                 if response_stream:
@@ -644,13 +669,15 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 complete_response = {"response": response_content}
                 if include_references:
                     complete_response["references"] = references
+                if token_usage:
+                    complete_response["token_usage"] = token_usage
 
                 yield f"{json.dumps(complete_response)}\n"
 
             if include_response_time:
                 # Final metadata line: total server-side processing time
                 # (retrieval + LLM generation) for opted-in clients.
-                yield f"{json.dumps({'response_time': round(time.perf_counter() - start_time, 3)})}\n"
+                yield f"{json.dumps({'response_time': round(time.perf_counter() - start_time, 3), 'token_usage': token_usage})}\n"
 
         return _generate
 

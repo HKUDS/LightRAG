@@ -1460,19 +1460,32 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             namespace=NameSpace.VECTOR_STORE_ENTITIES,
             workspace=self.workspace,
             embedding_func=self.embedding_func,
-            meta_fields={"entity_name", "source_id", "content", "file_path"},
+            meta_fields={
+                "entity_name",
+                "source_id",
+                "content",
+                "file_path",
+                "doc_ids",
+            },
         )
         self.relationships_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
             namespace=NameSpace.VECTOR_STORE_RELATIONSHIPS,
             workspace=self.workspace,
             embedding_func=self.embedding_func,
-            meta_fields={"src_id", "tgt_id", "source_id", "content", "file_path"},
+            meta_fields={
+                "src_id",
+                "tgt_id",
+                "source_id",
+                "content",
+                "file_path",
+                "doc_ids",
+            },
         )
         self.chunks_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
             namespace=NameSpace.VECTOR_STORE_CHUNKS,
             workspace=self.workspace,
             embedding_func=self.embedding_func,
-            meta_fields={"full_doc_id", "content", "file_path"},
+            meta_fields={"doc_id", "doc_ids", "full_doc_id", "content", "file_path"},
         )
 
         # Initialize document status storage
@@ -4102,12 +4115,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             max_total_tokens=param.max_total_tokens,
             hl_keywords=param.hl_keywords,
             ll_keywords=param.ll_keywords,
+            allowed_doc_ids=param.allowed_doc_ids,
             conversation_history=param.conversation_history,
             user_prompt=param.user_prompt,
             enable_rerank=param.enable_rerank,
         )
 
         query_result = None
+        token_tracker = TokenTracker()
 
         if data_param.mode in ["local", "global", "hybrid", "mix"]:
             logger.debug(f"[aquery_data] Using kg_query for mode: {data_param.mode}")
@@ -4122,6 +4137,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 hashing_kv=self.llm_response_cache,
                 system_prompt=None,
                 chunks_vdb=self.chunks_vdb,
+                token_tracker=token_tracker,
             )
         elif data_param.mode == "naive":
             logger.debug(f"[aquery_data] Using naive_query for mode: {data_param.mode}")
@@ -4133,6 +4149,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 hashing_kv=self.llm_response_cache,
                 system_prompt=None,
                 text_chunks_db=self.text_chunks,
+                token_tracker=token_tracker,
             )
         elif data_param.mode == "bypass":
             logger.debug("[aquery_data] Using bypass mode")
@@ -4152,6 +4169,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             no_result_message = "Query returned no results"
             if data_param.mode == "naive":
                 no_result_message = "No relevant document chunks found."
+            token_usage = token_tracker.get_usage()
             final_data: dict[str, Any] = {
                 "status": "failure",
                 "message": no_result_message,
@@ -4159,12 +4177,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 "metadata": {
                     "failure_reason": "no_results",
                     "mode": data_param.mode,
+                    "token_usage": token_usage,
                 },
+                "token_usage": token_usage,
             }
             logger.info("[aquery_data] Query returned no results.")
         else:
             # Extract raw_data from QueryResult
             final_data = query_result.raw_data or {}
+            token_usage = token_tracker.get_usage()
+            metadata = final_data.setdefault("metadata", {})
+            metadata["token_usage"] = token_usage
+            final_data["token_usage"] = token_usage
 
             # Log final result counts - adapt to new data format from convert_to_user_format
             if final_data and "data" in final_data:
@@ -4208,6 +4232,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         try:
             query_result = None
+            token_tracker = TokenTracker()
 
             if param.mode in ["local", "global", "hybrid", "mix"]:
                 query_result = await kg_query(
@@ -4222,6 +4247,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     system_prompt=system_prompt,
                     chunks_vdb=self.chunks_vdb,
                     progress_callback=progress_callback,
+                    token_tracker=token_tracker,
                 )
             elif param.mode == "naive":
                 query_result = await naive_query(
@@ -4233,6 +4259,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     system_prompt=system_prompt,
                     text_chunks_db=self.text_chunks,
                     progress_callback=progress_callback,
+                    token_tracker=token_tracker,
                 )
             elif param.mode == "bypass":
                 # Bypass mode: directly use LLM without knowledge retrieval
@@ -4243,13 +4270,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
 
                 param.stream = True if param.stream is None else param.stream
+                token_usage = token_tracker.get_usage()
                 response = await use_llm_func(
                     query.strip(),
                     system_prompt=system_prompt,
                     history_messages=param.conversation_history,
                     enable_cot=True,
                     stream=param.stream,
+                    token_tracker=token_tracker,
                 )
+                token_usage = token_tracker.get_usage()
                 # isinstance, not exact type: a truncated non-streaming
                 # response arrives as TruncatedResponse (a str subclass) and
                 # must not be misclassified as a streaming iterator.
@@ -4258,7 +4288,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         "status": "success",
                         "message": "Bypass mode LLM non streaming response",
                         "data": {},
-                        "metadata": {},
+                        "metadata": {"token_usage": token_usage},
+                        "token_usage": token_usage,
                         "llm_response": {
                             "content": response,
                             "response_iterator": None,
@@ -4270,7 +4301,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         "status": "success",
                         "message": "Bypass mode LLM streaming response",
                         "data": {},
-                        "metadata": {},
+                        "metadata": {"token_usage": token_usage},
+                        "token_usage": token_usage,
                         "llm_response": {
                             "content": None,
                             "response_iterator": response,
@@ -4284,6 +4316,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
             # Check if query_result is None
             if query_result is None:
+                token_usage = token_tracker.get_usage()
                 return {
                     "status": "failure",
                     "message": "Query returned no results",
@@ -4291,7 +4324,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     "metadata": {
                         "failure_reason": "no_results",
                         "mode": param.mode,
+                        "token_usage": token_usage,
                     },
+                    "token_usage": token_usage,
                     "llm_response": {
                         "content": PROMPTS["fail_response"],
                         "response_iterator": None,
@@ -4301,6 +4336,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
             # Extract structured data from query result
             raw_data = query_result.raw_data or {}
+            token_usage = token_tracker.get_usage()
+            metadata = raw_data.setdefault("metadata", {})
+            metadata["token_usage"] = token_usage
+            raw_data["token_usage"] = token_usage
             raw_data["llm_response"] = {
                 "content": query_result.content
                 if not query_result.is_streaming
@@ -4320,7 +4359,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 "status": "failure",
                 "message": f"Query failed: {str(e)}",
                 "data": {},
-                "metadata": {},
+                "metadata": {"token_usage": token_tracker.get_usage()},
+                "token_usage": token_tracker.get_usage(),
                 "llm_response": {
                     "content": None,
                     "response_iterator": None,

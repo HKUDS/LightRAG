@@ -140,6 +140,9 @@ class QueryParam:
     ll_keywords: list[str] = field(default_factory=list)
     """List of low-level keywords to refine retrieval focus."""
 
+    allowed_doc_ids: list[str] = field(default_factory=list)
+    """Strict allowlist of document IDs permitted during retrieval."""
+
     # History messages are only sent to LLM for context, not used for retrieval
     conversation_history: list[dict[str, str]] = field(default_factory=list)
     """Stores past conversation history to maintain context.

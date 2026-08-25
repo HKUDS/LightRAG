@@ -184,6 +184,9 @@ def build_chunks_dict_from_chunking_result(
         stored_chunk = {k: v for k, v in dp.items() if k != "_source_span"}
         chunks[chunk_key] = {
             **stored_chunk,
+            "doc_id": doc_id,
+            # Keep a scalar payload so every storage backend can persist it.
+            "doc_ids": doc_id,
             "full_doc_id": doc_id,
             "file_path": file_path,
             "llm_cache_list": seed_cache_list,
