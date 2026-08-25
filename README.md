@@ -76,7 +76,7 @@
 ---
 
 ## 🎉 News
-- [2026.08]🎯[New Feature]: Integrated **DocumentDB** as an all-in-one storage backend, supporting KV, vector, graph, and document status storage.
+- [2026.08]🎯[New Feature]: Integrated **DocumentDB (Linux Foundation)** as an all-in-one storage backend, supporting KV, vector, graph, and document status storage.
 - [2026.07]🎯[New Feature]: Add **Smart Heading** recognition feature for word documents.
 - [2026.05]🎯[New Feature]: **Merge RagAnything into LightRAG**🎉. Multimodal content parsing and extraction via **MinerU / Docling** services.
 - [2026.05]🎯[New Feature]: Introducing four selectable text chunking strategies: `Fix`, `Recursive`, `Vector`, and `Paragraph`.

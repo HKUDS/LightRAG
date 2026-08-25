@@ -9,7 +9,6 @@ from typing import ClassVar, final
 from pymongo.errors import PyMongoError
 
 from ..utils import logger
-
 from .mongo_impl import (
     ClientManager,
     _MongoDocStatusStorageBase,
@@ -22,7 +21,7 @@ from .mongo_impl import (
 class DocumentDBClientManager(ClientManager):
     """Keep DocumentDB connections isolated from MongoDB connections."""
 
-    _instances: dict = {"client": None, "db": None, "ref_count": 0}
+    _instances: ClassVar[dict] = {"client": None, "db": None, "ref_count": 0}
     _lock = asyncio.Lock()
     uri_env_var = "DOCUMENTDB_URI"
     database_env_var = "DOCUMENTDB_DATABASE"
@@ -56,8 +55,6 @@ class DocumentDBDocStatusStorage(
 class DocumentDBGraphStorage(_DocumentDBStorageMixin, _MongoGraphStorageBase):
     """DocumentDB-backed graph storage using native ``$graphLookup``."""
 
-    edge_index_partial_filter: ClassVar[dict | None] = None
-
     async def create_search_index_if_not_exists(self) -> None:
         # DocumentDB does not implement Atlas createSearchIndexes. Entity lookup
         # already falls back to the Mongo protocol regex path when no index exists.
@@ -73,6 +70,7 @@ class DocumentDBVectorDBStorage(
     """DocumentDB vector storage using native HNSW ``cosmosSearch`` indexes."""
 
     vector_query_uses_index_name: ClassVar[bool] = False
+    vector_query_uses_cosmos_search: ClassVar[bool] = True
 
     async def create_vector_index_if_not_exists(self) -> None:
         expected_dimensions = self.embedding_func.embedding_dim

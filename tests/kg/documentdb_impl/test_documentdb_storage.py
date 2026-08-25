@@ -83,6 +83,32 @@ async def test_documentdb_file_path_pagination_omits_query_collation():
 
 
 @pytest.mark.asyncio
+async def test_documentdb_edge_migration_uses_partial_unique_index():
+    storage = DocumentDBGraphStorage.__new__(DocumentDBGraphStorage)
+    storage.workspace = "test"
+    storage._edge_collection_name = "test_graph_edges"
+    storage.edge_collection = SimpleNamespace(
+        list_indexes=AsyncMock(return_value=_AsyncCursor([])),
+        estimated_document_count=AsyncMock(return_value=2),
+        create_index=AsyncMock(),
+    )
+    storage._dedupe_legacy_edges = AsyncMock(return_value=0)
+    storage._backfill_edge_endpoints = AsyncMock(return_value=2)
+
+    await storage.create_edge_indexes_and_migrate_if_not_exists()
+
+    storage.edge_collection.create_index.assert_awaited_once_with(
+        [("edge_lo", 1), ("edge_hi", 1)],
+        name="test_edge_endpoints_unique",
+        unique=True,
+        partialFilterExpression={
+            "edge_lo": {"$exists": True, "$type": "string"},
+            "edge_hi": {"$exists": True, "$type": "string"},
+        },
+    )
+
+
+@pytest.mark.asyncio
 async def test_documentdb_vector_index_uses_create_indexes_command():
     storage = DocumentDBVectorDBStorage.__new__(DocumentDBVectorDBStorage)
     storage.workspace = "test"
@@ -142,7 +168,7 @@ async def test_documentdb_vector_index_rejects_dimension_mismatch():
 
 
 @pytest.mark.asyncio
-async def test_documentdb_vector_query_omits_atlas_index_name():
+async def test_documentdb_vector_query_uses_cosmos_search():
     aggregate = AsyncMock(return_value=_AsyncCursor([]))
     storage = DocumentDBVectorDBStorage.__new__(DocumentDBVectorDBStorage)
     storage._data = SimpleNamespace(aggregate=aggregate)
@@ -152,9 +178,13 @@ async def test_documentdb_vector_query_omits_atlas_index_name():
     await storage.query("query", top_k=5, query_embedding=[0.1, 0.2])
 
     pipeline = aggregate.await_args.args[0]
-    assert pipeline[0]["$vectorSearch"] == {
-        "path": "vector",
-        "queryVector": [0.1, 0.2],
-        "numCandidates": 100,
-        "limit": 5,
+    assert pipeline[0] == {
+        "$search": {
+            "cosmosSearch": {
+                "path": "vector",
+                "vector": [0.1, 0.2],
+                "k": 5,
+            }
+        }
     }
+    assert pipeline[1] == {"$addFields": {"score": {"$meta": "searchScore"}}}
