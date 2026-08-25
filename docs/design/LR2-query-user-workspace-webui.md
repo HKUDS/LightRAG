@@ -394,16 +394,18 @@ WorkspaceQueryView ────────── WorkspaceEmptyState
   需要保护的不变式很窄：**旧数据不得落入两个不同的命名空间**。同一命名空间的两个标签页并发迁移是无害的——它们把相同的值写向相同的目标键，且按上文第 3 条只写不存在的键。因此需要的不是覆盖整个序列的互斥锁，而是**一次原子的归属认领**。
 
   1. 认领记录存放在 IndexedDB（库 `lightrag`，object store `migration-claims`，主键 `legacy-origin-state`），认领动作是一次 `readwrite` 事务中的 `add()`：键已存在时抛 `ConstraintError`，这正是一次天然的 compare-and-set。**不使用 localStorage 承载认领**——“读到不存在 → 写入 → 复读确认”在两个标签页交错时双方都会确认成功，所有者 ID、时间戳和并发测试都无法把非原子的 read-modify-write 变成锁。
-  2. `add()` 成功即成为 owner，记录 `{ v: 1, ns, state: 'claimed' }`；抛 `ConstraintError` 则读回记录：`ns` 为本命名空间即可续做，否则**本站点不迁移任何站点作用域状态**，全部使用默认值——它仍可正常读取主题、语言等 origin 全局偏好。
-  3. 认领的排他范围是**全部 legacy origin 级站点状态，不论载体**，而不只是旧 `settings-storage` envelope 中的字段。逐键策略见下表；若只对历史排他，owner 崩溃后另一个站点会沿通用步骤把 API key 复制过去。
-  4. 复制成功后把记录置为 `completed`，然后才清理旧键。**只有 owner 清理旧键**，非 owner 永不删除任何 legacy 键，保证单一写者。
-  5. owner 在第 2、4 步之间崩溃：记录停留在 `claimed`，旧键未清理。恢复规则是只有记录中的同一命名空间可以续做；其它站点仍按第 2 条跳过。
-  6. 清理完成后删除认领记录；删除失败无害——后续运行读到 `completed` 直接跳过（与 §5 purge journal 的死记录处理同构）。
-  7. owner 再也不被打开时旧键会长期残留。这是无害的遗留数据，不设超时抢占——命名空间归属是永久的而不是租约，抢占会让另一个站点在用户毫无感知的情况下继承一份来历不明的历史或凭据。
-  8. 认领记录的 `v` 不是本实现已知的版本时 **fail closed**：不迁移、不清理任何 legacy 键，使用默认值。
-  9. IndexedDB 本身不可用（部分浏览器的隐私模式）时同样 fail closed，并提示用户重新配置。
+  2. **提交点是事务的 `complete` 事件，不是 request 的 `success`。** request success 先于事务提交发生，事务随后仍可能 abort；若以 success 为准，可能出现：site01 收到 success 并开始复制旧 API key → 事务 abort、认领未持久化 → site02 认领成功并再复制一份。因此 `add()` 的 success 之后必须继续等待 transaction `complete`，**在事务提交之前不得开始任何 localStorage / sessionStorage 迁移写入**。
+  3. `ConstraintError` 会使该事务 abort，因此需另开一个 readonly 事务读回既有记录：`ns` 为本命名空间即可续做，否则**本站点不迁移任何站点作用域状态**，全部使用默认值——它仍可正常读取主题、语言等 origin 全局偏好。其余任何 abort 或 error 一律 fail closed。
+  4. 认领的排他范围是**全部 legacy origin 级站点状态，不论载体**，而不只是旧 `settings-storage` envelope 中的字段。逐键策略见下表；若只对历史排他，owner 崩溃后另一个站点会沿通用步骤把 API key 复制过去。
+  5. **提交顺序是：复制 → 清理全部 legacy 键 → 写 `completed` → 删除认领记录。** `completed` 必须晚于清理：若先写 `completed` 再清理，owner 在两者之间崩溃会让后续所有运行按第 7 条直接跳过，旧 API key 与历史永久残留且认领记录再也删不掉——那会与“部分失败可重试”自相矛盾。把 `completed` 放在最后，任何中途崩溃都停在 `claimed`，owner 下次打开即可重跑；复制（只写不存在的键）与清理（删除已不存在的键为空操作）都是幂等的，重跑安全。
+  6. **只有 owner 清理 legacy 键**，非 owner 永不删除任何 legacy 键，保证单一写者。
+  7. owner 崩溃后记录停留在 `claimed`：只有记录中的同一命名空间可以续做，其它站点仍按第 3 条跳过。读到 `completed` 则一切已完成，直接跳过。
+  8. 认领记录在写入 `completed` 后被删除；删除失败无害——后续运行读到 `completed` 直接跳过（与 §5 purge journal 的死记录处理同构）。
+  9. owner 再也不被打开时旧键会长期残留。这是无害的遗留数据，不设超时抢占——命名空间归属是永久的而不是租约，抢占会让另一个站点在用户毫无感知的情况下继承一份来历不明的历史或凭据。
+  10. 认领记录的 `v` 不是本实现已知的版本时 **fail closed**：不迁移、不清理任何 legacy 键，使用默认值。
+  11. IndexedDB 本身不可用（部分浏览器的隐私模式）时同样 fail closed，并提示用户重新配置。**能力探测必须是一次真实的打开数据库并提交事务**，不能只判断 `globalThis.indexedDB` 是否存在——存在但事务无法提交的环境正是需要被判为不可用的那一类。
 
-- **为什么不用 Web Locks 作主路径。** `navigator.locks` 在规范上带 `[SecureContext]`，可用性不只取决于浏览器版本，还要求安全上下文；而本项目的 SSL 是可选项（`env.example` 中 `SSL` 默认注释掉），`http://<服务器IP>:9621` 的自托管直连部署是常见形态，甚至是单站点部署的主流形态。若以 Web Locks 为唯一原语，这些部署会在升级时全量 fail closed 并丢失查询参数、历史与 API key——代价远大于它要防的那个窄窗口。IndexedDB 没有安全上下文限制，且事务提供真正的原子性，因此作为唯一机制。实现中的能力判定以运行时探测为准（`indexedDB` 是否可用并能开启事务），不以 `isSecureContext` 推断。
+- **为什么不用 Web Locks 作主路径。** `navigator.locks` 在规范上带 `[SecureContext]`，可用性不只取决于浏览器版本，还要求安全上下文；而本项目的 SSL 是可选项（`env.example` 中 `SSL` 默认注释掉），`http://<服务器IP>:9621` 的自托管直连部署是常见形态，甚至是单站点部署的主流形态。若以 Web Locks 为唯一原语，这些部署会在升级时全量 fail closed 并丢失查询参数、历史与 API key——代价远大于它要防的那个窄窗口。IndexedDB 没有安全上下文限制，且事务提供真正的原子性，因此作为唯一机制。实现中的能力判定以运行时探测为准——实际打开数据库并完成一次事务提交，而不是判断 `globalThis.indexedDB` 是否存在，也不以 `isSecureContext` 推断。
 
 - **legacy 键的逐键升级策略**（认领范围内，一律只由 owner 执行）：
 
@@ -705,7 +707,7 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - `RetrievalView` 继续只表示后台查询页；新增 `WorkspaceQueryView` 不改变现有调用方语义。
 - 一处有意的例外：共享 serializer 收紧后，`/webui` 的请求体不再携带 `history_turns`。该字段服务端从未声明、一直被静默丢弃，因此对服务端行为无影响，但属于可观测的请求体变化，需在变更记录中写明。
 - 现有 token、API key、guest token 和登录接口契约不变。服务端契约确实不变，但前端会新增**本地** token 有效性校验（§6.3）：过期或结构损坏的 token 不再先渲染应用再被 401 打回，而是直接进入欢迎页/登录页。这是两个入口共同受益的可观测行为变化。
-- `settings-storage` 会被拆分（§7.4）：`querySettings`、两份历史以及 `apiKey`、`userPromptHistory`、`queryLabel`、`backendMaxGraphNodes` 等站点相关状态迁出到按 `apiPrefix` 分区的新键，主题/语言等纯 UI 偏好留在原键。迁移在前端 persist 层完成，复用既有 v1→v21 版本链，须幂等、跨标签页互斥且对缺失字段回落到默认值。
+- `settings-storage` 会被拆分（§7.4）：`querySettings`、两份历史以及 `apiKey`、`userPromptHistory`、`queryLabel`、`backendMaxGraphNodes` 等站点相关状态迁出到按 `apiPrefix` 分区的新键，主题/语言等纯 UI 偏好留在原键。迁移在前端 persist 层完成，复用既有 v1→v21 版本链，须幂等、经**跨标签页原子归属认领**仲裁（不是覆盖整个序列的互斥锁）且对缺失字段回落到默认值。
 - 同源多站点部署的用户升级后，`apiKey` 需在每个站点各自重新填写一次——旧值只会被迁移到首个执行迁移的站点，其余站点从默认值开始。这是修正凭据跨站点共享的必要代价，须在升级说明中写明。
 - 认领机制选用 IndexedDB 而非 Web Locks，正是为了不让 `http://<服务器IP>:9621` 这类无 TLS 的自托管部署（`SSL` 在 `env.example` 中默认关闭）在升级时全量丢失配置。仅当 IndexedDB 本身不可用（部分浏览器隐私模式）时才 fail closed，此时所有站点都需重新配置一次。
 - 各站点的后端版本、标题与描述缓存在升级时被丢弃并重新请求，用户无感；`LIGHTRAG-PREVIOUS-USER` 不迁移，因此升级后每个站点的首次登录会各执行一次保守的历史清理。
@@ -820,7 +822,9 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - **并发认领测试**：交错执行两个命名空间的迁移，断言旧的**全部站点作用域字段**（历史、`querySettings`、`apiKey`、`userPromptHistory` 等）只进入其中一个命名空间；认领后、复制完成前中断，断言同一命名空间可续做而另一个命名空间使用默认值且不清理旧字段。
 - **fail-closed 测试**：IndexedDB 不可用、或认领记录带未知 `v` 时，不迁移任何站点作用域状态，新键为默认值、legacy 键完整保留，且不出现“部分迁移”的中间态。
 - **逐键策略测试**：owner 迁移查询参数/历史/`apiKey`/`userPromptHistory`/`queryLabel`/`backendMaxGraphNodes`/`lightrag_search_history`；丢弃后端版本、标题、描述与 `VERSION_CHECKED_FROM_LOGIN` 并在下次启动重新请求；不迁移 `LIGHTRAG-PREVIOUS-USER`，使各站点首次登录各清理一次历史；非 owner 从不删除任何 legacy 键。
-- **认领原子性测试**：以同一 IndexedDB 后端交错执行两个命名空间的认领，断言恰有一方 `add()` 成功、另一方收到 `ConstraintError` 并跳过；同一命名空间的两个并发迁移互不冲突且结果一致。
+- **认领原子性测试**：以同一 IndexedDB 后端交错执行两个命名空间的认领，断言恰有一方的事务 `complete`、另一方收到 `ConstraintError` 并在新的 readonly 事务中读回记录后跳过；同一命名空间的两个并发迁移互不冲突且结果一致。
+- **提交点测试**：注入“`add()` request 触发 success、随后事务 abort”的时序，断言此时**尚未**写入任何站点新键，且另一个命名空间随后可以正常认领。
+- **崩溃恢复测试**（覆盖提交顺序的每个间隙）：认领提交后复制前崩溃、复制完成后清理前崩溃、清理多个 legacy 键到一半崩溃、清理完成后写 `completed` 前崩溃——四种情形都停在 `claimed` 且 owner 重跑后收敛到同一结果，legacy 键不残留；以及 `completed` 已提交但删除认领记录失败时，后续运行直接跳过且不重复迁移。
 - **站点作用域字段测试**：盘点表中标为“分区”的全部键在两个命名空间之间互不可见——`apiKey`、`userPromptHistory`、`queryLabel`、`backendMaxGraphNodes`、`lightrag_search_history`、`LIGHTRAG-CORE-VERSION` / `-API-VERSION` / `-WEBUI-TITLE` / `-WEBUI-DESCRIPTION`、`LIGHTRAG-PREVIOUS-USER` 与 `VERSION_CHECKED_FROM_LOGIN`；site01 的请求头不携带 site02 的 `X-API-Key`；在 site01 退出登录不清除 site02 的 session 键，也不改变 site02 的历史保留判断。
 - **启动屏障测试**：断言迁移 promise 完成之前没有任何待拆分 store 被求值（未读取也未写回 localStorage），且应用未渲染。
 - **纯模块边界测试**：承载 v1→v21 链的模块其 import 图不含任何 store、`App`、API 客户端或导航模块；import 它不产生 localStorage 读写。
@@ -892,6 +896,8 @@ cd ..
 | 固定 localStorage 键名 | localStorage 只按 origin 隔离，同 host 多站点部署下查询参数、历史与 **`apiKey`** 互相串用——后者是把一个站点的凭据发给另一个站点 | 站点相关状态（含 `apiKey`、`userPromptHistory`、`queryLabel`、`backendMaxGraphNodes`）一律按 `apiPrefix` 分区，`storage` 事件只响应本命名空间 |
 | 迁移语义不完整 | 谁迁移、写入顺序、部分失败与重复执行未定义，升级后可能丢历史或用旧值覆盖新值 | 新键优先、先写新后清旧、部分失败保留旧字段重试 |
 | 并发首次打开两个站点 | 双方各自复制一份旧的历史与凭据，隔离不变式被破坏，且幂等测试发现不了 | IndexedDB 事务内 `add()` 做一次原子归属认领；绝不用 localStorage claim 冒充互斥 |
+| 以 request `success` 为提交点 | 事务随后 abort 时认领未持久化，另一站点可再认领并复制同一份凭据 | 等 transaction `complete` 后才开始任何迁移写入 |
+| `completed` 早于清理 | owner 在两者之间崩溃后，后续运行一律跳过，legacy 凭据与历史永久残留且认领记录删不掉 | 顺序固定为复制 → 清理 → 写 `completed` → 删记录，中途崩溃一律停在 `claimed` 可重跑 |
 | 用 Web Locks 作唯一原语 | `navigator.locks` 受 `[SecureContext]` 限制，无 TLS 的自托管部署（SSL 默认关闭）升级时全量 fail closed 丢配置 | 改用无安全上下文限制的 IndexedDB 认领，能力判定以运行时探测为准 |
 | 认领只对历史排他 | owner 崩溃后另一站点沿通用步骤把旧 `apiKey` 复制过去 | 认领范围覆盖全部 legacy origin 级站点状态（不论载体），并给出逐键策略表 |
 | 为复用迁移链而 import store 模块 | bootstrap 在认领之前就创建并 hydrate 了 persist store，启动屏障形同虚设 | v1→v21 链抽到无副作用纯模块，迁移器与 `persist.migrate` 共同 import |
