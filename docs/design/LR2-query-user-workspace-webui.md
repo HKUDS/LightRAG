@@ -380,7 +380,6 @@ WorkspaceQueryView ────────── WorkspaceEmptyState
 | `LIGHTRAG-PREVIOUS-USER` | localStorage | 分区 | 直接决定登录时是否清空查询历史；不分区会让一个站点的登录改变另一个站点的历史保留判断 |
 | `VERSION_CHECKED_FROM_LOGIN` | sessionStorage | 分区 | sessionStorage 同样不按路径隔离，同一标签页切换站点会跳过新站点的版本信息获取 |
 | `LIGHTRAG-API-TOKEN` / `LIGHTRAG-LAST-TOKEN-RENEWAL` | localStorage | **明确接受的既有风险** | 认证凭据及其伴随项整体留在 origin 级，改造属于认证层议题，不在本期范围 |
-| `lightrag` / `migration-claims` / `legacy-origin-state` | IndexedDB | origin 级协调元数据 | 迁移归属认领记录，schema `{ v: 1, ns, state: 'claimed' \| 'completed' }`。它**必须**是 origin 级的——其存在意义正是在多个命名空间之间仲裁。未知 `v` 时 fail closed；清理完成后删除，删除失败则后续运行读到 `completed` 跳过 |
 
 划线原则由此收敛为一句话：**只有认证凭据及其伴随项作为既有风险留在 origin 级，其余依赖站点/后端的状态一律分区。** `LIGHTRAG-API-TOKEN` 不再顺带豁免任何别的键。
 
@@ -390,45 +389,37 @@ WorkspaceQueryView ────────── WorkspaceEmptyState
 
 - 拆分后 `/workspace` 的任何写入都不再触及 `query-settings-storage`，参数覆盖竞态从源头消失。`settings-storage` 中剩下的主题/语言仍保留既有的整份写回竞态；这些是纯展示偏好，本期不处理。
 - 已打开的 `/workspace` 必须监听 `storage` 事件（或以等效方式重新 hydrate `query-settings-storage`），使 `/webui` 的新参数**从下一次查询开始生效**，无需刷新页面。不得在流式响应进行中途切换参数快照。
-- **迁移是异步的，因此入口必须有显式启动屏障。** 归属认领走 IndexedDB 事务（见下），本质上是异步的；而当前 `main.tsx` 静态 import `AppRouter`，后者又静态 import auth store 与 `App`；模块求值阶段 `initAuthState()` 就已同步读过 localStorage 并建好 store，认领尚未完成。要求：入口 bootstrap **先 `await` 迁移完成，再动态 `import()` 应用与 store 模块**。仅靠 persist 的 `skipHydration` 不够——auth store 的初始化发生在模块 `create()` 时、不经过 persist 通道，`skipHydration` 管不到它。
-- 升级迁移由**两个入口共同调用的迁移器**完成，在任何依赖上述键的 store 被求值之前执行，语义如下：
+- **迁移目标是静态确定的：遗留数据一律迁入空命名空间。** legacy 键是在还没有命名空间概念时写下的，**无法归因**到任何站点。“谁先打开谁继承”式的动态归属既要引入一整套跨标签页协调，又只是在两个同样可能错的答案里随机挑一个——多站点场景下旧数据本就是若干站点混写的结果，把它整体判给任何一个活动站点都可能把别的站点的 `apiKey` 交出去。因此把“没有命名空间”直接**定义**为“空命名空间”：所有 legacy 站点作用域状态一律迁往 `lightrag::…`，与执行迁移的入口是谁、它自己的 `<ns>` 是什么都无关。
+
+- **由此不需要任何锁。** 目标键固定；源数据在升级后不再被任何代码写入；目标值是源的确定性函数；只写不存在的键（下文第 4 条）；复制全部完成后才开始清理（第 5 条）。这五条合起来意味着任意交错的并发执行都是**把相同的字节写向相同的键**，竞态因构造而良性。不需要 IndexedDB，不需要 Web Locks，不需要任何互斥原语，也不需要 `claimed` / `completed` 状态机——重复执行天然自门控：字段已迁出、legacy 键已删除，后续运行自动成为空操作。这同时吸收了“升级前打开的旧标签页把整份 `settings-storage` 重新写回”的情形：下次启动再清理一次即可，且因第 4 条绝不会覆盖新键。
+
+- **每个入口都无条件执行迁移**，不按自己的 `<ns>` 分支。单一代码路径既是上述收敛论证成立的前提，也保证 legacy 键在任何部署形态下都会被清理，而不是只在恰好存在根部署时才被清理。
+
+- 迁移器由两个入口共同调用，在任何依赖上述键的 store 被求值之前执行，语义如下：
 
   1. **版本规范化先行。** 现有 `settings-storage` 带有 v1 → v21 的逐级迁移链，直接“只接受 v21 envelope”会把从 v20 及更早版本升级的用户判为无旧数据，绕开既有迁移链并把参数与历史清回默认值。迁移器必须先**复用**（而非复制）现有 `migrate` 链把任意 ≤21 的 envelope 规范化到 v21，再执行拆分。
-  1a. **这条“复用”与上一条启动屏障存在冲突，必须靠模块拆分化解。** 该迁移链目前内联在 `stores/settings.ts` 里，而该模块一被 import 就会创建并 hydrate persist store。bootstrap 若为复用函数而 import 它，就在拿到认领之前破坏了屏障。因此必须把 v1→v21 链抽到一个**无副作用的纯模块**，由 pre-bootstrap 迁移器与 Zustand 的 `persist.migrate` 共同 import；该纯模块不得 import 任何 store、`App`、API 客户端或导航模块。
-  2. `version > 21`（回滚后再升级、或未知的更高版本）时**不读、不清理、不覆盖任何旧字段**，新键一律用默认值初始化——否则一次降级会永久破坏数据。
-  3. **只为不存在的新键写入迁移值**；新键一旦存在，其值永远优先，重复迁移绝不用旧数据覆盖它。
-  4. 先成功写入全部新键，**再**清理旧 envelope 中已迁出的字段并升级其版本号。
-  5. 部分失败时保留旧字段不清理，下次启动按同样规则重试；已写入的新键因第 3 条不会被二次覆盖。
-  6. `/workspace` **允许**执行这一次性迁移写入，且例外覆盖迁移实际涉及的**全部**新键（包括 `webui-retrieval-history`——workspace 先被打开时必然由它写入）。运行期对 `query-settings-storage` 仍严格只读。
+  2. **该链必须抽成无副作用的纯模块。** 它目前内联在 `stores/settings.ts` 里，而该模块一被 import 就会创建并 hydrate persist store——迁移器为复用它而 import，就等于在迁移之前先把待拆分的 store 建了起来。因此把 v1→v21 链抽到一个纯模块，由迁移器与 Zustand 的 `persist.migrate` 共同 import；该纯模块不得 import 任何 store、`App`、API 客户端或导航模块。
+  3. `version > 21`（回滚后再升级、或未知的更高版本）时**不读、不清理、不覆盖任何旧字段**，新键一律用默认值初始化——否则一次降级会永久破坏数据。
+  4. **只为不存在的新键写入迁移值**；新键一旦存在，其值永远优先，重复迁移绝不用旧数据覆盖它。
+  5. 先成功写入全部新键，**再**清理旧 envelope 中已迁出的字段并升级其版本号、删除已迁出的独立 legacy 键。顺序不可颠倒：清理先于复制会在中途崩溃时直接丢数据。
+  6. 部分失败时保留未清理的旧字段，下次启动按同样规则重试；已写入的新键因第 4 条不会被二次覆盖，清理已删除的键是空操作，所以重跑安全且收敛到同一结果。
+  7. `/workspace` **允许**执行这一次性迁移写入，且覆盖迁移涉及的**全部**目标键（包括 `lightrag::webui-retrieval-history`——workspace 先被打开时必然由它写入）。运行期对 `query-settings-storage` 仍严格只读。
 
-- **归属仲裁需要真正的原子性，幂等不足以保证。** 两个站点并发首次打开时，双方都可能读到旧数据、都发现自己的新键不存在、于是各自复制一份，旧数据同时进入两个命名空间，直接违反隔离不变式；单线程幂等测试发现不了它。
+- **启动顺序：迁移模块必须是入口文件的第一个静态 import。** 迁移是纯同步的 localStorage 操作，不需要 `await`，也不需要动态 `import()`；但当前 `main.tsx` 静态 import `AppRouter`，后者又静态 import auth store 与 `App`，模块求值阶段 `initAuthState()` 就已读过 localStorage 并建好 store。ESM 按源码顺序深度优先求值同级 import，因此只要把这个带副作用的迁移模块放在入口文件 import 列表的**第一位**，它就会在任何 store 模块求值之前完整跑完。约束是两条：**位置在最前**，且它**递归地不 import 任何 store**（由第 2 条的纯模块保证）。
 
-  需要保护的不变式很窄：**旧数据不得落入两个不同的命名空间**。同一命名空间的两个标签页并发迁移是无害的——它们把相同的值写向相同的目标键，且按上文第 3 条只写不存在的键。因此需要的不是覆盖整个序列的互斥锁，而是**一次原子的归属认领**。
-
-  1. 认领记录存放在 IndexedDB（库 `lightrag`，object store `migration-claims`，主键 `legacy-origin-state`），认领动作是一次 `readwrite` 事务中的 `add()`：键已存在时抛 `ConstraintError`，这正是一次天然的 compare-and-set。**不使用 localStorage 承载认领**——“读到不存在 → 写入 → 复读确认”在两个标签页交错时双方都会确认成功，所有者 ID、时间戳和并发测试都无法把非原子的 read-modify-write 变成锁。
-  2. **提交点是事务的 `complete` 事件，不是 request 的 `success`。** request success 先于事务提交发生，事务随后仍可能 abort；若以 success 为准，可能出现：site01 收到 success 并开始复制旧 API key → 事务 abort、认领未持久化 → site02 认领成功并再复制一份。因此 `add()` 的 success 之后必须继续等待 transaction `complete`，**在事务提交之前不得开始任何 localStorage / sessionStorage 迁移写入**。
-  3. `ConstraintError` 会使该事务 abort，因此需另开一个 readonly 事务读回既有记录：`ns` 为本命名空间即可续做，否则**本站点不迁移任何站点作用域状态**，全部使用默认值——它仍可正常读取主题、语言等 origin 全局偏好。其余任何 abort 或 error 一律 fail closed。
-  4. 认领的排他范围是**全部 legacy origin 级站点状态，不论载体**，而不只是旧 `settings-storage` envelope 中的字段。逐键策略见下表；若只对历史排他，owner 崩溃后另一个站点会沿通用步骤把 API key 复制过去。
-  5. **提交顺序是：复制 → 清理全部 legacy 键 → 写 `completed` → 删除认领记录。** `completed` 必须晚于清理：若先写 `completed` 再清理，owner 在两者之间崩溃会让后续所有运行按第 7 条直接跳过，旧 API key 与历史永久残留且认领记录再也删不掉——那会与“部分失败可重试”自相矛盾。把 `completed` 放在最后，任何中途崩溃都停在 `claimed`，owner 下次打开即可重跑；复制（只写不存在的键）与清理（删除已不存在的键为空操作）都是幂等的，重跑安全。
-  6. **只有 owner 清理 legacy 键**，非 owner 永不删除任何 legacy 键，保证单一写者。
-  7. owner 崩溃后记录停留在 `claimed`：只有记录中的同一命名空间可以续做，其它站点仍按第 3 条跳过。读到 `completed` 则一切已完成，直接跳过。
-  8. 认领记录在写入 `completed` 后被删除；删除失败无害——后续运行读到 `completed` 直接跳过（与 §5 purge journal 的死记录处理同构）。
-  9. owner 再也不被打开时旧键会长期残留。这是无害的遗留数据，不设超时抢占——命名空间归属是永久的而不是租约，抢占会让另一个站点在用户毫无感知的情况下继承一份来历不明的历史或凭据。
-  10. 认领记录的 `v` 不是本实现已知的版本时 **fail closed**：不迁移、不清理任何 legacy 键，使用默认值。
-  11. IndexedDB 本身不可用（部分浏览器的隐私模式）时同样 fail closed，并提示用户重新配置。**能力探测必须是一次真实的打开数据库并提交事务**，不能只判断 `globalThis.indexedDB` 是否存在——存在但事务无法提交的环境正是需要被判为不可用的那一类。
-
-- **为什么不用 Web Locks 作主路径。** `navigator.locks` 在规范上带 `[SecureContext]`，可用性不只取决于浏览器版本，还要求安全上下文；而本项目的 SSL 是可选项（`env.example` 中 `SSL` 默认注释掉），`http://<服务器IP>:9621` 的自托管直连部署是常见形态，甚至是单站点部署的主流形态。若以 Web Locks 为唯一原语，这些部署会在升级时全量 fail closed 并丢失查询参数、历史与 API key——代价远大于它要防的那个窄窗口。IndexedDB 没有安全上下文限制，且事务提供真正的原子性，因此作为唯一机制。实现中的能力判定以运行时探测为准——实际打开数据库并完成一次事务提交，而不是判断 `globalThis.indexedDB` 是否存在，也不以 `isSecureContext` 推断。
-
-- **legacy 键的逐键升级策略**（认领范围内，一律只由 owner 执行）：
+- **legacy 键的升级策略**（每个入口都执行，目标固定为空命名空间）：
 
   | 旧状态 | 策略 | 理由 |
   | --- | --- | --- |
-  | `querySettings`、`retrievalHistory`、`apiKey`、`userPromptHistory`、`queryLabel`、`backendMaxGraphNodes` | 只迁给 owner | 有保留价值且无法归因，复制即违反隔离 |
-  | `lightrag_search_history` | 只迁给 owner | 同上；绝不可复制到多个命名空间 |
-  | `LIGHTRAG-CORE-VERSION` / `-API-VERSION` / `-WEBUI-TITLE` / `-WEBUI-DESCRIPTION` | **丢弃** | 它们本就是后端应答的缓存，各站点重新请求一次即可，重建代价为零 |
-  | `VERSION_CHECKED_FROM_LOGIN` | **丢弃** | sessionStorage 标记，重新检查一次即可 |
-  | `LIGHTRAG-PREVIOUS-USER` | **不迁移** | 让每个站点首次登录各执行一次保守的历史清理。方向必须保守：宁可多清一次，也不能因继承了另一站点的用户名而漏清 |
+  | `querySettings`、`retrievalHistory`、`apiKey`、`userPromptHistory`、`queryLabel`、`backendMaxGraphNodes`、`lightrag_search_history`、`LIGHTRAG-CORE-VERSION` / `-API-VERSION` / `-WEBUI-TITLE` / `-WEBUI-DESCRIPTION`、`LIGHTRAG-PREVIOUS-USER`、`VERSION_CHECKED_FROM_LOGIN` | 一律迁往 `lightrag::` 对应键（sessionStorage 项迁往 sessionStorage） | 单一规则，无需逐键判断。后端应答缓存那几项迁与不迁无可观察差异（各站点本就会重新请求），统一迁移以保持规则唯一 |
   | `LIGHTRAG-API-TOKEN` / `-LAST-TOKEN-RENEWAL` | 原键保留不动 | 盘点表中明确接受的既有风险 |
+
+  `LIGHTRAG-PREVIOUS-USER` 不再是特例。目标静态化之后它必须**跟着一起迁移**：否则根部署站点首次登录会因“无上一用户记录”执行一次保守清理，把刚迁过来的历史立即清空。带前缀的站点没有这条记录，而它们的历史本就为空，保守清理是空操作。
+
+- **两条明确接受的代价。**
+
+  1. **单实例、非空前缀的部署在升级时丢失站点作用域状态**（`apiKey` 需重新录入一次，历史与 `querySettings` 回到默认；登录态不受影响，因为 `LIGHTRAG-API-TOKEN` 仍留在 origin 级）。这类部署实际上没有归属歧义，但代码无从判断，不猜就是代价。旧数据被搬到 `lightrag::…` 而非销毁，不做导入引导 UI。
+  2. **根部署与带前缀部署混合在同一 origin 时，根站点确定性地继承这份混合数据**（nginx `location /` → 无前缀实例、`location /site01/` → 带前缀实例是合法且可路由的配置）。不变式仍然成立——legacy 数据**至多进入一个命名空间，且该命名空间是静态确定的**，不存在两个站点各拿一份。相比“随机挑一个活动站点”，确定性归属既可预期也可在部署文档中说明。
 
 - 作用域始终是**同源、同一浏览器 profile**。它不跨设备、不跨浏览器、不跨域名同步，也不是 Server 全局配置。若未来需要运维统一控制所有查询用户的参数，应另行设计服务端 query profile，不能把 localStorage 描述成全局策略。
 - token 失效、欢迎页和重新登录过程不得提前清空当前用户历史；如果登录成不同用户，则沿用现有规则清空——该规则对两份历史分别独立生效。
@@ -719,10 +710,10 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - `RetrievalView` 继续只表示后台查询页；新增 `WorkspaceQueryView` 不改变现有调用方语义。
 - 一处有意的例外：共享 serializer 收紧后，`/webui` 的请求体不再携带 `history_turns`。该字段服务端从未声明、一直被静默丢弃，因此对服务端行为无影响，但属于可观测的请求体变化，需在变更记录中写明。
 - 现有 token、API key、guest token 和登录接口契约不变。服务端契约确实不变，但前端会新增**本地** token 有效性校验（§6.3）：过期或结构损坏的 token 不再先渲染应用再被 401 打回，而是直接进入欢迎页/登录页。这是两个入口共同受益的可观测行为变化。
-- `settings-storage` 会被拆分（§7.4）：`querySettings`、两份历史以及 `apiKey`、`userPromptHistory`、`queryLabel`、`backendMaxGraphNodes` 等站点相关状态迁出到按 `apiPrefix` 分区的新键，主题/语言等纯 UI 偏好留在原键。迁移在前端 persist 层完成，复用既有 v1→v21 版本链，须幂等、经**跨标签页原子归属认领**仲裁（不是覆盖整个序列的互斥锁）且对缺失字段回落到默认值。
-- 同源多站点部署的用户升级后，`apiKey` 需在每个站点各自重新填写一次——旧值只会被迁移到首个执行迁移的站点，其余站点从默认值开始。这是修正凭据跨站点共享的必要代价，须在升级说明中写明。
-- 认领机制选用 IndexedDB 而非 Web Locks，正是为了不让 `http://<服务器IP>:9621` 这类无 TLS 的自托管部署（`SSL` 在 `env.example` 中默认关闭）在升级时全量丢失配置。仅当 IndexedDB 本身不可用（部分浏览器隐私模式）时才 fail closed，此时所有站点都需重新配置一次。
-- 各站点的后端版本、标题与描述缓存在升级时被丢弃并重新请求，用户无感；`LIGHTRAG-PREVIOUS-USER` 不迁移，因此升级后每个站点的首次登录会各执行一次保守的历史清理。
+- `settings-storage` 会被拆分（§7.4）：`querySettings`、两份历史以及 `apiKey`、`userPromptHistory`、`queryLabel`、`backendMaxGraphNodes` 等站点相关状态迁出到按 `apiPrefix` 分区的新键，主题/语言等纯 UI 偏好留在原键。迁移在前端 persist 层完成，复用既有 v1→v21 版本链，须幂等且对缺失字段回落到默认值。**目标命名空间静态固定为空命名空间**，因此不需要任何跨标签页协调。
+- 同源多站点部署的用户升级后，`apiKey` 需在每个带前缀的站点各自重新填写一次。旧值不会被判给任何一个活动站点，而是落到静态确定的空命名空间——同源上恰好存在根部署时由它继承，否则无人继承。这是修正凭据跨站点共享的必要代价，须在升级说明中写明。
+- 升级影响面：根部署（`LIGHTRAG_API_PREFIX` 为空）与直连端口部署的用户**完整保留**已保存的参数、历史与 `apiKey`，因为它们的 `<ns>` 本就是空命名空间。单实例、非空前缀的部署会丢失这些站点作用域状态并需重新录入一次 `apiKey`；登录态不受影响（`LIGHTRAG-API-TOKEN` 仍在 origin 级）。这是不猜测归属所付的代价，见 §7.4。
+- 带前缀站点的后端版本、标题与描述缓存在升级后重新请求一次，用户无感。`LIGHTRAG-PREVIOUS-USER` 随其余 legacy 状态一并迁入空命名空间：根部署站点因此不会把刚迁过来的历史误清；带前缀站点没有该记录，其首次登录会执行一次保守的历史清理，而此时历史本就为空，是空操作。
 - 当前 `WEBUI_TITLE` / `WEBUI_DESCRIPTION` 继续作为部署级、非本地化站点标题和描述，同时可供查询入口页头使用；欢迎页和空白态正文由 UI Bundle 拥有。
 - customization active 时：未设置 `UI_TEMPLATES_DIR` 的部署自动使用打包的 `ui_defaults`，升级无需新增配置；显式设置该变量的部署必须提供符合当前 Schema 的完整 Bundle。inactive 时（`workspace.html` 缺失）该变量被忽略并告警，不阻止启动。
 - 根路径 `/` 默认仍跳转 `/webui`；只有显式配置 `LIGHTRAG_DEFAULT_UI=workspace` 时才跳转 `/workspace`。
@@ -739,7 +730,7 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 | Runtime config | 两个 mount 注入逐字节相同的 `{ apiPrefix, webuiPrefix }`；模块级常量无需改造；运行时配置不含入口模式字段；dev 不引入模式开关 |
 | 跨入口 HTML | 每个 mount 只提供自己的索引文件（需覆写 Starlette 硬编码的 `index.html`）；另一入口的 HTML 返回 404，同入口显式文件名仍可用 |
 | 前端入口分流 | 两个入口各自组合自己的 router 与应用壳；工作区入口的**首屏静态依赖闭包**不含图谱/文档管理，mermaid 改为动态 import；品牌链接改为 `href="./"`；共享导航单例（含图谱重置适配器）由入口 bootstrap 显式配置 |
-| 客户端状态存储 | 按 §7.4 的完整盘点表逐键归类：只有认证凭据及其伴随项留在 origin 级，其余站点相关状态一律按 `apiPrefix` 分区；`querySettings` 独立 persist key（仅后台运行期可写），两份查询历史各自独立；迁移复用既有版本链（抽为无副作用纯模块）、以 IndexedDB 事务原子认领旧数据（IndexedDB 不可用则 fail closed）、按逐键策略迁移或丢弃、新键优先、先写后清、部分失败可重试；入口先 await 迁移再动态 import 应用；工作区监听本命名空间的 `storage` 事件重新 hydrate 参数 |
+| 客户端状态存储 | 按 §7.4 的完整盘点表逐键归类：只有认证凭据及其伴随项留在 origin 级，其余站点相关状态一律按 `apiPrefix` 分区；`querySettings` 独立 persist key（仅后台运行期可写），两份查询历史各自独立；迁移复用既有版本链（抽为无副作用纯模块）、目标命名空间静态固定为空命名空间因而无需任何锁、新键优先、先写全部再清理、部分失败可重试；迁移模块是入口文件的第一个静态 import；工作区监听本命名空间的 `storage` 事件重新 hydrate 参数 |
 | 根路径/降级 | `LIGHTRAG_DEFAULT_UI` 默认 `webui`，env + CLI 双通道，非法值启动期 fail-fast（含 env 取值）；选择 `workspace` 时保留 `root_path`；无资源时 `/webui` 可沿用 API 文档降级，`/workspace` 只返回无 API 文档链接或引导的固定服务信息 JSON；根路径遵循所选入口自己的降级分支，不改投另一入口 |
 | 健康状态 | 保留 `webui_available` 语义，并新增 `workspace_available`；两者由**各自产物**的检查结果派生，且**都留在 `/health` 的公开 liveness 层**——`webui_available` 今天就是匿名可见的 liveness 信号，把它挪进认证层会破坏既有契约，而两个入口是否挂载本就可由请求该路径直接探得。文件系统路径、Bundle 目录、`bundle_revision` 与 Bundle 来源只在认证层与启动日志中出现（§8.4）；customization 是否 active 由 `workspace_available` 表达，不新增字段 |
 | UI 定制加载 | 从内置或 `UI_TEMPLATES_DIR` 构造一个只读快照；绝不修改 WebUI 构建目录 |
@@ -831,14 +822,16 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - **存储拆分测试**：`/workspace` 的历史写入不修改 `query-settings-storage`；`storage` 事件触发后重新 hydrate，下一次查询使用新参数、进行中的流式响应不换快照；`storage` 事件中其它命名空间的键被忽略。
 - **迁移测试**：workspace 先打开、`/webui` 先打开、新键已存在（不得被旧值覆盖）、只成功写入部分新键后重试、重复执行结果一致、写入抛错后旧字段仍保留；两个不同 `apiPrefix` 命名空间之间互不可见；切换登录用户时两份历史都被清空。
 - **版本链测试**：从 v1、v6、v20、v21 各自升级后，查询参数与历史都不丢失（证明复用了既有迁移链而不是把旧版本判为无数据）；损坏 envelope 按无旧数据处理；`version > 21` 时旧字段不被读取也不被清理。
-- **并发认领测试**：交错执行两个命名空间的迁移，断言旧的**全部站点作用域字段**（历史、`querySettings`、`apiKey`、`userPromptHistory` 等）只进入其中一个命名空间；认领后、复制完成前中断，断言同一命名空间可续做而另一个命名空间使用默认值且不清理旧字段。
-- **fail-closed 测试**：IndexedDB 不可用、或认领记录带未知 `v` 时，不迁移任何站点作用域状态，新键为默认值、legacy 键完整保留，且不出现“部分迁移”的中间态。
-- **逐键策略测试**：owner 迁移查询参数/历史/`apiKey`/`userPromptHistory`/`queryLabel`/`backendMaxGraphNodes`/`lightrag_search_history`；丢弃后端版本、标题、描述与 `VERSION_CHECKED_FROM_LOGIN` 并在下次启动重新请求；不迁移 `LIGHTRAG-PREVIOUS-USER`，使各站点首次登录各清理一次历史；非 owner 从不删除任何 legacy 键。
-- **认领原子性测试**：以同一 IndexedDB 后端交错执行两个命名空间的认领，断言恰有一方的事务 `complete`、另一方收到 `ConstraintError` 并在新的 readonly 事务中读回记录后跳过；同一命名空间的两个并发迁移互不冲突且结果一致。
-- **提交点测试**：注入“`add()` request 触发 success、随后事务 abort”的时序，断言此时**尚未**写入任何站点新键，且另一个命名空间随后可以正常认领。
-- **崩溃恢复测试**（覆盖提交顺序的每个间隙）：认领提交后复制前崩溃、复制完成后清理前崩溃、清理多个 legacy 键到一半崩溃、清理完成后写 `completed` 前崩溃——四种情形都停在 `claimed` 且 owner 重跑后收敛到同一结果，legacy 键不残留；以及 `completed` 已提交但删除认领记录失败时，后续运行直接跳过且不重复迁移。
+- **静态目标测试**：分别以 `<ns>` 为空、`/site01` 的入口执行迁移，断言两者都把 legacy 站点作用域状态写入**同一组** `lightrag::…` 键，且带前缀的入口自己的 `lightrag:/site01:…` 键保持默认值。
+- **并发收敛测试**：以任意交错顺序执行两个命名空间入口的迁移（含一方读完 legacy 后另一方已完成清理的交错），断言结果与任一方单独执行完全一致，`lightrag::…` 每个键恰好一份且值相同，legacy 键被清理。
+- **重复执行自门控测试**：连续执行迁移三次，断言第二、三次为空操作，不覆盖已被用户改动过的新键值。
+- **旧标签页回写测试**：迁移完成后模拟旧 bundle 重新写回一份完整 `settings-storage` envelope，断言下次启动只清理该 envelope 而不覆盖任何新键。
+- **崩溃重跑测试**：复制到一半崩溃、复制完成后清理前崩溃、清理多个 legacy 键到一半崩溃——三种情形重跑后都收敛到同一结果，legacy 键不残留，新键不被旧值二次覆盖。
+- **版本边界测试**：`version > 21` 时不读、不清理、不覆盖任何旧字段，新键为默认值且不出现“部分迁移”的中间态；`version ≤ 21` 时经**复用**（而非复制）的 v1→v21 链规范化后再拆分，v20 envelope 的参数与历史完整保留。
+- **统一策略测试**：断言 `querySettings`、`retrievalHistory`、`apiKey`、`userPromptHistory`、`queryLabel`、`backendMaxGraphNodes`、`lightrag_search_history`、后端版本/标题/描述缓存、`LIGHTRAG-PREVIOUS-USER` 与 `VERSION_CHECKED_FROM_LOGIN` 全部迁往对应的 `lightrag::` 键（sessionStorage 项仍在 sessionStorage），而 `LIGHTRAG-API-TOKEN` / `-LAST-TOKEN-RENEWAL` 原地不动。
+- **历史误清回归测试**：根部署下迁移后首次登录，断言刚迁移过来的查询历史**不被**清空（`LIGHTRAG-PREVIOUS-USER` 已随迁移进入空命名空间）。
 - **站点作用域字段测试**：盘点表中标为“分区”的全部键在两个命名空间之间互不可见——`apiKey`、`userPromptHistory`、`queryLabel`、`backendMaxGraphNodes`、`lightrag_search_history`、`LIGHTRAG-CORE-VERSION` / `-API-VERSION` / `-WEBUI-TITLE` / `-WEBUI-DESCRIPTION`、`LIGHTRAG-PREVIOUS-USER` 与 `VERSION_CHECKED_FROM_LOGIN`；site01 的请求头不携带 site02 的 `X-API-Key`；在 site01 退出登录不清除 site02 的 session 键，也不改变 site02 的历史保留判断。
-- **启动屏障测试**：断言迁移 promise 完成之前没有任何待拆分 store 被求值（未读取也未写回 localStorage），且应用未渲染。
+- **启动顺序测试**：断言迁移模块求值完成之前没有任何待拆分 store 被求值（未读取也未写回 localStorage）；并断言迁移纯模块的传递 import 图中不含任何 store、`App`、API 客户端或导航模块。
 - **纯模块边界测试**：承载 v1→v21 链的模块其 import 图不含任何 store、`App`、API 客户端或导航模块；import 它不产生 localStorage 读写。
 - 工作区不解析 query mode 前缀，但读取后台持久化的合法 `querySettings`；未配置时使用前端默认值。
 - 两个页面的流式完成、失败、停止、清空、历史持久化和卸载清理使用同一组共享层测试（历史存储由测试注入，不由共享层选择）。
@@ -890,7 +883,7 @@ cd ..
 
 1. **双入口基础设施**：Vite 双 HTML 入口构建，Server 双 mount（各自的索引文件、跨入口 HTML 拒绝与独立产物检查），`LIGHTRAG_DEFAULT_UI` 与根路径跳转，`root_path`、健康状态、降级和打包测试。
 2. **入口感知认证**：两个入口各自的 router 与未登录默认页，欢迎页路由，共享导航单例的 bootstrap 配置，登录/退出/401/guest 全链路只经 `navigate()`。
-3. **客户端状态边界**：按 §7.4 盘点表分区站点作用域存储，实现启动屏障（先 await 迁移再动态 import 应用）、把 v1→v21 链抽为纯模块并复用、以 IndexedDB 事务原子认领的迁移、`storage` 事件重新 hydrate；收紧 token 本地校验；解耦导航核心与图谱 store（重置适配器），`ChatMessage` 的 mermaid 改为动态 import。这一步不引入新页面，可独立在 `/webui` 上验证无回归。
+3. **客户端状态边界**：按 §7.4 盘点表分区站点作用域存储，把迁移模块置为入口文件的第一个静态 import、把 v1→v21 链抽为纯模块并复用、实现目标静态固定为空命名空间的无锁迁移、`storage` 事件重新 hydrate；收紧 token 本地校验；解耦导航核心与图谱 store（重置适配器），`ChatMessage` 的 mermaid 改为动态 import。这一步不引入新页面，可独立在 `/webui` 上验证无回归。
 4. **查询共享层与工作区 UI**：从 `RetrievalView` 抽出查询会话、消息列表和输入操作层（历史存储由页面注入）；新增复用 `ChatMessage` 的 `WorkspaceQueryView`、空白态和精简应用壳；工作区入口只 import 查询所需模块，品牌链接改为 `href="./"`；保持后台页面行为不变。
 5. **多语言品牌定制**：默认 Bundle、严格 manifest、外部只读 Bundle 启动快照、locale/fallback、公开读取 API、revision/asset hash 缓存、安全渲染和运维文档。
 6. **移动端收口**：响应式布局、safe-area/软键盘、真实浏览器回归和无障碍检查。
@@ -907,13 +900,13 @@ cd ..
 | 共享历史 | 管理员的调试提问进入查询用户的展示与 `bypass` LLM 上下文 | 两份历史独立存储，共享层只接受注入的存储 |
 | 固定 localStorage 键名 | localStorage 只按 origin 隔离，同 host 多站点部署下查询参数、历史与 **`apiKey`** 互相串用——后者是把一个站点的凭据发给另一个站点 | 站点相关状态（含 `apiKey`、`userPromptHistory`、`queryLabel`、`backendMaxGraphNodes`）一律按 `apiPrefix` 分区，`storage` 事件只响应本命名空间 |
 | 迁移语义不完整 | 谁迁移、写入顺序、部分失败与重复执行未定义，升级后可能丢历史或用旧值覆盖新值 | 新键优先、先写新后清旧、部分失败保留旧字段重试 |
-| 并发首次打开两个站点 | 双方各自复制一份旧的历史与凭据，隔离不变式被破坏，且幂等测试发现不了 | IndexedDB 事务内 `add()` 做一次原子归属认领；绝不用 localStorage claim 冒充互斥 |
-| 以 request `success` 为提交点 | 事务随后 abort 时认领未持久化，另一站点可再认领并复制同一份凭据 | 等 transaction `complete` 后才开始任何迁移写入 |
-| `completed` 早于清理 | owner 在两者之间崩溃后，后续运行一律跳过，legacy 凭据与历史永久残留且认领记录删不掉 | 顺序固定为复制 → 清理 → 写 `completed` → 删记录，中途崩溃一律停在 `claimed` 可重跑 |
-| 用 Web Locks 作唯一原语 | `navigator.locks` 受 `[SecureContext]` 限制，无 TLS 的自托管部署（SSL 默认关闭）升级时全量 fail closed 丢配置 | 改用无安全上下文限制的 IndexedDB 认领，能力判定以运行时探测为准 |
-| 认领只对历史排他 | owner 崩溃后另一站点沿通用步骤把旧 `apiKey` 复制过去 | 认领范围覆盖全部 legacy origin 级站点状态（不论载体），并给出逐键策略表 |
-| 为复用迁移链而 import store 模块 | bootstrap 在认领之前就创建并 hydrate 了 persist store，启动屏障形同虚设 | v1→v21 链抽到无副作用纯模块，迁移器与 `persist.migrate` 共同 import |
-| 异步迁移与同步 hydrate 竞争 | 入口静态 import 链在锁完成前就建好并 hydrate 了 store，迁移形同虚设 | 入口先 await 迁移、再动态 import 应用与 store；`skipHydration` 覆盖不到 auth store |
+| 并发首次打开两个站点 | 若按“谁先打开谁继承”动态归属，双方各自复制一份旧历史与凭据，隔离不变式被破坏，且幂等测试发现不了 | 目标命名空间**静态固定为空命名空间**：任意交错都是把相同字节写向相同键，竞态因构造而良性，无需任何互斥原语 |
+| 带前缀的单实例部署升级 | 站点作用域状态（含 `apiKey`）不再可见，用户需重新录入一次 | **明确接受**：无归属证据时不猜。登录态不受影响；旧数据搬入 `lightrag::…` 而非销毁，不做导入引导 UI |
+| 根部署与带前缀部署共存于同一 origin | 根站点会继承那份混合的 legacy 数据 | **明确接受**：不变式是“至多一个命名空间继承，且是静态确定的”，不存在两站各拿一份；确定性归属可在部署文档中说明 |
+| 清理早于复制 | 中途崩溃直接丢数据 | 顺序固定为先写全部新键、再清理；重跑幂等（只写不存在的键，删已删的键为空操作） |
+| 引入 `claimed`/`completed` 状态机 | 状态推进顺序一旦写错（`completed` 早于清理），崩溃后所有运行永久跳过，凭据与历史残留 | 不引入状态机：重复执行天然自门控——字段已迁出、legacy 键已删，后续运行自动成为空操作 |
+| 为复用迁移链而 import store 模块 | 迁移器在迁移之前就创建并 hydrate 了待拆分的 persist store | v1→v21 链抽到无副作用纯模块，迁移器与 `persist.migrate` 共同 import；纯模块递归不含 store |
+| 迁移模块不在 import 首位 | ESM 按源码顺序求值同级 import，晚于 store 模块就等于没迁 | 约束写死为“入口文件的第一个静态 import”，并以 import 图测试守护 |
 | 存储盘点不完整 | `lightrag_search_history`、后端版本/标题、`LIGHTRAG-PREVIOUS-USER`、`VERSION_CHECKED_FROM_LOGIN` 继续跨站点串用 | 维护完整盘点表，每个键必须落到全局/分区/既有风险三类之一 |
 | 只接受 v21 envelope | 从 v20 及更早升级的用户被判为无旧数据，参数与历史清回默认值 | 复用既有 v1→v21 迁移链先规范化再拆分；`version > 21` 一律不读不清 |
 | token 只判存在性 | 过期或损坏的 token 被判为已登录，欢迎页矩阵中的“无有效 token”一行无法成立 | 启动时本地校验 JWT 结构与 `exp`，不通过即清除并进入欢迎页；签名与吊销仍由 401 纠正 |
