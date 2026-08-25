@@ -8,7 +8,9 @@ truncation helpers scattered across the codebase. The contract:
   ``max_tokens`` (BPE token count is not monotonic in text length, so nothing
   short of re-encoding the actual candidate can be trusted);
 * ``split`` fully covers the input with no gaps and real forward progress;
-* retreat is bounded and strictly one-directional (never oscillates);
+* the search brackets each span between a length verified to fit and one
+  verified to overflow, then bisects that bracket -- it only ever narrows
+  (never oscillates) and stays logarithmic in the remaining length;
 * a third-party ``Tokenizer`` subclass implementing only ``encode``/``decode``
   gets correct (if slower) behavior "for free" via the generic base-class
   implementation, with no new abstract methods to fill in.
@@ -495,3 +497,244 @@ def test_split_overlap_clamped_to_previous_window_size_minus_one():
     # window transition.
     spans = tok.split_by_token_limit(text, max_tokens=10, overlap_tokens=5000)
     _assert_split_invariants(tok, text, spans, 10)
+
+
+class _DensityVaryingTokenizer(TokenizerInterface):
+    """A tokenizer whose token density differs sharply between two regions.
+
+    ``D`` costs 4 tokens per character; every other character costs 1 token
+    per 4 characters. A document mixing the two has a whole-content
+    chars-per-token average that is wrong for *both* regions, which is
+    exactly the estimate ``_bounded_prefix_span`` seeds from. Real corpora do
+    this whenever contiguous CJK meets Latin text.
+
+    ``decode`` asserts rather than answering: the generic split/truncate
+    implementation is contractually encode-only, and a call here would mean
+    that promise was broken.
+    """
+
+    def encode(self, content: str) -> list[int]:
+        tokens: list[int] = []
+        index = 0
+        while index < len(content):
+            if content[index] == "D":
+                tokens.extend([1, 1, 1, 1])
+                index += 1
+            else:
+                run = 0
+                while index < len(content) and content[index] != "D":
+                    run += 1
+                    index += 1
+                tokens.extend([2] * ((run + 3) // 4))
+        return tokens
+
+    def decode(self, tokens: list[int]) -> str:  # pragma: no cover - see docstring
+        raise AssertionError("the generic contract must never call decode()")
+
+
+class _DensityCliffTokenizer(TokenizerInterface):
+    """A density ratio steep enough to expose a stalling convergence rule.
+
+    ``D`` costs 10 tokens per character, everything else 1 token per 1000 --
+    a 10 000:1 cliff, which real tokenizers do reach (in ``cl100k`` a run of
+    ``.`` is ~63 chars/token while Tifinagh is ~0.33, a 190:1 ratio, and
+    whitespace runs push it further). The gentler ratio in
+    ``_DensityVaryingTokenizer`` is enough to expose a wrong ANSWER but not a
+    wrong probe COUNT, which is what this one is for.
+    """
+
+    def encode(self, content: str) -> list[int]:
+        tokens: list[int] = []
+        index = 0
+        while index < len(content):
+            if content[index] == "D":
+                tokens.extend([1] * 10)
+                index += 1
+            else:
+                run = 0
+                while index < len(content) and content[index] != "D":
+                    run += 1
+                    index += 1
+                tokens.extend([2] * ((run + 999) // 1000))
+        return tokens
+
+    def decode(self, tokens: list[int]) -> str:  # pragma: no cover
+        raise AssertionError("the generic contract must never call decode()")
+
+
+class _CountingTokenizer(TokenizerInterface):
+    """Wraps another tokenizer and counts ``encode`` calls."""
+
+    def __init__(self, inner: TokenizerInterface):
+        self.inner = inner
+        self.encode_calls = 0
+
+    def encode(self, content: str) -> list[int]:
+        self.encode_calls += 1
+        return self.inner.encode(content)
+
+    def decode(self, tokens: list[int]) -> str:
+        return self.inner.decode(tokens)
+
+
+def _density_tokenizer() -> Tokenizer:
+    return Tokenizer(model_name="density", tokenizer=_DensityVaryingTokenizer())
+
+
+def test_dense_head_is_not_truncated_to_a_single_character():
+    """A head denser than the document average must not collapse the span.
+
+    The seed length comes from the whole-content average. When the head is
+    denser than that average the seed overflows, and stepping down by
+    exponentially growing amounts used to overshoot the whole remainder in a
+    few iterations -- ``max(1, candidate_len - step)`` then clamped straight
+    to one character, so a 5000-character budget returned one character.
+    """
+    content = "D" * 400 + "s" * 40000  # dense head, very sparse tail
+    tokenizer = _density_tokenizer()
+
+    span = tokenizer.truncate_by_token_limit(content, 500)
+
+    assert span.start == 0
+    assert span.end > 1, "the dense head collapsed the span to a single character"
+    assert span.token_count <= 500
+    assert len(tokenizer.encode(content[: span.end])) == span.token_count
+    # 500 tokens buys 125 dense chars; anything near that beats the clamp.
+    assert span.end >= 100
+
+
+def test_sparse_head_does_not_silently_drop_budget():
+    """A head sparser than the average must not stop at the first fit.
+
+    The old implementation returned the first candidate whose count fit, so a
+    seed shortened by a dense document average spent only a fraction of the
+    budget and reported success.
+    """
+    content = "s" * 40000 + "D" * 400  # sparse head, dense tail
+    tokenizer = _density_tokenizer()
+
+    span = tokenizer.truncate_by_token_limit(content, 500)
+
+    assert span.token_count == 500, "budget was left unspent on a sparse head"
+    assert len(tokenizer.encode(content[: span.end])) == span.token_count
+
+
+def test_split_does_not_emit_single_character_spans():
+    """The same clamp reached ``split_by_token_limit`` one window at a time.
+
+    Every window whose start landed in a dense region returned one character,
+    so a density-heterogeneous document was split into per-character chunks --
+    each one separately embedded downstream.
+    """
+    content = ("D" * 200 + "s" * 8000) * 3
+    tokenizer = _density_tokenizer()
+
+    spans = tokenizer.split_by_token_limit(content, 256)
+
+    assert spans, "split returned nothing"
+    assert min(span.end - span.start for span in spans) > 1
+    # Full coverage, no gaps, real forward progress -- the existing contract.
+    assert spans[0].start == 0
+    assert spans[-1].end == len(content)
+    for previous, current in zip(spans, spans[1:]):
+        assert current.start <= previous.end
+        assert current.end > previous.end
+    # A 256-token budget over this document needs tens of spans, not thousands.
+    assert len(spans) < 100
+
+
+@pytest.mark.parametrize(
+    "tokenizer_factory",
+    [_DensityVaryingTokenizer, _DensityCliffTokenizer],
+    ids=["ratio_16", "ratio_10000"],
+)
+@pytest.mark.parametrize(
+    "content,budget",
+    [
+        ("s" * 60000 + "D" * 4000, 4096),  # sparse head, dense tail
+        ("D" * 4000 + "s" * 60000, 4096),  # dense head, sparse tail
+        (("D" * 200 + "s" * 8000) * 8, 2048),  # alternating blocks
+        ("s" * 100000 + "D" * 5000, 8192),  # long, and sparse for most of it
+    ],
+)
+def test_probe_count_stays_logarithmic_on_heterogeneous_input(
+    content, budget, tokenizer_factory
+):
+    """Closing the bracket must halve it, not creep towards it.
+
+    Any closing rule that merely avoids the two endpoints -- interpolating
+    between the measurements, for instance -- can stall on one side: the
+    overflowing bound stays pinned while the fitting one advances a few
+    characters per probe, and every one of those probes re-encodes a slice
+    nearly as long as the document. That costs O(length) encodes rather than
+    O(length), which is worse than the defect being fixed. Bisection has no
+    such mode, and this bound is what pins it.
+
+    The steeper tokenizer is the one that matters: a stalling rule stays
+    within budget on a 16:1 ratio and only blows up as the cliff sharpens.
+    Measured here, bisection needs 13-23 probes across every case; the
+    interpolating rule this replaced needs 47-71 on the 10 000:1 cases.
+    """
+    inner = _CountingTokenizer(tokenizer_factory())
+    tokenizer = Tokenizer(model_name="density", tokenizer=inner)
+
+    inner.encode_calls = 0
+    span = tokenizer.truncate_by_token_limit(content, budget)
+
+    assert span.token_count <= budget
+    assert len(tokenizer.encode(content[: span.end])) == span.token_count
+    assert inner.encode_calls <= 40
+
+
+def test_bracket_survives_a_non_monotonic_tokenizer():
+    """Bracketing samples lengths; it cannot assume what lies between them.
+
+    ``_WordCountingTokenizer`` makes a longer prefix cost fewer tokens, so the
+    fitting and overflowing bounds do not partition the range cleanly. The
+    span must still be verified to fit -- that is the guarantee -- even though
+    a longer fitting prefix may exist that bisection never sampled.
+    """
+    tokenizer = Tokenizer(model_name="words", tokenizer=_WordCountingTokenizer())
+    content = "abababab" + "xyz" * 300 + "abababab"
+
+    for budget in (1, 2, 3, 5, 8, 13, 40):
+        span = tokenizer.truncate_by_token_limit(content, budget)
+        assert span.start == 0
+        assert span.end >= 1
+        assert content.startswith(content[: span.end])
+        assert len(tokenizer.encode(content[: span.end])) == span.token_count
+        assert span.token_count <= budget
+
+
+def test_budget_below_one_code_point_still_raises():
+    """The bracket must not paper over a genuinely impossible budget."""
+    tokenizer = _density_tokenizer()
+
+    with pytest.raises(TokenBudgetError):
+        tokenizer.truncate_by_token_limit("D" + "s" * 100, 3)
+
+
+def test_real_tokenizer_dense_head_keeps_the_budget():
+    """End to end on tiktoken, through the generic path.
+
+    A ``tokenizer_func`` injection reaches the base class -- ``TiktokenTokenizer``
+    overrides split/truncate with its ``decode_with_offsets`` fast path and does
+    not -- so the base class is wrapped around the same encoding directly.
+    """
+    tiktoken = pytest.importorskip("tiktoken")
+    tokenizer = Tokenizer(
+        model_name="gpt-4o-mini",
+        tokenizer=tiktoken.encoding_for_model("gpt-4o-mini"),
+    )
+    content = (
+        "\u8bed\u8a00\u6a21\u578b\u7684\u77e5\u8bc6\u56fe\u8c31" * 200
+        + "the quick brown fox jumps over the lazy dog " * 400
+    )
+
+    span = tokenizer.truncate_by_token_limit(content, 512)
+
+    assert span.start == 0
+    assert span.end > 1
+    assert span.token_count <= 512
+    assert len(tokenizer.encode(content[: span.end])) == span.token_count
+    assert span.token_count >= 500, "budget largely unspent on a dense head"
