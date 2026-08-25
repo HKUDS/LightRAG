@@ -816,12 +816,13 @@ MongoDB provides a one-stop storage solution for LightRAG with native KV storage
 
 `MongoVectorDBStorage` requires a MongoDB deployment with Atlas Search / Vector Search support (e.g., MongoDB Atlas or Atlas Local). The setup wizard's bundled local Docker MongoDB service uses MongoDB Atlas Local so it supports all four MongoDB-backed storage types.
 
-#### Using DocumentDB Storage
+#### Using DocumentDB (Linux Foundation) Storage
 
-[DocumentDB](https://github.com/documentdb/documentdb) is an open-source,
-PostgreSQL-based database that exposes a MongoDB-compatible wire protocol.
-LightRAG supports it for KV, graph, vector, and document-status storage through
-the `DocumentDB*Storage` backends.
+[DocumentDB](https://github.com/documentdb/documentdb) is the open-source,
+PostgreSQL-based database from the Linux Foundation that exposes a
+MongoDB-compatible wire protocol. It is distinct from Amazon DocumentDB.
+LightRAG supports DocumentDB `v0.100-0` and later for KV, graph, vector, and
+document-status storage through the `DocumentDB*Storage` backends.
 
 ```bash
 export DOCUMENTDB_URI="mongodb://user:password@localhost:10260/?tls=true&tlsAllowInvalidCertificates=true"
@@ -836,8 +837,10 @@ The invalid-certificate setting above is suitable only for the self-signed
 certificate used by a local development container. Production deployments
 should validate TLS certificates with a trusted CA. DocumentDB vector indexes
 use native HNSW `cosmosSearch` indexes and currently support embedding dimensions
-up to 2000. Tune index creation with `DOCUMENTDB_HNSW_M` and
-`DOCUMENTDB_HNSW_EF_CONSTRUCTION`.
+up to 2000. Vector retrieval uses the documented
+`$search: {cosmosSearch: ...}` stage with `$meta: "searchScore"`; it does not
+require the newer `$vectorSearch` stage added in DocumentDB `v0.114-0`. Tune
+index creation with `DOCUMENTDB_HNSW_M` and `DOCUMENTDB_HNSW_EF_CONSTRUCTION`.
 
 #### Using Redis Storage
 

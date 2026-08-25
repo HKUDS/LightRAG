@@ -3806,6 +3806,7 @@ class _MongoVectorDBStorageBase(BaseVectorStorage):
     client_manager: ClassVar[type[ClientManager]] = ClientManager
     workspace_env_var: ClassVar[str] = "MONGODB_WORKSPACE"
     vector_query_uses_index_name: ClassVar[bool] = True
+    vector_query_uses_cosmos_search: ClassVar[bool] = False
 
     def __init__(
         self, namespace, global_config, embedding_func, workspace=None, meta_fields=None
@@ -4144,22 +4145,37 @@ class _MongoVectorDBStorageBase(BaseVectorStorage):
             # Convert numpy array to a list to ensure compatibility with MongoDB
             query_vector = embedding[0].tolist()
 
-        # Define the aggregation pipeline with the converted query vector
-        vector_search = {
-            "path": "vector",
-            "queryVector": query_vector,
-            "numCandidates": 100,
-            "limit": top_k,
-        }
-        if self.vector_query_uses_index_name:
-            vector_search["index"] = self._index_name
+        if self.vector_query_uses_cosmos_search:
+            pipeline = [
+                {
+                    "$search": {
+                        "cosmosSearch": {
+                            "path": "vector",
+                            "vector": query_vector,
+                            "k": top_k,
+                        }
+                    }
+                },
+                {"$addFields": {"score": {"$meta": "searchScore"}}},
+                {"$match": {"score": {"$gte": self.cosine_better_than_threshold}}},
+                {"$project": {"vector": 0}},
+            ]
+        else:
+            vector_search = {
+                "path": "vector",
+                "queryVector": query_vector,
+                "numCandidates": 100,
+                "limit": top_k,
+            }
+            if self.vector_query_uses_index_name:
+                vector_search["index"] = self._index_name
 
-        pipeline = [
-            {"$vectorSearch": vector_search},
-            {"$addFields": {"score": {"$meta": "vectorSearchScore"}}},
-            {"$match": {"score": {"$gte": self.cosine_better_than_threshold}}},
-            {"$project": {"vector": 0}},
-        ]
+            pipeline = [
+                {"$vectorSearch": vector_search},
+                {"$addFields": {"score": {"$meta": "vectorSearchScore"}}},
+                {"$match": {"score": {"$gte": self.cosine_better_than_threshold}}},
+                {"$project": {"vector": 0}},
+            ]
 
         # Execute the aggregation pipeline
         cursor = await self._data.aggregate(pipeline, allowDiskUse=True)
