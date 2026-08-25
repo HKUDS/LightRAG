@@ -302,7 +302,7 @@ WorkspaceQueryView ────────── WorkspaceEmptyState
 
 **核心规则是 serializer 等价性**：
 
-> 给定相同的 `querySettings`、**显式传入的相同历史**和相同问题，共享 serializer 必须产生**完全相同**的请求体，包括 `mode`、`conversation_history` 以及 bypass 模式下的默认历史轮数。工作区不引入任何模式钳制、字段过滤或 history 特判。
+> 给定相同的 `querySettings`、**显式传入的相同历史**和相同问题，共享 serializer 必须产生**完全相同**的请求体，包括 `mode`、`conversation_history` 以及 bypass 模式下的默认历史轮数。**共享 serializer 内部**不得含有任何按入口分支的模式钳制、字段过滤或 history 特判。
 >
 > 运行时两个页面各自从**自己的**历史存储提供那段历史，因此实际请求体中的 `conversation_history` 本就不同——这是 §7.2 状态边界的直接结果，不是等价性的例外。
 >
@@ -809,7 +809,7 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - **版本链测试**：从 v1、v6、v20、v21 各自升级后，查询参数与历史都不丢失（证明复用了既有迁移链而不是把旧版本判为无数据）；损坏 envelope 按无旧数据处理；`version > 21` 时旧字段不被读取也不被清理。
 - **重复执行自门控测试**：连续执行迁移三次，断言第二、三次为空操作，不覆盖已被用户改动过的新键值。
 - **旧标签页回写测试**：迁移完成后模拟旧 bundle 重新写回一份完整 `settings-storage` envelope，断言下次启动只清理该 envelope 而不覆盖任何新键。
-- **崩溃重跑测试**：复制到一半崩溃、复制完成后清理前崩溃、清理多个 legacy 键到一半崩溃——三种情形重跑后都收敛到同一结果，legacy 键不残留，新键不被旧值二次覆盖。
+- **崩溃重跑测试**：复制到一半崩溃、复制完成后清理旧 envelope 字段前崩溃——两种情形重跑后都收敛到同一结果，新键不被旧值二次覆盖。
 - **版本边界测试**：`version > 21` 时不读、不清理、不覆盖任何旧字段，新键为默认值且不出现“部分迁移”的中间态；`version ≤ 21` 时经**复用**（而非复制）的 v1→v21 链规范化后再拆分，v20 envelope 的参数与历史完整保留。
 - **启动顺序测试**：断言迁移模块求值完成之前没有任何待拆分 store 被求值（未读取也未写回 localStorage）；并断言迁移纯模块的传递 import 图中不含任何 store、`App`、API 客户端或导航模块。
 - **纯模块边界测试**：承载 v1→v21 链的模块其 import 图不含任何 store、`App`、API 客户端或导航模块；import 它不产生 localStorage 读写。
@@ -867,7 +867,7 @@ cd ..
 2. **入口感知认证**：两个入口各自的 router 与未登录默认页，欢迎页路由，共享导航单例的 bootstrap 配置，登录/退出/401/guest 全链路只经 `navigate()`。
 3. **客户端状态边界**：按 §7.4 拆出 `query-settings-storage` 与两份查询历史，把迁移模块置为入口文件的第一个静态 import、把 v1→v21 链抽为纯模块并复用、实现单目标无锁迁移、`storage` 事件重新 hydrate；解耦导航核心与图谱 store（重置适配器），`ChatMessage` 的 mermaid 改为动态 import。这一步不引入新页面，可独立在 `/webui` 上验证无回归。
 
-   **前置**：[客户端状态分区与共享认证层](./LR2-client-state-partitioning.md) 的 token 本地校验（§5）须先于第 2 步的欢迎页上线；其 `<ns>` 分区可在本功能之后独立排期，两者无先后约束。
+   **前置与顺序**：[客户端状态分区与共享认证层](./LR2-client-state-partitioning.md) 的 token 本地校验（§5）须**先于**第 2 步的欢迎页上线。其 `<ns>` 分区与 legacy 键搬迁则必须**后于**本步：本步会清理 `settings-storage` 中已迁出的字段并升级 envelope 版本号，分区文档的迁移器要按那个升级后的版本作为规范化上界，否则会把新 envelope 判为未知的更高版本而拒绝读取，`apiKey` 永远搬不出来。两份文档的版本上界必须对齐，不得各写各的。
 4. **查询共享层与工作区 UI**：从 `RetrievalView` 抽出查询会话、消息列表和输入操作层（历史存储由页面注入）；新增复用 `ChatMessage` 的 `WorkspaceQueryView`、空白态和精简应用壳；工作区入口只 import 查询所需模块，品牌链接改为 `href="./"`；保持后台页面行为不变。
 5. **多语言品牌定制**：前端默认内容（i18n 文案 + 移入 `src/assets/` 的默认 Logo）、严格 manifest、外部只读 Bundle 启动快照、locale/fallback、公开读取 API（含无 Bundle 时的 `customized: false`）、revision/asset hash 缓存、安全渲染、示例 Bundle 与运维文档。
 6. **移动端收口**：响应式布局、safe-area/软键盘、真实浏览器回归和无障碍检查。
