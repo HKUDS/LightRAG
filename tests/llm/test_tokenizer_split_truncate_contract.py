@@ -12,7 +12,7 @@ truncation helpers scattered across the codebase. The contract:
   verified to overflow, then bisects that bracket -- it only ever narrows
   (never oscillates) and stays logarithmic in the remaining length;
 * a third-party ``Tokenizer`` subclass implementing only ``encode``/``decode``
-  gets correct (if slower) behavior "for free" via the generic base-class
+  gets contract-safe (if slower) behavior "for free" via the generic base-class
   implementation, with no new abstract methods to fill in.
 """
 
@@ -45,15 +45,11 @@ class _CharTokenizer(TokenizerInterface):
 
 
 class _WordCountingTokenizer(TokenizerInterface):
-    """A BPE-like tokenizer where a shorter prefix can cost MORE tokens.
+    """A BPE-like tokenizer that recognizes each ``ab`` pair as one token.
 
-    "ab" is a single recognized "word" token (cost 1); any other content
-    costs one token per character. Truncating "ab" down to just "a" therefore
-    goes from 1 token to 1 token (no change), but truncating "abc" down to
-    "ab" goes from 3 (a, b, c) to 1 -- and, the counter-example this contract
-    must survive, extending "a" (1 token) to "ab" (1 token) then over to "abx"
-    jumps to 3. The property under test: re-encoding the actual candidate
-    (not assuming monotonicity) is what makes truncate/split safe here.
+    This models cross-character merges used by the list reserialization tests.
+    The separate ``_NonMonotonicPrefixTokenizer`` below supplies the explicit
+    counterexample where extending a prefix reduces its token count.
     """
 
     def encode(self, content: str) -> list[int]:
@@ -70,6 +66,24 @@ class _WordCountingTokenizer(TokenizerInterface):
 
     def decode(self, tokens: list[int]) -> str:
         return "".join("ab" if t == -1 else chr(t) for t in tokens)
+
+
+class _NonMonotonicPrefixTokenizer(TokenizerInterface):
+    """A tokenizer whose prefix counts are explicitly non-monotonic.
+
+    For ``abcd`` the four prefix counts are 1, 2, 1, and 4: extending ``ab``
+    to ``abc`` creates one recognized token and makes the longer prefix
+    cheaper. This pins the generic contract's safety guarantee without
+    pretending that a logarithmic sampled search can prove the longest fit.
+    """
+
+    def encode(self, content: str) -> list[int]:
+        if content == "abc":
+            return [-1]
+        return [ord(ch) for ch in content]
+
+    def decode(self, tokens: list[int]) -> str:
+        return "".join("abc" if token == -1 else chr(token) for token in tokens)
 
 
 def _char_tok() -> Tokenizer:
@@ -138,15 +152,13 @@ def test_truncate_raises_token_budget_error_when_even_one_code_point_does_not_fi
 
 
 def test_truncate_survives_the_bpe_non_monotonic_counter_example():
-    """A shorter candidate is not guaranteed to cost fewer tokens.
+    """A longer candidate is not guaranteed to cost more tokens.
 
-    "ab" costs 1 token; "abx" costs 3 (the word-token breaks). If truncate
-    ever assumed "shorter == fewer or equal tokens" without re-encoding, it
-    could accept a growing candidate incorrectly. Pin that every returned
-    span is independently safe regardless of this non-monotonicity.
+    ``ab`` costs 2 tokens while ``abc`` costs 1. Pin that every returned span
+    is independently safe regardless of this non-monotonicity.
     """
-    tok = Tokenizer("word", _WordCountingTokenizer())
-    text = "ab" + "x" * 20
+    tok = Tokenizer("non-monotonic", _NonMonotonicPrefixTokenizer())
+    text = "abc" + "x" * 20
     for budget in (1, 2, 3, 5, 10):
         span = tok.truncate_by_token_limit(text, budget)
         sub = text[span.start : span.end]
@@ -273,20 +285,19 @@ def test_split_rejects_a_non_progressing_window_shape():
 
 
 def test_split_survives_the_bpe_non_monotonic_counter_example():
-    tok = Tokenizer("word", _WordCountingTokenizer())
-    text = ("ab" + "x" * 8) * 6
+    tok = Tokenizer("non-monotonic", _NonMonotonicPrefixTokenizer())
+    text = ("abc" + "x" * 8) * 6
     spans = tok.split_by_token_limit(text, 4)
     _assert_split_invariants(tok, text, spans, 4)
 
 
 # --------------------------------------------------------------------------- #
-# Exponential (not halving) retreat
+# Bounded generic bracket search
 # --------------------------------------------------------------------------- #
 
 
-def test_generic_retreat_is_strictly_decreasing_and_bounded():
-    """The char-offset retreat in the generic implementation must never grow
-    and must terminate in O(log max_tokens) probes, not O(max_tokens)."""
+def test_generic_bracket_search_is_logarithmically_bounded():
+    """The generic search must take O(log length), not O(length), probes."""
 
     class _CountingTokenizer(TokenizerInterface):
         def __init__(self):
@@ -305,7 +316,7 @@ def test_generic_retreat_is_strictly_decreasing_and_bounded():
     span = tok.truncate_by_token_limit(text, 37)
     assert span.token_count <= 37
     # log2(5000) ~= 13; a handful of probes on top for the ratio estimate and
-    # floor check is still far below a 5000-step linear retreat.
+    # floor check is still far below a 5000-step linear search.
     assert underlying.encode_calls < 40
 
 
@@ -667,8 +678,8 @@ def test_probe_count_stays_logarithmic_on_heterogeneous_input(
     overflowing bound stays pinned while the fitting one advances a few
     characters per probe, and every one of those probes re-encodes a slice
     nearly as long as the document. That costs O(length) encodes rather than
-    O(length), which is worse than the defect being fixed. Bisection has no
-    such mode, and this bound is what pins it.
+    O(log length), which is worse than the defect being fixed. Bisection has
+    no such mode, and this bound is what pins it.
 
     The steeper tokenizer is the one that matters: a stalling rule stays
     within budget on a 16:1 ratio and only blows up as the cliff sharpens.
@@ -689,21 +700,29 @@ def test_probe_count_stays_logarithmic_on_heterogeneous_input(
 def test_bracket_survives_a_non_monotonic_tokenizer():
     """Bracketing samples lengths; it cannot assume what lies between them.
 
-    ``_WordCountingTokenizer`` makes a longer prefix cost fewer tokens, so the
-    fitting and overflowing bounds do not partition the range cleanly. The
-    span must still be verified to fit -- that is the guarantee -- even though
-    a longer fitting prefix may exist that bisection never sampled.
+    The prefix counts for ``abcd`` are 1, 2, 1, and 4. With a budget of 1,
+    bisection can return ``a`` after sampling overflowing ``ab`` even though
+    the longer ``abc`` also fits. The returned span must still be verified to
+    fit -- that is the guarantee -- without claiming it is the longest fit.
     """
-    tokenizer = Tokenizer(model_name="words", tokenizer=_WordCountingTokenizer())
-    content = "abababab" + "xyz" * 300 + "abababab"
+    tokenizer = Tokenizer(
+        model_name="non-monotonic", tokenizer=_NonMonotonicPrefixTokenizer()
+    )
+    content = "abcd"
+    budget = 1
 
-    for budget in (1, 2, 3, 5, 8, 13, 40):
-        span = tokenizer.truncate_by_token_limit(content, budget)
-        assert span.start == 0
-        assert span.end >= 1
-        assert content.startswith(content[: span.end])
-        assert len(tokenizer.encode(content[: span.end])) == span.token_count
-        assert span.token_count <= budget
+    assert [len(tokenizer.encode(content[:end])) for end in range(1, 5)] == [
+        1,
+        2,
+        1,
+        4,
+    ]
+    span = tokenizer.truncate_by_token_limit(content, budget)
+
+    assert span == TokenSpan(0, 1, 1)
+    assert len(tokenizer.encode(content[: span.end])) == span.token_count
+    assert span.token_count <= budget
+    assert len(tokenizer.encode(content[:3])) <= budget  # a longer fit exists
 
 
 def test_budget_below_one_code_point_still_raises():
@@ -717,9 +736,10 @@ def test_budget_below_one_code_point_still_raises():
 def test_real_tokenizer_dense_head_keeps_the_budget():
     """End to end on tiktoken, through the generic path.
 
-    A ``tokenizer_func`` injection reaches the base class -- ``TiktokenTokenizer``
-    overrides split/truncate with its ``decode_with_offsets`` fast path and does
-    not -- so the base class is wrapped around the same encoding directly.
+    A custom ``Tokenizer`` injection reaches the base class --
+    ``TiktokenTokenizer`` overrides split/truncate with its
+    ``decode_with_offsets`` fast path and does not -- so the base class is
+    wrapped around the same encoding directly.
     """
     tiktoken = pytest.importorskip("tiktoken")
     tokenizer = Tokenizer(

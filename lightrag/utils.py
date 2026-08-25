@@ -3099,12 +3099,15 @@ class Tokenizer:
         return TokenSpan(start, start + 1, first_cp_tokens)
 
     def truncate_by_token_limit(self, content: str, max_tokens: int) -> TokenSpan:
-        """Return the longest safe prefix of ``content`` that fits ``max_tokens``.
+        """Return a verified safe prefix of ``content`` that fits ``max_tokens``.
 
         The result always starts at character offset 0. If the whole string
-        already fits, the returned span covers it entirely. Raises
-        ``ValueError`` for a non-positive budget, and ``TokenBudgetError`` if
-        not even the first complete Unicode code point fits.
+        already fits, the returned span covers it entirely. Otherwise the
+        bracketed search aims to use the available budget efficiently, but a
+        non-monotonic tokenizer may have a longer fitting prefix that was not
+        sampled. Raises ``ValueError`` for a non-positive budget, and
+        ``TokenBudgetError`` if not even the first complete Unicode code point
+        fits.
         """
         if max_tokens <= 0:
             raise ValueError(f"max_tokens must be positive, got {max_tokens}")
@@ -3214,7 +3217,7 @@ class TiktokenTokenizer(Tokenizer):
             import tiktoken
         except ImportError:
             raise ImportError(
-                "tiktoken is not installed. Please install it with `pip install tiktoken` or define custom `tokenizer_func`."
+                "tiktoken is not installed. Please install it with `pip install tiktoken` or pass a custom `tokenizer`."
             )
 
         try:
