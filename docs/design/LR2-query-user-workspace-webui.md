@@ -57,6 +57,7 @@
 - 本期不直接复用整个 `RetrievalView.tsx` 作为工作区页面，也不复制或重写其中的查询状态机；只把可复用逻辑抽成两个页面共同依赖的模块。
 - 本期不改变 `/query`、`/query/stream` 的公开 API 契约。
 - 本期不允许最终用户在 `/workspace` 中设置 query mode、Top K、Token Budget、rerank、stream、user prompt 等参数；这些参数沿用同一浏览器配置中 `/webui` 保存的值，未配置时使用现有前端默认值。
+- 本期不把 `only_need_context` / `only_need_prompt` 提供给查询入口。二者是**调试开关**（返回检索上下文原文或最终提示词而不是答案），只在 `/webui` 的参数侧栏提供；`/workspace` 强制以 `false` 提交，见 §7.3。
 - 本期不要求模板热重载；修改模板文件或 Logo 后重启 Server 生效。
 - 本期不允许通过模板注入任意 HTML、Jinja、JavaScript、CSS 或替换系统控制项。
 
@@ -236,7 +237,7 @@ WebUI 使用 `HashRouter`，全部导航都经 react-router 的 `navigate()` 完
 
 - 文档、知识图谱或 API 文档导航；
 - `QuerySettings` 侧栏或其移动端抽屉；
-- Query mode、Top K、Token Budget、rerank、stream、history turns、user prompt 等控件；
+- Query mode、Top K、Token Budget、rerank、stream、history turns、user prompt、`only_need_context` / `only_need_prompt` 等控件；
 - 后台健康状态、数据维护按钮或图谱编辑入口。
 
 ### 7.2 页面与复用边界
@@ -280,7 +281,7 @@ WorkspaceQueryView ────────── WorkspaceEmptyState
 历史隔离不是保守取舍，而是产品语义要求：后台历史是管理员的调参调试记录，工作区历史是终端用户的正常会话。把前者混入后者的展示，甚至混入后者 `bypass` 模式的 LLM 上下文，是缺陷而不是特性。共享层因此**不得自行决定读写哪个历史存储**——存储由页面组合层在构造控制层时注入。
 
 - 当前由 `ChatMessage.tsx` 导出的 `MessageWithError` 属于两个页面和会话控制层共同使用的领域模型，应迁移到独立的 retrieval types 模块，再由 `ChatMessage` 和共享层共同 import；不能让无 UI 的会话控制层反向依赖消息渲染组件。
-- 查询会话控制层通过显式策略接收“是否允许 mode 前缀”等页面差异，不得自行探测当前入口，也不得读取后台 `currentTab`；这样共享状态机保持单一，入口差异仍由页面组合层决定。
+- 查询会话控制层通过显式策略接收“是否允许 mode 前缀”等页面差异，不得自行探测当前入口，也不得读取后台 `currentTab`；这样共享状态机保持单一，入口差异仍由页面组合层决定。`querySettings` 快照同样是**由页面组合层构造并传入**的入参，`only_need_*` 的钳制因此落在 `WorkspaceQueryView` 里，共享层不含该字段的任何特判（§7.3）。
 - `RetrievalView` 保持后台页面定位，继续渲染当前 `QuerySettings`，继续支持现有查询参数和 `/mode` 输入前缀。
 - `WorkspaceQueryView` 不渲染 `QuerySettings`，也不解析 `/naive`、`/local`、`/global`、`/hybrid`、`/mix`、`/bypass` 等参数覆盖前缀；以 `/` 开头的普通问题按普通文本提交。**输入前缀解析是两个页面在请求序列化上的唯一差异**；`conversation_history` 来源不同不属于 serializer 差异——历史是显式入参，由各页面从自己的存储提供（§7.3）。
 - `WorkspaceQueryView` 始终把消息区域视为活跃；不得读取后台 `currentTab` 决定 Markdown、Mermaid 或动画是否更新。
@@ -308,6 +309,8 @@ WorkspaceQueryView ────────── WorkspaceEmptyState
 > 给定相同的 `querySettings`、**显式传入的相同历史**和相同问题，共享 serializer 必须产生**完全相同**的请求体，包括 `mode`、`conversation_history` 以及 bypass 模式下的默认历史轮数。工作区不引入任何模式钳制、字段过滤或 history 特判。
 >
 > 运行时两个页面各自从**自己的**历史存储提供那段历史，因此实际请求体中的 `conversation_history` 本就不同——这是 §7.2 状态边界的直接结果，不是等价性的例外。
+>
+> 同理，页面组合层对**传入的 `querySettings` 快照**做的任何处理（如下文对 `only_need_*` 的钳制）都不是等价性的例外：等价性约束的是 serializer 这个**函数**，快照是它的入参。serializer 自身不得含有任何按入口分支的钳制、过滤或特判。
 
 这条约束取代逐字段列举规则：它更强、更容易测（一条参数化跑遍全部 mode 的 serializer 测试即可覆盖），也精确划出了“共享实现、隔离状态”的边界——等价性约束的是**函数**，不是两个页面某一时刻的实际请求。派生规则如下：
 
@@ -319,9 +322,14 @@ WorkspaceQueryView ────────── WorkspaceEmptyState
 - 这是浏览器本地配置共享，不是 Server 全局配置，也不跨设备同步。若未来需要运维统一控制所有查询用户的参数，应另行设计服务端查询 profile，不能把 localStorage 描述成全局策略。
 - serializer 发送的字段以**服务端** `QueryRequest` 模型的声明为准。注意前端 TS 的 `QueryRequest` 类型里还留着 `history_turns`，而服务端没有这个字段（pydantic 默认 `extra='ignore'`，今天它被静默丢弃）：`history_turns` 的职责是决定往 `conversation_history` 里放几轮，展开后应从请求体中剥离。这是对共享 serializer 的清理，两个入口同时受益，需有回归测试钉住。
 - 工作区禁止通过输入前缀临时覆盖 mode，但**不钳制也不篡改**继承到的 mode 值。
+- `only_need_context` 与 `only_need_prompt` 是唯二在页面组合层被钳制的字段：`WorkspaceQueryView` 传给会话控制层的快照中，这两项恒为 `false`。钳制发生在构造入参时，serializer 不感知。
 - stream 继续决定调用 `/query` 或 `/query/stream`；无论选择哪一条，两个页面必须走相同的请求和错误处理路径。
 
 **mode 继承是全量的，包括 `bypass`。** `bypass` 是后台参数侧栏 mode 下拉框中的一个可选项，会被持久化并由工作区继承。管理员选中它之后，工作区的行为与 `/webui` 在**规则上**完全一致：跳过知识检索直接问 LLM（无引用），共享 serializer 中“`bypass` 且 `history_turns=0` 时取 3 轮”的既有逻辑照常生效，因而该模式下会带上最近 3 轮对话并绕过服务端答案缓存。区别只在数据来源——**各入口取自己最近 3 轮**，工作区用户不会看到管理员的调试上下文。这是有意为之的一致性，不是缺陷；但由于工作区用户看不到也改不了 mode，运维文档必须写明**后台的 mode 选择同时决定查询入口的行为**。
+
+**`only_need_context` / `only_need_prompt` 不继承，工作区强制为 `false`。** 这两项与 mode 不同：它们不是「换一种回答方式」，而是**让服务端不回答**——分别返回检索到的上下文原文和最终提示词。它们在后台参数侧栏中是可勾选开关（`QuerySettings.tsx`），会被持久化，并经 `...querySettings` 整体展开进请求体（`RetrievalView.tsx`）。若按全量继承处理，管理员调试后忘记关闭，`/workspace` 的**每一次**查询都会返回一段原始上下文或提示词而不是答案，而查询用户既看不到也改不了这个开关——这与 §2.1「无需理解 RAG 参数即可完成首次提问」直接冲突。
+
+它与 `bypass` 的区别值得写明，以免日后被当成同一类问题重开：`bypass` 仍然产出一个面向用户的答案（只是无检索、无引用），是一个**有意接受**的一致性取舍；`only_need_*` 产出的根本不是答案，属于调试出口。因此前者继承并由运维文档兜底，后者钳制。
 
 除 `bypass` 外的全部模式，前端 `history_turns` 被固定为 0（store 中无 UI 控件且迁移强制归零），因此工作区与 `/webui` 一样发送空 `conversation_history`，答案缓存正常生效。
 
@@ -773,6 +781,7 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - 不存在 `QuerySettings` DOM、后台 Tab、文档/图谱/API 文档入口或隐藏移动端参数抽屉。
 - 输入 `/mix what is RAG` 时整段作为普通问题提交，不覆盖 mode。
 - 请求携带当前浏览器中 `/webui` 保存的合法 `top_k`、`mode`、`user_prompt` 等参数；工作区不能编辑或临时覆盖它们。
+- **`only_need_*` 钳制**：在 `/webui` 中把 `only_need_context` 或 `only_need_prompt` 置为 `true` 后，`/workspace` 的请求体中两项均为 `false` 且用户仍得到正常答案；同一份 `querySettings` 下 `/webui` 自身的请求体保持 `true`，调试能力不受影响。
 - **serializer 等价性**：对同一份 `querySettings`、同一段**显式传入**的历史和同一个问题，共享 serializer 产生逐字段相等的请求体。用例覆盖全部 mode，含 `mode='bypass'`（带最近 3 轮 `conversation_history`）与非 bypass（空 `conversation_history`）。
 - **状态隔离**：两个入口的历史相互不可见；在 `bypass` 模式下各自只带本入口最近 3 轮；在一侧清空会话或点停止，不影响另一侧的历史与正在进行的流式响应。
 - **参数共享**：`/webui` 保存新参数后，已打开的 `/workspace` 无需刷新即可在下一次查询中使用；`/workspace` 的任何写入都不改变 `query-settings-storage`。
@@ -818,6 +827,7 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - 本地看似有效但服务端拒绝（签名无效或已吊销）时仍由 401 纠正，本地校验不得吞掉该路径。
 - `RetrievalView` 与 `WorkspaceQueryView` 的 DOM 差异，以及共享会话控制层的请求 payload 测试。
 - **serializer 等价性测试**：参数化跑遍全部 mode，断言共享 serializer 对同一份 `querySettings`、同一段显式传入的历史和同一个问题产生逐字段相等的请求体，并断言 `history_turns` 已被剥离。历史 fixture 是必需的——`bypass` 用例的请求体正是从它切片而来。
+- **`only_need_*` 钳制测试**：以 `only_need_context=true` / `only_need_prompt=true` 的 `querySettings` 分别构造两个页面的入参，断言 `WorkspaceQueryView` 交给共享层的快照中两项为 `false`、`RetrievalView` 的保持原值；并断言**共享 serializer 源码中不存在这两个字段的任何分支**（钳制必须在组合层，否则等价性契约被绕过而测试仍会通过）。
 - **状态隔离测试**：两个控制层实例注入不同历史存储后，各自的 `bypass` 请求体只含本存储的最近 3 轮；一侧 `clear()` 或 `abort()` 不改变另一侧的消息数组与流式状态。
 - **存储拆分测试**：`/workspace` 的历史写入不修改 `query-settings-storage`；`storage` 事件触发后重新 hydrate，下一次查询使用新参数、进行中的流式响应不换快照；`storage` 事件中其它命名空间的键被忽略。
 - **迁移测试**：workspace 先打开、`/webui` 先打开、新键已存在（不得被旧值覆盖）、只成功写入部分新键后重试、重复执行结果一致、写入抛错后旧字段仍保留；两个不同 `apiPrefix` 命名空间之间互不可见；切换登录用户时两份历史都被清空。
@@ -898,6 +908,7 @@ cd ..
 | 给 `RetrievalView` 堆叠 variant 分支 | 千行组件同时承担后台与移动工作区两套布局 | 两个页面壳组合同一组共享能力 |
 | 只隐藏参数侧栏 | `/mode` 前缀仍可临时覆盖参数，或两个页面组装出不同请求 | 使用同一 serializer 读取持久化参数，工作区禁用前缀解析，并以 serializer 等价性测试兜底 |
 | 共享历史 | 管理员的调试提问进入查询用户的展示与 `bypass` LLM 上下文 | 两份历史独立存储，共享层只接受注入的存储 |
+| 全量继承 `only_need_context` / `only_need_prompt` | 管理员调试后忘记关闭，查询用户每次提问都拿到检索上下文原文或提示词而不是答案，且无从察觉或修改 | 页面组合层在构造快照时强制置 `false`；serializer 不含该字段分支，等价性契约不受影响 |
 | 固定 localStorage 键名 | localStorage 只按 origin 隔离，同 host 多站点部署下查询参数、历史与 **`apiKey`** 互相串用——后者是把一个站点的凭据发给另一个站点 | 站点相关状态（含 `apiKey`、`userPromptHistory`、`queryLabel`、`backendMaxGraphNodes`）一律按 `apiPrefix` 分区，`storage` 事件只响应本命名空间 |
 | 迁移语义不完整 | 谁迁移、写入顺序、部分失败与重复执行未定义，升级后可能丢历史或用旧值覆盖新值 | 新键优先、先写新后清旧、部分失败保留旧字段重试 |
 | 并发首次打开两个站点 | 若按“谁先打开谁继承”动态归属，双方各自复制一份旧历史与凭据，隔离不变式被破坏，且幂等测试发现不了 | 目标命名空间**静态固定为空命名空间**：任意交错都是把相同字节写向相同键，竞态因构造而良性，无需任何互斥原语 |
