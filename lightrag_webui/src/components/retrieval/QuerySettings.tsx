@@ -43,6 +43,8 @@ export default function QuerySettings() {
   const { t } = useTranslation()
   const querySettings = useSettingsStore((state) => state.querySettings)
   const userPromptHistory = useSettingsStore((state) => state.userPromptHistory)
+  const workspaceId = useSettingsStore((state) => state.workspaceId)
+  const setWorkspaceId = useSettingsStore((state) => state.setWorkspaceId)
 
   const handleChange = useCallback((key: keyof QueryRequest, value: any) => {
     useSettingsStore.getState().updateQuerySettings({ [key]: value })
@@ -112,6 +114,44 @@ export default function QuerySettings() {
                   className="h-9"
                 />
               </div>
+            </>
+
+            {/* Workspace */}
+            <>
+              <label htmlFor="workspace_id" className="ml-1">
+                Workspace
+              </label>
+              <Input
+                id="workspace_id"
+                type="text"
+                value={workspaceId}
+                onChange={(e) => setWorkspaceId(e.target.value)}
+                placeholder="default"
+                className="h-9"
+              />
+            </>
+
+            {/* Allowed Doc IDs */}
+            <>
+              <label htmlFor="allowed_doc_ids" className="ml-1">
+                Allowed Doc IDs (CSV)
+              </label>
+              <Input
+                id="allowed_doc_ids"
+                type="text"
+                value={(querySettings.allowed_doc_ids || []).join(', ')}
+                onChange={(e) =>
+                  handleChange(
+                    'allowed_doc_ids',
+                    e.target.value
+                      .split(',')
+                      .map((value) => value.trim())
+                      .filter(Boolean)
+                  )
+                }
+                placeholder="doc-1, doc-2"
+                className="h-9"
+              />
             </>
 
             {/* Query Mode */}

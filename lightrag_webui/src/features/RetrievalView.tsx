@@ -271,7 +271,8 @@ export default function RetrievalView() {
         thinkingTime: null,        // Explicitly initialize to null
         thinkingContent: undefined, // Explicitly initialize to undefined
         displayContent: undefined,  // Explicitly initialize to undefined
-        isThinking: false          // Explicitly initialize to false
+        isThinking: false,         // Explicitly initialize to false
+        tokenUsage: null
       }
 
       const prevMessages = [...messages]
@@ -421,7 +422,8 @@ export default function RetrievalView() {
               latexRendered: assistantMessage.latexRendered,
               thinkingTime: assistantMessage.thinkingTime,
               responseTime: assistantMessage.responseTime,
-              firstTokenTime: assistantMessage.firstTokenTime
+              firstTokenTime: assistantMessage.firstTokenTime,
+              tokenUsage: assistantMessage.tokenUsage
             })
           }
           return newMessages
@@ -434,6 +436,18 @@ export default function RetrievalView() {
             scrollToBottom()
           }, 30)
         }
+      }
+
+      const updateAssistantTokenUsage = (tokenUsage: NonNullable<MessageWithError['tokenUsage']>) => {
+        assistantMessage.tokenUsage = tokenUsage
+        setMessages((prev) => {
+          const newMessages = [...prev]
+          const lastMessage = newMessages[newMessages.length - 1]
+          if (lastMessage && lastMessage.id === assistantMessage.id) {
+            lastMessage.tokenUsage = tokenUsage
+          }
+          return newMessages
+        })
       }
 
       // state was already read above (before timer setup)
@@ -486,6 +500,9 @@ export default function RetrievalView() {
             },
             (event) => {
               setQueryProgress(event)
+            },
+            (tokenUsage) => {
+              updateAssistantTokenUsage(tokenUsage)
             }
           )
           if (errorMessage) {
@@ -498,6 +515,9 @@ export default function RetrievalView() {
           const response = await queryText(queryParams, controller.signal)
           if (typeof response.response_time === 'number') {
             serverResponseTimeRef.current = response.response_time
+          }
+          if (response.token_usage) {
+            updateAssistantTokenUsage(response.token_usage)
           }
           updateAssistantMessage(response.response)
         }
