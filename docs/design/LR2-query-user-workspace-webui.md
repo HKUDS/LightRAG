@@ -1,6 +1,6 @@
 # PRD：面向查询用户的独立 WebUI 入口
 
-- 状态：评审通过（2026-08-24；2026-08-25 改为双 HTML 入口方案；2026-08-26 评审通过；2026-08-26 修订：钳制 `only_need_*`、取消服务端内置 UI Bundle、把 `<ns>` 分区与 token 本地校验拆出到 [LR2-client-state-partitioning.md](./LR2-client-state-partitioning.md)、取消配置端点的 locale revision 与 ETag）
+- 状态：评审通过（2026-08-24；2026-08-25 改为双 HTML 入口方案；2026-08-26 评审通过；2026-08-26 修订：钳制 `only_need_*`、取消服务端内置 UI Bundle、把 `<ns>` 分区与 token 本地校验拆出到 [LR2-client-state-partitioning.md](./LR2-client-state-partitioning.md)、取消配置端点的 locale revision 与 ETag；2026-08-26 二轮评审修订：可信 Bundle 信任模型、legacy 历史迁移映射、依赖闭包双证据、多键迁移原子性表述、`bundle_revision` 只进日志）
 - 适用范围：LightRAG Server（`lightrag/api/`）+ WebUI（`lightrag_webui/`）
 - 产品入口：日常查询端点 `/workspace`；后台管理端点 `/webui`
 - 关键约束：查询入口只提供知识库问答，不暴露查询参数、文档管理、知识图谱管理或 API 文档入口；即使 WebUI 资源缺失也不得跳转或引导到 API 文档；复用 `ChatMessage.tsx` 及从现有查询页抽出的共享会话能力，不复用后台页面壳；完整支持移动端；欢迎内容和 Logo 通过只读、多语言 UI Bundle 定制
@@ -131,7 +131,16 @@ Server 把**同一个静态目录**挂载两次，每个 mount 只把属于自�
 - **不需要 `React.lazy`：代码分割在构建层完成。** 当前 `App.tsx` 静态 import `GraphViewer`、`DocumentManager` 与 `RetrievalView`，构建出的入口 chunk 约 3.2 MB（未压缩，另含 cytoscape、mermaid 等依赖），一个只想提问的移动端用户要下载整个后台应用才能看到输入框，与 §9 的移动端定位直接冲突。双入口在页面壳这一层天然消除了它，但**仅换掉入口不足以达成目标**：现有代码里存在两条会把重依赖拖进公共 chunk 的静态链，必须一并拆开。
 - **导航核心不得静态依赖图谱 store。** 当前链路是 `api/lightrag.ts` → `services/navigation.ts` → `stores/graph.ts` → `graphology`，也就是说**任何发起查询的代码都会静态拉入图谱库**。修法与 §5.3 的 bootstrap 配置同源：导航核心只持有一个可选的“重置适配器”接口，后台入口在 bootstrap 时注册图谱清理逻辑，工作区入口不注册。导航核心自身不得 import `stores/graph`。
 - **Mermaid 必须动态加载。** `ChatMessage.tsx` 目前静态 import `mermaid`，而两个入口共用 `ChatMessage`，因此“工作区不含 mermaid”与“工作区保留 Mermaid 渲染”只能靠动态 import 同时成立：在消息中发现完整的 mermaid 代码块时才 `import()`。这不是可选优化，而是本条约束能否成立的前提。
-- 因此首屏约束的准确表述是**首屏静态依赖闭包**而非“chunk 闭包”：工作区入口经构建 manifest 递归展开的静态 `imports` 不得包含图谱与文档管理模块及其依赖；mermaid 允许且只允许出现在 `dynamicImports` 中。构建需开启 Vite `build.manifest` 以便断言，验收见 §12.2。
+- 因此首屏约束的准确表述是**首屏静态依赖闭包**而非“chunk 闭包”，而它需要**两种互补的证据**，因为任何一种单独都不充分：
+
+  | 证据 | 来源 | 能证明什么 | 不能证明什么 |
+  | --- | --- | --- | --- |
+  | Vite `build.manifest` | `ManifestChunk.imports` / `dynamicImports` | 入口存在、chunk 间的静态/动态可达关系、mermaid 只经动态边到达、首屏传输字节 | **chunk 内部包含哪些源模块** |
+  | 构建审计插件 | Rollup/Rolldown `OutputChunk.modules` 的键（模块 id） | 首屏可达 chunk 的**源模块清单**中不含图谱、文档管理及其依赖 | chunk 之间的加载时机 |
+
+  **只用 manifest 断言是不够的**：`ManifestChunk` 只有 `src`/`file`/`css`/`assets`/`isEntry`/`name`/`isDynamicEntry`/`imports`/`dynamicImports` 九个字段，没有任何字段列出 chunk 内部的源模块（`vite/dist/node/index.d.ts` 的 `ManifestChunk` 定义）。一旦 graphology 或 cytoscape 被合并进某个工作区入口也会静态加载的公共 chunk，“`imports` 里没有图谱 chunk”依然成立，而字节已经在首屏里了——这正是本条要防的退化，用 manifest 单独去防它是自证。`OutputChunk.modules` 是 `Record<string, RenderedModule>`，键即模块 id，可在 `generateBundle` 钩子里导出为清单。
+
+- **首屏传输字节必须有阈值，不能只“记录”。** 取实现完成时的实测值为基线，写入仓库并设定相对容差（建议 +10%）；超出即 CI 失败。只记录不设限的指标不会阻止任何退化，只会在事后被用来解释退化。
 - **开发环境无需任何模式开关。** `bun run dev` 下 `/` 提供后台入口，`/workspace.html` 提供查询入口（Vite 的 HTML fallback 对磁盘上存在的 `.html` 直接放行）。若希望 dev 的 URL 形态与生产一致，可加一段把 `/workspace/` 改写到 `/workspace.html` 的 dev 中间件；这是便利项而非必需项。不引入 `VITE_DEV_UI_MODE` 一类的构建期变量。
 - 不复制 `webui` 构建目录，不增加第二套 Vite 构建流程或第二个输出目录。
 - **两个入口的可用性各自独立判断。** `check_frontend_build()` 目前只检查 `webui/index.html` 并返回单个 `assets_exist`，同时驱动 mount 条件、根路径跳转和 `/health`。双产物后必须分别检查 `index.html` 与 `workspace.html`：正常构建两者同时存在（`emptyOutDir: true`），但“新服务端 + 旧构建目录”（镜像里烘焙的旧 WebUI、版本错配的安装包）会出现只有 `index.html` 的情况。此时**不得把整个 WebUI 判为未构建**——那会让后台一并失效，是过激的回归；正确行为是后台照常挂载，查询入口进入下述降级分支。
@@ -350,6 +359,16 @@ WorkspaceQueryView ────────── WorkspaceEmptyState
 
 “写入方”一列描述的是**运行期**权限。一次性迁移是唯一例外，它可以由任一入口执行并写入其涉及的全部新键。
 
+**迁移的字段映射是唯一且穷尽的**，不得由实现者推断：
+
+```text
+legacy settings-storage.querySettings      → lightrag::query-settings-storage
+legacy settings-storage.retrievalHistory   → lightrag::webui-retrieval-history
+（无来源）                                  → lightrag::workspace-retrieval-history = []
+```
+
+第二条必须写死。今天只有一份 `retrievalHistory`（`stores/settings.ts`），它记录的是**后台查询页**的提问——把它同时复制到两份，工作区就会展示管理员的调参调试记录，`bypass` 模式下还会把它当作 `conversation_history` 发给 LLM，正是 §7.2 要消除的缺陷；两份都置空则违背“不丢失现有历史”的兼容承诺。三种实现都能通过一个只检查“目标键都存在”的测试，所以映射必须是规格而不是约定。
+
 **只拆本功能必需的键。** 上表只搬走了 `querySettings` 与两份历史——它们是「参数共享、历史隔离」这一契约无法绕开的部分。`apiKey`、`userPromptHistory`、`queryLabel`、`backendMaxGraphNodes` 以及 `lightrag_search_history`、`LIGHTRAG-PREVIOUS-USER` 等独立键留在原处，由[客户端状态分区与共享认证层](./LR2-client-state-partitioning.md)统一搬迁。理由是这些键的搬迁只有连同 `<ns>` 分区才有意义：单独搬一次、分区时再动一次，等于让同一批数据承受两次迁移风险。
 
 **键名形状预留 `<ns>` 位，本期恒为空串。** 键写作 `lightrag:<ns>:<name>`，`<ns>` 在本期固定为空（故形如 `lightrag::query-settings-storage`，双冒号是有意保留的，使键形状统一、解析无歧义）。分区文档随后只把 `<ns>` 从「恒为空」改为「由 `apiPrefix` 计算」，**根部署与直连端口部署因此一个字节都不用动**，只有带前缀的部署会经历一次命名空间变化。把不可避免的那次迁移（拆 key）与可选的那次（分区）错开，两者的失败面就不会叠加。
@@ -368,9 +387,10 @@ WorkspaceQueryView ────────── WorkspaceEmptyState
   4. **只为不存在的新键写入迁移值**；新键一旦存在，其值永远优先，重复迁移绝不用旧数据覆盖它。
   5. 先成功写入全部新键，**再**清理旧 envelope 中已迁出的字段并升级其版本号。顺序不可颠倒：清理先于复制会在中途崩溃时直接丢数据。
   6. 部分失败时保留未清理的旧字段，下次启动按同样规则重试；已写入的新键因第 4 条不会被二次覆盖，所以重跑安全且收敛到同一结果。
-  7. `/workspace` **允许**执行这一次性迁移写入，且覆盖迁移涉及的**全部**目标键（包括 `lightrag::webui-retrieval-history`——workspace 先被打开时必然由它写入）。运行期对 `query-settings-storage` 仍严格只读。
+  7. **物理上允许存在“只写了一部分新键”的中间状态；要保证的是应用永远观察不到它。** `localStorage.setItem()` 对多个键没有事务，页面在两次写入之间崩溃必然留下部分新键，任何声称崩溃点原子的验收都无法实现。因此边界划在应用侧：**迁移未成功完成时，依赖这些键的 store 一律不得被 hydrate**，入口显示可重试的错误而不是带着默认值继续运行。这条不是保守，而是第 4 条的必然推论——若允许应用在半迁移状态下跑起来，store 会把缺失键初始化成默认值并在用户第一次改动时落盘，下次启动该键便“已存在”，legacy 值被永久遮蔽。下次启动只补齐**缺失的**键，已存在的新键保持优先。
+  8. `/workspace` **允许**执行这一次性迁移写入，且覆盖迁移涉及的**全部**目标键（包括 `lightrag::webui-retrieval-history`——workspace 先被打开时必然由它写入）。运行期对 `query-settings-storage` 仍严格只读。
 
-- **由此不需要任何锁。** 目标键固定（本期只有一个命名空间）；源数据在升级后不再被任何代码写入；目标值是源的确定性函数；只写不存在的键；复制全部完成后才开始清理。任意交错的并发执行都是把相同的字节写向相同的键，竞态因构造而良性；重复执行天然自门控——字段已迁出，后续运行自动成为空操作。这同时吸收了“升级前打开的旧标签页把整份 `settings-storage` 重新写回”的情形：下次启动再清理一次即可。
+- **由此不需要任何锁，也不需要 IndexedDB 事务。** 目标键固定（本期只有一个命名空间）；源数据在升级后不再被任何代码写入；目标值是源的确定性函数；只写不存在的键；复制全部完成后才开始清理。任意交错的并发执行都是把相同的字节写向相同的键，竞态因构造而良性；重复执行天然自门控——字段已迁出，后续运行自动成为空操作。上一条的「应用不得在半迁移状态下 hydrate」同样不需要互斥原语：它是单页面内的顺序约束，不是跨页面的协调。这同时吸收了“升级前打开的旧标签页把整份 `settings-storage` 重新写回”的情形：下次启动再清理一次即可。
 
 - **启动顺序：迁移模块必须是入口文件的第一个静态 import。** 迁移是纯同步的 localStorage 操作，不需要 `await`，也不需要动态 `import()`；但当前 `main.tsx` 静态 import `AppRouter`，后者又静态 import auth store 与 `App`，模块求值阶段 `initAuthState()` 就已读过 localStorage 并建好 store。ESM 按源码顺序深度优先求值同级 import，因此只要把这个带副作用的迁移模块放在入口文件 import 列表的**第一位**，它就会在任何 store 模块求值之前完整跑完。约束是两条：**位置在最前**，且它**递归地不 import 任何 store**（由第 2 条的纯模块保证）。
 
@@ -410,7 +430,24 @@ services:
 
 只保留一个 `UI_TEMPLATES_DIR` 配置，不再分别提供欢迎页、空白态和 Logo 的三个文件变量。这样可以一次校验并原子切换一整套品牌内容，也能让多语言文件和其资源保持一致。
 
-“模板”在本期指受限 Markdown 内容，不是可执行的 Jinja/JS/HTML 模板。系统拥有页面框架、登录/进入按钮、查询输入框、语言选择和导航行为；Bundle 只能提供品牌资源及内容区域，不能覆盖这些产品控制项。
+“模板”在本期指受限 Markdown 内容，不是可执行的 Jinja/JS/HTML 模板。系统拥有页面框架、登录/进入按钮、查询输入框、语言选择和导航行为；Bundle 只能提供品牌资源及内容区域，不能覆盖这些产品控制项。**这是产品格式边界，不是对 Bundle 的不信任**——见下。
+
+### 8.1.1 信任模型
+
+**Bundle 内容是可信的部署内容。** `UI_TEMPLATES_DIR` 只能由系统管理员设置，目录由管理员挂载，其内容与 `.env`、证书、compose 文件属于同一信任层级：能写入 Bundle 的主体本来就能改配置、换镜像、直接替换前端产物。因此本节各项校验的定位是：
+
+| 校验 | 定位 |
+| --- | --- |
+| manifest 严格 Schema、字段完整性 | **结构正确性**——让配置错误在启动期可诊断，而不是在用户面前表现为缺文案、缺 Logo |
+| 路径 containment、拒绝绝对路径 / `..` / 符号链接逃逸 | **避免误读任意服务器文件**——一条写错的相对路径不应把 `/etc/` 下的东西当作品牌资源公开出去 |
+| 文件存在性、单文件大小上限、MIME 与实际内容一致 | **部署可诊断性**——尽早报错，而不是在浏览器里表现为破图或超长响应 |
+| Markdown 不含 HTML/JS/CSS | **产品格式边界**——系统拥有页面壳与控制项；不是因为不信任作者 |
+
+由此明确**不做**的事：
+
+- 不对 Markdown 中的链接、图片等内容施加额外安全过滤（`javascript:` 一类仍被 react-markdown 的默认 `urlTransform` 挡住，这是库的默认行为而非本方案新增的过滤层；主动覆写它去放行反而需要额外代码）。
+- 不要求 Bundle 总字节、locale 数量或快照总内存有界；保留单文件上限即可。
+- 不把 Bundle 当作攻击面来设计威胁模型。**唯一仍然成立的告诫是运维性的**：Bundle 是公开展示内容，不要在其中放入密钥或内部路径——那是信息暴露，与作者是否可信无关。
 
 ### 8.2 Bundle 目录与 manifest
 
@@ -588,7 +625,7 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 | --- | --- | --- |
 | `asset_id` | 稳定的语义标识，例如 `brand-logo` | 资源角色变化时才变，不作为缓存失效值 |
 | `asset_hash` | 资源原始字节的 SHA-256 | Logo 等资源内容变化时改变，并进入 URL |
-| `bundle_revision` | 整个已激活 Bundle 的确定性摘要 | 任一 manifest、文案或被引用资源变化时改变；用于健康状态和日志。无 Bundle 时不存在 |
+| `bundle_revision` | 整个已激活 Bundle 的确定性摘要 | 任一 manifest、文案或被引用资源变化时改变；**只用于启动日志**。无 Bundle 时不存在 |
 
 缓存规则：
 
@@ -601,22 +638,22 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - 因此 `lightrag_webui/public/logo.svg` 若要作为默认 Logo 使用，**必须先移到 `src/assets/` 并以模块方式 import**。留在 `public/` 下的文件名不带内容哈希，浏览器或 CDN 会在版本更新后继续使用旧图——这正是本节要避免的失效模式。
 - Bundle 提供的可定制资源一律经上述资源 API 访问，不得由前端拼接任何 Bundle 路径。
 
-`bundle_revision` 可写入启动日志与认证后的健康信息，但不得暴露服务器目录。取消内置 Bundle 后不再存在 `builtin`/`custom` 两种来源：要么有一个外部 Bundle，要么没有 Bundle，日志相应地只需表达这一件事。若配置中含 locale 列表，可公开返回语言标识，但不返回文件结构。
+`bundle_revision` **只写入启动日志，既不进入匿名层也不进入认证层的 `/health`**，且不得暴露服务器目录。理由是没有它的用武之地：Bundle 非法时 Server 根本起不来，合法快照又不会在运行期变化，健康接口重复暴露一个恒定值只会制造第二个可能漂移的真相源，还要为它回答“属于哪一层”这个问题。取消内置 Bundle 后不再存在 `builtin`/`custom` 两种来源：要么有一个外部 Bundle，要么没有 Bundle，日志相应地只需表达这一件事。若配置中含 locale 列表，可公开返回语言标识，但不返回文件结构。
 
 两个摘要的计算必须跨进程、平台和重启保持确定性，但都不需要任何规范化序列化：`asset_hash` 是文件原始字节的 SHA-256；`bundle_revision` 把被引用文件按规范化后的相对路径排序，再将路径与**原始字节**（manifest 本身也只作为一个文件参与）纳入 SHA-256。多个 worker 对相同输入必须得到相同结果。
 
 ### 8.7 内容与资源安全
 
 - manifest 使用严格 Schema，拒绝未知字段、错误类型、重复或非法 locale，以及非法的 fallback source/target、空数组、数组内重复项和不存在的 target。按 §8.2 的单层解析不做环检测。
-- 所有相对路径必须解析后仍位于 Bundle 根目录内；拒绝绝对路径、`..` 穿越以及通过符号链接逃逸根目录。
+- 所有相对路径必须解析后仍位于 Bundle 根目录内；拒绝绝对路径、`..` 穿越以及通过符号链接逃逸根目录。定位是避免一条写错的路径把服务器上的任意文件当作品牌资源公开出去（§8.1.1），不是防御恶意管理员。
 - 只读取并公开 manifest 明确引用的文件。
-- Markdown 禁用原始 HTML、脚本、iframe、表单和事件属性；链接只允许明确的安全 scheme，并为新窗口链接添加 `noopener noreferrer`。
+- Markdown 不支持原始 HTML、脚本、iframe、表单和事件属性——这是 §8.1.1 的产品格式边界，不是内容过滤；新窗口链接按常规做法带上 `noopener noreferrer`（tab-nabbing 卫生，零成本）。链接与图片的 URL 不做额外过滤。
 - Logo 支持 PNG、JPEG、WebP 和 SVG，按实际内容校验 MIME，不只信任扩展名。
 - 自定义 SVG 仅作为 `<img>` 资源加载，不以内联 DOM 注入；资源响应设置正确的 `Content-Type`、`X-Content-Type-Options: nosniff` 和限制性 CSP。
-- **定制内容使用独立的、比聊天更严格的 Markdown 档位，不得复用聊天的 sanitize schema。** 现有 `chatMarkdownSanitizeSchema`（`lightrag_webui/src/utils/markdownSanitizeSchema.ts`，为修复 GHSA-xpjq-3w4w-w5wr 引入）**刻意保留了 `rehypeRaw`**——脚注插件与内联格式化标签依赖原始 HTML，安全性由 allow-list 兜底。定制内容没有这些需求，且出现在未登录可见的欢迎页上，因此必须是不挂 `rehypeRaw`、直接 `skipHtml` 的独立档位。两档需在代码中显式命名（如 `chat` / `customization`），避免实现时因“统一”二字把 `rehypeRaw` 带进欢迎页。
+- **定制内容使用独立的 Markdown 档位，不复用聊天的 sanitize schema。** 现有 `chatMarkdownSanitizeSchema`（`lightrag_webui/src/utils/markdownSanitizeSchema.ts`，为修复 GHSA-xpjq-3w4w-w5wr 引入）**刻意保留了 `rehypeRaw`**——脚注插件与内联格式化标签依赖原始 HTML，安全性由 allow-list 兜底。定制内容没有这些需求，因此使用不挂 `rehypeRaw`、直接 `skipHtml` 的独立档位。理由是**格式边界与实现简单**（不引入一条只为品牌文案服务的 HTML 通路），不是把 Bundle 当作不可信输入。两档需在代码中显式命名（如 `chat` / `customization`），避免实现时因“统一”二字把两者的行为混在一起。
 - 单个视图发生意外渲染错误时显示最小内置纯文本提示，不能让登录或查询页面白屏。
-- Bundle 是公开展示内容，运维文档必须提示不得在其中放入密钥、内部路径或其它敏感信息。
-- 公开 customization API 必须纳入路由和响应字段审计，不能演变为任意文件读取接口。
+- Bundle 是公开展示内容，运维文档必须提示不得在其中放入密钥、内部路径或其它敏感信息（信息暴露，与作者可信与否无关）。
+- 公开 customization API 必须纳入路由和响应字段审计，不能演变为任意文件读取接口——这一条与 Bundle 是否可信无关：端点本身面向未认证的公网，只能提供 manifest 明确引用的那几个文件。
 
 ### 8.8 前端加载与切换行为
 
@@ -711,10 +748,10 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 | 构建配置 | `rollupOptions.input` 产出 `index.html` 与 `workspace.html` 两个入口，均落在输出目录根；两个 HTML 源文件都含运行时配置占位符 |
 | Runtime config | 两个 mount 注入逐字节相同的 `{ apiPrefix, webuiPrefix }`；模块级常量无需改造；运行时配置不含入口模式字段；dev 不引入模式开关 |
 | 跨入口 HTML | 每个 mount 只提供自己的索引文件（需覆写 Starlette 硬编码的 `index.html`）；另一入口的 HTML 返回 404，同入口显式文件名仍可用 |
-| 前端入口分流 | 两个入口各自组合自己的 router 与应用壳；工作区入口的**首屏静态依赖闭包**不含图谱/文档管理，mermaid 改为动态 import；品牌链接改为 `href="./"`；共享导航单例（含图谱重置适配器）由入口 bootstrap 显式配置 |
+| 前端入口分流 | 两个入口各自组合自己的 router 与应用壳；工作区入口的**首屏静态依赖闭包**不含图谱/文档管理（由构建审计插件按 `OutputChunk.modules` 断言，manifest 只能证明 chunk 图与动态边），mermaid 改为动态 import，首屏字节设基线阈值；品牌链接改为 `href="./"`；共享导航单例（含图谱重置适配器）由入口 bootstrap 显式配置 |
 | 客户端状态存储 | 按 §7.4 拆出三个 `lightrag::…` 键：`querySettings` 独立 persist key（仅后台运行期可写），两份查询历史各自独立；键名预留 `<ns>` 位、本期恒为空串；迁移复用既有版本链（抽为无副作用纯模块）、单一目标因而无需任何锁、新键优先、先写全部再清理、部分失败可重试；迁移模块是入口文件的第一个静态 import；工作区监听 `storage` 事件重新 hydrate 参数。其余站点相关键的搬迁与 `<ns>` 分区见[独立文档](./LR2-client-state-partitioning.md) |
 | 根路径/降级 | `LIGHTRAG_DEFAULT_UI` 默认 `webui`，env + CLI 双通道，非法值启动期 fail-fast（含 env 取值）；选择 `workspace` 时保留 `root_path`；无资源时 `/webui` 可沿用 API 文档降级，`/workspace` 只返回无 API 文档链接或引导的固定服务信息 JSON；根路径遵循所选入口自己的降级分支，不改投另一入口 |
-| 健康状态 | 保留 `webui_available` 语义，并新增 `workspace_available`；两者由**各自产物**的检查结果派生，且**都留在 `/health` 的公开 liveness 层**——`webui_available` 今天就是匿名可见的 liveness 信号，把它挪进认证层会破坏既有契约，而两个入口是否挂载本就可由请求该路径直接探得。文件系统路径、Bundle 目录与 `bundle_revision` 只在认证层与启动日志中出现（§8.4）；customization 不新增任何 `/health` 字段，它与两个入口的可用性正交 |
+| 健康状态 | 保留 `webui_available` 语义，并新增 `workspace_available`；两者由**各自产物**的检查结果派生，且**都留在 `/health` 的公开 liveness 层**——`webui_available` 今天就是匿名可见的 liveness 信号，把它挪进认证层会破坏既有契约，而两个入口是否挂载本就可由请求该路径直接探得。文件系统路径与 Bundle 目录不出现在任何一层；`bundle_revision` **只在启动日志中出现**（§8.6）。customization 不向 `/health` 的任何一层新增字段，它与两个入口的可用性正交 |
 | UI 定制加载 | 仅当设置 `UI_TEMPLATES_DIR` 时从该目录构造一个只读快照；未设置即无定制，由前端渲染自身默认内容；绝不修改 WebUI 构建目录 |
 | 定制读取 API | 公开端点只返回当前 locale 内容和 manifest 引用资源，并正确处理前缀、内容哈希与安全响应头；配置端点 `no-store` 且不带 `ETag`，资源端点长期 immutable；无 Bundle 时统一返回 200 `customized: false`，不使用 404/503 表达该状态（§8.5） |
 | 启动日志 | 同时打印后台和查询入口的实际带前缀 URL；配置了 Bundle 时打印 `bundle_revision` 与校验结果，未配置时打印一行「无定制」；不打印服务端目录 |
@@ -742,7 +779,7 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 | 跨入口 HTML | 请求 `/workspace/index.html` 与 `/webui/workspace.html` | 均返回 404，不返回另一入口的应用壳 |
 | 同入口显式文件名 | 请求 `/webui/index.html` 与 `/workspace/workspace.html` | 正常返回本入口应用壳，资源解析与运行时配置注入均正确 |
 | 无硬跳转 | 静态检查前端源码 | 不存在 `location.href=` / `location.replace` / `location.assign` 等改写路径的导航 |
-| 品牌链接 | 检查 `/workspace/` 页面内全部链接 | 不存在指向 `/webui` 的链接 |
+| 品牌链接 | 检查 `/workspace/` 页面壳、导航与控制项中的全部链接（**不含定制 Markdown 正文渲染出的链接**） | 不存在指向 `/webui` 的链接。可信管理员在欢迎文案里自行写的链接不受此约束，也不得使该用例失败 |
 | API 前缀 | 在 `/site01` 下完成以上流程 | 所有资源和跳转保留 `/site01` |
 | 查询入口资源缺失、API 文档开启 | 打开 `/workspace` 或 `/workspace/` | 返回固定的查询入口不可用服务信息 JSON；不重定向、不链接或引导到 API 文档 |
 | 查询入口资源缺失、根路径选择查询入口 | 设置 `LIGHTRAG_DEFAULT_UI=workspace` 后打开 `/` | 进入 `/workspace` 降级分支；即使 API 文档开启也不进入 API 文档 |
@@ -760,7 +797,9 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - **状态隔离**：两个入口的历史相互不可见；在 `bypass` 模式下各自只带本入口最近 3 轮；在一侧清空会话或点停止，不影响另一侧的历史与正在进行的流式响应。
 - **参数共享**：`/webui` 保存新参数后，已打开的 `/workspace` 无需刷新即可在下一次查询中使用；`/workspace` 的任何写入都不改变 `query-settings-storage`。
 - 两个页面的请求体均不含 `history_turns`。
-- 按构建 manifest 递归展开 `workspace.html` 入口的**静态** `imports`，断言其中不含 `GraphViewer`、`DocumentManager`、`RetrievalView`、`stores/graph`、graphology 与 cytoscape；mermaid 只允许出现在 `dynamicImports` 中。同时记录并回归工作区首屏传输字节，以捕获“共享模块间接 import 重依赖”这类退化。
+- **chunk 图证据**：按构建 manifest 递归展开 `workspace.html` 入口的**静态** `imports`，断言 mermaid 只经 `dynamicImports` 到达。
+- **源模块证据**：由构建审计插件从首屏可达 chunk 的 `OutputChunk.modules` 生成模块清单，断言其中不含 `GraphViewer`、`DocumentManager`、`RetrievalView`、`stores/graph`、graphology 与 cytoscape。这条不可由 manifest 代替（§5.2）。
+- **字节阈值**：工作区首屏传输字节不超过仓库中记录的基线 + 10%，超出即失败。
 - 工作区渲染含 mermaid 代码块的答案时能正常出图（动态加载不得降级功能）。
 - 流式答案、停止、复制、清空、引用、思考区、公式、Mermaid、滚动跟随与现有后台查询页功能一致。
 - 后台查询页仍显示查询参数，并保持现有 `/mode` 前缀行为。
@@ -774,11 +813,11 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - 精确语言不存在时按 manifest 显式 fallback、再按外部 Bundle 自己的 `default_locale` 回退；**不会回落到前端默认内容**，也不与之逐字段拼接。
 - Bundle 激活时首屏不出现「前端默认内容闪过再被客户内容替换」；请求未完成期间显示 loading 占位。
 - 用户切换语言后，欢迎页和空白态使用相同解析结果原子更新，RTL 方向正确，切换过程中不出现跨语言字段混合。
-- 模板中的 `<script>`、事件属性、iframe 和危险 URL 不执行。
+- 模板中的 `<script>`、事件属性和 iframe 按格式边界被丢弃；普通链接与图片正常渲染，不被当作可疑内容剥离。
 - customization 配置端点返回 `Cache-Control: no-store` 且响应中不含 `ETag`；重启后内容变化立即对客户端可见，无需任何条件请求。
 - Logo 字节变化后 `asset_hash` 和资源 URL 改变；仅文案变化时 `asset_id` 和未修改 Logo URL 保持稳定。
 - 默认 Logo 与默认文案随前端产物的内容哈希失效，不经 customization API；`public/` 下不存在被直接引用的可定制资源。
-- 浏览器响应、健康信息和日志不暴露模板/Logo 的服务端绝对路径或文件内容之外的配置。
+- 浏览器响应、健康信息和日志不暴露模板/Logo 的服务端绝对路径或文件内容之外的配置；`bundle_revision` 只出现在启动日志，`/health` 两层均无。
 
 ### 12.4 移动端
 
@@ -804,11 +843,13 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - **状态隔离测试**：两个控制层实例注入不同历史存储后，各自的 `bypass` 请求体只含本存储的最近 3 轮；一侧 `clear()` 或 `abort()` 不改变另一侧的消息数组与流式状态。
 - **存储拆分测试**：`/workspace` 的历史写入不修改 `query-settings-storage`；`storage` 事件触发后重新 hydrate，下一次查询使用新参数、进行中的流式响应不换快照。
 - **迁移测试**：workspace 先打开、`/webui` 先打开、新键已存在（不得被旧值覆盖）、只成功写入部分新键后重试、重复执行结果一致、写入抛错后旧字段仍保留；切换登录用户时两份历史都被清空。
+- **历史映射测试**：给定一份非空 legacy `retrievalHistory`，迁移后 `lightrag::webui-retrieval-history` 逐条相等、`lightrag::workspace-retrieval-history` 为空数组。**回归用例**：升级后首次打开 `/workspace`，消息区为空白态（不展示旧后台历史），且此时以 `bypass` 模式发起查询，请求体的 `conversation_history` 为空——旧调试记录既不显示也不发送。
 - **版本链测试**：从 v1、v6、v20、v21 各自升级后，查询参数与历史都不丢失（证明复用了既有迁移链而不是把旧版本判为无数据）；损坏 envelope 按无旧数据处理；`version > 21` 时旧字段不被读取也不被清理。
 - **重复执行自门控测试**：连续执行迁移三次，断言第二、三次为空操作，不覆盖已被用户改动过的新键值。
 - **旧标签页回写测试**：迁移完成后模拟旧 bundle 重新写回一份完整 `settings-storage` envelope，断言下次启动只清理该 envelope 而不覆盖任何新键。
 - **崩溃重跑测试**：复制到一半崩溃、复制完成后清理旧 envelope 字段前崩溃——两种情形重跑后都收敛到同一结果，新键不被旧值二次覆盖。
-- **版本边界测试**：`version > 21` 时不读、不清理、不覆盖任何旧字段，新键为默认值且不出现“部分迁移”的中间态；`version ≤ 21` 时经**复用**（而非复制）的 v1→v21 链规范化后再拆分，v20 envelope 的参数与历史完整保留。
+- **版本边界测试**：`version > 21` 时不读、不清理、不覆盖任何旧字段，新键为默认值；`version ≤ 21` 时经**复用**（而非复制）的 v1→v21 链规范化后再拆分，v20 envelope 的参数与历史完整保留。
+- **半迁移不可观察测试**：在写入第二个新键前注入失败，断言（1）物理上确实只存在部分新键——不要求崩溃点原子；（2）依赖这些键的 store **未被 hydrate**，入口呈现可重试错误；（3）下次启动补齐缺失键后结果与一次成功执行完全一致；（4）中断那次运行没有把任何默认值写入尚未迁移的键（否则第 4 条会让 legacy 值被永久遮蔽）。
 - **启动顺序测试**：断言迁移模块求值完成之前没有任何待拆分 store 被求值（未读取也未写回 localStorage）；并断言迁移纯模块的传递 import 图中不含任何 store、`App`、API 客户端或导航模块。
 - **纯模块边界测试**：承载 v1→v21 链的模块其 import 图不含任何 store、`App`、API 客户端或导航模块；import 它不产生 localStorage 读写。
 - 工作区不解析 query mode 前缀，但读取后台持久化的合法 `querySettings`；未配置时使用前端默认值。
@@ -816,7 +857,7 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - 空白态首次显示、发送后隐藏、清空后恢复。
 - customization 加载失败、语言切换原子更新、RTL、fallback 测试。
 - `customized: false` 响应下整体渲染前端默认内容；Bundle 响应下不出现「默认内容先渲染再被替换」（请求未完成期间为 loading 占位）；断言两条路径经过同一渲染器与 `customization` sanitize 档位。
-- Markdown 安全渲染需分档断言：`customization` 档对原始 HTML 直接丢弃（而非净化后保留），`chat` 档维持现有 `chatMarkdownSanitizeSchema` 行为不回归。
+- Markdown 分档渲染断言：`customization` 档对原始 HTML 直接丢弃（而非净化后保留）——这是格式边界的行为断言；`chat` 档维持现有 `chatMarkdownSanitizeSchema` 行为不回归。定制文案中的普通链接与图片必须正常渲染，不得被当作可疑内容剥离。
 
 ### 13.2 后端测试
 
@@ -830,7 +871,7 @@ GET /ui/customization/assets/{asset_hash}/{asset_id}
 - 外部 Bundle 加载、严格 manifest Schema（含 `brand.logo` 必填与显式 `null` 的接受）、locale 规范化（含大小写归一与下划线拒绝）、单层显式 fallback 与 `default_locale` 兜底、完整 Bundle 原子校验。
 - 未设置 `UI_TEMPLATES_DIR` 时：配置端点返回 200 且 `customized=false` 并携带 `brand.title` / `brand.description`，资源端点对任意 `asset_hash` 返回 404，启动无告警。
 - **正交性测试**：`workspace.html` 存在与否 × `UI_TEMPLATES_DIR` 未设置/合法/非法，六种组合下 customization 的行为只由后一维决定——非法配置在两种产物状态下都启动失败，合法配置在两种产物状态下都成功加载，未设置时都无告警。
-- `/health` 不含任何 customization 字段。
+- `/health` 的**匿名层与认证层都不含**任何 customization 字段（含 `bundle_revision`）；该值只出现在启动日志中。
 - 路径穿越、绝对路径、符号链接逃逸、未引用文件、文件超限、MIME 不匹配和 SVG 响应头。
 - customization 配置端点的部署前缀与 `no-store` 响应头（断言不含 `ETag`），以及资源端点的 `asset_hash`、长期 immutable 缓存和未知资源拒绝。
 - 分别修改单一语言文案、共享 Logo、`WEBUI_TITLE`，验证 `bundle_revision` 与 `asset_hash` 的变化边界：改文案只动 `bundle_revision`，改 Logo 两者都动，改 `WEBUI_TITLE` 两者都不动。
@@ -896,9 +937,10 @@ cd ..
 | 另一入口的 HTML 可直接取到 | `/workspace/index.html` 吐出后台壳，跨入口验收失真 | 每个 mount 只提供自己的索引文件，其余 HTML 返回 404 |
 | 旧构建目录缺 `workspace.html` | 若按“缺任一即未构建”处理，后台会被一并判为不可用 | 两个产物独立检查；后台照常挂载，只有查询入口降级 |
 | 两套静态构建 | 包体、版本和发布流程漂移 | 一次构建、同目录双挂载 |
-| 共享模块间接 import 重依赖 | 查询 API → 导航服务 → 图谱 store → graphology，以及 `ChatMessage` 静态 import mermaid，使工作区入口重新膨胀 | 导航核心改用重置适配器、mermaid 动态 import；按构建 manifest 断言首屏静态依赖闭包并回归传输字节 |
-| 复用聊天的 Markdown sanitize schema | 为脚注保留的 `rehypeRaw` 被带进未登录可见的欢迎页 | `chat` / `customization` 两档显式分离 |
-| 原始 HTML 模板 | XSS、钓鱼表单或布局劫持 | 受限 Markdown，系统拥有操作控件 |
+| 共享模块间接 import 重依赖 | 查询 API → 导航服务 → 图谱 store → graphology，以及 `ChatMessage` 静态 import mermaid，使工作区入口重新膨胀 | 导航核心改用重置适配器、mermaid 动态 import；chunk 图用 manifest 断言，**源模块闭包用构建审计插件按 `OutputChunk.modules` 断言**，首屏字节设基线 +10% 阈值 |
+| 仅用 Vite manifest 证明依赖闭包 | `ManifestChunk` 不列出 chunk 内部的源模块；重依赖被合入公共 chunk 后断言照样通过，退化无人察觉 | 两种证据并用，源模块清单来自 Rollup/Rolldown `OutputChunk.modules` |
+| 两档 Markdown 行为被“统一” | 一条只为品牌文案服务的原始 HTML 通路被引入，两档行为漂移 | `chat` / `customization` 两档显式命名分离 |
+| 把 Bundle 当作不可信输入设计 | 为可信部署内容堆叠过滤层与容量上限，实现变重、正常的链接与图片被误剥离 | §8.1.1 明确信任模型：校验只服务于结构正确性、避免误读任意服务器文件和部署可诊断性 |
 | 启动时复制客户文件覆盖构建目录 | 只读容器/PyPI 安装不可写，多 worker 竞态，升级后残留旧文件 | 外部目录只读加载为内存快照，构建产物永不修改 |
 | 显式错误配置被静默回退 | 运维误以为客户品牌已生效，实际展示 LightRAG 默认内容 | 未配置 `UI_TEMPLATES_DIR` 即无定制；显式配置校验失败即启动失败，且与前端产物状态无关 |
 | 服务端内置一份默认 Bundle | 与 §8.8 必需的前端默认路径构成同一件事的两套实现，并连带 `ui_defaults/` 打包、原始路径拒绝规则、11 语言服务端维护，以及「内置 Bundle 缺失是否阻止启动」这一整串交叉判断 | 默认内容留在前端 i18n 与 Vite 资源；服务端只认外部 Bundle，customization 与 `/workspace` 可用性正交 |
