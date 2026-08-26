@@ -248,10 +248,15 @@ def _is_set(value: str | None) -> bool:
 
 
 def validate_bedrock_auth_configuration(args: argparse.Namespace) -> None:
-    """Reject Bedrock configuration with no explicit supported auth source."""
+    """Validate explicitly configured Bedrock credentials.
+
+    When no explicit credentials or bearer token is provided, boto3 resolves
+    credentials through its default provider chain, including web identity
+    tokens used by Kubernetes IRSA.
+    """
     bearer_token = os.getenv("AWS_BEARER_TOKEN_BEDROCK")
 
-    def has_valid_auth(prefix: str | None = None) -> bool:
+    def has_no_partial_explicit_credentials(prefix: str | None = None) -> bool:
         if _is_set(bearer_token):
             return True
 
@@ -263,42 +268,46 @@ def validate_bedrock_auth_configuration(args: argparse.Namespace) -> None:
 
         access_key = getattr(args, "aws_access_key_id", None)
         secret_key = getattr(args, "aws_secret_access_key", None)
-        return _is_set(access_key) and _is_set(secret_key)
+        return not (_is_set(access_key) or _is_set(secret_key)) or (
+            _is_set(access_key) and _is_set(secret_key)
+        )
 
     if getattr(args, "llm_binding", None) == "bedrock":
-        if not has_valid_auth():
+        if not has_no_partial_explicit_credentials():
             raise ValueError(
-                "Bedrock LLM binding requires AWS_ACCESS_KEY_ID and "
-                "AWS_SECRET_ACCESS_KEY, or process-level AWS_BEARER_TOKEN_BEDROCK."
+                "Bedrock LLM binding requires both AWS_ACCESS_KEY_ID and "
+                "AWS_SECRET_ACCESS_KEY when either explicit credential is set."
             )
         if _is_set(getattr(args, "llm_binding_api_key", None)):
             logging.warning(
                 "LLM_BINDING_API_KEY is set but ignored for Bedrock LLM binding. "
-                "Use SigV4 AWS_* variables or process-level AWS_BEARER_TOKEN_BEDROCK instead."
+                "Use AWS credentials, the default AWS credential provider chain, or "
+                "process-level AWS_BEARER_TOKEN_BEDROCK instead."
             )
 
     if getattr(args, "embedding_binding", None) == "bedrock":
-        if not has_valid_auth():
+        if not has_no_partial_explicit_credentials():
             raise ValueError(
-                "Bedrock embedding binding requires AWS_ACCESS_KEY_ID and "
-                "AWS_SECRET_ACCESS_KEY, or process-level AWS_BEARER_TOKEN_BEDROCK."
+                "Bedrock embedding binding requires both AWS_ACCESS_KEY_ID and "
+                "AWS_SECRET_ACCESS_KEY when either explicit credential is set."
             )
         if _is_set(getattr(args, "embedding_binding_api_key", None)):
             logging.warning(
                 "EMBEDDING_BINDING_API_KEY is set but ignored for Bedrock embedding binding. "
-                "Use SigV4 AWS_* variables or process-level AWS_BEARER_TOKEN_BEDROCK instead."
+                "Use AWS credentials, the default AWS credential provider chain, or "
+                "process-level AWS_BEARER_TOKEN_BEDROCK instead."
             )
 
     for spec in ROLES:
         role = spec.name
         if getattr(
             args, f"{role}_llm_binding", None
-        ) == "bedrock" and not has_valid_auth(role):
+        ) == "bedrock" and not has_no_partial_explicit_credentials(role):
             raise ValueError(
-                f"Bedrock role '{role}' requires {spec.env_prefix}_AWS_ACCESS_KEY_ID "
-                f"and {spec.env_prefix}_AWS_SECRET_ACCESS_KEY, global "
-                "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, or process-level "
-                "AWS_BEARER_TOKEN_BEDROCK."
+                f"Bedrock role '{role}' requires both "
+                f"{spec.env_prefix}_AWS_ACCESS_KEY_ID and "
+                f"{spec.env_prefix}_AWS_SECRET_ACCESS_KEY when either explicit "
+                "credential is set."
             )
 
 
