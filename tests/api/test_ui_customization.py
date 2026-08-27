@@ -118,7 +118,9 @@ class TestLocaleNormalization:
         with pytest.raises(ValueError, match="underscore"):
             normalize_locale("zh_TW")
 
-    @pytest.mark.parametrize("bad", ["", "  ", "a", "1x", "en-", "-en", "en--US", "x" * 40])
+    @pytest.mark.parametrize(
+        "bad", ["", "  ", "a", "1x", "en-", "-en", "en--US", "x" * 40]
+    )
     def test_invalid_forms_rejected(self, bad):
         with pytest.raises(ValueError):
             normalize_locale(bad)
@@ -159,13 +161,25 @@ class TestBundleValidation:
             (lambda m: m.update(fallbacks={"ko": ["en", "en"]}), "duplicate target"),
             (
                 lambda m: m["locales"].update(
-                    {"zh_TW": {"welcome": "locales/zh/welcome.md", "query_empty": "locales/zh/query_empty.md", "logo_alt": "x"}}
+                    {
+                        "zh_TW": {
+                            "welcome": "locales/zh/welcome.md",
+                            "query_empty": "locales/zh/query_empty.md",
+                            "logo_alt": "x",
+                        }
+                    }
                 ),
                 "underscore",
             ),
             (
                 lambda m: m["locales"].update(
-                    {"ZH-tw": {"welcome": "locales/zh/welcome.md", "query_empty": "locales/zh/query_empty.md", "logo_alt": "x"}}
+                    {
+                        "ZH-tw": {
+                            "welcome": "locales/zh/welcome.md",
+                            "query_empty": "locales/zh/query_empty.md",
+                            "logo_alt": "x",
+                        }
+                    }
                 ),
                 "normalized form",
             ),
@@ -365,7 +379,9 @@ class TestCustomizationEndpointNoBundle:
     def test_asset_endpoint_rejects_everything(self, tmp_path, monkeypatch):
         _stage_frontend(tmp_path)
         client = TestClient(_build_app(tmp_path, monkeypatch))
-        assert client.get("/ui/customization/assets/abc123/brand-logo").status_code == 404
+        assert (
+            client.get("/ui/customization/assets/abc123/brand-logo").status_code == 404
+        )
 
 
 class TestCustomizationEndpointWithBundle:
