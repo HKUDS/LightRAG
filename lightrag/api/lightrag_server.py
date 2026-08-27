@@ -70,6 +70,8 @@ from lightrag.parser.external.mineru.cache import MinerUParserOptions
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
+from lightrag.api.routers.ui_customization_routes import create_ui_customization_routes
+from lightrag.api.ui_customization import load_ui_customization_snapshot
 
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
@@ -1394,6 +1396,26 @@ def create_app(args):
     # build args without this field (tests, embedding).
     default_ui = getattr(args, "default_ui", "webui")
 
+    # UI customization bundle (workspace-entry PRD §8). Completely orthogonal
+    # to the entry-HTML checks above: a configured-but-broken bundle fails
+    # startup regardless of which entry products exist, and a missing
+    # workspace.html never suppresses bundle validation. bundle_revision is
+    # logged HERE only — it appears in no /health tier.
+    ui_templates_dir = (getattr(args, "ui_templates_dir", "") or "").strip()
+    if ui_templates_dir:
+        # Raises UICustomizationError → server startup fails (fail-fast; a
+        # silent fallback would show LightRAG content while the operator
+        # believes the customer branding is live).
+        ui_customization_snapshot = load_ui_customization_snapshot(ui_templates_dir)
+        logger.info(
+            "UI customization bundle active: bundle_revision=%s locales=%s",
+            ui_customization_snapshot.bundle_revision,
+            sorted(ui_customization_snapshot.locales),
+        )
+    else:
+        ui_customization_snapshot = None
+        logger.info("UI customization: no bundle configured (UI_TEMPLATES_DIR unset)")
+
     # Create unified API version display with warning symbol if frontend is outdated
     api_version_display = (
         f"{__api_version__}⚠️" if is_frontend_outdated else __api_version__
@@ -2456,6 +2478,13 @@ def create_app(args):
     app.include_router(create_document_routes(rag, doc_manager, api_key))
     app.include_router(create_query_routes(rag, api_key, args.top_k))
     app.include_router(create_graph_routes(rag, api_key))
+    # Public read-only customization surface — registered unconditionally:
+    # without a bundle it answers 200 {"customized": false, ...}.
+    app.include_router(
+        create_ui_customization_routes(
+            ui_customization_snapshot, webui_title, webui_description
+        )
+    )
 
     # Add Ollama API routes
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)

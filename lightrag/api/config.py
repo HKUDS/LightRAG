@@ -852,6 +852,12 @@ def parse_args() -> argparse.Namespace:
     # RFC #3671). Any route audit must condition the same set on this flag.
     args.enable_api_docs = get_env_value("ENABLE_API_DOCS", True, bool)
 
+    # Optional external UI customization bundle (workspace-entry PRD §8).
+    # Empty/unset means "no customization" — the normal state, not an error;
+    # a set value must point at a bundle that validates completely or the
+    # server refuses to start (see lightrag/api/ui_customization.py).
+    args.ui_templates_dir = get_env_value("UI_TEMPLATES_DIR", "", str)
+
     # For JWT Auth
     args.auth_accounts = get_env_value("AUTH_ACCOUNTS", "")
     args.token_secret = get_env_value("TOKEN_SECRET", None)

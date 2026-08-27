@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync, existsSync } from 'fs'
+import { execSync } from 'child_process'
 import { dirname, join, resolve } from 'path'
 
 /**
@@ -137,7 +138,6 @@ describe('navigation core stays graph-free', () => {
 
 describe('no path-rewriting hard navigation in the SPA', () => {
   test('frontend source contains no location.href= / location.replace( / location.assign(', () => {
-    const { execSync } = require('child_process') as typeof import('child_process')
     const output = execSync(
       String.raw`grep -rnE "location\.href\s*=|location\.replace\(|location\.assign\(" --include='*.ts' --include='*.tsx' . || true`,
       { cwd: SRC, encoding: 'utf8' }
