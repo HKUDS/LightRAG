@@ -90,7 +90,7 @@
     "@types/node": "^26.2.0",
     "@tailwindcss/typography": "^0.5.20",
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.4",
+    "@types/react-dom": "^19.2.5",
     "@types/react-i18next": "^8.1.0",
     "@types/react-syntax-highlighter": "^15.5.13",
     "@types/seedrandom": "^3.0.8",
