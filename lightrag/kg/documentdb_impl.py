@@ -41,9 +41,7 @@ class DocumentDBKVStorage(_DocumentDBStorageMixin, _MongoKVStorageBase):
 
 
 @final
-class DocumentDBDocStatusStorage(
-    _DocumentDBStorageMixin, _MongoDocStatusStorageBase
-):
+class DocumentDBDocStatusStorage(_DocumentDBStorageMixin, _MongoDocStatusStorageBase):
     """DocumentDB-backed document status storage."""
 
     supports_collation_indexes: ClassVar[bool] = False
@@ -65,9 +63,7 @@ class DocumentDBGraphStorage(_DocumentDBStorageMixin, _MongoGraphStorageBase):
 
 
 @final
-class DocumentDBVectorDBStorage(
-    _DocumentDBStorageMixin, _MongoVectorDBStorageBase
-):
+class DocumentDBVectorDBStorage(_DocumentDBStorageMixin, _MongoVectorDBStorageBase):
     """DocumentDB vector storage using native HNSW ``cosmosSearch`` indexes."""
 
     vector_query_uses_index_name: ClassVar[bool] = False

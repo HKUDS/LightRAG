@@ -398,8 +398,7 @@ printf 'DOCUMENTDB_DATABASE=%s\n' "${{ENV_VALUES[DOCUMENTDB_DATABASE]}}"
 """)
 
     assert (
-        values["DOCUMENTDB_URI"]
-        == "mongodb://documentdb.example.com:10260/?tls=true"
+        values["DOCUMENTDB_URI"] == "mongodb://documentdb.example.com:10260/?tls=true"
     )
     assert values["DOCUMENTDB_DATABASE"] == "production_rag"
 

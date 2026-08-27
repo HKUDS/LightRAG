@@ -29,10 +29,7 @@ class _AsyncCursor:
 def test_documentdb_backends_resolve_from_storage_factory():
     assert get_storage_class("DocumentDBKVStorage") is DocumentDBKVStorage
     assert get_storage_class("DocumentDBGraphStorage") is DocumentDBGraphStorage
-    assert (
-        get_storage_class("DocumentDBVectorDBStorage")
-        is DocumentDBVectorDBStorage
-    )
+    assert get_storage_class("DocumentDBVectorDBStorage") is DocumentDBVectorDBStorage
 
 
 def test_documentdb_client_configuration_is_isolated_from_mongodb():
@@ -72,9 +69,7 @@ async def test_documentdb_file_path_pagination_omits_query_collation():
     storage = DocumentDBDocStatusStorage.__new__(DocumentDBDocStatusStorage)
     storage._data = collection
 
-    documents, total_count = await storage.get_docs_paginated(
-        sort_field="file_path"
-    )
+    documents, total_count = await storage.get_docs_paginated(sort_field="file_path")
 
     assert documents == []
     assert total_count == 0
@@ -134,7 +129,9 @@ async def test_documentdb_vector_index_uses_create_indexes_command():
     storage._collection_name = "test_entities"
     storage._index_name = "vector_knn_index_test_entities"
     storage.embedding_func = SimpleNamespace(embedding_dim=1536)
-    storage._data = SimpleNamespace(list_indexes=AsyncMock(return_value=_AsyncCursor([])))
+    storage._data = SimpleNamespace(
+        list_indexes=AsyncMock(return_value=_AsyncCursor([]))
+    )
     storage.db = SimpleNamespace(command=AsyncMock())
 
     await storage.create_vector_index_if_not_exists()
