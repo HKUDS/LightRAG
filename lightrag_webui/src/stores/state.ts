@@ -295,7 +295,7 @@ export const clearLocalToken = (): void => {
   }
 };
 
-const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean; coreVersion: string | null; apiVersion: string | null; username: string | null; webuiTitle: string | null; webuiDescription: string | null; lastTokenRenewal: string | null; tokenExpiresAt: number | null } => {
+export const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean; coreVersion: string | null; apiVersion: string | null; username: string | null; webuiTitle: string | null; webuiDescription: string | null; lastTokenRenewal: string | null; tokenExpiresAt: number | null } => {
   let token = localStorage.getItem(TOKEN_STORAGE_KEY);
   if (token && !isTokenLocallyValid(token)) {
     // Expired or structurally broken: clear it (and its companions) and
