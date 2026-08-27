@@ -1,6 +1,6 @@
-import { afterAll, beforeAll, describe, expect, mock, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test'
 import { QUERY_SETTINGS_STORAGE_KEY, WEBUI_RETRIEVAL_HISTORY_KEY } from '@/lib/storageKeys'
-import type { NavigationEntryConfig } from '@/services/navigation'
+import type { navigationService as NavigationServiceType } from '@/services/navigation'
 
 /**
  * Workspace entry bootstrap: configures the navigation singleton for THIS
@@ -8,10 +8,16 @@ import type { NavigationEntryConfig } from '@/services/navigation'
  * settings on cross-entry `storage` events so /webui parameter saves take
  * effect from the next query without a reload.
  *
- * The navigation service is replaced with a RECORDING stub before the
- * bootstrap module is imported — mock.module is process-global in bun test,
- * so relying on the real singleton would make this file order-dependent on
- * other files' navigation mocks.
+ * Isolation rules this file follows (learned the hard way):
+ * - NO `mock.module` on shared singletons: bun's module mocks live in the
+ *   process-wide registry for the rest of the run and would hand every later
+ *   test file a gutted navigationService. The bootstrap's configureEntry call
+ *   is observed with a RESTORABLE spy on the REAL service instead
+ *   (mockRestore + resetForTests in afterAll).
+ * - Persisted state is read/written through the store's OWN persist storage
+ *   (zustand v5's createJSONStorage captures the Storage object once at
+ *   store creation, so swapping globalThis.localStorage after the singleton
+ *   was created elsewhere would read/write a different object).
  */
 
 const storageMock = () => {
@@ -32,20 +38,25 @@ const storageMock = () => {
 
 type StorageListener = (event: { key: string | null }) => void
 const storageListeners: StorageListener[] = []
-const recordedConfigs: NavigationEntryConfig[] = []
 
+let navigationService: typeof NavigationServiceType
+let configureSpy: ReturnType<typeof spyOn> | undefined
 let querySettingsModule: typeof import('@/stores/querySettings')
 let workspaceHistoryModule: typeof import('@/stores/workspaceRetrievalHistory')
 
 beforeAll(async () => {
-  Object.defineProperty(globalThis, 'localStorage', {
-    value: storageMock(),
-    configurable: true
-  })
-  Object.defineProperty(globalThis, 'sessionStorage', {
-    value: storageMock(),
-    configurable: true
-  })
+  if (typeof localStorage === 'undefined') {
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: storageMock(),
+      configurable: true
+    })
+  }
+  if (typeof sessionStorage === 'undefined') {
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      value: storageMock(),
+      configurable: true
+    })
+  }
   Object.defineProperty(globalThis, 'window', {
     value: {
       addEventListener: (type: string, listener: StorageListener) => {
@@ -55,18 +66,10 @@ beforeAll(async () => {
     configurable: true
   })
 
-  mock.module('@/services/navigation', () => ({
-    navigationService: {
-      configureEntry: (config: NavigationEntryConfig) => {
-        recordedConfigs.push(config)
-      },
-      setNavigate: () => {},
-      navigateToUnauthenticated: () => {},
-      navigateToHome: () => {},
-      resetAllApplicationState: () => {},
-      resetForTests: () => {}
-    }
-  }))
+  navigationService = (await import('@/services/navigation')).navigationService
+  // Call-through spy: records the bootstrap's configuration AND still applies
+  // it to the real singleton (so the navigate assertion below is end-to-end).
+  configureSpy = spyOn(navigationService, 'configureEntry')
 
   querySettingsModule = await import('@/stores/querySettings')
   workspaceHistoryModule = await import('@/stores/workspaceRetrievalHistory')
@@ -74,32 +77,44 @@ beforeAll(async () => {
 })
 
 afterAll(() => {
+  configureSpy?.mockRestore()
+  navigationService.resetForTests()
   delete (globalThis as Record<string, unknown>).window
 })
 
+const recordedConfig = () => {
+  expect(configureSpy!.mock.calls).toHaveLength(1)
+  return configureSpy!.mock.calls[0][0] as import('@/services/navigation').NavigationEntryConfig
+}
+
 describe('workspace bootstrap', () => {
   test('configures the unauthenticated target to /welcome (never the admin /login)', () => {
-    expect(recordedConfigs).toHaveLength(1)
-    expect(recordedConfigs[0].unauthenticatedRoute).toBe('/welcome')
+    const config = recordedConfig()
+    expect(config.unauthenticatedRoute).toBe('/welcome')
     // No graph reset adapter on this entry — registering one would pull
     // stores/graph (and graphology) into the workspace first-load closure.
-    expect(recordedConfigs[0].resetAdapters ?? []).toEqual([])
+    expect(config.resetAdapters ?? []).toEqual([])
+  })
+
+  test('an unauthenticated navigation on the configured singleton lands on /welcome', () => {
+    const targets: string[] = []
+    navigationService.setNavigate(((to: string) => targets.push(to)) as never)
+    navigationService.navigateToUnauthenticated()
+    expect(targets).toEqual(['/welcome'])
   })
 
   test('the injected history clearer clears the WORKSPACE history store', () => {
     workspaceHistoryModule.useWorkspaceRetrievalHistoryStore
       .getState()
       .setHistory([{ id: 'w', role: 'user', content: 'q' }])
-    recordedConfigs[0].clearRetrievalHistory()
+    recordedConfig().clearRetrievalHistory()
     expect(
       workspaceHistoryModule.useWorkspaceRetrievalHistoryStore.getState().history
     ).toEqual([])
   })
 
-  // Write through the store's OWN persist storage: zustand v5's
-  // createJSONStorage captures the Storage object once at store creation,
-  // and other test files swap the global localStorage stub — writing to the
-  // current global would race with whichever stub the singleton captured.
+  // Write through the store's OWN persist storage — see the isolation rules
+  // in the module docs above.
   const writePersisted = (querySettings: Record<string, unknown>) => {
     const storage = querySettingsModule.useQuerySettingsStore.persist.getOptions()
       .storage!
