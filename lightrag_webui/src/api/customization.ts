@@ -43,15 +43,23 @@ export interface UICustomization {
  */
 export const toBcp47Locale = (language: string): string => language.replace(/_/g, '-')
 
+/**
+ * `language: null` sends NO locale parameter — the server then resolves the
+ * bundle's `default_locale`. Used when the user never explicitly selected a
+ * language and the browser's languages match none of the UI locales
+ * (language priority: explicit choice > browser language > bundle default).
+ */
 export async function fetchUICustomization(
-  language: string,
+  language: string | null,
   signal?: AbortSignal
 ): Promise<UICustomization> {
-  const locale = toBcp47Locale(language)
-  const response = await fetch(
-    `${backendBaseUrl}/ui/customization?locale=${encodeURIComponent(locale)}`,
-    { signal, headers: { Accept: 'application/json' } }
-  )
+  const query = language
+    ? `?locale=${encodeURIComponent(toBcp47Locale(language))}`
+    : ''
+  const response = await fetch(`${backendBaseUrl}/ui/customization${query}`, {
+    signal,
+    headers: { Accept: 'application/json' }
+  })
   if (!response.ok) {
     throw new Error(`customization request failed: ${response.status}`)
   }

@@ -5,6 +5,7 @@ import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
 import { navigationService } from '@/services/navigation'
+import { AuthenticationRequiredError, isAuthenticationRequiredError } from '@/api/errors'
 
 // Types
 export type LightragNodeType = {
@@ -487,7 +488,7 @@ axiosInstance.interceptors.response.use(
         // 2. Prevent infinite retry
         if (originalRequest && (originalRequest as any)._retry) {
           navigationService.navigateToUnauthenticated();
-          return Promise.reject(new Error('Authentication required'));
+          return Promise.reject(new AuthenticationRequiredError());
         }
 
         // 3. Check if in guest mode
@@ -512,13 +513,17 @@ axiosInstance.interceptors.response.use(
             console.error('Failed to refresh guest token:', refreshError);
             // Refresh failed, navigate to login
             navigationService.navigateToUnauthenticated();
-            return Promise.reject(new Error('Failed to refresh authentication'));
+            return Promise.reject(
+              new AuthenticationRequiredError('Failed to refresh authentication', {
+                cause: refreshError,
+              })
+            );
           }
         }
 
         // 5. Non-guest mode: navigate to login page
         navigationService.navigateToUnauthenticated();
-        return Promise.reject(new Error('Authentication required'));
+        return Promise.reject(new AuthenticationRequiredError());
       }
       throw new Error(
         `${error.response.status} ${error.response.statusText}\n${JSON.stringify(
@@ -729,10 +734,6 @@ function _classifyStreamError(
 
   const message = errorMessage(error);
 
-  if (message === 'Authentication required') {
-    return 'Authentication required';
-  }
-
   const statusCodeMatch = message.match(/^(\d{3})\s/);
   if (statusCodeMatch) {
     const statusCode = parseInt(statusCodeMatch[1], 10);
@@ -845,7 +846,7 @@ export const queryTextStream = async (
               refreshError
             );
             navigationService.navigateToUnauthenticated();
-            throw new Error('Failed to refresh authentication', {
+            throw new AuthenticationRequiredError('Failed to refresh authentication', {
               cause: refreshError,
             });
           }
@@ -854,7 +855,7 @@ export const queryTextStream = async (
             if (retryResponse.status === 401) {
               // Refreshed token still rejected → genuine auth failure
               navigationService.navigateToUnauthenticated();
-              throw new Error('Authentication required');
+              throw new AuthenticationRequiredError();
             }
             // Non-auth HTTP error on retry → classify like the first response
             await _throwStreamHttpError(retryResponse);
@@ -864,7 +865,7 @@ export const queryTextStream = async (
         } else {
           // Non-guest 401 → login
           navigationService.navigateToUnauthenticated();
-          throw new Error('Authentication required');
+          throw new AuthenticationRequiredError();
         }
       } else {
         // --- Other HTTP errors ---------------------------------------------
@@ -875,6 +876,13 @@ export const queryTextStream = async (
     // --- Read the NDJSON stream (happy path or refreshed retry) ------------
     await _readNdjsonStream(activeResponse, onChunk, onError, onResponseTime, onProgress);
   } catch (error) {
+    // Auth termination is NOT an answer failure: navigation to the entry's
+    // unauthenticated route already happened above. Rethrow the typed error
+    // so the query session ends quietly instead of rendering it as an
+    // assistant error via onError.
+    if (isAuthenticationRequiredError(error)) {
+      throw error;
+    }
     const classified = _classifyStreamError(error, signal);
     if (classified === null) {
       return; // User abort — silent exit

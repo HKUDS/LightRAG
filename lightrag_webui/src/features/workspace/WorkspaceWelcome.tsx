@@ -88,8 +88,22 @@ export default function WorkspaceWelcome() {
   }
 
   return (
-    <div className="flex h-dvh w-screen flex-col items-center justify-center bg-gradient-to-br from-emerald-50 to-teal-100 p-4 dark:from-gray-900 dark:to-gray-800">
-      <div className="absolute top-4 right-4 flex items-center gap-2">
+    <div
+      className="flex h-dvh w-screen flex-col items-center justify-center bg-gradient-to-br from-emerald-50 to-teal-100 dark:from-gray-900 dark:to-gray-800"
+      style={{
+        // 1rem base padding extended by the device safe areas (notch,
+        // Dynamic Island, home indicator).
+        padding:
+          'calc(env(safe-area-inset-top) + 1rem) calc(env(safe-area-inset-right) + 1rem) calc(env(safe-area-inset-bottom) + 1rem) calc(env(safe-area-inset-left) + 1rem)'
+      }}
+    >
+      <div
+        className="absolute flex items-center gap-2"
+        style={{
+          top: 'calc(env(safe-area-inset-top) + 1rem)',
+          right: 'calc(env(safe-area-inset-right) + 1rem)'
+        }}
+      >
         <AppSettings className="bg-white/30 backdrop-blur-sm dark:bg-gray-800/30 rounded-md" />
       </div>
       <div

@@ -149,8 +149,24 @@ const LoginPage = () => {
   }
 
   return (
-    <div className="flex h-screen w-screen items-center justify-center bg-gradient-to-br from-emerald-50 to-teal-100 dark:from-gray-900 dark:to-gray-800">
-      <div className="absolute top-4 right-4 flex items-center gap-2">
+    <div
+      // min-h-dvh, not h-screen: mobile browsers include their collapsing
+      // chrome in 100vh, which can push the form under the toolbar; dvh
+      // tracks the actually visible viewport, and min- lets small screens
+      // scroll instead of clipping.
+      className="flex min-h-dvh w-screen items-center justify-center bg-gradient-to-br from-emerald-50 to-teal-100 dark:from-gray-900 dark:to-gray-800"
+      style={{
+        padding:
+          'calc(env(safe-area-inset-top) + 1rem) calc(env(safe-area-inset-right) + 1rem) calc(env(safe-area-inset-bottom) + 1rem) calc(env(safe-area-inset-left) + 1rem)'
+      }}
+    >
+      <div
+        className="absolute flex items-center gap-2"
+        style={{
+          top: 'calc(env(safe-area-inset-top) + 1rem)',
+          right: 'calc(env(safe-area-inset-right) + 1rem)'
+        }}
+      >
         <AppSettings className="bg-white/30 dark:bg-gray-800/30 backdrop-blur-sm rounded-md" />
       </div>
       <Card className="w-full max-w-[480px] shadow-lg mx-4">

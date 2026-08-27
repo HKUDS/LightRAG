@@ -1,4 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, mock, spyOn, test } from 'bun:test'
+// Dependency-free module — safe to import statically before the mocks below.
+import { isAuthenticationRequiredError } from './errors'
 
 // ---------------------------------------------------------------------------
 // Mock dependencies BEFORE importing the module under test
@@ -555,5 +557,63 @@ describe('queryTextStream — guest-token 401 retry', () => {
     expect(capturedError).toBe(
       'Too many requests, please try again later (429 Too Many Requests)'
     )
+  })
+})
+
+describe('queryTextStream — auth termination (401)', () => {
+  // PRD error split: a 401 means the session's authentication is gone, not
+  // that the answer failed. The API layer navigates to the unauthenticated
+  // route and queryTextStream REJECTS with the typed error — it must never
+  // surface through onError, which the query session renders as an assistant
+  // error bubble and persists into history.
+  test('non-guest 401 rejects with AuthenticationRequiredError, never calling onError', async () => {
+    installFetchMock(() => makeTextResponse('{"error":"unauthorized"}', 401))
+
+    let capturedError: string | null = null
+    let caught: unknown = null
+    try {
+      await apiModule.queryTextStream(
+        makeQueryRequest(),
+        () => {},
+        (e) => {
+          capturedError = e
+        }
+      )
+    } catch (error) {
+      caught = error
+    }
+
+    expect(isAuthenticationRequiredError(caught)).toBe(true)
+    expect(capturedError).toBeNull()
+  })
+
+  test('guest whose refreshed token is still rejected also gets the typed error', async () => {
+    storageData.set('LIGHTRAG-API-TOKEN', 'expired-guest-token')
+    authStore.setState({ isGuestMode: true })
+
+    let callCount = 0
+    installFetchMock(() => {
+      callCount++
+      // First request AND the refreshed retry are both rejected.
+      return makeTextResponse('{"error":"unauthorized"}', 401)
+    })
+
+    let capturedError: string | null = null
+    let caught: unknown = null
+    try {
+      await apiModule.queryTextStream(
+        makeQueryRequest(),
+        () => {},
+        (e) => {
+          capturedError = e
+        }
+      )
+    } catch (error) {
+      caught = error
+    }
+
+    expect(callCount).toBe(2)
+    expect(isAuthenticationRequiredError(caught)).toBe(true)
+    expect(capturedError).toBeNull()
   })
 })

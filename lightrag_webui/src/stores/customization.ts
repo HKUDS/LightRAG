@@ -12,18 +12,35 @@ import { fetchUICustomization, type UICustomization } from '@/api/customization'
  *   a bundle-configured deployment must never flash the default first;
  * - a language switch keeps the current complete content until the new
  *   response succeeds, then swaps logo, alt text and both texts atomically;
- * - a temporarily failing re-request keeps the last successful snapshot.
+ * - a temporarily failing re-request keeps the last successful snapshot;
+ * - correctness under fast switching (A → B while B is in flight → back to
+ *   A): a response is applied only when it is BOTH the newest request AND for
+ *   the locale the user still targets. Re-targeting a locale whose snapshot
+ *   is already loaded issues no network request but still invalidates every
+ *   response in flight — otherwise B's late response would land while A is
+ *   selected.
  */
 
 export type CustomizationStatus = 'loading' | 'ready' | 'error'
+
+/**
+ * Sentinel target locale: request the customization WITHOUT a `locale`
+ * parameter, so the server resolves the bundle's `default_locale`. Used when
+ * the user never explicitly selected a language and the browser's languages
+ * match none of the UI locales.
+ */
+export const SERVER_DEFAULT_LOCALE = ''
 
 interface CustomizationState {
   status: CustomizationStatus
   /** Last successful response (customized or not); null before the first. */
   snapshot: UICustomization | null
-  /** Language (internal id, e.g. zh_TW) the snapshot was loaded for. */
-  loadedLanguage: string | null
-  load: (language: string) => Promise<void>
+  /** Locale the user currently targets: last `load` argument (internal id,
+   * e.g. zh_TW, or SERVER_DEFAULT_LOCALE); null before the first load. */
+  targetLocale: string | null
+  /** Locale the current snapshot was loaded for. */
+  loadedLocale: string | null
+  load: (locale: string) => Promise<void>
 }
 
 let requestCounter = 0
@@ -31,20 +48,33 @@ let requestCounter = 0
 export const useCustomizationStore = create<CustomizationState>((set, get) => ({
   status: 'loading',
   snapshot: null,
-  loadedLanguage: null,
+  targetLocale: null,
+  loadedLocale: null,
 
-  load: async (language: string) => {
+  load: async (locale: string) => {
+    // Every (re-)target bumps the counter, so responses for previously
+    // targeted locales can never be applied afterwards — even when this call
+    // itself needs no network request.
     const requestId = ++requestCounter
+    set({ targetLocale: locale })
+    if (get().loadedLocale === locale && get().snapshot !== null) {
+      // Already showing this locale. The counter bump above just invalidated
+      // any other locale's in-flight response (the A → B → A race).
+      return
+    }
     if (get().snapshot === null) {
       set({ status: 'loading' })
     }
     try {
-      const snapshot = await fetchUICustomization(language)
-      if (requestId !== requestCounter) return // superseded by a newer request
+      const snapshot = await fetchUICustomization(
+        locale === SERVER_DEFAULT_LOCALE ? null : locale
+      )
+      // Apply only when still the newest request AND for the current target.
+      if (requestId !== requestCounter || get().targetLocale !== locale) return
       // Atomic swap: one set() replaces the whole locale representation.
-      set({ status: 'ready', snapshot, loadedLanguage: language })
+      set({ status: 'ready', snapshot, loadedLocale: locale })
     } catch (error) {
-      if (requestId !== requestCounter) return
+      if (requestId !== requestCounter || get().targetLocale !== locale) return
       console.error('Failed to load UI customization:', error)
       if (get().snapshot === null) {
         // Hard failure on first load → frontend default content takes over.

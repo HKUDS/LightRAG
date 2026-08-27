@@ -37,9 +37,17 @@ export default function AppSettings({ className }: AppSettingsProps) {
           size="icon"
           side="bottom"
           tooltip={t('header.appSettings')}
-          className={cn('h-9 w-9', className)}
+          // A tooltip is only a description, never the accessible name — an
+          // icon-only button needs the explicit aria-label.
+          aria-label={t('header.appSettings')}
+          // 36px visual size; the ::after overlay widens the TOUCH target to
+          // 44px (PRD: primary touch targets ≥44px) without moving layout.
+          className={cn(
+            'relative h-9 w-9 after:absolute after:-inset-1 after:content-[\'\']',
+            className
+          )}
         >
-          <PaletteIcon className="h-5 w-5" />
+          <PaletteIcon className="h-5 w-5" aria-hidden="true" />
         </Button>
       </PopoverTrigger>
       <PopoverContent side="bottom" align="end" className="w-56">

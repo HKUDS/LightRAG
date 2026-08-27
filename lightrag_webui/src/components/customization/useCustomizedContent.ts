@@ -1,7 +1,8 @@
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSettingsStore } from '@/stores/settings'
-import { useCustomizationStore } from '@/stores/customization'
+import { SERVER_DEFAULT_LOCALE, useCustomizationStore } from '@/stores/customization'
+import { detectBrowserLanguage } from '@/lib/browserLanguage'
 import defaultLogoUrl from '@/assets/logo.svg'
 
 /**
@@ -32,16 +33,28 @@ export interface CustomizedContent {
 export function useCustomizedContent(): CustomizedContent {
   const { t } = useTranslation()
   const language = useSettingsStore.use.language()
+  const languageUserSelected = useSettingsStore.use.languageUserSelected()
   const status = useCustomizationStore((s) => s.status)
   const snapshot = useCustomizationStore((s) => s.snapshot)
-  const loadedLanguage = useCustomizationStore((s) => s.loadedLanguage)
+  const targetLocale = useCustomizationStore((s) => s.targetLocale)
 
-  // (Re-)request on mount and whenever the user switches language.
+  // Language priority (PRD): explicit persisted choice > browser language >
+  // bundle default. Without an explicit choice the store's language already
+  // mirrors the browser detection (i18n bootstrap); when even that found no
+  // supported match, send NO locale and let the server resolve the bundle's
+  // default_locale.
+  const locale = languageUserSelected
+    ? language
+    : (detectBrowserLanguage() ?? SERVER_DEFAULT_LOCALE)
+
+  // (Re-)target on mount and whenever the user switches language. The store
+  // decides whether a network request is needed; a re-target alone still
+  // invalidates any stale in-flight response (fast A → B → A switching).
   useEffect(() => {
-    if (loadedLanguage !== language) {
-      void useCustomizationStore.getState().load(language)
+    if (targetLocale !== locale) {
+      void useCustomizationStore.getState().load(locale)
     }
-  }, [language, loadedLanguage])
+  }, [locale, targetLocale])
 
   if (status === 'loading') {
     return {

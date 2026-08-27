@@ -73,6 +73,16 @@ interface SettingsState {
   setTheme: (theme: Theme) => void
 
   language: Language
+  /**
+   * True only after the user has picked a language in the UI. Distinguishes
+   * an explicit choice from the initial default ('en') that persistence
+   * writes back like any other field — the language priority contract
+   * (explicit choice > browser language > bundle default) needs exactly this
+   * distinction. While false, the effective language is re-resolved from the
+   * browser on every load (see src/i18n.ts) and the customization request
+   * may omit its locale entirely.
+   */
+  languageUserSelected: boolean
   setLanguage: (lang: Language) => void
 
   enableHealthCheck: boolean
@@ -91,6 +101,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     (set) => ({
       theme: 'system',
       language: 'en',
+      languageUserSelected: false,
       showPropertyPanel: true,
       showNodeSearchBar: true,
       showLegend: false,
@@ -124,7 +135,8 @@ const useSettingsStoreBase = create<SettingsState>()(
       setTheme: (theme: Theme) => set({ theme }),
 
       setLanguage: (language: Language) => {
-        set({ language })
+        // An explicit pick outranks the browser language from now on.
+        set({ language, languageUserSelected: true })
       },
 
       setQueryLabel: (queryLabel: string) =>

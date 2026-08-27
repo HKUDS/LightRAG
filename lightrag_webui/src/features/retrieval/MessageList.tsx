@@ -290,12 +290,15 @@ export default function MessageList({
                   {message.role === 'user' && (
                     <Button
                       onClick={() => handleCopyMessage(message)}
-                      className="mb-2 size-6 rounded-md opacity-60 transition-opacity hover:opacity-100 shrink-0"
+                      // 24px visual; ::after widens the TOUCH target to 44px
+                      // (PRD ≥44px) without inflating the message layout.
+                      className="relative mb-2 size-6 shrink-0 rounded-md opacity-60 transition-opacity after:absolute after:-inset-2.5 after:content-[''] hover:opacity-100"
                       tooltip={t('retrievePanel.chatMessage.copyTooltip')}
+                      aria-label={t('retrievePanel.chatMessage.copyTooltip')}
                       variant="ghost"
                       size="icon"
                     >
-                      <CopyIcon className="size-4" />
+                      <CopyIcon className="size-4" aria-hidden="true" />
                     </Button>
                   )}
                   <ChatMessage
@@ -315,12 +318,13 @@ export default function MessageList({
                   {message.role === 'assistant' && (
                     <Button
                       onClick={() => handleCopyMessage(message)}
-                      className="mb-2 size-6 rounded-md opacity-60 transition-opacity hover:opacity-100 shrink-0"
+                      className="relative mb-2 size-6 shrink-0 rounded-md opacity-60 transition-opacity after:absolute after:-inset-2.5 after:content-[''] hover:opacity-100"
                       tooltip={t('retrievePanel.chatMessage.copyTooltip')}
+                      aria-label={t('retrievePanel.chatMessage.copyTooltip')}
                       variant="ghost"
                       size="icon"
                     >
-                      <CopyIcon className="size-4" />
+                      <CopyIcon className="size-4" aria-hidden="true" />
                     </Button>
                   )}
                 </div>
@@ -337,10 +341,11 @@ export default function MessageList({
           size="icon"
           aria-label={t('retrievePanel.retrieval.scrollToBottom')}
           tooltip={t('retrievePanel.retrieval.scrollToBottom')}
-          className="bg-background/70 absolute bottom-4 left-1/2 z-10 size-8 -translate-x-1/2 rounded-full opacity-70 shadow-md backdrop-blur transition-opacity hover:opacity-100"
+          // 32px visual; ::after widens the TOUCH target to 44px (PRD ≥44px).
+          className="bg-background/70 absolute bottom-4 left-1/2 z-10 size-8 -translate-x-1/2 rounded-full opacity-70 shadow-md backdrop-blur transition-opacity after:absolute after:-inset-1.5 after:content-[''] hover:opacity-100"
           onClick={handleJumpToBottom}
         >
-          <ChevronDownIcon className="size-4" />
+          <ChevronDownIcon className="size-4" aria-hidden="true" />
         </Button>
       )}
     </div>

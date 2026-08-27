@@ -81,6 +81,7 @@ export default function WorkspaceApp() {
     <main
       className="flex h-dvh w-screen flex-col overflow-hidden"
       style={{
+        paddingTop: 'env(safe-area-inset-top)',
         paddingLeft: 'env(safe-area-inset-left)',
         paddingRight: 'env(safe-area-inset-right)',
         paddingBottom: 'env(safe-area-inset-bottom)'

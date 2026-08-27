@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { queryText, queryTextStream } from '@/api/lightrag'
 import type { QueryMode } from '@/api/lightrag'
+import { isAuthenticationRequiredError } from '@/api/errors'
 import { errorMessage } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
 import type { MessageWithError } from '@/types/retrieval'
@@ -391,6 +392,11 @@ export function useQuerySession({
       // ⇒ identical request body, on both pages.
       const queryParams = serializeQueryRequest(snapshot, query, prevMessages)
 
+      // 401 termination flag: when authentication is gone the API layer has
+      // already navigated to the entry's unauthenticated route, so the PRD's
+      // error split applies — this is a session end, not an answer failure.
+      let authRequired = false
+
       try {
         // Run query
         if (snapshot.stream) {
@@ -425,9 +431,14 @@ export function useQuerySession({
           updateAssistantMessage(response.response)
         }
       } catch (err) {
-        // If the user terminated the query, handleStop already finalized the
-        // message state; don't render it as an error.
-        if (!controller.signal.aborted) {
+        if (isAuthenticationRequiredError(err)) {
+          // Auth termination (streaming rethrows it; the axios interceptor
+          // rejects non-streaming queries with it): no assistant error bubble,
+          // no error history — cleanup happens in `finally`.
+          authRequired = true
+        } else if (!controller.signal.aborted) {
+          // If the user terminated the query, handleStop already finalized the
+          // message state; don't render it as an error.
           updateAssistantMessage(
             `${t('retrievePanel.retrieval.error')}\n${errorMessage(err)}`,
             true
@@ -446,64 +457,77 @@ export function useQuerySession({
             clearInterval(responseTimerRef.current)
             responseTimerRef.current = null
           }
-          const authoritativeTime = serverResponseTimeRef.current
-          if (authoritativeTime !== null) {
-            assistantMessage.responseTime = authoritativeTime
-          } else if (responseStartRef.current) {
-            const finalElapsed = (Date.now() - responseStartRef.current) / 1000
-            assistantMessage.responseTime = parseFloat(finalElapsed.toFixed(1))
-          }
-          responseStartRef.current = null
-          serverResponseTimeRef.current = null
-          firstTokenRecordedRef.current = false
-          // Sync the finalized time into the rendered message
-          setMessages((prev) => {
-            const newMessages = [...prev]
-            const lastMessage = newMessages[newMessages.length - 1]
-            if (lastMessage && lastMessage.id === assistantMessage.id) {
-              lastMessage.responseTime = assistantMessage.responseTime
-            }
-            return newMessages
-          })
 
-          // Enhanced cleanup with error handling to prevent memory leaks
-          try {
-            // Final COT state validation and cleanup
-            const finalCotResult = parseCOTContent(assistantMessage.content)
-
-            // Force set final state - stream ended so thinking must be false
-            assistantMessage.isThinking = false
-
-            // If we have a complete thinking block but time wasn't calculated, finalize
-            if (
-              finalCotResult.hasValidThinkBlock &&
-              thinkingStartTime.current &&
-              !assistantMessage.thinkingTime
-            ) {
-              const duration = (Date.now() - thinkingStartTime.current) / 1000
-              assistantMessage.thinkingTime = parseFloat(duration.toFixed(2))
-            }
-
-            // Ensure display content is correctly set based on final parsing
-            if (finalCotResult.displayContent !== undefined) {
-              assistantMessage.displayContent = finalCotResult.displayContent
-            }
-          } catch (error) {
-            console.error('Error in final COT state validation:', error)
-            // Force reset state on error
-            assistantMessage.isThinking = false
-          } finally {
-            // Ensure cleanup happens regardless of errors
+          if (authRequired) {
+            // Quiet session end: roll back the optimistic user+assistant pair
+            // so nothing unanswered or error-shaped is shown after re-login,
+            // and persist NOTHING — the stored history stays whatever it was
+            // before this submit.
+            responseStartRef.current = null
+            serverResponseTimeRef.current = null
+            firstTokenRecordedRef.current = false
             thinkingStartTime.current = null
-          }
+            setMessages(prevMessages)
+          } else {
+            const authoritativeTime = serverResponseTimeRef.current
+            if (authoritativeTime !== null) {
+              assistantMessage.responseTime = authoritativeTime
+            } else if (responseStartRef.current) {
+              const finalElapsed = (Date.now() - responseStartRef.current) / 1000
+              assistantMessage.responseTime = parseFloat(finalElapsed.toFixed(1))
+            }
+            responseStartRef.current = null
+            serverResponseTimeRef.current = null
+            firstTokenRecordedRef.current = false
+            // Sync the finalized time into the rendered message
+            setMessages((prev) => {
+              const newMessages = [...prev]
+              const lastMessage = newMessages[newMessages.length - 1]
+              if (lastMessage && lastMessage.id === assistantMessage.id) {
+                lastMessage.responseTime = assistantMessage.responseTime
+              }
+              return newMessages
+            })
 
-          // Save history into THIS page's injected storage
-          try {
-            historyStore
-              .getState()
-              .setHistory([...prevMessages, userMessage, assistantMessage])
-          } catch (error) {
-            console.error('Error saving retrieval history:', error)
+            // Enhanced cleanup with error handling to prevent memory leaks
+            try {
+              // Final COT state validation and cleanup
+              const finalCotResult = parseCOTContent(assistantMessage.content)
+
+              // Force set final state - stream ended so thinking must be false
+              assistantMessage.isThinking = false
+
+              // If we have a complete thinking block but time wasn't calculated, finalize
+              if (
+                finalCotResult.hasValidThinkBlock &&
+                thinkingStartTime.current &&
+                !assistantMessage.thinkingTime
+              ) {
+                const duration = (Date.now() - thinkingStartTime.current) / 1000
+                assistantMessage.thinkingTime = parseFloat(duration.toFixed(2))
+              }
+
+              // Ensure display content is correctly set based on final parsing
+              if (finalCotResult.displayContent !== undefined) {
+                assistantMessage.displayContent = finalCotResult.displayContent
+              }
+            } catch (error) {
+              console.error('Error in final COT state validation:', error)
+              // Force reset state on error
+              assistantMessage.isThinking = false
+            } finally {
+              // Ensure cleanup happens regardless of errors
+              thinkingStartTime.current = null
+            }
+
+            // Save history into THIS page's injected storage
+            try {
+              historyStore
+                .getState()
+                .setHistory([...prevMessages, userMessage, assistantMessage])
+            } catch (error) {
+              console.error('Error saving retrieval history:', error)
+            }
           }
         }
       }
