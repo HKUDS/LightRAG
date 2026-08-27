@@ -15,7 +15,7 @@ validate_uri() {
     neo4j)
       [[ "$uri" =~ ^(neo4j(\+s|\+ssc)?|bolt)://.+ ]]
       return $?; ;;
-    mongodb)
+    mongodb|documentdb)
       [[ "$uri" =~ ^mongodb(\+srv)?://.+ ]]
       return $?; ;;
     redis)

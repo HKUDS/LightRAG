@@ -54,7 +54,7 @@ LIGHTRAG_PARSER=*:legacy-F
 
 不需要做数据迁移。启动后的第一轮 sweep 是一次 strict 全量 sweep，因此旧 writer 留在半途的文档——例如卡在 `PARSING`/`ANALYZING`/`PROCESSING` 但背后已没有 worker 的行——会被自动捡起并重新处理。如果确实无法排空（必须放弃一次运行），基于同样的原因，中途停止也是安全的；不安全的是事后又把旧版本启动回来。
 
-**启动后请检查日志里有没有 strict 能力告警。** 五个内置 `doc_status` 后端（JSON、Redis、PostgreSQL、MongoDB、OpenSearch）都具备全部能力。第三方后端可能不具备，而每一项缺失都是**失败关闭**而非静默降级：admission 返回 503、source-conflict 端点返回 501、scan 会一直重复检查陈旧的 `FAILED` stub。启动日志会逐项列出缺失的能力及其代价，已鉴权的 `/health` 在 `capabilities` 下报告同一份信息。设 `PIPELINE_REQUIRE_STRICT_STORAGE_READS=true` 可把这些缺口变成启动失败。有界分页没有对应旋钮：分页与 typed source 解析方法是抽象方法，缺失的后端根本无法构造。
+**启动后请检查日志里有没有 strict 能力告警。** 六个内置 `doc_status` 后端（JSON、Redis、PostgreSQL、MongoDB、DocumentDB、OpenSearch）都具备全部能力。第三方后端可能不具备，而每一项缺失都是**失败关闭**而非静默降级：admission 返回 503、source-conflict 端点返回 501、scan 会一直重复检查陈旧的 `FAILED` stub。启动日志会逐项列出缺失的能力及其代价，已鉴权的 `/health` 在 `capabilities` 下报告同一份信息。设 `PIPELINE_REQUIRE_STRICT_STORAGE_READS=true` 可把这些缺口变成启动失败。有界分页没有对应旋钮：分页与 typed source 解析方法是抽象方法，缺失的后端根本无法构造。
 
 ## 入门指南
 
@@ -534,13 +534,13 @@ lightrag-server --port 9622 --workspace space2
 命令行的 workspace 参数和`.env`文件中的环境变量`WORKSPACE` 都可以用于指定当前实例的工作空间名字，命令行参数的优先级别更高。下面是不同类型的存储实现工作空间的方式：
 
 - **对于本地基于文件的数据库，数据隔离通过工作空间子目录实现：** JsonKVStorage, JsonDocStatusStorage, NetworkXStorage, NanoVectorDBStorage, FaissVectorDBStorage。
-- **对于将数据存储在集合（collection）中的数据库，通过在集合名称前添加工作空间前缀来实现：** RedisKVStorage, RedisDocStatusStorage, MilvusVectorDBStorage, MongoKVStorage, MongoDocStatusStorage, MongoVectorDBStorage, MongoGraphStorage, PGGraphStorage。
+- **对于将数据存储在集合（collection）中的数据库，通过在集合名称前添加工作空间前缀来实现：** RedisKVStorage, RedisDocStatusStorage, MilvusVectorDBStorage, MongoKVStorage, MongoDocStatusStorage, MongoVectorDBStorage, MongoGraphStorage, DocumentDBKVStorage, DocumentDBDocStatusStorage, DocumentDBVectorDBStorage, DocumentDBGraphStorage, PGGraphStorage。
 - **对于 Qdrant 向量数据库，通过基于 payload 的分区实现数据隔离（Qdrant 推荐的多租户方式）：** `QdrantVectorDBStorage` 使用共享 collection 和 payload 过滤，从而支持不限数量的 workspace。
 - **对于关系型数据库，数据隔离通过向表中添加 `workspace` 字段进行数据的逻辑隔离：** PGKVStorage, PGVectorStorage, PGDocStatusStorage。
 - **对于图数据库，通过 label 实现数据的逻辑隔离：** `Neo4JStorage`、`MemgraphStorage`
 - **对于 OpenSearch，通过索引名称前缀实现数据隔离：** `OpenSearchKVStorage`、`OpenSearchDocStatusStorage`、`OpenSearchGraphStorage`、`OpenSearchVectorDBStorage`
 
-为了保持对遗留数据的兼容，在未配置工作空间时PostgreSQL的默认工作空间为`default`，Neo4j的默认工作空间为`base`。对于所有的外部存储，系统都提供了专用的工作空间环境变量，用于覆盖公共的 `WORKSPACE`环境变量配置。这些适用于指定存储类型的工作空间环境变量为：`REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `MEMGRAPH_WORKSPACE`, `OPENSEARCH_WORKSPACE`。
+为了保持对遗留数据的兼容，在未配置工作空间时PostgreSQL的默认工作空间为`default`，Neo4j的默认工作空间为`base`。对于所有的外部存储，系统都提供了专用的工作空间环境变量，用于覆盖公共的 `WORKSPACE`环境变量配置。这些适用于指定存储类型的工作空间环境变量为：`REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `DOCUMENTDB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `MEMGRAPH_WORKSPACE`, `OPENSEARCH_WORKSPACE`。
 
 ### Gunicorn + Uvicorn 的多工作进程
 
@@ -889,12 +889,12 @@ LightRAG 使用 4 种类型的存储用于不同目的：
 
 | 存储类型 | 可选实现（首个为默认实现） |
 |---|---|
-| KV_STORAGE | `JsonKVStorage`、`RedisKVStorage`、`PGKVStorage`、`MongoKVStorage`、`OpenSearchKVStorage` |
-| VECTOR_STORAGE | `NanoVectorDBStorage`、`MilvusVectorDBStorage`、`PGVectorStorage`、`FaissVectorDBStorage`、`QdrantVectorDBStorage`、`MongoVectorDBStorage`、`OpenSearchVectorDBStorage` |
-| GRAPH_STORAGE | `NetworkXStorage`、`Neo4JStorage`、`PGTableGraphStorage`、`PGGraphStorage`、`MongoGraphStorage`、`MemgraphStorage`、`OpenSearchGraphStorage` |
-| DOC_STATUS_STORAGE | `JsonDocStatusStorage`、`RedisDocStatusStorage`、`PGDocStatusStorage`、`MongoDocStatusStorage`、`OpenSearchDocStatusStorage` |
+| KV_STORAGE | `JsonKVStorage`、`RedisKVStorage`、`PGKVStorage`、`MongoKVStorage`、`DocumentDBKVStorage`、`OpenSearchKVStorage` |
+| VECTOR_STORAGE | `NanoVectorDBStorage`、`MilvusVectorDBStorage`、`PGVectorStorage`、`FaissVectorDBStorage`、`QdrantVectorDBStorage`、`MongoVectorDBStorage`、`DocumentDBVectorDBStorage`、`OpenSearchVectorDBStorage` |
+| GRAPH_STORAGE | `NetworkXStorage`、`Neo4JStorage`、`PGTableGraphStorage`、`PGGraphStorage`、`MongoGraphStorage`、`DocumentDBGraphStorage`、`MemgraphStorage`、`OpenSearchGraphStorage` |
+| DOC_STATUS_STORAGE | `JsonDocStatusStorage`、`RedisDocStatusStorage`、`PGDocStatusStorage`、`MongoDocStatusStorage`、`DocumentDBDocStatusStorage`、`OpenSearchDocStatusStorage` |
 
-在生产环境中，如果希望用单一后端同时承担全部四种存储，可以选择 PostgreSQL、MongoDB 或 OpenSearch；也可以为不同存储类型分别选择专用数据库，例如用 Milvus 或 Qdrant 承担向量存储，用 Neo4j 或 Memgraph 承担图存储。
+在生产环境中，如果希望用单一后端同时承担全部四种存储，可以选择 PostgreSQL、MongoDB、DocumentDB 或 OpenSearch；也可以为不同存储类型分别选择专用数据库，例如用 Milvus 或 Qdrant 承担向量存储，用 Neo4j 或 Memgraph 承担图存储。
 
 **PostgreSQL 图存储推荐使用 `PGTableGraphStorage`：** 对于新建的 PostgreSQL 部署，`PGTableGraphStorage` 是推荐的 `GRAPH_STORAGE` 实现，用于替代 `PGGraphStorage`。它不经由 Apache AGE，而是把实体关系图直接存放在普通表中（JSONB 属性配合 B-tree 索引），由此带来两点实际优势：
 
@@ -910,6 +910,7 @@ LightRAG 使用 4 种类型的存储用于不同目的：
 | `PGKVStorage` / `PGVectorStorage` / `PGGraphStorage` / `PGTableGraphStorage` / `PGDocStatusStorage` | `POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DATABASE`（另需 `POSTGRES_HOST`、`POSTGRES_PORT`） |
 | `Neo4JStorage` | `NEO4J_URI`、`NEO4J_USERNAME`、`NEO4J_PASSWORD` |
 | `MongoKVStorage` / `MongoVectorDBStorage` / `MongoGraphStorage` / `MongoDocStatusStorage` | `MONGO_URI`、`MONGO_DATABASE`（`MongoVectorDBStorage` 要求该 Mongo 实例支持 Atlas Search / Vector Search） |
+| `DocumentDBKVStorage` / `DocumentDBVectorDBStorage` / `DocumentDBGraphStorage` / `DocumentDBDocStatusStorage` | `DOCUMENTDB_URI`、`DOCUMENTDB_DATABASE` |
 | `RedisKVStorage` / `RedisDocStatusStorage` | `REDIS_URI` |
 | `MilvusVectorDBStorage` | `MILVUS_URI`、`MILVUS_DB_NAME` |
 | `QdrantVectorDBStorage` | `QDRANT_URL`（`QDRANT_API_KEY` 可选） |

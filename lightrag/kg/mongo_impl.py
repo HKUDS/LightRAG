@@ -313,26 +313,36 @@ async def _run_batched_bulk_write(
 class ClientManager:
     _instances: dict = {"client": None, "db": None, "ref_count": 0}
     _lock = asyncio.Lock()
+    uri_env_var = "MONGO_URI"
+    database_env_var = "MONGO_DATABASE"
+    config_section = "mongodb"
+    default_uri = "mongodb://root:root@localhost:27017/"
+    default_database = "LightRAG"
+    driver_name = "LightRAG"
 
     @classmethod
     async def get_client(cls) -> AsyncMongoClient:
         async with cls._lock:
             if cls._instances["db"] is None:
                 uri = os.environ.get(
-                    "MONGO_URI",
+                    cls.uri_env_var,
                     config.get(
-                        "mongodb",
+                        cls.config_section,
                         "uri",
-                        fallback="mongodb://root:root@localhost:27017/",
+                        fallback=cls.default_uri,
                     ),
                 )
                 database_name = os.environ.get(
-                    "MONGO_DATABASE",
-                    config.get("mongodb", "database", fallback="LightRAG"),
+                    cls.database_env_var,
+                    config.get(
+                        cls.config_section,
+                        "database",
+                        fallback=cls.default_database,
+                    ),
                 )
                 client = AsyncMongoClient(
                     uri,
-                    driver=DriverInfo(name="LightRAG", version=__version__),
+                    driver=DriverInfo(name=cls.driver_name, version=__version__),
                 )
                 db = client.get_database(database_name)
                 cls._instances["client"] = client
@@ -355,13 +365,14 @@ class ClientManager:
                         cls._instances["db"] = None
 
 
-@final
 @dataclass
-class MongoKVStorage(BaseKVStorage):
+class _MongoKVStorageBase(BaseKVStorage):
     db: AsyncDatabase = field(default=None)
     _data: AsyncCollection = field(default=None)
 
     supports_strict_point_reads: ClassVar[bool] = True
+    client_manager: ClassVar[type[ClientManager]] = ClientManager
+    workspace_env_var: ClassVar[str] = "MONGODB_WORKSPACE"
 
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
         super().__init__(
@@ -376,12 +387,12 @@ class MongoKVStorage(BaseKVStorage):
         validate_workspace(self.workspace)
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all MongoDB storage instances
-        mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
+        mongodb_workspace = os.environ.get(self.workspace_env_var)
         if mongodb_workspace and mongodb_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = mongodb_workspace.strip()
             logger.info(
-                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
+                f"Using {self.workspace_env_var} environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
         else:
             # Use the workspace parameter passed during initialization
@@ -416,7 +427,7 @@ class MongoKVStorage(BaseKVStorage):
     async def initialize(self):
         async with get_data_init_lock():
             if self.db is None:
-                self.db = await ClientManager.get_client()
+                self.db = await self.client_manager.get_client()
 
             self._data = await get_or_create_collection(self.db, self._collection_name)
             logger.debug(
@@ -425,7 +436,7 @@ class MongoKVStorage(BaseKVStorage):
 
     async def finalize(self):
         if self.db is not None:
-            await ClientManager.release_client(self.db)
+            await self.client_manager.release_client(self.db)
             self.db = None
             self._data = None
 
@@ -592,12 +603,20 @@ class MongoKVStorage(BaseKVStorage):
 
 
 @final
+class MongoKVStorage(_MongoKVStorageBase):
+    pass
+
+
 @dataclass
-class MongoDocStatusStorage(DocStatusStorage):
+class _MongoDocStatusStorageBase(DocStatusStorage):
     db: AsyncDatabase = field(default=None)
     _data: AsyncCollection = field(default=None)
 
     supports_strict_point_reads: ClassVar[bool] = True
+    client_manager: ClassVar[type[ClientManager]] = ClientManager
+    workspace_env_var: ClassVar[str] = "MONGODB_WORKSPACE"
+    supports_collation_indexes: ClassVar[bool] = True
+    supports_query_collation: ClassVar[bool] = True
 
     # Bounded upper limit on the sample of conflicting doc IDs surfaced by the
     # source-conflict listing/repair APIs — never materialize the whole set.
@@ -656,12 +675,12 @@ class MongoDocStatusStorage(DocStatusStorage):
         validate_workspace(self.workspace)
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all MongoDB storage instances
-        mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
+        mongodb_workspace = os.environ.get(self.workspace_env_var)
         if mongodb_workspace and mongodb_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = mongodb_workspace.strip()
             logger.info(
-                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
+                f"Using {self.workspace_env_var} environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
         else:
             # Use the workspace parameter passed during initialization
@@ -690,7 +709,7 @@ class MongoDocStatusStorage(DocStatusStorage):
     async def initialize(self):
         async with get_data_init_lock():
             if self.db is None:
-                self.db = await ClientManager.get_client()
+                self.db = await self.client_manager.get_client()
 
             self._data = await get_or_create_collection(self.db, self._collection_name)
 
@@ -703,7 +722,7 @@ class MongoDocStatusStorage(DocStatusStorage):
 
     async def finalize(self):
         if self.db is not None:
-            await ClientManager.release_client(self.db)
+            await self.client_manager.release_client(self.db)
             self.db = None
             self._data = None
 
@@ -934,6 +953,12 @@ class MongoDocStatusStorage(DocStatusStorage):
                     "keys": [("status", 1), ("created_at", 1), ("_id", 1)],
                 },
             ]
+            if not self.supports_collation_indexes:
+                all_indexes = [
+                    index_info
+                    for index_info in all_indexes
+                    if "collation" not in index_info
+                ]
 
             # 2. Handle legacy index cleanup: only drop old indexes that exist in THIS collection
             legacy_index_names = [
@@ -1055,7 +1080,7 @@ class MongoDocStatusStorage(DocStatusStorage):
         sort_criteria = [(sort_field, sort_direction_value)]
 
         # Query for paginated data with Chinese collation for file_path sorting
-        if sort_field == "file_path":
+        if sort_field == "file_path" and self.supports_query_collation:
             # Use Chinese collation for pinyin sorting
             cursor = (
                 self._data.find(query_filter)
@@ -1718,8 +1743,12 @@ class MongoDocStatusStorage(DocStatusStorage):
 
 
 @final
+class MongoDocStatusStorage(_MongoDocStatusStorageBase):
+    pass
+
+
 @dataclass
-class MongoGraphStorage(BaseGraphStorage):
+class _MongoGraphStorageBase(BaseGraphStorage):
     """
     A concrete implementation using MongoDB's $graphLookup to demonstrate multi-hop queries.
     """
@@ -1729,6 +1758,13 @@ class MongoGraphStorage(BaseGraphStorage):
     collection: AsyncCollection = field(default=None)
     # edge collection storing source_node_id, target_node_id, and edge_properties
     edgeCollection: AsyncCollection = field(default=None)
+    client_manager: ClassVar[type[ClientManager]] = ClientManager
+    workspace_env_var: ClassVar[str] = "MONGODB_WORKSPACE"
+    label_search_uses_atlas: ClassVar[bool] = True
+    edge_index_partial_filter: ClassVar[dict[str, Any] | None] = {
+        "edge_lo": {"$exists": True, "$type": "string"},
+        "edge_hi": {"$exists": True, "$type": "string"},
+    }
 
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
         super().__init__(
@@ -1740,12 +1776,12 @@ class MongoGraphStorage(BaseGraphStorage):
         validate_workspace(self.workspace)
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all MongoDB storage instances
-        mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
+        mongodb_workspace = os.environ.get(self.workspace_env_var)
         if mongodb_workspace and mongodb_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = mongodb_workspace.strip()
             logger.info(
-                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
+                f"Using {self.workspace_env_var} environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
         else:
             # Use the workspace parameter passed during initialization
@@ -1780,7 +1816,7 @@ class MongoGraphStorage(BaseGraphStorage):
     async def initialize(self):
         async with get_data_init_lock():
             if self.db is None:
-                self.db = await ClientManager.get_client()
+                self.db = await self.client_manager.get_client()
 
             self.collection = await get_or_create_collection(
                 self.db, self._collection_name
@@ -1803,7 +1839,7 @@ class MongoGraphStorage(BaseGraphStorage):
 
     async def finalize(self):
         if self.db is not None:
-            await ClientManager.release_client(self.db)
+            await self.client_manager.release_client(self.db)
             self.db = None
             self.collection = None
             self.edge_collection = None
@@ -1866,14 +1902,11 @@ class MongoGraphStorage(BaseGraphStorage):
         # The unique index is the completion flag — only created on full success.
         # unique build raises if any duplicate slipped through (e.g. a concurrent
         # old-version writer), which fails startup so the next run retries.
+        index_options: dict[str, Any] = {"name": index_name, "unique": True}
+        if self.edge_index_partial_filter is not None:
+            index_options["partialFilterExpression"] = self.edge_index_partial_filter
         await self.edge_collection.create_index(
-            [("edge_lo", 1), ("edge_hi", 1)],
-            name=index_name,
-            unique=True,
-            partialFilterExpression={
-                "edge_lo": {"$exists": True, "$type": "string"},
-                "edge_hi": {"$exists": True, "$type": "string"},
-            },
+            [("edge_lo", 1), ("edge_hi", 1)], **index_options
         )
         scanned = total if total is not None else "?"
         logger.info(
@@ -3609,6 +3642,9 @@ class MongoGraphStorage(BaseGraphStorage):
             logger.error(f"[{self.workspace}] Error counting nodes: {e}")
             raise
 
+        if not self.label_search_uses_atlas:
+            return await self._fallback_regex_search(query_strip, limit)
+
         # Progressive search strategy
         search_methods = [
             ("text", self._try_atlas_text_search),
@@ -3793,6 +3829,11 @@ class MongoGraphStorage(BaseGraphStorage):
             return {"status": "error", "message": str(e)}
 
 
+@final
+class MongoGraphStorage(_MongoGraphStorageBase):
+    pass
+
+
 @dataclass
 class _PendingVectorDoc:
     """Buffered vector upsert waiting for embedding and/or bulk flush."""
@@ -3802,12 +3843,15 @@ class _PendingVectorDoc:
     vector: list[float] | None = None
 
 
-@final
 @dataclass
-class MongoVectorDBStorage(BaseVectorStorage):
+class _MongoVectorDBStorageBase(BaseVectorStorage):
     db: AsyncDatabase | None = field(default=None)
     _data: AsyncCollection | None = field(default=None)
     _index_name: str = field(default="", init=False)
+    client_manager: ClassVar[type[ClientManager]] = ClientManager
+    workspace_env_var: ClassVar[str] = "MONGODB_WORKSPACE"
+    vector_query_uses_index_name: ClassVar[bool] = True
+    vector_query_uses_cosmos_search: ClassVar[bool] = False
 
     def __init__(
         self, namespace, global_config, embedding_func, workspace=None, meta_fields=None
@@ -3827,12 +3871,12 @@ class MongoVectorDBStorage(BaseVectorStorage):
 
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all MongoDB storage instances
-        mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
+        mongodb_workspace = os.environ.get(self.workspace_env_var)
         if mongodb_workspace and mongodb_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = mongodb_workspace.strip()
             logger.info(
-                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
+                f"Using {self.workspace_env_var} environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
         else:
             # Use the workspace parameter passed during initialization
@@ -3896,7 +3940,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
     async def initialize(self):
         async with get_data_init_lock():
             if self.db is None:
-                self.db = await ClientManager.get_client()
+                self.db = await self.client_manager.get_client()
 
             self._data = await get_or_create_collection(self.db, self._collection_name)
 
@@ -3921,7 +3965,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
             flush_error = e
 
         if self.db is not None:
-            await ClientManager.release_client(self.db)
+            await self.client_manager.release_client(self.db)
             self.db = None
             self._data = None
 
@@ -4146,21 +4190,37 @@ class MongoVectorDBStorage(BaseVectorStorage):
             # Convert numpy array to a list to ensure compatibility with MongoDB
             query_vector = embedding[0].tolist()
 
-        # Define the aggregation pipeline with the converted query vector
-        pipeline = [
-            {
-                "$vectorSearch": {
-                    "index": self._index_name,  # Use stored index name for consistency
-                    "path": "vector",
-                    "queryVector": query_vector,
-                    "numCandidates": 100,  # Adjust for performance
-                    "limit": top_k,
-                }
-            },
-            {"$addFields": {"score": {"$meta": "vectorSearchScore"}}},
-            {"$match": {"score": {"$gte": self.cosine_better_than_threshold}}},
-            {"$project": {"vector": 0}},
-        ]
+        if self.vector_query_uses_cosmos_search:
+            pipeline = [
+                {
+                    "$search": {
+                        "cosmosSearch": {
+                            "path": "vector",
+                            "vector": query_vector,
+                            "k": top_k,
+                        }
+                    }
+                },
+                {"$addFields": {"score": {"$meta": "searchScore"}}},
+                {"$match": {"score": {"$gte": self.cosine_better_than_threshold}}},
+                {"$project": {"vector": 0}},
+            ]
+        else:
+            vector_search = {
+                "path": "vector",
+                "queryVector": query_vector,
+                "numCandidates": 100,
+                "limit": top_k,
+            }
+            if self.vector_query_uses_index_name:
+                vector_search["index"] = self._index_name
+
+            pipeline = [
+                {"$vectorSearch": vector_search},
+                {"$addFields": {"score": {"$meta": "vectorSearchScore"}}},
+                {"$match": {"score": {"$gte": self.cosine_better_than_threshold}}},
+                {"$project": {"vector": 0}},
+            ]
 
         # Execute the aggregation pipeline
         cursor = await self._data.aggregate(pipeline, allowDiskUse=True)
@@ -4624,6 +4684,11 @@ class MongoVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Error dropping vector storage {self._collection_name}: {e}"
             )
             return {"status": "error", "message": str(e)}
+
+
+@final
+class MongoVectorDBStorage(_MongoVectorDBStorageBase):
+    pass
 
 
 async def get_or_create_collection(db: AsyncDatabase, collection_name: str):

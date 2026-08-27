@@ -15,6 +15,7 @@ Supported KV Storage Types:
     - RedisKVStorage
     - PGKVStorage
     - MongoKVStorage
+    - DocumentDBKVStorage
     - OpenSearchKVStorage
 """
 
@@ -49,12 +50,14 @@ STORAGE_TYPES = {
     "3": "PGKVStorage",
     "4": "MongoKVStorage",
     "5": "OpenSearchKVStorage",
+    "6": "DocumentDBKVStorage",
 }
 
 # Workspace environment variable mapping
 WORKSPACE_ENV_MAP = {
     "PGKVStorage": "POSTGRES_WORKSPACE",
     "MongoKVStorage": "MONGODB_WORKSPACE",
+    "DocumentDBKVStorage": "DOCUMENTDB_WORKSPACE",
     "RedisKVStorage": "REDIS_WORKSPACE",
     "OpenSearchKVStorage": "OPENSEARCH_WORKSPACE",
 }
@@ -175,6 +178,10 @@ class CleanupTool:
                 return config.has_option("mongodb", "uri") and config.has_option(
                     "mongodb", "database"
                 )
+            elif storage_name == "DocumentDBKVStorage":
+                return config.has_option("documentdb", "uri") and config.has_option(
+                    "documentdb", "database"
+                )
             elif storage_name == "OpenSearchKVStorage":
                 return config.has_option("opensearch", "hosts")
 
@@ -241,6 +248,10 @@ class CleanupTool:
             from lightrag.kg.mongo_impl import MongoKVStorage
 
             return MongoKVStorage
+        elif storage_name == "DocumentDBKVStorage":
+            from lightrag.kg.documentdb_impl import DocumentDBKVStorage
+
+            return DocumentDBKVStorage
         elif storage_name == "OpenSearchKVStorage":
             from lightrag.kg.opensearch_impl import OpenSearchKVStorage
 
@@ -440,7 +451,7 @@ class CleanupTool:
             return await self.count_query_caches_redis(storage)
         elif storage_name == "PGKVStorage":
             return await self.count_query_caches_pg(storage)
-        elif storage_name == "MongoKVStorage":
+        elif storage_name in {"MongoKVStorage", "DocumentDBKVStorage"}:
             return await self.count_query_caches_mongo(storage)
         elif storage_name == "OpenSearchKVStorage":
             return await self.count_query_caches_opensearch(storage)
@@ -779,7 +790,7 @@ class CleanupTool:
             await self.delete_query_caches_redis(storage, cleanup_type, stats)
         elif storage_name == "PGKVStorage":
             await self.delete_query_caches_pg(storage, cleanup_type, stats)
-        elif storage_name == "MongoKVStorage":
+        elif storage_name in {"MongoKVStorage", "DocumentDBKVStorage"}:
             await self.delete_query_caches_mongo(storage, cleanup_type, stats)
         elif storage_name == "OpenSearchKVStorage":
             await self.delete_query_caches_opensearch(storage, cleanup_type, stats)
@@ -1043,6 +1054,10 @@ class CleanupTool:
             elif storage_name == "MongoKVStorage":
                 print("     [mongodb]")
                 print("     uri = mongodb://root:root@localhost:27017/")
+                print("     database = LightRAG")
+            elif storage_name == "DocumentDBKVStorage":
+                print("     [documentdb]")
+                print("     uri = mongodb://localhost:10260/")
                 print("     database = LightRAG")
             elif storage_name == "OpenSearchKVStorage":
                 print("     [opensearch]")

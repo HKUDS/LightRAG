@@ -620,6 +620,46 @@ fi
     assert "MongoVectorDBStorage requires an Atlas-capable MongoDB URI" in result.stderr
 
 
+def test_validate_env_file_rejects_invalid_documentdb_uri(tmp_path: Path) -> None:
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LIGHTRAG_KV_STORAGE=DocumentDBKVStorage",
+            "LIGHTRAG_VECTOR_STORAGE=DocumentDBVectorDBStorage",
+            "LIGHTRAG_GRAPH_STORAGE=DocumentDBGraphStorage",
+            "LIGHTRAG_DOC_STATUS_STORAGE=DocumentDBDocStatusStorage",
+            "DOCUMENTDB_URI=https://documentdb.example.com:10260/",
+            "DOCUMENTDB_DATABASE=LightRAG",
+        ],
+    )
+    write_text_lines(tmp_path / "env.example", ["LLM_BINDING=openai"])
+
+    result = subprocess.run(
+        [
+            bash_bin(),
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+if validate_env_file; then
+  printf 'VALID=yes\\n'
+else
+  printf 'VALID=no\\n'
+fi
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert parse_lines(result.stdout)["VALID"] == "no"
+    assert "Invalid DOCUMENTDB_URI" in result.stderr
+
+
 def test_validate_env_file_allows_mongo_vector_storage_with_wizard_managed_atlas_local(
     tmp_path: Path,
 ) -> None:

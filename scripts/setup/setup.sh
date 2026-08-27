@@ -646,6 +646,7 @@ prepare_compose_runtime_overrides() {
     "LLM_BINDING_HOST" \
     "REDIS_URI" \
     "MONGO_URI" \
+    "DOCUMENTDB_URI" \
     "NEO4J_URI" \
     "MILVUS_URI" \
     "QDRANT_URL" \
@@ -1299,6 +1300,9 @@ collect_database_config() {
     mongodb)
       collect_mongodb_config "$default_docker"
       ;;
+    documentdb)
+      collect_documentdb_config
+      ;;
     redis)
       collect_redis_config "$default_docker"
       ;;
@@ -1492,6 +1496,19 @@ collect_mongodb_config() {
   else
     set_compose_override "MONGO_URI" ""
   fi
+}
+
+collect_documentdb_config() {
+  local uri database
+  local existing_database=""
+
+  uri="${ENV_VALUES[DOCUMENTDB_URI]:-mongodb://localhost:10260/}"
+  uri="$(prompt_until_valid "DocumentDB MongoDB-compatible URI" "$uri" validate_uri documentdb)"
+  existing_database="${ORIGINAL_ENV_VALUES[DOCUMENTDB_DATABASE]-${ENV_VALUES[DOCUMENTDB_DATABASE]:-}}"
+  database="$(prompt_with_default "DocumentDB database" "${existing_database:-LightRAG}")"
+
+  ENV_VALUES["DOCUMENTDB_URI"]="$uri"
+  ENV_VALUES["DOCUMENTDB_DATABASE"]="$database"
 }
 
 collect_redis_config() {
@@ -2644,7 +2661,7 @@ finalize_base_setup() {
 env_storage_flow() {
   local env_file="${REPO_ROOT}/.env"
   local db_type
-  local db_order=("postgresql" "neo4j" "mongodb" "redis" "milvus" "qdrant" "memgraph" "opensearch")
+  local db_order=("postgresql" "neo4j" "mongodb" "documentdb" "redis" "milvus" "qdrant" "memgraph" "opensearch")
 
   if [[ ! -f "$env_file" ]]; then
     format_error "No .env file found." "Run 'make env-base' first to configure LLM and embedding."
@@ -3038,6 +3055,10 @@ validate_env_file() {
   fi
   if [[ -n "${referenced_db_types[mongodb]+set}" ]] && [[ -n "${ENV_VALUES[MONGO_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[MONGO_URI]}" mongodb; then
     format_error "Invalid MONGO_URI" "Use mongodb:// or mongodb+srv:// format."
+    errors=1
+  fi
+  if [[ -n "${referenced_db_types[documentdb]+set}" ]] && [[ -n "${ENV_VALUES[DOCUMENTDB_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[DOCUMENTDB_URI]}" documentdb; then
+    format_error "Invalid DOCUMENTDB_URI" "Use mongodb:// or mongodb+srv:// format."
     errors=1
   fi
   if [[ -n "${referenced_db_types[redis]+set}" ]] && [[ -n "${ENV_VALUES[REDIS_URI]:-}" ]] && ! validate_uri "${ENV_VALUES[REDIS_URI]}" redis; then

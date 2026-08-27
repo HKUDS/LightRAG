@@ -54,7 +54,7 @@ Recommended sequence:
 
 No data migration is required. The first sweep after startup is a strict full sweep, so a document an old writer left mid-flight — a row stuck in `PARSING`/`ANALYZING`/`PROCESSING` with no worker behind it — is picked up and reprocessed on its own. If a run genuinely cannot be drained, stopping mid-run is still safe for the same reason; what is not safe is starting the old version again afterwards.
 
-**After starting, check the log for a strict-capability warning.** All five built-in `doc_status` backends (JSON, Redis, PostgreSQL, MongoDB, OpenSearch) have every capability. A third-party backend may not, and each gap fails closed rather than degrading quietly: admission answers 503, the source-conflict endpoints answer 501, and a scan keeps re-examining a stale `FAILED` stub. Startup names each missing capability and what it costs, and the authenticated `/health` reports the same under `capabilities`. Set `PIPELINE_REQUIRE_STRICT_STORAGE_READS=true` to turn those gaps into a startup failure instead. There is no equivalent knob for bounded paging: the paging and typed source-resolution methods are abstract, so a backend without them cannot be constructed at all.
+**After starting, check the log for a strict-capability warning.** All six built-in `doc_status` backends (JSON, Redis, PostgreSQL, MongoDB, DocumentDB, OpenSearch) have every capability. A third-party backend may not, and each gap fails closed rather than degrading quietly: admission answers 503, the source-conflict endpoints answer 501, and a scan keeps re-examining a stale `FAILED` stub. Startup names each missing capability and what it costs, and the authenticated `/health` reports the same under `capabilities`. Set `PIPELINE_REQUIRE_STRICT_STORAGE_READS=true` to turn those gaps into a startup failure instead. There is no equivalent knob for bounded paging: the paging and typed source-resolution methods are abstract, so a backend without them cannot be constructed at all.
 
 ## Getting Started
 
@@ -534,13 +534,13 @@ Configuring an independent working directory and a dedicated `.env` configuratio
 The command-line `workspace` argument and the `WORKSPACE` environment variable in the `.env` file can both be used to specify the workspace name for the current instance, with the command-line argument having higher priority. Here is how workspaces are implemented for different types of storage:
 
 - **For local file-based databases, data isolation is achieved through workspace subdirectories:** `JsonKVStorage`, `JsonDocStatusStorage`, `NetworkXStorage`, `NanoVectorDBStorage`, `FaissVectorDBStorage`.
-- **For databases that store data in collections, it's done by adding a workspace prefix to the collection name:** `RedisKVStorage`, `RedisDocStatusStorage`, `MilvusVectorDBStorage`, `MongoKVStorage`, `MongoDocStatusStorage`, `MongoVectorDBStorage`, `MongoGraphStorage`, `PGGraphStorage`.
+- **For databases that store data in collections, it's done by adding a workspace prefix to the collection name:** `RedisKVStorage`, `RedisDocStatusStorage`, `MilvusVectorDBStorage`, `MongoKVStorage`, `MongoDocStatusStorage`, `MongoVectorDBStorage`, `MongoGraphStorage`, `DocumentDBKVStorage`, `DocumentDBDocStatusStorage`, `DocumentDBVectorDBStorage`, `DocumentDBGraphStorage`, `PGGraphStorage`.
 - **For Qdrant vector database, data isolation is achieved through payload-based partitioning (Qdrant's recommended multitenancy approach):** `QdrantVectorDBStorage` uses shared collections with payload filtering for unlimited workspace scalability.
 - **For relational databases, data isolation is achieved by adding a `workspace` field to the tables for logical data separation:** `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage`.
 - **For graph databases, logical data isolation is achieved through labels:** `Neo4JStorage`, `MemgraphStorage`
 - **For OpenSearch, data isolation is achieved through index name prefixes:** `OpenSearchKVStorage`, `OpenSearchDocStatusStorage`, `OpenSearchGraphStorage`, `OpenSearchVectorDBStorage`
 
-To maintain compatibility with legacy data, the default workspace for PostgreSQL is `default` and for Neo4j is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `MEMGRAPH_WORKSPACE`, `OPENSEARCH_WORKSPACE`.
+To maintain compatibility with legacy data, the default workspace for PostgreSQL is `default` and for Neo4j is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `DOCUMENTDB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `MEMGRAPH_WORKSPACE`, `OPENSEARCH_WORKSPACE`.
 
 ### Multiple workers for Gunicorn + Uvicorn
 
@@ -889,12 +889,12 @@ Each storage type offers multiple implementations. By default, LightRAG Server u
 
 | Storage Type | Available Implementations (Default First) |
 |---|---|
-| KV_STORAGE | `JsonKVStorage`, `RedisKVStorage`, `PGKVStorage`, `MongoKVStorage`, `OpenSearchKVStorage` |
-| VECTOR_STORAGE | `NanoVectorDBStorage`, `MilvusVectorDBStorage`, `PGVectorStorage`, `FaissVectorDBStorage`, `QdrantVectorDBStorage`, `MongoVectorDBStorage`, `OpenSearchVectorDBStorage` |
-| GRAPH_STORAGE | `NetworkXStorage`, `Neo4JStorage`, `PGTableGraphStorage`, `PGGraphStorage`, `MongoGraphStorage`, `MemgraphStorage`, `OpenSearchGraphStorage` |
-| DOC_STATUS_STORAGE | `JsonDocStatusStorage`, `RedisDocStatusStorage`, `PGDocStatusStorage`, `MongoDocStatusStorage`, `OpenSearchDocStatusStorage` |
+| KV_STORAGE | `JsonKVStorage`, `RedisKVStorage`, `PGKVStorage`, `MongoKVStorage`, `DocumentDBKVStorage`, `OpenSearchKVStorage` |
+| VECTOR_STORAGE | `NanoVectorDBStorage`, `MilvusVectorDBStorage`, `PGVectorStorage`, `FaissVectorDBStorage`, `QdrantVectorDBStorage`, `MongoVectorDBStorage`, `DocumentDBVectorDBStorage`, `OpenSearchVectorDBStorage` |
+| GRAPH_STORAGE | `NetworkXStorage`, `Neo4JStorage`, `PGTableGraphStorage`, `PGGraphStorage`, `MongoGraphStorage`, `DocumentDBGraphStorage`, `MemgraphStorage`, `OpenSearchGraphStorage` |
+| DOC_STATUS_STORAGE | `JsonDocStatusStorage`, `RedisDocStatusStorage`, `PGDocStatusStorage`, `MongoDocStatusStorage`, `DocumentDBDocStatusStorage`, `OpenSearchDocStatusStorage` |
 
-For production deployments, PostgreSQL, MongoDB, or OpenSearch can provide all four storage types through a single backend. You can also select a specialized database for each storage type, such as Milvus or Qdrant for vector storage and Neo4j or Memgraph for graph storage.
+For production deployments, PostgreSQL, MongoDB, DocumentDB, or OpenSearch can provide all four storage types through a single backend. You can also select a specialized database for each storage type, such as Milvus or Qdrant for vector storage and Neo4j or Memgraph for graph storage.
 
 **PostgreSQL Graph Storage — prefer `PGTableGraphStorage`:** For new PostgreSQL deployments, `PGTableGraphStorage` is the recommended `GRAPH_STORAGE` implementation and supersedes `PGGraphStorage`. It keeps the entity-relation graph in ordinary tables — JSONB properties plus B-tree indexes — instead of going through Apache AGE, which brings two practical advantages:
 
@@ -910,6 +910,7 @@ The environment variables required at startup for each storage implementation ar
 | `PGKVStorage` / `PGVectorStorage` / `PGGraphStorage` / `PGTableGraphStorage` / `PGDocStatusStorage` | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE` (plus `POSTGRES_HOST` and `POSTGRES_PORT`) |
 | `Neo4JStorage` | `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD` |
 | `MongoKVStorage` / `MongoVectorDBStorage` / `MongoGraphStorage` / `MongoDocStatusStorage` | `MONGO_URI`, `MONGO_DATABASE` (`MongoVectorDBStorage` requires a MongoDB deployment that supports Atlas Search / Vector Search) |
+| `DocumentDBKVStorage` / `DocumentDBVectorDBStorage` / `DocumentDBGraphStorage` / `DocumentDBDocStatusStorage` | `DOCUMENTDB_URI`, `DOCUMENTDB_DATABASE` |
 | `RedisKVStorage` / `RedisDocStatusStorage` | `REDIS_URI` |
 | `MilvusVectorDBStorage` | `MILVUS_URI`, `MILVUS_DB_NAME` |
 | `QdrantVectorDBStorage` | `QDRANT_URL` (`QDRANT_API_KEY` is optional) |
@@ -933,7 +934,7 @@ LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 
 You cannot change storage implementation selection after adding documents to LightRAG. Data migration from one storage implementation to another is not supported yet, except for the graph moving from `PGGraphStorage` to `PGTableGraphStorage` (see *Graph Migration From Apache AGE To PostgreSQL Tables* below) and the LLM cache (see *LLM Cache Migration Between Storage Types* below). For further information, please read the sample `env.example` file.
 
-> The [dev-lancedb](https://github.com/HKUDS/LightRAG/tree/dev-lancedb) development branch provides community-contributed LanceDB storage implementations for all four storage types: key-value (KV), vector, graph, and document status. The [dev-nebula-graph](https://github.com/HKUDS/LightRAG/tree/dev-nebula-graph) development branch provides a community-contributed Nebula graph storage implementation. Developers who need these storage options are welcome to try them and help improve them.
+> The [dev-documentdb](https://github.com/HKUDS/LightRAG/tree/dev-documentdb) development branch provides community-contributed DocumentDB (Linux Foundation) storage implementations for all four storage types: key-value (KV), vector, graph, and document status. It serves as an integration branch for wider community validation before the backend is considered for inclusion in `main`. The [dev-lancedb](https://github.com/HKUDS/LightRAG/tree/dev-lancedb) development branch provides community-contributed LanceDB storage implementations for all four storage types: key-value (KV), vector, graph, and document status. The [dev-nebula-graph](https://github.com/HKUDS/LightRAG/tree/dev-nebula-graph) development branch provides a community-contributed Nebula graph storage implementation. Developers who need these storage options are welcome to try them and help improve them.
 
 ### LLM Cache Migration Between Storage Types
 

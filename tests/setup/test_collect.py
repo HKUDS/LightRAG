@@ -378,6 +378,31 @@ printf '{env_key}=%s\\n' "${{ENV_VALUES[{env_key}]}}\"
     assert values[env_key] == expected_value
 
 
+def test_collect_documentdb_config_preserves_existing_values() -> None:
+    values = run_bash_lines(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+ENV_VALUES[DOCUMENTDB_URI]="mongodb://documentdb.example.com:10260/?tls=true"
+ENV_VALUES[DOCUMENTDB_DATABASE]="production_rag"
+ORIGINAL_ENV_VALUES[DOCUMENTDB_DATABASE]="production_rag"
+
+prompt_until_valid() {{ printf '%s' "$2"; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+
+collect_documentdb_config
+
+printf 'DOCUMENTDB_URI=%s\n' "${{ENV_VALUES[DOCUMENTDB_URI]}}"
+printf 'DOCUMENTDB_DATABASE=%s\n' "${{ENV_VALUES[DOCUMENTDB_DATABASE]}}"
+""")
+
+    assert (
+        values["DOCUMENTDB_URI"] == "mongodb://documentdb.example.com:10260/?tls=true"
+    )
+    assert values["DOCUMENTDB_DATABASE"] == "production_rag"
+
+
 def test_collect_ssl_config_can_disable_loaded_ssl_values(tmp_path: Path) -> None:
     """Declining SSL should clear previously loaded cert paths and staged sources."""
     cert_path = tmp_path / "cert.pem"
