@@ -9,6 +9,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, mock, spyOn, test } f
 // replaces that module with only `errorMessage`. See the constants mock for why
 // the real exports are needed at all.
 const realConstants = await import('@/lib/constants')
+// Same overlay rationale as the constants mock below: files running after
+// this one still need the module's OTHER exports (e.g. `createSelectors`,
+// used by every zustand store module).
+const realUtils = await import('@/lib/utils')
 
 const storageData = new Map<string, string>()
 const storageMock = {
@@ -41,10 +45,22 @@ const fakeAuthStore = {
 
 mock.module('@/stores/settings', () => ({ useSettingsStore: fakeSettingsStore }))
 mock.module('@/stores/state', () => ({ useAuthStore: fakeAuthStore }))
+// Full no-op surface, not just the one method this file calls: mock.module is
+// global for the whole bun test run, so a partial stub would delete the other
+// navigationService methods for every module imported afterwards (the
+// workspace bootstrap calls configureEntry at import time).
 mock.module('@/services/navigation', () => ({
-  navigationService: { navigateToUnauthenticated: () => {} },
+  navigationService: {
+    navigateToUnauthenticated: () => {},
+    navigateToHome: () => {},
+    setNavigate: () => {},
+    configureEntry: () => {},
+    resetAllApplicationState: () => {},
+    resetForTests: () => {},
+  },
 }))
 mock.module('@/lib/utils', () => ({
+  ...realUtils,
   errorMessage: (error: any) =>
     error instanceof Error ? error.message : `${error}`,
 }))

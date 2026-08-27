@@ -37,7 +37,7 @@ const historyFixture: MessageWithError[] = [
 ]
 
 describe('serializer equivalence', () => {
-  test.each(ALL_MODES)(
+  test.each([...ALL_MODES])(
     'mode=%s: same settings + same explicit history + same question ⇒ field-identical bodies',
     (mode) => {
       const a = serializeQueryRequest(baseSettings(mode), 'what is RAG', historyFixture)

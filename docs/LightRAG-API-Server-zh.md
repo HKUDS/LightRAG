@@ -240,6 +240,18 @@ lightrag-server --port 9621
 
 后端会把该值作为 FastAPI 的 `root_path`，并把同一个运行时前缀注入 WebUI。WebUI 在服务端内部始终挂载到 `/webui`，因此同一份前端构建产物可以服务任意前缀。完整的 Nginx、Docker 和 Kubernetes 示例请参阅 [Single-Server Multi-Site Deployment](./MultiSiteDeployment.md)。
 
+### `/workspace` 查询入口
+
+除 `/webui` 后台管理界面外，服务端还挂载第二个入口 `/workspace`：面向日常查询用户的纯问答界面。它只提供聊天界面（无文档管理、无知识图谱、无查询参数侧栏、无 API 文档入口），并针对移动端优化。未登录访问 `/workspace` 先看到可定制的欢迎页；`/webui` 保持直接显示登录页。两个入口来自同一次前端构建（`index.html` + `workspace.html`），都支持 `LIGHTRAG_API_PREFIX`。
+
+- `LIGHTRAG_DEFAULT_UI` / `--default-ui`（默认 `webui`，可选 `workspace`）只控制一件事：根路径 `/` 跳转到哪个入口。两个入口始终都会挂载；非法值会导致启动失败。
+- `/workspace` 的查询参数**只继承、不可编辑**：每次查询使用同一浏览器中 `/webui` 保存的 `querySettings`（未保存时使用前端默认值）。这是按浏览器的本地配置，不是服务端全局策略。**因此后台保存的查询 `mode` 同时决定查询入口的行为**——包括 `bypass`（跳过检索、携带最近 3 轮对话直接询问 LLM）。唯二例外是调试开关 `only_need_context` / `only_need_prompt`：`/workspace` 始终以 `false` 提交，管理员调试后忘记关闭也不会让查询用户拿到原始上下文而非答案。
+- 两个入口的查询历史相互独立：管理员的调试对话不会出现在查询入口（也不会作为其 `bypass` 上下文发送），反之亦然。
+- `UI_TEMPLATES_DIR` 指向可选的只读多语言 UI Bundle，可在不重建前端的情况下替换欢迎页文案、查询空白态文案和品牌 Logo——参见 `docs/ui_templates_example/`。未设置即使用前端内置品牌内容（这是常态）；显式设置但 Bundle 非法会导致启动失败。修改内容需重启；文案以 `no-store` 提供、Logo 通过内容哈希的 immutable URL 提供，无需手动清缓存。
+- `/health` 分别报告 `webui_available` 与 `workspace_available`；旧构建产物缺少 `workspace.html` 时 `/webui` 完整可用，`/workspace` 返回固定 JSON 提示（绝不重定向到 API 文档）。
+
+对查询用户隐藏后台界面是 UX 分流，**不是**安全边界：所有接口的授权仍由服务端强制执行。
+
 > **`WHITELIST_PATHS` 不带前缀书写。** 它的条目是内部路由路径，与路由声明时完全一致。匹配前会先剥离挂载前缀，两种转发方式下都是如此。因此在 `LIGHTRAG_API_PREFIX=/site01` 下，出厂默认的 `WHITELIST_PATHS=/health,/api/*` 本身就是正确的，会豁免浏览器所见的 `/site01/health`。若按浏览器可见形式书写（`WHITELIST_PATHS=/site01/health`），则匹配不到任何路径，反而会让这些路径要求认证。
 
 ### 使用 Docker 启动 LightRAG 服务器

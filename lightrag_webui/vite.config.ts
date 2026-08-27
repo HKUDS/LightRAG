@@ -80,14 +80,27 @@ const FORBIDDEN_WORKSPACE_MODULES: RegExp[] = [
 const BASELINE_FILE = path.resolve(import.meta.dirname, 'workspace-first-load-baseline.json')
 const BASELINE_TOLERANCE = 1.1
 
+// Structural view of the Rollup/Rolldown OutputChunk fields the audit uses
+// (the bundler's own type package is not a direct dependency here).
+interface AuditOutputChunk {
+  type: 'chunk'
+  fileName: string
+  name?: string
+  isEntry: boolean
+  imports: string[]
+  code: string
+  modules: Record<string, unknown>
+  viteMetadata?: { importedCss?: Iterable<string> }
+}
+
 function workspaceFirstLoadAuditPlugin(): Plugin {
   return {
     name: 'lightrag-workspace-first-load-audit',
     apply: 'build',
     generateBundle(_options, bundle) {
       const chunks = Object.values(bundle).filter(
-        (item): item is import('rollup').OutputChunk => item.type === 'chunk'
-      )
+        (item) => item.type === 'chunk'
+      ) as unknown as AuditOutputChunk[]
       const byFileName = new Map(chunks.map((chunk) => [chunk.fileName, chunk]))
       const entry = chunks.find((chunk) => chunk.isEntry && chunk.name === 'workspace')
       if (!entry) {

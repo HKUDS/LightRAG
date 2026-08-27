@@ -162,8 +162,9 @@ LightRAG/
 ├── lightrag/
 │   └── api/
 │       └── webui/           # Frontend build output (gitignored)
-│           ├── index.html   # Built files (after running bun run build)
-│           └── assets/      # Built assets
+│           ├── index.html      # Admin UI entry (/webui)
+│           ├── workspace.html  # Query-user entry (/workspace) — same build
+│           └── assets/         # Built assets shared by both entries
 │
 ├── setup.py                 # Build checks
 ├── pyproject.toml           # Package configuration
