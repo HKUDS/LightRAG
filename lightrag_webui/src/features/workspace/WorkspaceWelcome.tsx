@@ -29,7 +29,9 @@ export default function WorkspaceWelcome() {
   const content = useCustomizedContent()
   const [authConfigured, setAuthConfigured] = useState<boolean | null>(null)
   const [entering, setEntering] = useState(false)
-  const [logoFailed, setLogoFailed] = useState(false)
+  // Latch the URL that failed, not a boolean: a transient failure must not
+  // keep hiding the logo after a language switch supplies a different URL.
+  const [failedLogoUrl, setFailedLogoUrl] = useState<string | null>(null)
   const authProbeRef = useRef(false)
 
   useEffect(() => {
@@ -102,12 +104,12 @@ export default function WorkspaceWelcome() {
           />
         ) : (
           <>
-            {content.logoUrl && !logoFailed && (
+            {content.logoUrl && failedLogoUrl !== content.logoUrl && (
               <img
                 src={content.logoUrl}
                 alt={content.logoAlt}
                 className="max-h-[88px] max-w-[88px] object-contain md:max-h-[120px] md:max-w-[120px]"
-                onError={() => setLogoFailed(true)}
+                onError={() => setFailedLogoUrl(content.logoUrl)}
               />
             )}
             <h1 className="text-2xl font-bold tracking-tight">{content.brandTitle}</h1>

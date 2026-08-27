@@ -9,7 +9,9 @@ import { useCustomizedContent } from '@/components/customization/useCustomizedCo
  */
 export default function WorkspaceEmptyState() {
   const content = useCustomizedContent()
-  const [logoFailed, setLogoFailed] = useState(false)
+  // Latch the URL that failed, not a boolean: a transient failure must not
+  // keep hiding the logo after a language switch supplies a different URL.
+  const [failedLogoUrl, setFailedLogoUrl] = useState<string | null>(null)
 
   if (content.loading) {
     // Loading placeholder — never flash the default content before knowing
@@ -28,13 +30,13 @@ export default function WorkspaceEmptyState() {
       dir={content.direction}
       className="flex max-w-prose flex-col items-center gap-4 px-4 text-center"
     >
-      {content.logoUrl && !logoFailed && (
+      {content.logoUrl && failedLogoUrl !== content.logoUrl && (
         <img
           src={content.logoUrl}
           alt={content.logoAlt}
           // Aspect ratio preserved; 120px max edge on desktop, 88px on phones.
           className="max-h-[88px] max-w-[88px] object-contain md:max-h-[120px] md:max-w-[120px]"
-          onError={() => setLogoFailed(true)}
+          onError={() => setFailedLogoUrl(content.logoUrl)}
         />
       )}
       <CustomizedMarkdown
