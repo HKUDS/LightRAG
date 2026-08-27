@@ -501,5 +501,21 @@
     "prevPage": "Page précédente",
     "nextPage": "Page suivante",
     "lastPage": "Dernière page"
+  },
+  "workspace": {
+    "welcome": {
+      "defaultMarkdown": "Bienvenue ! Posez vos questions sur la base de connaissances et obtenez des réponses avec citations. Connectez-vous pour commencer.",
+      "enterButton": "Entrer dans l'espace",
+      "loginButton": "Se connecter",
+      "enterFailed": "Impossible de joindre le serveur. Veuillez réessayer."
+    },
+    "queryEmpty": {
+      "defaultMarkdown": "Posez une question sur la base de connaissances pour commencer."
+    }
+  },
+  "migration": {
+    "failedTitle": "Échec de la préparation des paramètres locaux",
+    "failedBody": "Vos paramètres n'ont pas pu être migrés vers le nouveau format de stockage. Rien n'a été perdu — rechargez pour réessayer.",
+    "retry": "Recharger"
   }
 }

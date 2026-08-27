@@ -501,5 +501,21 @@
     "prevPage": "Trang Trước",
     "nextPage": "Trang Tiếp",
     "lastPage": "Trang Cuối"
+  },
+  "workspace": {
+    "welcome": {
+      "defaultMarkdown": "Chào mừng! Hãy đặt câu hỏi về cơ sở tri thức và nhận câu trả lời kèm trích dẫn. Đăng nhập để bắt đầu.",
+      "enterButton": "Vào không gian làm việc",
+      "loginButton": "Đăng nhập",
+      "enterFailed": "Không thể kết nối máy chủ. Vui lòng thử lại."
+    },
+    "queryEmpty": {
+      "defaultMarkdown": "Hãy đặt bất kỳ câu hỏi nào về cơ sở tri thức để bắt đầu."
+    }
+  },
+  "migration": {
+    "failedTitle": "Không thể chuẩn bị cài đặt cục bộ",
+    "failedBody": "Không thể di chuyển cài đặt đã lưu sang định dạng lưu trữ mới. Không có gì bị mất — hãy tải lại để thử lại.",
+    "retry": "Tải lại"
   }
 }

@@ -490,6 +490,22 @@ def parse_args() -> argparse.Namespace:
         help="API path prefix (e.g., /api/v1). Prepended to all API routes. Default: none (root).",
     )
 
+    # Root-path default UI entry. Scope is pinned to exactly one behavior: the
+    # redirect target of '/'. It does NOT control whether either UI entry is
+    # mounted, and it is an enum on purpose (a free URL would open a redirect
+    # surface and could not participate in the availability degradation logic).
+    parser.add_argument(
+        "--default-ui",
+        type=str,
+        choices=["webui", "workspace"],
+        default=get_env_value("LIGHTRAG_DEFAULT_UI", "webui"),
+        help=(
+            "UI entry the root path '/' redirects to: 'webui' (admin UI, "
+            "default) or 'workspace' (query-user entry). Controls only the "
+            "'/' redirect target."
+        ),
+    )
+
     # Server workers configuration
     parser.add_argument(
         "--workers",
@@ -587,6 +603,17 @@ def parse_args() -> argparse.Namespace:
         GeminiEmbeddingOptions.add_args(parser)
 
     args = parser.parse_args()
+
+    # argparse ``choices`` validates only values explicitly passed on the
+    # command line — an env-provided default bypasses it (same shape as
+    # --rerank-binding). Validate explicitly so a typo like
+    # LIGHTRAG_DEFAULT_UI=workspaces fails at startup instead of silently
+    # falling back to the webui redirect.
+    if args.default_ui not in ("webui", "workspace"):
+        parser.error(
+            "--default-ui / LIGHTRAG_DEFAULT_UI must be 'webui' or "
+            f"'workspace', got {args.default_ui!r}"
+        )
 
     # convert relative path to absolute path
     args.working_dir = os.path.abspath(args.working_dir)

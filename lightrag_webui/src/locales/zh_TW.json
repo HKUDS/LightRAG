@@ -501,5 +501,21 @@
     "prevPage": "上一頁",
     "nextPage": "下一頁",
     "lastPage": "最後一頁"
+  },
+  "workspace": {
+    "welcome": {
+      "defaultMarkdown": "歡迎使用！您可以就知識庫內容提問，並獲得帶引用的回答。登入後即可開始。",
+      "enterButton": "進入工作區",
+      "loginButton": "登入",
+      "enterFailed": "無法連接伺服器，請重試。"
+    },
+    "queryEmpty": {
+      "defaultMarkdown": "輸入您想了解的問題，開始查詢知識庫。"
+    }
+  },
+  "migration": {
+    "failedTitle": "本機設定準備失敗",
+    "failedBody": "您儲存的設定暫時無法遷移到新的儲存格式。資料未遺失——請重新整理重試。",
+    "retry": "重新載入"
   }
 }

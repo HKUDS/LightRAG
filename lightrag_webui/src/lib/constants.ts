@@ -39,7 +39,9 @@ export const maxNodeSize = 20
 
 export const healthCheckInterval = 15 // seconds
 
-export const defaultQueryLabel = '*'
+// Re-exported from the pure defaults module (also used by the store-free
+// legacy settings migration chain — see src/lib/queryDefaults.ts).
+export { defaultQueryLabel, suggestedUserPrompts } from '@/lib/queryDefaults'
 
 // reference: https://developer.mozilla.org/en-US/docs/Web/HTTP/MIME_types/Common_types
 export const supportedFileTypes = {
@@ -119,9 +121,3 @@ export const EDGE_PERF_LIMIT = 5000
 // with graph size, capped so huge graphs don't run unbounded.
 export const workerBudgetMs = (order: number): number => Math.min(1500 + order / 10, 10000)
 
-// One-time system-suggested user prompts, injected once into userPromptHistory
-// (for both fresh installs and upgrades). See settings store version 20 migration.
-export const suggestedUserPrompts: string[] = [
-  'Ignore the `References Section Format` instruction in the system prompt, and do not include a `References` section in the response.',
-  'For inline citations, use the footnote marker syntax `[^1]`, where the `^` preceding the identifier indicates a footnote reference. When multiple citations are required at a single location, each ID should be enclosed in separate footnote markers (e.g., `[^1][^2][^3]`).'
-]

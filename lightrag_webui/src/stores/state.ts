@@ -244,12 +244,72 @@ const getTokenExpiresAt = (token: string): number | null => {
   return payload.exp ? payload.exp * 1000 : null; // Convert to milliseconds
 };
 
+const TOKEN_STORAGE_KEY = 'LIGHTRAG-API-TOKEN';
+// localStorage keys that only make sense alongside a valid token; cleared
+// together with it when local validation rejects the token.
+const TOKEN_COMPANION_STORAGE_KEYS = ['LIGHTRAG-LAST-TOKEN-RENEWAL'];
+
+const decodeBase64Url = (value: string): string | null => {
+  try {
+    let base64 = value.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = base64.length % 4;
+    if (pad === 1) return null;
+    if (pad > 0) base64 += '='.repeat(4 - pad);
+    return atob(base64);
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * LOCAL token validity check: JWT structure parses and `exp` has not passed.
+ *
+ * This deliberately replaces the old "token exists ⇒ authenticated" rule: an
+ * expired or structurally broken token used to render the whole app before a
+ * 401 bounced the user back. It does NOT take over authentication — a token
+ * that only the server can reject (invalid signature, revoked) still passes
+ * here and is corrected by the usual 401 path.
+ */
+export const isTokenLocallyValid = (token: string): boolean => {
+  const parts = token.split('.');
+  if (parts.length !== 3) return false;
+  const decoded = decodeBase64Url(parts[1]);
+  if (decoded === null) return false;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(decoded);
+  } catch {
+    return false;
+  }
+  if (!payload || typeof payload !== 'object') return false;
+  const exp = (payload as { exp?: unknown }).exp;
+  if (typeof exp !== 'number') return false;
+  return exp * 1000 > Date.now();
+};
+
+/** Remove a locally-invalid token together with its companion keys. */
+export const clearLocalToken = (): void => {
+  localStorage.removeItem(TOKEN_STORAGE_KEY);
+  for (const key of TOKEN_COMPANION_STORAGE_KEYS) {
+    localStorage.removeItem(key);
+  }
+};
+
 const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean; coreVersion: string | null; apiVersion: string | null; username: string | null; webuiTitle: string | null; webuiDescription: string | null; lastTokenRenewal: string | null; tokenExpiresAt: number | null } => {
-  const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
+  let token = localStorage.getItem(TOKEN_STORAGE_KEY);
+  if (token && !isTokenLocallyValid(token)) {
+    // Expired or structurally broken: clear it (and its companions) and
+    // proceed as "no valid token" — the entry's unauthenticated default page
+    // (login / welcome) takes over instead of the app rendering first.
+    clearLocalToken();
+    token = null;
+  }
   const coreVersion = localStorage.getItem('LIGHTRAG-CORE-VERSION');
   const apiVersion = localStorage.getItem('LIGHTRAG-API-VERSION');
   const webuiTitle = localStorage.getItem('LIGHTRAG-WEBUI-TITLE');
   const webuiDescription = localStorage.getItem('LIGHTRAG-WEBUI-DESCRIPTION');
+  // Read AFTER the validity check above so a just-cleared companion key is
+  // not resurrected into the store.
   const lastTokenRenewal = localStorage.getItem('LIGHTRAG-LAST-TOKEN-RENEWAL');
   const username = token ? getUsernameFromToken(token) : null;
   const tokenExpiresAt = token ? getTokenExpiresAt(token) : null;

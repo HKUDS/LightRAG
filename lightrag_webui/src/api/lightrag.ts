@@ -486,7 +486,7 @@ axiosInstance.interceptors.response.use(
 
         // 2. Prevent infinite retry
         if (originalRequest && (originalRequest as any)._retry) {
-          navigationService.navigateToLogin();
+          navigationService.navigateToUnauthenticated();
           return Promise.reject(new Error('Authentication required'));
         }
 
@@ -511,13 +511,13 @@ axiosInstance.interceptors.response.use(
           } catch (refreshError) {
             console.error('Failed to refresh guest token:', refreshError);
             // Refresh failed, navigate to login
-            navigationService.navigateToLogin();
+            navigationService.navigateToUnauthenticated();
             return Promise.reject(new Error('Failed to refresh authentication'));
           }
         }
 
         // 5. Non-guest mode: navigate to login page
-        navigationService.navigateToLogin();
+        navigationService.navigateToUnauthenticated();
         return Promise.reject(new Error('Authentication required'));
       }
       throw new Error(
@@ -844,7 +844,7 @@ export const queryTextStream = async (
               'Failed to refresh guest token for streaming:',
               refreshError
             );
-            navigationService.navigateToLogin();
+            navigationService.navigateToUnauthenticated();
             throw new Error('Failed to refresh authentication', {
               cause: refreshError,
             });
@@ -853,7 +853,7 @@ export const queryTextStream = async (
           if (!retryResponse.ok) {
             if (retryResponse.status === 401) {
               // Refreshed token still rejected → genuine auth failure
-              navigationService.navigateToLogin();
+              navigationService.navigateToUnauthenticated();
               throw new Error('Authentication required');
             }
             // Non-auth HTTP error on retry → classify like the first response
@@ -863,7 +863,7 @@ export const queryTextStream = async (
           activeResponse = retryResponse;
         } else {
           // Non-guest 401 → login
-          navigationService.navigateToLogin();
+          navigationService.navigateToUnauthenticated();
           throw new Error('Authentication required');
         }
       } else {

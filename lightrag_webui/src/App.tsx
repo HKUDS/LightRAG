@@ -3,7 +3,7 @@ import ThemeProvider from '@/components/ThemeProvider'
 import TabVisibilityProvider from '@/contexts/TabVisibilityProvider'
 import ApiKeyAlert from '@/components/ApiKeyAlert'
 import StatusIndicator from '@/components/status/StatusIndicator'
-import { SiteInfo, webuiPrefix } from '@/lib/constants'
+import { SiteInfo } from '@/lib/constants'
 import { useBackendState, useAuthStore } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
 import { getAuthStatus } from '@/api/lightrag'
@@ -180,7 +180,9 @@ function App() {
             {/* Simplified header during initialization - matches SiteHeader structure */}
             <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
               <div className="min-w-[200px] w-auto flex items-center">
-                <a href={webuiPrefix} className="flex items-center gap-2">
+                {/* Document-relative brand link — resolves to this entry's own
+                    mount root (see SiteHeader). */}
+                <a href="./" className="flex items-center gap-2">
                   <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
                   <span className="font-bold md:inline-block">{SiteInfo.name}</span>
                 </a>

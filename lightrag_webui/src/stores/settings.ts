@@ -1,13 +1,24 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { createSelectors } from '@/lib/utils'
-import { defaultQueryLabel, suggestedUserPrompts } from '@/lib/constants'
-import { Message, QueryRequest } from '@/api/lightrag'
+import { defaultQueryLabel, suggestedUserPrompts } from '@/lib/queryDefaults'
+import { LEGACY_SETTINGS_STORAGE_KEY } from '@/lib/storageKeys'
+import { migrateLegacySettingsState } from '@/migrations/legacySettingsChain'
+import {
+  getSettingsMigrationError,
+  SETTINGS_STORAGE_VERSION_AFTER_SPLIT
+} from '@/migrations/splitSettingsStorage'
 
 type Theme = 'dark' | 'light' | 'system'
 type Language = 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW' | 'ru' | 'ja' | 'de' | 'uk' | 'ko' | 'vi'
 type Tab = 'documents' | 'knowledge-graph' | 'retrieval'
 
+// NOTE: `querySettings` and `retrievalHistory` were split out of this store
+// into their own persist keys — see stores/querySettings.ts,
+// stores/webuiRetrievalHistory.ts, stores/workspaceRetrievalHistory.ts and
+// migrations/splitSettingsStorage.ts. This store keeps theme/language, graph
+// display preferences and the not-yet-partitioned site-scoped state
+// (apiKey, userPromptHistory, queryLabel, backendMaxGraphNodes, ...).
 interface SettingsState {
   // Document manager settings
   showFileName: boolean
@@ -52,12 +63,6 @@ interface SettingsState {
   // Retrieval settings
   queryLabel: string
   setQueryLabel: (queryLabel: string) => void
-
-  retrievalHistory: Message[]
-  setRetrievalHistory: (history: Message[]) => void
-
-  querySettings: Omit<QueryRequest, 'query'>
-  updateQuerySettings: (settings: Partial<QueryRequest>) => void
 
   // Auth settings
   apiKey: string | null
@@ -114,23 +119,7 @@ const useSettingsStoreBase = create<SettingsState>()(
       showFileName: false,
       documentsPageSize: 10,
 
-      retrievalHistory: [],
       userPromptHistory: [...suggestedUserPrompts],
-
-      querySettings: {
-        mode: 'mix',
-        top_k: 40,
-        chunk_top_k: 20,
-        max_entity_tokens: 6000,
-        max_relation_tokens: 8000,
-        max_total_tokens: 30000,
-        only_need_context: false,
-        only_need_prompt: false,
-        stream: true,
-        history_turns: 0,
-        user_prompt: '',
-        enable_rerank: true
-      },
 
       setTheme: (theme: Theme) => set({ theme }),
 
@@ -177,17 +166,6 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       setCurrentTab: (tab: Tab) => set({ currentTab: tab }),
 
-      setRetrievalHistory: (history: Message[]) => set({ retrievalHistory: history }),
-
-      updateQuerySettings: (settings: Partial<QueryRequest>) => {
-        // Filter out history_turns to prevent changes, always keep it as 0
-        const filteredSettings = { ...settings }
-        delete filteredSettings.history_turns
-        set((state) => ({
-          querySettings: { ...state.querySettings, ...filteredSettings, history_turns: 0 }
-        }))
-      },
-
       setShowFileName: (show: boolean) => set({ showFileName: show }),
       setShowLegend: (show: boolean) => set({ showLegend: show }),
       setDocumentsPageSize: (size: number) => set({ documentsPageSize: size }),
@@ -227,128 +205,22 @@ const useSettingsStoreBase = create<SettingsState>()(
         }))
     }),
     {
-      name: 'settings-storage',
+      name: LEGACY_SETTINGS_STORAGE_KEY,
       storage: createJSONStorage(() => localStorage),
-      version: 21,
+      version: SETTINGS_STORAGE_VERSION_AFTER_SPLIT,
+      // See splitSettingsStorage rule 7: never hydrate on a half-migrated
+      // storage state.
+      skipHydration: getSettingsMigrationError() != null,
       migrate: (state: any, version: number) => {
-        if (version < 2) {
-          state.showEdgeLabel = false
-        }
-        if (version < 3) {
-          state.queryLabel = defaultQueryLabel
-        }
-        if (version < 4) {
-          state.showPropertyPanel = true
-          state.showNodeSearchBar = true
-          state.showNodeLabel = true
-          state.enableHealthCheck = true
-          state.apiKey = null
-        }
-        if (version < 5) {
-          state.currentTab = 'documents'
-        }
-        if (version < 6) {
-          state.querySettings = {
-            mode: 'global',
-            response_type: 'Multiple Paragraphs',
-            top_k: 10,
-            max_token_for_text_unit: 4000,
-            max_token_for_global_context: 4000,
-            max_token_for_local_context: 4000,
-            only_need_context: false,
-            only_need_prompt: false,
-            stream: true,
-            history_turns: 0,
-            hl_keywords: [],
-            ll_keywords: []
-          }
-          state.retrievalHistory = []
-        }
-        if (version < 7) {
-          state.graphQueryMaxDepth = 3
-        }
-        if (version < 8) {
-          state.graphMinDegree = 0
-          state.language = 'en'
-        }
-        if (version < 9) {
-          state.showFileName = false
-        }
-        if (version < 10) {
-          delete state.graphMinDegree // 删除废弃参数
-          state.graphMaxNodes = 1000  // 添加新参数
-        }
-        if (version < 11) {
-          state.minEdgeSize = 1
-          state.maxEdgeSize = 1
-        }
-        if (version < 12) {
-          // Clear retrieval history to avoid compatibility issues with MessageWithError type
-          state.retrievalHistory = []
-        }
-        if (version < 13) {
-          // Add user_prompt field for older versions
-          if (state.querySettings) {
-            state.querySettings.user_prompt = ''
-          }
-        }
-        if (version < 14) {
-          // Add backendMaxGraphNodes field for older versions
-          state.backendMaxGraphNodes = null
-        }
-        if (version < 15) {
-          // Add new querySettings
-          state.querySettings = {
-            ...state.querySettings,
-            mode: 'mix',
-            response_type: 'Multiple Paragraphs',
-            top_k: 40,
-            chunk_top_k: 10,
-            max_entity_tokens: 10000,
-            max_relation_tokens: 10000,
-            max_total_tokens: 32000,
-            enable_rerank: true,
-            history_turns: 0,
-          }
-        }
-        if (version < 16) {
-          // Add documentsPageSize field for older versions
-          state.documentsPageSize = 10
-        }
-        if (version < 17) {
-          // Force history_turns to 0 for all users
-          if (state.querySettings) {
-            state.querySettings.history_turns = 0
-          }
-        }
-        if (version < 18) {
-          // Add userPromptHistory field for older versions
-          state.userPromptHistory = []
-        }
-        if (version < 19) {
-          // Remove deprecated response_type parameter
-          if (state.querySettings) {
-            delete state.querySettings.response_type
-          }
-        }
-        if (version < 20) {
-          // One-time injection of system-suggested prompts; append after any existing
-          // history so user's own prompts keep priority. Skip any prompt already
-          // present to avoid duplicate dropdown entries (matches the de-duping in
-          // addUserPromptToHistory). version monotonicity makes this run at most once.
-          const existing = state.userPromptHistory ?? []
-          state.userPromptHistory = [
-            ...existing,
-            ...suggestedUserPrompts.filter((p: string) => !existing.includes(p))
-          ]
-        }
-        if (version < 21) {
-          // The API tab was replaced by a header icon that opens /docs in a
-          // new browser tab; a persisted 'api' would select a tab that no
-          // longer exists and leave the content area empty.
-          if (state.currentTab === 'api') {
-            state.currentTab = 'documents'
-          }
+        // The split migrator normally bumps the envelope to v22 before this
+        // store is even evaluated. This branch remains for envelopes written
+        // back by tabs still running pre-split code (their version is <= 21):
+        // normalize through the REUSED legacy chain, then drop the fields
+        // that were split into their own keys — clean, never merge.
+        if (version <= 21) {
+          state = migrateLegacySettingsState(state, version)
+          delete state.querySettings
+          delete state.retrievalHistory
         }
         return state
       }

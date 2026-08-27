@@ -1,12 +1,15 @@
 import '@/lib/extensions'; // Import all global extensions
+import '@/bootstrap/webuiEntry'; // Entry-specific navigation policy — before anything can 401
 import { HashRouter as Router, Routes, Route, useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { useAuthStore } from '@/stores/state'
 import { navigationService } from '@/services/navigation'
+import { getSettingsMigrationError } from '@/migrations/splitSettingsStorage'
 import { Toaster } from 'sonner'
 import App from './App'
 import LoginPage from '@/features/LoginPage'
 import ThemeProvider from '@/components/ThemeProvider'
+import MigrationErrorScreen from '@/components/MigrationErrorScreen'
 
 const AppContent = () => {
   const [initializing, setInitializing] = useState(true)
@@ -77,6 +80,15 @@ const AppContent = () => {
 }
 
 const AppRouter = () => {
+  if (getSettingsMigrationError() != null) {
+    // Storage split migration did not complete: dependent stores skipped
+    // hydration, so render a retryable error instead of running on defaults.
+    return (
+      <ThemeProvider>
+        <MigrationErrorScreen />
+      </ThemeProvider>
+    )
+  }
   return (
     <ThemeProvider>
       <Router>

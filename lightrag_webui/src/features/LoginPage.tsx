@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/state'
-import { useSettingsStore } from '@/stores/settings'
+import { useWebuiRetrievalHistoryStore } from '@/stores/webuiRetrievalHistory'
+import { useWorkspaceRetrievalHistoryStore } from '@/stores/workspaceRetrievalHistory'
 import { loginToServer, getAuthStatus } from '@/api/lightrag'
+import logoUrl from '@/assets/logo.svg'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 import { Card, CardContent, CardHeader } from '@/components/ui/Card'
@@ -106,8 +108,10 @@ const LoginPage = () => {
         console.log('Same user logging in, preserving chat history')
       } else {
         console.log('Different user logging in, clearing chat history')
-        // Directly clear chat history instead of setting a flag
-        useSettingsStore.getState().setRetrievalHistory([])
+        // A different user must not see the previous user's conversations in
+        // EITHER entry — the rule applies to both split histories.
+        useWebuiRetrievalHistoryStore.getState().clearHistory()
+        useWorkspaceRetrievalHistoryStore.getState().clearHistory()
       }
 
       // Update previous username
@@ -153,7 +157,7 @@ const LoginPage = () => {
         <CardHeader className="flex items-center justify-center space-y-2 pb-8 pt-6">
           <div className="flex flex-col items-center space-y-4">
             <div className="flex items-center gap-3">
-              <img src="logo.svg" alt="LightRAG Logo" className="h-12 w-12" />
+              <img src={logoUrl} alt="LightRAG Logo" className="h-12 w-12" />
               <ZapIcon className="size-10 text-emerald-400" aria-hidden="true" />
             </div>
             <div className="text-center space-y-2">

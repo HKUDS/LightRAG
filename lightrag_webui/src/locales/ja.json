@@ -501,5 +501,21 @@
     "prevPage": "前のページ",
     "nextPage": "次のページ",
     "lastPage": "最後のページ"
+  },
+  "workspace": {
+    "welcome": {
+      "defaultMarkdown": "ようこそ！ナレッジベースについて質問すると、引用付きの回答が得られます。ログインして始めましょう。",
+      "enterButton": "ワークスペースに入る",
+      "loginButton": "ログイン",
+      "enterFailed": "サーバーに接続できませんでした。もう一度お試しください。"
+    },
+    "queryEmpty": {
+      "defaultMarkdown": "ナレッジベースについて何でも質問して始めましょう。"
+    }
+  },
+  "migration": {
+    "failedTitle": "ローカル設定の準備に失敗しました",
+    "failedBody": "保存された設定を新しいストレージ形式に移行できませんでした。データは失われていません。再読み込みしてやり直してください。",
+    "retry": "再読み込み"
   }
 }

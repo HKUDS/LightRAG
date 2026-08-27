@@ -42,7 +42,7 @@ const fakeAuthStore = {
 mock.module('@/stores/settings', () => ({ useSettingsStore: fakeSettingsStore }))
 mock.module('@/stores/state', () => ({ useAuthStore: fakeAuthStore }))
 mock.module('@/services/navigation', () => ({
-  navigationService: { navigateToLogin: () => {} },
+  navigationService: { navigateToUnauthenticated: () => {} },
 }))
 mock.module('@/lib/utils', () => ({
   errorMessage: (error: any) =>
