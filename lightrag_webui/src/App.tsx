@@ -14,9 +14,9 @@ import { ZapIcon } from 'lucide-react'
 import GraphViewer from '@/features/GraphViewer'
 import DocumentManager from '@/features/DocumentManager'
 import RetrievalView from '@/features/RetrievalView'
-import ApiSite from '@/features/ApiSite'
 
 import { Tabs, TabsContent } from '@/components/ui/Tabs'
+import ErrorBoundary from '@/components/ErrorBoundary'
 
 function App() {
   const message = useBackendState.use.message()
@@ -73,6 +73,13 @@ function App() {
 
     if (!enableHealthCheck || apiKeyAlertOpen) {
       useBackendState.getState().clearHealthCheckTimer();
+      // With periodic checks disabled the header still needs to know whether
+      // the backend serves /docs. Resolve that capability alone (RFC #3671) —
+      // never through `check()`, whose failure path would latch `health: false`
+      // and stop the document list polling with no timer left to recover it.
+      if (!enableHealthCheck && !apiKeyAlertOpen) {
+        useBackendState.getState().probeApiDocsCapability();
+      }
       return;
     }
 
@@ -207,16 +214,19 @@ function App() {
               <SiteHeader />
               <div className="relative grow">
                 <TabsContent value="documents" className="absolute top-0 right-0 bottom-0 left-0 overflow-auto">
-                  <DocumentManager />
+                  <ErrorBoundary>
+                    <DocumentManager />
+                  </ErrorBoundary>
                 </TabsContent>
                 <TabsContent value="knowledge-graph" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
-                  <GraphViewer />
+                  <ErrorBoundary>
+                    <GraphViewer />
+                  </ErrorBoundary>
                 </TabsContent>
                 <TabsContent value="retrieval" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
-                  <RetrievalView />
-                </TabsContent>
-                <TabsContent value="api" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
-                  <ApiSite />
+                  <ErrorBoundary>
+                    <RetrievalView />
+                  </ErrorBoundary>
                 </TabsContent>
               </div>
             </Tabs>

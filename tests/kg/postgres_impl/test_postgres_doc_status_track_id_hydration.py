@@ -75,10 +75,12 @@ async def test_an_unknown_column_is_ignored_rather_than_fatal():
 
     ``_pg_doc_processing_status_from_row`` names every kwarg explicitly instead
     of splatting the row, so a column the running build does not declare is
-    simply not read. The version-rollback shape that breaks JSON/Redis/Mongo
-    (``TypeError: unexpected keyword argument``) therefore cannot arise here —
-    pinned so a refactor to ``DocProcessingStatus(**element)`` cannot silently
-    import that failure mode into PG.
+    simply not read. The version-rollback shape that used to break
+    JSON/Redis/Mongo (``TypeError: unexpected keyword argument``) never arose
+    here — the other backends now match via
+    ``DocProcessingStatus.from_stored``. Pinned so a refactor to
+    ``DocProcessingStatus(**element)`` cannot silently import that failure
+    mode into PG.
     """
     storage = _make_storage(
         [_row("old_doc"), _row("written_by_newer_build", field_from_the_future="value")]

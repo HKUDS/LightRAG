@@ -30,7 +30,12 @@ dependencies = [
     "networkx",
     "numpy>=1.24.0,<3.0.0",
     "packaging",
-    "pandas>=2.0.0,<2.4.0",
+    # pandas 3.0 requires Python >= 3.11 while this project still supports
+    # 3.10, so the ceiling is widened instead of the floor being raised:
+    # resolvers pick 2.x on 3.10 and 3.x from 3.11 up. Only the Excel branch
+    # of aexport_data uses pandas (DataFrame/ExcelWriter/to_excel), all of
+    # which are unchanged in 3.x.
+    "pandas>=2.0.0,<4.0.0",
     "pipmaster",
     "pydantic",
     "pypinyin",
@@ -42,7 +47,9 @@ dependencies = [
     # oldest release whose encode_batch/decode_batch fan encode()/decode() of
     # one Encoding across threads — the thread safety Tokenizer relies on.
     "tiktoken>=0.7.0",
-    "xlsxwriter>=3.1.0",
+    # 3.2.0 is the minimum pandas 3.x declares for its xlsxwriter Excel
+    # engine (pandas.compat._optional.VERSIONS).
+    "xlsxwriter>=3.2.0",
 ]
 
 [project.optional-dependencies]
@@ -63,8 +70,13 @@ api = [
     "nano-vectordb",
     "networkx",
     "numpy>=1.24.0,<3.0.0",
-    "openai>=2.0.0,<3.0.0",
-    "pandas>=2.0.0,<2.4.0",
+    "openai>=2.0.0,<4.0.0",
+    # pandas 3.0 requires Python >= 3.11 while this project still supports
+    # 3.10, so the ceiling is widened instead of the floor being raised:
+    # resolvers pick 2.x on 3.10 and 3.x from 3.11 up. Only the Excel branch
+    # of aexport_data uses pandas (DataFrame/ExcelWriter/to_excel), all of
+    # which are unchanged in 3.x.
+    "pandas>=2.0.0,<4.0.0",
     "pipmaster",
     "pydantic",
     "pypinyin",
@@ -76,12 +88,20 @@ api = [
     # oldest release whose encode_batch/decode_batch fan encode()/decode() of
     # one Encoding across threads — the thread safety Tokenizer relies on.
     "tiktoken>=0.7.0",
-    "xlsxwriter>=3.1.0",
+    # 3.2.0 is the minimum pandas 3.x declares for its xlsxwriter Excel
+    # engine (pandas.compat._optional.VERSIONS).
+    "xlsxwriter>=3.2.0",
     "google-api-core>=2.0.0,<3.0.0",
     "google-genai>=1.0.0,<3.0.0",
     # API-specific dependencies
     "aiofiles",
     "ascii_colors",
+    # asyncio.timeout() (used directly on 3.11+) is Python 3.11+ only;
+    # requires-python allows 3.10, which needs this backport instead for
+    # the MinerU/Docling result-download wall-clock deadline. Marker keeps
+    # it out of 3.11+ installs entirely, where lightrag/parser/external/
+    # _common.py never imports it.
+    "async-timeout>=4.0.3; python_version < '3.11'",
     "distro",
     "fastapi>=0.108",  # 0.108 adds FastAPI.__call__ scope["root_path"] override; api_prefix relies on it
     "httpcore",
@@ -136,9 +156,9 @@ offline-storage = [
 
 offline-llm = [
     # LLM provider dependencies
-    "openai>=2.0.0,<3.0.0",
+    "openai>=2.0.0,<4.0.0",
     "anthropic>=0.18.0,<1.0.0",
-    "ollama>=0.1.0,<1.0.0",
+    "ollama>=0.5.4,<1.0.0",
     "zhipuai>=2.0.0,<3.0.0",
     "aioboto3>=12.0.0,<16.0.0",
     "voyageai>=0.2.0,<1.0.0",

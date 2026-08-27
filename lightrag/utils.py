@@ -3005,12 +3005,19 @@ class Tokenizer:
     # the cost of a handful of extra ``encode()`` calls per span compared to
     # the tiktoken fast path.
     #
-    # BPE token count is not monotonic in character-prefix length, so this is
-    # a bounded, STRICTLY ONE-DIRECTIONAL retreat: candidate length only ever
-    # decreases (by exponential character steps: 1, 2, 4, 8, ...), never
-    # re-expands. That rules out oscillation and bounds the number of
-    # re-encodes to O(log max_tokens) regardless of how good the initial
-    # char/token ratio estimate turns out to be for a given region of text.
+    # BPE token count is not monotonic in character-prefix length, so no
+    # candidate is ever trusted without encoding it. The search brackets the
+    # answer between a length verified to fit and one verified to overflow --
+    # reached by doubling or halving from the ratio estimate -- and then
+    # bisects that bracket. The bracket only ever narrows, which rules out
+    # oscillation, and both phases are logarithmic in the remaining character
+    # count, so the number of re-encodes stays bounded however wrong the
+    # initial char/token ratio estimate is for a given region of text.
+    #
+    # Bracketing is an assumption about the sampled lengths, not a proof about
+    # every length between them: the span returned is always verified to fit,
+    # but under a sufficiently non-monotonic tokenizer a longer one may exist
+    # that the bisection never sampled.
     #
     # No cross-call state: nothing here is written back onto ``self``. An
     # injected tokenizer must remain safe under concurrent calls from
@@ -3026,19 +3033,62 @@ class Tokenizer:
         whole-content encode) used only to pick a starting candidate length;
         the result is always independently verified by encoding the exact
         candidate substring.
+
+        That estimate is a whole-content average, so wherever token density
+        varies it is wrong in one of two directions at ``start``: a region
+        sparser than the average makes the seed too short, a denser one makes
+        it too long. Accepting the first candidate that happens to fit leaves
+        most of the budget unspent in the first case; stepping down from an
+        over-long seed by exponentially growing amounts overshoots the whole
+        remainder in the second, which is why that step-down had to clamp at
+        one character. Both are avoided by bracketing the answer between a
+        length verified to fit and one verified to overflow, then bisecting.
         """
         remaining_len = len(content) - start
-        candidate_len = min(remaining_len, max(1, int(max_tokens * chars_per_token)))
-        step = 1
-        while True:
-            candidate = content[start : start + candidate_len]
-            count = len(self.encode(candidate))
-            if count <= max_tokens:
-                return TokenSpan(start, start + candidate_len, count)
-            if candidate_len <= 1:
-                break
-            candidate_len = max(1, candidate_len - step)
-            step *= 2
+        seed = min(remaining_len, max(1, int(max_tokens * chars_per_token)))
+
+        # ``good`` is the longest length verified to fit, ``bad`` the shortest
+        # verified not to; ``bad`` starts one past the end as a sentinel for
+        # "nothing has overflowed yet".
+        good, good_count = 0, 0
+        bad = remaining_len + 1
+
+        count = len(self.encode(content[start : start + seed]))
+        if count <= max_tokens:
+            good, good_count = seed, count
+            if seed == remaining_len:
+                return TokenSpan(start, start + good, good_count)
+            candidate = seed
+            while True:  # double until a candidate overflows
+                candidate = min(remaining_len, candidate * 2)
+                probe_count = len(self.encode(content[start : start + candidate]))
+                if probe_count > max_tokens:
+                    bad = candidate
+                    break
+                good, good_count = candidate, probe_count
+                if candidate == remaining_len:
+                    return TokenSpan(start, start + good, good_count)
+        else:
+            bad = seed
+            candidate = seed
+            while candidate > 1:  # halve until a candidate fits
+                candidate //= 2
+                probe_count = len(self.encode(content[start : start + candidate]))
+                if probe_count <= max_tokens:
+                    good, good_count = candidate, probe_count
+                    break
+                bad = candidate
+
+        while bad - good > 1:  # bisect the bracket
+            midpoint = (good + bad) // 2
+            probe_count = len(self.encode(content[start : start + midpoint]))
+            if probe_count <= max_tokens:
+                good, good_count = midpoint, probe_count
+            else:
+                bad = midpoint
+
+        if good > 0:
+            return TokenSpan(start, start + good, good_count)
 
         first_cp = content[start : start + 1]
         first_cp_tokens = len(self.encode(first_cp))
@@ -3049,12 +3099,15 @@ class Tokenizer:
         return TokenSpan(start, start + 1, first_cp_tokens)
 
     def truncate_by_token_limit(self, content: str, max_tokens: int) -> TokenSpan:
-        """Return the longest safe prefix of ``content`` that fits ``max_tokens``.
+        """Return a verified safe prefix of ``content`` that fits ``max_tokens``.
 
         The result always starts at character offset 0. If the whole string
-        already fits, the returned span covers it entirely. Raises
-        ``ValueError`` for a non-positive budget, and ``TokenBudgetError`` if
-        not even the first complete Unicode code point fits.
+        already fits, the returned span covers it entirely. Otherwise the
+        bracketed search aims to use the available budget efficiently, but a
+        non-monotonic tokenizer may have a longer fitting prefix that was not
+        sampled. Raises ``ValueError`` for a non-positive budget, and
+        ``TokenBudgetError`` if not even the first complete Unicode code point
+        fits.
         """
         if max_tokens <= 0:
             raise ValueError(f"max_tokens must be positive, got {max_tokens}")
@@ -3164,7 +3217,7 @@ class TiktokenTokenizer(Tokenizer):
             import tiktoken
         except ImportError:
             raise ImportError(
-                "tiktoken is not installed. Please install it with `pip install tiktoken` or define custom `tokenizer_func`."
+                "tiktoken is not installed. Please install it with `pip install tiktoken` or pass a custom `tokenizer`."
             )
 
         try:
@@ -6203,6 +6256,25 @@ def subtract_source_ids(
         for source_id in source_ids
         if source_id and source_id not in removal_set
     ]
+
+
+def has_chunk_tracking_row(stored_data: Any) -> bool:
+    """Return True when a chunk-tracking KV row is present and structurally usable.
+
+    Presence is defined by schema — a dict carrying a ``chunk_ids`` list — never
+    by list truthiness. A persisted row of ``{"chunk_ids": [], "count": 0}`` is
+    authoritative ("this object tracks no chunks") and must be distinguished
+    from an absent row or a legacy/partial shape (``{}``, ``{"count": 0}``,
+    ``{"chunk_ids": null}``), which mean UNKNOWN. Only in the UNKNOWN case may a
+    caller fall back to the graph object's ``source_id`` — a truncated view that
+    can still name chunks a previous purge already pruned (see
+    ``compute_incremental_chunk_ids``); reseeding a present-but-empty row from
+    it resurrects stale attribution (issue #3609).
+    """
+
+    return isinstance(stored_data, dict) and isinstance(
+        stored_data.get("chunk_ids"), list
+    )
 
 
 def make_relation_chunk_key(src: str, tgt: str) -> str:

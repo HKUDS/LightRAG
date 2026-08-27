@@ -100,6 +100,10 @@ VLM_GEMINI_LLM_TEMPERATURE=0.2
 | `bedrock` | `BEDROCK_LLM_*` | `EXTRACT_BEDROCK_LLM_MAX_TOKENS` |
 | `gemini` | `GEMINI_LLM_*` | `VLM_GEMINI_LLM_THINKING_CONFIG` |
 
+本文只讲角色前缀与继承规则。`{FIELD}` 部分——每个前缀下可用的全部参数、类型、取值语法，
+以及各 provider 驱动实际如何使用这些参数——见
+[LLM and Embedding Provider Options Reference](./LLMProviderOptions.md)（英文技术参考）。
+
 ## 继承规则
 
 ### 同一个 provider 内覆盖
@@ -374,3 +378,4 @@ QUERY_BEDROCK_LLM_TEMPERATURE=0.2
 - Gemini Vertex AI 模式由进程级 Google 环境变量控制，不能在同一个 LightRAG 进程里让某些角色使用 Vertex AI、另一些角色使用 AI Studio API key。
 - `LLM_BINDING_HOST` 在 Docker/Compose 中通常需要使用容器可访问地址，例如 `host.docker.internal`，角色级 host 也遵循相同原则。
 - 修改 `.env` 后请重启 LightRAG Server。部分 IDE 终端会预加载 `.env`，建议打开新的终端会话确认环境变量生效。
+- 支持思考模式的 Ollama 模型在提取阶段可能因为隐藏推理耗尽了全部生成预算、在给出任何输出前就用完额度，导致实体/关系静默返回为空（issue #3597）。遇到这种情况可设置 `EXTRACT_OLLAMA_LLM_THINK=false`（如果关键词提取也受影响，同样设置 `KEYWORD_OLLAMA_LLM_THINK=false`）。除 `true`/`false` 外，该选项还接受推理档位（`low`/`medium`/`high`，需要 Ollama 服务端支持档位）。完全不设置表示跟随模型自身默认；留空（`OLLAMA_LLM_THINK=`）等同于 `false`，不等同于未设置。

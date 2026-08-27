@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from enum import Enum
 import os
 from dotenv import load_dotenv
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import (
     Any,
     ClassVar,
@@ -225,20 +225,23 @@ class StorageNameSpace(ABC):
 
 @dataclass
 class BaseVectorStorage(StorageNameSpace, ABC):
-    embedding_func: EmbeddingFunc
+    requires_embedding_func: ClassVar[bool] = True
+
+    embedding_func: EmbeddingFunc | None
     cosine_better_than_threshold: float = field(default=0.2)
     meta_fields: set[str] = field(default_factory=set)
 
     def _validate_embedding_func(self):
-        """Validate that embedding_func is provided.
+        """Validate the backend's embedding function requirement.
 
         This method should be called at the beginning of __post_init__
-        in all vector storage implementations.
+        in all vector storage implementations. Backends that never materialize
+        vectors may set ``requires_embedding_func`` to ``False``.
 
         Raises:
-            ValueError: If embedding_func is None
+            ValueError: If the backend requires embedding_func and it is None
         """
-        if self.embedding_func is None:
+        if self.requires_embedding_func and self.embedding_func is None:
             raise ValueError(
                 "embedding_func is required for vector storage. "
                 "Please provide a valid EmbeddingFunc instance."
@@ -856,16 +859,40 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         Order the labels by code point (SQL ``COLLATE "C"``, not a locale
         collation) so every backend agrees with Python's ``str`` comparison.
 
-        **Scope: the ``*`` whole-graph ranking on every backend.** The rule
-        should govern the non-wildcard path too -- a BFS level that overflows
-        ``max_nodes`` faces the same tie, and it decides both which neighbours
-        survive and which get expanded next -- but today only
-        :class:`~lightrag.kg.networkx_impl.NetworkXStorage` and
-        :class:`~lightrag.kg.pgtable_impl.PGTableGraphStorage` order their BFS
-        levels that way. Neo4j, Memgraph, Mongo and OpenSearch admit same-depth
-        nodes in traversal order, so their non-wildcard cutoff is still
-        ingestion-order dependent. Tracked in issue #3612; a new backend should
-        implement both paths rather than match that gap.
+        **Scope: the ``*`` whole-graph ranking.** The non-wildcard path -- BFS
+        expansion from a start ``node_label`` -- is deliberately NOT bound by
+        it, and a backend that admits same-depth nodes in traversal order there
+        is compliant. Only one level of that path could ever be affected: once
+        ``max_nodes`` is filled no deeper level contributes a node at all, so
+        the rule would decide nothing beyond which same-depth neighbours of the
+        single straddling level survive.
+
+        Buying that decision is not worth its price. The only caller is the
+        graph view (``GET /graphs``), whose consumer treats ``nodes`` and
+        ``edges`` as sets: the WebUI recomputes each node's degree from the
+        returned edges to size it and never reads the order a backend produced.
+        Against that, ranking a level requires seeing the whole level AND its
+        global degrees before the cap, which on a graph database costs the
+        traversal's early exit (the cap can no longer stop the expansion), a
+        degree count over the entire reached neighbourhood, and -- once the
+        surviving set is no longer the traversal's own subgraph -- a second,
+        unbounded relationship match to rebuild the edges. Those are real
+        query-plan costs paid on every truncated view, in exchange for a
+        marginally better neighbour choice in one level that the consumer
+        cannot distinguish.
+
+        Level-internal admission order is therefore backend-defined. Backends
+        where the ranking is a local sort pay approximately nothing and do
+        apply it: :class:`~lightrag.kg.networkx_impl.NetworkXStorage` and
+        :class:`~lightrag.kg.pgtable_impl.PGTableGraphStorage` order every
+        level, while ``MongoGraphStorage`` (default ``bidirectional`` mode) and
+        :class:`~lightrag.kg.opensearch_impl.OpenSearchGraphStorage` rank the
+        level straddling the cap, gated on overflow so a subgraph that fits
+        pays nothing at all. Neo4j, Memgraph and ``PGGraphStorage`` (Apache AGE)
+        admit in traversal order. A new backend should rank its levels where
+        its query language makes that free, and is under no obligation to
+        reshape a traversal to achieve it.
+        This is the resolution of issue #3612, not an outstanding gap in it.
 
         **Known deviation -- PGGraphStorage (Apache AGE)** ranks the ``*`` view
         on ``degree DESC, v.id ASC``, the internal vertex id, not the label.
@@ -1002,7 +1029,9 @@ class DocProcessingStatus:
     Always a hint-stripped basename (e.g. ``abc.docx``) or the literal
     ``"unknown_source"`` sentinel; never carries directory components or
     parser ``[hint]`` segments. UI display, filename-based dedup, and
-    citation paths all share this value.
+    citation paths all share this value. Duplicate-attempt rows deliberately
+    reuse the primary document's basename, so this field is not a unique key
+    and does not by itself prove ownership of a physical source file.
     """
     status: DocStatus
     """Current processing status"""
@@ -1045,6 +1074,25 @@ class DocProcessingStatus:
                 and self.status == DocStatus.PROCESSED
             ):
                 self.status = DocStatus.PREPROCESSED
+
+    @classmethod
+    def from_stored(cls, data: dict[str, Any]) -> "DocProcessingStatus":
+        """Construct from a stored doc_status row, ignoring undeclared fields.
+
+        Producers evolve independently of this schema: RAG-Anything writes
+        ``scheme_name``/``multimodal_content``, other LightRAG versions write
+        fields an installed release does not declare yet (or no longer does).
+        ``DocProcessingStatus(**row)`` raises ``TypeError`` on any such field,
+        which makes every read path treat the row as malformed and drop it
+        from listings — the document silently disappears from the WebUI and
+        the API even though its record is intact (HKUDS/RAG-Anything#73).
+
+        Extra fields are ignored for construction only; the stored row is
+        not modified. A *missing required* field still raises ``TypeError``
+        — tolerance is strictly for extras, not for malformed rows.
+        """
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
 
 
 class CursorPosition:
@@ -1719,6 +1767,7 @@ class DeletionResult:
     message: str
     status_code: int = 200
     file_path: str | None = None
+    """Canonical source basename; another status row may reference it too."""
 
 
 # Unified Query Result Data Structures for Reference List Support

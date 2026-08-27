@@ -7,6 +7,8 @@ from uuid import uuid4
 
 import pytest
 
+from lightrag.chunker import chunking_by_token_size
+
 _original_argv = sys.argv[:]
 sys.argv = [sys.argv[0]]
 _document_routes = importlib.import_module("lightrag.api.routers.document_routes")
@@ -119,6 +121,7 @@ class _FakeRag:
         self.errors = []
         # _resolve_text_chunking reads addon_params; {} -> default chunker config.
         self.addon_params = {}
+        self.chunking_func = chunking_by_token_size
 
     async def apipeline_enqueue_documents(
         self,
@@ -335,19 +338,56 @@ class _ScanRag:
 
 
 class _DuplicateUploadRag:
-    def __init__(self, docs_by_path):
+    def __init__(self, docs_by_path, chunking_func=chunking_by_token_size):
         self.doc_status = _ScanDocStatus(docs_by_path)
         self.workspace = f"upload-test-{uuid4().hex}"
+        self.chunking_func = chunking_func
+        self.addon_params = {}
+
+
+class _DeleteDocStatus:
+    def __init__(self, rows: dict | None = None):
+        self.rows = rows or {}
+
+    def _primary_matches(self, basename: str) -> list[tuple[str, dict]]:
+        return [
+            (doc_id, row)
+            for doc_id, row in self.rows.items()
+            if row.get("file_path") == basename
+            and not (row.get("metadata") or {}).get("is_duplicate")
+        ]
+
+    async def get_doc_by_file_basename(self, basename: str):
+        # Legacy best-effort lookup; real backends expose both methods. The
+        # route's ownership check must NOT use this one (mongo/redis/opensearch
+        # swallow query failures into None), which the fail-closed regression
+        # test below pins behaviorally.
+        matches = self._primary_matches(basename)
+        return matches[0] if matches else None
+
+    async def resolve_doc_source_strict(self, canonical_source_key: str):
+        matches = self._primary_matches(canonical_source_key)
+        if not matches:
+            return SourceAbsent()
+        if len(matches) == 1:
+            doc_id, row = matches[0]
+            return SourceUnique(doc_id=doc_id, doc=row)
+        return SourceConflict(
+            candidate_count=len(matches),
+            sample_doc_ids=tuple(doc_id for doc_id, _ in matches[:2]),
+        )
 
 
 class _DeleteRag:
-    def __init__(self, result):
+    def __init__(self, result, status_rows=None):
         self.result = result
         self.workspace = f"delete-test-{uuid4().hex}"
         self.deleted_doc_ids = []
+        self.doc_status = _DeleteDocStatus(status_rows)
 
     async def adelete_by_doc_id(self, doc_id, delete_llm_cache=False):
         self.deleted_doc_ids.append((doc_id, delete_llm_cache))
+        self.doc_status.rows.pop(doc_id, None)
         return self.result
 
     async def apipeline_process_enqueue_documents(self):
@@ -601,6 +641,26 @@ async def test_pipeline_enqueue_passes_process_options_from_filename_hint(
     ]
     # Native engine deferral keeps the source file in place for the parser.
     assert file_path.exists()
+
+
+async def test_scan_enqueue_accepts_c_hint_for_observable_runtime_fallback(
+    tmp_path, monkeypatch
+):
+    """Scan has no caller to receive a 422, so ``C`` remains persisted and the
+    runtime decides between the injected callback and warned F fallback."""
+    monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native")
+    file_path = tmp_path / "report.[native-Cite].docx"
+    file_path.write_bytes(b"docx-bytes")
+    rag = _FakeRag()
+
+    enqueued = await pipeline_enqueue_scan_batch(
+        rag,
+        [_ScanCandidate(file_path, len(b"docx-bytes"))],
+        "track-custom-scan",
+    )
+
+    assert enqueued == 1
+    assert rag.enqueued[0]["process_options"] == "Cite"
 
 
 async def test_pipeline_enqueue_rejects_invalid_filename_hint(tmp_path, monkeypatch):
@@ -1379,6 +1439,68 @@ async def test_upload_rejects_malformed_hint_with_detail(tmp_path, monkeypatch):
         await upload_endpoint(set(), upload_file)
     assert excinfo.value.status_code == 400
     assert "multiple chunking modes" in excinfo.value.detail
+
+
+async def test_upload_rejects_c_without_custom_callback_before_writing(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+    upload_file = _document_routes.UploadFile(
+        filename="custom.[native-C].docx",
+        file=BytesIO(b"docx bytes"),
+    )
+
+    with pytest.raises(_document_routes.HTTPException) as excinfo:
+        await upload_endpoint(set(), upload_file)
+
+    assert excinfo.value.status_code == 422
+    assert "custom chunking requires" in str(excinfo.value.detail)
+    assert not (tmp_path / "custom.[native-C].docx").exists()
+
+
+async def test_upload_accepts_c_when_custom_callback_is_injected(tmp_path, monkeypatch):
+    import importlib
+
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({}, chunking_func=lambda *args, **kwargs: [])
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+
+    async def _no_op_index(rag_arg, file_path, track_id=None, admission_token=None):
+        return None
+
+    monkeypatch.setattr(_document_routes, "pipeline_index_file", _no_op_index)
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+    upload_file = _document_routes.UploadFile(
+        filename="custom.[native-C].docx",
+        file=BytesIO(b"docx bytes"),
+    )
+
+    managed: set = set()
+    response = await upload_endpoint(managed, upload_file)
+    await _await_managed(managed)
+
+    assert response.status == "success"
+    assert (tmp_path / "custom.[native-C].docx").exists()
 
 
 async def test_upload_succeeds_concurrent_with_pipeline_busy(tmp_path, monkeypatch):
@@ -3113,6 +3235,276 @@ async def test_background_delete_removes_parser_hint_file_variants(tmp_path):
     assert not source_file.exists()
     assert not parsed_variant.exists()
     assert unrelated_file.exists()
+
+
+async def test_background_delete_duplicate_marker_preserves_shared_source_file(
+    tmp_path,
+):
+    """Deleting a ``dup-*`` status row must not delete the primary's file.
+
+    Duplicate-attempt rows deliberately share the primary document's canonical
+    ``file_path``.  That value is display metadata for the marker, not ownership
+    of the physical source file.
+    """
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    source_file = tmp_path / "paper.pdf"
+    source_file.write_bytes(b"primary source")
+    doc_manager = DocumentManager(str(tmp_path))
+    duplicate_id = "dup-attempt"
+    rag = _DeleteRag(
+        DeletionResult(
+            status="success",
+            doc_id=duplicate_id,
+            message="deleted duplicate marker",
+            file_path="paper.pdf",
+        ),
+        status_rows={
+            duplicate_id: {
+                "file_path": "paper.pdf",
+                "metadata": {
+                    "is_duplicate": True,
+                    "original_doc_id": "doc-primary",
+                },
+            },
+            "doc-primary": {
+                "file_path": "paper.pdf",
+                "metadata": {},
+            },
+        },
+    )
+    shared_storage.initialize_share_data()
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+
+    await _document_routes.background_delete_documents(
+        rag,
+        doc_manager,
+        [duplicate_id],
+        delete_file=True,
+    )
+
+    assert rag.deleted_doc_ids == [(duplicate_id, False)]
+    assert source_file.read_bytes() == b"primary source"
+
+
+async def test_background_delete_post_parse_duplicate_removes_owned_archive(
+    tmp_path,
+):
+    """A demoted ``doc-*`` row still owns its unique archived source."""
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    parsed_dir = tmp_path / PARSED_DIR_NAME
+    parsed_dir.mkdir()
+    archived_source = parsed_dir / "twin.pdf"
+    archived_source.write_bytes(b"duplicate content under a unique filename")
+    artifact_dir = parsed_dir / "twin.pdf.parsed"
+    artifact_dir.mkdir()
+    sidecar = artifact_dir / "twin.blocks.jsonl"
+    sidecar.write_text("{}", encoding="utf-8")
+    primary_source = parsed_dir / "primary.pdf"
+    primary_source.write_bytes(b"primary source")
+    doc_manager = DocumentManager(str(tmp_path))
+    duplicate_id = "doc-twin"
+    rag = _DeleteRag(
+        DeletionResult(
+            status="success",
+            doc_id=duplicate_id,
+            message="deleted post-parse duplicate",
+            file_path="twin.pdf",
+        ),
+        status_rows={
+            duplicate_id: {
+                "file_path": "twin.pdf",
+                "metadata": {
+                    "is_duplicate": True,
+                    "duplicate_kind": "content_hash",
+                    "original_doc_id": "doc-primary",
+                },
+            },
+            "doc-primary": {
+                "file_path": "primary.pdf",
+                "metadata": {},
+            },
+        },
+    )
+    shared_storage.initialize_share_data()
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+
+    await _document_routes.background_delete_documents(
+        rag,
+        doc_manager,
+        [duplicate_id],
+        delete_file=True,
+    )
+
+    assert rag.deleted_doc_ids == [(duplicate_id, False)]
+    assert not archived_source.exists()
+    assert not artifact_dir.exists()
+    assert not sidecar.exists()
+    assert primary_source.read_bytes() == b"primary source"
+
+
+async def test_background_delete_primary_still_removes_source_file(tmp_path):
+    """The duplicate guard must not weaken ordinary ``delete_file=True``."""
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    source_file = tmp_path / "paper.pdf"
+    source_file.write_bytes(b"primary source")
+    doc_manager = DocumentManager(str(tmp_path))
+    primary_id = "doc-primary"
+    rag = _DeleteRag(
+        DeletionResult(
+            status="success",
+            doc_id=primary_id,
+            message="deleted primary document",
+            file_path="paper.pdf",
+        ),
+        status_rows={
+            primary_id: {
+                "file_path": "paper.pdf",
+                "metadata": {},
+            }
+        },
+    )
+    shared_storage.initialize_share_data()
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+
+    await _document_routes.background_delete_documents(
+        rag,
+        doc_manager,
+        [primary_id],
+        delete_file=True,
+    )
+
+    assert rag.deleted_doc_ids == [(primary_id, False)]
+    assert not source_file.exists()
+
+
+class _FailingOwnershipDocStatus(_DeleteDocStatus):
+    """Simulates a transient backend read failure during the ownership check.
+
+    Mirrors real backend semantics: the legacy ``get_doc_by_file_basename``
+    swallows the failure and returns ``None`` (mongo/redis/opensearch
+    "best-effort miss"), while ``resolve_doc_source_strict`` raises per its
+    fail-closed contract. An ownership check built on the legacy lookup reads
+    the swallowed failure as "unreferenced" and deletes the shared file.
+    """
+
+    async def get_doc_by_file_basename(self, basename: str):
+        return None
+
+    async def resolve_doc_source_strict(self, canonical_source_key: str):
+        raise RuntimeError("simulated backend read failure")
+
+
+async def test_background_delete_ownership_lookup_failure_preserves_file(tmp_path):
+    """A swallowed/raised lookup failure must never delete a shared file."""
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    source_file = tmp_path / "paper.pdf"
+    source_file.write_bytes(b"primary source")
+    doc_manager = DocumentManager(str(tmp_path))
+    duplicate_id = "dup-attempt"
+    rag = _DeleteRag(
+        DeletionResult(
+            status="success",
+            doc_id=duplicate_id,
+            message="deleted duplicate marker",
+            file_path="paper.pdf",
+        ),
+        status_rows={
+            duplicate_id: {
+                "file_path": "paper.pdf",
+                "metadata": {"is_duplicate": True},
+            },
+            "doc-primary": {
+                "file_path": "paper.pdf",
+                "metadata": {},
+            },
+        },
+    )
+    rag.doc_status = _FailingOwnershipDocStatus(rag.doc_status.rows)
+    shared_storage.initialize_share_data()
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+
+    await _document_routes.background_delete_documents(
+        rag,
+        doc_manager,
+        [duplicate_id],
+        delete_file=True,
+    )
+
+    # The record deletion itself still succeeds; only the physical file
+    # cleanup is suppressed (fail closed).
+    assert rag.deleted_doc_ids == [(duplicate_id, False)]
+    assert source_file.read_bytes() == b"primary source"
+
+
+async def test_background_delete_source_conflict_preserves_file(tmp_path):
+    """With a historical basename conflict, surviving primaries keep the file."""
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    source_file = tmp_path / "paper.pdf"
+    source_file.write_bytes(b"conflicted source")
+    doc_manager = DocumentManager(str(tmp_path))
+    deleted_id = "doc-a"
+    rag = _DeleteRag(
+        DeletionResult(
+            status="success",
+            doc_id=deleted_id,
+            message="deleted one conflicting primary",
+            file_path="paper.pdf",
+        ),
+        status_rows={
+            deleted_id: {"file_path": "paper.pdf", "metadata": {}},
+            "doc-b": {"file_path": "paper.pdf", "metadata": {}},
+            "doc-c": {"file_path": "paper.pdf", "metadata": {}},
+        },
+    )
+    shared_storage.initialize_share_data()
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+
+    await _document_routes.background_delete_documents(
+        rag,
+        doc_manager,
+        [deleted_id],
+        delete_file=True,
+    )
+
+    assert rag.deleted_doc_ids == [(deleted_id, False)]
+    assert source_file.read_bytes() == b"conflicted source"
+
+
+async def test_background_delete_stale_self_match_preserves_file(tmp_path):
+    """An eventually-consistent index may still return the deleted row itself."""
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    source_file = tmp_path / "paper.pdf"
+    source_file.write_bytes(b"primary source")
+    doc_manager = DocumentManager(str(tmp_path))
+    deleted_id = "doc-stale"
+
+    class _StaleDocStatus(_DeleteDocStatus):
+        async def resolve_doc_source_strict(self, canonical_source_key: str):
+            return SourceUnique(
+                doc_id=deleted_id, doc={"file_path": canonical_source_key}
+            )
+
+    rag = _DeleteRag(
+        DeletionResult(
+            status="success",
+            doc_id=deleted_id,
+            message="deleted document",
+            file_path="paper.pdf",
+        ),
+    )
+    rag.doc_status = _StaleDocStatus()
+    shared_storage.initialize_share_data()
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+
+    await _document_routes.background_delete_documents(
+        rag,
+        doc_manager,
+        [deleted_id],
+        delete_file=True,
+    )
+
+    assert rag.deleted_doc_ids == [(deleted_id, False)]
+    assert source_file.read_bytes() == b"primary source"
 
 
 async def test_docx_archive_failure_is_best_effort(tmp_path, monkeypatch):

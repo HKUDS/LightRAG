@@ -85,6 +85,7 @@ from lightrag.constants import (
     MAX_R_SEPARATORS,
     PARSED_ARTIFACT_DIR_SUFFIXES,
     PARSED_DIR_NAME,
+    PROCESS_OPTION_CHUNK_CUSTOM,
     PROCESS_OPTION_CHUNK_FIXED,
     PROCESS_OPTION_CHUNK_PARAGRAH,
     PROCESS_OPTION_CHUNK_RECURSIVE,
@@ -105,6 +106,7 @@ from lightrag.kg.scan_job_store import (
 )
 from lightrag.parser.routing import (
     FilenameParserHintError,
+    ParserDirectives,
     canonicalize_parser_hinted_basename,
     chunk_strategy_key,
     encode_parse_engine,
@@ -616,6 +618,7 @@ TextChunkingStrategy = Literal[
     "recursive_character",
     "semantic_vector",
     "paragraph_semantic",
+    "custom",
 ]
 
 
@@ -760,6 +763,10 @@ _CHUNKING_PARAMS_MODEL: dict[str, type[_StrictChunkParams]] = {
     "recursive_character": RecursiveCharacterChunkParams,
     "semantic_vector": SemanticVectorChunkParams,
     "paragraph_semantic": ParagraphSemanticChunkParams,
+    # ``custom`` invokes LightRAG.chunking_func with the historical six
+    # arguments, so its request parameters are exactly the fixed-token fields
+    # that populate that signature.
+    "custom": FixedTokenChunkParams,
 }
 
 
@@ -770,6 +777,11 @@ class TextChunkingConfig(BaseModel):
     keys, wrong types, and out-of-range values all raise synchronously
     during request parsing (HTTP 422) — never later in the background
     indexing task, where the HTTP response has already been sent.
+
+    ``custom`` explicitly invokes ``LightRAG.chunking_func`` and reuses the
+    fixed-token parameter contract (split character, split-only flag, overlap,
+    and size). It is rejected unless the application injected a non-default
+    callback.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1605,7 +1617,9 @@ class DocumentManager:
     def mark_as_indexed(self, file_path: Path):
         self.indexed_files.add(file_path)
 
-    def is_supported_file(self, filename: str) -> bool:
+    def is_supported_file(
+        self, filename: str, *, directives: ParserDirectives | None = None
+    ) -> bool:
         """True when THIS filename routes to an engine that can parse it.
 
         Resolves the engine for the concrete name — so a per-file hint
@@ -1614,9 +1628,15 @@ class DocumentManager:
         default ``legacy`` engine is rejected here instead of failing later
         at the parse worker's suffix gate.
 
+        ``directives`` lets a caller that already resolved this filename
+        (upload does, to gate the ``C`` selector) reuse that resolution
+        instead of paying a second hint parse plus rule scan.
+
         Raises :class:`FilenameParserHintError` for a malformed hint —
         callers surface it (upload → HTTP 400 with the detailed message;
         scan passes the file through so enqueue emits an error document).
+        A caller passing ``directives`` has already resolved (and therefore
+        already surfaced) that error, so nothing is raised on that path.
         """
         from lightrag.parser.routing import (
             parser_engine_supports_suffix,
@@ -1624,7 +1644,11 @@ class DocumentManager:
             resolve_file_parser_engine,
         )
 
-        engine = resolve_file_parser_engine(filename)
+        engine = (
+            directives.engine
+            if directives is not None
+            else resolve_file_parser_engine(filename)
+        )
         return parser_engine_supports_suffix(engine, parser_suffix(filename))
 
 
@@ -2609,7 +2633,27 @@ _STRATEGY_TO_PROCESS_OPTION: Dict[str, str] = {
     "recursive_character": PROCESS_OPTION_CHUNK_RECURSIVE,
     "semantic_vector": PROCESS_OPTION_CHUNK_VECTOR,
     "paragraph_semantic": PROCESS_OPTION_CHUNK_PARAGRAH,
+    "custom": PROCESS_OPTION_CHUNK_CUSTOM,
 }
+
+
+def _validate_custom_chunking_available(process_options: str, rag: LightRAG) -> None:
+    """Require an injected callback for synchronous user-facing ``C`` ingress.
+
+    Background scans and reprocessing intentionally do not call this helper:
+    they may encounter an already-persisted ``C`` document after the callback
+    was removed, and the processing pipeline has an observable fixed-token
+    fallback for that case.
+    """
+    if parse_process_options(process_options).chunking != PROCESS_OPTION_CHUNK_CUSTOM:
+        return
+
+    from lightrag.chunker import chunking_by_token_size
+
+    if getattr(rag, "chunking_func", chunking_by_token_size) is chunking_by_token_size:
+        raise ValueError(
+            "custom chunking requires a non-default LightRAG.chunking_func"
+        )
 
 
 def _resolve_text_chunking(
@@ -2647,6 +2691,7 @@ def _resolve_text_chunking(
         )
 
     process_options = _STRATEGY_TO_PROCESS_OPTION[chunking.strategy]
+    _validate_custom_chunking_available(process_options, rag)
     chunk_options = resolve_chunk_options(
         rag.addon_params, process_options=process_options
     )
@@ -2735,6 +2780,7 @@ async def pipeline_index_texts(
     file_sources: List[str] = None,
     track_id: str = None,
     chunking: Optional[TextChunkingConfig] = None,
+    resolved_chunking: Optional[tuple[str, dict]] = None,
     admission_token: str | None = None,
 ):
     """Index a list of texts with track_id
@@ -2746,6 +2792,10 @@ async def pipeline_index_texts(
         track_id: Optional tracking ID
         chunking: Optional chunking strategy + params (already validated by
             the request model); when None, default fixed-token chunking is used
+        resolved_chunking: Optional preflight-frozen ``(process_options,
+            chunk_options)`` snapshot. Request handlers pass this so accepted
+            work cannot be invalidated by a callback/config change before its
+            managed task starts. Direct callers may omit it to resolve here.
         admission_token: the endpoint's pending-enqueue reservation, forwarded so
             the admission guard re-weights that token to the deduped count
             (LR2 §9.2)
@@ -2762,7 +2812,10 @@ async def pipeline_index_texts(
     if len(set(normalized_file_sources)) != len(normalized_file_sources):
         raise ValueError("File sources must be unique by filename")
 
-    process_options, chunk_options = _resolve_text_chunking(chunking, rag)
+    if resolved_chunking is None:
+        process_options, chunk_options = _resolve_text_chunking(chunking, rag)
+    else:
+        process_options, chunk_options = resolved_chunking
     enqueue_kwargs: dict[str, Any] = {
         "input": texts,
         "file_paths": normalized_file_sources,
@@ -4146,6 +4199,9 @@ async def background_delete_documents(
 
             file_path = "#"
             try:
+                delete_physical_file = delete_file
+                file_preservation_reason = None
+
                 result = await rag.adelete_by_doc_id(
                     doc_id, delete_llm_cache=delete_llm_cache
                 )
@@ -4153,6 +4209,80 @@ async def background_delete_documents(
                     getattr(result, "file_path", "-") if "result" in locals() else "-"
                 )
                 if result.status == "success":
+                    if (
+                        delete_file
+                        and result.file_path
+                        and result.file_path != UNKNOWN_FILE_SOURCE
+                    ):
+                        try:
+                            # Duplicate-attempt and source-conflict rows share a
+                            # primary document's basename. Check ownership only
+                            # after the deleted row is gone so a post-parse
+                            # content duplicate, which owns its unique archive,
+                            # still removes that archive normally.
+                            #
+                            # resolve_doc_source_strict is the fail-closed
+                            # contract: a backend failure RAISES here. The
+                            # legacy get_doc_by_file_basename lookup swallows
+                            # query failures into a best-effort None on some
+                            # backends, which would read as "unreferenced" and
+                            # delete a file a live primary still uses.
+                            resolution = await rag.doc_status.resolve_doc_source_strict(
+                                result.file_path
+                            )
+                            if isinstance(resolution, SourceUnique):
+                                if resolution.doc_id == doc_id:
+                                    # The deleted row is still visible to the
+                                    # lookup (eventually-consistent index).
+                                    # Preserve: a stale leak beats deleting a
+                                    # file another writer may have claimed.
+                                    delete_physical_file = False
+                                    file_preservation_reason = (
+                                        "deleted row still visible to the "
+                                        "ownership lookup"
+                                    )
+                                else:
+                                    delete_physical_file = False
+                                    file_preservation_reason = (
+                                        "still referenced by document "
+                                        f"{resolution.doc_id}"
+                                    )
+                            elif isinstance(resolution, SourceConflict):
+                                delete_physical_file = False
+                                file_preservation_reason = (
+                                    "still referenced by conflicting documents "
+                                    f"{', '.join(resolution.sample_doc_ids)}"
+                                )
+                            elif not isinstance(
+                                resolution, SourceAbsent
+                            ):  # pragma: no cover - typed union
+                                # The raise is caught below and preserves the
+                                # file.
+                                raise TypeError(
+                                    "resolve_doc_source_strict returned "
+                                    f"{type(resolution).__name__}; expected "
+                                    "SourceAbsent | SourceUnique | SourceConflict"
+                                )
+                            # SourceAbsent: no primary references the basename
+                            # any more; the deleted row was its sole owner.
+                        except Exception as ownership_error:
+                            # Fail closed: a storage read failure must never
+                            # turn a successful record deletion into accidental
+                            # removal of a possibly shared physical file. Keep
+                            # the raw error in the log only; pipeline_status is
+                            # serialized into API responses.
+                            logger.error(
+                                "Ownership check failed for %s (%s): %s",
+                                doc_id,
+                                result.file_path,
+                                ownership_error,
+                            )
+                            delete_physical_file = False
+                            file_preservation_reason = (
+                                "ownership check failed: "
+                                f"{type(ownership_error).__name__}"
+                            )
+
                     successful_deletions.append(doc_id)
                     success_msg = (
                         f"Document deleted {i}/{total_docs}: {doc_id}[{file_path}]"
@@ -4163,7 +4293,7 @@ async def background_delete_documents(
 
                     # Handle file deletion if requested and source information is available
                     if (
-                        delete_file
+                        delete_physical_file
                         and result.file_path
                         and result.file_path != UNKNOWN_FILE_SOURCE
                     ):
@@ -4213,7 +4343,16 @@ async def background_delete_documents(
                             async with pipeline_status_lock:
                                 pipeline_status["latest_message"] = file_error_msg
                                 append_pipeline_history(pipeline_status, file_error_msg)
-                    elif delete_file:
+                    elif delete_file and not delete_physical_file:
+                        file_preserved_msg = (
+                            f"Source file preserved for {doc_id}: {result.file_path} "
+                            f"({file_preservation_reason})"
+                        )
+                        logger.info(file_preserved_msg)
+                        async with pipeline_status_lock:
+                            pipeline_status["latest_message"] = file_preserved_msg
+                            append_pipeline_history(pipeline_status, file_preserved_msg)
+                    elif delete_physical_file:
                         no_file_msg = (
                             f"File deletion skipped, missing file path: {doc_id}"
                         )
@@ -5128,9 +5267,11 @@ def create_document_routes(
                 - status="success": File accepted and queued for processing
 
         Raises:
-            HTTPException: 400 unsupported file type, 409 same-name
-                conflict or scan-classifying / destructive job in
-                flight, 413 file too large, 500 other errors.
+            HTTPException: 400 unsupported file type or malformed filename
+                hint, 409 same-name conflict or scan-classifying /
+                destructive job in flight, 413 file too large, 422 invalid
+                chunking configuration (an explicit ``C`` selector without a
+                custom ``LightRAG.chunking_func``), 500 other errors.
         """
         from lightrag.kg.shared_storage import start_reserved_background_task
 
@@ -5153,17 +5294,36 @@ def create_document_routes(
             # Sanitize filename to prevent Path Traversal attacks
             safe_filename = sanitize_filename(file.filename, doc_manager.input_dir)
 
+            # Resolve engine + process options once and reuse the result for
+            # both gates below; each resolution costs a hint parse plus a
+            # LIGHTRAG_PARSER rule scan.
             try:
-                filename_supported = doc_manager.is_supported_file(safe_filename)
+                upload_directives = resolve_parser_directives(safe_filename)
             except FilenameParserHintError as hint_error:
                 # Reject malformed hints synchronously with the detailed
                 # message (previously surfaced asynchronously as an error
                 # document after the upload was accepted).
                 raise HTTPException(status_code=400, detail=str(hint_error))
-            if not filename_supported:
+
+            if not doc_manager.is_supported_file(
+                safe_filename, directives=upload_directives
+            ):
                 raise HTTPException(
                     status_code=400,
                     detail=f"Unsupported file type. Supported types: {doc_manager.supported_extensions}",
+                )
+
+            # Unlike scans/reprocessing, this request has a caller to correct
+            # an unusable explicit ``C`` selector. Reject before writing the
+            # upload rather than silently accepting work that must fall back.
+            try:
+                _validate_custom_chunking_available(
+                    upload_directives.process_options, rag
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Invalid chunking configuration: {exc}",
                 )
 
             # Check file size limit (if configured)
@@ -5430,10 +5590,11 @@ def create_document_routes(
             # Resolve + validate chunking synchronously so an invalid
             # effective config (e.g. chunk_token_size below the inherited
             # overlap) fails with HTTP 422 here, before any background work is
-            # scheduled. pipeline_index_texts re-resolves from the same
-            # addon_params inside the task.
+            # scheduled. Keep the returned snapshot: the callback/config may
+            # change before the managed task starts, but an accepted request
+            # must enqueue the exact options that passed this preflight.
             try:
-                _resolve_text_chunking(request.chunking, rag)
+                resolved_chunking = _resolve_text_chunking(request.chunking, rag)
             except ValueError as exc:
                 # Controlled chunking-config validation message (numeric sizes
                 # only, no internal detail); kept as client-facing 422 feedback
@@ -5458,6 +5619,7 @@ def create_document_routes(
                         file_sources=[normalized_file_source],
                         track_id=track_id,
                         chunking=request.chunking,
+                        resolved_chunking=resolved_chunking,
                         admission_token=enqueue_token,
                     )
                 finally:
@@ -5585,10 +5747,11 @@ def create_document_routes(
             # Resolve + validate the shared chunking synchronously so an
             # invalid effective config (e.g. chunk_token_size below the
             # inherited overlap) fails with HTTP 422 here, before any
-            # background work is scheduled. pipeline_index_texts re-resolves
-            # from the same addon_params inside the task.
+            # background work is scheduled. Keep the returned snapshot: the
+            # callback/config may change before the managed task starts, but an
+            # accepted request must enqueue the exact options from preflight.
             try:
-                _resolve_text_chunking(request.chunking, rag)
+                resolved_chunking = _resolve_text_chunking(request.chunking, rag)
             except ValueError as exc:
                 # Controlled chunking-config validation message (numeric sizes
                 # only, no internal detail); kept as client-facing 422 feedback
@@ -5620,6 +5783,7 @@ def create_document_routes(
                         file_sources=normalized_file_sources,
                         track_id=track_id,
                         chunking=request.chunking,
+                        resolved_chunking=resolved_chunking,
                         admission_token=enqueue_token,
                     )
                 finally:

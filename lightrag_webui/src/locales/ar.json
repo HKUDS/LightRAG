@@ -10,8 +10,9 @@
     "documents": "المستندات",
     "knowledgeGraph": "شبكة المعرفة",
     "retrieval": "الاسترجاع",
-    "api": "واجهة برمجة التطبيقات",
+    "apiDocs": "وثائق واجهة برمجة التطبيقات",
     "projectRepository": "مستودع المشروع",
+    "appSettings": "الإعدادات",
     "logout": "تسجيل الخروج",
     "frontendNeedsRebuild": "الواجهة الأمامية تحتاج إلى إعادة البناء",
     "themeToggle": {
@@ -37,7 +38,10 @@
     "cancel": "إلغاء",
     "save": "حفظ",
     "saving": "جارٍ الحفظ...",
-    "saveFailed": "فشل الحفظ"
+    "saveFailed": "فشل الحفظ",
+    "errorBoundaryTitle": "حدث خطأ ما",
+    "errorBoundaryDescription": "فشل عرض هذه اللوحة. حاول مرة أخرى أو انتقل إلى علامة تبويب أخرى.",
+    "errorBoundaryRetry": "إعادة المحاولة"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -482,9 +486,6 @@
       "enableRerank": "تمكين إعادة الترتيب",
       "enableRerankTooltip": "تمكين إعادة ترتيب أجزاء النص المسترجعة. إذا كان True ولكن لم يتم تكوين نموذج إعادة الترتيب، فسيتم إصدار تحذير. افتراضي True."
     }
-  },
-  "apiSite": {
-    "loading": "جارٍ تحميل وثائق واجهة برمجة التطبيقات..."
   },
   "apiKeyAlert": {
     "title": "مفتاح واجهة برمجة التطبيقات مطلوب",

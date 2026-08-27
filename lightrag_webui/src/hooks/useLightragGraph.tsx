@@ -92,8 +92,10 @@ const createTypeColorResolver = () => {
   let mapUpdated = false
 
   return {
-    colorFor(entityType: string | undefined): string {
-      const key = entityType ?? ''
+    colorFor(entityType: unknown): string {
+      // entity_type is untrusted graph data and may be a non-string; keep the
+      // cache key a string and let resolveNodeColor handle the raw value.
+      const key = typeof entityType === 'string' ? entityType : ''
       let color = cache.get(key)
       if (color === undefined) {
         const resolved = resolveNodeColor(entityType, typeColorMap)
@@ -263,7 +265,7 @@ const createSigmaGraph = async (rawGraph: RawGraph | null): Promise<UndirectedGr
     if (graph.hasNode(rawNode.id)) continue
 
     const { x, y } = hashNodeIdToPosition(rawNode.id)
-    rawNode.color = typeColors.colorFor(rawNode.properties?.entity_type as string | undefined)
+    rawNode.color = typeColors.colorFor(rawNode.properties?.entity_type)
 
     graph.addNode(rawNode.id, {
       label: safeNodeLabel(rawNode.labels, rawNode.id),
@@ -708,7 +710,7 @@ const useLightrangeGraph = () => {
         const processedNodes: RawNodeType[] = []
         for (const node of extendedGraph.nodes) {
           const { x, y } = hashNodeIdToPosition(node.id)
-          const color = typeColors.colorFor(node.properties?.entity_type as string | undefined)
+          const color = typeColors.colorFor(node.properties?.entity_type)
 
           // Create a properly typed RawNodeType
           processedNodes.push({

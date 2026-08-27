@@ -261,15 +261,14 @@ async def test_get_docs_paginated_excludes_rows_missing_required_fields(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_get_docs_paginated_excludes_rows_with_unexpected_fields(tmp_path):
+async def test_get_docs_paginated_hydrates_rows_with_unexpected_fields(tmp_path):
     """
-    A row can carry every required field and STILL fail to hydrate — e.g. an
-    unexpected top-level key makes ``DocProcessingStatus(**data)`` raise
-    TypeError even though nothing is missing. Regression test for a bug
-    where the validation pass only checked a fixed set of required-field
-    names present, so such a row was counted in total_count but then
-    silently dropped when the page-hydration step actually tried to
-    construct it — total_count and the returned page disagreed.
+    An unexpected top-level key no longer makes a row unhydratable —
+    ``DocProcessingStatus.from_stored`` ignores undeclared fields — so the
+    row appears in BOTH total_count and the returned page. The invariant
+    this file originally pinned still holds and is what this test asserts:
+    the validation pass and the page-hydration step must agree, whatever
+    the hydration rules are, or total_count disagrees with the page.
     """
     storage = JsonDocStatusStorage(
         namespace="doc_status",
@@ -302,8 +301,10 @@ async def test_get_docs_paginated_excludes_rows_with_unexpected_fields(tmp_path)
     )
 
     docs, total = await storage.get_docs_paginated()
-    assert total == 1
-    assert [doc_id for doc_id, _ in docs] == ["doc9"]
+    assert total == 2
+    assert sorted(doc_id for doc_id, _ in docs) == ["doc10", "doc9"]
+    hydrated = dict(docs)["doc10"]
+    assert not hasattr(hydrated, "unexpected_field")
 
 
 @pytest.mark.asyncio

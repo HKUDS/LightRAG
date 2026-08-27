@@ -100,6 +100,10 @@ Common provider prefixes:
 | `bedrock` | `BEDROCK_LLM_*` | `EXTRACT_BEDROCK_LLM_MAX_TOKENS` |
 | `gemini` | `GEMINI_LLM_*` | `VLM_GEMINI_LLM_THINKING_CONFIG` |
 
+This guide covers the role prefix and the inheritance rules. For the `{FIELD}` half —
+every option each prefix accepts, its type, its value syntax, and what the provider
+driver does with it — see [LLM and Embedding Provider Options Reference](./LLMProviderOptions.md).
+
 ## Inheritance Rules
 
 ### Overrides Within the Same Provider
@@ -374,3 +378,4 @@ Do not set `QUERY_LLM_BINDING_API_KEY`; Bedrock rejects that configuration.
 - Gemini Vertex AI mode is controlled by process-level Google environment variables. In the same LightRAG process, some roles cannot use Vertex AI while others use AI Studio API keys.
 - In Docker/Compose, `LLM_BINDING_HOST` usually needs to use a container-reachable address such as `host.docker.internal`; role-level hosts follow the same principle.
 - Restart LightRAG Server after modifying `.env`. Some IDE terminals preload `.env`, so opening a new terminal session is recommended to confirm that environment variables take effect.
+- A thinking-capable Ollama model can silently return empty entities/relations during extraction when its whole generation budget goes to hidden reasoning before any output (issue #3597). If that happens, set `EXTRACT_OLLAMA_LLM_THINK=false` (and `KEYWORD_OLLAMA_LLM_THINK=false` if keyword extraction is affected too). Besides `true`/`false`, this option accepts a reasoning level (`low`/`medium`/`high`, requires an Ollama server that supports levels). Leaving it unset follows the model's own default; an empty value (`OLLAMA_LLM_THINK=`) means `false`, not unset.

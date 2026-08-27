@@ -10,8 +10,9 @@
     "documents": "Documents",
     "knowledgeGraph": "Graphe de connaissances",
     "retrieval": "Récupération",
-    "api": "API",
+    "apiDocs": "Documentation de l'API",
     "projectRepository": "Référentiel du projet",
+    "appSettings": "Paramètres",
     "logout": "Déconnexion",
     "frontendNeedsRebuild": "Le frontend nécessite une reconstruction",
     "themeToggle": {
@@ -37,7 +38,10 @@
     "cancel": "Annuler",
     "save": "Sauvegarder",
     "saving": "Sauvegarde en cours...",
-    "saveFailed": "Échec de la sauvegarde"
+    "saveFailed": "Échec de la sauvegarde",
+    "errorBoundaryTitle": "Une erreur s'est produite",
+    "errorBoundaryDescription": "Ce panneau n'a pas pu s'afficher. Réessayez ou passez à un autre onglet.",
+    "errorBoundaryRetry": "Réessayer"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -482,9 +486,6 @@
       "enableRerank": "Activer le Reclassement",
       "enableRerankTooltip": "Active le reclassement pour les fragments de texte récupérés. Si True mais qu'aucun modèle de reclassement n'est configuré, un avertissement sera émis. True par défaut."
     }
-  },
-  "apiSite": {
-    "loading": "Chargement de la documentation de l'API..."
   },
   "apiKeyAlert": {
     "title": "Clé API requise",

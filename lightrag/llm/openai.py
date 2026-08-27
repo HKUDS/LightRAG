@@ -516,6 +516,7 @@ async def openai_complete_if_cache(
             cot_active = False
             cot_started = False
             initial_content_seen = False
+            closing_via_generator_exit = False
 
             try:
                 iteration_started = True
@@ -611,12 +612,29 @@ async def openai_complete_if_cache(
                     logger.debug(f"Streaming token usage (from API): {token_counts}")
                 elif token_tracker:
                     logger.debug("No usage information available in streaming response")
+            except GeneratorExit:
+                # Consumer disconnect mid-COT: tell the finally block below to
+                # skip its yield, which would otherwise abort cleanup with
+                # "async generator ignored GeneratorExit".
+                closing_via_generator_exit = True
+                raise
             except Exception as e:
                 # Ensure COT is properly closed before handling exception
                 if enable_cot and cot_active:
                     try:
                         yield "</think>"
                         cot_active = False
+                    except GeneratorExit:
+                        # Consumer disconnect while closing COT on the error
+                        # path. GeneratorExit is a BaseException, so neither
+                        # the handler below nor the co-sibling ``except
+                        # GeneratorExit`` above sees it. Without this clause
+                        # the finally block yields into a closing generator,
+                        # aclose() raises "async generator ignored
+                        # GeneratorExit", and the frame is abandoned before
+                        # the stream and the client are ever closed.
+                        closing_via_generator_exit = True
+                        raise
                     except Exception as close_error:
                         logger.warning(
                             f"Failed to close COT tag during exception handling: {close_error}"
@@ -645,8 +663,9 @@ async def openai_complete_if_cache(
                     )
                 raise
             finally:
-                # Final safety check for unclosed COT tags
-                if enable_cot and cot_active:
+                # Final safety check for unclosed COT tags, skipped while
+                # closing via GeneratorExit (see the except clause above).
+                if enable_cot and cot_active and not closing_via_generator_exit:
                     try:
                         yield "</think>"
                         cot_active = False
@@ -1047,7 +1066,16 @@ async def openai_embed(
                 truncated_texts.append(text)
                 continue
 
-            tokens = encoding.encode(text)
+            # disallowed_special=() is required, not an optimization: tiktoken
+            # defaults to disallowed_special=ALL and raises ValueError as soon as
+            # the text merely CONTAINS a literal special-token string such as
+            # "<|endoftext|>". Since this encode runs for every non-empty text
+            # once truncation is enabled, one chunk of user content quoting that
+            # marker -- common in documentation, notes, or captured model output
+            # -- failed the whole embedding batch regardless of its length. The
+            # markers must be encoded as ordinary text, exactly as
+            # Tokenizer.encode does for every other tokenizing path.
+            tokens = encoding.encode(text, disallowed_special=())
             if len(tokens) > max_token_size:
                 truncated_tokens = tokens[:max_token_size]
                 truncated_texts.append(encoding.decode(truncated_tokens))

@@ -45,7 +45,7 @@ class NativeExtractRuntime:
     consumes none of them simply ignores the argument.
 
     ``cancel_events`` is the full set, in the ``(event, exception_type)`` shape
-    :func:`~lightrag.parser.llm_bridge.normalize_cancel_events` accepts, so a
+    :func:`~lightrag.parser.exceptions.normalize_cancel_events` accepts, so a
     consumer stays agnostic about which source fired: the per-parse event
     (first entry), the pipeline's (``/documents/cancel_pipeline``), and the
     rag shutdown event.
@@ -258,9 +258,9 @@ class NativeParserBase(BaseParser):
         # Per-parse cancel event, polled by the LLM bridge between waits. The
         # rag-level shutdown event (when present) covers finalize_storages
         # while an extract is still in flight.
-        from lightrag.parser.llm_bridge import (
-            LLMBridgePipelineCancelled,
-            LLMBridgeShutdown,
+        from lightrag.parser.exceptions import (
+            ParsePipelineCancelled,
+            ParseShutdown,
         )
 
         cancel_event = threading.Event()
@@ -277,8 +277,8 @@ class NativeParserBase(BaseParser):
         # network read.
         cancel_events = (
             cancel_event,
-            (ctx.pipeline_cancel_event, LLMBridgePipelineCancelled),
-            (shutdown_event, LLMBridgeShutdown),
+            (ctx.pipeline_cancel_event, ParsePipelineCancelled),
+            (shutdown_event, ParseShutdown),
         )
         llm_invoke = None
         smartheading_cache_keys: list = []
@@ -344,14 +344,14 @@ class NativeParserBase(BaseParser):
             # The source is gone from INPUT_DIR by then, so that is not
             # recoverable.
             #
-            # Raise LLMBridgePipelineCancelled, NOT asyncio.CancelledError:
+            # Raise ParsePipelineCancelled, NOT asyncio.CancelledError:
             # the pipeline-level cancel (_watch_pipeline_cancellation) only
             # SETS ctx.pipeline_cancel_event, it never cancels the worker task,
             # so a CancelledError raised here would be set on a live, un-
             # cancelled future and re-raised into _parse_worker as a
             # BaseException that matches neither of its except clauses — the
             # doc would strand in PARSING and, if every worker died this way,
-            # wedge the batch on q.join() with busy=True. LLMBridgePipelineCancelled
+            # wedge the batch on q.join() with busy=True. ParsePipelineCancelled
             # is the repo-wide "blocking parse wait was cancelled" signal that
             # _parse_worker catches to mark the doc cancelled. In the task-
             # cancel case the future is already cancelled, so awaiting it raises
@@ -359,25 +359,25 @@ class NativeParserBase(BaseParser):
             # raise covers both.
             #
             # The rag-level shutdown event is checked here too, and raises the
-            # distinct LLMBridgeShutdown. _shutdown_parser_executor() sets it
+            # distinct ParseShutdown. _shutdown_parser_executor() sets it
             # and then calls executor.shutdown(wait=False), i.e. it does NOT
             # wait for a running extract — its contract is that in-flight work
             # exits via the event. Without this branch a worker still inside
             # validate_source_blocking when finalize_storages() runs would walk
             # on to rmtree parsed_dir and extract into storages being torn down.
             # Shutdown stays a generic parse failure for audit (the parse worker
-            # catches only PipelineCancelledException / LLMBridgePipelineCancelled
+            # catches only PipelineCancelledException / ParsePipelineCancelled
             # as "cancelled"), which is the documented intent.
             pipeline_cancelled = ctx.pipeline_cancel_event
             with cleanup_lock:
                 if shutdown_event is not None and shutdown_event.is_set():
-                    raise LLMBridgeShutdown(
+                    raise ParseShutdown(
                         f"parser executor shut down before extraction: {ctx.file_path}"
                     )
                 if cancel_event.is_set() or (
                     pipeline_cancelled is not None and pipeline_cancelled.is_set()
                 ):
-                    raise LLMBridgePipelineCancelled(
+                    raise ParsePipelineCancelled(
                         f"parse cancelled before extraction: {ctx.file_path}"
                     )
                 cleanup_started = True

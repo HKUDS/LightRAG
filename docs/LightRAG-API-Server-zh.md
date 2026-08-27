@@ -424,7 +424,7 @@ docker compose -f docker-compose.final.yml up -d
 处理生产数据前请注意：
 
 - 首次上传前确定 Embedding 模型、向量维度和非对称嵌入设置。之后修改这些配置需要清空对应 workspace/向量数据并重新索引文档。
-- 首次上传前确定存储后端。当前不支持在不同存储实现之间直接迁移。
+- 首次上传前确定存储后端。当前不支持在不同存储实现之间直接迁移，但有一个例外：已抽取的图可以从 `PGGraphStorage` 迁移到 `PGTableGraphStorage` 而无需重新索引 —— 参见下文*从 Apache AGE 迁移图数据到 PostgreSQL 表*。
 - 修改 `LIGHTRAG_PARSER` 只影响新上传文件。如需让已有文档使用新的解析路由，请删除后重新上传。
 
 ### Nginx 反向代理配置
@@ -729,7 +729,7 @@ API 服务器可以通过两种方式配置（优先级从高到低）：
 * 命令行参数
 * 环境变量或 .env 文件
 
-大多数配置都有默认设置，详细信息请查看示例文件：`.env.example`。存储配置也应通过环境变量或 `.env` 文件设置。
+大多数配置都有默认设置，详细信息请查看示例文件：`env.example`。存储配置也应通过环境变量或 `.env` 文件设置。
 
 ### 支持的 LLM 和嵌入后端
 
@@ -778,7 +778,9 @@ lightrag-server --embedding-binding ollama --help
 lightrag-server --embedding-binding gemini --help
 ```
 
-> 请使用openai兼容方式访问OpenRouter、vLLM或SLang部署的LLM。可以通过 `OPENAI_LLM_EXTRA_BODY` 环境变量给OpenRouter、vLLM或SGLang推理框架传递额外的参数，实现推理模式的关闭或者其它个性化控制。
+> **全部 provider 参数速查：** `--help` 只显示当前所选 binding 的参数组，既不显示默认值也不显示对应的环境变量名。[LLM and Embedding Provider Options Reference](./LLMProviderOptions.md)（英文技术参考）完整列出 `OPENAI_LLM_*`、`OLLAMA_LLM_*`、`GEMINI_LLM_*`、`BEDROCK_LLM_*`、`OLLAMA_EMBEDDING_*`、`GEMINI_EMBEDDING_*` 的每一个变量及其类型与含义，并说明取值规则（未设置即“不下发”、取值语法、各驱动实际转发哪些参数、以及为什么修改 provider 参数不会让 LLM 缓存失效）。
+>
+> 请使用openai兼容方式访问OpenRouter、[OrcaRouter](https://www.orcarouter.ai)、vLLM或SGLang部署的LLM。可以通过 `OPENAI_LLM_EXTRA_BODY` 环境变量给这些提供商传递额外的参数，实现推理模式的关闭或者其它个性化控制。
 
 设置 `max_tokens` 参数旨在**防止在实体关系提取阶段出现LLM 响应输出过长或无休止的循环输出的问题**。设置 `max_tokens` 参数的目的是在超时发生之前截断 LLM 输出，从而防止文档提取失败。这解决了某些包含大量实体和关系的文本块（例如表格或引文）可能导致 LLM 产生过长甚至无限循环输出的问题。此设置对于本地部署的小参数模型尤为重要。`max_tokens` 值可以通过以下公式计算：`LLM_TIMEOUT * llm_output_tokens/second`（例如 `240s * 50 tokens/s = 12000`，此时 max_tokens 应小于 12000）。
 
@@ -899,7 +901,7 @@ LightRAG 使用 4 种类型的存储用于不同目的：
 * **无需安装扩展。** `PGGraphStorage` 依赖 Apache AGE 扩展，而多数托管 PostgreSQL 服务（Amazon RDS、Cloud SQL、Supabase、Neon）并不提供该扩展，导致图存储往往无法与其余三类存储共用同一个数据库。`PGTableGraphStorage` 可运行在任意原生 PostgreSQL 14 及以上版本，所需的表在 `initialize()` 阶段自动创建。在 Docker 部署中，这也意味着使用官方镜像 `pgvector/pgvector:pg18` 即可；内置 AGE 的 `gzdaniel/postgres-for-rag:pg18-age-pgvector` 镜像仅 `PGGraphStorage` 需要。
 * **性能大幅提升。** 查询是带索引的普通 SQL，而非基于 `agtype` 的 Cypher；`get_knowledge_graph` 采用受 `max_nodes` 约束的前沿限幅 BFS。根据 [PR #3103](https://github.com/HKUDS/LightRAG/pull/3103) 随附的实测数据（PostgreSQL 18，8k 节点 / 约 40k 边的图，两个后端在测量前均已执行 `VACUUM ANALYZE`）：`get_knowledge_graph` p50 为 **39 ms 对 1,099 ms（约 28 倍）**，图数据批量装载 **3.0 s 对 434 s**，混合负载吞吐 **1,431 对 73 RPS**。
 
-两种实现读取相同的 `POSTGRES_*` 环境变量，但图数据的存放位置不同 —— `PGTableGraphStorage` 使用自己的 `lightrag_graph_nodes` / `lightrag_graph_edges` 表，`PGGraphStorage` 则存放在 AGE 图内部。因此对已有部署而言，切换实现并不是原地迁移：此前抽取的图将不可见，文档需要重新索引（LLM 缓存可以沿用，参见下文*在不同存储类型之间迁移LLM缓存*）。对于已经运行在 AGE 上的部署，`PGGraphStorage` 仍继续支持。
+两种实现读取相同的 `POSTGRES_*` 环境变量，但图数据的存放位置不同 —— `PGTableGraphStorage` 使用自己的 `lightrag_graph_nodes` / `lightrag_graph_edges` 表，`PGGraphStorage` 则存放在 AGE 图内部。因此对已有部署而言，切换实现并不是原地变更：切换之后，此前抽取的图对新后端不可见。此时可以选择重新索引文档，或使用下文*从 Apache AGE 迁移图数据到 PostgreSQL 表*所述的离线迁移工具把已有的图搬过去（LLM 缓存可以单独沿用，参见*在不同存储类型之间迁移LLM缓存*）。对于已经运行在 AGE 上的部署，`PGGraphStorage` 仍继续支持。
 
 各存储实现启动时必须配置的环境变量如下（未列出的实现无需额外配置，仅依赖 WORKING_DIR 下的文件持久化）：
 
@@ -930,13 +932,25 @@ LIGHTRAG_GRAPH_STORAGE=PGTableGraphStorage
 LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 ```
 
-在向 LightRAG 添加文档后，您不能更改存储实现选择。目前尚不支持从一个存储实现迁移到另一个存储实现。更多配置信息请阅读示例 `.env.example` 文件。
+在向 LightRAG 添加文档后，您不能更改存储实现选择。目前尚不支持从一个存储实现迁移到另一个存储实现，但图数据从 `PGGraphStorage` 迁移到 `PGTableGraphStorage`（参见下文*从 Apache AGE 迁移图数据到 PostgreSQL 表*）以及 LLM 缓存迁移（参见下文*在不同存储类型之间迁移LLM缓存*）除外。更多配置信息请阅读示例 `env.example` 文件。
 
 > 开发分支 [dev-lancedb](https://github.com/HKUDS/LightRAG/tree/dev-lancedb) 提供了由社区贡献的 LanceDB 存储实现，支持键值（KV）、向量、图及文档状态四类存储。开发分支 [dev-nebula-graph](https://github.com/HKUDS/LightRAG/tree/dev-nebula-graph) 则提供了社区贡献的 Nebula 图存储实现。欢迎有需求的开发者试用并持续完善上述两项存储方案。
 
 ### 在不同存储类型之间迁移LLM缓存
 
 当LightRAG更换存储实现方式的时候，可以LLM缓存从就的存储迁移到新的存储。先以后在新的存储上重新上传文件时，将利用利用原有存储的LLM缓存大幅度加快文件处理的速度。LLM缓存迁移工具的使用方法请参考 [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)
+
+### 从 Apache AGE 迁移图数据到 PostgreSQL 表
+
+已经运行 `PGGraphStorage` 的部署，可以把已抽取的图迁移到 `PGTableGraphStorage`，无需重新处理源文档。该离线工具通过公共存储 API 复制图数据：
+
+```bash
+# 请先停止所有 LightRAG 写入进程。默认为 dry run —— 不迁移任何图数据。
+python -m lightrag.tools.migrate_graph_storage
+python -m lightrag.tools.migrate_graph_storage --apply
+```
+
+只有图数据被迁移；向量与 KV 数据不受影响且继续有效，因为迁移后的图保持相同的实体与关系标识。该工具要求目标图分片为空，并且在写入任何数据之前，会拒绝所有它能观察到、且无法完整迁移的结构——缺少可用标识的节点、重复的节点 ID、互为反向的边对，以及 PostgreSQL `jsonb` 无法存储的取值。若写入过程中失败，它只移除本次运行实际写入的内容。有一点限制需要知悉：Apache AGE 使用 `SELECT DISTINCT` 枚举边，因此同一对节点之间两条完全相同的关系只会返回一行，工具无法察觉图的度数将会改变。更换存储后端的通用建议仍然是重新索引 —— 本工具是针对这一特定组合的进阶路径。前置条件、报告格式与失败处理请参考 [README_MIGRATE_GRAPH_STORAGE.md](../lightrag/tools/README_MIGRATE_GRAPH_STORAGE.md)
 
 ### LightRAG API 服务器命令行选项
 
@@ -1233,6 +1247,8 @@ notes.[-R].md
 
 - Swagger UI：http://localhost:9621/docs
 - ReDoc：http://localhost:9621/redoc
+
+设置 `ENABLE_API_DOCS=false` 可完全关闭交互式接口文档——`/docs`、`/redoc`、`/openapi.json` 及内置 Swagger UI 静态资源全部返回 404（建议加固的生产部署使用）。`/health` 以 `api_docs_available` 字段报告该状态，WebUI 会据此隐藏 API 文档入口。
 
 您可以使用提供的 curl 命令或通过 Swagger UI 界面测试 API 端点。确保：
 

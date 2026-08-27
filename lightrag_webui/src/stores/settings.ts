@@ -6,7 +6,7 @@ import { Message, QueryRequest } from '@/api/lightrag'
 
 type Theme = 'dark' | 'light' | 'system'
 type Language = 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW' | 'ru' | 'ja' | 'de' | 'uk' | 'ko' | 'vi'
-type Tab = 'documents' | 'knowledge-graph' | 'retrieval' | 'api'
+type Tab = 'documents' | 'knowledge-graph' | 'retrieval'
 
 interface SettingsState {
   // Document manager settings
@@ -229,7 +229,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 20,
+      version: 21,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -341,6 +341,14 @@ const useSettingsStoreBase = create<SettingsState>()(
             ...existing,
             ...suggestedUserPrompts.filter((p: string) => !existing.includes(p))
           ]
+        }
+        if (version < 21) {
+          // The API tab was replaced by a header icon that opens /docs in a
+          // new browser tab; a persisted 'api' would select a tab that no
+          // longer exists and leave the content area empty.
+          if (state.currentTab === 'api') {
+            state.currentTab = 'documents'
+          }
         }
         return state
       }

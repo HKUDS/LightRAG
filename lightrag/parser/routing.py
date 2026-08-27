@@ -19,6 +19,7 @@ from lightrag.constants import (
     PARSER_ENGINE_LEGACY,
     PARSER_ENGINE_NATIVE,
     PROCESS_OPTION_CHUNK_CHARS,
+    PROCESS_OPTION_CHUNK_CUSTOM,
     PROCESS_OPTION_CHUNK_FIXED,
     PROCESS_OPTION_CHUNK_VECTOR,
     PROCESS_OPTION_CHUNK_PARAGRAH,
@@ -140,7 +141,7 @@ def decode_parse_engine(
 
 
 # ---------------------------------------------------------------------------
-# Per-file processing options (i/t/e/!/F/R/V/P)
+# Per-file processing options (i/t/e/!/F/R/V/P/C)
 # ---------------------------------------------------------------------------
 
 
@@ -210,7 +211,7 @@ def validate_process_options(
         errors.append(
             f"{label} specifies multiple chunking modes "
             f"({'/'.join(seen_chunkers)}); pick one of "
-            f"{PROCESS_OPTION_CHUNK_FIXED}/{PROCESS_OPTION_CHUNK_RECURSIVE}/{PROCESS_OPTION_CHUNK_VECTOR}/{PROCESS_OPTION_CHUNK_PARAGRAH}"
+            f"{PROCESS_OPTION_CHUNK_FIXED}/{PROCESS_OPTION_CHUNK_RECURSIVE}/{PROCESS_OPTION_CHUNK_VECTOR}/{PROCESS_OPTION_CHUNK_PARAGRAH}/{PROCESS_OPTION_CHUNK_CUSTOM}"
         )
     return errors
 
@@ -240,7 +241,7 @@ def parse_process_options(options: Any) -> ProcessOptions:
 
 # ---------------------------------------------------------------------------
 # Per-chunker parameter snapshot (chunk_options) — counterpart to the
-# F/R/V/P selector in ``ProcessOptions``.  ``process_options`` chooses
+# F/R/V/P/C selector in ``ProcessOptions``.  ``process_options`` chooses
 # the strategy; ``chunk_options`` carries the parameters the chosen
 # strategy reads.
 #
@@ -253,7 +254,7 @@ def parse_process_options(options: Any) -> ProcessOptions:
 # ---------------------------------------------------------------------------
 
 
-# Strategy selector (F/R/V/P) → snapshot sub-dict key.  Single source
+# Strategy selector (F/R/V/P/C) → snapshot sub-dict key.  Single source
 # of truth for the slim ``chunk_options`` shape — used by
 # :func:`resolve_chunk_options` to pick which strategy block to keep
 # and by :func:`slim_chunk_options` to project caller-supplied dicts
@@ -263,6 +264,9 @@ _CHUNK_STRATEGY_KEYS: dict[str, str] = {
     PROCESS_OPTION_CHUNK_RECURSIVE: "recursive_character",
     PROCESS_OPTION_CHUNK_VECTOR: "semantic_vector",
     PROCESS_OPTION_CHUNK_PARAGRAH: "paragraph_semantic",
+    # C deliberately reuses the fixed-token snapshot: those values map
+    # one-for-one to the six-argument legacy chunking_func contract.
+    PROCESS_OPTION_CHUNK_CUSTOM: "fixed_token",
 }
 
 
@@ -717,7 +721,7 @@ def _extract_param_blocks(
     * ``engine_param_text`` is the text inside an engine-level ``(...)`` block
       (before the engine/options ``-``) when present, else ``None``.  Engine
       parameters are not accepted in Phase 1; callers reject them.
-    * ``chunk_param_texts`` maps each chunk selector char (F/R/V/P) to the raw
+    * ``chunk_param_texts`` maps each chunk selector char (F/R/V/P/C) to the raw
       text of the block that immediately follows it.
     * ``errors`` collects structural problems (unbalanced parens, a block not
       following a chunk strategy, duplicate blocks on one char).
@@ -756,7 +760,7 @@ def _extract_param_blocks(
                     engine_param = block
             else:
                 errors.append(
-                    f"parameters '({block})' must follow a chunk strategy (F/R/V/P)"
+                    f"parameters '({block})' must follow a chunk strategy (F/R/V/P/C)"
                 )
             i = nxt
             prev_meaningful = None
@@ -1057,7 +1061,7 @@ def filename_parser_directives(file_path: str | Path) -> tuple[str | None, str]:
 def filename_chunk_params(file_path: str | Path) -> dict[str, dict[str, Any]]:
     """Return the per-selector chunk parameters decoded from a filename hint.
 
-    Maps a chunk selector char (F/R/V/P) to its canonical parameter dict;
+    Maps a chunk selector char (F/R/V/P/C) to its canonical parameter dict;
     empty when the hint carries no parameters or is not a usable hint.
     """
     found = _filename_hint_match(file_path)
@@ -1397,7 +1401,7 @@ def _matching_rule_directives(
 class ParserDirectives:
     """Fully resolved per-file parser directives.
 
-    ``process_options`` stays a pure selector string (``i/t/e/!/F/R/V/P``);
+    ``process_options`` stays a pure selector string (``i/t/e/!/F/R/V/P/C``);
     parameters live in separate fields.  ``chunk_params`` maps a chunk
     selector char to its canonical parameter dict and feeds the existing
     ``chunk_options`` channel.  ``engine_params`` is the flat, canonical
@@ -1428,7 +1432,7 @@ def resolve_parser_directives(
            specify.
         3. Default engine ``legacy`` with empty options.
 
-    Selector (``i/t/e/!/FRVP``) keeps the legacy "filename options wholesale
+    Selector (``i/t/e/!/FRVPC``) keeps the legacy "filename options wholesale
     override rule options" behaviour.  Chunk parameters overlay per selector
     char: rule parameters first, then filename-hint parameters (filename wins
     on a shared key).

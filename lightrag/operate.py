@@ -55,6 +55,7 @@ from lightrag.utils import (
     apply_source_ids_limit,
     merge_source_ids,
     make_relation_chunk_key,
+    has_chunk_tracking_row,
     _cooperative_yield,
     wait_tasks_with_drain,
     performance_timing_log,
@@ -89,6 +90,7 @@ from lightrag.constants import (
     DEFAULT_SUMMARY_LANGUAGE,
     SOURCE_IDS_LIMIT_METHOD_KEEP,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
+    RELATION_NO_EVIDENCE_SOURCE_IDS,
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
     DEFAULT_MAX_FILE_PATHS,
     DEFAULT_ENTITY_NAME_MAX_LENGTH,
@@ -647,6 +649,62 @@ async def _summarize_descriptions(
     return summary
 
 
+# JavaScript Object.prototype member names. When such a value is stored as an
+# entity_type it crashes the WebUI knowledge-graph view: the type-color resolver
+# indexes a plain object with it and the Legend later calls a string method on
+# the resulting non-string map key (see graphColor.ts in the WebUI).
+# They are never valid entity types, so reject them at the extraction source.
+_RESERVED_ENTITY_TYPES = frozenset({"__proto__", "constructor", "prototype"})
+
+
+def _normalize_and_validate_entity_type(entity_type: str, context: str) -> str | None:
+    """Validate and normalize a sanitized entity_type extracted from an LLM.
+
+    Shared by the text (delimited-record) and JSON extraction paths so both
+    reject the same values. Expects ``entity_type`` to have already been passed
+    through ``sanitize_and_normalize_extracted_text``.
+
+    Returns the cleaned, space-stripped, lowercased type, or ``None`` when the
+    entity must be dropped:
+    - empty, or containing a structural delimiter character;
+    - all-empty after a comma split;
+    - a reserved JavaScript prototype member name (see ``_RESERVED_ENTITY_TYPES``).
+
+    ``context`` is a short caller-supplied descriptor included in warning logs.
+    """
+    if not entity_type.strip() or any(
+        char in entity_type for char in ["'", "(", ")", "<", ">", "|", "/", "\\"]
+    ):
+        logger.warning(f"Entity extraction error: invalid entity type in {context}")
+        return None
+
+    # Handle comma-separated entity types by finding the first non-empty token
+    if "," in entity_type:
+        original = entity_type
+        tokens = [t.strip() for t in entity_type.split(",")]
+        non_empty = [t for t in tokens if t]
+        if not non_empty:
+            logger.warning(
+                f"Entity extraction error: all tokens empty after comma-split in {context}: '{original}'"
+            )
+            return None
+        entity_type = non_empty[0]
+        logger.warning(
+            f"Entity type contains comma, taking first non-empty token in {context}: '{original}' -> '{entity_type}'"
+        )
+
+    # Remove spaces and convert to lowercase
+    entity_type = entity_type.replace(" ", "").lower()
+
+    if entity_type in _RESERVED_ENTITY_TYPES:
+        logger.warning(
+            f"Entity extraction error: reserved entity type '{entity_type}' rejected in {context}"
+        )
+        return None
+
+    return entity_type
+
+
 def _handle_single_entity_extraction(
     record_attributes: list[str],
     chunk_key: str,
@@ -675,32 +733,11 @@ def _handle_single_entity_extraction(
         entity_type = sanitize_and_normalize_extracted_text(
             record_attributes[2], remove_inner_quotes=True
         )
-
-        if not entity_type.strip() or any(
-            char in entity_type for char in ["'", "(", ")", "<", ">", "|", "/", "\\"]
-        ):
-            logger.warning(
-                f"Entity extraction error: invalid entity type in: {record_attributes}"
-            )
+        entity_type = _normalize_and_validate_entity_type(
+            entity_type, f"record {record_attributes}"
+        )
+        if entity_type is None:
             return None
-
-        # Handle comma-separated entity types by finding the first non-empty token
-        if "," in entity_type:
-            original = entity_type
-            tokens = [t.strip() for t in entity_type.split(",")]
-            non_empty = [t for t in tokens if t]
-            if not non_empty:
-                logger.warning(
-                    f"Entity extraction error: all tokens empty after comma-split: '{original}'"
-                )
-                return None
-            entity_type = non_empty[0]
-            logger.warning(
-                f"Entity type contains comma, taking first non-empty token: '{original}' -> '{entity_type}'"
-            )
-
-        # Remove spaces and convert to lowercase
-        entity_type = entity_type.replace(" ", "").lower()
 
         # Process entity description with same cleaning pipeline
         entity_description = sanitize_and_normalize_extracted_text(record_attributes[3])
@@ -934,16 +971,11 @@ async def _process_json_extraction_result(
             entity_type = sanitize_and_normalize_extracted_text(
                 str(entity_data.get("type", "")), remove_inner_quotes=True
             )
-            if not entity_type.strip() or any(
-                char in entity_type
-                for char in ["'", "(", ")", "<", ">", "|", "/", "\\"]
-            ):
-                logger.warning(
-                    f"{chunk_key}: Invalid entity type '{entity_type}' for entity '{entity_name}'"
-                )
+            entity_type = _normalize_and_validate_entity_type(
+                entity_type, f"{chunk_key}: entity '{entity_name}'"
+            )
+            if entity_type is None:
                 continue
-
-            entity_type = entity_type.replace(" ", "").lower()
 
             entity_description = sanitize_and_normalize_extracted_text(
                 str(entity_data.get("description", ""))
@@ -1983,9 +2015,24 @@ async def _rebuild_single_relationship(
 
     # Same as _rebuild_single_entity: chunk_ids reach this function already
     # split and non-empty, so no merge_source_ids() normalization is needed.
-    normalized_chunk_ids = chunk_ids
+    #
+    # Drop the historical no-evidence placeholders here, once, for BOTH writes
+    # below: this list becomes the authoritative relation_chunks row, and its
+    # post-limit form becomes the edge's source_id. Purge carries a placeholder
+    # in from a legacy tracking row or edge source_id (it is not one of the
+    # deleted chunk IDs, so nothing subtracts it), and a later purge or audit
+    # would read it back out of tracking as a real surviving chunk.
+    normalized_chunk_ids = [
+        chunk_id
+        for chunk_id in chunk_ids
+        if chunk_id and chunk_id not in RELATION_NO_EVIDENCE_SOURCE_IDS
+    ]
 
-    if relation_chunks_storage is not None and normalized_chunk_ids:
+    # Keyed on the INPUT being non-empty, not on the filtered result: a row whose
+    # only entry was a placeholder must be rewritten EMPTY -- authoritative "this
+    # relation tracks no chunks" under the presence model -- rather than left
+    # holding the placeholder because the write was skipped.
+    if relation_chunks_storage is not None and chunk_ids:
         storage_key = make_relation_chunk_key(src, tgt)
         await relation_chunks_storage.upsert(
             {
@@ -2096,6 +2143,25 @@ async def _rebuild_single_relationship(
     )
 
     weight = sum(weights) if weights else current_relationship.get("weight", 1.0)
+    # A rebuilt relation must not fall below its evidence floor: limited_chunk_ids
+    # becomes the edge's source_id, while cached fragments only cover those
+    # surviving chunks whose extraction cache is still present (none at all on the
+    # degraded path). Their summed weight can therefore under-count the evidence
+    # and mint exactly the rows relation edits later refuse. Count the post-limit
+    # list, matching _merge_edges_then_upsert and the source_id actually stored on
+    # the edge.
+    #
+    # This is a floor, not boost preservation: a rebuild that found fragments
+    # re-derives weight from them, exactly as it re-derives description and
+    # keywords, so weight follows evidence DOWN as a purge removes chunks and an
+    # edit_relation boost is not carried across. Folding the stored scalar into
+    # the max would freeze weight at its pre-purge value forever, since the
+    # scalar cannot be decomposed into evidence and boost. The degraded path has
+    # nothing to re-derive from, so it seeds ``weights`` with the stored value
+    # above and the boost survives there.
+    # limited_chunk_ids is derived from the placeholder-filtered list above, so
+    # every entry here already counts as real evidence.
+    weight = max(float(weight), float(len(set(limited_chunk_ids))))
 
     # Generate final description from relations or fallback to current
     if degraded:
@@ -2385,16 +2451,22 @@ async def _merge_nodes_then_upsert(
         new_source_ids = [dp["source_id"] for dp in nodes_data if dp.get("source_id")]
 
         existing_full_source_ids = []
+        has_tracking_row = False
         if entity_chunks_storage is not None:
             stored_chunks = await entity_chunks_storage.get_by_id(entity_name)
-            if stored_chunks and isinstance(stored_chunks, dict):
+            # Row presence by schema, never list truthiness (see
+            # has_chunk_tracking_row): a present-but-empty row is authoritative
+            # and must NOT be reseeded from the graph node's source_id, which is
+            # a truncated view that may still name purged chunks.
+            has_tracking_row = has_chunk_tracking_row(stored_chunks)
+            if has_tracking_row:
                 existing_full_source_ids = [
                     chunk_id
                     for chunk_id in stored_chunks.get("chunk_ids", [])
                     if chunk_id
                 ]
 
-        if not existing_full_source_ids:
+        if not has_tracking_row:
             existing_full_source_ids = [
                 chunk_id for chunk_id in already_source_ids if chunk_id
             ]
@@ -2744,18 +2816,35 @@ async def _merge_edges_then_upsert(
 
         storage_key = make_relation_chunk_key(src_id, tgt_id)
         existing_full_source_ids = []
+        has_tracking_row = False
         if relation_chunks_storage is not None:
             stored_chunks = await relation_chunks_storage.get_by_id(storage_key)
-            if stored_chunks and isinstance(stored_chunks, dict):
+            # Row presence by schema, never list truthiness (see
+            # has_chunk_tracking_row): a present-but-empty row is authoritative
+            # and must NOT be reseeded from the graph edge's source_id, which is
+            # a truncated view that may still name purged chunks.
+            has_tracking_row = has_chunk_tracking_row(stored_chunks)
+            if has_tracking_row:
+                # relation_chunks is the authoritative chunk list, so a
+                # historical no-evidence placeholder must never enter it: purge
+                # and audit would read it back as a real surviving chunk. Filter
+                # it out of BOTH baselines -- the stored row (repairing a legacy
+                # row on this merge) and, below, the legacy edge's own source_id
+                # used when no row exists. Filtering leaves an all-placeholder
+                # row empty, which stays authoritative here: the edge cannot own
+                # real chunks that tracking never recorded, so there is nothing
+                # to reseed.
                 existing_full_source_ids = [
                     chunk_id
                     for chunk_id in stored_chunks.get("chunk_ids", [])
-                    if chunk_id
+                    if chunk_id and chunk_id not in RELATION_NO_EVIDENCE_SOURCE_IDS
                 ]
 
-        if not existing_full_source_ids:
+        if not has_tracking_row:
             existing_full_source_ids = [
-                chunk_id for chunk_id in already_source_ids if chunk_id
+                chunk_id
+                for chunk_id in already_source_ids
+                if chunk_id and chunk_id not in RELATION_NO_EVIDENCE_SOURCE_IDS
             ]
 
         # 2. Merge new source ids with existing ones
@@ -2859,6 +2948,17 @@ async def _merge_edges_then_upsert(
             ]
             + already_weights
         )
+        # Repair legacy/manual rows that predate the shared weight contract:
+        # every distinct real source contributes a baseline of 1, while an
+        # existing larger weight remains an optional importance boost.
+        evidence_count = len(
+            {
+                source
+                for source in source_ids
+                if source and source not in RELATION_NO_EVIDENCE_SOURCE_IDS
+            }
+        )
+        weight = max(float(weight), float(evidence_count))
 
         # 6.2 Finalize keywords by merging existing and new keywords
         all_keywords = set()
@@ -3106,19 +3206,25 @@ async def _merge_edges_then_upsert(
 
                 # 1. Get existing full source_ids from entity_chunks_storage
                 existing_full_source_ids = []
+                has_tracking_row = False
                 if entity_chunks_storage is not None:
                     stored_chunks = await entity_chunks_storage.get_by_id(
                         need_insert_id
                     )
-                    if stored_chunks and isinstance(stored_chunks, dict):
+                    # Row presence by schema, never list truthiness (see
+                    # has_chunk_tracking_row): a present-but-empty row is
+                    # authoritative and must NOT be reseeded from the graph
+                    # node's possibly-stale source_id.
+                    has_tracking_row = has_chunk_tracking_row(stored_chunks)
+                    if has_tracking_row:
                         existing_full_source_ids = [
                             chunk_id
                             for chunk_id in stored_chunks.get("chunk_ids", [])
                             if chunk_id
                         ]
 
-                # If not in entity_chunks_storage, get from graph database
-                if not existing_full_source_ids:
+                # If no tracking row exists at all, fall back to graph database
+                if not has_tracking_row:
                     if existing_node.get("source_id"):
                         existing_full_source_ids = existing_node["source_id"].split(
                             GRAPH_FIELD_SEP

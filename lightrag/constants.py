@@ -48,6 +48,11 @@ DEFAULT_HEADING_LEVEL_MAX_CHARS = 80
 # Separator for: description, source_id and relation-key fields(Can not be changed after data inserted)
 GRAPH_FIELD_SEP = "<SEP>"
 
+# Historical placeholders written when a manually-created relation did not
+# provide a real source. They remain readable for compatibility but are not
+# evidence and therefore do not contribute to the relation weight floor.
+RELATION_NO_EVIDENCE_SOURCE_IDS = frozenset({"manual_creation", "UNKNOWN"})
+
 # Query and retrieval configuration defaults
 DEFAULT_TOP_K = 40
 DEFAULT_CHUNK_TOP_K = 20
@@ -212,6 +217,26 @@ DEFAULT_NATIVE_DOCX_IMAGE_MAX_TOTAL_BYTES = 64 * 1024 * 1024
 # / PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES.
 DEFAULT_PARSER_RESULT_BUNDLE_MAX_ENTRIES = 10_000
 DEFAULT_PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES = 512 * 1024 * 1024  # 512 MiB
+
+# Overall wall-clock budget for downloading the result bundle from docling
+# or mineru, on top of (not instead of) the per-read httpx timeout each
+# client already sets. A per-read timeout only bounds a single socket
+# operation — a peer trickling one byte per interval keeps resetting it
+# and can hold the download open indefinitely. Env:
+# PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT.
+DEFAULT_PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT = 300  # 5 minutes
+
+# Cap on the raw HTTP response body streamed off the wire while downloading
+# the result bundle, checked chunk-by-chunk before the bytes are ever handed
+# to safe_extract_zip. Deliberately a separate knob from
+# DEFAULT_PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES above: that one bounds the
+# *uncompressed* size a zip's central directory declares (safe_extract_zip's
+# zip-bomb check), while this bounds the *compressed* bytes actually received
+# — different budgets an operator may need to tune independently. Same
+# default value only because it's a reasonable starting point for both, not
+# because the two are meant to move together. Env:
+# PARSER_RESULT_BUNDLE_DOWNLOAD_MAX_BYTES.
+DEFAULT_PARSER_RESULT_BUNDLE_DOWNLOAD_MAX_BYTES = 512 * 1024 * 1024  # 512 MiB
 
 # Native docx smart_heading (opt-in engine param) tunables. Each DEFAULT_*
 # below has a matching env var (drop the DEFAULT_ prefix) read at run time
@@ -423,7 +448,7 @@ PROCESS_OPTION_IMAGES = "i"  # Enable VLM analysis for drawings/images
 PROCESS_OPTION_TABLES = "t"  # Enable VLM analysis for tables
 PROCESS_OPTION_EQUATIONS = "e"  # Enable VLM analysis for equations
 PROCESS_OPTION_SKIP_KG = "!"  # Skip entity/relation extraction (no KG build)
-ProcessChunkingOption: TypeAlias = Literal["F", "R", "V", "P"]
+ProcessChunkingOption: TypeAlias = Literal["F", "R", "V", "P", "C"]
 PROCESS_OPTION_CHUNK_FIXED: ProcessChunkingOption = (
     "F"  # Fixed-length / separator chunking (default)
 )
@@ -436,6 +461,9 @@ PROCESS_OPTION_CHUNK_VECTOR: ProcessChunkingOption = (
 PROCESS_OPTION_CHUNK_PARAGRAH: ProcessChunkingOption = (
     "P"  # Paragrah-driven semantic chunking
 )
+PROCESS_OPTION_CHUNK_CUSTOM: ProcessChunkingOption = (
+    "C"  # Explicitly invoke LightRAG.chunking_func
+)
 
 PROCESS_OPTION_CHUNK_CHARS: frozenset[ProcessChunkingOption] = frozenset(
     {
@@ -443,6 +471,7 @@ PROCESS_OPTION_CHUNK_CHARS: frozenset[ProcessChunkingOption] = frozenset(
         PROCESS_OPTION_CHUNK_RECURSIVE,
         PROCESS_OPTION_CHUNK_VECTOR,
         PROCESS_OPTION_CHUNK_PARAGRAH,
+        PROCESS_OPTION_CHUNK_CUSTOM,
     }
 )
 SUPPORTED_PROCESS_OPTIONS = frozenset(
@@ -455,6 +484,7 @@ SUPPORTED_PROCESS_OPTIONS = frozenset(
         PROCESS_OPTION_CHUNK_RECURSIVE,
         PROCESS_OPTION_CHUNK_VECTOR,
         PROCESS_OPTION_CHUNK_PARAGRAH,
+        PROCESS_OPTION_CHUNK_CUSTOM,
     }
 )
 

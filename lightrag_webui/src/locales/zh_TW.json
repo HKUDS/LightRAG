@@ -10,8 +10,9 @@
     "documents": "文件",
     "knowledgeGraph": "知識圖譜",
     "retrieval": "檢索",
-    "api": "API",
+    "apiDocs": "API 文件",
     "projectRepository": "專案庫",
+    "appSettings": "設定",
     "logout": "登出",
     "frontendNeedsRebuild": "前端程式碼需重新建置",
     "themeToggle": {
@@ -37,7 +38,10 @@
     "cancel": "取消",
     "save": "儲存",
     "saving": "儲存中...",
-    "saveFailed": "儲存失敗"
+    "saveFailed": "儲存失敗",
+    "errorBoundaryTitle": "發生錯誤",
+    "errorBoundaryDescription": "此面板無法顯示。請重試，或切換到其他分頁。",
+    "errorBoundaryRetry": "重試"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -482,9 +486,6 @@
       "maxTotalTokens": "總詞元數上限",
       "maxTotalTokensTooltip": "整個查詢上下文的最大總詞元預算（實體+關係+文檔塊+系統提示）"
     }
-  },
-  "apiSite": {
-    "loading": "正在載入 API 文件..."
   },
   "apiKeyAlert": {
     "title": "需要 API key",

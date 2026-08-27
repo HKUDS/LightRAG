@@ -316,7 +316,7 @@ When choosing an Embedding model, pay attention to its multilingual support capa
 
 ### Enabling Reranking
 
-Enabling the Rerank option during the query phase can significantly improve query quality. However, enabling Rerank typically introduces a 1–2 second delay. To minimize latency, it is highly recommended to deploy the Rerank model locally. Any mainstream, up-to-date reranker works; for local deployment, `BAAI/bge-reranker-v2-m3` is recommended. For configuration details, please refer to the `.env.example` file. Unlike Embedding models, the Rerank model can be changed at any time during the query phase.
+Enabling the Rerank option during the query phase can significantly improve query quality. However, enabling Rerank typically introduces a 1–2 second delay. To minimize latency, it is highly recommended to deploy the Rerank model locally. Any mainstream, up-to-date reranker works; for local deployment, `BAAI/bge-reranker-v2-m3` is recommended. For configuration details, please refer to the `env.example` file. Unlike Embedding models, the Rerank model can be changed at any time during the query phase.
 
 ### Document Processing Pipeline Configuration
 
@@ -370,7 +370,7 @@ During the document insertion stage, you may also want to adjust the following e
 - **ENABLE_CONTENT_HEADINGS**: Controls whether the section heading information of a text chunk is sent to the LLM during the query stage (enabled by default, providing more context for the LLM).
 - **FORCE_LLM_SUMMARY_ON_MERGE / MAX_SOURCE_IDS_PER_RELATION**: Controls the maximum number of text chunks an `entity/relation` can be associated with.
 - **SOURCE_IDS_LIMIT_METHOD**: Controls whether to keep updating the entity/relation description once an `entity/relation` exceeds its associated text chunk limit (by default it stops updating, because at that point the entity-relation description is already rich enough and further updates add little value; skipping updates can greatly speed up knowledge base construction).
-- **DEFAULT_MAX_FILE_PATHS**: Controls the maximum number of source files an `entity/relation` can be associated with; once this limit is exceeded, new file names are no longer written to the vector storage.
+- **MAX_FILE_PATHS**: Controls the maximum number of source files an `entity/relation` can be associated with; once this limit is exceeded, new file names are no longer written to the vector storage.
 
 ### Resolving LLM Timeouts During Entity-Relation Extraction
 
@@ -507,6 +507,7 @@ Entries marked 🇨🇳 also ship a Chinese translation as `*-zh.md` in the same
 | Document | What it covers |
 |---|---|
 | [RoleSpecificLLMConfiguration.md](./docs/RoleSpecificLLMConfiguration.md) [🇨🇳](./docs/RoleSpecificLLMConfiguration-zh.md) | Per-role (`EXTRACT` / `QUERY` / `KEYWORD` / `VLM`) LLM and VLM configuration |
+| [LLMProviderOptions.md](./docs/LLMProviderOptions.md) | Complete reference for provider generation options (`OPENAI_LLM_*`, `OLLAMA_LLM_*`, `GEMINI_LLM_*`, `BEDROCK_LLM_*`, `*_EMBEDDING_*`) |
 | [AsymmetricEmbedding.md](./docs/AsymmetricEmbedding.md) | Query/document asymmetric embedding (`EMBEDDING_ASYMMETRIC`) and per-model prefixes |
 | [MilvusConfigurationGuide.md](./docs/MilvusConfigurationGuide.md) | Tuning Milvus index parameters through `vector_db_storage_cls_kwargs` |
 

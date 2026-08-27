@@ -128,7 +128,8 @@ async def lmdeploy_model_if_cache(
             stacklevel=2,
         )
     kwargs.pop("response_format", None)
-    max_new_tokens = kwargs.pop("max_tokens", 512)
+    max_tokens = kwargs.pop("max_tokens", 512)
+    max_new_tokens = kwargs.pop("max_new_tokens", max_tokens)
     tp = kwargs.pop("tp", 1)
     skip_special_tokens = kwargs.pop("skip_special_tokens", True)
     do_preprocess = kwargs.pop("do_preprocess", True)
@@ -142,7 +143,6 @@ async def lmdeploy_model_if_cache(
             f"v0.6.0, but currently using lmdeloy {lmdeploy.__version__}"
         )
     else:
-        do_sample = True
         gen_params.update(do_sample=do_sample)
 
     lmdeploy_pipe = initialize_lmdeploy_pipeline(
