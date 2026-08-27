@@ -120,4 +120,3 @@ export const EDGE_PERF_LIMIT = 5000
 // Time budget (ms) a relaxing worker layout runs before it is stopped. Scales
 // with graph size, capped so huge graphs don't run unbounded.
 export const workerBudgetMs = (order: number): number => Math.min(1500 + order / 10, 10000)
-

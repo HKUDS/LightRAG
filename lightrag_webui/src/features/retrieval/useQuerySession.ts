@@ -534,7 +534,7 @@ export function useQuerySession({
     // Relinquish ownership so the aborted query's deferred `finally` skips
     // its cleanup — otherwise it would write the stale conversation back into
     // history, undoing a Clear the user performs after stopping.
-     
+
     abortControllerRef.current = null
 
     // Finalize the terminated assistant message and persist immediately so
@@ -572,9 +572,9 @@ export function useQuerySession({
     }
 
     // The skipped `finally` won't reset these shared thinking refs.
-     
+
     thinkingStartTime.current = null
-     
+
     thinkingProcessed.current = false
 
     // Stop the live response timer (the skipped finally won't clear it).

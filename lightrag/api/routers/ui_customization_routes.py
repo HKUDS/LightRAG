@@ -61,7 +61,9 @@ def create_ui_customization_routes(
             )
 
         try:
-            requested = normalize_locale(locale) if locale.strip() else snapshot.default_locale
+            requested = (
+                normalize_locale(locale) if locale.strip() else snapshot.default_locale
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
