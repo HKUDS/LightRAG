@@ -94,6 +94,23 @@ describe('createFutureGuardedStorage', () => {
     stub.removeItem('b')
   })
 
+  test('extraDivert diverts every operation while its condition holds', () => {
+    let migrating = true
+    const storage = createFutureGuardedStorage(1, () => migrating)
+
+    stub.setItem('m', envelope(1))
+    storage.setItem('m', envelope(1).replace('{}', '{"x":1}'))
+    // The pre-existing value survives; the write stayed session-local.
+    expect(stub.getItem('m')).toBe(envelope(1))
+    expect(storage.getItem('m')).toContain('"x":1')
+
+    migrating = false
+    storage.setItem('m', envelope(1))
+    expect(stub.getItem('m')).toBe(envelope(1))
+    expect(storage.getItem('m')).toBe(envelope(1))
+    stub.removeItem('m')
+  })
+
   test('once the future envelope is gone, reads and writes hit localStorage again', () => {
     const storage = createFutureGuardedStorage(1)
     stub.setItem('a', envelope(2))

@@ -65,10 +65,15 @@ const useQuerySettingsStoreBase = create<QuerySettingsState>()(
       name: QUERY_SETTINGS_STORAGE_KEY,
       // Rollback safety: an envelope written by a NEWER client (version above
       // this build's) is neither hydrated nor overwritten — even when it
-      // arrives mid-session from a newer tab (guard semantics in
-      // lib/guardedStorage.ts).
+      // arrives mid-session from a newer tab. The extra divert extends
+      // rule 7 to WRITES: after a failed split, no set() may plant a
+      // defaults envelope that writeIfAbsent would later treat as
+      // authoritative (guard semantics in lib/guardedStorage.ts).
       storage: createJSONStorage(() =>
-        createFutureGuardedStorage(QUERY_SETTINGS_STORE_VERSION)
+        createFutureGuardedStorage(
+          QUERY_SETTINGS_STORE_VERSION,
+          () => getSettingsMigrationError() != null
+        )
       ),
       version: QUERY_SETTINGS_STORE_VERSION,
       // Rule 7 of the split migration: when the split did not complete, the

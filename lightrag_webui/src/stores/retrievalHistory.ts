@@ -38,9 +38,13 @@ export function createRetrievalHistoryStore(storageKey: string): RetrievalHistor
       {
         name: storageKey,
         // Rollback safety: a NEWER client's envelope is neither hydrated nor
-        // overwritten, even arriving mid-session (lib/guardedStorage.ts).
+        // overwritten, even arriving mid-session; after a failed split no
+        // set() may plant a defaults envelope either (lib/guardedStorage.ts).
         storage: createJSONStorage(() =>
-          createFutureGuardedStorage(RETRIEVAL_HISTORY_STORE_VERSION)
+          createFutureGuardedStorage(
+            RETRIEVAL_HISTORY_STORE_VERSION,
+            () => getSettingsMigrationError() != null
+          )
         ),
         version: RETRIEVAL_HISTORY_STORE_VERSION,
         // See splitSettingsStorage rule 7: never hydrate on a half-migrated

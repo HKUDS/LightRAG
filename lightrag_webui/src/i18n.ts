@@ -7,6 +7,7 @@ import {
   type SupportedUiLanguage
 } from '@/lib/browserLanguage'
 import { LEGACY_SETTINGS_STORAGE_KEY } from '@/lib/storageKeys'
+import { getSettingsMigrationError } from '@/migrations/splitSettingsStorage'
 
 import en from './locales/en.json'
 import zh from './locales/zh.json'
@@ -79,7 +80,15 @@ i18n
 
 // Sync the store to the resolved language WITHOUT marking it user-selected:
 // a browser-derived language must keep re-resolving on future visits.
-if (useSettingsStore.getState().language !== initialLanguage) {
+// Skipped entirely after a failed split migration: with skipHydration the
+// store holds defaults, and persisting ANY set() would replace the
+// unmigrated legacy envelope with a default-heavy v22 one (the storage
+// adapter also diverts such writes — this gate just avoids even that).
+// i18n itself already runs on `initialLanguage` via init() above.
+if (
+  getSettingsMigrationError() == null &&
+  useSettingsStore.getState().language !== initialLanguage
+) {
   useSettingsStore.setState({ language: initialLanguage })
 }
 

@@ -1,5 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { SETTINGS_STORAGE_VERSION_AFTER_SPLIT } from '@/migrations/splitSettingsStorage'
+import {
+  getSettingsMigrationError,
+  resetSettingsMigrationErrorForTests,
+  runSettingsStorageSplitMigration,
+  SETTINGS_STORAGE_VERSION_AFTER_SPLIT
+} from '@/migrations/splitSettingsStorage'
 import { LEGACY_SETTINGS_STORAGE_KEY } from '@/lib/storageKeys'
 
 /**
@@ -130,5 +135,48 @@ describe('settings storage guard (per-operation, cross-tab safe)', () => {
     expect(written.version).toBe(SETTINGS_STORAGE_VERSION_AFTER_SPLIT)
     expect(written.state.theme).toBe('system')
     stub.removeItem(LEGACY_SETTINGS_STORAGE_KEY)
+  })
+
+  test('after a FAILED split migration, writes divert instead of replacing the legacy envelope', async () => {
+    // Drive the REAL failure path: a storage whose writes throw (quota-style)
+    // records the migration error exactly as production would.
+    const legacyEnvelope = JSON.stringify({
+      state: {
+        theme: 'dark',
+        querySettings: { mode: 'hybrid', history_turns: 0 },
+        retrievalHistory: [{ id: 'h1', role: 'user', content: 'unmigrated' }]
+      },
+      version: 21
+    })
+    const failingStorage = {
+      getItem: (key: string) =>
+        key === LEGACY_SETTINGS_STORAGE_KEY ? legacyEnvelope : null,
+      setItem: () => {
+        throw new Error('quota exceeded (injected)')
+      },
+      removeItem: () => {},
+      clear: () => {},
+      key: () => null,
+      length: 0
+    } as Storage
+    runSettingsStorageSplitMigration(failingStorage)
+    expect(getSettingsMigrationError()).not.toBeNull()
+
+    try {
+      // The unmigrated envelope sits in localStorage; a set() (e.g. the i18n
+      // language sync) must NOT replace it with a default-heavy v22 envelope
+      // — that would make the next load treat the split as completed and
+      // lose the legacy query settings/history forever.
+      stub.setItem(LEGACY_SETTINGS_STORAGE_KEY, legacyEnvelope)
+      await persistStorage().setItem(LEGACY_SETTINGS_STORAGE_KEY, {
+        state: { theme: 'light' },
+        version: SETTINGS_STORAGE_VERSION_AFTER_SPLIT
+      } as never)
+
+      expect(stub.getItem(LEGACY_SETTINGS_STORAGE_KEY)).toBe(legacyEnvelope)
+    } finally {
+      resetSettingsMigrationErrorForTests()
+      stub.removeItem(LEGACY_SETTINGS_STORAGE_KEY)
+    }
   })
 })

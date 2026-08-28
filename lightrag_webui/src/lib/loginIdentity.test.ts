@@ -7,6 +7,7 @@ import {
 } from './loginIdentity'
 import { useWebuiRetrievalHistoryStore } from '@/stores/webuiRetrievalHistory'
 import { useWorkspaceRetrievalHistoryStore } from '@/stores/workspaceRetrievalHistory'
+import { WORKSPACE_RETRIEVAL_HISTORY_KEY } from '@/lib/storageKeys'
 
 /**
  * Identity-change cleanup contract: logout/401 preserve the histories, so
@@ -106,6 +107,32 @@ describe('applyLoginIdentity', () => {
     expect(useWebuiRetrievalHistoryStore.getState().history).toEqual([])
     expect(useWorkspaceRetrievalHistoryStore.getState().history).toEqual([])
     expect(stub.getItem(PREVIOUS_USER_KEY)).toBe('alice')
+  })
+
+  test('a NEWER client\'s history envelope is destroyed too, not diverted around', () => {
+    // Rollback interaction: a v2 (future) envelope holds the previous
+    // identity's conversations. The future-envelope guard would DIVERT the
+    // stores' clear-writes and preserve it — while the identity commit below
+    // would make the newer client skip its own cleanup later. The identity
+    // transition therefore removes the persisted keys outright.
+    const futureEnvelope = JSON.stringify({
+      state: { history: [{ id: 'a9', role: 'user', content: 'alice secret' }] },
+      version: 2
+    })
+    stub.setItem(WORKSPACE_RETRIEVAL_HISTORY_KEY, futureEnvelope)
+    stub.setItem(PREVIOUS_USER_KEY, 'alice')
+
+    applyLoginIdentity('bob')
+
+    const remaining = stub.getItem(WORKSPACE_RETRIEVAL_HISTORY_KEY)
+    // Either fully removed, or re-created EMPTY at this build's version by
+    // the store's own clear-write — never the newer envelope's content.
+    if (remaining !== null) {
+      const parsed = JSON.parse(remaining)
+      expect(parsed.version).toBe(1)
+      expect(parsed.state.history).toEqual([])
+    }
+    expect(stub.getItem(PREVIOUS_USER_KEY)).toBe('bob')
   })
 
   test('the P1 sequence end-to-end: named user → logout preserves → guest activation clears', () => {

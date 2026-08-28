@@ -1,6 +1,10 @@
 import { create } from 'zustand'
 import { useWebuiRetrievalHistoryStore } from '@/stores/webuiRetrievalHistory'
 import { useWorkspaceRetrievalHistoryStore } from '@/stores/workspaceRetrievalHistory'
+import {
+  WEBUI_RETRIEVAL_HISTORY_KEY,
+  WORKSPACE_RETRIEVAL_HISTORY_KEY
+} from '@/lib/storageKeys'
 
 /**
  * Identity-change cleanup shared by EVERY path that activates a login: the
@@ -52,6 +56,21 @@ export function applyLoginIdentity(identity: string): boolean {
   if (identityChanged) {
     // A different person (or a guest after a named user): neither entry may
     // show the previous identity's conversations.
+    //
+    // Destruction outranks rollback preservation here: remove the PERSISTED
+    // envelopes outright FIRST, bypassing the future-envelope guard. The
+    // guard would otherwise DIVERT the stores' clear-writes and leave a
+    // NEWER client's envelope holding the previous identity's conversations
+    // — and because the identity below is still committed, that newer
+    // client would later skip its own cleanup ("identity already matches")
+    // and hydrate them. Raw key removal is version-agnostic: no client, old
+    // or new, has anything left to hydrate.
+    try {
+      localStorage.removeItem(WEBUI_RETRIEVAL_HISTORY_KEY)
+      localStorage.removeItem(WORKSPACE_RETRIEVAL_HISTORY_KEY)
+    } catch (error) {
+      console.error('Failed to remove persisted retrieval histories:', error)
+    }
     useWebuiRetrievalHistoryStore.getState().clearHistory()
     useWorkspaceRetrievalHistoryStore.getState().clearHistory()
   }

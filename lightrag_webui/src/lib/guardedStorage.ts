@@ -37,15 +37,26 @@ export function hasFutureEnvelope(
  * store whose current envelope version is `currentVersion`. The key checked
  * is the one zustand passes in (the store's own persist name), and
  * `localStorage` is read at call time, never captured.
+ *
+ * `extraDivert` adds a store-supplied condition under which operations are
+ * ALSO diverted to the session fallback — the split stores pass "the split
+ * migration did not complete" (rule 7 extended to writes: a store running on
+ * defaults after `skipHydration` must not let any set() replace the
+ * unmigrated legacy envelope with a default-heavy one, which the next load
+ * would take as a completed migration).
  */
-export function createFutureGuardedStorage(currentVersion: number) {
+export function createFutureGuardedStorage(
+  currentVersion: number,
+  extraDivert?: () => boolean
+) {
   const sessionFallback = new Map<string, string>()
-  const isFuture = (key: string) => hasFutureEnvelope(key, currentVersion)
+  const isDiverted = (key: string) =>
+    hasFutureEnvelope(key, currentVersion) || extraDivert?.() === true
   return {
     getItem: (key: string): string | null =>
-      isFuture(key) ? (sessionFallback.get(key) ?? null) : localStorage.getItem(key),
+      isDiverted(key) ? (sessionFallback.get(key) ?? null) : localStorage.getItem(key),
     setItem: (key: string, value: string): void => {
-      if (isFuture(key)) {
+      if (isDiverted(key)) {
         sessionFallback.set(key, value)
         return
       }
@@ -53,7 +64,7 @@ export function createFutureGuardedStorage(currentVersion: number) {
     },
     removeItem: (key: string): void => {
       sessionFallback.delete(key)
-      if (!isFuture(key)) {
+      if (!isDiverted(key)) {
         localStorage.removeItem(key)
       }
     }

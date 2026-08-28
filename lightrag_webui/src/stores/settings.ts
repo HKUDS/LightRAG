@@ -221,10 +221,15 @@ const useSettingsStoreBase = create<SettingsState>()(
       name: LEGACY_SETTINGS_STORAGE_KEY,
       // Rollback safety (split-migration rule 3): an envelope written by a
       // NEWER client (version > 22) is neither hydrated nor overwritten —
-      // even when it arrives mid-session from a newer tab. Guard semantics
-      // in lib/guardedStorage.ts.
+      // even when it arrives mid-session from a newer tab. The extra divert
+      // extends rule 7 to WRITES: after a failed split this store runs on
+      // defaults (skipHydration), and no set() may replace the unmigrated
+      // legacy envelope. Guard semantics in lib/guardedStorage.ts.
       storage: createJSONStorage(() =>
-        createFutureGuardedStorage(SETTINGS_STORAGE_VERSION_AFTER_SPLIT)
+        createFutureGuardedStorage(
+          SETTINGS_STORAGE_VERSION_AFTER_SPLIT,
+          () => getSettingsMigrationError() != null
+        )
       ),
       version: SETTINGS_STORAGE_VERSION_AFTER_SPLIT,
       // See splitSettingsStorage rule 7: never hydrate on a half-migrated
