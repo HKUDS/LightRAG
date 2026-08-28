@@ -28,6 +28,7 @@ from lightrag.base import (
 )
 from lightrag.constants import (
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
+    DOC_STATUS_CONTENT_SUMMARY_MAX_LENGTH,
     DUPLICATE_DEMOTION_METADATA_KEYS,
     FILE_EXTRACTION_SUMMARY_PREFIX,
     FULL_DOCS_FORMAT_LIGHTRAG,
@@ -52,6 +53,15 @@ from lightrag.utils import (
     move_file_to_parsed_dir,
 )
 
+
+# Character budget for the error description inside a generated
+# ``[File Extraction]`` summary: the column ceiling minus the prefix and minus
+# the ellipsis ``get_content_summary`` appends when it truncates. Keeps the
+# concatenated summary within PostgreSQL's ``varchar(255)`` for an error
+# message of any length.
+_FILE_EXTRACTION_SUMMARY_ERROR_BUDGET = (
+    DOC_STATUS_CONTENT_SUMMARY_MAX_LENGTH - len(FILE_EXTRACTION_SUMMARY_PREFIX) - 3
+)
 
 PLACEHOLDER_DOCUMENT_SOURCES = {"", "no-file-path", "unknown_source"}
 SIDECAR_LOCATION_UNKNOWN = "unknown_source"
@@ -699,6 +709,13 @@ def doc_status_parse_failure_fields(
     directive whitelists, so the next transition (retry reset, PARSING)
     drops them automatically — mirroring how ``error_msg`` is cleared.
 
+    The generated summary is budgeted so that prefix + description +
+    ellipsis never exceeds ``DOC_STATUS_CONTENT_SUMMARY_MAX_LENGTH``.
+    ``get_content_summary``'s own 250-char default would overflow
+    PostgreSQL's ``varchar(255)`` once the prefix is prepended, and the
+    upsert that fails is the FAILED transition itself — the document would
+    silently stay in its previous in-flight status with no error recorded.
+
     ``engine_hint`` (the parse worker's resolved engine key, falling back
     to its queue-group id) is stamped as ``parse_engine`` only when the
     failure happened before the post-parse stamp put one on
@@ -717,8 +734,10 @@ def doc_status_parse_failure_fields(
     if not current_summary or current_summary.startswith(
         FILE_EXTRACTION_SUMMARY_PREFIX
     ):
-        extra_fields["content_summary"] = (
-            FILE_EXTRACTION_SUMMARY_PREFIX + get_content_summary(error_text)
+        extra_fields["content_summary"] = FILE_EXTRACTION_SUMMARY_PREFIX + (
+            get_content_summary(
+                error_text, max_length=_FILE_EXTRACTION_SUMMARY_ERROR_BUDGET
+            )
         )
     metadata_extra: dict[str, Any] = {
         "error_type": "file_extraction_error",
