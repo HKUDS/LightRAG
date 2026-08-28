@@ -12,6 +12,7 @@ from lightrag.utils import (
     load_json,
     logger,
     validate_workspace,
+    run_in_storage_io,
     write_json,
 )
 from lightrag.exceptions import StorageNotInitializedError
@@ -209,7 +210,10 @@ class JsonKVStorage(BaseKVStorage):
                return.
             2. Snapshot ``self._data`` (converting from ``Manager.dict``
                proxy to a plain ``dict`` so the JSON encoder doesn't trip
-               over the proxy) and write it via ``write_json``.
+               over the proxy) and write it via ``write_json``, which runs
+               in the storage-IO pool rather than on the event loop. The
+               snapshot is taken here, on the loop, so the worker thread
+               only ever reads a private dict.
             3. If ``write_json`` reports sanitization was applied, the
                on-disk file no longer matches what was in memory — reload
                the cleaned data back into ``self._data`` under the same
@@ -240,10 +244,19 @@ class JsonKVStorage(BaseKVStorage):
                     f"[{self.workspace}] Process {os.getpid()} KV writting {data_count} records to {self.namespace}"
                 )
 
-                # Write JSON and check if sanitization was applied
-                needs_reload = write_json(data_dict, self._file_name)
+                # Off the event loop: this rewrites the whole file, which on a
+                # large corpus takes seconds during which the single worker
+                # serving HTTP would otherwise be blocked. Only the write moves
+                # -- `data_dict` is snapshotted above, on the loop, under the
+                # lock, so the worker thread touches nothing shared.
+                needs_reload = await run_in_storage_io(
+                    write_json, data_dict, self._file_name
+                )
 
-                # If data was sanitized, reload cleaned data to update shared memory
+                # If data was sanitized, reload cleaned data to update shared
+                # memory. Deliberately NOT offloaded: this branch writes back
+                # into the shared dict, and it only runs for payloads that fail
+                # to encode.
                 if needs_reload:
                     logger.info(
                         f"[{self.workspace}] Reloading sanitized data into shared memory for {self.namespace}"
