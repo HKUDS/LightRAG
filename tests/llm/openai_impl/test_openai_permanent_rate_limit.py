@@ -220,3 +220,94 @@ async def test_embed_still_retries_ordinary_rate_limit(monkeypatch, no_retry_wai
         await openai_embed(["hello"])
 
     assert fake_client.calls == 3
+
+
+# ---------------------------------------------------------------------------
+# HTTP level -- the SDK has a retry loop of its own
+# ---------------------------------------------------------------------------
+#
+# The tests above stub ``chat.completions.create``, so they never exercise the
+# transport and cannot see the OpenAI SDK's own retries. The SDK defaults to
+# ``max_retries=2`` and its ``_should_retry`` is body-blind (it retries every
+# 429), so a permanent spend stop still cost three HTTP requests plus SDK
+# backoff even with the tenacity predicate in place. ``create_openai_async_client``
+# now builds the client with ``max_retries=0``; these tests count the requests
+# that actually reach the wire.
+
+
+def _counting_transport(counter: list[int], body: dict) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        counter[0] += 1
+        return httpx.Response(429, json={"error": body})
+
+    return httpx.MockTransport(handler)
+
+
+def _client_factory(transport: httpx.MockTransport):
+    """Build a fresh client per call, all sharing one counting transport.
+
+    Every tenacity attempt calls ``create_openai_async_client`` anew, and the
+    error handlers close the client they were given, so a single shared
+    instance would fail the second attempt with a connection error instead of
+    reaching the transport.
+    """
+    from lightrag.llm.openai import create_openai_async_client
+
+    def factory(**_kwargs):
+        return create_openai_async_client(
+            api_key="test-key",
+            base_url="https://proxy.example/v1",
+            client_configs={"http_client": httpx.AsyncClient(transport=transport)},
+        )
+
+    return factory
+
+
+@pytest.mark.asyncio
+async def test_budget_exceeded_costs_exactly_one_http_request(
+    monkeypatch, no_retry_wait
+):
+    calls = [0]
+    monkeypatch.setattr(
+        "lightrag.llm.openai.create_openai_async_client",
+        _client_factory(_counting_transport(calls, BUDGET_BODY)),
+    )
+
+    with pytest.raises(RateLimitError):
+        await openai_complete_if_cache(model="gpt-4o-mini", prompt="hello")
+
+    assert calls[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_ordinary_429_costs_exactly_the_tenacity_attempts(
+    monkeypatch, no_retry_wait
+):
+    """With the SDK loop off, the request count is the tenacity attempt count.
+
+    Previously this was 3 x 3: the outer loop multiplied with the SDK's own.
+    """
+    calls = [0]
+    monkeypatch.setattr(
+        "lightrag.llm.openai.create_openai_async_client",
+        _client_factory(_counting_transport(calls, THROTTLE_BODY)),
+    )
+
+    with pytest.raises(RetryError):
+        await openai_complete_if_cache(model="gpt-4o-mini", prompt="hello")
+
+    assert calls[0] == 3
+
+
+def test_sdk_retries_are_off_by_default():
+    from lightrag.llm.openai import create_openai_async_client
+
+    assert create_openai_async_client(api_key="k").max_retries == 0
+
+
+def test_client_configs_can_restore_sdk_retries():
+    """Escape hatch: the SDK's Retry-After handling stays available on request."""
+    from lightrag.llm.openai import create_openai_async_client
+
+    client = create_openai_async_client(api_key="k", client_configs={"max_retries": 2})
+    assert client.max_retries == 2

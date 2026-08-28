@@ -175,10 +175,22 @@ def create_openai_async_client(
         timeout: Request timeout in seconds.
         client_configs: Additional configuration options for the AsyncOpenAI client.
             These will override any default configurations but will be overridden by
-            explicit parameters (api_key, base_url).
+            explicit parameters (api_key, base_url). Pass ``max_retries`` here to
+            re-enable the SDK's own retry loop (see below).
 
     Returns:
         An AsyncOpenAI or AsyncAzureOpenAI client instance.
+
+    Retry ownership: the client is built with ``max_retries=0`` so the tenacity
+    decorators on ``openai_complete_if_cache`` / ``openai_embed`` are the only
+    retry layer. The SDK defaults to ``max_retries=2`` and its ``_should_retry``
+    is body-blind -- it retries every 429, including the permanent spend stops
+    (LiteLLM ``budget_exceeded``, OpenAI ``insufficient_quota``) that the
+    tenacity predicate exists to fail fast on, so those would still cost three
+    HTTP requests plus SDK backoff per call. It also multiplied with the outer
+    loop, making a transient failure cost up to 3x3 requests. Overridable
+    through ``client_configs`` for anyone who wants the SDK's ``Retry-After``
+    handling back.
     """
     if use_azure:
         from openai import AsyncAzureOpenAI
@@ -193,6 +205,8 @@ def create_openai_async_client(
 
         # Create a merged config dict with precedence: explicit params > client_configs
         merged_configs = {
+            # Retry ownership belongs to the tenacity decorators; see docstring.
+            "max_retries": 0,
             **client_configs,
             "api_key": api_key,
         }
@@ -225,6 +239,8 @@ def create_openai_async_client(
 
         # Create a merged config dict with precedence: explicit params > client_configs > defaults
         merged_configs = {
+            # Retry ownership belongs to the tenacity decorators; see docstring.
+            "max_retries": 0,
             **client_configs,
             "default_headers": default_headers,
             "api_key": api_key,
