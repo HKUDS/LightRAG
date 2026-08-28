@@ -1,4 +1,4 @@
 """Lightweight version definitions shared by packaging and runtime code."""
 
 __version__ = "1.5.7"
-__api_version__ = "0335"
+__api_version__ = "0336"

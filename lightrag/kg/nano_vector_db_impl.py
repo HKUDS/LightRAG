@@ -3,8 +3,9 @@ import base64
 import json
 import os
 import zlib
+from functools import partial
 from hashlib import md5
-from typing import Any, final
+from typing import Any, Awaitable, Callable, final
 from dataclasses import dataclass
 import numpy as np
 import time
@@ -13,6 +14,7 @@ from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.utils import (
     logger,
     compute_mdhash_id,
+    commit_in_storage_io,
     validate_workspace,
 )
 
@@ -690,7 +692,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # needed — a reload resurrecting the removed version is taken out again
         # by the replay at the top of the next flush, rewrite preserved.
 
-    def _save_to_disk_locked(self) -> None:
+    async def _save_to_disk_locked(
+        self, on_committed: Callable[[], Awaitable[None]]
+    ) -> None:
         """Atomically persist ``self._client`` and notify other processes.
 
         Precondition: the caller must already hold ``_storage_lock``. Factored
@@ -699,6 +703,32 @@ class NanoVectorDBStorage(BaseVectorStorage):
         path is on the instance, so we temporarily redirect ``storage_file`` to
         the per-writer tmp and let ``atomic_write`` own the rename; the original
         path is restored on every path (success and exception).
+
+        Runs in the storage-IO pool rather than on the event loop. Two
+        consequences the caller must respect:
+
+        * The lock has to stay held for the whole call. ``_save_atomic`` swaps
+          ``self._client.storage_file`` to the tmp sibling for the duration of
+          the save, so a coroutine that got in during the write would observe
+          the client pointing at a path that is about to be renamed away.
+        * ``commit_in_storage_io`` therefore refuses to return before the worker
+          finishes, even when the caller is cancelled — matching the old
+          synchronous write, which could not be cancelled at all.
+
+        ``on_committed`` carries the post-write bookkeeping (retire the redo
+        logs, flag the other processes, clear the dirty bit) into that same
+        uncancellable region. It must not be inlined after this call: a cancel
+        delivered in between would leave the file published with the other
+        processes never told to reload it, and would strand the redo logs. It
+        runs only if the write succeeded — running it without a write would
+        retire redo entries for rows that were never persisted.
+
+        Only PART of the stall goes away. ``NanoVectorDB.save()`` base64-encodes
+        the entire matrix through ``tobytes()`` and ``b64encode()``, two single C
+        calls that hold the GIL for their whole duration no matter which thread
+        they run on; a 400 MB matrix still stalls the loop for that stretch. The
+        ``json.dump`` that follows is the cooperative part. Fixing the encode
+        needs a chunked or binary format and is tracked separately.
         """
 
         def _save_atomic(tmp: str) -> None:
@@ -709,7 +739,15 @@ class NanoVectorDBStorage(BaseVectorStorage):
             finally:
                 self._client.storage_file = original
 
-        atomic_write(self._client_file_name, _save_atomic, self.workspace or "_")
+        await commit_in_storage_io(
+            partial(
+                atomic_write,
+                self._client_file_name,
+                _save_atomic,
+                self.workspace or "_",
+            ),
+            on_committed,
+        )
 
     async def query(
         self, query: str, top_k: int, query_embedding: list[float] = None
@@ -1055,12 +1093,15 @@ class NanoVectorDBStorage(BaseVectorStorage):
             # aborts the batch; pending stays intact and _client_dirty stays
             # True (if only the save failed) for a later retry.
             await self._flush_pending_locked()
-            self._save_to_disk_locked()
-            self._unsaved_deletes.clear()  # the removals are durable now
-            self._unsaved_upserts.clear()  # the rows are durable now
-            await set_all_update_flags(self.namespace, workspace=self.workspace)
-            self.storage_updated.value = False
-            self._client_dirty = False
+
+            async def _committed() -> None:
+                self._unsaved_deletes.clear()  # the removals are durable now
+                self._unsaved_upserts.clear()  # the rows are durable now
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
+                self.storage_updated.value = False
+                self._client_dirty = False
+
+            await self._save_to_disk_locked(_committed)
             return True
 
     @staticmethod
@@ -1445,9 +1486,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 # the whole file and flag every other process for a full
                 # reload for no reason.
                 return
-            self._save_to_disk_locked()
-            self._unsaved_deletes.clear()  # the removals are durable now
-            self._unsaved_upserts.clear()  # the rows are durable now
-            await set_all_update_flags(self.namespace, workspace=self.workspace)
-            self.storage_updated.value = False
-            self._client_dirty = False
+
+            async def _committed() -> None:
+                self._unsaved_deletes.clear()  # the removals are durable now
+                self._unsaved_upserts.clear()  # the rows are durable now
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
+                self.storage_updated.value = False
+                self._client_dirty = False
+
+            await self._save_to_disk_locked(_committed)

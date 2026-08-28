@@ -26,6 +26,7 @@ from hashlib import md5
 from pathlib import Path
 from typing import (
     Any,
+    Awaitable,
     Protocol,
     Callable,
     TYPE_CHECKING,
@@ -2725,28 +2726,87 @@ def _consume_future_exception(fut: "asyncio.Future") -> None:
         fut.exception()
 
 
-async def bounded_submit(
+async def _wait_deferring_cancellation(
+    future: "asyncio.Future",
+    pending_cancel: Optional[asyncio.CancelledError],
+) -> Optional[asyncio.CancelledError]:
+    """Await ``future`` to completion, deferring cancellation of the caller.
+
+    Loop + shield, not a single shield: a lone ``await asyncio.shield(...)``
+    returns immediately on RE-cancellation, so a second cancel would let the
+    caller escape while the work is still running. Same shape and same reason as
+    ``_KeyedLockContext.__aexit__`` in ``lightrag/kg/shared_storage.py``.
+
+    Returns the cancellation to re-raise once every step is done (the first one
+    seen, if any). Cancelling ``future`` ITSELF still propagates immediately: it
+    did not run to completion and we must not pretend it did.
+    """
+    while not future.done():
+        try:
+            await asyncio.shield(future)
+        except asyncio.CancelledError as exc:
+            if future.cancelled():
+                raise
+            pending_cancel = pending_cancel or exc
+        except BaseException:
+            # The awaited work failed. Do NOT let that exception out from here: a
+            # cancellation recorded on an earlier round has to take precedence,
+            # and deciding that is the caller's job. The exception stays on
+            # ``future`` for the caller to re-raise or log. Anything raised while
+            # the future is still pending came from elsewhere and propagates.
+            if not future.done():
+                raise
+            break
+    return pending_cancel
+
+
+async def _bounded_submit_impl(
     executor: ThreadPoolExecutor,
     semaphore: asyncio.Semaphore,
     fn: Callable[..., Any],
-    /,
-    *args: Any,
-    **kwargs: Any,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    *,
+    wait_for_completion: bool,
+    on_committed: Optional[Callable[[], Awaitable[Any]]] = None,
 ) -> Any:
-    """Run ``fn`` in ``executor`` under a permit owned by the executor future.
+    """Shared body of :func:`bounded_submit` and :func:`run_in_storage_io`.
 
-    Args:
-        executor: destination pool.
-        semaphore: submission ceiling for this pool, from :func:`get_loop_semaphore`.
-        fn: synchronous callable to run in the pool.
-        *args, **kwargs: forwarded to ``fn``.
+    Private, and takes ``args`` / ``kwargs`` as explicit containers rather than
+    ``*args, **kwargs``, so the control flag can never collide with an argument
+    meant for ``fn``. ``bounded_submit`` forwards its ``**kwargs`` verbatim, so
+    putting ``wait_for_completion`` on its own signature would either make it
+    positional-only (before the ``/``, where passing it by keyword would silently
+    forward it to ``fn`` instead of setting it) or steal a legitimate argument of
+    ``fn`` (after ``*args``).
 
-    Returns:
-        Whatever ``fn`` returns.
+    ``wait_for_completion`` selects what happens AFTER the work is submitted:
 
-    Cancelling the caller does not cancel the thread: the work runs to completion
-    and only then is the permit returned. That is deliberate — see the module
-    comment above.
+    * ``False`` — cancelling the caller returns immediately. The thread still
+      runs to completion and still owns the permit; the caller just stops
+      waiting for it.
+    * ``True`` — the caller refuses to return until the worker is done, because
+      the worker may be halfway through mutating state the caller's lock is
+      protecting (see :func:`run_in_storage_io`).
+
+    Either way the permit wait itself stays cancellable: nothing has been
+    submitted at that point, so a cancelled caller leaves no work in flight and
+    can release whatever lock it holds immediately.
+
+    ``on_committed`` (requires ``wait_for_completion``) is the bookkeeping that
+    must not be separated from a write that already landed — flipping other
+    processes' reload flags, retiring a redo log. It runs inside the SAME
+    uncancellable region as the write, and only when the write actually
+    succeeded:
+
+    * write succeeded → ``on_committed`` runs to completion, and only then is a
+      deferred cancellation re-raised;
+    * ``fn`` raised → ``on_committed`` does NOT run and the exception
+      propagates; the write did not land, so its bookkeeping must not either;
+    * cancelled while waiting for a permit → ``on_committed`` does NOT run,
+      because nothing was ever submitted. That is load-bearing, not tidiness:
+      Nano's bookkeeping retires the redo log, and running it without a write
+      would discard rows that were never persisted.
     """
     await semaphore.acquire()
     try:
@@ -2772,7 +2832,72 @@ async def bounded_submit(
 
     async_future = asyncio.wrap_future(concurrent_future)
     async_future.add_done_callback(_consume_future_exception)
-    return await asyncio.shield(async_future)
+
+    if not wait_for_completion:
+        if on_committed is not None:
+            raise ValueError("on_committed requires wait_for_completion")
+        return await asyncio.shield(async_future)
+
+    pending_cancel = await _wait_deferring_cancellation(async_future, None)
+
+    write_exc = None if async_future.cancelled() else async_future.exception()
+
+    commit_exc: Optional[BaseException] = None
+    if write_exc is None and on_committed is not None:
+        # The write landed, so its bookkeeping is no longer optional: a cancel
+        # here would leave the file published with the other processes never told
+        # to reload it. Deferred through this step too — without the second wait
+        # the gap simply moves one layer down, onto whatever this awaits.
+        commit_future = asyncio.ensure_future(on_committed())
+        commit_future.add_done_callback(_consume_future_exception)
+        pending_cancel = await _wait_deferring_cancellation(
+            commit_future, pending_cancel
+        )
+        if not commit_future.cancelled():
+            commit_exc = commit_future.exception()
+
+    if pending_cancel is not None:
+        # The caller gets CancelledError, so nobody will ever see these.
+        # ``_consume_future_exception`` already marked them retrieved (no
+        # "exception was never retrieved" noise at GC time); log them so the
+        # failure is not lost entirely.
+        for label, exc in (("Offloaded work", write_exc), ("Commit hook", commit_exc)):
+            if exc is not None:
+                logger.error(f"{label} failed while its caller was cancelled: {exc}")
+        raise pending_cancel
+    if commit_exc is not None:
+        raise commit_exc
+    return async_future.result()
+
+
+async def bounded_submit(
+    executor: ThreadPoolExecutor,
+    semaphore: asyncio.Semaphore,
+    fn: Callable[..., Any],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Run ``fn`` in ``executor`` under a permit owned by the executor future.
+
+    Args:
+        executor: destination pool.
+        semaphore: submission ceiling for this pool, from :func:`get_loop_semaphore`.
+        fn: synchronous callable to run in the pool.
+        *args, **kwargs: forwarded to ``fn`` verbatim. This function declares no
+            keyword arguments of its own, so ``fn`` may use any parameter name.
+
+    Returns:
+        Whatever ``fn`` returns.
+
+    Cancelling the caller does not cancel the thread: the work runs to completion
+    and only then is the permit returned. That is deliberate — see the module
+    comment above. Callers that must not RETURN before the thread finishes use
+    :func:`run_in_storage_io` instead.
+    """
+    return await _bounded_submit_impl(
+        executor, semaphore, fn, args, kwargs, wait_for_completion=False
+    )
 
 
 # Semaphores are per event loop, executors are per process. ``asyncio.Semaphore``
@@ -2885,6 +3010,120 @@ async def run_in_chunking_executor(fn: Callable[..., Any], *args: Any, **kwargs)
     semaphore = get_loop_semaphore("chunking", CHUNKING_SUBMIT_LIMIT)
     return await bounded_submit(
         get_chunking_executor(), semaphore, partial(fn, *args, **kwargs)
+    )
+
+
+# ---------------------------------------------------------------------------
+# File-backend persistence off the event loop
+# ---------------------------------------------------------------------------
+#
+# The file backends rewrite their whole file on every commit, synchronously, on
+# the event loop: ``write_json`` for the JSON KV / doc-status stores,
+# ``nx.write_graphml`` for NetworkX, ``NanoVectorDB.save`` for nano. A single
+# ``_insert_done`` flushes every storage, and a document purge issues several of
+# them, so on a large corpus the loop stops serving HTTP for seconds at a time —
+# the same failure mode as GHSA-26pm-px5v-8c4w, in a different place.
+#
+# One worker. Those commits are ALREADY serialized today: ``_flush_storages``
+# gathers them, but each synchronous write runs to completion without yielding,
+# so they happen one after another anyway. A single worker preserves that
+# concurrency exactly while freeing the loop. More workers would only make the
+# pure-Python encoders (``json.dump`` with ``indent``, GraphML's per-element
+# loop) contend for the GIL with each other AND with the loop — turning "the
+# loop is blocked for N seconds" into "the loop is starved for N seconds",
+# which is worse.
+#
+# Not the default executor: that one is shared with
+# ``UnifiedLock._acquire_mp_lock_in_executor``, password hashing and ``stat``
+# calls, and parking it behind a multi-second file write would delay work that
+# has to run promptly.
+#
+# Invariants for anything submitted here:
+#   * no nested submission to this pool — one worker plus a held permit
+#     deadlocks;
+#   * no calling back into the storage layer (``_get_client`` / ``_get_graph``):
+#     they take ``NamespaceLock``, which the caller already holds and which is
+#     not reentrant;
+#   * therefore the pool holds no locks, so it cannot take part in a cycle.
+
+_STORAGE_IO_EXECUTOR: Optional[ThreadPoolExecutor] = None
+_STORAGE_IO_EXECUTOR_GUARD = threading.Lock()
+
+
+def get_storage_io_executor() -> ThreadPoolExecutor:
+    """The process-wide single-worker pool used for file-backend persistence."""
+    global _STORAGE_IO_EXECUTOR
+    if _STORAGE_IO_EXECUTOR is None:
+        with _STORAGE_IO_EXECUTOR_GUARD:
+            if _STORAGE_IO_EXECUTOR is None:
+                _STORAGE_IO_EXECUTOR = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="lightrag-storage-io"
+                )
+    return _STORAGE_IO_EXECUTOR
+
+
+async def run_in_storage_io(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Run a synchronous storage-persistence callable off the event loop.
+
+    Uncancellable once submitted, unlike :func:`bounded_submit`. Callers hold
+    their storage lock across this call and the worker may be halfway through
+    mutating shared state — ``NanoVectorDBStorage`` points its client's
+    ``storage_file`` at the temporary sibling for the duration of the save.
+    Returning early would release the lock with that state still swapped, a
+    window the synchronous write being replaced here did not have, because it
+    could not be cancelled at all.
+
+    The wait for a submission permit stays cancellable: at that point nothing has
+    been submitted, so a cancelled caller leaves no half-written file behind and
+    releases its lock immediately.
+    """
+    from lightrag.constants import STORAGE_IO_SUBMIT_LIMIT
+
+    semaphore = get_loop_semaphore("storage_io", STORAGE_IO_SUBMIT_LIMIT)
+    return await _bounded_submit_impl(
+        get_storage_io_executor(),
+        semaphore,
+        fn,
+        args,
+        kwargs,
+        wait_for_completion=True,
+    )
+
+
+async def commit_in_storage_io(
+    fn: Callable[[], Any],
+    on_committed: Callable[[], Awaitable[Any]],
+) -> Any:
+    """``run_in_storage_io`` for a write whose bookkeeping must not be orphaned.
+
+    Backends that publish a file and then tell the other processes to reload it
+    (``set_all_update_flags``) have two steps that must not come apart. A cancel
+    landing between them leaves the file published while every other worker keeps
+    reading the previous snapshot, until some later commit happens to fix it.
+
+    The synchronous writes this replaces had the same gap — with the loop frozen
+    for the whole write, cancellation could only be delivered at the first
+    suspension point after it, which in multiprocess mode is the lock acquire
+    inside ``set_all_update_flags``, before any flag is flipped. Freeing the
+    event loop makes the window far easier to hit, so it is closed here rather
+    than left to grow.
+
+    ``fn`` takes no arguments (wrap it in a lambda or ``partial``), which keeps
+    this signature clear of the keyword-forwarding hazard ``run_in_storage_io``
+    has to live with. ``on_committed`` runs ONLY if ``fn`` succeeded — see
+    ``_bounded_submit_impl`` for why running it otherwise would lose data.
+    """
+    from lightrag.constants import STORAGE_IO_SUBMIT_LIMIT
+
+    semaphore = get_loop_semaphore("storage_io", STORAGE_IO_SUBMIT_LIMIT)
+    return await _bounded_submit_impl(
+        get_storage_io_executor(),
+        semaphore,
+        fn,
+        (),
+        {},
+        wait_for_completion=True,
+        on_committed=on_committed,
     )
 
 
