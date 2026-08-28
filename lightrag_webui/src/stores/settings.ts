@@ -99,24 +99,33 @@ interface SettingsState {
 
 // Rollback safety (split-migration rule 3): an envelope written by a NEWER
 // client (version > 22) is neither hydrated nor overwritten. Hydration would
-// restamp it as v22 (zustand writes the migrate result back) and any later
-// set() would clobber fields this build does not know — so the store runs on
-// a session-only in-memory storage instead, leaving the future envelope
-// byte-for-byte intact for the client that wrote it.
-const createSessionOnlyStorage = (): Storage => {
-  const data = new Map<string, string>()
+// restamp it as v22 (zustand writes the migrate result back) and any set()
+// would clobber fields this build does not know. The guard is evaluated on
+// EVERY storage operation, not once at creation: a newer tab can write a v23
+// envelope while this v22 tab is already running, and this tab's next
+// settings write must not clobber it either — such writes divert to a
+// session-only fallback (kept readable so a same-session rehydrate does not
+// silently reset to defaults), leaving the future envelope byte-for-byte
+// intact for the client that wrote it.
+const createGuardedSettingsStorage = () => {
+  const sessionFallback = new Map<string, string>()
   return {
-    getItem: (key: string) => data.get(key) ?? null,
-    setItem: (key: string, value: string) => {
-      data.set(key, value)
+    getItem: (key: string): string | null =>
+      hasFutureSettingsEnvelope()
+        ? (sessionFallback.get(key) ?? null)
+        : localStorage.getItem(key),
+    setItem: (key: string, value: string): void => {
+      if (hasFutureSettingsEnvelope()) {
+        sessionFallback.set(key, value)
+        return
+      }
+      localStorage.setItem(key, value)
     },
-    removeItem: (key: string) => {
-      data.delete(key)
-    },
-    clear: () => data.clear(),
-    key: (index: number) => [...data.keys()][index] ?? null,
-    get length() {
-      return data.size
+    removeItem: (key: string): void => {
+      sessionFallback.delete(key)
+      if (!hasFutureSettingsEnvelope()) {
+        localStorage.removeItem(key)
+      }
     }
   }
 }
@@ -243,9 +252,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     }),
     {
       name: LEGACY_SETTINGS_STORAGE_KEY,
-      storage: createJSONStorage(() =>
-        hasFutureSettingsEnvelope() ? createSessionOnlyStorage() : localStorage
-      ),
+      storage: createJSONStorage(() => createGuardedSettingsStorage()),
       version: SETTINGS_STORAGE_VERSION_AFTER_SPLIT,
       // See splitSettingsStorage rule 7: never hydrate on a half-migrated
       // storage state.

@@ -86,7 +86,9 @@ export function resetSettingsMigrationErrorForTests(): void {
  * settings store itself: hydrating such an envelope would restamp it as v22
  * (zustand persists the migrate result back), and any later set() would
  * clobber fields this build does not know. The settings store consults this
- * to run on session-only storage instead (see stores/settings.ts).
+ * on EVERY storage operation (see stores/settings.ts) — the envelope can
+ * also arrive mid-session from a newer client's tab — and diverts writes to
+ * a session-only fallback while one is present.
  */
 export function hasFutureSettingsEnvelope(
   storage: Storage | null = typeof localStorage === 'undefined' ? null : localStorage

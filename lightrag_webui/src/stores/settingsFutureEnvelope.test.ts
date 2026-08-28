@@ -1,50 +1,59 @@
-import { beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { SETTINGS_STORAGE_VERSION_AFTER_SPLIT } from '@/migrations/splitSettingsStorage'
+import { LEGACY_SETTINGS_STORAGE_KEY } from '@/lib/storageKeys'
 
 /**
  * Rollback safety: an envelope written by a NEWER client must never be
- * reported as successfully migrated — zustand persists the migrate result
- * back stamped with THIS build's version (22), downgrading the newer
- * client's envelope and discarding its versioning. The migrate callback
- * throws instead, which aborts hydration WITHOUT the write-back (the
- * session-only storage guard in stores/settings.ts covers the creation-time
- * path; this pins the callback itself).
+ * hydrated-and-restamped as v22 NOR clobbered by this tab's later settings
+ * writes. Two mechanisms are pinned here:
+ * - the `migrate` callback throws for future versions (zustand would
+ *   otherwise persist the migrate result back stamped v22);
+ * - the storage adapter re-checks the envelope on EVERY operation, so a v23
+ *   envelope arriving mid-session from a newer tab diverts this tab's writes
+ *   to a session-only fallback instead of overwriting it.
  *
- * Isolation: the module-cached singleton is only READ (persist options); no
- * state or module mock is touched. localStorage must exist BEFORE the store
+ * Isolation: the singleton's storage adapter reads globalThis.localStorage
+ * dynamically at call time, so this file installs its own stub and RESTORES
+ * the previous binding in afterAll. localStorage must exist BEFORE the store
  * module is imported — zustand omits the `persist` API entirely when its
- * storage resolves to undefined — so a stub is installed first and the store
- * imported dynamically (matching the other store test files).
+ * storage resolves to undefined — hence the dynamic import.
  */
 
-const storageStub = () => {
-  const data = new Map<string, string>()
-  return {
-    getItem: (key: string) => data.get(key) ?? null,
-    setItem: (key: string, value: string) => {
-      data.set(key, value)
-    },
-    removeItem: (key: string) => {
-      data.delete(key)
-    },
-    clear: () => {
-      data.clear()
-    }
+const data = new Map<string, string>()
+const stub = {
+  getItem: (key: string) => data.get(key) ?? null,
+  setItem: (key: string, value: string) => {
+    data.set(key, value)
+  },
+  removeItem: (key: string) => {
+    data.delete(key)
+  },
+  clear: () => {
+    data.clear()
   }
 }
 
+let previousDescriptor: PropertyDescriptor | undefined
 type Migrate = (state: unknown, version: number) => unknown
 let migrate: Migrate
+let store: typeof import('./settings').useSettingsStore
 
 beforeAll(async () => {
-  if (typeof localStorage === 'undefined') {
-    Object.defineProperty(globalThis, 'localStorage', {
-      value: storageStub(),
-      configurable: true
-    })
+  previousDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: stub,
+    configurable: true
+  })
+  store = (await import('./settings')).useSettingsStore
+  migrate = store.persist.getOptions().migrate as Migrate
+})
+
+afterAll(() => {
+  if (previousDescriptor) {
+    Object.defineProperty(globalThis, 'localStorage', previousDescriptor)
+  } else {
+    delete (globalThis as Record<string, unknown>).localStorage
   }
-  const { useSettingsStore } = await import('./settings')
-  migrate = useSettingsStore.persist.getOptions().migrate as Migrate
 })
 
 describe('settings store migrate', () => {
@@ -71,5 +80,46 @@ describe('settings store migrate', () => {
   test('the current version (22) passes through unchanged', () => {
     const state = { theme: 'light' }
     expect(migrate(state, SETTINGS_STORAGE_VERSION_AFTER_SPLIT)).toBe(state)
+  })
+})
+
+describe('settings storage guard (per-operation, cross-tab safe)', () => {
+  const persistStorage = () => store.persist.getOptions().storage!
+
+  test('a write AFTER a newer tab stored v23 diverts — the future envelope survives byte-for-byte', async () => {
+    const futureEnvelope = JSON.stringify({
+      state: { theme: 'dark', futureField: 1 },
+      version: SETTINGS_STORAGE_VERSION_AFTER_SPLIT + 1
+    })
+    stub.setItem(LEGACY_SETTINGS_STORAGE_KEY, futureEnvelope)
+
+    await persistStorage().setItem(LEGACY_SETTINGS_STORAGE_KEY, {
+      state: { theme: 'light' },
+      version: SETTINGS_STORAGE_VERSION_AFTER_SPLIT
+    } as never)
+
+    // localStorage still holds the newer client's envelope untouched…
+    expect(stub.getItem(LEGACY_SETTINGS_STORAGE_KEY)).toBe(futureEnvelope)
+    // …while the diverted write stays readable within this session.
+    const diverted = (await persistStorage().getItem(LEGACY_SETTINGS_STORAGE_KEY)) as {
+      version: number
+      state: { theme: string }
+    }
+    expect(diverted.version).toBe(SETTINGS_STORAGE_VERSION_AFTER_SPLIT)
+    expect(diverted.state.theme).toBe('light')
+  })
+
+  test('without a future envelope, writes reach localStorage as before', async () => {
+    stub.removeItem(LEGACY_SETTINGS_STORAGE_KEY)
+
+    await persistStorage().setItem(LEGACY_SETTINGS_STORAGE_KEY, {
+      state: { theme: 'system' },
+      version: SETTINGS_STORAGE_VERSION_AFTER_SPLIT
+    } as never)
+
+    const written = JSON.parse(stub.getItem(LEGACY_SETTINGS_STORAGE_KEY)!)
+    expect(written.version).toBe(SETTINGS_STORAGE_VERSION_AFTER_SPLIT)
+    expect(written.state.theme).toBe('system')
+    stub.removeItem(LEGACY_SETTINGS_STORAGE_KEY)
   })
 })

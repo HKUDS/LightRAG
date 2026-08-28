@@ -3,8 +3,10 @@ import { useTranslation } from 'react-i18next'
 import { ZapIcon, LogOutIcon } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import AppSettings from '@/components/AppSettings'
+import ApiKeyAlert from '@/components/ApiKeyAlert'
 import ErrorBoundary from '@/components/ErrorBoundary'
-import { useAuthStore } from '@/stores/state'
+import { useAuthStore, useBackendState } from '@/stores/state'
+import { useSettingsStore } from '@/stores/settings'
 import { getAuthStatus } from '@/api/lightrag'
 import { navigationService } from '@/services/navigation'
 import WorkspaceQueryView from './WorkspaceQueryView'
@@ -22,6 +24,8 @@ export default function WorkspaceApp() {
   const { t } = useTranslation()
   const { isGuestMode, username, webuiTitle, webuiDescription } = useAuthStore()
   const [initializing, setInitializing] = useState(true)
+  const [apiKeyAlertOpen, setApiKeyAlertOpen] = useState(false)
+  const apiKey = useSettingsStore.use.apiKey()
   const versionCheckRef = useRef(false) // Prevent duplicate calls in Vite dev mode
 
   // Refresh version/title info once (mirrors the admin shell, minus the
@@ -72,6 +76,19 @@ export default function WorkspaceApp() {
 
     checkVersion()
   }, [])
+
+  // Credential probe — once after initialization and again whenever the
+  // stored API key changes. In an API-key-only deployment (LIGHTRAG_API_KEY
+  // without AUTH_ACCOUNTS) the guest token alone never authenticates, so a
+  // fresh browser would otherwise only ever see 403s: the probe surfaces the
+  // API-key error in the backend state, and the mounted ApiKeyAlert (which
+  // watches that message) opens to capture the key. This is the workspace
+  // counterpart of the admin shell's periodic health check — a single probe,
+  // not a polling loop.
+  useEffect(() => {
+    if (initializing) return
+    void useBackendState.getState().check()
+  }, [initializing, apiKey])
 
   const handleLogout = () => {
     navigationService.navigateToUnauthenticated()
@@ -144,6 +161,7 @@ export default function WorkspaceApp() {
           </ErrorBoundary>
         )}
       </div>
+      <ApiKeyAlert open={apiKeyAlertOpen} onOpenChange={setApiKeyAlertOpen} />
     </main>
   )
 }
