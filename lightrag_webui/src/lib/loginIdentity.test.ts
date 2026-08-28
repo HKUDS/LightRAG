@@ -1,5 +1,10 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
-import { applyLoginIdentity, loginIdentityFromToken } from './loginIdentity'
+import {
+  applyLoginIdentity,
+  handleIdentityStorageEvent,
+  loginIdentityFromToken,
+  useIdentityEpochStore
+} from './loginIdentity'
 import { useWebuiRetrievalHistoryStore } from '@/stores/webuiRetrievalHistory'
 import { useWorkspaceRetrievalHistoryStore } from '@/stores/workspaceRetrievalHistory'
 
@@ -115,6 +120,42 @@ describe('applyLoginIdentity', () => {
     const changed = applyLoginIdentity(loginIdentityFromToken(guestToken))
     expect(changed).toBe(false)
     expect(useWorkspaceRetrievalHistoryStore.getState().history).toHaveLength(1)
+  })
+})
+
+describe('handleIdentityStorageEvent (cross-tab identity change)', () => {
+  test('a DIFFERENT identity recorded by another tab clears LIVE histories and bumps the epoch', () => {
+    seedHistories()
+    const before = useIdentityEpochStore.getState().epoch
+
+    handleIdentityStorageEvent({
+      key: PREVIOUS_USER_KEY,
+      oldValue: 'alice',
+      newValue: 'guest'
+    })
+
+    expect(useWebuiRetrievalHistoryStore.getState().history).toEqual([])
+    expect(useWorkspaceRetrievalHistoryStore.getState().history).toEqual([])
+    // The epoch bump is what remounts mounted query sessions (their message
+    // state was copied from the store at initialization).
+    expect(useIdentityEpochStore.getState().epoch).toBe(before + 1)
+  })
+
+  test('other keys, unchanged values and key removals are ignored', () => {
+    seedHistories()
+    const before = useIdentityEpochStore.getState().epoch
+
+    handleIdentityStorageEvent({ key: 'some-other-key', oldValue: 'a', newValue: 'b' })
+    handleIdentityStorageEvent({
+      key: PREVIOUS_USER_KEY,
+      oldValue: 'guest',
+      newValue: 'guest'
+    })
+    handleIdentityStorageEvent({ key: PREVIOUS_USER_KEY, oldValue: 'guest', newValue: null })
+
+    expect(useWebuiRetrievalHistoryStore.getState().history).toHaveLength(1)
+    expect(useWorkspaceRetrievalHistoryStore.getState().history).toHaveLength(1)
+    expect(useIdentityEpochStore.getState().epoch).toBe(before)
   })
 })
 

@@ -14,6 +14,7 @@ import { navigationService } from '@/services/navigation'
 import { useQuerySettingsStore } from '@/stores/querySettings'
 import { useWorkspaceRetrievalHistoryStore } from '@/stores/workspaceRetrievalHistory'
 import { QUERY_SETTINGS_STORAGE_KEY } from '@/lib/storageKeys'
+import { watchCrossTabIdentityChanges } from '@/lib/loginIdentity'
 
 navigationService.configureEntry({
   unauthenticatedRoute: '/welcome',
@@ -31,3 +32,7 @@ if (typeof window !== 'undefined') {
     }
   })
 }
+
+// Another tab switching identity must also reset THIS tab's live session —
+// not just the persisted history the other tab already cleared.
+watchCrossTabIdentityChanges()

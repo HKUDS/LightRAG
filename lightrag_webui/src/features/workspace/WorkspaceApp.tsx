@@ -7,7 +7,8 @@ import ApiKeyAlert from '@/components/ApiKeyAlert'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import { useAuthStore, useBackendState } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
-import { getAuthStatus } from '@/api/lightrag'
+import { getAuthStatus, InvalidApiKeyError, RequireApiKeError } from '@/api/lightrag'
+import { useIdentityEpochStore } from '@/lib/loginIdentity'
 import { navigationService } from '@/services/navigation'
 import WorkspaceQueryView from './WorkspaceQueryView'
 
@@ -26,6 +27,9 @@ export default function WorkspaceApp() {
   const [initializing, setInitializing] = useState(true)
   const [apiKeyAlertOpen, setApiKeyAlertOpen] = useState(false)
   const apiKey = useSettingsStore.use.apiKey()
+  // Bumped by the cross-tab identity watch: remounting the query view drops
+  // the live session state that belonged to the previous identity.
+  const identityEpoch = useIdentityEpochStore((s) => s.epoch)
   const versionCheckRef = useRef(false) // Prevent duplicate calls in Vite dev mode
 
   // Refresh version/title info once (mirrors the admin shell, minus the
@@ -87,7 +91,19 @@ export default function WorkspaceApp() {
   // not a polling loop.
   useEffect(() => {
     if (initializing) return
-    void useBackendState.getState().check()
+    void useBackendState.getState().check().then(() => {
+      // Open the dialog HERE, from the probe result, not only via
+      // ApiKeyAlert's message watch: a rejected replacement key produces the
+      // IDENTICAL message string, which never re-fires a message-change
+      // effect — and this entry has no other API-key control.
+      const message = useBackendState.getState().message
+      if (
+        message &&
+        (message.includes(InvalidApiKeyError) || message.includes(RequireApiKeError))
+      ) {
+        setApiKeyAlertOpen(true)
+      }
+    })
   }, [initializing, apiKey])
 
   const handleLogout = () => {
@@ -157,7 +173,7 @@ export default function WorkspaceApp() {
           </div>
         ) : (
           <ErrorBoundary>
-            <WorkspaceQueryView />
+            <WorkspaceQueryView key={identityEpoch} />
           </ErrorBoundary>
         )}
       </div>

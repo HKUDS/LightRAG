@@ -10,6 +10,7 @@
 import { navigationService } from '@/services/navigation'
 import { useGraphStore } from '@/stores/graph'
 import { useWebuiRetrievalHistoryStore } from '@/stores/webuiRetrievalHistory'
+import { watchCrossTabIdentityChanges } from '@/lib/loginIdentity'
 
 function resetGraphState() {
   const graphStore = useGraphStore.getState()
@@ -33,3 +34,7 @@ navigationService.configureEntry({
   clearRetrievalHistory: () =>
     useWebuiRetrievalHistoryStore.getState().clearHistory()
 })
+
+// Another tab switching identity must also reset THIS tab's live retrieval
+// session — not just the persisted history the other tab already cleared.
+watchCrossTabIdentityChanges()

@@ -1,3 +1,4 @@
+import { create } from 'zustand'
 import { useWebuiRetrievalHistoryStore } from '@/stores/webuiRetrievalHistory'
 import { useWorkspaceRetrievalHistoryStore } from '@/stores/workspaceRetrievalHistory'
 
@@ -61,4 +62,41 @@ export function applyLoginIdentity(identity: string): boolean {
     console.error('Failed to store user identity:', error)
   }
   return identityChanged
+}
+
+/**
+ * Cross-tab identity epoch. Bumped when ANOTHER tab records a different
+ * identity (see below); the query pages key their session view on it, so a
+ * remount drops the live component state — `useQuerySession` copies history
+ * into component state only at initialization, so clearing the persisted
+ * envelope alone would leave an already-open page displaying (and, in bypass
+ * mode, resending; on its next write, re-persisting) the previous identity's
+ * conversation under the NEW tab's token.
+ */
+export const useIdentityEpochStore = create<{ epoch: number }>(() => ({ epoch: 0 }))
+
+/**
+ * Storage-event handler for cross-tab identity changes. `storage` events
+ * fire only in OTHER tabs and only when the value actually changed, so a
+ * matching event is always a genuine identity transition performed
+ * elsewhere: clear this tab's LIVE history state (the other tab already
+ * cleared the persisted envelopes; clearing again is idempotent) and bump
+ * the epoch so mounted query sessions remount empty.
+ */
+export function handleIdentityStorageEvent(event: {
+  key: string | null
+  oldValue?: string | null
+  newValue?: string | null
+}): void {
+  if (event.key !== PREVIOUS_USER_KEY) return
+  if (event.newValue == null || event.newValue === event.oldValue) return
+  useWebuiRetrievalHistoryStore.getState().clearHistory()
+  useWorkspaceRetrievalHistoryStore.getState().clearHistory()
+  useIdentityEpochStore.setState((state) => ({ epoch: state.epoch + 1 }))
+}
+
+/** Installed by BOTH entry bootstraps alongside their other listeners. */
+export function watchCrossTabIdentityChanges(): void {
+  if (typeof window === 'undefined') return
+  window.addEventListener('storage', handleIdentityStorageEvent)
 }

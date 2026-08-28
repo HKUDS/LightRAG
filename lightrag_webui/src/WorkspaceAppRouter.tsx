@@ -40,7 +40,9 @@ const WorkspaceAppContent = () => {
   return (
     <Routes>
       <Route path="/welcome" element={<WorkspaceWelcome />} />
-      <Route path="/login" element={<LoginPage />} />
+      {/* Guest activation happens ONLY through the welcome page's explicit
+          action — an auth-disabled deployment redirects #/login there. */}
+      <Route path="/login" element={<LoginPage autoActivateGuest={false} />} />
       <Route
         path="/"
         element={isAuthenticated ? <WorkspaceApp /> : <Navigate to="/welcome" replace />}

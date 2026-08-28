@@ -36,7 +36,11 @@ const storageMock = () => {
   }
 }
 
-type StorageListener = (event: { key: string | null }) => void
+type StorageListener = (event: {
+  key: string | null
+  oldValue?: string | null
+  newValue?: string | null
+}) => void
 const storageListeners: StorageListener[] = []
 
 let navigationService: typeof NavigationServiceType
@@ -135,6 +139,26 @@ describe('workspace bootstrap', () => {
     const settings = querySettingsModule.useQuerySettingsStore.getState().querySettings
     expect(settings.mode).toBe('global')
     expect(settings.top_k).toBe(7)
+  })
+
+  test('a cross-tab identity change clears the workspace history and bumps the session epoch', async () => {
+    const { useIdentityEpochStore } = await import('@/lib/loginIdentity')
+    workspaceHistoryModule.useWorkspaceRetrievalHistoryStore
+      .getState()
+      .setHistory([{ id: 'w-old', role: 'user', content: 'previous identity' }])
+    const epochBefore = useIdentityEpochStore.getState().epoch
+
+    // Another tab records a different identity (storage events only fire on
+    // a genuine value change, and only in OTHER tabs).
+    for (const listener of storageListeners) {
+      listener({ key: 'LIGHTRAG-PREVIOUS-USER', oldValue: 'alice', newValue: 'guest' })
+    }
+
+    expect(
+      workspaceHistoryModule.useWorkspaceRetrievalHistoryStore.getState().history
+    ).toEqual([])
+    // The epoch bump remounts the query view, dropping its live message state.
+    expect(useIdentityEpochStore.getState().epoch).toBe(epochBefore + 1)
   })
 
   test('storage events for OTHER keys do not touch the settings store', () => {

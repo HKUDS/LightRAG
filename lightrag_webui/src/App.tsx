@@ -7,7 +7,11 @@ import { SiteInfo } from '@/lib/constants'
 import { useBackendState, useAuthStore } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
 import { getAuthStatus } from '@/api/lightrag'
-import { applyLoginIdentity, loginIdentityFromToken } from '@/lib/loginIdentity'
+import {
+  applyLoginIdentity,
+  loginIdentityFromToken,
+  useIdentityEpochStore
+} from '@/lib/loginIdentity'
 import SiteHeader from '@/features/SiteHeader'
 import { InvalidApiKeyError, RequireApiKeError } from '@/api/lightrag'
 import { ZapIcon } from 'lucide-react'
@@ -25,6 +29,9 @@ function App() {
   const currentTab = useSettingsStore.use.currentTab()
   const [apiKeyAlertOpen, setApiKeyAlertOpen] = useState(false)
   const [initializing, setInitializing] = useState(true) // Add initializing state
+  // Bumped by the cross-tab identity watch: remounting the retrieval view
+  // drops the live session state that belonged to the previous identity.
+  const identityEpoch = useIdentityEpochStore((s) => s.epoch)
   const versionCheckRef = useRef(false); // Prevent duplicate calls in Vite dev mode
   const healthCheckInitializedRef = useRef(false); // Prevent duplicate health checks in Vite dev mode
 
@@ -231,7 +238,7 @@ function App() {
                 </TabsContent>
                 <TabsContent value="retrieval" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
                   <ErrorBoundary>
-                    <RetrievalView />
+                    <RetrievalView key={identityEpoch} />
                   </ErrorBoundary>
                 </TabsContent>
               </div>

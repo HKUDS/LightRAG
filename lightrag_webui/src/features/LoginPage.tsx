@@ -12,7 +12,18 @@ import Button from '@/components/ui/Button'
 import { ZapIcon } from 'lucide-react'
 import AppSettings from '@/components/AppSettings'
 
-const LoginPage = () => {
+interface LoginPageProps {
+  /**
+   * Whether an auth-disabled deployment may activate the guest token right
+   * here. The admin entry keeps the historical auto-login; the WORKSPACE
+   * entry passes false — its guest activation happens ONLY through the
+   * welcome page's explicit action (PRD §6.3), so a direct or bookmarked
+   * #/login visit redirects there instead of silently activating a token.
+   */
+  autoActivateGuest?: boolean
+}
+
+const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
   const navigate = useNavigate()
   const { login, isAuthenticated } = useAuthStore()
   const { t } = useTranslation()
@@ -52,6 +63,12 @@ const LoginPage = () => {
         }
 
         if (!status.auth_configured && status.access_token) {
+          if (!autoActivateGuest) {
+            // Workspace entry: guest activation belongs to the welcome page's
+            // explicit action — never to a (possibly bookmarked) login visit.
+            navigate('/welcome', { replace: true })
+            return
+          }
           // If auth is not configured, use the guest token and redirect.
           // Guest activation is an identity transition: a different stored
           // identity means the previous user's histories must not be shown.
@@ -81,7 +98,7 @@ const LoginPage = () => {
     // Cleanup function to prevent state updates after unmount
     return () => {
     }
-  }, [isAuthenticated, login, navigate])
+  }, [isAuthenticated, login, navigate, autoActivateGuest])
 
   // Don't render anything while checking auth
   if (checkingAuth) {
