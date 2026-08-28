@@ -92,7 +92,7 @@ describe('documentRefreshCircuitBreaker', () => {
     // later poll tick through while the probe was still in flight.
     expect(first.state.isOpen).toBe(true)
     expect(first.state.halfOpenSince).toBe(deadline)
-    expect(isCircuitBreakerBlocked(first.state)).toBe(true)
+    expect(isCircuitBreakerBlocked(first.state, deadline)).toBe(true)
 
     // Poll ticks arriving while the probe is unsettled get nothing.
     for (const offset of [1, 5_000, 10_000, 30_000]) {
@@ -144,16 +144,17 @@ describe('documentRefreshCircuitBreaker', () => {
   test('a successful probe clears the whole state', () => {
     expect(resetCircuitBreaker()).toEqual(initialCircuitBreakerState)
     expect(resetCircuitBreaker()).not.toBe(initialCircuitBreakerState)
-    expect(isCircuitBreakerBlocked(resetCircuitBreaker())).toBe(false)
+    expect(isCircuitBreakerBlocked(resetCircuitBreaker(), 1)).toBe(false)
   })
 
   test('isCircuitBreakerBlocked reports the open state without admitting', () => {
     const now = 1_000_000
     const open = openBreaker(now)
 
-    // Past the deadline a probe COULD be admitted, but a read-only check must
-    // not hand out that slot — the queued-request path relies on this.
-    expect(isCircuitBreakerBlocked(open)).toBe(true)
+    // Blocked inside the backoff window, and unblocked at the deadline — but
+    // either way the read must not hand out the half-open slot.
+    expect(isCircuitBreakerBlocked(open, now + 1)).toBe(true)
+    expect(isCircuitBreakerBlocked(open, open.nextRetryTime!)).toBe(false)
     expect(open.halfOpenSince).toBeNull()
   })
 })

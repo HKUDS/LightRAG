@@ -98,15 +98,6 @@ export const resetCircuitBreaker = (): CircuitBreakerState => ({
   ...initialCircuitBreakerState
 })
 
-/**
- * Read-only view for callers that must not admit a probe — e.g. deciding
- * whether a queued automatic refresh may still run after the request ahead of
- * it settled. A half-open probe belongs to whoever was admitted by
- * `admitCircuitBreakerRequest`, so anything else stays blocked while the
- * breaker is open.
- */
-export const isCircuitBreakerBlocked = (state: CircuitBreakerState): boolean =>
-  state.isOpen
 
 /**
  * Ask the breaker to admit one request, applying the half-open transition.
@@ -140,3 +131,15 @@ export const admitCircuitBreakerRequest = (
 
   return { state, admitted: false }
 }
+
+/**
+ * Read-only "would a request be admitted right now?" check, for callers that
+ * must not consume the half-open slot — e.g. a polling tick deciding whether
+ * it is worth walking the throttle gate at all. The admission itself must
+ * still go through admitCircuitBreakerRequest at the point the request is
+ * issued.
+ */
+export const isCircuitBreakerBlocked = (
+  state: CircuitBreakerState,
+  now: number
+): boolean => !admitCircuitBreakerRequest(state, now).admitted

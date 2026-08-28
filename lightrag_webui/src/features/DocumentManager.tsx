@@ -62,6 +62,7 @@ import {
   type CircuitBreakerState
 } from '@/features/documentRefreshCircuitBreaker'
 import { classifyDocumentRefreshError } from '@/features/documentRefreshErrors'
+import { createRefreshQueue } from '@/features/documentRefreshQueue'
 
 type StatusDisplayConfig = {
   labelKey: string
@@ -464,8 +465,6 @@ export default function DocumentManager() {
   // Add refs to track previous pipelineActive state and current interval
   const prevPipelineActiveRef = useRef<boolean | undefined>(undefined);
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const activeRefreshPromiseRef = useRef<Promise<void> | null>(null);
-  const pendingRefreshRequestRef = useRef<RefreshRequest | null>(null);
   const latestRefreshRequestVersionRef = useRef(0);
   // Throttle gate: all auto-driven /documents/paginated entrances funnel through
   // refreshDocumentsThrottled() to enforce a minimum 2s wall-clock interval.
@@ -776,7 +775,7 @@ export default function DocumentManager() {
   // Read-only check for a request that was already queued: it must not take
   // the half-open slot, so it only gets to run while the breaker is closed.
   const isAutomaticRefreshBlocked = useCallback(
-    () => isCircuitBreakerBlocked(circuitBreakerRef.current),
+    () => isCircuitBreakerBlocked(circuitBreakerRef.current, Date.now()),
     []
   );
 
@@ -923,54 +922,26 @@ export default function DocumentManager() {
     buildDocumentsRequest
   ]);
 
-  const enqueueRefresh = useCallback(async (refreshRequest: RefreshRequest) => {
-    if (activeRefreshPromiseRef.current) {
-      pendingRefreshRequestRef.current = refreshRequest;
-      await activeRefreshPromiseRef.current;
-      return;
-    }
+  // One queue for the component's lifetime: it owns the in-flight/pending
+  // state, so rebuilding it would drop a request mid-flight. The handlers ride
+  // along with each enqueue instead of being captured at construction.
+  const [refreshQueue] = useState(() => createRefreshQueue<RefreshRequest>());
 
-    // A queued automatic refresh must clear the breaker again before it runs:
-    // the request it waited behind may have been the half-open probe, and the
-    // breaker admitted exactly one request, not a follow-up. Dropping it is
-    // safe — the polling timer re-issues one as soon as the breaker allows.
-    const takeNextRequest = (): RefreshRequest | null => {
-      const pending = pendingRefreshRequestRef.current;
-      pendingRefreshRequestRef.current = null;
-
-      if (
-        pending &&
-        pending.type === 'intelligent' &&
-        pending.auto &&
-        isAutomaticRefreshBlocked()
-      ) {
-        return null;
-      }
-
-      return pending;
-    };
-
-    const refreshLoopPromise = (async () => {
-      let nextRequest: RefreshRequest | null = refreshRequest;
-
-      while (nextRequest) {
-        pendingRefreshRequestRef.current = null;
-        await runRefreshRequest(nextRequest);
-        nextRequest = takeNextRequest();
-      }
-    })();
-
-    activeRefreshPromiseRef.current = refreshLoopPromise;
-
-    try {
-      await refreshLoopPromise;
-    } finally {
-      if (activeRefreshPromiseRef.current === refreshLoopPromise) {
-        activeRefreshPromiseRef.current = null;
-      }
-      pendingRefreshRequestRef.current = null;
-    }
-  }, [runRefreshRequest, isAutomaticRefreshBlocked]);
+  const enqueueRefresh = useCallback(
+    (refreshRequest: RefreshRequest) =>
+      refreshQueue.enqueue(refreshRequest, {
+        runRequest: runRefreshRequest,
+        // The single admission point for automatic refreshes, evaluated where
+        // the request is actually issued — first request and queued request
+        // alike. Manual refresh and page/filter/sort changes are untagged and
+        // always run: explicit user intent is the escape hatch.
+        admit: (request) =>
+          request.type !== 'intelligent' ||
+          !request.auto ||
+          admitAutomaticRefresh()
+      }),
+    [refreshQueue, runRefreshRequest, admitAutomaticRefresh]
+  );
 
   // Intelligent refresh function: handles all boundary cases
   const handleIntelligentRefresh = useCallback(async (options: {
@@ -1131,7 +1102,10 @@ export default function DocumentManager() {
 
     pollingIntervalRef.current = setInterval(() => {
       if (!isMountedRef.current) return;
-      if (!admitAutomaticRefresh()) return;
+      // Read-only: the admission itself happens in the refresh queue, at the
+      // point the request is issued. Skipping here just avoids walking the
+      // throttle gate for a request that would be dropped anyway.
+      if (isAutomaticRefreshBlocked()) return;
       // refreshDocumentsThrottled is fire-and-forget; the breaker is fed from
       // inside runRefreshRequest (recordSuccess on a real response,
       // recordFailure in its catch), never from this tick — a tick proves
@@ -1139,7 +1113,7 @@ export default function DocumentManager() {
       // the breaker from ever opening.
       refreshDocumentsThrottled();
     }, intervalMs);
-  }, [refreshDocumentsThrottled, clearPollingInterval, admitAutomaticRefresh]);
+  }, [refreshDocumentsThrottled, clearPollingInterval, isAutomaticRefreshBlocked]);
 
   const scanDocuments = useCallback(async () => {
     try {
