@@ -28,6 +28,17 @@ from lightrag.utils import EmbeddingFunc, compute_mdhash_id  # noqa: E402
 DIM = 8
 
 
+async def _failing_save() -> None:
+    """Async stand-in for ``_save_to_disk_locked`` that always fails.
+
+    ``_save_to_disk_locked`` is a coroutine function (its write runs in the
+    storage-IO pool), so a synchronous stand-in silently changes what these
+    tests prove: the caller would await ``None`` and they would pass on a
+    ``TypeError`` instead of on the ``OSError`` they are about.
+    """
+    raise OSError("disk full")
+
+
 @pytest.fixture(autouse=True)
 def _shared_data():
     finalize_share_data()
@@ -205,7 +216,12 @@ async def test_finalize_skips_the_save_when_queued_deletes_change_nothing(tmp_pa
 
     saves: list[int] = []
     original = storage._save_to_disk_locked
-    storage._save_to_disk_locked = lambda: (saves.append(1), original())[1]
+
+    async def counting_save():
+        saves.append(1)
+        return await original()
+
+    storage._save_to_disk_locked = counting_save
 
     await storage.delete(["never-inserted"])
     await storage.finalize()
@@ -323,7 +339,7 @@ async def test_delete_survives_a_failed_save_then_a_concurrent_commit(tmp_path):
 
     # The flush applies the delete, then the save fails.
     original_save = writer._save_to_disk_locked
-    writer._save_to_disk_locked = lambda: (_ for _ in ()).throw(OSError("disk full"))
+    writer._save_to_disk_locked = _failing_save
     with pytest.raises(OSError):
         await writer.index_done_callback()
     assert set(writer._unsaved_deletes) == {"id1"}, "retained until the save lands"
@@ -386,7 +402,7 @@ async def test_replay_does_not_remove_a_newer_row_under_the_same_id(tmp_path):
     await _seed(writer, {"id1": "old"})
 
     original_save = writer._save_to_disk_locked
-    writer._save_to_disk_locked = lambda: (_ for _ in ()).throw(OSError("disk full"))
+    writer._save_to_disk_locked = _failing_save
     await writer.delete(["id1"])
     with pytest.raises(OSError):
         await writer.index_done_callback()
@@ -419,7 +435,7 @@ async def test_an_id_that_matched_nothing_is_never_replayed(tmp_path):
     await _seed(writer, {"seed": "s"})
 
     original_save = writer._save_to_disk_locked
-    writer._save_to_disk_locked = lambda: (_ for _ in ()).throw(OSError("disk full"))
+    writer._save_to_disk_locked = _failing_save
     await writer.upsert({"other": {"content": "o"}})
     with pytest.raises(OSError):
         await writer.index_done_callback()  # client is now dirty
@@ -452,7 +468,7 @@ async def test_repeated_failed_saves_do_not_re_delete_each_time(tmp_path):
     _spy_client_delete(storage, calls)
 
     original_save = storage._save_to_disk_locked
-    storage._save_to_disk_locked = lambda: (_ for _ in ()).throw(OSError("disk full"))
+    storage._save_to_disk_locked = _failing_save
     await storage.delete(["id1"])
     for _ in range(4):
         with pytest.raises(OSError):
@@ -468,7 +484,7 @@ def _make_save_fail(storage):
     """Make ``_save_to_disk_locked`` raise; returns a restore callable."""
     original = storage._save_to_disk_locked
 
-    def boom():
+    async def boom():
         raise OSError("disk full")
 
     storage._save_to_disk_locked = boom
