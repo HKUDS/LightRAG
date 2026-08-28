@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import { fetchUICustomization, type UICustomization } from '@/api/customization'
+import { bundleLocaleToAdopt } from '@/lib/browserLanguage'
+import { useSettingsStore } from '@/stores/settings'
 
 /**
  * In-memory snapshot of the UI customization for the current page.
@@ -22,6 +24,36 @@ import { fetchUICustomization, type UICustomization } from '@/api/customization'
  */
 
 export type CustomizationStatus = 'loading' | 'ready' | 'error'
+
+/**
+ * A bundle that does not declare the requested language answers with its own
+ * `default_locale`. When the request itself was only the last-resort fallback
+ * (no explicit choice, no browser match), follow the bundle so the chrome
+ * does not stay in a language the branding never uses — see
+ * `bundleLocaleToAdopt` for why an explicit choice and a real browser
+ * preference are never overridden. Not marked user-selected: this is a
+ * fallback, not a choice, so a later visit re-resolves from scratch.
+ *
+ * Isolated from the load's own try/catch on purpose: writing the settings
+ * store persists it, and a storage failure there (private mode, quota) must
+ * not be reported as a failed customization load — the snapshot is already
+ * applied and correct.
+ */
+function adoptBundleLocaleIntoUi(snapshot: UICustomization): void {
+  try {
+    const settings = useSettingsStore.getState()
+    const adopted = bundleLocaleToAdopt(
+      snapshot.locale,
+      settings.languageUserSelected,
+      settings.language
+    )
+    if (adopted) {
+      useSettingsStore.setState({ language: adopted })
+    }
+  } catch (error) {
+    console.error('Failed to adopt the bundle locale for the UI language:', error)
+  }
+}
 
 /**
  * Sentinel target locale: request the customization WITHOUT a `locale`
@@ -133,6 +165,7 @@ export const useCustomizationStore = create<CustomizationState>((set, get) => ({
       if (requestId !== requestCounter || get().targetLocale !== locale) return
       // Atomic swap: one set() replaces the whole locale representation.
       set({ status: 'ready', snapshot, loadedLocale: locale, failedAttempts: 0 })
+      adoptBundleLocaleIntoUi(snapshot)
     } catch (error) {
       if (requestId !== requestCounter || get().targetLocale !== locale) return
       console.error('Failed to load UI customization:', error)

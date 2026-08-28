@@ -14,6 +14,7 @@ import {
 } from '@/lib/versionCheckCache'
 import { activateSessionFromAuthStatus } from './authBootstrap'
 import { runCredentialProbe, useCredentialProbeStore } from './credentialProbe'
+import { entryHomeHref } from '@/lib/pathPrefix'
 import { navigationService } from '@/services/navigation'
 import WorkspaceQueryView from './WorkspaceQueryView'
 
@@ -116,9 +117,10 @@ export default function WorkspaceApp() {
     >
       <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-11 w-full shrink-0 items-center border-b px-3 backdrop-blur md:px-4">
         <div className="flex min-w-0 flex-1 items-center gap-2">
-          {/* Document-relative brand link: resolves to THIS entry's mount
-              root under any proxy prefix — never to /webui. */}
-          <a href="./" className="flex shrink-0 items-center gap-2">
+          {/* Document-relative brand link: resolves to THIS entry's own root
+              under any proxy prefix — never to /webui, and never to the admin
+              index.html that the dev server answers `/` with. */}
+          <a href={entryHomeHref(window.location.pathname)} className="flex shrink-0 items-center gap-2">
             <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
             <span className="font-bold">{webuiTitle || 'LightRAG'}</span>
           </a>

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  bundleLocaleToAdopt,
   DEFAULT_UI_LANGUAGE,
   detectBrowserLanguage,
   matchBrowserLanguageTag,
@@ -133,6 +134,71 @@ describe('resolveUiLanguage (the shared chain)', () => {
       expect(resolveUiLanguage(true, 'zh')).toBe('zh')
       // …but only when it is a language this build ships.
       expect(resolveUiLanguage(true, 'xx')).toBe('de')
+    })
+  })
+})
+
+
+/**
+ * `bundleLocaleToAdopt` closes the residual half of the same mismatch:
+ * requesting a concrete locale does not guarantee matching content, because a
+ * bundle that does not DECLARE that language answers with its own
+ * `default_locale`. When the chrome's language was itself only the
+ * last-resort fallback, following the bundle is what keeps one language on
+ * the page; the two higher ranks of the chain must never be overridden.
+ */
+describe('bundleLocaleToAdopt', () => {
+  const withBrowserLanguages = <T,>(tags: string[], run: () => T): T => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { languages: tags, language: tags[0] },
+      configurable: true
+    })
+    try {
+      return run()
+    } finally {
+      if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor)
+      // @ts-expect-error - removing the stub when there was no navigator
+      else delete globalThis.navigator
+    }
+  }
+
+  test('adopts the bundle default when the chrome only had the last-resort fallback', () => {
+    // No explicit choice, browser matches nothing: 'en' was a fallback, and a
+    // bundle without English answered in Korean. Follow it.
+    withBrowserLanguages(['th-TH'], () => {
+      expect(bundleLocaleToAdopt('ko', false, 'en')).toBe('ko')
+    })
+  })
+
+  test('normalizes the BCP 47 form the response speaks', () => {
+    withBrowserLanguages(['th-TH'], () => {
+      expect(bundleLocaleToAdopt('zh-TW', false, 'en')).toBe('zh_TW')
+      expect(bundleLocaleToAdopt('zh-Hant', false, 'en')).toBe('zh_TW')
+    })
+  })
+
+  test('an EXPLICIT choice is never overridden by the bundle', () => {
+    withBrowserLanguages(['th-TH'], () => {
+      expect(bundleLocaleToAdopt('ko', true, 'en')).toBeNull()
+    })
+  })
+
+  test('a real browser preference is never overridden by the bundle', () => {
+    // German browser, bundle without German: the chrome stays German — the
+    // PRD ranks the browser language above the bundle default.
+    withBrowserLanguages(['de-DE'], () => {
+      expect(bundleLocaleToAdopt('ko', false, 'de')).toBeNull()
+    })
+  })
+
+  test('nothing to do for an absent, unsupported or already-current locale', () => {
+    withBrowserLanguages(['th-TH'], () => {
+      expect(bundleLocaleToAdopt(undefined, false, 'en')).toBeNull()
+      expect(bundleLocaleToAdopt('', false, 'en')).toBeNull()
+      // A bundle may declare locales this build ships no UI text for.
+      expect(bundleLocaleToAdopt('th', false, 'en')).toBeNull()
+      expect(bundleLocaleToAdopt('en', false, 'en')).toBeNull()
     })
   })
 })

@@ -111,3 +111,37 @@ export function resolveUiLanguage(
   if (userSelected && persisted) return persisted
   return detectBrowserLanguage() ?? DEFAULT_UI_LANGUAGE
 }
+
+
+/**
+ * The locale a customization response should ALSO apply to the UI chrome, or
+ * null when the chrome keeps what it has.
+ *
+ * Requesting a concrete locale still cannot guarantee matching surfaces: a
+ * bundle that does not declare the requested language answers with its own
+ * `default_locale`, so English buttons could stand beside, say, Korean
+ * welcome text. When the chrome's language was itself only the last-resort
+ * `DEFAULT_UI_LANGUAGE` — no explicit choice AND no browser match — nothing
+ * is lost by adopting what the bundle actually returned, and the PRD chain is
+ * then honored end to end: explicit choice > browser language > bundle
+ * default, for BOTH surfaces.
+ *
+ * The two higher ranks are never overridden: an explicit selection stands
+ * even against a bundle that has no content for it, and so does a genuine
+ * browser preference — a German browser must not be flipped to the bundle's
+ * Korean default just because the bundle omits German.
+ */
+export function bundleLocaleToAdopt(
+  responseLocale: string | null | undefined,
+  userSelected: unknown,
+  currentLanguage: unknown
+): SupportedUiLanguage | null {
+  if (!responseLocale) return null
+  if (userSelected) return null
+  if (detectBrowserLanguage() !== null) return null
+  // The response speaks BCP 47; the UI ids use underscores. The browser-tag
+  // matcher is exactly that normalization (zh-Hant/zh-TW → zh_TW included).
+  const adopted = matchBrowserLanguageTag(responseLocale)
+  if (!adopted || adopted === currentLanguage) return null
+  return adopted
+}

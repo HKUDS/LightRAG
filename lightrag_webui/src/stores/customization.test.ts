@@ -49,9 +49,39 @@ const snapshotFor = (title: string): UICustomization => ({
 })
 
 let store: typeof import('./customization').useCustomizationStore
+let settingsStore: typeof import('./settings').useSettingsStore
 let SERVER_DEFAULT_LOCALE: string
 
+// The settings store persists on every set(); give it somewhere to write and
+// a navigator whose languages match no UI locale (the only situation in which
+// the bundle's locale may be adopted for the chrome).
+const localData = new Map<string, string>()
+let previousStorage: PropertyDescriptor | undefined
+let previousNavigator: PropertyDescriptor | undefined
+
 beforeAll(async () => {
+  previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  previousNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: {
+      getItem: (key: string) => localData.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        localData.set(key, value)
+      },
+      removeItem: (key: string) => {
+        localData.delete(key)
+      },
+      clear: () => {
+        localData.clear()
+      }
+    },
+    configurable: true
+  })
+  Object.defineProperty(globalThis, 'navigator', {
+    value: { languages: ['th-TH'], language: 'th-TH' },
+    configurable: true
+  })
+
   globalThis.fetch = ((input: RequestInfo | URL) => {
     const url = String(input)
     fetchUrls.push(url)
@@ -63,10 +93,23 @@ beforeAll(async () => {
   const mod = await import('./customization')
   store = mod.useCustomizationStore
   SERVER_DEFAULT_LOCALE = mod.SERVER_DEFAULT_LOCALE
+  settingsStore = (await import('./settings')).useSettingsStore
 })
 
 afterAll(() => {
   globalThis.fetch = realFetch
+  if (previousStorage) {
+    Object.defineProperty(globalThis, 'localStorage', previousStorage)
+  } else {
+    // @ts-expect-error - removing the stub installed for this file
+    delete globalThis.localStorage
+  }
+  if (previousNavigator) {
+    Object.defineProperty(globalThis, 'navigator', previousNavigator)
+  } else {
+    // @ts-expect-error - removing the stub installed for this file
+    delete globalThis.navigator
+  }
 })
 
 // The store is a module singleton — these tests run in order and continue
@@ -295,5 +338,52 @@ describe('retry and in-flight dedupe', () => {
     expect(store.getState().snapshot?.brand.title).toBe('German bundle')
     expect(store.getState().loadedLocale).toBe('de')
     expect(store.getState().pendingLocale).toBeNull()
+  })
+})
+
+
+/**
+ * Chrome/branding alignment: asking for a concrete locale is not enough,
+ * because a bundle that does not DECLARE it answers with its own
+ * `default_locale`. Nothing used to move i18next to that locale, so English
+ * controls stood beside (for example) Korean welcome content.
+ *
+ * The navigator stub in beforeAll matches no UI locale, so the chrome's
+ * language here is the last-resort fallback — the only rank the bundle may
+ * override (see bundleLocaleToAdopt).
+ */
+describe('adopting the locale a bundle actually answered with', () => {
+  test('a non-English bundle default becomes the UI language too', async () => {
+    settingsStore.setState({ language: 'en', languageUserSelected: false })
+
+    const loading = store.getState().load('en')
+    takePending().resolve(
+      jsonResponse({
+        customized: true,
+        // The server fell back: English is not declared by this bundle.
+        requested_locale: 'en',
+        locale: 'ko',
+        fallback_used: true,
+        brand: { title: '한국어 번들' }
+      })
+    )
+    await loading
+
+    expect(settingsStore.getState().language).toBe('ko')
+    // A fallback is not a choice: the next visit re-resolves from scratch.
+    expect(settingsStore.getState().languageUserSelected).toBe(false)
+  })
+
+  test('an EXPLICIT choice keeps the chrome, whatever the bundle answers', async () => {
+    settingsStore.setState({ language: 'en', languageUserSelected: true })
+
+    const loading = store.getState().load('fr')
+    takePending().resolve(
+      jsonResponse({ customized: true, locale: 'ko', brand: { title: '한국어 번들' } })
+    )
+    await loading
+
+    expect(settingsStore.getState().language).toBe('en')
+    settingsStore.setState({ languageUserSelected: false })
   })
 })
