@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from openai import RateLimitError
+from openai import APIStatusError, RateLimitError
 from tenacity import RetryError, wait_none
 
 from lightrag.llm._error_utils import is_permanent_rate_limit_error
@@ -235,10 +235,12 @@ async def test_embed_still_retries_ordinary_rate_limit(monkeypatch, no_retry_wai
 # that actually reach the wire.
 
 
-def _counting_transport(counter: list[int], body: dict) -> httpx.MockTransport:
+def _counting_transport(
+    counter: list[int], body: dict | None, status_code: int = 429
+) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
         counter[0] += 1
-        return httpx.Response(429, json={"error": body})
+        return httpx.Response(status_code, json={"error": body} if body else {})
 
     return httpx.MockTransport(handler)
 
@@ -263,18 +265,48 @@ def _client_factory(transport: httpx.MockTransport):
     return factory
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(BUDGET_BODY, id="budget-exceeded"),
+        pytest.param(QUOTA_BODY, id="insufficient-quota"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_budget_exceeded_costs_exactly_one_http_request(
-    monkeypatch, no_retry_wait
+async def test_spend_stop_costs_exactly_one_http_request(
+    monkeypatch, no_retry_wait, body
 ):
     calls = [0]
     monkeypatch.setattr(
         "lightrag.llm.openai.create_openai_async_client",
-        _client_factory(_counting_transport(calls, BUDGET_BODY)),
+        _client_factory(_counting_transport(calls, body)),
     )
 
     with pytest.raises(RateLimitError):
         await openai_complete_if_cache(model="gpt-4o-mini", prompt="hello")
+
+    assert calls[0] == 1
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(BUDGET_BODY, id="budget-exceeded"),
+        pytest.param(QUOTA_BODY, id="insufficient-quota"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_embed_spend_stop_costs_exactly_one_http_request(
+    monkeypatch, no_retry_wait, body
+):
+    calls = [0]
+    monkeypatch.setattr(
+        "lightrag.llm.openai.create_openai_async_client",
+        _client_factory(_counting_transport(calls, body)),
+    )
+
+    with pytest.raises(RateLimitError):
+        await openai_embed(["hello"])
 
     assert calls[0] == 1
 
@@ -311,3 +343,64 @@ def test_client_configs_can_restore_sdk_retries():
 
     client = create_openai_async_client(api_key="k", client_configs={"max_retries": 2})
     assert client.max_retries == 2
+
+
+# ---------------------------------------------------------------------------
+# Retry ownership -- what the SDK loop used to cover
+# ---------------------------------------------------------------------------
+#
+# ``max_retries=0`` moves the whole retry decision to tenacity, so the outer
+# loop must cover everything the SDK's ``_should_retry`` did. Connection
+# errors, timeouts, 429 and >=500 already had predicates; 408 and 409 did not.
+# ``_make_status_error`` maps 409 to ConflictError and has no branch for 408 at
+# all (it arrives as a bare APIStatusError), so neither matched anything.
+
+
+@pytest.mark.parametrize("status_code", [408, 409])
+@pytest.mark.asyncio
+async def test_complete_retries_transient_statuses(
+    monkeypatch, no_retry_wait, status_code
+):
+    calls = [0]
+    monkeypatch.setattr(
+        "lightrag.llm.openai.create_openai_async_client",
+        _client_factory(_counting_transport(calls, None, status_code)),
+    )
+
+    with pytest.raises(RetryError):
+        await openai_complete_if_cache(model="gpt-4o-mini", prompt="hello")
+
+    assert calls[0] == 3
+
+
+@pytest.mark.parametrize("status_code", [408, 409])
+@pytest.mark.asyncio
+async def test_embed_retries_transient_statuses(
+    monkeypatch, no_retry_wait, status_code
+):
+    calls = [0]
+    monkeypatch.setattr(
+        "lightrag.llm.openai.create_openai_async_client",
+        _client_factory(_counting_transport(calls, None, status_code)),
+    )
+
+    with pytest.raises(RetryError):
+        await openai_embed(["hello"])
+
+    assert calls[0] == 3
+
+
+@pytest.mark.parametrize("status_code", [400, 401, 403, 404, 422])
+@pytest.mark.asyncio
+async def test_client_errors_still_fail_fast(monkeypatch, no_retry_wait, status_code):
+    """Ownership transfer must not widen: the SDK never retried these either."""
+    calls = [0]
+    monkeypatch.setattr(
+        "lightrag.llm.openai.create_openai_async_client",
+        _client_factory(_counting_transport(calls, None, status_code)),
+    )
+
+    with pytest.raises(APIStatusError):
+        await openai_complete_if_cache(model="gpt-4o-mini", prompt="hello")
+
+    assert calls[0] == 1

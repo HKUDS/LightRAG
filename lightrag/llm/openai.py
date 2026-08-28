@@ -14,6 +14,7 @@ if not pm.is_installed("openai"):
 
 from openai import (
     APIConnectionError,
+    APIStatusError,
     RateLimitError,
     APITimeoutError,
     InternalServerError,
@@ -93,6 +94,24 @@ class TransientBadRequestError(Exception):
     """
 
     pass
+
+
+# Retry ownership moved wholly to tenacity when the client stopped carrying the
+# SDK's own loop (``max_retries=0``), so the outer loop has to cover everything
+# the SDK's body-blind ``_should_retry`` used to: 408 request timeouts and 409
+# lock timeouts. Neither is matched by any other predicate here -- ``_make_status_error``
+# maps 409 to ConflictError and has no branch for 408 at all, so it arrives as a
+# bare APIStatusError. (429 and >=500 are covered by the RateLimitError and
+# InternalServerError predicates.)
+_TRANSIENT_STATUS_CODES = frozenset({408, 409})
+
+
+def _is_transient_status_error(error: BaseException) -> bool:
+    """tenacity predicate: retry the transient statuses the SDK used to retry."""
+    return (
+        isinstance(error, APIStatusError)
+        and getattr(error, "status_code", None) in _TRANSIENT_STATUS_CODES
+    )
 
 
 def _is_retryable_rate_limit_error(error: BaseException) -> bool:
@@ -191,6 +210,10 @@ def create_openai_async_client(
     loop, making a transient failure cost up to 3x3 requests. Overridable
     through ``client_configs`` for anyone who wants the SDK's ``Retry-After``
     handling back.
+
+    Taking ownership means covering everything the SDK's loop covered:
+    connection errors, timeouts, 429 and >=500 already had predicates, and
+    ``_is_transient_status_error`` adds the 408 / 409 the SDK also retried.
     """
     if use_azure:
         from openai import AsyncAzureOpenAI
@@ -267,6 +290,8 @@ def create_openai_async_client(
     wait=wait_exponential(multiplier=1, min=4, max=10),
     retry=(
         retry_if_exception(_is_retryable_rate_limit_error)
+        # 408 / 409 -- retried by the SDK loop this client no longer runs.
+        | retry_if_exception(_is_transient_status_error)
         | retry_if_exception_type(APIConnectionError)
         | retry_if_exception_type(APITimeoutError)
         | retry_if_exception_type(InvalidResponseError)
@@ -1018,6 +1043,8 @@ async def nvidia_openai_complete(
     wait=wait_exponential(multiplier=1, min=4, max=60),
     retry=(
         retry_if_exception(_is_retryable_rate_limit_error)
+        # 408 / 409 -- retried by the SDK loop this client no longer runs.
+        | retry_if_exception(_is_transient_status_error)
         | retry_if_exception_type(APIConnectionError)
         | retry_if_exception_type(APITimeoutError)
         # Retry transient HTTP 5xx (OpenAI 500 / proxy upstream errors).
