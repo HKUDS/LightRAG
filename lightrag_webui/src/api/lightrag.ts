@@ -752,6 +752,18 @@ function _classifyStreamError(
     const statusCode = parseInt(statusCodeMatch[1], 10);
     switch (statusCode) {
       case 403:
+        // A 403 raised by the API-key check must KEEP that detail: the
+        // workspace entry recognizes these messages to re-probe credentials
+        // and reopen its API-key dialog, which is the only way back in after
+        // a key is rotated (and streaming is the default query mode, so
+        // flattening them here disabled that path entirely). Unrelated 403s
+        // keep the generic wording.
+        if (message.includes(InvalidApiKeyError)) {
+          return `${InvalidApiKeyError} (403 Forbidden)`;
+        }
+        if (message.includes(RequireApiKeError)) {
+          return `${RequireApiKeError} (403 Forbidden)`;
+        }
         return 'You do not have permission to access this resource (403 Forbidden)';
       case 404:
         return 'The requested resource does not exist (404 Not Found)';

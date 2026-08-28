@@ -560,6 +560,51 @@ describe('queryTextStream — guest-token 401 retry', () => {
   })
 })
 
+describe('queryTextStream — API-key 403 detail survives classification', () => {
+  // Streaming is the DEFAULT query mode, and the workspace entry recognizes
+  // these messages to re-probe credentials and reopen its API-key dialog —
+  // the only way back in after a key is rotated. Flattening the 403 into a
+  // generic permission error disabled that path entirely.
+  test.each([
+    ['Invalid API Key', 'Invalid API Key (403 Forbidden)'],
+    ['API Key required', 'API Key required (403 Forbidden)']
+  ])('a 403 carrying %p keeps the detail', async (detail, expected) => {
+    installFetchMock(() =>
+      makeTextResponse(JSON.stringify({ detail }), 403)
+    )
+
+    let capturedError = ''
+    await apiModule.queryTextStream(
+      makeQueryRequest(),
+      () => {},
+      (e) => {
+        capturedError = e
+      }
+    )
+
+    expect(capturedError).toBe(expected)
+  })
+
+  test('an UNRELATED 403 still gets the generic permission message', async () => {
+    installFetchMock(() =>
+      makeTextResponse(JSON.stringify({ detail: 'Workspace is read-only' }), 403)
+    )
+
+    let capturedError = ''
+    await apiModule.queryTextStream(
+      makeQueryRequest(),
+      () => {},
+      (e) => {
+        capturedError = e
+      }
+    )
+
+    expect(capturedError).toBe(
+      'You do not have permission to access this resource (403 Forbidden)'
+    )
+  })
+})
+
 describe('queryTextStream — auth termination (401)', () => {
   // PRD error split: a 401 means the session's authentication is gone, not
   // that the answer failed. The API layer navigates to the unauthenticated
