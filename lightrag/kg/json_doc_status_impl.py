@@ -31,6 +31,7 @@ from lightrag.utils import (
     load_json,
     logger,
     validate_workspace,
+    commit_in_storage_io,
     write_json,
     get_pinyin_sort_key,
 )
@@ -274,9 +275,13 @@ class JsonDocStatusStorage(DocStatusStorage):
         """Flush dirty shared memory to disk and clear all dirty flags.
 
         Identical commit protocol to ``JsonKVStorage.index_done_callback``
-        (snapshot the shared dict → ``write_json`` → if sanitization
-        happened reload the cleaned data → ``clear_all_update_flags``).
+        (snapshot the shared dict → ``write_json`` off the event loop → if
+        sanitization happened reload the cleaned data → ``clear_all_update_flags``).
         See ``JsonKVStorage`` docstring for details.
+
+        This is the highest-frequency writer of the three file backends:
+        ``upsert`` persists on every call, so a purge journalling four phases
+        per document commits this file four times for that document alone.
         """
         async with self._storage_lock:
             if self.storage_updated.value:
@@ -290,20 +295,44 @@ class JsonDocStatusStorage(DocStatusStorage):
                     f"[{self.workspace}] Process {os.getpid()} doc status writting {len(data_dict)} records to {self.namespace}"
                 )
 
-                # Write JSON and check if sanitization was applied
-                needs_reload = write_json(data_dict, self._file_name)
+                # Off the event loop: this rewrites the whole file, which on a
+                # large corpus takes seconds during which the single worker
+                # serving HTTP would otherwise be blocked. Only the write moves
+                # -- `data_dict` is snapshotted above, on the loop, under the
+                # lock, so the worker thread touches nothing shared.
+                write_outcome: dict[str, bool] = {}
 
-                # If data was sanitized, reload cleaned data to update shared memory
-                if needs_reload:
-                    logger.info(
-                        f"[{self.workspace}] Reloading sanitized data into shared memory for {self.namespace}"
+                def _write() -> None:
+                    write_outcome["needs_reload"] = write_json(
+                        data_dict, self._file_name
                     )
-                    cleaned_data = load_json(self._file_name)
-                    if cleaned_data is not None:
-                        self._data.clear()
-                        self._data.update(cleaned_data)
 
-                await clear_all_update_flags(self.namespace, workspace=self.workspace)
+                async def _committed() -> None:
+                    # Reconciliation belongs INSIDE the write's uncancellable
+                    # region. The sanitized file is already published at this
+                    # point, so a cancellation landing between the two would
+                    # leave the shared dict holding the rows that failed to
+                    # encode — diverging from disk until some later flush
+                    # happens to sanitize again. Before the offload the write
+                    # and this branch were one unpreemptable synchronous block,
+                    # which is the guarantee being restored here.
+                    #
+                    # Still not offloaded itself: it writes back into the shared
+                    # dict, and it only runs for payloads that fail to encode.
+                    if write_outcome.get("needs_reload"):
+                        logger.info(
+                            f"[{self.workspace}] Reloading sanitized data into shared memory for {self.namespace}"
+                        )
+                        cleaned_data = load_json(self._file_name)
+                        if cleaned_data is not None:
+                            self._data.clear()
+                            self._data.update(cleaned_data)
+
+                    await clear_all_update_flags(
+                        self.namespace, workspace=self.workspace
+                    )
+
+                await commit_in_storage_io(_write, _committed)
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Insert/update doc-status records and **persist immediately**.

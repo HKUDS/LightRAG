@@ -3,13 +3,18 @@ import os
 import time
 import asyncio
 from hashlib import md5
-from typing import Any, final
+from typing import Any, Awaitable, Callable, final
 import json
 import numpy as np
 from dataclasses import dataclass
 
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
-from lightrag.utils import logger, compute_mdhash_id, validate_workspace
+from lightrag.utils import (
+    logger,
+    compute_mdhash_id,
+    commit_in_storage_io,
+    validate_workspace,
+)
 from lightrag.base import BaseVectorStorage
 from lightrag.constants import DEFAULT_QUERY_PRIORITY
 
@@ -91,13 +96,22 @@ class FaissVectorDBStorage(BaseVectorStorage):
            ``index_done_callback`` completes. Reads in the gap between a
            writer's in-memory mutation and its commit may legitimately
            return the pre-update snapshot.
-        3. **Faiss + dict mutations are synchronous.** Under a
-           single-threaded asyncio event loop, ``index.add`` /
-           ``index.search`` / ``self._id_to_meta`` mutations cannot be
-           preempted by another coroutine, which gives them implicit
-           mutual exclusion. This is why most methods don't hold
-           ``_storage_lock`` while touching ``self._index`` /
-           ``self._id_to_meta``.
+        3. **Faiss + dict MUTATIONS are synchronous and stay on the
+           event loop.** ``index.add`` / ``index.remove_ids`` /
+           ``self._id_to_meta`` mutations cannot be preempted by another
+           coroutine, which gives them implicit mutual exclusion. This is
+           why most methods don't hold ``_storage_lock`` while touching
+           ``self._index`` / ``self._id_to_meta``.
+
+           ``_save_faiss_index`` is the one part that runs in a worker
+           thread, and it is compatible with this invariant because it
+           only READS: it takes its ``self._id_to_meta`` snapshot on the
+           loop before offloading, and it reads ``self._index`` while
+           holding ``_storage_lock``, which excludes every mutation
+           above. The only unlocked Faiss access, ``query``'s
+           ``index.search``, is a read as well. Moving a MUTATION (or an
+           unsnapshotted dict iteration) into the pool would break the
+           invariant and would require widening the lock scope instead.
 
     Cross-process sync protocol:
         Writer side (``index_done_callback``):
@@ -133,11 +147,14 @@ class FaissVectorDBStorage(BaseVectorStorage):
         The lock is **non-reentrant**, so ``_flush_pending_locked`` /
         ``_remove_faiss_ids_locked`` / ``_save_faiss_index`` /
         ``_reload_index_from_disk_locked`` all require the caller to
-        already hold it and never re-enter via ``_get_index``. Routine
+        already hold it and never re-enter via ``_get_index`` — the last
+        of these runs its writes in a worker thread, where re-entering
+        would deadlock on a lock the caller already holds. Routine
         ``index.search`` outside ``_get_index`` and the synchronous
-        ``client_storage`` read rely on invariant (3) above — if either
-        premise is broken (e.g. Faiss calls moved to a thread pool),
-        the lock scope must be widened.
+        ``client_storage`` read rely on invariant (3) above; both are
+        reads, which is why they coexist with the offloaded save. Moving
+        a Faiss or dict MUTATION into a thread pool would break that
+        premise and require widening the lock scope.
 
     Caveat — synchronous ``client_storage`` reads:
         ``client_storage`` is a synchronous property and does **not** go
@@ -1202,7 +1219,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # needed — a reload resurrecting the removed version is taken out again
         # by the replay at the top of the next flush, rewrite preserved.
 
-    def _save_faiss_index(self):
+    async def _save_faiss_index(
+        self, on_committed: Callable[[], Awaitable[None]]
+    ) -> None:
         """Atomically persist ``self._index`` + ``self._id_to_meta`` to disk.
 
         Precondition: the caller must already hold ``_storage_lock`` (this is
@@ -1220,13 +1239,32 @@ class FaissVectorDBStorage(BaseVectorStorage):
         ``test_faiss_meta_inconsistency``; the ``index > meta`` direction is
         a known gap (logged on reload, not auto-repaired) — see class
         docstring *Storage model*.
-        """
-        atomic_write(
-            self._faiss_index_file,
-            lambda tmp: faiss.write_index(self._index, tmp),
-            self.workspace or "_",
-        )
 
+        Both writes run in the storage-IO pool rather than on the event loop:
+        together they rewrite the entire index and the entire metadata file, so
+        inline they froze every unrelated request for the duration. Measured on
+        faiss 1.14.2, both halves genuinely yield — ``faiss.write_index``
+        releases the GIL outright, and ``json.dump`` is the same cooperative
+        pure-Python encoder the JSON backends use.
+
+        The metadata snapshot is built HERE, on the loop, before the offload:
+        the worker must not iterate ``self._id_to_meta`` while the synchronous
+        ``client_storage`` property can read it. ``self._index`` is handed over
+        by reference, which is sound because the worker only READS it while
+        every mutation (``add`` / ``remove_ids`` / reload) happens under
+        ``_storage_lock`` — held for this whole call — and the one unlocked
+        Faiss access, ``query``'s ``index.search``, is also a read. The write
+        ORDER (index first, then meta) is preserved: it is what keeps the
+        crash skew in the tolerated direction.
+
+        ``on_committed`` carries the post-write bookkeeping (retire the redo
+        logs, flag the other processes, clear the dirty bit) into the same
+        uncancellable region as the write. It must not be inlined after this
+        call: a cancel delivered in between would leave both files published
+        with the other processes never told to reload them. It runs only if the
+        write succeeded — running it without a write would retire redo entries
+        for rows that were never persisted.
+        """
         # Save metadata dict to JSON, excluding __vector__ since vectors are
         # already stored in the Faiss index file and can be reconstructed on load.
         serializable_dict = {}
@@ -1234,11 +1272,26 @@ class FaissVectorDBStorage(BaseVectorStorage):
             filtered_meta = {k: v for k, v in meta.items() if k != "__vector__"}
             serializable_dict[str(fid)] = filtered_meta
 
+        index = self._index
+        index_file = self._faiss_index_file
+        meta_file = self._meta_file
+        workspace = self.workspace or "_"
+
         def _write_meta(tmp: str) -> None:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(serializable_dict, f)
 
-        atomic_write(self._meta_file, _write_meta, self.workspace or "_")
+        def _write_both() -> None:
+            # One submission for both files: two would take two permits and
+            # could interleave another namespace's commit between the halves.
+            atomic_write(
+                index_file,
+                lambda tmp: faiss.write_index(index, tmp),
+                workspace,
+            )
+            atomic_write(meta_file, _write_meta, workspace)
+
+        await commit_in_storage_io(_write_both, on_committed)
 
     def _load_faiss_index(self):
         """
@@ -1390,12 +1443,15 @@ class FaissVectorDBStorage(BaseVectorStorage):
             # aborts the batch; pending stays intact and _index_dirty stays
             # True (if only the save failed) for a later retry.
             await self._flush_pending_locked()
-            self._save_faiss_index()
-            self._unsaved_deletes.clear()  # the removals are durable now
-            self._unsaved_upserts.clear()  # the rows are durable now
-            await set_all_update_flags(self.namespace, workspace=self.workspace)
-            self.storage_updated.value = False
-            self._index_dirty = False
+
+            async def _committed() -> None:
+                self._unsaved_deletes.clear()  # the removals are durable now
+                self._unsaved_upserts.clear()  # the rows are durable now
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
+                self.storage_updated.value = False
+                self._index_dirty = False
+
+            await self._save_faiss_index(_committed)
             return True
 
     @staticmethod
@@ -1775,9 +1831,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 # would rewrite both files and flag every other process
                 # for a full reload for no reason.
                 return
-            self._save_faiss_index()
-            self._unsaved_deletes.clear()  # the removals are durable now
-            self._unsaved_upserts.clear()  # the rows are durable now
-            await set_all_update_flags(self.namespace, workspace=self.workspace)
-            self.storage_updated.value = False
-            self._index_dirty = False
+
+            async def _committed() -> None:
+                self._unsaved_deletes.clear()  # the removals are durable now
+                self._unsaved_upserts.clear()  # the rows are durable now
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
+                self.storage_updated.value = False
+                self._index_dirty = False
+
+            await self._save_faiss_index(_committed)
