@@ -122,6 +122,15 @@ export interface QuerySessionOptions {
   /** Optional: called with a non-empty user_prompt on submit (admin page
    * records it into the prompt history; the workspace passes nothing). */
   onUserPromptUsed?: (prompt: string) => void
+  /**
+   * Optional: called with the classified failure message when a query fails
+   * for a reason OTHER than auth termination or a user abort. The page
+   * composition layer decides what that means for its entry — the workspace
+   * re-probes credentials on API-key-shaped failures, since a key rotated
+   * after its startup probe would otherwise 403 every query with no way in.
+   * This layer stays entry-agnostic: it does not inspect the message.
+   */
+  onQueryError?: (message: string) => void
 }
 
 export interface SubmitOptions {
@@ -136,7 +145,8 @@ export interface SubmitOptions {
 export function useQuerySession({
   historyStore,
   getQuerySettingsSnapshot,
-  onUserPromptUsed
+  onUserPromptUsed,
+  onQueryError
 }: QuerySessionOptions) {
   const { t } = useTranslation()
 
@@ -418,6 +428,7 @@ export function useQuerySession({
             }
           )
           if (streamError) {
+            onQueryError?.(streamError)
             if (assistantMessage.content) {
               streamError = assistantMessage.content + '\n' + streamError
             }
@@ -439,6 +450,7 @@ export function useQuerySession({
         } else if (!controller.signal.aborted) {
           // If the user terminated the query, handleStop already finalized the
           // message state; don't render it as an error.
+          onQueryError?.(errorMessage(err))
           updateAssistantMessage(
             `${t('retrievePanel.retrieval.error')}\n${errorMessage(err)}`,
             true
@@ -532,7 +544,15 @@ export function useQuerySession({
         }
       }
     },
-    [isLoading, messages, historyStore, getQuerySettingsSnapshot, onUserPromptUsed, t]
+    [
+      isLoading,
+      messages,
+      historyStore,
+      getQuerySettingsSnapshot,
+      onUserPromptUsed,
+      onQueryError,
+      t
+    ]
   )
 
   const clearMessages = useCallback(() => {

@@ -47,7 +47,13 @@ const resolveInitialLanguage = (): SupportedUiLanguage => {
   if (persisted?.languageUserSelected && persistedLanguage) {
     return persistedLanguage
   }
-  return detectBrowserLanguage() ?? persistedLanguage ?? 'en'
+  // WITHOUT an explicit selection the persisted value has no say: it is
+  // itself a browser-derived leftover, and honoring it here would (a) keep a
+  // stale language after the browser's preferences changed to something
+  // unsupported, and (b) disagree with useCustomizedContent, whose chain is
+  // `browser ?? bundle default` — the page would then mix UI text in the
+  // stale language with branding in the bundle's default one.
+  return detectBrowserLanguage() ?? 'en'
 }
 
 const initialLanguage = resolveInitialLanguage()

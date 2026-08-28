@@ -6,14 +6,9 @@ import AppSettings from '@/components/AppSettings'
 import ApiKeyAlert from '@/components/ApiKeyAlert'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import { useAuthStore, useBackendState } from '@/stores/state'
-import {
-  getAuthStatus,
-  InvalidApiKeyError,
-  RequireApiKeError,
-  verifyCredentials
-} from '@/api/lightrag'
-import { errorMessage } from '@/lib/utils'
+import { getAuthStatus } from '@/api/lightrag'
 import { useIdentityEpochStore } from '@/lib/loginIdentity'
+import { runCredentialProbe, useCredentialProbeStore } from './credentialProbe'
 import { navigationService } from '@/services/navigation'
 import WorkspaceQueryView from './WorkspaceQueryView'
 
@@ -30,14 +25,15 @@ export default function WorkspaceApp() {
   const { t } = useTranslation()
   const { isGuestMode, username, webuiTitle, webuiDescription } = useAuthStore()
   const [initializing, setInitializing] = useState(true)
-  const [apiKeyAlertOpen, setApiKeyAlertOpen] = useState(false)
+  // Dialog visibility is DERIVED, not synced: the probe signals through a
+  // monotonic counter and this records the count the user last dismissed, so
+  // two consecutive failures with the IDENTICAL message still reopen it (and
+  // no effect has to push state, which would cascade renders).
+  const [dismissedDialogRequests, setDismissedDialogRequests] = useState(0)
   // Bumped by the cross-tab identity watch: remounting the query view drops
   // the live session state that belonged to the previous identity.
   const identityEpoch = useIdentityEpochStore((s) => s.epoch)
   const versionCheckRef = useRef(false) // Prevent duplicate calls in Vite dev mode
-  // Generation of the newest credential probe: rapid re-saves can leave an
-  // older probe in flight, and only the newest one may decide the dialog.
-  const probeGenerationRef = useRef(0)
 
   // Refresh version/title info once (mirrors the admin shell, minus the
   // guest auto-login: on this entry guest activation happens ONLY through
@@ -88,79 +84,30 @@ export default function WorkspaceApp() {
     checkVersion()
   }, [])
 
-  // Credential probe — once after initialization and again whenever the
-  // stored API key changes. In an API-key-only deployment (LIGHTRAG_API_KEY
-  // without AUTH_ACCOUNTS) the guest token alone never authenticates, so a
-  // fresh browser would otherwise only ever see 403s: the probe surfaces the
-  // API-key error in the backend state, and the mounted ApiKeyAlert (which
-  // watches that message) opens to capture the key. This is the workspace
-  // counterpart of the admin shell's periodic health check — a single probe,
-  // not a polling loop.
-  const runCredentialProbe = useCallback(() => {
-    const generation = ++probeGenerationRef.current
-    // /auth/verify, NOT /health: /health sits on the default whitelist and
-    // deliberately answers "healthy" to unauthenticated callers, so it can
-    // never surface a missing or invalid API key.
-    void verifyCredentials()
-      .then(() => {
-        if (generation !== probeGenerationRef.current) return
-        // Credentials accepted: drop a leftover API-key error so ApiKeyAlert
-        // shows a clean slate the next time it opens.
-        const message = useBackendState.getState().message
-        if (
-          message &&
-          (message.includes(InvalidApiKeyError) || message.includes(RequireApiKeError))
-        ) {
-          useBackendState.getState().clear()
-        }
-      })
-      .catch((error) => {
-        // Only the NEWEST probe may decide the dialog: rapid re-saves can
-        // leave an older probe in flight whose stale failure must not reopen
-        // it after the replacement key already validated.
-        if (generation !== probeGenerationRef.current) return
-        const message = errorMessage(error)
-        if (
-          message.includes(InvalidApiKeyError) ||
-          message.includes(RequireApiKeError)
-        ) {
-          // Surface the failure where ApiKeyAlert displays it, and open the
-          // dialog HERE rather than only via the message watch — a rejected
-          // replacement key produces the IDENTICAL message string, which
-          // never re-fires a message-change effect, and this entry has no
-          // other API-key control.
-          useBackendState.getState().setErrorMessage(message, 'API Key required')
-          setApiKeyAlertOpen(true)
-        }
-        // Anything else (network failure, auth termination that already
-        // navigated) is not an API-key problem: leave the dialog alone.
-      })
-  }, [])
-
-  // SINGLE trigger per save: the workspace's only API-key writer is the
-  // dialog below, whose close handler re-probes — an additional apiKey
-  // dependency here would launch a duplicate request for the same save and
-  // reintroduce the stale-completion race. This effect covers first mount.
+  // Startup probe: an API-key-only deployment rejects queries until a key is
+  // stored, and this entry has no other place to enter one.
   useEffect(() => {
     if (initializing) return
     runCredentialProbe()
-  }, [initializing, runCredentialProbe])
+  }, [initializing])
+
+  // Requests come from the startup probe AND from a query rejected on
+  // credential grounds (the server key can be rotated long after startup).
+  const apiKeyDialogRequests = useCredentialProbeStore((s) => s.apiKeyDialogRequests)
+  const apiKeyAlertOpen = apiKeyDialogRequests > dismissedDialogRequests
 
   const handleApiKeyAlertOpenChange = useCallback(
     (open: boolean) => {
-      setApiKeyAlertOpen(open)
-      if (!open) {
-        // Re-validate on EVERY dialog close, not only when the stored key
-        // changed: saving a blank or unchanged key leaves both `apiKey` and
-        // the backend message identical, so no dependency-gated effect would
-        // ever reopen the dialog. Clearing first mirrors the admin shell's
-        // close handler (a still-failing probe then also re-fires the
-        // message-change watch), and the probe reopens on a bad result.
-        useBackendState.getState().clear()
-        runCredentialProbe()
-      }
+      if (open) return // opening is driven by the probe's request counter
+      setDismissedDialogRequests(useCredentialProbeStore.getState().apiKeyDialogRequests)
+      // Re-validate on EVERY dialog close, not only when the stored key
+      // changed: saving a blank or unchanged key leaves both `apiKey` and the
+      // backend message identical, so no value-gated trigger would ever
+      // reopen the dialog. The probe requests it again on a bad result.
+      useBackendState.getState().clear()
+      runCredentialProbe()
     },
-    [runCredentialProbe]
+    []
   )
 
   const handleLogout = () => {

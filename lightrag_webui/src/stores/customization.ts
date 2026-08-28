@@ -45,8 +45,15 @@ interface CustomizationState {
    * mounting, or the retry gate re-firing while the request is still out)
    * dedupe instead of issuing a request storm. */
   pendingLocale: string | null
+  /** Failed attempts for `targetLocale` since it was last targeted. Bounds
+   * the automatic retry: without a cap, re-arming on completion would loop
+   * (fail → state change → gate re-fires → fail …) and storm the endpoint. */
+  failedAttempts: number
   load: (locale: string) => Promise<void>
 }
+
+/** Automatic attempts per target locale: the first one plus ONE retry. */
+export const MAX_CUSTOMIZATION_ATTEMPTS = 2
 
 /**
  * Whether the hook should ask the store to (re-)load `locale`. Pure so the
@@ -62,9 +69,15 @@ interface CustomizationState {
 export function needsCustomizationLoad(
   locale: string,
   targetLocale: string | null,
-  loadedLocale: string | null
+  loadedLocale: string | null,
+  failedAttempts = 0
 ): boolean {
-  return targetLocale !== locale || loadedLocale !== locale
+  if (targetLocale !== locale) return true
+  if (loadedLocale === locale) return false
+  // Targeted but not loaded: in flight (deduped in `load`) or failed. Retry
+  // only while attempts remain, so a persistently failing endpoint settles
+  // on the default content instead of being hammered.
+  return failedAttempts < MAX_CUSTOMIZATION_ATTEMPTS
 }
 
 let requestCounter = 0
@@ -75,6 +88,7 @@ export const useCustomizationStore = create<CustomizationState>((set, get) => ({
   targetLocale: null,
   loadedLocale: null,
   pendingLocale: null,
+  failedAttempts: 0,
 
   load: async (locale: string) => {
     if (get().pendingLocale === locale) {
@@ -91,7 +105,12 @@ export const useCustomizationStore = create<CustomizationState>((set, get) => ({
     // itself needs no network request. Any older in-flight request is now
     // stale, so it no longer owns `pendingLocale`.
     const requestId = ++requestCounter
-    set({ targetLocale: locale, pendingLocale: null })
+    // A NEW target starts its own attempt budget.
+    set({
+      targetLocale: locale,
+      pendingLocale: null,
+      ...(get().targetLocale === locale ? {} : { failedAttempts: 0 })
+    })
     if (get().loadedLocale === locale && get().snapshot !== null) {
       // Already showing this locale. The counter bump above just invalidated
       // any other locale's in-flight response (the A → B → A race).
@@ -108,10 +127,11 @@ export const useCustomizationStore = create<CustomizationState>((set, get) => ({
       // Apply only when still the newest request AND for the current target.
       if (requestId !== requestCounter || get().targetLocale !== locale) return
       // Atomic swap: one set() replaces the whole locale representation.
-      set({ status: 'ready', snapshot, loadedLocale: locale })
+      set({ status: 'ready', snapshot, loadedLocale: locale, failedAttempts: 0 })
     } catch (error) {
       if (requestId !== requestCounter || get().targetLocale !== locale) return
       console.error('Failed to load UI customization:', error)
+      set({ failedAttempts: get().failedAttempts + 1 })
       if (get().snapshot === null) {
         // Hard failure on first load → frontend default content takes over.
         set({ status: 'error' })

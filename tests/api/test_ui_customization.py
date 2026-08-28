@@ -242,6 +242,59 @@ class TestBundleValidation:
         with pytest.raises(UICustomizationError, match="not PNG, JPEG, WebP or SVG"):
             load_ui_customization_snapshot(bundle)
 
+    @pytest.mark.parametrize(
+        "content",
+        [
+            pytest.param(
+                b'<?xml version="1.0" encoding="UTF-8"?>\n'
+                b"<config><value>42</value></config>",
+                id="xml-declaration-without-svg-root",
+            ),
+            pytest.param(
+                b"<!DOCTYPE html><html><body>not an image</body></html>",
+                id="doctype-without-svg-root",
+            ),
+            pytest.param(b"<!-- just a comment -->", id="comment-only"),
+        ],
+    )
+    def test_xml_without_svg_root_is_rejected(self, tmp_path, content):
+        # An XML declaration alone is not an image. Accepting it would serve
+        # an unrenderable logo under an immutable image/svg+xml cache header,
+        # contradicting the fail-fast promise the error message makes.
+        bundle = make_bundle(tmp_path)
+        (bundle / "assets" / "logo.svg").write_bytes(content)
+        with pytest.raises(UICustomizationError, match="not PNG, JPEG, WebP or SVG"):
+            load_ui_customization_snapshot(bundle)
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            pytest.param(SVG_BYTES, id="bare-svg-root"),
+            pytest.param(
+                b'<?xml version="1.0" encoding="UTF-8"?>\n' + SVG_BYTES,
+                id="xml-declaration-then-svg",
+            ),
+            pytest.param(
+                b'<?xml version="1.0"?><!-- brand mark -->\n'
+                b'<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "svg11.dtd">\n'
+                + SVG_BYTES,
+                id="declaration-comment-doctype-then-svg",
+            ),
+            pytest.param(b"\xef\xbb\xbf\n  " + SVG_BYTES, id="bom-and-whitespace"),
+        ],
+    )
+    def test_real_svg_variants_are_accepted(self, tmp_path, content):
+        bundle = make_bundle(tmp_path)
+        (bundle / "assets" / "logo.svg").write_bytes(content)
+        snapshot = load_ui_customization_snapshot(bundle)
+        assert snapshot.locales["en"].logo_asset_id == "brand-logo"
+        logo = next(
+            asset
+            for asset in snapshot.assets.values()
+            if asset.asset_id == "brand-logo"
+        )
+        assert logo.mime == "image/svg+xml"
+
     def test_locale_logo_override(self, tmp_path):
         bundle = make_bundle(tmp_path, extra_files={"assets/logo-zh.png": PNG_BYTES})
         manifest = json.loads((bundle / "manifest.json").read_text())

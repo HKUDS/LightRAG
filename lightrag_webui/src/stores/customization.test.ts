@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test'
 import type { UICustomization } from '@/api/customization'
-import { needsCustomizationLoad } from './customization'
+import {
+  MAX_CUSTOMIZATION_ATTEMPTS,
+  needsCustomizationLoad
+} from './customization'
 
 /**
  * Customization store: correctness under fast language switching.
@@ -193,6 +196,26 @@ describe('needsCustomizationLoad (the hook\'s gate)', () => {
     expect(needsCustomizationLoad('en', 'en', 'en')).toBe(false)
     expect(needsCustomizationLoad('', '', '')).toBe(false)
   })
+
+  test('the automatic retry is BOUNDED — a hot loop would storm the endpoint', () => {
+    // The hook re-arms on every failure (failedAttempts is a dependency), so
+    // without this bound the sequence fail → state change → gate → fail …
+    // would hammer the endpoint forever.
+    expect(needsCustomizationLoad('fr', 'fr', null, 0)).toBe(true)
+    expect(needsCustomizationLoad('fr', 'fr', null, MAX_CUSTOMIZATION_ATTEMPTS - 1)).toBe(
+      true
+    )
+    expect(needsCustomizationLoad('fr', 'fr', null, MAX_CUSTOMIZATION_ATTEMPTS)).toBe(false)
+    expect(needsCustomizationLoad('fr', 'fr', null, MAX_CUSTOMIZATION_ATTEMPTS + 5)).toBe(
+      false
+    )
+  })
+
+  test('a NEW target is always requested, however many attempts failed before', () => {
+    // The budget is per target: switching language must never be blocked by
+    // the previous locale's failures.
+    expect(needsCustomizationLoad('de', 'fr', null, 99)).toBe(true)
+  })
 })
 
 describe('retry and in-flight dedupe', () => {
@@ -217,6 +240,40 @@ describe('retry and in-flight dedupe', () => {
 
       expect(store.getState().snapshot?.brand.title).toBe('Japanese bundle')
       expect(store.getState().loadedLocale).toBe('ja')
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
+  test('failures accumulate per target and reset on success / re-target', async () => {
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const first = store.getState().load('uk')
+      takePending().reject(new Error('down'))
+      await first
+      expect(store.getState().failedAttempts).toBe(1)
+
+      const second = store.getState().load('uk')
+      takePending().reject(new Error('still down'))
+      await second
+      expect(store.getState().failedAttempts).toBe(MAX_CUSTOMIZATION_ATTEMPTS)
+      // The gate now stops the automatic retry for this locale.
+      expect(
+        needsCustomizationLoad(
+          'uk',
+          store.getState().targetLocale,
+          store.getState().loadedLocale,
+          store.getState().failedAttempts
+        )
+      ).toBe(false)
+
+      // Re-targeting resets the budget…
+      const other = store.getState().load('ru')
+      expect(store.getState().failedAttempts).toBe(0)
+      takePending().resolve(jsonResponse(snapshotFor('Russian bundle')))
+      await other
+      // …and a success leaves it at zero.
+      expect(store.getState().failedAttempts).toBe(0)
     } finally {
       errorSpy.mockRestore()
     }

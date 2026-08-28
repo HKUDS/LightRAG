@@ -42,6 +42,7 @@ export function useCustomizedContent(): CustomizedContent {
   const snapshot = useCustomizationStore((s) => s.snapshot)
   const targetLocale = useCustomizationStore((s) => s.targetLocale)
   const loadedLocale = useCustomizationStore((s) => s.loadedLocale)
+  const failedAttempts = useCustomizationStore((s) => s.failedAttempts)
 
   // Language priority (PRD): explicit persisted choice > browser language >
   // bundle default. Without an explicit choice the store's language already
@@ -55,15 +56,17 @@ export function useCustomizedContent(): CustomizedContent {
   // (Re-)target on mount and whenever the user switches language, AND retry
   // whenever this locale is not the one actually loaded — a failed request
   // leaves the target already set to it, so keying on the target alone would
-  // never try again (see `needsCustomizationLoad`). The store decides whether
-  // a network request is needed: a re-target alone still invalidates a stale
-  // in-flight response (fast A → B → A switching), and repeated calls while a
-  // request is out are deduped there.
+  // never try again (see `needsCustomizationLoad`). `failedAttempts` is a
+  // dependency so a failure RE-ARMS this effect without a remount, and it is
+  // also the bound that stops the re-arm from looping. The store decides
+  // whether a network request is needed: a re-target alone still invalidates
+  // a stale in-flight response (fast A → B → A switching), and repeated calls
+  // while a request is out are deduped there.
   useEffect(() => {
-    if (needsCustomizationLoad(locale, targetLocale, loadedLocale)) {
+    if (needsCustomizationLoad(locale, targetLocale, loadedLocale, failedAttempts)) {
       void useCustomizationStore.getState().load(locale)
     }
-  }, [locale, targetLocale, loadedLocale])
+  }, [locale, targetLocale, loadedLocale, failedAttempts])
 
   if (status === 'loading') {
     return {

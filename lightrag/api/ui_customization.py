@@ -98,6 +98,31 @@ def locale_direction(locale: str) -> str:
     return "rtl" if language in _RTL_LANGUAGE_SUBTAGS else "ltr"
 
 
+def _has_svg_root(head: bytes) -> bool:
+    """Whether ``head`` opens an ``<svg>`` element, skipping any XML
+    declaration, comments, doctype and processing instructions before it."""
+    rest = head
+    while True:
+        rest = rest.lstrip(b" \t\r\n")
+        if rest.startswith(b"<svg") and (
+            len(rest) == 4 or rest[4:5].isspace() or rest[4:5] in (b">", b"/")
+        ):
+            return True
+        # Skip one prologue node; anything else means this is not an SVG.
+        if rest.startswith(b"<!--"):
+            end = rest.find(b"-->", 4)
+            if end == -1:
+                return False
+            rest = rest[end + 3 :]
+        elif rest.startswith(b"<?") or rest.startswith(b"<!"):
+            end = rest.find(b">")
+            if end == -1:
+                return False
+            rest = rest[end + 1 :]
+        else:
+            return False
+
+
 def _sniff_logo_mime(content: bytes, path_label: str) -> str:
     """MIME from actual content (PNG/JPEG/WebP/SVG), not the extension."""
     if content.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -106,8 +131,14 @@ def _sniff_logo_mime(content: bytes, path_label: str) -> str:
         return "image/jpeg"
     if content[:4] == b"RIFF" and content[8:12] == b"WEBP":
         return "image/webp"
+    # SVG requires an actual <svg> ROOT. An XML declaration, or leading
+    # comments / doctype / processing instructions, may precede it — but a
+    # file that merely *starts* like XML and never opens an <svg> element is
+    # not an image, and accepting it would serve an unrenderable logo with an
+    # immutable image/svg+xml cache header (and contradict the fail-fast
+    # promise this function's error message makes).
     head = content[:4096].lstrip(b"\xef\xbb\xbf \t\r\n")
-    if head.startswith(b"<?xml") or head.startswith(b"<svg") or b"<svg" in head[:1024]:
+    if _has_svg_root(head):
         return "image/svg+xml"
     raise UICustomizationError(
         f"logo {path_label!r}: content is not PNG, JPEG, WebP or SVG "
