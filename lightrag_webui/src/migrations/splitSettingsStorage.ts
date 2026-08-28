@@ -56,6 +56,7 @@ import {
   WEBUI_RETRIEVAL_HISTORY_KEY,
   WORKSPACE_RETRIEVAL_HISTORY_KEY
 } from '@/lib/storageKeys'
+import { hasFutureEnvelope } from '@/lib/guardedStorage'
 
 /** Envelope version of `settings-storage` after the split. */
 export const SETTINGS_STORAGE_VERSION_AFTER_SPLIT = 22
@@ -93,16 +94,11 @@ export function resetSettingsMigrationErrorForTests(): void {
 export function hasFutureSettingsEnvelope(
   storage: Storage | null = typeof localStorage === 'undefined' ? null : localStorage
 ): boolean {
-  if (!storage) return false
-  try {
-    const raw = storage.getItem(LEGACY_SETTINGS_STORAGE_KEY)
-    if (raw == null) return false
-    const version: unknown = JSON.parse(raw)?.version
-    return typeof version === 'number' && version > SETTINGS_STORAGE_VERSION_AFTER_SPLIT
-  } catch {
-    // Unreadable / corrupt envelope: not evidence of a newer client.
-    return false
-  }
+  return hasFutureEnvelope(
+    LEGACY_SETTINGS_STORAGE_KEY,
+    SETTINGS_STORAGE_VERSION_AFTER_SPLIT,
+    storage
+  )
 }
 
 function writeIfAbsent(storage: Storage, key: string, value: unknown): void {
@@ -164,6 +160,16 @@ export function runSettingsStorageSplitMigration(
     // the legacy envelope and bump its version.
     delete normalized.querySettings
     delete normalized.retrievalHistory
+    // Legacy envelopes predate the `languageUserSelected` marker, but their
+    // `language` field only ever changed through the selector: a persisted
+    // NON-DEFAULT value therefore proves an explicit choice and must keep
+    // outranking the browser language after the upgrade. A persisted 'en'
+    // stays ambiguous (initial default or chosen) and resolves via the
+    // browser, like a fresh visit.
+    if (!('languageUserSelected' in normalized)) {
+      normalized.languageUserSelected =
+        typeof normalized.language === 'string' && normalized.language !== 'en'
+    }
     storage.setItem(
       LEGACY_SETTINGS_STORAGE_KEY,
       JSON.stringify({

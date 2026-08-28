@@ -6,9 +6,9 @@ import { LEGACY_SETTINGS_STORAGE_KEY } from '@/lib/storageKeys'
 import { migrateLegacySettingsState } from '@/migrations/legacySettingsChain'
 import {
   getSettingsMigrationError,
-  hasFutureSettingsEnvelope,
   SETTINGS_STORAGE_VERSION_AFTER_SPLIT
 } from '@/migrations/splitSettingsStorage'
+import { createFutureGuardedStorage } from '@/lib/guardedStorage'
 
 type Theme = 'dark' | 'light' | 'system'
 type Language = 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW' | 'ru' | 'ja' | 'de' | 'uk' | 'ko' | 'vi'
@@ -95,39 +95,6 @@ interface SettingsState {
   // Search label dropdown refresh trigger (non-persistent, runtime only)
   searchLabelDropdownRefreshTrigger: number
   triggerSearchLabelDropdownRefresh: () => void
-}
-
-// Rollback safety (split-migration rule 3): an envelope written by a NEWER
-// client (version > 22) is neither hydrated nor overwritten. Hydration would
-// restamp it as v22 (zustand writes the migrate result back) and any set()
-// would clobber fields this build does not know. The guard is evaluated on
-// EVERY storage operation, not once at creation: a newer tab can write a v23
-// envelope while this v22 tab is already running, and this tab's next
-// settings write must not clobber it either — such writes divert to a
-// session-only fallback (kept readable so a same-session rehydrate does not
-// silently reset to defaults), leaving the future envelope byte-for-byte
-// intact for the client that wrote it.
-const createGuardedSettingsStorage = () => {
-  const sessionFallback = new Map<string, string>()
-  return {
-    getItem: (key: string): string | null =>
-      hasFutureSettingsEnvelope()
-        ? (sessionFallback.get(key) ?? null)
-        : localStorage.getItem(key),
-    setItem: (key: string, value: string): void => {
-      if (hasFutureSettingsEnvelope()) {
-        sessionFallback.set(key, value)
-        return
-      }
-      localStorage.setItem(key, value)
-    },
-    removeItem: (key: string): void => {
-      sessionFallback.delete(key)
-      if (!hasFutureSettingsEnvelope()) {
-        localStorage.removeItem(key)
-      }
-    }
-  }
 }
 
 const useSettingsStoreBase = create<SettingsState>()(
@@ -252,7 +219,13 @@ const useSettingsStoreBase = create<SettingsState>()(
     }),
     {
       name: LEGACY_SETTINGS_STORAGE_KEY,
-      storage: createJSONStorage(() => createGuardedSettingsStorage()),
+      // Rollback safety (split-migration rule 3): an envelope written by a
+      // NEWER client (version > 22) is neither hydrated nor overwritten —
+      // even when it arrives mid-session from a newer tab. Guard semantics
+      // in lib/guardedStorage.ts.
+      storage: createJSONStorage(() =>
+        createFutureGuardedStorage(SETTINGS_STORAGE_VERSION_AFTER_SPLIT)
+      ),
       version: SETTINGS_STORAGE_VERSION_AFTER_SPLIT,
       // See splitSettingsStorage rule 7: never hydrate on a half-migrated
       // storage state.
@@ -279,6 +252,14 @@ const useSettingsStoreBase = create<SettingsState>()(
           state = migrateLegacySettingsState(state, version)
           delete state.querySettings
           delete state.retrievalHistory
+          // Same synthesis as the split migrator: legacy `language` only ever
+          // changed through the selector, so a persisted non-default value
+          // proves an explicit choice that must keep outranking the browser
+          // language (old-tab rewrites carry the same legacy semantics).
+          if (!('languageUserSelected' in state)) {
+            state.languageUserSelected =
+              typeof state.language === 'string' && state.language !== 'en'
+          }
         }
         return state
       }

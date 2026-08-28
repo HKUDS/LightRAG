@@ -67,6 +67,7 @@ describe('settings store migrate', () => {
     const result = migrate(
       {
         theme: 'dark',
+        language: 'fr',
         querySettings: { mode: 'hybrid', history_turns: 0 },
         retrievalHistory: [{ id: 'h1', role: 'user', content: 'q' }]
       },
@@ -75,6 +76,14 @@ describe('settings store migrate', () => {
     expect(result.querySettings).toBeUndefined()
     expect(result.retrievalHistory).toBeUndefined()
     expect(result.theme).toBe('dark')
+    // A non-default legacy language proves an explicit choice — synthesized
+    // so the browser language cannot silently replace it after the upgrade.
+    expect(result.languageUserSelected).toBe(true)
+  })
+
+  test('a legacy envelope with the default \'en\' stays non-explicit', () => {
+    const result = migrate({ language: 'en' }, 21) as Record<string, unknown>
+    expect(result.languageUserSelected).toBe(false)
   })
 
   test('the current version (22) passes through unchanged', () => {

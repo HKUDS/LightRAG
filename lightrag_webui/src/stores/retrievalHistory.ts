@@ -1,6 +1,10 @@
 import { create, type UseBoundStore, type StoreApi } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
-import { getSettingsMigrationError } from '@/migrations/splitSettingsStorage'
+import {
+  getSettingsMigrationError,
+  RETRIEVAL_HISTORY_STORE_VERSION
+} from '@/migrations/splitSettingsStorage'
+import { createFutureGuardedStorage } from '@/lib/guardedStorage'
 import type { MessageWithError } from '@/types/retrieval'
 
 /**
@@ -33,11 +37,26 @@ export function createRetrievalHistoryStore(storageKey: string): RetrievalHistor
       }),
       {
         name: storageKey,
-        storage: createJSONStorage(() => localStorage),
-        version: 1,
+        // Rollback safety: a NEWER client's envelope is neither hydrated nor
+        // overwritten, even arriving mid-session (lib/guardedStorage.ts).
+        storage: createJSONStorage(() =>
+          createFutureGuardedStorage(RETRIEVAL_HISTORY_STORE_VERSION)
+        ),
+        version: RETRIEVAL_HISTORY_STORE_VERSION,
         // See splitSettingsStorage rule 7: never hydrate on a half-migrated
         // storage state.
-        skipHydration: getSettingsMigrationError() != null
+        skipHydration: getSettingsMigrationError() != null,
+        migrate: (state: unknown, version: number) => {
+          if (version > RETRIEVAL_HISTORY_STORE_VERSION) {
+            // Never report a newer client's envelope as migrated — zustand
+            // would persist it back restamped with this build's version.
+            throw new Error(
+              `${storageKey} version ${version} is newer than this build ` +
+                `supports (${RETRIEVAL_HISTORY_STORE_VERSION}); refusing to downgrade it`
+            )
+          }
+          return state
+        }
       }
     )
   )

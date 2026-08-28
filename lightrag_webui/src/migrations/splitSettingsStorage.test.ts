@@ -321,3 +321,32 @@ describe('hasFutureSettingsEnvelope (rule 3 extended to the settings store)', ()
     expect(hasFutureSettingsEnvelope(null)).toBe(false)
   })
 })
+
+describe('legacy language choice synthesis (languageUserSelected)', () => {
+  // Legacy `language` only ever changed through the selector, so a persisted
+  // NON-DEFAULT value proves an explicit choice; the marker is synthesized
+  // during the split so an upgrade cannot let the browser language silently
+  // replace it. A persisted 'en' is ambiguous and stays non-explicit.
+  test('a non-default legacy language is marked as an explicit choice', () => {
+    storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, legacyEnvelope(21, v21State())) // language: 'zh'
+    runSettingsStorageSplitMigration(storage)
+    expect(parsed(LEGACY_SETTINGS_STORAGE_KEY).state.languageUserSelected).toBe(true)
+    expect(parsed(LEGACY_SETTINGS_STORAGE_KEY).state.language).toBe('zh')
+  })
+
+  test('the default \'en\' (or a missing language) stays non-explicit', () => {
+    storage.setItem(
+      LEGACY_SETTINGS_STORAGE_KEY,
+      legacyEnvelope(21, { ...v21State(), language: 'en' })
+    )
+    runSettingsStorageSplitMigration(storage)
+    expect(parsed(LEGACY_SETTINGS_STORAGE_KEY).state.languageUserSelected).toBe(false)
+
+    const withoutLanguage: Record<string, unknown> = { ...v21State() }
+    delete withoutLanguage.language
+    storage = new FakeStorage()
+    storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, legacyEnvelope(21, withoutLanguage))
+    runSettingsStorageSplitMigration(storage)
+    expect(parsed(LEGACY_SETTINGS_STORAGE_KEY).state.languageUserSelected).toBe(false)
+  })
+})
