@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import {
   runSettingsStorageSplitMigration,
   getSettingsMigrationError,
+  hasFutureSettingsEnvelope,
   resetSettingsMigrationErrorForTests,
   SETTINGS_STORAGE_VERSION_AFTER_SPLIT
 } from './splitSettingsStorage'
@@ -283,5 +284,40 @@ describe('crash and partial-failure behavior', () => {
     expect(storage.getItem(WEBUI_RETRIEVAL_HISTORY_KEY)).not.toBeNull()
     expect(storage.getItem(WORKSPACE_RETRIEVAL_HISTORY_KEY)).not.toBeNull()
     expect(storage.getItem(QUERY_SETTINGS_STORAGE_KEY)).not.toBeNull()
+  })
+})
+
+describe('hasFutureSettingsEnvelope (rule 3 extended to the settings store)', () => {
+  test('an envelope from a NEWER client (version > 22) is detected', () => {
+    storage.setItem(
+      LEGACY_SETTINGS_STORAGE_KEY,
+      legacyEnvelope(SETTINGS_STORAGE_VERSION_AFTER_SPLIT + 1, { theme: 'dark' })
+    )
+    expect(hasFutureSettingsEnvelope(storage)).toBe(true)
+  })
+
+  test('current, legacy, absent and corrupt envelopes are NOT future', () => {
+    // Current (22)
+    storage.setItem(
+      LEGACY_SETTINGS_STORAGE_KEY,
+      legacyEnvelope(SETTINGS_STORAGE_VERSION_AFTER_SPLIT, { theme: 'dark' })
+    )
+    expect(hasFutureSettingsEnvelope(storage)).toBe(false)
+    // Legacy (21)
+    storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, legacyEnvelope(21, v21State()))
+    expect(hasFutureSettingsEnvelope(storage)).toBe(false)
+    // Non-numeric version
+    storage.setItem(
+      LEGACY_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ state: {}, version: 'later' })
+    )
+    expect(hasFutureSettingsEnvelope(storage)).toBe(false)
+    // Corrupt JSON
+    storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, '{not json')
+    expect(hasFutureSettingsEnvelope(storage)).toBe(false)
+    // Absent
+    storage.removeItem(LEGACY_SETTINGS_STORAGE_KEY)
+    expect(hasFutureSettingsEnvelope(storage)).toBe(false)
+    expect(hasFutureSettingsEnvelope(null)).toBe(false)
   })
 })

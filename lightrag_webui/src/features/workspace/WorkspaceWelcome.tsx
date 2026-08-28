@@ -8,6 +8,7 @@ import CustomizedMarkdown from '@/components/customization/CustomizedMarkdown'
 import { useCustomizedContent } from '@/components/customization/useCustomizedContent'
 import { useAuthStore } from '@/stores/state'
 import { getAuthStatus } from '@/api/lightrag'
+import { applyLoginIdentity, loginIdentityFromToken } from '@/lib/loginIdentity'
 
 /**
  * The workspace entry's public welcome page — the unauthenticated default of
@@ -58,6 +59,11 @@ export default function WorkspaceWelcome() {
     try {
       const status = await getAuthStatus()
       if (!status.auth_configured && status.access_token) {
+        // Guest activation is an identity transition like any login: when the
+        // browser was last used by a DIFFERENT identity (e.g. a named user
+        // before auth was disabled), both entries' histories are cleared so
+        // the guest never sees that user's conversations.
+        applyLoginIdentity(loginIdentityFromToken(status.access_token))
         useAuthStore
           .getState()
           .login(

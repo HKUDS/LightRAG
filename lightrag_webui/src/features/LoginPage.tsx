@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/state'
-import { useWebuiRetrievalHistoryStore } from '@/stores/webuiRetrievalHistory'
-import { useWorkspaceRetrievalHistoryStore } from '@/stores/workspaceRetrievalHistory'
+import { applyLoginIdentity, loginIdentityFromToken } from '@/lib/loginIdentity'
 import { loginToServer, getAuthStatus } from '@/api/lightrag'
 import logoUrl from '@/assets/logo.svg'
 import { toast } from 'sonner'
@@ -53,7 +52,10 @@ const LoginPage = () => {
         }
 
         if (!status.auth_configured && status.access_token) {
-          // If auth is not configured, use the guest token and redirect
+          // If auth is not configured, use the guest token and redirect.
+          // Guest activation is an identity transition: a different stored
+          // identity means the previous user's histories must not be shown.
+          applyLoginIdentity(loginIdentityFromToken(status.access_token))
           login(status.access_token, true, status.core_version, status.api_version, status.webui_title || null, status.webui_description || null)
           if (status.message) {
             toast.info(status.message)
@@ -97,25 +99,15 @@ const LoginPage = () => {
       setLoading(true)
       const response = await loginToServer(username, password)
 
-      // Get previous username from localStorage
-      const previousUsername = localStorage.getItem('LIGHTRAG-PREVIOUS-USER')
-
-      // Check if it's the same user logging in again
-      const isSameUser = previousUsername === username
-
-      // If it's not the same user, clear chat history
-      if (isSameUser) {
-        console.log('Same user logging in, preserving chat history')
-      } else {
-        console.log('Different user logging in, clearing chat history')
-        // A different user must not see the previous user's conversations in
-        // EITHER entry — the rule applies to both split histories.
-        useWebuiRetrievalHistoryStore.getState().clearHistory()
-        useWorkspaceRetrievalHistoryStore.getState().clearHistory()
-      }
-
-      // Update previous username
-      localStorage.setItem('LIGHTRAG-PREVIOUS-USER', username)
+      // Identity-change cleanup, shared with the guest activation paths: a
+      // different user must not see the previous user's conversations in
+      // EITHER entry — the rule applies to both split histories.
+      const identityChanged = applyLoginIdentity(username)
+      console.log(
+        identityChanged
+          ? 'Different user logging in, clearing chat history'
+          : 'Same user logging in, preserving chat history'
+      )
 
       // Check authentication mode
       const isGuestMode = response.auth_mode === 'disabled'

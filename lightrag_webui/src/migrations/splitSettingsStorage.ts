@@ -80,6 +80,29 @@ export function resetSettingsMigrationErrorForTests(): void {
   migrationError = null
 }
 
+/**
+ * True when the legacy envelope was written by a NEWER client (version above
+ * this build's 22). Rule 3's "never read, clean or overwrite" extends to the
+ * settings store itself: hydrating such an envelope would restamp it as v22
+ * (zustand persists the migrate result back), and any later set() would
+ * clobber fields this build does not know. The settings store consults this
+ * to run on session-only storage instead (see stores/settings.ts).
+ */
+export function hasFutureSettingsEnvelope(
+  storage: Storage | null = typeof localStorage === 'undefined' ? null : localStorage
+): boolean {
+  if (!storage) return false
+  try {
+    const raw = storage.getItem(LEGACY_SETTINGS_STORAGE_KEY)
+    if (raw == null) return false
+    const version: unknown = JSON.parse(raw)?.version
+    return typeof version === 'number' && version > SETTINGS_STORAGE_VERSION_AFTER_SPLIT
+  } catch {
+    // Unreadable / corrupt envelope: not evidence of a newer client.
+    return false
+  }
+}
+
 function writeIfAbsent(storage: Storage, key: string, value: unknown): void {
   if (storage.getItem(key) == null) {
     storage.setItem(key, JSON.stringify(value))

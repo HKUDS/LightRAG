@@ -7,6 +7,7 @@ import { SiteInfo } from '@/lib/constants'
 import { useBackendState, useAuthStore } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
 import { getAuthStatus } from '@/api/lightrag'
+import { applyLoginIdentity, loginIdentityFromToken } from '@/lib/loginIdentity'
 import SiteHeader from '@/features/SiteHeader'
 import { InvalidApiKeyError, RequireApiKeError } from '@/api/lightrag'
 import { ZapIcon } from 'lucide-react'
@@ -119,8 +120,11 @@ function App() {
         const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
         const status = await getAuthStatus();
 
-        // If auth is not configured and a new token is returned, use the new token
+        // If auth is not configured and a new token is returned, use the new token.
+        // A fresh guest activation is an identity transition: clear the previous
+        // identity's histories when it differs (same rule as the login page).
         if (!status.auth_configured && status.access_token) {
+          applyLoginIdentity(loginIdentityFromToken(status.access_token))
           useAuthStore.getState().login(
             status.access_token, // Use the new token
             true, // Guest mode

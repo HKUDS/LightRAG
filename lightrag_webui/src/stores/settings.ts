@@ -6,6 +6,7 @@ import { LEGACY_SETTINGS_STORAGE_KEY } from '@/lib/storageKeys'
 import { migrateLegacySettingsState } from '@/migrations/legacySettingsChain'
 import {
   getSettingsMigrationError,
+  hasFutureSettingsEnvelope,
   SETTINGS_STORAGE_VERSION_AFTER_SPLIT
 } from '@/migrations/splitSettingsStorage'
 
@@ -94,6 +95,30 @@ interface SettingsState {
   // Search label dropdown refresh trigger (non-persistent, runtime only)
   searchLabelDropdownRefreshTrigger: number
   triggerSearchLabelDropdownRefresh: () => void
+}
+
+// Rollback safety (split-migration rule 3): an envelope written by a NEWER
+// client (version > 22) is neither hydrated nor overwritten. Hydration would
+// restamp it as v22 (zustand writes the migrate result back) and any later
+// set() would clobber fields this build does not know — so the store runs on
+// a session-only in-memory storage instead, leaving the future envelope
+// byte-for-byte intact for the client that wrote it.
+const createSessionOnlyStorage = (): Storage => {
+  const data = new Map<string, string>()
+  return {
+    getItem: (key: string) => data.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      data.set(key, value)
+    },
+    removeItem: (key: string) => {
+      data.delete(key)
+    },
+    clear: () => data.clear(),
+    key: (index: number) => [...data.keys()][index] ?? null,
+    get length() {
+      return data.size
+    }
+  }
 }
 
 const useSettingsStoreBase = create<SettingsState>()(
@@ -218,12 +243,26 @@ const useSettingsStoreBase = create<SettingsState>()(
     }),
     {
       name: LEGACY_SETTINGS_STORAGE_KEY,
-      storage: createJSONStorage(() => localStorage),
+      storage: createJSONStorage(() =>
+        hasFutureSettingsEnvelope() ? createSessionOnlyStorage() : localStorage
+      ),
       version: SETTINGS_STORAGE_VERSION_AFTER_SPLIT,
       // See splitSettingsStorage rule 7: never hydrate on a half-migrated
       // storage state.
       skipHydration: getSettingsMigrationError() != null,
       migrate: (state: any, version: number) => {
+        if (version > SETTINGS_STORAGE_VERSION_AFTER_SPLIT) {
+          // Belt over the session-only storage guard above (e.g. a newer
+          // client's tab writes the envelope after this store was created and
+          // something calls rehydrate()): a future envelope must NEVER be
+          // reported as successfully migrated — zustand would persist the
+          // result back stamped v22, downgrading the newer client's data.
+          // Throwing aborts hydration without that write-back.
+          throw new Error(
+            `settings-storage version ${version} is newer than this build supports ` +
+              `(${SETTINGS_STORAGE_VERSION_AFTER_SPLIT}); refusing to downgrade it`
+          )
+        }
         // The split migrator normally bumps the envelope to v22 before this
         // store is even evaluated. This branch remains for envelopes written
         // back by tabs still running pre-split code (their version is <= 21):
