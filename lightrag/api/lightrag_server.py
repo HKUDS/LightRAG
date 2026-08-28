@@ -71,7 +71,11 @@ from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
 from lightrag.api.routers.ui_customization_routes import create_ui_customization_routes
-from lightrag.api.ui_customization import load_ui_customization_snapshot
+from lightrag.api.ui_customization import (
+    WEBUI_CHROME_LOCALES,
+    load_ui_customization_snapshot,
+    locales_without_chrome_translation,
+)
 
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
@@ -1412,6 +1416,24 @@ def create_app(args):
             ui_customization_snapshot.bundle_revision,
             sorted(ui_customization_snapshot.locales),
         )
+        # A bundle may declare any valid BCP 47 locale, but the WebUI chrome
+        # only exists in the languages it ships. Content in another language
+        # renders fine while the buttons and settings around it stay in the
+        # visitor's resolved UI language — nothing the frontend can fix, so
+        # say it here instead of leaving the operator to discover it from a
+        # user's screenshot.
+        untranslated = locales_without_chrome_translation(
+            ui_customization_snapshot.locales
+        )
+        if untranslated:
+            logger.warning(
+                "UI customization: the WebUI ships no interface translation for "
+                "%s — content in %s locale(s) will render beside controls in the "
+                "visitor's resolved UI language (supported: %s)",
+                untranslated,
+                len(untranslated),
+                sorted(WEBUI_CHROME_LOCALES),
+            )
     else:
         ui_customization_snapshot = None
         logger.info("UI customization: no bundle configured (UI_TEMPLATES_DIR unset)")

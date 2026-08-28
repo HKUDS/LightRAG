@@ -10,7 +10,10 @@ hash change boundaries, orthogonality to workspace.html availability, and
 """
 
 import json
+import logging
+import re
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -19,7 +22,10 @@ from fastapi.testclient import TestClient
 
 from lightrag.api.ui_customization import (
     UICustomizationError,
+    WEBUI_CHROME_LOCALES,
+    chrome_language_for,
     load_ui_customization_snapshot,
+    locales_without_chrome_translation,
     normalize_locale,
 )
 
@@ -562,3 +568,119 @@ class TestOrthogonality:
         _stage_frontend(tmp_path, workspace=workspace_present)
         client = TestClient(_build_app(tmp_path, monkeypatch))
         assert client.get("/ui/customization").json()["customized"] is False
+
+
+class TestChromeTranslationCoverage:
+    """A bundle may declare ANY valid BCP 47 locale — a deployment is free to
+    write its welcome text in a language the WebUI itself is not translated
+    into, and rejecting those bundles would forbid a legitimate setup. What
+    the operator needs instead is to learn at deploy time that the controls
+    around that content cannot follow it, so startup names such locales.
+    """
+
+    def test_the_python_list_matches_the_webui_language_list(self):
+        """The warning is only truthful while the two lists agree; the
+        frontend's list is the source of truth (its locale JSON files)."""
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "lightrag_webui"
+            / "src"
+            / "lib"
+            / "browserLanguage.ts"
+        ).read_text(encoding="utf-8")
+        block = re.search(
+            r"SUPPORTED_UI_LANGUAGES\s*=\s*\[(.*?)\]", source, re.S
+        )
+        assert block is not None, "SUPPORTED_UI_LANGUAGES not found in the WebUI source"
+        webui_ids = set(re.findall(r"'([^']+)'", block.group(1)))
+        assert webui_ids, "no languages parsed from the WebUI source"
+        # The manifest form is BCP 47; the frontend ids use underscores.
+        assert {locale.replace("_", "-") for locale in webui_ids} == set(
+            WEBUI_CHROME_LOCALES
+        )
+
+    @pytest.mark.parametrize(
+        "locale,expected",
+        [
+            ("en", "en"),
+            ("de-AT", "de"),  # region variants ride on the language subtag
+            ("zh-CN", "zh"),
+            ("zh-HK", "zh-TW"),  # traditional script/regions → the shipped variant
+            ("zh-Hant", "zh-TW"),
+            ("es", None),  # valid BCP 47, no WebUI translation
+            ("pt-BR", None),
+            ("", None),
+        ],
+    )
+    def test_chrome_language_for_mirrors_the_frontend_matcher(self, locale, expected):
+        assert chrome_language_for(locale) == expected
+
+    def test_only_the_untranslated_locales_are_named(self):
+        assert locales_without_chrome_translation(
+            ["en", "es", "zh-TW", "he", "de"]
+        ) == ["es", "he"]
+        assert locales_without_chrome_translation(["en", "fr"]) == []
+
+    def test_startup_warns_about_a_bundle_the_chrome_cannot_follow(
+        self, tmp_path, monkeypatch
+    ):
+        from lightrag.utils import logger as lightrag_logger
+
+        _stage_frontend(tmp_path)
+        bundle = make_bundle(tmp_path)
+        manifest = json.loads((bundle / "manifest.json").read_text())
+        # A Spanish-only bundle: perfectly valid, but the WebUI ships no
+        # Spanish interface, so its controls cannot follow the content.
+        manifest["locales"]["es"] = manifest["locales"].pop("zh")
+        manifest["default_locale"] = "es"
+        manifest["fallbacks"] = {}
+        (bundle / "manifest.json").write_text(json.dumps(manifest), "utf-8")
+        monkeypatch.setenv("UI_TEMPLATES_DIR", str(bundle))
+
+        # The project logger does not propagate to the root logger caplog
+        # installs on, so capture on the logger that actually emits.
+        records = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        handler = _Capture(level=logging.WARNING)
+        lightrag_logger.addHandler(handler)
+        try:
+            _build_app(tmp_path, monkeypatch)
+        finally:
+            lightrag_logger.removeHandler(handler)
+
+        warnings = [
+            record.getMessage()
+            for record in records
+            if record.levelno >= logging.WARNING
+        ]
+        assert any("no interface translation" in message for message in warnings)
+        # It names the offending locale, not merely that something is off.
+        assert any("'es'" in message for message in warnings)
+
+    def test_a_fully_translatable_bundle_warns_about_nothing(self, tmp_path, monkeypatch):
+        from lightrag.utils import logger as lightrag_logger
+
+        _stage_frontend(tmp_path)
+        bundle = make_bundle(tmp_path)  # en + zh, both shipped by the WebUI
+        monkeypatch.setenv("UI_TEMPLATES_DIR", str(bundle))
+
+        records = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        handler = _Capture(level=logging.WARNING)
+        lightrag_logger.addHandler(handler)
+        try:
+            _build_app(tmp_path, monkeypatch)
+        finally:
+            lightrag_logger.removeHandler(handler)
+
+        assert not any(
+            "no interface translation" in record.getMessage() for record in records
+        )

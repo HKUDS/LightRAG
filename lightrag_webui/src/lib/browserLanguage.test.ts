@@ -196,8 +196,12 @@ describe('bundleLocaleToAdopt', () => {
     withBrowserLanguages(['th-TH'], () => {
       expect(bundleLocaleToAdopt(undefined, false, 'en')).toBeNull()
       expect(bundleLocaleToAdopt('', false, 'en')).toBeNull()
-      // A bundle may declare locales this build ships no UI text for.
+      // A bundle may declare any valid BCP 47 locale, including ones this
+      // build ships no interface translation for. There is nothing to adopt
+      // — the content renders in its own language while the controls stay
+      // put — and the server warns the operator about it at startup.
       expect(bundleLocaleToAdopt('th', false, 'en')).toBeNull()
+      expect(bundleLocaleToAdopt('es', false, 'en')).toBeNull()
       expect(bundleLocaleToAdopt('en', false, 'en')).toBeNull()
     })
   })

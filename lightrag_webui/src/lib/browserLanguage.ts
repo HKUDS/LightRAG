@@ -130,6 +130,15 @@ export function resolveUiLanguage(
  * even against a bundle that has no content for it, and so does a genuine
  * browser preference — a German browser must not be flipped to the bundle's
  * Korean default just because the bundle omits German.
+ *
+ * A bundle may also answer in a language this build ships NO interface
+ * translation for (any valid BCP 47 locale is a legal bundle locale — a
+ * deployment may write its welcome text in Spanish). There is nothing to
+ * adopt then, and nothing this side can do about it: the content renders in
+ * its own language and direction while the controls stay where they are.
+ * That is a bundle-coverage decision, made visible to the operator by the
+ * startup warning `locales_without_chrome_translation` drives, not a
+ * client-side defect to paper over.
  */
 export function bundleLocaleToAdopt(
   responseLocale: string | null | undefined,

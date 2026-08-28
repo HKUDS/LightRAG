@@ -38,5 +38,14 @@ Copy this directory, replace the texts and the logo, then restart the server
   logo.
 - The bundle is public content served without authentication — never put
   secrets or internal paths in it.
+- **The bundle's languages and the WebUI's are separate sets.** Any valid
+  BCP 47 locale is accepted here, but the surrounding interface (buttons,
+  settings, login) exists only in the languages the WebUI ships: `en`, `zh`,
+  `zh-TW`, `fr`, `ar`, `ru`, `ja`, `de`, `uk`, `ko`, `vi`. A locale outside
+  that set renders its own content correctly, text direction included, while
+  the controls around it stay in the visitor's resolved UI language — there
+  is no interface translation to switch to. Startup logs a warning naming
+  such locales. Declare a locale from the list above whenever you want the
+  whole page in one language.
 - If anything in the bundle is invalid, the server FAILS TO START with a
   descriptive error (a misconfigured bundle is never silently ignored).

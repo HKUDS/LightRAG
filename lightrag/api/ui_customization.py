@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -96,6 +97,49 @@ def locale_direction(locale: str) -> str:
     """'rtl' / 'ltr' from the trusted registry, by language subtag."""
     language = locale.split("-", 1)[0].lower()
     return "rtl" if language in _RTL_LANGUAGE_SUBTAGS else "ltr"
+
+
+# The UI languages the bundled WebUI ships CHROME translations for (buttons,
+# settings, login), written in the manifest's BCP 47 form. Mirrors
+# SUPPORTED_UI_LANGUAGES in lightrag_webui/src/lib/browserLanguage.ts; the two
+# lists are kept in sync by tests/api/test_ui_customization.py.
+WEBUI_CHROME_LOCALES = frozenset(
+    {"en", "zh", "fr", "ar", "zh-TW", "ru", "ja", "de", "uk", "ko", "vi"}
+)
+
+
+def chrome_language_for(locale: str) -> str | None:
+    """The WebUI chrome language a bundle locale maps onto, or None.
+
+    Mirrors the frontend's `matchBrowserLanguageTag`: the language subtag
+    decides, except that the traditional-Chinese script/region subtags map
+    onto the single traditional variant the UI ships.
+    """
+    subtags = [part for part in locale.replace("_", "-").lower().split("-") if part]
+    if not subtags:
+        return None
+    base = subtags[0]
+    if base == "zh" and any(
+        subtag in ("hant", "tw", "hk", "mo") for subtag in subtags[1:]
+    ):
+        return "zh-TW"
+    return base if base in WEBUI_CHROME_LOCALES else None
+
+
+def locales_without_chrome_translation(locales: Iterable[str]) -> list[str]:
+    """Bundle locales whose CONTENT renders but whose controls cannot follow.
+
+    A bundle may declare any valid BCP 47 locale — a deployment is free to
+    write its welcome text in a language the WebUI itself is not translated
+    into. The content then renders correctly (direction included), but the
+    surrounding buttons, settings and login text stay in the visitor's
+    resolved UI language, because no such translation exists to switch to.
+    Startup names these locales so the operator learns it at deploy time
+    rather than from a user's screenshot.
+    """
+    return sorted(
+        locale for locale in locales if chrome_language_for(locale) is None
+    )
 
 
 def _has_svg_root(head: bytes) -> bool:
