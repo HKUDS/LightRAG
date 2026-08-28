@@ -40,7 +40,31 @@ interface CustomizationState {
   targetLocale: string | null
   /** Locale the current snapshot was loaded for. */
   loadedLocale: string | null
+  /** Locale of the NEWEST in-flight request, or null when none is running.
+   * Lets repeated `load` calls for the same locale (several components
+   * mounting, or the retry gate re-firing while the request is still out)
+   * dedupe instead of issuing a request storm. */
+  pendingLocale: string | null
   load: (locale: string) => Promise<void>
+}
+
+/**
+ * Whether the hook should ask the store to (re-)load `locale`. Pure so the
+ * retry contract is testable without a DOM:
+ * - target moved (a language switch, or the A → B → A re-target whose whole
+ *   job is invalidating B's in-flight response);
+ * - OR this locale is not the one actually LOADED — the retry case: a failed
+ *   request leaves `targetLocale` already equal to it, so keying on the
+ *   target alone would never try again (transient first-load failure = stuck
+ *   on default branding; failed switch = stuck on the previous locale).
+ * In-flight duplicates are absorbed by `pendingLocale` inside `load`.
+ */
+export function needsCustomizationLoad(
+  locale: string,
+  targetLocale: string | null,
+  loadedLocale: string | null
+): boolean {
+  return targetLocale !== locale || loadedLocale !== locale
 }
 
 let requestCounter = 0
@@ -50,13 +74,24 @@ export const useCustomizationStore = create<CustomizationState>((set, get) => ({
   snapshot: null,
   targetLocale: null,
   loadedLocale: null,
+  pendingLocale: null,
 
   load: async (locale: string) => {
+    if (get().pendingLocale === locale) {
+      // The NEWEST in-flight request is already for exactly this locale
+      // (pendingLocale is cleared by any newer request below, so it can only
+      // describe the current one). Re-assert the target and let it finish —
+      // bumping the counter here would invalidate the very request we are
+      // waiting on and leave nothing to replace it.
+      set({ targetLocale: locale })
+      return
+    }
     // Every (re-)target bumps the counter, so responses for previously
     // targeted locales can never be applied afterwards — even when this call
-    // itself needs no network request.
+    // itself needs no network request. Any older in-flight request is now
+    // stale, so it no longer owns `pendingLocale`.
     const requestId = ++requestCounter
-    set({ targetLocale: locale })
+    set({ targetLocale: locale, pendingLocale: null })
     if (get().loadedLocale === locale && get().snapshot !== null) {
       // Already showing this locale. The counter bump above just invalidated
       // any other locale's in-flight response (the A → B → A race).
@@ -65,6 +100,7 @@ export const useCustomizationStore = create<CustomizationState>((set, get) => ({
     if (get().snapshot === null) {
       set({ status: 'loading' })
     }
+    set({ pendingLocale: locale })
     try {
       const snapshot = await fetchUICustomization(
         locale === SERVER_DEFAULT_LOCALE ? null : locale
@@ -81,6 +117,10 @@ export const useCustomizationStore = create<CustomizationState>((set, get) => ({
         set({ status: 'error' })
       }
       // With a previous snapshot: keep it (status stays 'ready').
+    } finally {
+      // Only the newest request owns the flag; a superseded one already had
+      // it cleared by whoever superseded it.
+      if (requestId === requestCounter) set({ pendingLocale: null })
     }
   }
 }))

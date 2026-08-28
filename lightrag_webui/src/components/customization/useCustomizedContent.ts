@@ -1,7 +1,11 @@
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSettingsStore } from '@/stores/settings'
-import { SERVER_DEFAULT_LOCALE, useCustomizationStore } from '@/stores/customization'
+import {
+  needsCustomizationLoad,
+  SERVER_DEFAULT_LOCALE,
+  useCustomizationStore
+} from '@/stores/customization'
 import { detectBrowserLanguage } from '@/lib/browserLanguage'
 import defaultLogoUrl from '@/assets/logo.svg'
 
@@ -37,6 +41,7 @@ export function useCustomizedContent(): CustomizedContent {
   const status = useCustomizationStore((s) => s.status)
   const snapshot = useCustomizationStore((s) => s.snapshot)
   const targetLocale = useCustomizationStore((s) => s.targetLocale)
+  const loadedLocale = useCustomizationStore((s) => s.loadedLocale)
 
   // Language priority (PRD): explicit persisted choice > browser language >
   // bundle default. Without an explicit choice the store's language already
@@ -47,14 +52,18 @@ export function useCustomizedContent(): CustomizedContent {
     ? language
     : (detectBrowserLanguage() ?? SERVER_DEFAULT_LOCALE)
 
-  // (Re-)target on mount and whenever the user switches language. The store
-  // decides whether a network request is needed; a re-target alone still
-  // invalidates any stale in-flight response (fast A → B → A switching).
+  // (Re-)target on mount and whenever the user switches language, AND retry
+  // whenever this locale is not the one actually loaded — a failed request
+  // leaves the target already set to it, so keying on the target alone would
+  // never try again (see `needsCustomizationLoad`). The store decides whether
+  // a network request is needed: a re-target alone still invalidates a stale
+  // in-flight response (fast A → B → A switching), and repeated calls while a
+  // request is out are deduped there.
   useEffect(() => {
-    if (targetLocale !== locale) {
+    if (needsCustomizationLoad(locale, targetLocale, loadedLocale)) {
       void useCustomizationStore.getState().load(locale)
     }
-  }, [locale, targetLocale])
+  }, [locale, targetLocale, loadedLocale])
 
   if (status === 'loading') {
     return {
