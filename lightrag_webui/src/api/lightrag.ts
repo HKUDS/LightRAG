@@ -1,5 +1,11 @@
 import axios, { AxiosError } from 'axios'
-import { backendBaseUrl, popularLabelsDefaultLimit, searchLabelsDefaultLimit } from '@/lib/constants'
+import {
+  backendBaseUrl,
+  healthCheckTimeout,
+  pipelineStatusTimeout,
+  popularLabelsDefaultLimit,
+  searchLabelsDefaultLimit
+} from '@/lib/constants'
 import type { SupportedFileTypes } from '@/lib/fileTypes'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
@@ -559,7 +565,13 @@ export const checkHealth = async (): Promise<
   LightragStatus | { status: 'error'; message: string }
 > => {
   try {
-    const response = await axiosInstance.get('/health')
+    // Explicit timeout: the axios instance sets none, so a backend whose
+    // event loop is blocked would leave this request hanging and the health
+    // state would neither succeed nor fail. Kept below healthCheckInterval
+    // so probes cannot pile up.
+    const response = await axiosInstance.get('/health', {
+      timeout: healthCheckTimeout * 1000
+    })
     return response.data
   } catch (error) {
     return {
@@ -1013,7 +1025,9 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
 }
 
 export const getPipelineStatus = async (): Promise<PipelineStatusResponse> => {
-  const response = await axiosInstance.get('/documents/pipeline_status')
+  const response = await axiosInstance.get('/documents/pipeline_status', {
+    timeout: pipelineStatusTimeout * 1000
+  })
   return response.data
 }
 

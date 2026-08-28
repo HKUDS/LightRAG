@@ -35,6 +35,7 @@ import {
   DocStatus,
   DocStatusResponse,
   DocumentsRequest,
+  PaginatedDocsResponse,
   PaginationInfo
 } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
@@ -52,6 +53,13 @@ import {
   type StatusFilter
 } from '@/features/documentStatusFilters'
 import { hasDocumentWarning } from '@/features/documentRecoveryWarnings'
+import {
+  evaluateCircuitBreaker,
+  initialCircuitBreakerState,
+  recordCircuitBreakerFailure,
+  resetCircuitBreaker,
+  type CircuitBreakerState
+} from '@/features/documentRefreshCircuitBreaker'
 
 type StatusDisplayConfig = {
   labelKey: string
@@ -463,20 +471,10 @@ export default function DocumentManager() {
   const probeTimersRef = useRef<ReturnType<typeof setTimeout>[] | null>(null);
   const probeActiveRef = useRef(false);
 
-  // Add retry mechanism state (read by circuit breaker via setRetryState only).
-  const [, setRetryState] = useState({
-    count: 0,
-    lastError: null as Error | null,
-    isBackingOff: false
-  });
-
-  // Add circuit breaker state
-  const [circuitBreakerState, setCircuitBreakerState] = useState({
-    isOpen: false,
-    failureCount: 0,
-    lastFailureTime: null as number | null,
-    nextRetryTime: null as number | null
-  });
+  // Circuit breaker guarding the automatic /documents/paginated polling.
+  // Transitions live in features/documentRefreshCircuitBreaker (unit-tested);
+  // this ref just holds the current state.
+  const circuitBreakerRef = useRef<CircuitBreakerState>(initialCircuitBreakerState);
 
 
   // Handle checkbox change for individual documents
@@ -777,58 +775,31 @@ export default function DocumentManager() {
     return { type: 'unknown', shouldRetry: true, shouldShowToast: true };
   }, []);
 
-  // Circuit breaker utility functions
+  // Circuit breaker utility functions. State lives in a ref, not useState: the
+  // breaker is read from timer callbacks only, and a state write would change
+  // startPollingInterval's identity and make the polling useEffect tear down
+  // and recreate the interval, resetting its phase on every failure.
   const isCircuitBreakerOpen = useCallback(() => {
-    if (!circuitBreakerState.isOpen) return false;
-
-    const now = Date.now();
-    if (circuitBreakerState.nextRetryTime && now >= circuitBreakerState.nextRetryTime) {
-      // Reset circuit breaker to half-open state
-      setCircuitBreakerState(prev => ({
-        ...prev,
-        isOpen: false,
-        failureCount: Math.max(0, prev.failureCount - 1)
-      }));
-      return false;
-    }
-
-    return true;
-  }, [circuitBreakerState]);
-
-  const recordFailure = useCallback((error: Error) => {
-    const now = Date.now();
-    setCircuitBreakerState(prev => {
-      const newFailureCount = prev.failureCount + 1;
-      const shouldOpen = newFailureCount >= 3; // Open after 3 failures
-
-      return {
-        isOpen: shouldOpen,
-        failureCount: newFailureCount,
-        lastFailureTime: now,
-        nextRetryTime: shouldOpen ? now + (Math.pow(2, newFailureCount) * 1000) : null
-      };
-    });
-
-    setRetryState(prev => ({
-      count: prev.count + 1,
-      lastError: error,
-      isBackingOff: true
-    }));
+    const { state, isOpen } = evaluateCircuitBreaker(
+      circuitBreakerRef.current,
+      Date.now()
+    );
+    circuitBreakerRef.current = state;
+    return isOpen;
   }, []);
 
-  const recordSuccess = useCallback(() => {
-    setCircuitBreakerState({
-      isOpen: false,
-      failureCount: 0,
-      lastFailureTime: null,
-      nextRetryTime: null
-    });
+  const recordFailure = useCallback(() => {
+    circuitBreakerRef.current = recordCircuitBreakerFailure(
+      circuitBreakerRef.current,
+      Date.now()
+    );
+  }, []);
 
-    setRetryState({
-      count: 0,
-      lastError: null,
-      isBackingOff: false
-    });
+  // Call ONLY when a response actually came back. Recording success on a
+  // fire-and-forget refresh (what the polling tick used to do) clears the
+  // failure counter on every tick and the breaker can never open.
+  const recordSuccess = useCallback(() => {
+    circuitBreakerRef.current = resetCircuitBreaker();
   }, []);
 
   // Handle page size change - update state and save to store
@@ -860,9 +831,22 @@ export default function DocumentManager() {
       const { query, requestVersion } = refreshRequest
       const isStaleRequest = () => requestVersion !== latestRefreshRequestVersionRef.current
 
+      // Single entrance for the paginated fetch so the circuit breaker is fed
+      // by real responses. A 200 proves the backend is reachable even when the
+      // payload is then discarded as stale, so success is recorded before any
+      // staleness check.
+      const fetchPage = async (
+        pageRequest: DocumentsRequest,
+        timeoutMs?: number
+      ): Promise<PaginatedDocsResponse> => {
+        const response = await getDocumentsPaginatedWithTimeout(pageRequest, timeoutMs)
+        recordSuccess()
+        return response
+      }
+
       if (refreshRequest.type === 'manual') {
         const request = buildDocumentsRequest(query, 1)
-        const response = await getDocumentsPaginatedWithTimeout(request)
+        const response = await fetchPage(request)
 
         if (!isMountedRef.current || isStaleRequest()) return;
 
@@ -893,7 +877,7 @@ export default function DocumentManager() {
         const { customTimeout } = refreshRequest;
         const pageToFetch = query.page;
         const request = buildDocumentsRequest(query, pageToFetch)
-        const response = await getDocumentsPaginatedWithTimeout(request, customTimeout)
+        const response = await fetchPage(request, customTimeout)
 
         if (!isMountedRef.current || isStaleRequest()) return;
 
@@ -903,10 +887,7 @@ export default function DocumentManager() {
 
           if (pageToFetch !== lastPage) {
             const lastPageRequest = buildDocumentsRequest(query, lastPage)
-            const lastPageResponse = await getDocumentsPaginatedWithTimeout(
-              lastPageRequest,
-              customTimeout
-            )
+            const lastPageResponse = await fetchPage(lastPageRequest, customTimeout)
 
             if (!isMountedRef.current || isStaleRequest()) return;
 
@@ -933,7 +914,7 @@ export default function DocumentManager() {
         }
 
         if (errorClassification.shouldRetry) {
-          recordFailure(err as Error);
+          recordFailure();
         }
       }
     } finally {
@@ -946,6 +927,7 @@ export default function DocumentManager() {
     updateComponentState,
     classifyError,
     recordFailure,
+    recordSuccess,
     handlePageSizeChange,
     buildDocumentsRequest
   ]);
@@ -1136,12 +1118,14 @@ export default function DocumentManager() {
     pollingIntervalRef.current = setInterval(() => {
       if (!isMountedRef.current) return;
       if (isCircuitBreakerOpen()) return;
-      // refreshDocumentsThrottled is fire-and-forget; errors are surfaced via
-      // toast/recordFailure inside runRefreshRequest.
+      // refreshDocumentsThrottled is fire-and-forget; the breaker is fed from
+      // inside runRefreshRequest (recordSuccess on a real response,
+      // recordFailure in its catch), never from this tick — a tick proves
+      // nothing about the backend and clearing the counter here is what kept
+      // the breaker from ever opening.
       refreshDocumentsThrottled();
-      recordSuccess();
     }, intervalMs);
-  }, [refreshDocumentsThrottled, clearPollingInterval, isCircuitBreakerOpen, recordSuccess]);
+  }, [refreshDocumentsThrottled, clearPollingInterval, isCircuitBreakerOpen]);
 
   const scanDocuments = useCallback(async () => {
     try {
@@ -1209,14 +1193,21 @@ export default function DocumentManager() {
   // during scan classification / upload enqueue, well before the new doc rows
   // appear in /documents/paginated. Without this, the UI would stall in 30s
   // idle polling for several seconds after the user clicked scan/upload.
+  // A failed health check no longer stops the list: it drops polling to the
+  // idle cadence instead. Latching health=false used to clear the interval
+  // outright, so a single 504 from a busy backend froze the document list until
+  // the next successful /health probe. The circuit breaker (fed by real
+  // responses) is what throttles a backend that is genuinely down.
   useEffect(() => {
-    if (currentTab !== 'documents' || !health) {
+    if (currentTab !== 'documents') {
       clearPollingInterval();
       return
     }
 
     const hasActiveDocuments = hasActiveDocumentsStatus(statusCounts);
-    const pollingInterval = (hasActiveDocuments || pipelineActive) ? 5000 : 30000;
+    const pollingInterval = health
+      ? ((hasActiveDocuments || pipelineActive) ? 5000 : 30000)
+      : 30000;
 
     startPollingInterval(pollingInterval);
 
