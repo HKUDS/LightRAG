@@ -1,12 +1,4 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
-import {
-  applyLoginIdentity,
-  handleIdentityStorageEvent,
-  loginIdentityFromToken,
-  useIdentityEpochStore
-} from './loginIdentity'
-import { useWebuiRetrievalHistoryStore } from '@/stores/webuiRetrievalHistory'
-import { useWorkspaceRetrievalHistoryStore } from '@/stores/workspaceRetrievalHistory'
 import { WORKSPACE_RETRIEVAL_HISTORY_KEY } from '@/lib/storageKeys'
 
 /**
@@ -18,10 +10,13 @@ import { WORKSPACE_RETRIEVAL_HISTORY_KEY } from '@/lib/storageKeys'
  *
  * Isolation: the REAL store singletons are driven via setState and reset in
  * afterEach; globalThis.localStorage is swapped for a stub and RESTORED in
- * afterAll (the helper reads it dynamically at call time).
+ * afterAll. The module under test (and the stores it pulls in — including
+ * stores/state, which derives auth state from localStorage AT IMPORT) is
+ * imported dynamically AFTER the stub is installed.
  */
 
 const PREVIOUS_USER_KEY = 'LIGHTRAG-PREVIOUS-USER'
+const TOKEN_STORAGE_KEY = 'LIGHTRAG-API-TOKEN'
 
 const data = new Map<string, string>()
 const stub = {
@@ -39,12 +34,44 @@ const stub = {
 
 let previousDescriptor: PropertyDescriptor | undefined
 
-beforeAll(() => {
+let applyLoginIdentity: typeof import('./loginIdentity').applyLoginIdentity
+let handleIdentityStorageEvent: typeof import('./loginIdentity').handleIdentityStorageEvent
+let loginIdentityFromToken: typeof import('./loginIdentity').loginIdentityFromToken
+let useIdentityEpochStore: typeof import('./loginIdentity').useIdentityEpochStore
+let useWebuiRetrievalHistoryStore: typeof import('@/stores/webuiRetrievalHistory').useWebuiRetrievalHistoryStore
+let useWorkspaceRetrievalHistoryStore: typeof import('@/stores/workspaceRetrievalHistory').useWorkspaceRetrievalHistoryStore
+let useAuthStore: typeof import('@/stores/state').useAuthStore
+
+beforeAll(async () => {
   previousDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
   Object.defineProperty(globalThis, 'localStorage', {
     value: stub,
     configurable: true
   })
+  if (typeof sessionStorage === 'undefined') {
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      value: {
+        getItem: () => null,
+        setItem: () => {},
+        removeItem: () => {},
+        clear: () => {}
+      },
+      configurable: true
+    })
+  }
+
+  const identityModule = await import('./loginIdentity')
+  applyLoginIdentity = identityModule.applyLoginIdentity
+  handleIdentityStorageEvent = identityModule.handleIdentityStorageEvent
+  loginIdentityFromToken = identityModule.loginIdentityFromToken
+  useIdentityEpochStore = identityModule.useIdentityEpochStore
+  useWebuiRetrievalHistoryStore = (
+    await import('@/stores/webuiRetrievalHistory')
+  ).useWebuiRetrievalHistoryStore
+  useWorkspaceRetrievalHistoryStore = (
+    await import('@/stores/workspaceRetrievalHistory')
+  ).useWorkspaceRetrievalHistoryStore
+  useAuthStore = (await import('@/stores/state')).useAuthStore
 })
 
 afterAll(() => {
@@ -59,6 +86,7 @@ afterEach(() => {
   data.clear()
   useWebuiRetrievalHistoryStore.setState({ history: [] })
   useWorkspaceRetrievalHistoryStore.setState({ history: [] })
+  useAuthStore.setState({ isAuthenticated: false, isGuestMode: false, username: null })
 })
 
 const seedHistories = () => {
@@ -70,8 +98,11 @@ const seedHistories = () => {
     .setHistory([{ id: 'w1', role: 'user', content: 'workspace question' }])
 }
 
+const makeToken = (payload: Record<string, unknown>) =>
+  `x.${btoa(JSON.stringify(payload))}.y`
+
 // A syntactically valid JWT whose payload is {"sub":"guest","role":"guest"}.
-const guestToken = `x.${btoa(JSON.stringify({ sub: 'guest', role: 'guest' }))}.y`
+const guestToken = makeToken({ sub: 'guest', role: 'guest' })
 
 describe('applyLoginIdentity', () => {
   test('a DIFFERENT stored identity clears BOTH histories and records the new one', () => {
@@ -184,14 +215,46 @@ describe('handleIdentityStorageEvent (cross-tab identity change)', () => {
     expect(useWorkspaceRetrievalHistoryStore.getState().history).toHaveLength(1)
     expect(useIdentityEpochStore.getState().epoch).toBe(before)
   })
+
+  test('a token written by another tab RESYNCS this tab\'s auth store', () => {
+    // The token is the LAST thing a login writes (the identity marker the
+    // first), so its event is the completion signal: this tab must stop
+    // describing the previous identity while its requests already send the
+    // new tab's token (the API layer reads localStorage per request).
+    const exp = Math.floor(Date.now() / 1000) + 3600
+    const bobToken = makeToken({ sub: 'bob', role: 'user', exp })
+    stub.setItem(TOKEN_STORAGE_KEY, bobToken)
+
+    handleIdentityStorageEvent({
+      key: TOKEN_STORAGE_KEY,
+      oldValue: null,
+      newValue: bobToken
+    })
+
+    expect(useAuthStore.getState().isAuthenticated).toBe(true)
+    expect(useAuthStore.getState().username).toBe('bob')
+    expect(useAuthStore.getState().isGuestMode).toBe(false)
+  })
+
+  test('a token REMOVED by another tab (logout) de-authenticates this tab', () => {
+    useAuthStore.setState({ isAuthenticated: true, username: 'alice' })
+    stub.removeItem(TOKEN_STORAGE_KEY)
+
+    handleIdentityStorageEvent({
+      key: TOKEN_STORAGE_KEY,
+      oldValue: 'old-token',
+      newValue: null
+    })
+
+    expect(useAuthStore.getState().isAuthenticated).toBe(false)
+    expect(useAuthStore.getState().username).toBeNull()
+  })
 })
 
 describe('loginIdentityFromToken', () => {
   test('reads the JWT sub', () => {
     expect(loginIdentityFromToken(guestToken)).toBe('guest')
-    expect(
-      loginIdentityFromToken(`x.${btoa(JSON.stringify({ sub: 'alice' }))}.y`)
-    ).toBe('alice')
+    expect(loginIdentityFromToken(makeToken({ sub: 'alice' }))).toBe('alice')
   })
 
   test('unreadable tokens fall back to "guest"', () => {

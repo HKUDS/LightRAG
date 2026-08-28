@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { useWebuiRetrievalHistoryStore } from '@/stores/webuiRetrievalHistory'
 import { useWorkspaceRetrievalHistoryStore } from '@/stores/workspaceRetrievalHistory'
+import { initAuthState, useAuthStore } from '@/stores/state'
 import {
   WEBUI_RETRIEVAL_HISTORY_KEY,
   WORKSPACE_RETRIEVAL_HISTORY_KEY
@@ -22,6 +23,7 @@ import {
  */
 
 const PREVIOUS_USER_KEY = 'LIGHTRAG-PREVIOUS-USER'
+const TOKEN_STORAGE_KEY = 'LIGHTRAG-API-TOKEN'
 
 /** The identity a token asserts: its JWT `sub`, or "guest" when unreadable
  * (only guest activations call this without knowing the name up front). */
@@ -107,6 +109,18 @@ export function handleIdentityStorageEvent(event: {
   oldValue?: string | null
   newValue?: string | null
 }): void {
+  if (event.key === TOKEN_STORAGE_KEY) {
+    // The token is the LAST thing a login writes (applyLoginIdentity runs
+    // FIRST), so this event — not the identity marker's — is the reliable
+    // signal that another tab's auth transition is complete. Rebuild this
+    // tab's auth store from storage so its username, guest/authenticated
+    // flags and expiry describe the token its own requests will now send
+    // (the API layer reads it per-request from localStorage). Covers login,
+    // logout (newValue null → unauthenticated, and the workspace router
+    // falls back to /welcome) and guest silent refreshes alike.
+    useAuthStore.setState(initAuthState())
+    return
+  }
   if (event.key !== PREVIOUS_USER_KEY) return
   if (event.newValue == null || event.newValue === event.oldValue) return
   useWebuiRetrievalHistoryStore.getState().clearHistory()

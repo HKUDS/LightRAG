@@ -574,6 +574,19 @@ export const checkHealth = async (): Promise<
   }
 }
 
+/**
+ * Probe whether the caller's credentials satisfy the API's combined auth.
+ * /health CANNOT serve this purpose: it sits on the default whitelist and
+ * deliberately answers "healthy" to unauthenticated callers, so it never
+ * distinguishes valid, invalid and missing API keys. /auth/verify always
+ * runs the combined dependency — a missing or wrong X-API-Key REJECTS with
+ * the standard 403 detail ("API Key required" / "Invalid API Key"), which
+ * the axios interceptor surfaces in the thrown error's message.
+ */
+export const verifyCredentials = async (): Promise<void> => {
+  await axiosInstance.get('/auth/verify')
+}
+
 export const getDocuments = async (): Promise<DocsStatusesResponse> => {
   const response = await axiosInstance.get('/documents')
   return response.data

@@ -2581,6 +2581,20 @@ def create_app(args):
         else:
             return service_info_response(request)
 
+    @app.get("/auth/verify", dependencies=[Depends(combined_auth)])
+    async def verify_credentials():
+        """Verify that the caller's credentials satisfy the combined auth.
+
+        /health deliberately stays on the default whitelist as an
+        unauthenticated liveness probe, so it can never distinguish valid,
+        invalid and missing credentials. This endpoint ALWAYS runs the
+        combined dependency: a missing or wrong X-API-Key fails with the
+        standard 403 detail ("API Key required" / "Invalid API Key"), which
+        the WebUI's API-key dialogs key on, while valid credentials get a
+        trivial 200. No data is exposed.
+        """
+        return {"status": "ok"}
+
     @app.get("/auth-status")
     async def get_auth_status():
         """Get authentication status and guest token if auth is not configured"""

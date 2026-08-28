@@ -6,7 +6,13 @@ import AppSettings from '@/components/AppSettings'
 import ApiKeyAlert from '@/components/ApiKeyAlert'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import { useAuthStore, useBackendState } from '@/stores/state'
-import { getAuthStatus, InvalidApiKeyError, RequireApiKeError } from '@/api/lightrag'
+import {
+  getAuthStatus,
+  InvalidApiKeyError,
+  RequireApiKeError,
+  verifyCredentials
+} from '@/api/lightrag'
+import { errorMessage } from '@/lib/utils'
 import { useIdentityEpochStore } from '@/lib/loginIdentity'
 import { navigationService } from '@/services/navigation'
 import WorkspaceQueryView from './WorkspaceQueryView'
@@ -92,23 +98,43 @@ export default function WorkspaceApp() {
   // not a polling loop.
   const runCredentialProbe = useCallback(() => {
     const generation = ++probeGenerationRef.current
-    void useBackendState.getState().check().then(() => {
-      // check() itself is last-caller-wins (stale checks never write the
-      // backend state); this guard is the same rule for the DIALOG decision:
-      // a superseded probe must not act on the newer probe's result.
-      if (generation !== probeGenerationRef.current) return
-      // Open the dialog HERE, from the probe result, not only via
-      // ApiKeyAlert's message watch: a rejected replacement key produces the
-      // IDENTICAL message string, which never re-fires a message-change
-      // effect — and this entry has no other API-key control.
-      const message = useBackendState.getState().message
-      if (
-        message &&
-        (message.includes(InvalidApiKeyError) || message.includes(RequireApiKeError))
-      ) {
-        setApiKeyAlertOpen(true)
-      }
-    })
+    // /auth/verify, NOT /health: /health sits on the default whitelist and
+    // deliberately answers "healthy" to unauthenticated callers, so it can
+    // never surface a missing or invalid API key.
+    void verifyCredentials()
+      .then(() => {
+        if (generation !== probeGenerationRef.current) return
+        // Credentials accepted: drop a leftover API-key error so ApiKeyAlert
+        // shows a clean slate the next time it opens.
+        const message = useBackendState.getState().message
+        if (
+          message &&
+          (message.includes(InvalidApiKeyError) || message.includes(RequireApiKeError))
+        ) {
+          useBackendState.getState().clear()
+        }
+      })
+      .catch((error) => {
+        // Only the NEWEST probe may decide the dialog: rapid re-saves can
+        // leave an older probe in flight whose stale failure must not reopen
+        // it after the replacement key already validated.
+        if (generation !== probeGenerationRef.current) return
+        const message = errorMessage(error)
+        if (
+          message.includes(InvalidApiKeyError) ||
+          message.includes(RequireApiKeError)
+        ) {
+          // Surface the failure where ApiKeyAlert displays it, and open the
+          // dialog HERE rather than only via the message watch — a rejected
+          // replacement key produces the IDENTICAL message string, which
+          // never re-fires a message-change effect, and this entry has no
+          // other API-key control.
+          useBackendState.getState().setErrorMessage(message, 'API Key required')
+          setApiKeyAlertOpen(true)
+        }
+        // Anything else (network failure, auth termination that already
+        // navigated) is not an API-key problem: leave the dialog alone.
+      })
   }, [])
 
   // SINGLE trigger per save: the workspace's only API-key writer is the
