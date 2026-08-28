@@ -138,22 +138,25 @@ async def lollms_model_if_cache(
     request_data["prompt"] = full_prompt
     timeout = aiohttp.ClientTimeout(total=kwargs.get("timeout", None))
 
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        if stream:
+    if stream:
 
-            async def inner():
+        async def inner():
+            async with aiohttp.ClientSession(
+                timeout=timeout, headers=headers
+            ) as session:
                 async with session.post(
                     f"{base_url}/lollms_generate", json=request_data
                 ) as response:
                     async for line in response.content:
                         yield line.decode().strip()
 
-            return inner()
-        else:
-            async with session.post(
-                f"{base_url}/lollms_generate", json=request_data
-            ) as response:
-                return await response.text()
+        return inner()
+
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        async with session.post(
+            f"{base_url}/lollms_generate", json=request_data
+        ) as response:
+            return await response.text()
 
 
 async def lollms_model_complete(
