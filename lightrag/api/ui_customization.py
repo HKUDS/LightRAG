@@ -137,9 +137,7 @@ def locales_without_chrome_translation(locales: Iterable[str]) -> list[str]:
     Startup names these locales so the operator learns it at deploy time
     rather than from a user's screenshot.
     """
-    return sorted(
-        locale for locale in locales if chrome_language_for(locale) is None
-    )
+    return sorted(locale for locale in locales if chrome_language_for(locale) is None)
 
 
 def _has_svg_root(head: bytes) -> bool:

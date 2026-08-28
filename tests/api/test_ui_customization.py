@@ -588,9 +588,7 @@ class TestChromeTranslationCoverage:
             / "lib"
             / "browserLanguage.ts"
         ).read_text(encoding="utf-8")
-        block = re.search(
-            r"SUPPORTED_UI_LANGUAGES\s*=\s*\[(.*?)\]", source, re.S
-        )
+        block = re.search(r"SUPPORTED_UI_LANGUAGES\s*=\s*\[(.*?)\]", source, re.S)
         assert block is not None, "SUPPORTED_UI_LANGUAGES not found in the WebUI source"
         webui_ids = set(re.findall(r"'([^']+)'", block.group(1)))
         assert webui_ids, "no languages parsed from the WebUI source"
@@ -661,7 +659,9 @@ class TestChromeTranslationCoverage:
         # It names the offending locale, not merely that something is off.
         assert any("'es'" in message for message in warnings)
 
-    def test_a_fully_translatable_bundle_warns_about_nothing(self, tmp_path, monkeypatch):
+    def test_a_fully_translatable_bundle_warns_about_nothing(
+        self, tmp_path, monkeypatch
+    ):
         from lightrag.utils import logger as lightrag_logger
 
         _stage_frontend(tmp_path)
