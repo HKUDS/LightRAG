@@ -8,6 +8,7 @@ import ErrorBoundary from '@/components/ErrorBoundary'
 import { useAuthStore, useBackendState } from '@/stores/state'
 import { getAuthStatus } from '@/api/lightrag'
 import { useIdentityEpochStore } from '@/lib/loginIdentity'
+import { activateSessionFromAuthStatus } from './authBootstrap'
 import { runCredentialProbe, useCredentialProbeStore } from './credentialProbe'
 import { navigationService } from '@/services/navigation'
 import WorkspaceQueryView from './WorkspaceQueryView'
@@ -35,9 +36,10 @@ export default function WorkspaceApp() {
   const identityEpoch = useIdentityEpochStore((s) => s.epoch)
   const versionCheckRef = useRef(false) // Prevent duplicate calls in Vite dev mode
 
-  // Refresh version/title info once (mirrors the admin shell, minus the
-  // guest auto-login: on this entry guest activation happens ONLY through
-  // the welcome page's explicit action).
+  // Refresh version/title info once, and reconcile the session with what the
+  // server reports (mirrors the admin shell, minus the auto-login for
+  // UNAUTHENTICATED visitors: on this entry the first way in is always the
+  // welcome page's explicit action).
   useEffect(() => {
     const checkVersion = async () => {
       if (versionCheckRef.current) return
@@ -53,26 +55,9 @@ export default function WorkspaceApp() {
       try {
         const token = localStorage.getItem('LIGHTRAG-API-TOKEN')
         const status = await getAuthStatus()
-        if (
-          token &&
-          (status.core_version ||
-            status.api_version ||
-            status.webui_title ||
-            status.webui_description)
-        ) {
-          const isGuest =
-            status.auth_mode === 'disabled' || useAuthStore.getState().isGuestMode
-          useAuthStore
-            .getState()
-            .login(
-              token,
-              isGuest,
-              status.core_version,
-              status.api_version,
-              status.webui_title || null,
-              status.webui_description || null
-            )
-        }
+        // Reconciliation (including the stale-token replacement an
+        // auth-disabled server requires) lives in authBootstrap.
+        activateSessionFromAuthStatus(status, token)
         sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true')
       } catch (error) {
         console.error('Failed to get version info:', error)
