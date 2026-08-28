@@ -23,6 +23,7 @@ from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
+    retry_if_exception,
     retry_if_exception_type,
 )
 from lightrag.utils import (
@@ -35,6 +36,7 @@ from lightrag.utils import (
 
 from lightrag.api import __api_version__
 from lightrag.exceptions import EmptyTruncatedResponseError
+from lightrag.llm._error_utils import is_permanent_rate_limit_error
 
 import numpy as np
 import base64
@@ -91,6 +93,22 @@ class TransientBadRequestError(Exception):
     """
 
     pass
+
+
+def _is_retryable_rate_limit_error(error: BaseException) -> bool:
+    """tenacity predicate: retry 429s, except permanent spend stops.
+
+    Used instead of ``retry_if_exception_type(RateLimitError)`` so the original
+    RateLimitError still propagates to callers unchanged (upstream
+    ``except RateLimitError`` / ``isinstance`` checks keep working, and the
+    doc-status failure summary carries the provider's own message -- the
+    LiteLLM budget figures, or OpenAI's billing pointer -- instead of an opaque
+    RetryError). See :mod:`lightrag.llm._error_utils` for what counts as
+    permanent.
+    """
+    return isinstance(error, RateLimitError) and not is_permanent_rate_limit_error(
+        error
+    )
 
 
 def _validate_openai_response_format(response_format: Any | None) -> None:
@@ -232,7 +250,7 @@ def create_openai_async_client(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
     retry=(
-        retry_if_exception_type(RateLimitError)
+        retry_if_exception(_is_retryable_rate_limit_error)
         | retry_if_exception_type(APIConnectionError)
         | retry_if_exception_type(APITimeoutError)
         | retry_if_exception_type(InvalidResponseError)
@@ -338,7 +356,10 @@ async def openai_complete_if_cache(
     Raises:
         InvalidResponseError: If the response from OpenAI is invalid or empty.
         APIConnectionError: If there is a connection error with the OpenAI API.
-        RateLimitError: If the OpenAI API rate limit is exceeded.
+        RateLimitError: If the OpenAI API rate limit is exceeded. Retried
+            with backoff, except for a permanent spend stop (a LiteLLM Proxy
+            ``budget_exceeded`` or an OpenAI ``insufficient_quota``), which
+            fails fast.
         APITimeoutError: If the OpenAI API request times out.
     """
     if history_messages is None:
@@ -458,7 +479,10 @@ async def openai_complete_if_cache(
             logger.warning(f"Failed to close OpenAI client: {close_error}")
         raise
     except RateLimitError as e:
-        logger.error(f"OpenAI API Rate Limit Error: {e}")
+        if is_permanent_rate_limit_error(e):
+            logger.error(f"OpenAI API Spend Limit Reached (not retrying): {e}")
+        else:
+            logger.error(f"OpenAI API Rate Limit Error: {e}")
         try:
             await openai_async_client.close()
         except Exception as close_error:
@@ -977,7 +1001,7 @@ async def nvidia_openai_complete(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
     retry=(
-        retry_if_exception_type(RateLimitError)
+        retry_if_exception(_is_retryable_rate_limit_error)
         | retry_if_exception_type(APIConnectionError)
         | retry_if_exception_type(APITimeoutError)
         # Retry transient HTTP 5xx (OpenAI 500 / proxy upstream errors).
@@ -1047,7 +1071,10 @@ async def openai_embed(
 
     Raises:
         APIConnectionError: If there is a connection error with the OpenAI API.
-        RateLimitError: If the OpenAI API rate limit is exceeded.
+        RateLimitError: If the OpenAI API rate limit is exceeded. Retried
+            with backoff, except for a permanent spend stop (a LiteLLM Proxy
+            ``budget_exceeded`` or an OpenAI ``insufficient_quota``), which
+            fails fast.
         APITimeoutError: If the OpenAI API request times out.
     """
     # Apply context-based prefixes if provided
