@@ -145,6 +145,10 @@ from lightrag.operate import (
     naive_query,
     rebuild_knowledge_from_chunks,
 )
+from lightrag.sidecar.query_attachments import (
+    enrich_raw_data_attachments,
+    resolve_include_im_ids_for_enrich,
+)
 from lightrag.utils_pipeline import (
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
     KG_RECOVERY_WARNINGS_METADATA_KEY,
@@ -160,7 +164,7 @@ from lightrag.utils_pipeline import (
     normalize_document_file_path,
     require_doc_status_record,
 )
-from lightrag.constants import GRAPH_FIELD_SEP, RELATION_NO_EVIDENCE_SOURCE_IDS
+from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.exceptions import (
     IndexFlushError,
     KGPurgeOperationConflictError,
@@ -391,7 +395,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
     # Directory
     # ---
-
+    # Dataclass defaults below; field() attaches per-attribute metadata/docstrings.
     working_dir: str = field(default="./rag_storage")
     """Directory where cache and temporary files are stored."""
 
@@ -1362,6 +1366,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             )
         self.embedding_token_limit = embedding_max_token_size
 
+
         # Fix global_config now
         global_config = self._build_global_config()
         # Restore original EmbeddingFunc object (asdict converts it to dict)
@@ -1369,6 +1374,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in global_config.items()])
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
+
 
         # Step 2: Apply priority wrapper decorator to EmbeddingFunc's inner func
         # Create a NEW EmbeddingFunc instance with the wrapped func to avoid mutating the caller's object
@@ -1383,6 +1389,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             )(self.embedding_func.func)
             # Use dataclasses.replace() to create a new instance, leaving the original unchanged
             self.embedding_func = replace(self.embedding_func, func=wrapped_func)
+
 
         # Initialize all storages
         self.key_string_value_json_storage_cls: type[BaseKVStorage] = get_storage_class(
@@ -1403,6 +1410,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         self.graph_storage_cls = partial(  # type: ignore
             self.graph_storage_cls, global_config=global_config
         )
+
 
         # Initialize document status storage
         self.doc_status_storage_cls = get_storage_class(self.doc_status_storage)
@@ -1566,6 +1574,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         self._storages_status = StoragesStatus.CREATED
 
     async def initialize_storages(self):
+        
         """Storage initialization must be called one by one to prevent deadlock"""
         if self._storages_status == StoragesStatus.CREATED:
             # Record the loop the storages (and their shared_storage locks) bind
@@ -1813,7 +1822,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             str: tracking ID for monitoring processing status
         """
-        # Generate track_id if not provided
+        # Generate track_id if not provided.
         if track_id is None:
             track_id = generate_track_id("insert")
 
@@ -1824,11 +1833,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # carrier; runtime split args are an ainsert-only concern.
         from lightrag.parser.routing import resolve_chunk_options
 
+        # resolve_chunk_options returns a per-document chunk_options dict snapshot.
         chunk_opts = resolve_chunk_options(
             self.addon_params,
             split_by_character=split_by_character,
             split_by_character_only=split_by_character_only,
         )
+
+        # Enqueue documents; track_id lets callers poll ingest status while processing runs.
         await self.apipeline_enqueue_documents(
             input,
             ids,
@@ -1836,9 +1848,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             track_id,
             chunk_options=chunk_opts,
         )
+
+
+        # Drain the queue through the full ingest pipeline (chunk, embed, graph, etc.).
         await self.apipeline_process_enqueue_documents()
 
         return track_id
+
+
 
     # TODO: deprecated, use insert instead
     def insert_custom_chunks(
@@ -3470,9 +3487,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Entity names and relationship endpoints are normalized with the same
         contract used by document extraction before any storage write begins.
-        A relationship weight is bounded below by its number of distinct real
-        evidence sources. Explicit weights may boost that baseline; omit the
-        relationship ``source_id`` to use a fractional source-less weight.
 
         .. warning:: (issue #3400 Phase 5 — direct-writer audit)
            This path is OUTSIDE the document-level recovery guarantee. It has
@@ -3491,10 +3505,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         update_storage = False
         try:
-            from lightrag.utils_graph import (
-                relation_evidence_source_ids,
-                validate_relation_weight,
-            )
 
             def _normalize_custom_kg_entity_name(value: Any, *, field: str) -> str:
                 if not isinstance(value, str):
@@ -3552,17 +3562,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         f"'{normalized_relationship_data['src_id']}': src_id and "
                         "tgt_id must be different entities"
                     )
-                source_id = relationship_data.get("source_id", "")
-                # This is still a custom-KG alias rather than the graph edge's
-                # persisted source_id. Validate its shape now, but defer the
-                # evidence floor until chunk_to_source_map resolves the alias.
-                relation_evidence_source_ids(source_id)
-                normalized_relationship_data["source_id"] = source_id
-                normalized_relationship_data["weight"] = validate_relation_weight(
-                    relationship_data.get("weight", 1.0),
-                    "",
-                    context=f"Custom KG relationships[{index}]",
-                )
                 normalized_relationships.append(normalized_relationship_data)
 
             # Insert chunks into vector storage
@@ -3577,6 +3576,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 pipeline busy flag, so leaving the loop here would let it encode
                 concurrently with a document being chunked.
                 """
+                nonlocal update_storage
                 for chunk_data in custom_kg.get("chunks", []):
                     chunk_content = sanitize_text_for_encoding(chunk_data["content"])
                     source_id = chunk_data["source_id"]
@@ -3604,30 +3604,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     }
                     all_chunks_data[chunk_id] = chunk_entry
                     chunk_to_source_map[source_id] = chunk_id
+                    update_storage = True
 
             await run_in_chunking_executor(_build_custom_kg_chunks)
 
-            # Validate the source IDs that will actually be persisted. Custom
-            # KG relationships refer to chunk aliases, and even a historical
-            # no-source placeholder can be a real alias that resolves to a
-            # chunk hash. This second pass must run before the chunk upserts
-            # below so an invalid mapped relation leaves every storage clean.
-            for index, relationship_data in enumerate(normalized_relationships):
-                source_alias = relationship_data["source_id"]
-                source_id = (
-                    chunk_to_source_map.get(source_alias, "UNKNOWN")
-                    if source_alias
-                    else ""
-                )
-                relationship_data["source_id"] = source_id
-                relationship_data["weight"] = validate_relation_weight(
-                    relationship_data["weight"],
-                    source_id,
-                    context=f"Custom KG relationships[{index}]",
-                )
-
             if all_chunks_data:
-                update_storage = True
                 await asyncio.gather(
                     self.chunks_vdb.upsert(all_chunks_data),
                     self.text_chunks.upsert(all_chunks_data),
@@ -3762,7 +3743,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 for relationship_data in deduped_relationships.values():
                     src_id = relationship_data["src_id"]
                     tgt_id = relationship_data["tgt_id"]
-                    source_id = relationship_data["source_id"]
+                    source_chunk_id = relationship_data.get("source_id", "UNKNOWN")
+                    source_id = chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
                     file_path = normalize_document_file_path(
                         relationship_data.get("file_path", "custom_kg")
                     )
@@ -3792,7 +3774,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     normalized_src_id, normalized_tgt_id = sorted((src_id, tgt_id))
 
                     edge_data = {
-                        "weight": relationship_data["weight"],
+                        "weight": relationship_data.get("weight", 1.0),
                         "description": relationship_data["description"],
                         "keywords": relationship_data["keywords"],
                         "source_id": source_id,
@@ -3808,7 +3790,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             "description": relationship_data["description"],
                             "keywords": relationship_data["keywords"],
                             "source_id": source_id,
-                            "weight": relationship_data["weight"],
+                            "weight": relationship_data.get("weight", 1.0),
                             "file_path": file_path,
                             "created_at": int(time.time()),
                         }
@@ -4016,7 +3998,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             "tgt_id": str,           # Target entity name
                             "description": str,      # Relationship description
                             "keywords": str,         # Relationship keywords
-                            "weight": float,         # Evidence floor plus optional boost
+                            "weight": float,         # Relationship strength
                             "source_id": str,        # Source chunk references
                             "file_path": str,        # Origin file path
                             "created_at": str,       # Creation timestamp
@@ -4164,6 +4146,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             logger.info("[aquery_data] Query returned no results.")
         else:
             # Extract raw_data from QueryResult
+            if query_result.raw_data:
+                query_result.raw_data = await enrich_raw_data_attachments(
+                    query_result.raw_data,
+                    self.text_chunks,
+                    self.full_docs,
+                )
             final_data = query_result.raw_data or {}
 
             # Log final result counts - adapt to new data format from convert_to_user_format
@@ -4202,6 +4190,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             dict[str, Any]: Complete response with structured data and LLM response.
         """
+        
         logger.debug(f"[aquery_llm] Query param: {param}")
 
         global_config = self._build_global_config()
@@ -4222,6 +4211,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     system_prompt=system_prompt,
                     chunks_vdb=self.chunks_vdb,
                     progress_callback=progress_callback,
+                    full_docs_db=self.full_docs,
                 )
             elif param.mode == "naive":
                 query_result = await naive_query(
@@ -4233,6 +4223,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     system_prompt=system_prompt,
                     text_chunks_db=self.text_chunks,
                     progress_callback=progress_callback,
+                    full_docs_db=self.full_docs,
                 )
             elif param.mode == "bypass":
                 # Bypass mode: directly use LLM without knowledge retrieval
@@ -4301,6 +4292,26 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
             # Extract structured data from query result
             raw_data = query_result.raw_data or {}
+            metadata = raw_data.get("metadata")
+            deferred_attachment_enrich = (
+                query_result.is_streaming
+                and isinstance(metadata, dict)
+                and metadata.get("deferred_attachment_enrich")
+            )
+            if deferred_attachment_enrich:
+                if "data" not in raw_data or not isinstance(raw_data["data"], dict):
+                    raw_data["data"] = {}
+                raw_data["data"]["attachments"] = []
+            else:
+                include_im_ids = resolve_include_im_ids_for_enrich(
+                    raw_data, global_config
+                )
+                raw_data = await enrich_raw_data_attachments(
+                    raw_data,
+                    self.text_chunks,
+                    self.full_docs,
+                    include_im_ids=include_im_ids,
+                )
             raw_data["llm_response"] = {
                 "content": query_result.content
                 if not query_result.is_streaming
@@ -5357,13 +5368,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 graph_sources: list[str] = []
                 if self.entity_chunks:
                     stored_chunks = await self.entity_chunks.get_by_id(node_label)
-                    # NOTE(#3609): this deliberately keeps truthiness semantics and
-                    # does NOT distinguish a present-but-empty tracking row from an
-                    # absent one. Here an empty `existing_sources` falls back to the
-                    # graph `source_id` below; treating a present-empty row as
-                    # authoritative (as the edit paths now do) would instead route
-                    # the object into `entities_to_delete`, a deletion-behavior
-                    # change that needs its own issue + tests before being applied.
                     if stored_chunks and isinstance(stored_chunks, dict):
                         existing_sources = [
                             chunk_id
@@ -5429,11 +5433,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 if self.relation_chunks:
                     storage_key = make_relation_chunk_key(src, tgt)
                     stored_chunks = await self.relation_chunks.get_by_id(storage_key)
-                    # NOTE(#3609): as with the entity branch above, truthiness is
-                    # kept here on purpose — a present-but-empty relation tracking
-                    # row falls back to the graph `source_id` rather than being
-                    # treated as authoritative "tracks no chunks". Changing that is a
-                    # deletion-behavior change and belongs in its own issue + tests.
                     if stored_chunks and isinstance(stored_chunks, dict):
                         existing_sources = [
                             chunk_id
@@ -5501,23 +5500,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 for edge_tuple, remaining in relation_chunk_updates.items():
                     if not remaining:
                         continue
-                    # relation_chunks is the authoritative chunk list, so the
-                    # historical no-evidence placeholders must not be written
-                    # into it. `remaining` inherits them from a legacy tracking
-                    # row or edge source_id (nothing subtracts them -- they are
-                    # not deleted chunk IDs). The stage-6 rebuild writes the same
-                    # rows filtered the same way; filtering here too keeps the
-                    # authoritative row clean across the whole purge, including
-                    # the summary-bearing rebuild window and a crash inside it.
-                    tracked = [
-                        chunk_id
-                        for chunk_id in remaining
-                        if chunk_id not in RELATION_NO_EVIDENCE_SOURCE_IDS
-                    ]
                     storage_key = make_relation_chunk_key(*edge_tuple)
                     relation_upsert_payload[storage_key] = {
-                        "chunk_ids": tracked,
-                        "count": len(tracked),
+                        "chunk_ids": remaining,
+                        "count": len(remaining),
                         "updated_at": current_time,
                     }
                 if relation_upsert_payload:
@@ -6685,10 +6671,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Args:
             source_entity: Name of the source entity
             target_entity: Name of the target entity
-            updated_data: Dictionary containing updated attributes. The final
-                relation must satisfy ``weight >=`` its distinct real source
-                count; set ``source_id`` to an empty string in the same edit to
-                use a smaller fractional weight.
+            updated_data: Dictionary containing updated attributes, e.g. {"description": "new description", "keywords": "new keywords"}
 
         Returns:
             Dictionary containing updated relation information
@@ -6763,10 +6746,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Args:
             source_entity: Name of the source entity
             target_entity: Name of the target entity
-            relation_data: Dictionary containing relation attributes. ``weight``
-                is the evidence-count floor plus an optional boost. It must be
-                at least the distinct real ``source_id`` count. Omit
-                ``source_id`` to create a source-less fractional-weight edge.
+            relation_data: Dictionary containing relation attributes, e.g. {"description": "description", "keywords": "keywords"}
 
         Returns:
             Dictionary containing created relation information
@@ -6805,10 +6785,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Merges multiple source entities into a target entity, handling all relationships,
         and updating both the knowledge graph and vector database.
-
-        Redirected relations that collapse onto the same endpoint use
-        ``max(input weights, distinct merged evidence sources)`` so neither an
-        explicit boost nor the evidence-count floor regresses.
 
         Args:
             source_entities: List of source entity names to merge
