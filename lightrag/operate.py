@@ -2520,7 +2520,8 @@ async def _merge_nodes_then_upsert(
         ):
             if already_node:
                 logger.info(
-                    f"Skipped `{entity_name}`: KEEP old chunks {already_source_ids}/{len(full_source_ids)}"
+                    f"Skipped `{entity_name}`: KEEP old chunks "
+                    f"{len(existing_full_source_ids)}/{len(full_source_ids)} (limit {max_source_limit})"
                 )
                 existing_node_data = dict(already_node)
                 return existing_node_data
@@ -2899,7 +2900,8 @@ async def _merge_edges_then_upsert(
         ):
             if already_edge:
                 logger.info(
-                    f"Skipped `{src_id}`~`{tgt_id}`: KEEP old chunks  {already_source_ids}/{len(full_source_ids)}"
+                    f"Skipped `{src_id}`~`{tgt_id}`: KEEP old chunks "
+                    f"{len(existing_full_source_ids)}/{len(full_source_ids)} (limit {max_source_limit})"
                 )
                 existing_edge_data = dict(already_edge)
                 return existing_edge_data
