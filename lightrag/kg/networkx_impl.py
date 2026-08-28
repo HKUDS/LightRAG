@@ -1,3 +1,4 @@
+import asyncio
 import os
 from collections import deque
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from lightrag.utils import (
     logger,
     validate_xml_attributes,
     validate_workspace,
+    run_in_storage_io,
 )
 from lightrag.base import BaseGraphStorage
 import networkx as nx
@@ -62,7 +64,43 @@ class NetworkXStorage(BaseGraphStorage):
            preempted by another coroutine, which gives them implicit
            mutual exclusion over ``self._graph``. This is why the methods
            below don't have to hold ``_storage_lock`` while calling into
-           ``graph``.
+           ``graph``. The one place that is NOT on the event loop is the
+           GraphML serialization, which runs in the storage-IO pool — see
+           *Commit gate* below for what re-establishes the exclusion there.
+
+    Commit gate:
+        ``index_done_callback`` hands ``self._graph`` to a worker thread,
+        which iterates ``graph._node`` / ``graph._adj`` for the length of
+        the write. Invariant (3) does not cover that: a coroutine on the
+        loop could mutate the graph mid-iteration, tearing the snapshot or
+        raising ``RuntimeError: dictionary changed size during iteration``
+        from inside the writer.
+
+        ``_commit_gate`` is an ``asyncio.Event``, set except while this
+        process is serializing. The committer clears it inside
+        ``_storage_lock`` and restores it in a ``finally`` (every path,
+        cancellation included — leaking a cleared gate once deadlocks every
+        later graph operation in this workspace). ``_get_graph`` waits on it.
+
+        **Holding ``_storage_lock`` across the write is NOT sufficient on
+        its own**, which is why the gate exists as well. Releasing a
+        ``NamespaceLock`` runs the release on a fresh task and awaits a
+        shield, so ``__aexit__`` always suspends at least once. A mutator
+        that has read ``self._graph`` and is suspended in that release is
+        past the lock and would resume — and mutate — while the worker
+        thread is iterating. The gate is therefore checked AFTER
+        ``_get_graph``'s lock block, i.e. after the last suspension point:
+        from the ``is_set()`` check through the caller's synchronous
+        ``graph.add_node()`` there is no ``await``, so no commit can start
+        in the middle of a mutation.
+
+        The gate sits at ``_get_graph``, the single choke point every read
+        and write goes through, rather than in the seven mutators. Reads are
+        gated too. That is deliberate and free: a reader already has to pass
+        ``_storage_lock``, which the committer holds throughout, so the gate
+        adds no wait it did not already have — and a ``for_write=True``
+        variant would buy nothing while forking the semantics of the one
+        choke point.
 
     Cross-process sync protocol (identical in shape to
     ``NanoVectorDBStorage`` — see that class's docstring for the canonical
@@ -90,10 +128,13 @@ class NetworkXStorage(BaseGraphStorage):
         spanning both intra-process coroutines and inter-process workers.
         It wraps only the *reload* and *commit* critical sections, not
         every ``graph.xxx`` call. Operating on ``graph`` outside the lock
-        is safe today *because of invariant (3)* — if either premise is
-        ever broken (e.g. ``graph.xxx`` is moved to a thread pool, or
-        networkx is swapped for an async graph library), the lock scope
-        must be widened to cover the mutation/read itself.
+        is safe *because of invariant (3)* plus the commit gate, which
+        covers the one case invariant (3) does not: the serialization
+        running in a worker thread. If invariant (3) is broken further —
+        ``graph.xxx`` itself moved to a thread pool, or networkx swapped
+        for an async graph library — the gate is no longer enough either
+        and the lock scope must be widened to cover the mutation/read
+        itself.
 
     Implementation differences from ``NanoVectorDBStorage`` (same design,
     different surface):
@@ -223,6 +264,9 @@ class NetworkXStorage(BaseGraphStorage):
         self._storage_lock = None
         self.storage_updated = None
         self._graph = None
+        # Created lazily by _gate(): asyncio.Event binds to a loop on first
+        # wait, and instances are constructed outside any running loop.
+        self._commit_gate = None
 
         reap_orphan_tmp_files(self._graphml_xml_file, workspace=self.workspace or "_")
 
@@ -248,6 +292,18 @@ class NetworkXStorage(BaseGraphStorage):
         self._storage_lock = get_namespace_lock(
             self.namespace, workspace=self.workspace
         )
+
+    def _gate(self) -> asyncio.Event:
+        """The commit gate: set except while this process is serializing.
+
+        See *Commit gate* in the class docstring. Lazily created so the
+        ``asyncio.Event`` binds to whichever loop first waits on it, which is
+        never the loop-less ``__post_init__``.
+        """
+        if self._commit_gate is None:
+            self._commit_gate = asyncio.Event()
+            self._commit_gate.set()
+        return self._commit_gate
 
     async def _get_graph(self):
         """Return the live ``networkx.Graph``, reloading from disk if needed.
@@ -284,7 +340,26 @@ class NetworkXStorage(BaseGraphStorage):
                 # Reset update flag
                 self.storage_updated.value = False
 
-            return self._graph
+            graph = self._graph
+
+        # The gate is checked HERE, after the lock block, and that placement is
+        # the whole point -- see *Commit gate* in the class docstring. Holding
+        # _storage_lock in the committer does not exclude a caller that is
+        # already past this method's lock body: releasing a NamespaceLock runs
+        # the release on a fresh task and awaits a shield, so __aexit__ ALWAYS
+        # suspends at least once. Such a caller would resume and mutate
+        # self._graph while the committer's worker thread iterates graph._node /
+        # graph._adj.
+        #
+        # After this check there is no suspension point left: is_set() does not
+        # await, so the caller's synchronous graph.add_node() / remove_node()
+        # cannot have a commit start in the middle of it.
+        #
+        # A loop, not one wait(): a woken waiter's wait() returns True even if a
+        # second committer has cleared the gate again in the meantime.
+        while not self._gate().is_set():
+            await self._gate().wait()
+        return graph
 
     async def has_node(self, node_id: str) -> bool:
         graph = await self._get_graph()
@@ -866,10 +941,22 @@ class NetworkXStorage(BaseGraphStorage):
 
         # Acquire lock and perform persistence
         async with self._storage_lock:
+            # Close the commit gate for the duration of the serialization: the
+            # worker thread iterates graph._node / graph._adj, and a concurrent
+            # add_node/remove_node would tear the snapshot (or raise
+            # "dictionary changed size during iteration" from inside the writer).
+            # The lock alone is not enough -- see _get_graph.
+            gate = self._gate()
+            gate.clear()
             try:
-                # Save data to disk
-                NetworkXStorage.write_nx_graph(
-                    self._graph, self._graphml_xml_file, self.workspace
+                # Save data to disk, off the event loop. The name is resolved at
+                # call time on purpose: test_networkx_index_done.py monkeypatches
+                # write_nx_graph, and hoisting the reference would leave that
+                # test green while testing nothing.
+                await run_in_storage_io(
+                    lambda: NetworkXStorage.write_nx_graph(
+                        self._graph, self._graphml_xml_file, self.workspace
+                    )
                 )
                 # Notify other processes that data has been updated
                 await set_all_update_flags(self.namespace, workspace=self.workspace)
@@ -884,6 +971,10 @@ class NetworkXStorage(BaseGraphStorage):
                 # aligns this backend with the others (faiss/nano raise too).
                 logger.error(f"[{self.workspace}] Error saving graph: {e}")
                 raise
+            finally:
+                # Every path, including CancelledError. Leaking a cleared gate
+                # once deadlocks every later graph operation in this workspace.
+                gate.set()
 
         return True
 
