@@ -282,3 +282,54 @@ async def test_a_woken_waiter_rechecks_the_gate_before_proceeding(tmp_path):
     gate.set()
     await asyncio.wait_for(mutator, timeout=2)
     assert storage._graph.has_node("n2")
+
+
+async def test_cancelled_commit_still_notifies_the_other_processes(
+    tmp_path, monkeypatch
+):
+    """A cancelled commit must not publish the file and skip the notification.
+
+    ``set_all_update_flags`` is what tells every other worker to reload. Skipped,
+    they keep serving the previous graph until some later commit happens to
+    notify them. The write is already durable at that point, so the bookkeeping
+    runs inside the same uncancellable region (``commit_in_storage_io``).
+
+    Fix-proof: inline ``set_all_update_flags`` after the offload instead, and
+    ``flagged`` stays empty — this is the P2 Codex raised on #3740.
+    """
+    storage = await _make_storage(tmp_path)
+    await storage.upsert_node("A", {"entity_id": "A"})
+
+    flagged: list[str] = []
+    real_write = NetworkXStorage.write_nx_graph
+    inside_write = threading.Event()
+    may_finish = threading.Event()
+
+    async def spy_set_all_update_flags(namespace, workspace=None):
+        flagged.append(namespace)
+
+    def parked_write(graph, path, workspace="_"):
+        inside_write.set()
+        assert may_finish.wait(timeout=5), "writer was never released"
+        return real_write(graph, path, workspace)
+
+    monkeypatch.setattr(
+        "lightrag.kg.networkx_impl.set_all_update_flags", spy_set_all_update_flags
+    )
+    monkeypatch.setattr(NetworkXStorage, "write_nx_graph", staticmethod(parked_write))
+
+    commit = asyncio.create_task(storage.index_done_callback())
+    await _wait_for(inside_write.is_set)
+
+    commit.cancel()
+    may_finish.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await commit
+
+    assert flagged == ["chunk_entity_relation"], (
+        "a cancelled commit published the graph without telling the other "
+        f"processes to reload it (flagged={flagged})"
+    )
+    # And the gate is back open, so later graph work is not deadlocked.
+    await asyncio.wait_for(storage.upsert_node("B", {"entity_id": "B"}), timeout=2)

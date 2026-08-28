@@ -167,3 +167,53 @@ async def test_cancelled_commit_restores_storage_file(tmp_path, monkeypatch):
     assert observed_during_write, "the write body never ran"
     assert observed_during_write[0] != storage._client_file_name
     assert storage._client.storage_file == storage._client_file_name
+
+
+async def test_cancelled_commit_still_notifies_and_retires_the_redo_logs(
+    tmp_path, monkeypatch
+):
+    """A cancelled commit must not save and then skip its bookkeeping.
+
+    Two things are stranded if it does: the other processes are never told to
+    reload (``set_all_update_flags``), and the redo logs keep rows that ARE on
+    disk, so a later commit replays them. Both live in the hook that
+    ``commit_in_storage_io`` runs inside the write's uncancellable region.
+
+    Fix-proof: inline the bookkeeping after the offload instead, and ``flagged``
+    stays empty with ``_client_dirty`` still True — the P2 Codex raised on #3740.
+    """
+    storage = await _make_storage(tmp_path)
+    await storage.upsert({"id1": {"content": "alpha"}})
+
+    flagged: list[str] = []
+    inside_save = threading.Event()
+    may_finish = threading.Event()
+    real_save = nano_vectordb.NanoVectorDB.save
+
+    async def spy_set_all_update_flags(namespace, workspace=None):
+        flagged.append(namespace)
+
+    def parked_save(self):
+        inside_save.set()
+        assert may_finish.wait(timeout=5), "writer was never released"
+        return real_save(self)
+
+    monkeypatch.setattr(nano_impl, "set_all_update_flags", spy_set_all_update_flags)
+    monkeypatch.setattr(nano_vectordb.NanoVectorDB, "save", parked_save)
+
+    commit = asyncio.create_task(storage.index_done_callback())
+    while not inside_save.is_set():
+        await asyncio.sleep(0.01)
+
+    commit.cancel()
+    may_finish.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await commit
+
+    assert flagged == ["test_vectors"], (
+        "a cancelled commit saved without telling the other processes to "
+        f"reload (flagged={flagged})"
+    )
+    assert storage._client_dirty is False, "the dirty bit survived a durable save"
+    assert storage._unsaved_upserts == {}, "redo log kept rows that are on disk"

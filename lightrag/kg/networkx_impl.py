@@ -11,7 +11,7 @@ from lightrag.utils import (
     logger,
     validate_xml_attributes,
     validate_workspace,
-    run_in_storage_io,
+    commit_in_storage_io,
 )
 from lightrag.base import BaseGraphStorage
 import networkx as nx
@@ -953,15 +953,22 @@ class NetworkXStorage(BaseGraphStorage):
                 # call time on purpose: test_networkx_index_done.py monkeypatches
                 # write_nx_graph, and hoisting the reference would leave that
                 # test green while testing nothing.
-                await run_in_storage_io(
+                async def _committed() -> None:
+                    # Runs inside the same uncancellable region as the write,
+                    # and only if the write landed. Inlined after the offload it
+                    # would be skippable by a cancel, leaving the new GraphML
+                    # published while every other process keeps reading the
+                    # previous one until some later commit happens to notify it.
+                    await set_all_update_flags(self.namespace, workspace=self.workspace)
+                    # Reset own update flag to avoid self-reloading
+                    self.storage_updated.value = False
+
+                await commit_in_storage_io(
                     lambda: NetworkXStorage.write_nx_graph(
                         self._graph, self._graphml_xml_file, self.workspace
-                    )
+                    ),
+                    _committed,
                 )
-                # Notify other processes that data has been updated
-                await set_all_update_flags(self.namespace, workspace=self.workspace)
-                # Reset own update flag to avoid self-reloading
-                self.storage_updated.value = False
                 return True  # Return success
             except Exception as e:
                 # Raise (do NOT swallow + return False): _insert_done's

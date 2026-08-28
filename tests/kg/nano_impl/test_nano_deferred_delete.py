@@ -28,13 +28,17 @@ from lightrag.utils import EmbeddingFunc, compute_mdhash_id  # noqa: E402
 DIM = 8
 
 
-async def _failing_save() -> None:
+async def _failing_save(_on_committed) -> None:
     """Async stand-in for ``_save_to_disk_locked`` that always fails.
 
     ``_save_to_disk_locked`` is a coroutine function (its write runs in the
     storage-IO pool), so a synchronous stand-in silently changes what these
     tests prove: the caller would await ``None`` and they would pass on a
     ``TypeError`` instead of on the ``OSError`` they are about.
+
+    It also takes the post-commit bookkeeping hook. A stand-in that fails must
+    never run it — the write did not land, so retiring the redo logs would
+    discard rows that were never persisted.
     """
     raise OSError("disk full")
 
@@ -217,9 +221,9 @@ async def test_finalize_skips_the_save_when_queued_deletes_change_nothing(tmp_pa
     saves: list[int] = []
     original = storage._save_to_disk_locked
 
-    async def counting_save():
+    async def counting_save(on_committed):
         saves.append(1)
-        return await original()
+        return await original(on_committed)
 
     storage._save_to_disk_locked = counting_save
 
@@ -484,7 +488,7 @@ def _make_save_fail(storage):
     """Make ``_save_to_disk_locked`` raise; returns a restore callable."""
     original = storage._save_to_disk_locked
 
-    async def boom():
+    async def boom(_on_committed):
         raise OSError("disk full")
 
     storage._save_to_disk_locked = boom

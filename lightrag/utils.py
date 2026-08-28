@@ -26,6 +26,7 @@ from hashlib import md5
 from pathlib import Path
 from typing import (
     Any,
+    Awaitable,
     Protocol,
     Callable,
     TYPE_CHECKING,
@@ -2725,6 +2726,40 @@ def _consume_future_exception(fut: "asyncio.Future") -> None:
         fut.exception()
 
 
+async def _wait_deferring_cancellation(
+    future: "asyncio.Future",
+    pending_cancel: Optional[asyncio.CancelledError],
+) -> Optional[asyncio.CancelledError]:
+    """Await ``future`` to completion, deferring cancellation of the caller.
+
+    Loop + shield, not a single shield: a lone ``await asyncio.shield(...)``
+    returns immediately on RE-cancellation, so a second cancel would let the
+    caller escape while the work is still running. Same shape and same reason as
+    ``_KeyedLockContext.__aexit__`` in ``lightrag/kg/shared_storage.py``.
+
+    Returns the cancellation to re-raise once every step is done (the first one
+    seen, if any). Cancelling ``future`` ITSELF still propagates immediately: it
+    did not run to completion and we must not pretend it did.
+    """
+    while not future.done():
+        try:
+            await asyncio.shield(future)
+        except asyncio.CancelledError as exc:
+            if future.cancelled():
+                raise
+            pending_cancel = pending_cancel or exc
+        except BaseException:
+            # The awaited work failed. Do NOT let that exception out from here: a
+            # cancellation recorded on an earlier round has to take precedence,
+            # and deciding that is the caller's job. The exception stays on
+            # ``future`` for the caller to re-raise or log. Anything raised while
+            # the future is still pending came from elsewhere and propagates.
+            if not future.done():
+                raise
+            break
+    return pending_cancel
+
+
 async def _bounded_submit_impl(
     executor: ThreadPoolExecutor,
     semaphore: asyncio.Semaphore,
@@ -2733,6 +2768,7 @@ async def _bounded_submit_impl(
     kwargs: dict[str, Any],
     *,
     wait_for_completion: bool,
+    on_committed: Optional[Callable[[], Awaitable[Any]]] = None,
 ) -> Any:
     """Shared body of :func:`bounded_submit` and :func:`run_in_storage_io`.
 
@@ -2756,6 +2792,21 @@ async def _bounded_submit_impl(
     Either way the permit wait itself stays cancellable: nothing has been
     submitted at that point, so a cancelled caller leaves no work in flight and
     can release whatever lock it holds immediately.
+
+    ``on_committed`` (requires ``wait_for_completion``) is the bookkeeping that
+    must not be separated from a write that already landed — flipping other
+    processes' reload flags, retiring a redo log. It runs inside the SAME
+    uncancellable region as the write, and only when the write actually
+    succeeded:
+
+    * write succeeded → ``on_committed`` runs to completion, and only then is a
+      deferred cancellation re-raised;
+    * ``fn`` raised → ``on_committed`` does NOT run and the exception
+      propagates; the write did not land, so its bookkeeping must not either;
+    * cancelled while waiting for a permit → ``on_committed`` does NOT run,
+      because nothing was ever submitted. That is load-bearing, not tidiness:
+      Nano's bookkeeping retires the redo log, and running it without a write
+      would discard rows that were never persisted.
     """
     await semaphore.acquire()
     try:
@@ -2783,45 +2834,39 @@ async def _bounded_submit_impl(
     async_future.add_done_callback(_consume_future_exception)
 
     if not wait_for_completion:
+        if on_committed is not None:
+            raise ValueError("on_committed requires wait_for_completion")
         return await asyncio.shield(async_future)
 
-    # Loop + shield, not a single shield: a lone ``await asyncio.shield(...)``
-    # returns immediately on RE-cancellation, so a second cancel would let the
-    # caller escape while the thread is still running. Same shape and same reason
-    # as ``_KeyedLockContext.__aexit__`` in ``lightrag/kg/shared_storage.py``.
-    pending_cancel: Optional[asyncio.CancelledError] = None
-    while not async_future.done():
-        try:
-            await asyncio.shield(async_future)
-        except asyncio.CancelledError as exc:
-            if async_future.cancelled():
-                # The submitted work itself was cancelled — it did not run to
-                # completion and we must not pretend it did.
-                raise
-            pending_cancel = pending_cancel or exc
-        except BaseException:
-            # The worker failed. Do NOT let that exception out from here: a
-            # cancellation recorded on an earlier round has to take precedence,
-            # and deciding that is the block below's job. The exception stays on
-            # ``async_future`` and is re-raised by ``result()`` (or logged) once
-            # the loop has established which one wins. Anything raised while the
-            # future is still pending came from elsewhere and still propagates.
-            if not async_future.done():
-                raise
-            break
+    pending_cancel = await _wait_deferring_cancellation(async_future, None)
+
+    write_exc = None if async_future.cancelled() else async_future.exception()
+
+    commit_exc: Optional[BaseException] = None
+    if write_exc is None and on_committed is not None:
+        # The write landed, so its bookkeeping is no longer optional: a cancel
+        # here would leave the file published with the other processes never told
+        # to reload it. Deferred through this step too — without the second wait
+        # the gap simply moves one layer down, onto whatever this awaits.
+        commit_future = asyncio.ensure_future(on_committed())
+        commit_future.add_done_callback(_consume_future_exception)
+        pending_cancel = await _wait_deferring_cancellation(
+            commit_future, pending_cancel
+        )
+        if not commit_future.cancelled():
+            commit_exc = commit_future.exception()
 
     if pending_cancel is not None:
-        # The caller gets CancelledError, so nobody will ever see the worker's
-        # exception. ``_consume_future_exception`` already marked it retrieved
-        # (no "exception was never retrieved" noise at GC time); log it so the
+        # The caller gets CancelledError, so nobody will ever see these.
+        # ``_consume_future_exception`` already marked them retrieved (no
+        # "exception was never retrieved" noise at GC time); log them so the
         # failure is not lost entirely.
-        if not async_future.cancelled():
-            worker_exc = async_future.exception()
-            if worker_exc is not None:
-                logger.error(
-                    f"Offloaded work failed while its caller was cancelled: {worker_exc}"
-                )
+        for label, exc in (("Offloaded work", write_exc), ("Commit hook", commit_exc)):
+            if exc is not None:
+                logger.error(f"{label} failed while its caller was cancelled: {exc}")
         raise pending_cancel
+    if commit_exc is not None:
+        raise commit_exc
     return async_future.result()
 
 
@@ -3042,6 +3087,43 @@ async def run_in_storage_io(fn: Callable[..., Any], *args: Any, **kwargs: Any) -
         args,
         kwargs,
         wait_for_completion=True,
+    )
+
+
+async def commit_in_storage_io(
+    fn: Callable[[], Any],
+    on_committed: Callable[[], Awaitable[Any]],
+) -> Any:
+    """``run_in_storage_io`` for a write whose bookkeeping must not be orphaned.
+
+    Backends that publish a file and then tell the other processes to reload it
+    (``set_all_update_flags``) have two steps that must not come apart. A cancel
+    landing between them leaves the file published while every other worker keeps
+    reading the previous snapshot, until some later commit happens to fix it.
+
+    The synchronous writes this replaces had the same gap — with the loop frozen
+    for the whole write, cancellation could only be delivered at the first
+    suspension point after it, which in multiprocess mode is the lock acquire
+    inside ``set_all_update_flags``, before any flag is flipped. Freeing the
+    event loop makes the window far easier to hit, so it is closed here rather
+    than left to grow.
+
+    ``fn`` takes no arguments (wrap it in a lambda or ``partial``), which keeps
+    this signature clear of the keyword-forwarding hazard ``run_in_storage_io``
+    has to live with. ``on_committed`` runs ONLY if ``fn`` succeeded — see
+    ``_bounded_submit_impl`` for why running it otherwise would lose data.
+    """
+    from lightrag.constants import STORAGE_IO_SUBMIT_LIMIT
+
+    semaphore = get_loop_semaphore("storage_io", STORAGE_IO_SUBMIT_LIMIT)
+    return await _bounded_submit_impl(
+        get_storage_io_executor(),
+        semaphore,
+        fn,
+        (),
+        {},
+        wait_for_completion=True,
+        on_committed=on_committed,
     )
 
 

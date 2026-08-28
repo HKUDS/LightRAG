@@ -14,7 +14,10 @@ Pinned here:
   nothing is in flight yet, and refusing to return there would keep the caller's
   lock held for the whole queue;
 * splitting the body out of ``bounded_submit`` did not change its forwarding
-  contract: it still declares no keyword arguments of its own.
+  contract: it still declares no keyword arguments of its own;
+* ``commit_in_storage_io`` keeps a landed write and its bookkeeping together:
+  the hook runs inside the same uncancellable region, and only if the write
+  actually happened.
 """
 
 import asyncio
@@ -29,6 +32,7 @@ from lightrag import utils as lr_utils
 from lightrag.utils import (
     _bounded_submit_impl,
     bounded_submit,
+    commit_in_storage_io,
     get_storage_io_executor,
     run_in_storage_io,
 )
@@ -300,3 +304,159 @@ def test_storage_io_executor_is_a_single_worker_named_pool():
     assert executor._max_workers == 1
     assert executor._thread_name_prefix == "lightrag-storage-io"
     assert lr_utils._STORAGE_IO_EXECUTOR is executor
+
+
+# ---------------------------------------------------------------------------
+# commit_in_storage_io: a landed write and its bookkeeping must not come apart
+# ---------------------------------------------------------------------------
+
+
+async def test_commit_hook_completes_before_a_deferred_cancellation():
+    """Cancelled mid-write, the bookkeeping still runs — before CancelledError.
+
+    This is the case Codex flagged on #3740: the GraphML file is already
+    published, so skipping ``set_all_update_flags`` leaves every other worker
+    reading the previous snapshot indefinitely.
+
+    Fix-proof: route the same work through ``run_in_storage_io`` and inline the
+    hook after it, and the hook never runs at all — the ordering list ends at
+    ["write", "cancelled"].
+    """
+    order = []
+    work = _BlockingWork()
+
+    async def on_committed():
+        # An await here on purpose: a second cancel would otherwise land on it,
+        # which is exactly what the deferring wait has to absorb.
+        await asyncio.sleep(0)
+        order.append("committed")
+
+    task = asyncio.create_task(commit_in_storage_io(work, on_committed))
+
+    await _wait_for(work.started.is_set)
+    task.cancel()
+    work.release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    order.append("cancelled")
+
+    assert order == ["committed", "cancelled"], order
+
+
+async def test_commit_hook_does_not_run_when_waiting_for_a_permit_is_cancelled():
+    """No submission means no write, so the bookkeeping must NOT run.
+
+    Load-bearing rather than tidiness: Nano's hook retires the redo logs. Running
+    it without a write would discard rows that were never persisted.
+    """
+    executor = _CountingExecutor(max_workers=1)
+    semaphore = asyncio.Semaphore(1)
+    holder = _BlockingWork()
+    hook_ran = []
+
+    async def on_committed():
+        hook_ran.append(1)
+
+    try:
+        held = asyncio.create_task(
+            _bounded_submit_impl(
+                executor,
+                semaphore,
+                holder,
+                (),
+                {},
+                wait_for_completion=True,
+                on_committed=on_committed,
+            )
+        )
+        await _wait_for(holder.started.is_set)
+
+        queued = _BlockingWork()
+        waiting = asyncio.create_task(
+            _bounded_submit_impl(
+                executor,
+                semaphore,
+                queued,
+                (),
+                {},
+                wait_for_completion=True,
+                on_committed=on_committed,
+            )
+        )
+        await _wait_for(lambda: semaphore.locked())
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+
+        assert executor.submissions == 1
+        assert not queued.started.is_set()
+        assert hook_ran == [], "bookkeeping ran for a write that never happened"
+
+        holder.release.set()
+        await held
+        assert hook_ran == [1], "the write that DID land must run its bookkeeping"
+    finally:
+        holder.release.set()
+        executor.shutdown(wait=True)
+
+
+async def test_commit_hook_does_not_run_when_the_write_raises():
+    """A failed write must not have its bookkeeping applied."""
+    hook_ran = []
+
+    async def on_committed():
+        hook_ran.append(1)
+
+    work = _BlockingWork(exc=OSError("disk full"))
+    task = asyncio.create_task(commit_in_storage_io(work, on_committed))
+
+    await _wait_for(work.started.is_set)
+    work.release.set()
+
+    with pytest.raises(OSError, match="disk full"):
+        await task
+    assert hook_ran == []
+
+
+async def test_commit_hook_failure_surfaces_when_not_cancelled():
+    """Bookkeeping that fails must be reported, not swallowed.
+
+    The write landed but the namespace was never flagged, so the caller has to
+    hear about it — ``_insert_done`` only detects failures via exceptions.
+    """
+
+    async def on_committed():
+        raise RuntimeError("flag update failed")
+
+    work = _BlockingWork()
+    work.release.set()
+
+    with pytest.raises(RuntimeError, match="flag update failed"):
+        await commit_in_storage_io(work, on_committed)
+
+
+async def test_on_committed_requires_wait_for_completion():
+    """The hook is meaningless without the uncancellable wait — reject it."""
+    executor = ThreadPoolExecutor(max_workers=1)
+    semaphore = asyncio.Semaphore(1)
+
+    async def on_committed():  # pragma: no cover — never reached
+        raise AssertionError("must not run")
+
+    try:
+        with pytest.raises(ValueError, match="wait_for_completion"):
+            await _bounded_submit_impl(
+                executor,
+                semaphore,
+                lambda: None,
+                (),
+                {},
+                wait_for_completion=False,
+                on_committed=on_committed,
+            )
+    finally:
+        executor.shutdown(wait=True)
