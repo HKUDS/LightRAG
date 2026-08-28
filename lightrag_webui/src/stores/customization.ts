@@ -25,9 +25,14 @@ export type CustomizationStatus = 'loading' | 'ready' | 'error'
 
 /**
  * Sentinel target locale: request the customization WITHOUT a `locale`
- * parameter, so the server resolves the bundle's `default_locale`. Used when
- * the user never explicitly selected a language and the browser's languages
- * match none of the UI locales.
+ * parameter, so the server resolves the bundle's `default_locale`.
+ *
+ * NOT what the UI surfaces send. They resolve a concrete language through
+ * `resolveUiLanguage`, because the UI chrome cannot wait for an async
+ * default: letting the bundle pick here left English buttons beside branding
+ * in the bundle's own default locale. A caller that genuinely wants the
+ * server to choose (and has nothing else to keep in sync) can still use it —
+ * the server falls back to `default_locale` for an undeclared locale anyway.
  */
 export const SERVER_DEFAULT_LOCALE = ''
 

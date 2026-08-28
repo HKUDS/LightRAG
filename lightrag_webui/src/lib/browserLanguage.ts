@@ -2,9 +2,7 @@
  * Browser-language detection for the language priority contract
  * (workspace-entry PRD): an EXPLICIT, persisted user selection wins;
  * otherwise the browser's preferred languages are matched against the UI
- * locales; otherwise callers fall back (UI text → 'en'; the customization
- * request sends NO locale so the server resolves the bundle's
- * default_locale).
+ * locales; otherwise `DEFAULT_UI_LANGUAGE`.
  *
  * Pure module: no store imports, so it is usable from the pre-React i18n
  * bootstrap and unit-testable with injected preference lists.
@@ -71,4 +69,45 @@ export function detectBrowserLanguage(
     if (match) return match
   }
   return null
+}
+
+
+/**
+ * Last resort when no explicit selection exists and the browser's languages
+ * match no UI locale.
+ *
+ * Every surface must land on the SAME language here. Asking the server for
+ * no locale instead — letting it answer with the bundle's `default_locale` —
+ * looks like a closer reading of "browser language > bundle default", but it
+ * makes the two surfaces disagree: the UI chrome has no async fallback and
+ * is already rendering English, so a bundle defaulting to another locale
+ * produced English buttons beside, say, Korean welcome text. Requesting this
+ * language keeps the bundle's own fallback in charge of what it actually
+ * covers (`UIBundle.resolve_locale` answers with `default_locale` when the
+ * requested locale is not declared), which is the same outcome wherever the
+ * bundle has no English variant — and the right one wherever it does.
+ */
+export const DEFAULT_UI_LANGUAGE: SupportedUiLanguage = 'en'
+
+/**
+ * The full priority chain, shared by the i18n bootstrap and the branding
+ * loader so the two can never drift apart: explicit persisted choice >
+ * browser language > `DEFAULT_UI_LANGUAGE`.
+ *
+ * `persistedLanguage` is honored ONLY when `userSelected` is true; without
+ * that marker the stored value is itself a browser-derived leftover, and
+ * honoring it would keep a stale language after the browser's preferences
+ * changed.
+ */
+export function resolveUiLanguage(
+  userSelected: unknown,
+  persistedLanguage: unknown
+): SupportedUiLanguage {
+  const persisted =
+    typeof persistedLanguage === 'string' &&
+    (SUPPORTED_UI_LANGUAGES as readonly string[]).includes(persistedLanguage)
+      ? (persistedLanguage as SupportedUiLanguage)
+      : null
+  if (userSelected && persisted) return persisted
+  return detectBrowserLanguage() ?? DEFAULT_UI_LANGUAGE
 }

@@ -1,16 +1,18 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  DEFAULT_UI_LANGUAGE,
   detectBrowserLanguage,
   matchBrowserLanguageTag,
+  resolveUiLanguage,
   SUPPORTED_UI_LANGUAGES
 } from './browserLanguage'
 
 /**
  * Language priority contract (workspace-entry PRD): without an explicit
  * persisted selection the browser languages decide, normalized onto the UI
- * locale ids; when nothing matches, callers fall back (UI → 'en',
- * customization request → server default). These tests pin the
- * normalization half of that contract.
+ * locale ids; when nothing matches, every surface falls back to
+ * DEFAULT_UI_LANGUAGE. These tests pin the normalization half of that
+ * contract and the shared resolver that keeps the surfaces aligned.
  */
 
 describe('matchBrowserLanguageTag', () => {
@@ -71,5 +73,66 @@ describe('detectBrowserLanguage', () => {
     for (const language of SUPPORTED_UI_LANGUAGES) {
       expect(detectBrowserLanguage([language])).toBe(language)
     }
+  })
+})
+
+
+/**
+ * `resolveUiLanguage` is the WHOLE chain, and it exists to be shared: the
+ * i18n bootstrap and useCustomizedContent both run it, so UI chrome and
+ * branding cannot land on different languages.
+ *
+ * The defect it closes: the branding loader used to send NO locale when the
+ * browser matched nothing, letting the server answer with the bundle's
+ * `default_locale` — while the chrome, which has no async fallback, had
+ * already rendered English. A bundle defaulting to Korean produced Korean
+ * welcome text beside English buttons and settings.
+ */
+describe('resolveUiLanguage (the shared chain)', () => {
+  const withBrowserLanguages = <T>(tags: string[], run: () => T): T => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { languages: tags, language: tags[0] },
+      configurable: true
+    })
+    try {
+      return run()
+    } finally {
+      if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor)
+      // @ts-expect-error - removing the stub when there was no navigator
+      else delete globalThis.navigator
+    }
+  }
+
+  test('an unsupported browser language resolves to the SAME fallback as i18n', () => {
+    // Both surfaces call this, so there is one answer by construction.
+    withBrowserLanguages(['th-TH', 'pt-BR'], () => {
+      expect(resolveUiLanguage(false, null)).toBe(DEFAULT_UI_LANGUAGE)
+      expect(resolveUiLanguage(false, 'zh')).toBe(DEFAULT_UI_LANGUAGE)
+    })
+  })
+
+  test('it never returns the empty "let the server decide" locale', () => {
+    // Sending no locale is what let the bundle default disagree with the
+    // chrome; the chain must always name a supported language.
+    withBrowserLanguages(['th-TH'], () => {
+      const resolved = resolveUiLanguage(false, undefined)
+      expect(resolved).not.toBe('')
+      expect(SUPPORTED_UI_LANGUAGES).toContain(resolved)
+    })
+  })
+
+  test('the browser language wins over a persisted value that was not chosen', () => {
+    withBrowserLanguages(['de-DE'], () => {
+      expect(resolveUiLanguage(false, 'zh')).toBe('de')
+    })
+  })
+
+  test('an explicit persisted choice wins over the browser', () => {
+    withBrowserLanguages(['de-DE'], () => {
+      expect(resolveUiLanguage(true, 'zh')).toBe('zh')
+      // …but only when it is a language this build ships.
+      expect(resolveUiLanguage(true, 'xx')).toBe('de')
+    })
   })
 })

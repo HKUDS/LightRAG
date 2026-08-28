@@ -513,6 +513,56 @@ describe('quota degradation under a byte budget', () => {
     expectCompletedWithEmptyHistory(quotaStorage)
   })
 
+  test('the FIRST target write already fails: the legacy history is freed', () => {
+    // The dead end this covers: when the legacy envelope alone leaves less
+    // room than the small query-settings target needs, nothing of ours ever
+    // lands, so there is nothing to reclaim and the degraded retry repeats
+    // the identical failing write — on this run and on every reload, pinning
+    // the user on MigrationErrorScreen with a retry that can never succeed.
+    // The only bytes left to free are the legacy history's own, and by then
+    // the degradation has already decided to discard it.
+    const quotaStorage = new ByteQuotaStorage(1450, false)
+    quotaStorage.setItem(LEGACY_SETTINGS_STORAGE_KEY, legacyWithBigHistory())
+
+    runSettingsStorageSplitMigration(quotaStorage)
+
+    // Nothing of ours had landed, so nothing of ours was reclaimed…
+    expect(quotaStorage.removed).not.toContain(WEBUI_RETRIEVAL_HISTORY_KEY)
+    // …and the split still completed under the degradation policy.
+    expectCompletedWithEmptyHistory(quotaStorage)
+  })
+
+  test('the same case on an engine that CAN shrink a key in place', () => {
+    // freeOnReplace: the legacy envelope is rewritten smaller directly, so
+    // the key is never removed and no crash window exists at all.
+    const quotaStorage = new ByteQuotaStorage(1450)
+    quotaStorage.setItem(LEGACY_SETTINGS_STORAGE_KEY, legacyWithBigHistory())
+
+    runSettingsStorageSplitMigration(quotaStorage)
+
+    expect(quotaStorage.removed).toEqual([])
+    expectCompletedWithEmptyHistory(quotaStorage)
+  })
+
+  test('a quota that stays exhausted is reported, not silently declared done', () => {
+    // Freeing the legacy history cannot always be enough — here another key
+    // holds the store. The run must record the failure so dependent stores
+    // refuse to hydrate and the entry offers a retry (rules 6/7), and it must
+    // leave a legacy envelope behind: a run that found NO envelope would
+    // declare the split done over data it never migrated.
+    const quotaStorage = new ByteQuotaStorage(10000, false)
+    quotaStorage.setItem(LEGACY_SETTINGS_STORAGE_KEY, legacyWithBigHistory())
+    quotaStorage.setItem('unrelated::blob', 'y'.repeat(1000))
+    // The quota tightens under us (other origins' data, another tab's writes).
+    quotaStorage.budget = 1250
+
+    runSettingsStorageSplitMigration(quotaStorage)
+
+    expect(getSettingsMigrationError()).not.toBeNull()
+    expect(wasHistoryDroppedDuringMigration()).toBe(false)
+    expect(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)).not.toBeNull()
+  })
+
   test('a PRE-EXISTING history key is never reclaimed (rule 4 still wins)', () => {
     const quotaStorage = new ByteQuotaStorage(2950, false)
     const userHistory = JSON.stringify({

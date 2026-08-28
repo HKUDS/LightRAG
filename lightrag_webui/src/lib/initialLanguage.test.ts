@@ -1,13 +1,14 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { LEGACY_SETTINGS_STORAGE_KEY } from '@/lib/storageKeys'
+import { resolveUiLanguage } from '@/lib/browserLanguage'
 
 /**
  * Language priority at startup: an EXPLICIT persisted choice wins; otherwise
  * the browser decides; otherwise 'en'. The persisted value has NO say without
  * the explicit marker — it is itself a browser-derived leftover, so honoring
  * it would keep a stale language after the browser's preferences changed AND
- * disagree with useCustomizedContent (whose chain is browser → bundle
- * default), mixing two languages on one page.
+ * disagree with useCustomizedContent, mixing two languages on one page —
+ * both now resolve through the SAME `resolveUiLanguage`.
  *
  * i18n.ts resolves this once at module load, so each case re-imports the
  * module with a fresh registry (bun caches per path; the query string makes
@@ -90,5 +91,22 @@ describe('startup language resolution', () => {
     expect(await resolveInitialLanguage()).toBe('ja')
     seed(null, ['pt-BR'])
     expect(await resolveInitialLanguage()).toBe('en')
+  })
+
+  test('an unsupported browser language: branding requests the SAME language', async () => {
+    // The mismatch this pins: the branding loader used to send NO locale
+    // here, letting the server answer with the bundle's `default_locale`,
+    // while i18n had already settled on English — Korean welcome text beside
+    // English buttons. Both surfaces now run the one chain below.
+    seed(null, ['th-TH', 'pt-BR'])
+
+    const uiLanguage = await resolveInitialLanguage()
+    // What useCustomizedContent passes to the customization request:
+    const brandingLocale = resolveUiLanguage(false, null)
+
+    expect(uiLanguage).toBe('en')
+    expect<string>(brandingLocale).toBe(uiLanguage)
+    // Never the "let the server decide" sentinel.
+    expect(brandingLocale).not.toBe('')
   })
 })

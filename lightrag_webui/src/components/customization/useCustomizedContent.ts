@@ -1,12 +1,8 @@
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSettingsStore } from '@/stores/settings'
-import {
-  needsCustomizationLoad,
-  SERVER_DEFAULT_LOCALE,
-  useCustomizationStore
-} from '@/stores/customization'
-import { detectBrowserLanguage } from '@/lib/browserLanguage'
+import { needsCustomizationLoad, useCustomizationStore } from '@/stores/customization'
+import { resolveUiLanguage } from '@/lib/browserLanguage'
 import defaultLogoUrl from '@/assets/logo.svg'
 
 /**
@@ -44,14 +40,14 @@ export function useCustomizedContent(): CustomizedContent {
   const loadedLocale = useCustomizationStore((s) => s.loadedLocale)
   const failedAttempts = useCustomizationStore((s) => s.failedAttempts)
 
-  // Language priority (PRD): explicit persisted choice > browser language >
-  // bundle default. Without an explicit choice the store's language already
-  // mirrors the browser detection (i18n bootstrap); when even that found no
-  // supported match, send NO locale and let the server resolve the bundle's
-  // default_locale.
-  const locale = languageUserSelected
-    ? language
-    : (detectBrowserLanguage() ?? SERVER_DEFAULT_LOCALE)
+  // The SHARED language chain — the same function the i18n bootstrap runs on
+  // (explicit persisted choice > browser language > DEFAULT_UI_LANGUAGE), so
+  // branding and UI chrome always speak one language. Requesting no locale
+  // here instead would hand the last step to the bundle's `default_locale`
+  // while the chrome, which has no async fallback, was already English.
+  // Asking for a concrete locale loses nothing: the server still answers a
+  // locale the bundle does not declare with its own default.
+  const locale = resolveUiLanguage(languageUserSelected, language)
 
   // (Re-)target on mount and whenever the user switches language, AND retry
   // whenever this locale is not the one actually loaded — a failed request

@@ -200,13 +200,82 @@ function writeTargetsAndClean(
   )
 }
 
+/** One degraded attempt (history dropped); returns the error, or null on
+ * success. */
+function tryWriteDegraded(
+  storage: Storage,
+  context: { envelope: any; normalized: any },
+  writtenKeys: Set<string>
+): unknown {
+  try {
+    writeTargetsAndClean(storage, context.envelope, context.normalized, true, writtenKeys)
+    return null
+  } catch (error) {
+    return error
+  }
+}
+
+/**
+ * Last-resort quota reclamation: drop the retrieval history from the LEGACY
+ * envelope itself. Returns false when there is nothing there to free.
+ *
+ * Reached only on the quota path, after the degraded retry failed too — so
+ * the history is already being discarded and this frees the bytes that
+ * decision releases. It exists because the legacy envelope can be big enough
+ * to leave no room for even the FIRST small target write: nothing of ours
+ * would have landed, the reclamation above would have nothing to remove, and
+ * every retry (this run's and every reload's) would fail identically, pinning
+ * the user on MigrationErrorScreen forever.
+ *
+ * The reduced envelope KEEPS querySettings and is stamped at the normalized
+ * cap version, so a crash right here leaves a valid, still-migratable
+ * envelope — the next run re-normalizes it as a no-op and splits it. Only the
+ * already-forfeited history is gone.
+ */
+function freeLegacyHistory(
+  storage: Storage,
+  context: { raw: string; envelope: any; normalized: any }
+): boolean {
+  if (context.normalized.retrievalHistory === undefined) return false
+  const payload = JSON.stringify({
+    ...context.envelope,
+    state: { ...context.normalized, retrievalHistory: undefined },
+    version: LEGACY_SETTINGS_VERSION_CAP
+  })
+  try {
+    storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, payload)
+  } catch (error) {
+    if (!isQuotaExceededError(error)) throw error
+    // An engine that checks the total BEFORE releasing the replaced value
+    // cannot shrink a key in place. Remove it first: the envelope is absent
+    // for exactly one statement, and the alternative is a migration that can
+    // never succeed on any reload.
+    storage.removeItem(LEGACY_SETTINGS_STORAGE_KEY)
+    try {
+      storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, payload)
+    } catch (writeBackError) {
+      // Never leave the browser with NO legacy envelope: a later run would
+      // read "no legacy data" and declare the split done over data it never
+      // migrated. Restoring the exact bytes just removed always fits.
+      try {
+        storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, context.raw)
+      } catch {
+        // Nothing further is possible; the error below is what gets recorded.
+      }
+      throw writeBackError
+    }
+  }
+  delete context.normalized.retrievalHistory
+  return true
+}
+
 export function runSettingsStorageSplitMigration(
   storage: Storage | null = typeof localStorage === 'undefined' ? null : localStorage
 ): void {
   migrationError = null
   historyDroppedDuringMigration = false
   if (!storage) return
-  let parsedContext: { envelope: any; normalized: any } | null = null
+  let parsedContext: { raw: string; envelope: any; normalized: any } | null = null
   // Target keys THIS run created; the quota retry may reclaim only those.
   const writtenKeys = new Set<string>()
   try {
@@ -236,7 +305,7 @@ export function runSettingsStorageSplitMigration(
     // Rule 1: reuse the existing chain to normalize to v21 before splitting.
     const normalized = migrateLegacySettingsState(state, version)
 
-    parsedContext = { envelope, normalized }
+    parsedContext = { raw, envelope, normalized }
     writeTargetsAndClean(storage, envelope, normalized, false, writtenKeys)
   } catch (error) {
     // Quota degradation (product decision: the retrieval history is a
@@ -258,13 +327,27 @@ export function runSettingsStorageSplitMigration(
           storage.removeItem(WEBUI_RETRIEVAL_HISTORY_KEY)
           writtenKeys.delete(WEBUI_RETRIEVAL_HISTORY_KEY)
         }
-        writeTargetsAndClean(
-          storage,
-          parsedContext.envelope,
-          parsedContext.normalized,
-          true,
-          writtenKeys
-        )
+        const retryError = tryWriteDegraded(storage, parsedContext, writtenKeys)
+        if (retryError == null) {
+          historyDroppedDuringMigration = true
+          return
+        }
+        if (!isQuotaExceededError(retryError)) {
+          migrationError = retryError
+          return
+        }
+        // Still out of room: what this run wrote (possibly nothing — the
+        // very first target write can already fail) was not what held the
+        // quota. The legacy history is, so free it there and try once more.
+        if (!freeLegacyHistory(storage, parsedContext)) {
+          migrationError = retryError
+          return
+        }
+        const finalError = tryWriteDegraded(storage, parsedContext, writtenKeys)
+        if (finalError != null) {
+          migrationError = finalError
+          return
+        }
         historyDroppedDuringMigration = true
         return
       } catch (retryError) {

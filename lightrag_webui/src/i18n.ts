@@ -1,11 +1,7 @@
 import i18n from 'i18next'
 import { initReactI18next } from 'react-i18next'
 import { useSettingsStore } from '@/stores/settings'
-import {
-  detectBrowserLanguage,
-  SUPPORTED_UI_LANGUAGES,
-  type SupportedUiLanguage
-} from '@/lib/browserLanguage'
+import { resolveUiLanguage, type SupportedUiLanguage } from '@/lib/browserLanguage'
 import { LEGACY_SETTINGS_STORAGE_KEY } from '@/lib/storageKeys'
 import { getSettingsMigrationError } from '@/migrations/splitSettingsStorage'
 
@@ -28,11 +24,6 @@ import vi from './locales/vi.json'
  * "never chose" — only an envelope with `languageUserSelected` set wins over
  * the browser languages.
  */
-const asSupportedLanguage = (value: unknown): SupportedUiLanguage | null =>
-  typeof value === 'string' && (SUPPORTED_UI_LANGUAGES as readonly string[]).includes(value)
-    ? (value as SupportedUiLanguage)
-    : null
-
 const resolveInitialLanguage = (): SupportedUiLanguage => {
   let persisted: { language?: unknown; languageUserSelected?: unknown } | undefined
   try {
@@ -43,17 +34,12 @@ const resolveInitialLanguage = (): SupportedUiLanguage => {
   } catch (e) {
     console.error('Failed to get stored language:', e)
   }
-  const persistedLanguage = asSupportedLanguage(persisted?.language)
-  if (persisted?.languageUserSelected && persistedLanguage) {
-    return persistedLanguage
-  }
-  // WITHOUT an explicit selection the persisted value has no say: it is
-  // itself a browser-derived leftover, and honoring it here would (a) keep a
-  // stale language after the browser's preferences changed to something
-  // unsupported, and (b) disagree with useCustomizedContent, whose chain is
-  // `browser ?? bundle default` — the page would then mix UI text in the
-  // stale language with branding in the bundle's default one.
-  return detectBrowserLanguage() ?? 'en'
+  // The SHARED chain (see resolveUiLanguage): without an explicit selection
+  // the persisted value has no say — it is itself a browser-derived leftover,
+  // and honoring it would keep a stale language after the browser's
+  // preferences changed. useCustomizedContent resolves through the very same
+  // function, so UI text and branding can never land on different languages.
+  return resolveUiLanguage(persisted?.languageUserSelected, persisted?.language)
 }
 
 const initialLanguage = resolveInitialLanguage()
