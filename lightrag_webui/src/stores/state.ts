@@ -62,6 +62,14 @@ interface AuthState {
 // mounts effects twice, and the probe is idempotent but not free.
 let apiDocsProbeInFlight: Promise<void> | null = null
 
+// Last-caller-wins guard for health checks: concurrent check() calls (a
+// credential probe racing a save-triggered re-probe, or overlapping periodic
+// checks) must not let COMPLETION ORDER decide the shared state — a stale
+// request finishing last would overwrite health/message with an outdated
+// result (e.g. the previous API key's failure after the replacement already
+// validated). Only the newest in-flight check may write.
+let healthCheckGeneration = 0
+
 const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
   health: true,
   message: null,
@@ -76,7 +84,14 @@ const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
   healthCheckIntervalValue: healthCheckInterval * 1000, // Use constant from lib/constants
 
   check: async () => {
+    const generation = ++healthCheckGeneration
     const health = await checkHealth()
+    if (generation !== healthCheckGeneration) {
+      // Superseded mid-flight by a newer check: discard this result entirely
+      // (no state, version, title, or graph-limit writes) and report the
+      // state the newest check established.
+      return get().health
+    }
     if (health.status === 'healthy') {
       // Update version information if health check returns it
       if (health.core_version || health.api_version) {

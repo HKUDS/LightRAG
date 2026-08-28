@@ -6,7 +6,6 @@ import AppSettings from '@/components/AppSettings'
 import ApiKeyAlert from '@/components/ApiKeyAlert'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import { useAuthStore, useBackendState } from '@/stores/state'
-import { useSettingsStore } from '@/stores/settings'
 import { getAuthStatus, InvalidApiKeyError, RequireApiKeError } from '@/api/lightrag'
 import { useIdentityEpochStore } from '@/lib/loginIdentity'
 import { navigationService } from '@/services/navigation'
@@ -26,11 +25,13 @@ export default function WorkspaceApp() {
   const { isGuestMode, username, webuiTitle, webuiDescription } = useAuthStore()
   const [initializing, setInitializing] = useState(true)
   const [apiKeyAlertOpen, setApiKeyAlertOpen] = useState(false)
-  const apiKey = useSettingsStore.use.apiKey()
   // Bumped by the cross-tab identity watch: remounting the query view drops
   // the live session state that belonged to the previous identity.
   const identityEpoch = useIdentityEpochStore((s) => s.epoch)
   const versionCheckRef = useRef(false) // Prevent duplicate calls in Vite dev mode
+  // Generation of the newest credential probe: rapid re-saves can leave an
+  // older probe in flight, and only the newest one may decide the dialog.
+  const probeGenerationRef = useRef(0)
 
   // Refresh version/title info once (mirrors the admin shell, minus the
   // guest auto-login: on this entry guest activation happens ONLY through
@@ -90,7 +91,12 @@ export default function WorkspaceApp() {
   // counterpart of the admin shell's periodic health check — a single probe,
   // not a polling loop.
   const runCredentialProbe = useCallback(() => {
+    const generation = ++probeGenerationRef.current
     void useBackendState.getState().check().then(() => {
+      // check() itself is last-caller-wins (stale checks never write the
+      // backend state); this guard is the same rule for the DIALOG decision:
+      // a superseded probe must not act on the newer probe's result.
+      if (generation !== probeGenerationRef.current) return
       // Open the dialog HERE, from the probe result, not only via
       // ApiKeyAlert's message watch: a rejected replacement key produces the
       // IDENTICAL message string, which never re-fires a message-change
@@ -105,10 +111,14 @@ export default function WorkspaceApp() {
     })
   }, [])
 
+  // SINGLE trigger per save: the workspace's only API-key writer is the
+  // dialog below, whose close handler re-probes — an additional apiKey
+  // dependency here would launch a duplicate request for the same save and
+  // reintroduce the stale-completion race. This effect covers first mount.
   useEffect(() => {
     if (initializing) return
     runCredentialProbe()
-  }, [initializing, apiKey, runCredentialProbe])
+  }, [initializing, runCredentialProbe])
 
   const handleApiKeyAlertOpenChange = useCallback(
     (open: boolean) => {
