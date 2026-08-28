@@ -416,3 +416,116 @@ describe('quota-aware degradation (history is non-critical test data)', () => {
     expect(parsed(WEBUI_RETRIEVAL_HISTORY_KEY).state.history).toEqual(HISTORY)
   })
 })
+
+/**
+ * Total-byte quota — the model in which a large write can SUCCEED and a
+ * LATER write then fails because the budget is exhausted. `freeOnReplace`
+ * covers both real browser behaviors: some free a replaced key's old bytes
+ * before checking, some check against the current total.
+ */
+class ByteQuotaStorage implements Storage {
+  data = new Map<string, string>()
+  removed: string[] = []
+  constructor(
+    public budget: number,
+    private freeOnReplace = true
+  ) {}
+
+  get length() {
+    return this.data.size
+  }
+  private used(exceptKey?: string) {
+    let total = 0
+    for (const [key, value] of this.data) {
+      if (key !== exceptKey) total += key.length + value.length
+    }
+    return total
+  }
+  clear() {
+    this.data.clear()
+  }
+  getItem(key: string) {
+    return this.data.get(key) ?? null
+  }
+  key(index: number) {
+    return [...this.data.keys()][index] ?? null
+  }
+  removeItem(key: string) {
+    this.removed.push(key)
+    this.data.delete(key)
+  }
+  setItem(key: string, value: string) {
+    const used = this.freeOnReplace ? this.used(key) : this.used()
+    if (used + key.length + value.length > this.budget) {
+      const error = new Error('quota exceeded (byte budget)')
+      error.name = 'QuotaExceededError'
+      throw error
+    }
+    this.data.set(key, value)
+  }
+}
+
+describe('quota degradation under a byte budget', () => {
+  const bigHistory = [{ id: 'h1', role: 'user', content: 'x'.repeat(1200) }]
+  const legacyWithBigHistory = () =>
+    legacyEnvelope(21, { ...v21State(), retrievalHistory: bigHistory })
+
+  const expectCompletedWithEmptyHistory = (quotaStorage: ByteQuotaStorage) => {
+    const read = (key: string) => JSON.parse(quotaStorage.getItem(key)!)
+    // No dead end: the split completed under the degradation policy…
+    expect(getSettingsMigrationError()).toBeNull()
+    expect(wasHistoryDroppedDuringMigration()).toBe(true)
+    // …every target exists, with the history dropped to empty…
+    expect(read(QUERY_SETTINGS_STORAGE_KEY).state.querySettings.mode).toBe('hybrid')
+    expect(read(WEBUI_RETRIEVAL_HISTORY_KEY).state.history).toEqual([])
+    expect(read(WORKSPACE_RETRIEVAL_HISTORY_KEY).state.history).toEqual([])
+    // …and the legacy envelope was cleaned and bumped, so the next reload is
+    // a no-op instead of repeating the failure forever.
+    expect(read(LEGACY_SETTINGS_STORAGE_KEY).version).toBe(
+      SETTINGS_STORAGE_VERSION_AFTER_SPLIT
+    )
+    expect(read(LEGACY_SETTINGS_STORAGE_KEY).state.retrievalHistory).toBeUndefined()
+  }
+
+  test('the history copy itself does not fit: the retry writes an empty one', () => {
+    const quotaStorage = new ByteQuotaStorage(2100)
+    quotaStorage.setItem(LEGACY_SETTINGS_STORAGE_KEY, legacyWithBigHistory())
+
+    runSettingsStorageSplitMigration(quotaStorage)
+
+    expectCompletedWithEmptyHistory(quotaStorage)
+    // Nothing to reclaim — the oversized write never landed.
+    expect(quotaStorage.removed).toEqual([])
+  })
+
+  test('the copy LANDS and a later write hits the quota: the retry reclaims it', () => {
+    // The sequence that would loop forever without reclamation: writeIfAbsent
+    // preserves the oversized copy this run just made, so the outstanding
+    // write fails identically on this run and on every reload after it.
+    // Budget calibrated so the history copy still fits (total 2908 B) while
+    // the cleanup write that follows it does not (needs 3025 B).
+    const quotaStorage = new ByteQuotaStorage(2950, false)
+    quotaStorage.setItem(LEGACY_SETTINGS_STORAGE_KEY, legacyWithBigHistory())
+
+    runSettingsStorageSplitMigration(quotaStorage)
+
+    expect(quotaStorage.removed).toEqual([WEBUI_RETRIEVAL_HISTORY_KEY])
+    expectCompletedWithEmptyHistory(quotaStorage)
+  })
+
+  test('a PRE-EXISTING history key is never reclaimed (rule 4 still wins)', () => {
+    const quotaStorage = new ByteQuotaStorage(2950, false)
+    const userHistory = JSON.stringify({
+      state: { history: [{ id: 'u1', role: 'user', content: 'the user own record' }] },
+      version: 1
+    })
+    quotaStorage.setItem(WEBUI_RETRIEVAL_HISTORY_KEY, userHistory)
+    quotaStorage.setItem(LEGACY_SETTINGS_STORAGE_KEY, legacyWithBigHistory())
+
+    runSettingsStorageSplitMigration(quotaStorage)
+
+    // A key this run did NOT create survives untouched, whatever the quota did.
+    expect(quotaStorage.removed).toEqual([])
+    expect(quotaStorage.getItem(WEBUI_RETRIEVAL_HISTORY_KEY)).toBe(userHistory)
+  })
+})

@@ -102,9 +102,17 @@ export function hasFutureSettingsEnvelope(
   )
 }
 
-function writeIfAbsent(storage: Storage, key: string, value: unknown): void {
+/** Writes `value` only when `key` is absent (rule 4), recording the keys
+ * THIS run created — the quota retry may reclaim only those. */
+function writeIfAbsent(
+  storage: Storage,
+  key: string,
+  value: unknown,
+  writtenKeys: Set<string>
+): void {
   if (storage.getItem(key) == null) {
     storage.setItem(key, JSON.stringify(value))
+    writtenKeys.add(key)
   }
 }
 
@@ -127,24 +135,46 @@ function writeTargetsAndClean(
   storage: Storage,
   envelope: any,
   normalized: any,
-  dropHistory: boolean
+  dropHistory: boolean,
+  writtenKeys: Set<string>
 ): void {
   // Phase 1 (rule 4/5): write every missing target key. JSON.stringify
   // drops `undefined` fields, so an envelope that somehow lacks a source
   // field simply lets the store fall back to its defaults on hydration.
-  writeIfAbsent(storage, QUERY_SETTINGS_STORAGE_KEY, {
-    state: { querySettings: normalized.querySettings },
-    version: QUERY_SETTINGS_STORE_VERSION
-  })
-  writeIfAbsent(storage, WEBUI_RETRIEVAL_HISTORY_KEY, {
-    state: { history: dropHistory ? [] : (normalized.retrievalHistory ?? []) },
-    version: RETRIEVAL_HISTORY_STORE_VERSION
-  })
-  writeIfAbsent(storage, WORKSPACE_RETRIEVAL_HISTORY_KEY, {
-    // Fixed mapping: the workspace history has NO legacy source.
-    state: { history: [] },
-    version: RETRIEVAL_HISTORY_STORE_VERSION
-  })
+  //
+  // ORDER MATTERS: the small, fixed-size targets go first and the
+  // quota-sensitive history copy LAST. A quota failure then leaves the
+  // cheap targets already written, so the degraded retry only has to place
+  // an empty history — it never has to squeeze in another required write
+  // while the oversized copy still occupies the quota.
+  writeIfAbsent(
+    storage,
+    QUERY_SETTINGS_STORAGE_KEY,
+    {
+      state: { querySettings: normalized.querySettings },
+      version: QUERY_SETTINGS_STORE_VERSION
+    },
+    writtenKeys
+  )
+  writeIfAbsent(
+    storage,
+    WORKSPACE_RETRIEVAL_HISTORY_KEY,
+    {
+      // Fixed mapping: the workspace history has NO legacy source.
+      state: { history: [] },
+      version: RETRIEVAL_HISTORY_STORE_VERSION
+    },
+    writtenKeys
+  )
+  writeIfAbsent(
+    storage,
+    WEBUI_RETRIEVAL_HISTORY_KEY,
+    {
+      state: { history: dropHistory ? [] : (normalized.retrievalHistory ?? []) },
+      version: RETRIEVAL_HISTORY_STORE_VERSION
+    },
+    writtenKeys
+  )
 
   // Phase 2 (rule 5): all targets exist — strip the migrated fields from
   // the legacy envelope and bump its version.
@@ -177,6 +207,8 @@ export function runSettingsStorageSplitMigration(
   historyDroppedDuringMigration = false
   if (!storage) return
   let parsedContext: { envelope: any; normalized: any } | null = null
+  // Target keys THIS run created; the quota retry may reclaim only those.
+  const writtenKeys = new Set<string>()
   try {
     const raw = storage.getItem(LEGACY_SETTINGS_STORAGE_KEY)
     if (raw == null) return
@@ -205,7 +237,7 @@ export function runSettingsStorageSplitMigration(
     const normalized = migrateLegacySettingsState(state, version)
 
     parsedContext = { envelope, normalized }
-    writeTargetsAndClean(storage, envelope, normalized, false)
+    writeTargetsAndClean(storage, envelope, normalized, false, writtenKeys)
   } catch (error) {
     // Quota degradation (product decision: the retrieval history is a
     // non-critical test-chat record). A legacy history near the quota cannot
@@ -216,11 +248,22 @@ export function runSettingsStorageSplitMigration(
     // and record the drop so the entry shells can show a one-time warning.
     if (parsedContext && isQuotaExceededError(error)) {
       try {
+        // Reclaim the oversized copy this run just made, so the retry has
+        // room for the writes still outstanding (a later write can hit the
+        // quota precisely BECAUSE the copy landed). Only a key THIS run
+        // created may go: rule 4 keeps a pre-existing history authoritative,
+        // and `writeIfAbsent` would otherwise preserve our own oversized
+        // copy and make the retry fail identically, forever.
+        if (writtenKeys.has(WEBUI_RETRIEVAL_HISTORY_KEY)) {
+          storage.removeItem(WEBUI_RETRIEVAL_HISTORY_KEY)
+          writtenKeys.delete(WEBUI_RETRIEVAL_HISTORY_KEY)
+        }
         writeTargetsAndClean(
           storage,
           parsedContext.envelope,
           parsedContext.normalized,
-          true
+          true,
+          writtenKeys
         )
         historyDroppedDuringMigration = true
         return
