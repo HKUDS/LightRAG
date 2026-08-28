@@ -333,3 +333,56 @@ async def test_cancelled_commit_still_notifies_the_other_processes(
     )
     # And the gate is back open, so later graph work is not deadlocked.
     await asyncio.wait_for(storage.upsert_node("B", {"entity_id": "B"}), timeout=2)
+
+
+def test_gate_is_rebound_after_the_owning_loop_closes(tmp_path):
+    """One instance, two loops: the gate must not stay bound to the dead one.
+
+    ``asyncio.Event`` binds to a loop the first time a ``wait()`` suspends on
+    it, and afterwards ``wait()`` from another loop raises "is bound to a
+    different event loop". A ``NetworkXStorage`` can outlive its loop — the
+    synchronous wrappers let calls through on a fresh loop once the original
+    ``owning_loop`` has closed (``_run_sync``, i.e. the common
+    ``rag = asyncio.run(initialize_rag())`` shape) — so a gate bound during an
+    earlier commit would break the next one.
+
+    Deliberately NOT an async test: it needs two real loops, and the failure
+    only appears on the second one. Fix-proof: drop the ``_commit_gate_loop``
+    check from ``_gate()`` and the second ``asyncio.run`` raises RuntimeError.
+    """
+    initialize_share_data()
+    try:
+        storage = None
+
+        async def first_loop():
+            nonlocal storage
+            storage = await _make_storage(tmp_path)
+            await storage.upsert_node("A", {"entity_id": "A"})
+            # Force a real suspension on the gate so it binds to THIS loop.
+            gate = storage._gate()
+            gate.clear()
+            waiter = asyncio.create_task(storage._get_graph())
+            await _wait_for(lambda: not waiter.done())
+            for _ in range(5):
+                await asyncio.sleep(0)
+            gate.set()
+            await waiter
+            assert storage._commit_gate_loop is asyncio.get_running_loop()
+
+        asyncio.run(first_loop())
+
+        bound_to = storage._commit_gate
+
+        async def second_loop():
+            # A commit that closes and reopens the gate: with the stale Event
+            # still in place, the mutator's wait() below raises RuntimeError.
+            await storage.index_done_callback()
+            await asyncio.wait_for(
+                storage.upsert_node("B", {"entity_id": "B"}), timeout=2
+            )
+            assert storage._commit_gate is not bound_to, "gate was not rebound"
+            assert storage._commit_gate_loop is asyncio.get_running_loop()
+
+        asyncio.run(second_loop())
+    finally:
+        finalize_share_data()

@@ -267,6 +267,7 @@ class NetworkXStorage(BaseGraphStorage):
         # Created lazily by _gate(): asyncio.Event binds to a loop on first
         # wait, and instances are constructed outside any running loop.
         self._commit_gate = None
+        self._commit_gate_loop = None
 
         reap_orphan_tmp_files(self._graphml_xml_file, workspace=self.workspace or "_")
 
@@ -299,10 +300,27 @@ class NetworkXStorage(BaseGraphStorage):
         See *Commit gate* in the class docstring. Lazily created so the
         ``asyncio.Event`` binds to whichever loop first waits on it, which is
         never the loop-less ``__post_init__``.
+
+        Rebuilt when the running loop changes. An ``asyncio.Event`` binds to a
+        loop the first time a ``wait()`` actually suspends on it, and from then
+        on ``wait()`` from any other loop raises "is bound to a different event
+        loop". A single instance CAN legitimately outlive its loop: the
+        synchronous wrappers let calls through on a fresh loop once the original
+        ``owning_loop`` has closed (see ``_run_sync`` — the common
+        ``rag = asyncio.run(initialize_rag())`` shape), and a gate bound during
+        some earlier commit would then break the next one.
+
+        Rebinding is safe rather than a race: a commit in flight holds
+        ``_storage_lock`` and runs on the loop being replaced, so reaching here
+        on a different loop means no commit of ours is outstanding and an open
+        gate is the correct state. Lazily rebuilt here, not eagerly in
+        ``initialize()``, because that is not where the loop change shows up.
         """
-        if self._commit_gate is None:
+        loop = asyncio.get_running_loop()
+        if self._commit_gate is None or self._commit_gate_loop is not loop:
             self._commit_gate = asyncio.Event()
             self._commit_gate.set()
+            self._commit_gate_loop = loop
         return self._commit_gate
 
     async def _get_graph(self):
