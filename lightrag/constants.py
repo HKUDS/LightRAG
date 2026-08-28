@@ -425,6 +425,14 @@ DUPLICATE_DEMOTION_METADATA_KEYS: tuple[str, ...] = (
 # a stale generated summary while real raw-document summaries are preserved —
 # keep every producer on this constant so the match never drifts.
 FILE_EXTRACTION_SUMMARY_PREFIX = "[File Extraction]"
+# Hard ceiling for a doc_status ``content_summary``. PostgreSQL declares the
+# column as ``varchar(255)``; the other backends are unconstrained, so this is
+# the narrowest storage the value must fit. Producers that BUILD a summary from
+# unbounded text (an error message, a document body) must budget against this
+# rather than against ``get_content_summary``'s own default, or a long enough
+# input makes the whole upsert fail on PostgreSQL — including the FAILED
+# transition itself, which then leaves the document stuck in PARSING.
+DOC_STATUS_CONTENT_SUMMARY_MAX_LENGTH = 255
 
 # Suffixes for parser artifact subdirectories under ``<input>/__parsed__/``.
 # Centralising them here keeps the sidecar writer, engine cache modules and
