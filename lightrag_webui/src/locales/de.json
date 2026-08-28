@@ -516,6 +516,10 @@
   "migration": {
     "failedTitle": "Lokale Einstellungen konnten nicht vorbereitet werden",
     "failedBody": "Ihre gespeicherten Einstellungen konnten nicht in das neue Speicherformat migriert werden. Nichts ging verloren — laden Sie die Seite neu, um es erneut zu versuchen.",
-    "retry": "Neu laden"
+    "retry": "Neu laden",
+    "historyDropped": "Der Chat-Verlauf passte beim Upgrade nicht in den Browser-Speicher und wurde verworfen. Die Einstellungen wurden normal migriert."
+  },
+  "retrievalHistory": {
+    "quotaDropped": "Der Browser-Speicher ist voll: Der Chat-Verlauf wird nicht mehr gespeichert. Die aktuelle Unterhaltung bleibt sichtbar, bis Sie die Seite verlassen."
   }
 }

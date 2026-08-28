@@ -2581,17 +2581,26 @@ def create_app(args):
         else:
             return service_info_response(request)
 
-    @app.get("/auth/verify", dependencies=[Depends(combined_auth)])
+    # The verifier ignores WHITELIST_PATHS: its whole purpose is to report
+    # credential validity, and a whitelist entry covering it (e.g. "/auth/*")
+    # would otherwise turn it into an unconditional 200 while the protected
+    # routes still reject.
+    credential_verify_auth = get_combined_auth_dependency(
+        api_key, respect_whitelist=False
+    )
+
+    @app.get("/auth/verify", dependencies=[Depends(credential_verify_auth)])
     async def verify_credentials():
         """Verify that the caller's credentials satisfy the combined auth.
 
         /health deliberately stays on the default whitelist as an
         unauthenticated liveness probe, so it can never distinguish valid,
         invalid and missing credentials. This endpoint ALWAYS runs the
-        combined dependency: a missing or wrong X-API-Key fails with the
-        standard 403 detail ("API Key required" / "Invalid API Key"), which
-        the WebUI's API-key dialogs key on, while valid credentials get a
-        trivial 200. No data is exposed.
+        combined dependency — WHITELIST_PATHS is deliberately ignored here —
+        so a missing or wrong X-API-Key fails with the standard 403 detail
+        ("API Key required" / "Invalid API Key"), which the WebUI's API-key
+        dialogs key on, while valid credentials get a trivial 200. No data is
+        exposed.
         """
         return {"status": "ok"}
 

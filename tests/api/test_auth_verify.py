@@ -90,6 +90,30 @@ class TestApiKeyOnlyProfile:
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
 
+    def test_whitelist_covering_auth_paths_does_not_neuter_the_verifier(
+        self, tmp_path, monkeypatch
+    ):
+        # A deployment may whitelist "/auth/*" (e.g. for /auth-status). The
+        # verifier's whole purpose is credential validity, so it must ignore
+        # WHITELIST_PATHS — otherwise it answers 200 while protected routes
+        # still reject, and the workspace never opens its API-key dialog.
+        # whitelist_patterns is compiled once at utils_api import, so the
+        # test injects the compiled form directly.
+        import lightrag.api.utils_api as utils_api
+
+        client = _client(tmp_path, monkeypatch, "--key", API_KEY)
+        monkeypatch.setattr(
+            utils_api,
+            "whitelist_patterns",
+            [("/health", False), ("/api", True), ("/auth", True)],
+        )
+        response = client.get("/auth/verify")
+        assert response.status_code == 403
+        assert response.json()["detail"] == "API Key required"
+        # The correct key still passes, proving the dependency runs normally.
+        ok = client.get("/auth/verify", headers={"X-API-Key": API_KEY})
+        assert ok.status_code == 200
+
     def test_health_stays_an_unauthenticated_liveness_probe(
         self, tmp_path, monkeypatch
     ):

@@ -4,6 +4,7 @@ import {
   getSettingsMigrationError,
   hasFutureSettingsEnvelope,
   resetSettingsMigrationErrorForTests,
+  wasHistoryDroppedDuringMigration,
   SETTINGS_STORAGE_VERSION_AFTER_SPLIT
 } from './splitSettingsStorage'
 import {
@@ -18,6 +19,11 @@ class FakeStorage implements Storage {
   data = new Map<string, string>()
   writeCount = 0
   failAfterWrites: number | null = null
+  // Quota-realistic mode: values LARGER than this fail, small ones succeed
+  // (a real quota keeps accepting small writes after rejecting a big one).
+  failValueLongerThan: number | null = null
+  // 'Error' simulates a generic crash; 'QuotaExceededError' the quota path.
+  failureName = 'Error'
 
   get length() {
     return this.data.size
@@ -35,8 +41,14 @@ class FakeStorage implements Storage {
     this.data.delete(key)
   }
   setItem(key: string, value: string) {
-    if (this.failAfterWrites !== null && this.writeCount >= this.failAfterWrites) {
-      throw new Error('quota exceeded (injected)')
+    const overQuota =
+      this.failValueLongerThan !== null && value.length > this.failValueLongerThan
+    const crashed =
+      this.failAfterWrites !== null && this.writeCount >= this.failAfterWrites
+    if (overQuota || crashed) {
+      const error = new Error('write failed (injected)')
+      error.name = this.failureName
+      throw error
     }
     this.writeCount += 1
     this.data.set(key, value)
@@ -348,5 +360,59 @@ describe('legacy language choice synthesis (languageUserSelected)', () => {
     storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, legacyEnvelope(21, withoutLanguage))
     runSettingsStorageSplitMigration(storage)
     expect(parsed(LEGACY_SETTINGS_STORAGE_KEY).state.languageUserSelected).toBe(false)
+  })
+})
+
+describe('quota-aware degradation (history is non-critical test data)', () => {
+  // Product decision: a legacy history near the browser quota cannot coexist
+  // with its migrated copy. Rather than locking the user into a migration
+  // error whose retry can never succeed, the split retries WITHOUT the
+  // history copy, records the drop (surfaced as a one-time toast by the
+  // entry shells), and everything else migrates normally.
+  test('QuotaExceededError on the history copy drops the history and completes', () => {
+    // A history too large to duplicate: the quota rejects its serialized
+    // copy while every other (small) write keeps succeeding — which is what
+    // lets the degraded retry converge WITHOUT any quota being freed.
+    const bigHistory = [{ id: 'h1', role: 'user', content: 'x'.repeat(4000) }]
+    storage.setItem(
+      LEGACY_SETTINGS_STORAGE_KEY,
+      legacyEnvelope(21, { ...v21State(), retrievalHistory: bigHistory })
+    )
+    storage.failValueLongerThan = 2000
+    storage.failureName = 'QuotaExceededError'
+
+    runSettingsStorageSplitMigration(storage)
+
+    expect(getSettingsMigrationError()).toBeNull()
+    expect(wasHistoryDroppedDuringMigration()).toBe(true)
+
+    // Everything except the history migrated normally…
+    expect(parsed(QUERY_SETTINGS_STORAGE_KEY).state.querySettings.mode).toBe('hybrid')
+    expect(parsed(LEGACY_SETTINGS_STORAGE_KEY).version).toBe(
+      SETTINGS_STORAGE_VERSION_AFTER_SPLIT
+    )
+    expect(parsed(LEGACY_SETTINGS_STORAGE_KEY).state.retrievalHistory).toBeUndefined()
+    // …and the history keys hold EMPTY histories, not the oversized copy.
+    expect(parsed(WEBUI_RETRIEVAL_HISTORY_KEY).state.history).toEqual([])
+    expect(parsed(WORKSPACE_RETRIEVAL_HISTORY_KEY).state.history).toEqual([])
+  })
+
+  test('a GENERIC write failure keeps the original fail-and-retry semantics', () => {
+    storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, legacyEnvelope(21, v21State()))
+    storage.failAfterWrites = 2
+    storage.failureName = 'Error'
+
+    runSettingsStorageSplitMigration(storage)
+
+    expect(getSettingsMigrationError()).not.toBeNull()
+    expect(wasHistoryDroppedDuringMigration()).toBe(false)
+    expect(parsed(LEGACY_SETTINGS_STORAGE_KEY).version).toBe(21)
+  })
+
+  test('a clean run reports no drop', () => {
+    storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, legacyEnvelope(21, v21State()))
+    runSettingsStorageSplitMigration(storage)
+    expect(wasHistoryDroppedDuringMigration()).toBe(false)
+    expect(parsed(WEBUI_RETRIEVAL_HISTORY_KEY).state.history).toEqual(HISTORY)
   })
 })

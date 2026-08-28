@@ -516,6 +516,10 @@
   "migration": {
     "failedTitle": "Không thể chuẩn bị cài đặt cục bộ",
     "failedBody": "Không thể di chuyển cài đặt đã lưu sang định dạng lưu trữ mới. Không có gì bị mất — hãy tải lại để thử lại.",
-    "retry": "Tải lại"
+    "retry": "Tải lại",
+    "historyDropped": "Lịch sử trò chuyện vượt quá dung lượng lưu trữ của trình duyệt trong quá trình nâng cấp và đã bị loại bỏ. Các cài đặt đã được di chuyển bình thường."
+  },
+  "retrievalHistory": {
+    "quotaDropped": "Bộ nhớ trình duyệt đã đầy: lịch sử trò chuyện không còn được lưu. Cuộc trò chuyện hiện tại vẫn hiển thị cho đến khi bạn rời trang."
   }
 }

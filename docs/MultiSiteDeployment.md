@@ -286,7 +286,7 @@ Browser ──► localhost:5173 (Vite) ──► localhost:9621 (backend, no pr
 # lightrag_webui/.env.development (already in repo as sample)
 VITE_BACKEND_URL=http://localhost:9621
 VITE_API_PROXY=true
-VITE_API_ENDPOINTS=/api,/documents,/graphs,/graph,/health,/query,/docs,/redoc,/openapi.json,/login,/auth-status,/static
+VITE_API_ENDPOINTS=/api,/documents,/graphs,/graph,/health,/query,/docs,/redoc,/openapi.json,/login,/auth-status,/auth/verify,/ui/customization,/static
 # VITE_DEV_API_PREFIX=          ← leave empty
 ```
 
@@ -312,7 +312,7 @@ Browser ──► localhost:5173 (Vite + HMR)
 ```bash
 VITE_BACKEND_URL=…                             # see "Where to point VITE_BACKEND_URL" below
 VITE_API_PROXY=true
-VITE_API_ENDPOINTS=/api,/documents,/graphs,/graph,/health,/query,/docs,/redoc,/openapi.json,/login,/auth-status,/static
+VITE_API_ENDPOINTS=/api,/documents,/graphs,/graph,/health,/query,/docs,/redoc,/openapi.json,/login,/auth-status,/auth/verify,/ui/customization,/static
 VITE_DEV_API_PREFIX=/site01
 ```
 

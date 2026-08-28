@@ -4,8 +4,12 @@ import { HashRouter as Router, Routes, Route, Navigate, useNavigate } from 'reac
 import { useEffect } from 'react'
 import { useAuthStore } from '@/stores/state'
 import { navigationService } from '@/services/navigation'
-import { getSettingsMigrationError } from '@/migrations/splitSettingsStorage'
-import { Toaster } from 'sonner'
+import {
+  getSettingsMigrationError,
+  wasHistoryDroppedDuringMigration
+} from '@/migrations/splitSettingsStorage'
+import { toast, Toaster } from 'sonner'
+import i18n from '@/i18n'
 import ThemeProvider from '@/components/ThemeProvider'
 import MigrationErrorScreen from '@/components/MigrationErrorScreen'
 import LoginPage from '@/features/LoginPage'
@@ -34,6 +38,15 @@ const WorkspaceAppContent = () => {
   useEffect(() => {
     navigationService.setNavigate(navigate)
   }, [navigate])
+
+  // One-time notice: the storage-split migration had to DISCARD the legacy
+  // chat history to fit within the browser quota (non-critical test data by
+  // product decision — but the drop must not be silent).
+  useEffect(() => {
+    if (wasHistoryDroppedDuringMigration()) {
+      toast.warning(i18n.t('migration.historyDropped'))
+    }
+  }, [])
 
   const fallback = isAuthenticated ? '/' : '/welcome'
 

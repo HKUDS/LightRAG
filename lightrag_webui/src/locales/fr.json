@@ -516,6 +516,10 @@
   "migration": {
     "failedTitle": "Échec de la préparation des paramètres locaux",
     "failedBody": "Vos paramètres n'ont pas pu être migrés vers le nouveau format de stockage. Rien n'a été perdu — rechargez pour réessayer.",
-    "retry": "Recharger"
+    "retry": "Recharger",
+    "historyDropped": "L'historique de discussion dépassait le stockage du navigateur pendant la mise à niveau et a été abandonné. Les paramètres ont été migrés normalement."
+  },
+  "retrievalHistory": {
+    "quotaDropped": "Le stockage du navigateur est plein : l'historique de discussion n'est plus enregistré. La conversation en cours reste visible jusqu'à ce que vous quittiez la page."
   }
 }
