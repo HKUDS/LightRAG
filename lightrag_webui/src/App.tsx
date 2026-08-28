@@ -12,6 +12,10 @@ import {
   loginIdentityFromToken,
   useIdentityEpochStore
 } from '@/lib/loginIdentity'
+import {
+  markVersionCheckedFromLogin,
+  wasVersionCheckedThisPageLoad
+} from '@/lib/versionCheckCache'
 import SiteHeader from '@/features/SiteHeader'
 import { InvalidApiKeyError, RequireApiKeError } from '@/api/lightrag'
 import { ZapIcon } from 'lucide-react'
@@ -113,9 +117,10 @@ function App() {
       if (versionCheckRef.current) return;
       versionCheckRef.current = true;
 
-      // Check if version info was already obtained in login page
-      const versionCheckedFromLogin = sessionStorage.getItem('VERSION_CHECKED_FROM_LOGIN') === 'true';
-      if (versionCheckedFromLogin) {
+      // Skip only the request the login page just made in THIS page load: a
+      // reload must reconcile again, since the server's auth mode can have
+      // changed under a still-valid stored token (see versionCheckCache).
+      if (wasVersionCheckedThisPageLoad()) {
         setInitializing(false); // Skip initialization if already checked
         return;
       }
@@ -154,7 +159,7 @@ function App() {
         }
 
         // Set flag to indicate version info has been checked
-        sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true');
+        markVersionCheckedFromLogin();
       } catch (error) {
         console.error('Failed to get version info:', error);
       } finally {

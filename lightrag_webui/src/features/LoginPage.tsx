@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/state'
 import { applyLoginIdentity, loginIdentityFromToken } from '@/lib/loginIdentity'
+import { markVersionCheckedFromLogin } from '@/lib/versionCheckCache'
 import { loginToServer, getAuthStatus } from '@/api/lightrag'
 import logoUrl from '@/assets/logo.svg'
 import { toast } from 'sonner'
@@ -59,7 +60,7 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
 
         // Set session flag for version check to avoid duplicate checks in App component
         if (status.core_version || status.api_version) {
-          sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true');
+          markVersionCheckedFromLogin();
         }
 
         if (!status.auth_configured && status.access_token) {
@@ -132,7 +133,7 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
 
       // Set session flag for version check
       if (response.core_version || response.api_version) {
-        sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true');
+        markVersionCheckedFromLogin();
       }
 
       if (isGuestMode) {

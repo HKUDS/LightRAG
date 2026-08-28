@@ -9,6 +9,7 @@ import { useCustomizedContent } from '@/components/customization/useCustomizedCo
 import { useAuthStore } from '@/stores/state'
 import { getAuthStatus } from '@/api/lightrag'
 import { applyLoginIdentity, loginIdentityFromToken } from '@/lib/loginIdentity'
+import { markVersionCheckedFromLogin } from '@/lib/versionCheckCache'
 
 /**
  * The workspace entry's public welcome page — the unauthenticated default of
@@ -74,7 +75,7 @@ export default function WorkspaceWelcome() {
             status.webui_title || null,
             status.webui_description || null
           )
-        sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true')
+        markVersionCheckedFromLogin()
         navigate('/')
       } else {
         // Auth got enabled between the probe and the click.

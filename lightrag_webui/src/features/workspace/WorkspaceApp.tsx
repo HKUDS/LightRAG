@@ -8,6 +8,10 @@ import ErrorBoundary from '@/components/ErrorBoundary'
 import { useAuthStore, useBackendState } from '@/stores/state'
 import { getAuthStatus } from '@/api/lightrag'
 import { useIdentityEpochStore } from '@/lib/loginIdentity'
+import {
+  markVersionCheckedFromLogin,
+  wasVersionCheckedThisPageLoad
+} from '@/lib/versionCheckCache'
 import { activateSessionFromAuthStatus } from './authBootstrap'
 import { runCredentialProbe, useCredentialProbeStore } from './credentialProbe'
 import { navigationService } from '@/services/navigation'
@@ -45,9 +49,10 @@ export default function WorkspaceApp() {
       if (versionCheckRef.current) return
       versionCheckRef.current = true
 
-      const versionCheckedFromLogin =
-        sessionStorage.getItem('VERSION_CHECKED_FROM_LOGIN') === 'true'
-      if (versionCheckedFromLogin) {
+      // Skip only the request the login/welcome page just made in THIS page
+      // load. A reload must reconcile again — the server's auth mode can have
+      // changed under a still-valid stored token.
+      if (wasVersionCheckedThisPageLoad()) {
         setInitializing(false)
         return
       }
@@ -58,7 +63,7 @@ export default function WorkspaceApp() {
         // Reconciliation (including the stale-token replacement an
         // auth-disabled server requires) lives in authBootstrap.
         activateSessionFromAuthStatus(status, token)
-        sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true')
+        markVersionCheckedFromLogin()
       } catch (error) {
         console.error('Failed to get version info:', error)
       } finally {
