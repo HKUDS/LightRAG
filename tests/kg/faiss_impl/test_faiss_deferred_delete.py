@@ -275,7 +275,7 @@ async def test_failed_delete_rebuild_keeps_tombstones_for_retry(tmp_path, monkey
 def _fail_save(storage, monkeypatch):
     """Make the next save(s) raise, simulating a transient IO failure."""
 
-    def boom():
+    async def boom(_on_committed):
         raise OSError("transient disk error")
 
     monkeypatch.setattr(storage, "_save_faiss_index", boom)
