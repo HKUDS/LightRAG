@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ZapIcon, LogOutIcon } from 'lucide-react'
 import Button from '@/components/ui/Button'
@@ -89,8 +89,7 @@ export default function WorkspaceApp() {
   // watches that message) opens to capture the key. This is the workspace
   // counterpart of the admin shell's periodic health check — a single probe,
   // not a polling loop.
-  useEffect(() => {
-    if (initializing) return
+  const runCredentialProbe = useCallback(() => {
     void useBackendState.getState().check().then(() => {
       // Open the dialog HERE, from the probe result, not only via
       // ApiKeyAlert's message watch: a rejected replacement key produces the
@@ -104,7 +103,29 @@ export default function WorkspaceApp() {
         setApiKeyAlertOpen(true)
       }
     })
-  }, [initializing, apiKey])
+  }, [])
+
+  useEffect(() => {
+    if (initializing) return
+    runCredentialProbe()
+  }, [initializing, apiKey, runCredentialProbe])
+
+  const handleApiKeyAlertOpenChange = useCallback(
+    (open: boolean) => {
+      setApiKeyAlertOpen(open)
+      if (!open) {
+        // Re-validate on EVERY dialog close, not only when the stored key
+        // changed: saving a blank or unchanged key leaves both `apiKey` and
+        // the backend message identical, so no dependency-gated effect would
+        // ever reopen the dialog. Clearing first mirrors the admin shell's
+        // close handler (a still-failing probe then also re-fires the
+        // message-change watch), and the probe reopens on a bad result.
+        useBackendState.getState().clear()
+        runCredentialProbe()
+      }
+    },
+    [runCredentialProbe]
+  )
 
   const handleLogout = () => {
     navigationService.navigateToUnauthenticated()
@@ -177,7 +198,7 @@ export default function WorkspaceApp() {
           </ErrorBoundary>
         )}
       </div>
-      <ApiKeyAlert open={apiKeyAlertOpen} onOpenChange={setApiKeyAlertOpen} />
+      <ApiKeyAlert open={apiKeyAlertOpen} onOpenChange={handleApiKeyAlertOpenChange} />
     </main>
   )
 }
