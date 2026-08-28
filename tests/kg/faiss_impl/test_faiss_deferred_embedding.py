@@ -437,12 +437,12 @@ async def test_finalize_retries_save_after_flush_failure(tmp_path):
     original_save = storage._save_faiss_index
     save_calls = 0
 
-    def fail_once():
+    async def fail_once(on_committed):
         nonlocal save_calls
         save_calls += 1
         if save_calls == 1:
             raise OSError("boom")
-        original_save()
+        await original_save(on_committed)
 
     storage._save_faiss_index = fail_once
 
@@ -509,7 +509,7 @@ async def test_index_done_callback_save_failure_raises(tmp_path):
 
     original_save = storage._save_faiss_index
 
-    def fail_save():
+    async def fail_save(_on_committed):
         raise OSError("save boom")
 
     storage._save_faiss_index = fail_save
@@ -839,7 +839,7 @@ async def test_drop_pending_does_not_rollback_materialized(tmp_path):
     # materialized-but-unsaved (dirty) and the pending buffer is emptied.
     await storage.upsert({"id1": {"content": "alpha"}})
 
-    def fail_save():
+    async def fail_save(_on_committed):
         raise OSError("save boom")
 
     storage._save_faiss_index = fail_save
@@ -1082,7 +1082,7 @@ def _make_save_fail(storage):
     """Make ``_save_faiss_index`` raise; returns a restore callable."""
     original = storage._save_faiss_index
 
-    def boom():
+    async def boom(_on_committed):
         raise OSError("disk full")
 
     storage._save_faiss_index = boom
