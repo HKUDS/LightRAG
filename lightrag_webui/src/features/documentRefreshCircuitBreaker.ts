@@ -6,7 +6,7 @@
  * project has no React component test setup, so inline component state cannot
  * be covered. Same pattern as documentStatusFilters / documentRecoveryWarnings.
  *
- * Two invariants this module exists to enforce:
+ * Three invariants this module exists to enforce:
  *
  * 1. **Backoff is bounded.** The previous inline implementation used a raw
  *    `2 ** failureCount * 1000` with no cap on either the exponent or the
@@ -18,6 +18,12 @@
  *    response actually came back. The previous implementation called its
  *    success hook right after a fire-and-forget refresh, so every polling tick
  *    cleared the failure counter and the breaker never opened at all.
+ * 3. **Half-open admits exactly one probe.** The breaker stays OPEN while the
+ *    probe is in flight; only its settlement (recordSuccess / recordFailure)
+ *    moves it on. Simply flipping `isOpen` to false at the deadline would let
+ *    every subsequent poll tick through for as long as the probe takes to
+ *    fail — with a 5s poll cadence and a 30s request timeout, that is several
+ *    ticks, and the request they queue up would bypass the breaker entirely.
  */
 
 export type CircuitBreakerState = {
@@ -25,6 +31,12 @@ export type CircuitBreakerState = {
   failureCount: number
   lastFailureTime: number | null
   nextRetryTime: number | null
+  /**
+   * When the half-open probe was admitted, or null when no probe is in
+   * flight. The breaker keeps `isOpen: true` for its duration: a probe is an
+   * exception granted to one request, not a state change.
+   */
+  halfOpenSince: number | null
 }
 
 /** Consecutive failures required to open the breaker. */
@@ -36,11 +48,22 @@ export const CIRCUIT_BREAKER_MAX_FAILURE_COUNT = 6
 /** Hard cap on the backoff delay. */
 export const CIRCUIT_BREAKER_MAX_BACKOFF_MS = 60_000
 
+/**
+ * How long a half-open probe may stay unsettled before the breaker admits
+ * another one. Every admitted probe should settle through recordSuccess /
+ * recordFailure (the paginated fetch has its own 30s timeout), but an admission
+ * that never turns into a request — the caller's throttle gate can coalesce it
+ * into an already-running refresh — would otherwise wedge the breaker closed
+ * forever. Must stay above the request timeout so it never races a live probe.
+ */
+export const CIRCUIT_BREAKER_PROBE_TIMEOUT_MS = 45_000
+
 export const initialCircuitBreakerState: CircuitBreakerState = {
   isOpen: false,
   failureCount: 0,
   lastFailureTime: null,
-  nextRetryTime: null
+  nextRetryTime: null,
+  halfOpenSince: null
 }
 
 /** Exponential backoff for `failureCount`, clamped to the max delay. */
@@ -48,8 +71,8 @@ export const circuitBreakerBackoffMs = (failureCount: number): number =>
   Math.min(2 ** failureCount * 1000, CIRCUIT_BREAKER_MAX_BACKOFF_MS)
 
 /**
- * Record one failed request. Opens the breaker once the threshold is reached
- * and stamps the next retry time.
+ * Record one failed request, closing any half-open probe. Opens the breaker
+ * once the threshold is reached and stamps the next retry time.
  */
 export const recordCircuitBreakerFailure = (
   state: CircuitBreakerState,
@@ -65,44 +88,55 @@ export const recordCircuitBreakerFailure = (
     isOpen,
     failureCount,
     lastFailureTime: now,
-    nextRetryTime: isOpen ? now + circuitBreakerBackoffMs(failureCount) : null
+    nextRetryTime: isOpen ? now + circuitBreakerBackoffMs(failureCount) : null,
+    halfOpenSince: null
   }
 }
 
-/** A real response came back: clear everything. */
+/** A real response came back: clear everything, probe included. */
 export const resetCircuitBreaker = (): CircuitBreakerState => ({
   ...initialCircuitBreakerState
 })
 
 /**
- * Decide whether a request may go out now, applying the half-open transition.
+ * Read-only view for callers that must not admit a probe — e.g. deciding
+ * whether a queued automatic refresh may still run after the request ahead of
+ * it settled. A half-open probe belongs to whoever was admitted by
+ * `admitCircuitBreakerRequest`, so anything else stays blocked while the
+ * breaker is open.
+ */
+export const isCircuitBreakerBlocked = (state: CircuitBreakerState): boolean =>
+  state.isOpen
+
+/**
+ * Ask the breaker to admit one request, applying the half-open transition.
  *
  * Returns the (possibly updated) state alongside the decision so the caller
- * can store it — the half-open step mutates the counter, and dropping that
- * write would re-open the breaker on the very next evaluation.
+ * can store it — admitting a probe stamps `halfOpenSince`, and dropping that
+ * write would admit an unbounded number of them.
  */
-export const evaluateCircuitBreaker = (
+export const admitCircuitBreakerRequest = (
   state: CircuitBreakerState,
   now: number
-): { state: CircuitBreakerState; isOpen: boolean } => {
+): { state: CircuitBreakerState; admitted: boolean } => {
   if (!state.isOpen) {
-    return { state, isOpen: false }
+    return { state, admitted: true }
+  }
+
+  if (state.halfOpenSince !== null) {
+    // A probe is in flight. Admit a replacement only once it is so old that it
+    // cannot still be a live request (see CIRCUIT_BREAKER_PROBE_TIMEOUT_MS).
+    if (now - state.halfOpenSince < CIRCUIT_BREAKER_PROBE_TIMEOUT_MS) {
+      return { state, admitted: false }
+    }
+    return { state: { ...state, halfOpenSince: now }, admitted: true }
   }
 
   if (state.nextRetryTime !== null && now >= state.nextRetryTime) {
-    // Half-open: let exactly one request through. The counter is decremented
-    // rather than cleared so a backend that is still down re-opens with a
-    // comparable delay instead of restarting the ramp from zero.
-    return {
-      state: {
-        ...state,
-        isOpen: false,
-        failureCount: Math.max(0, state.failureCount - 1),
-        nextRetryTime: null
-      },
-      isOpen: false
-    }
+    // Half-open: admit exactly one probe. `isOpen` deliberately stays true —
+    // the breaker closes only when the probe reports success.
+    return { state: { ...state, halfOpenSince: now }, admitted: true }
   }
 
-  return { state, isOpen: true }
+  return { state, admitted: false }
 }

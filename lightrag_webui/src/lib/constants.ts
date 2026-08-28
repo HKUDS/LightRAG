@@ -44,6 +44,10 @@ export const healthCheckInterval = 15 // seconds
 // /query and document uploads are legitimately long-running).
 export const healthCheckTimeout = 10 // seconds
 export const pipelineStatusTimeout = 10 // seconds
+// Message carried by the getDocumentsPaginatedWithTimeout timeout error.
+// Lives here so the refresh error classifier can recognise it without
+// importing the API module (which creates the axios instance on load).
+export const documentFetchTimeoutMessage = 'Document fetch timeout'
 
 export const defaultQueryLabel = '*'
 

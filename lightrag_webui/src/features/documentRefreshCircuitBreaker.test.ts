@@ -4,9 +4,11 @@ import {
   CIRCUIT_BREAKER_FAILURE_THRESHOLD,
   CIRCUIT_BREAKER_MAX_BACKOFF_MS,
   CIRCUIT_BREAKER_MAX_FAILURE_COUNT,
+  CIRCUIT_BREAKER_PROBE_TIMEOUT_MS,
+  admitCircuitBreakerRequest,
   circuitBreakerBackoffMs,
-  evaluateCircuitBreaker,
   initialCircuitBreakerState,
+  isCircuitBreakerBlocked,
   recordCircuitBreakerFailure,
   resetCircuitBreaker,
   type CircuitBreakerState
@@ -24,13 +26,16 @@ const failTimes = (
   return next
 }
 
+const openBreaker = (now: number): CircuitBreakerState =>
+  failTimes(CIRCUIT_BREAKER_FAILURE_THRESHOLD, now)
+
 describe('documentRefreshCircuitBreaker', () => {
   test('stays closed below the threshold and opens at it', () => {
     const now = 1_000_000
 
     expect(failTimes(1, now).isOpen).toBe(false)
     expect(failTimes(2, now).isOpen).toBe(false)
-    expect(failTimes(CIRCUIT_BREAKER_FAILURE_THRESHOLD, now).isOpen).toBe(true)
+    expect(openBreaker(now).isOpen).toBe(true)
   })
 
   test('backoff is capped instead of growing without bound', () => {
@@ -47,9 +52,9 @@ describe('documentRefreshCircuitBreaker', () => {
   })
 
   test('failure counter is capped', () => {
-    const state = failTimes(50, 1_000_000)
-
-    expect(state.failureCount).toBe(CIRCUIT_BREAKER_MAX_FAILURE_COUNT)
+    expect(failTimes(50, 1_000_000).failureCount).toBe(
+      CIRCUIT_BREAKER_MAX_FAILURE_COUNT
+    )
   })
 
   test('backoff helper clamps at the max delay', () => {
@@ -59,38 +64,96 @@ describe('documentRefreshCircuitBreaker', () => {
     expect(circuitBreakerBackoffMs(30)).toBe(CIRCUIT_BREAKER_MAX_BACKOFF_MS)
   })
 
+  test('admits everything while closed', () => {
+    const decision = admitCircuitBreakerRequest(initialCircuitBreakerState, 1)
+
+    expect(decision.admitted).toBe(true)
+    expect(decision.state).toBe(initialCircuitBreakerState)
+  })
+
   test('blocks requests while the backoff window is open', () => {
     const now = 1_000_000
-    const open = failTimes(CIRCUIT_BREAKER_FAILURE_THRESHOLD, now)
+    const open = openBreaker(now)
 
-    const decision = evaluateCircuitBreaker(open, now + 1)
+    const decision = admitCircuitBreakerRequest(open, now + 1)
 
-    expect(decision.isOpen).toBe(true)
+    expect(decision.admitted).toBe(false)
     expect(decision.state).toEqual(open)
   })
 
-  test('half-opens once the backoff window elapses, decrementing the counter', () => {
+  test('half-open admits exactly one probe and stays open until it settles', () => {
     const now = 1_000_000
-    const open = failTimes(CIRCUIT_BREAKER_FAILURE_THRESHOLD, now)
+    const open = openBreaker(now)
+    const deadline = open.nextRetryTime!
 
-    const decision = evaluateCircuitBreaker(open, open.nextRetryTime!)
+    const first = admitCircuitBreakerRequest(open, deadline)
+    expect(first.admitted).toBe(true)
+    // The breaker must NOT close on admission: closing here is what let every
+    // later poll tick through while the probe was still in flight.
+    expect(first.state.isOpen).toBe(true)
+    expect(first.state.halfOpenSince).toBe(deadline)
+    expect(isCircuitBreakerBlocked(first.state)).toBe(true)
 
-    expect(decision.isOpen).toBe(false)
-    expect(decision.state.isOpen).toBe(false)
-    expect(decision.state.failureCount).toBe(open.failureCount - 1)
-    expect(decision.state.nextRetryTime).toBeNull()
+    // Poll ticks arriving while the probe is unsettled get nothing.
+    for (const offset of [1, 5_000, 10_000, 30_000]) {
+      const next = admitCircuitBreakerRequest(first.state, deadline + offset)
+      expect(next.admitted).toBe(false)
+      expect(next.state).toEqual(first.state)
+    }
   })
 
-  test('a closed breaker is returned untouched', () => {
-    const state = failTimes(1, 1_000_000)
-    const decision = evaluateCircuitBreaker(state, 2_000_000)
+  test('a probe that never settles does not wedge the breaker shut', () => {
+    const now = 1_000_000
+    const open = openBreaker(now)
+    const deadline = open.nextRetryTime!
+    const probing = admitCircuitBreakerRequest(open, deadline).state
 
-    expect(decision.isOpen).toBe(false)
-    expect(decision.state).toBe(state)
+    const stillBlocked = admitCircuitBreakerRequest(
+      probing,
+      deadline + CIRCUIT_BREAKER_PROBE_TIMEOUT_MS - 1
+    )
+    expect(stillBlocked.admitted).toBe(false)
+
+    const readmitted = admitCircuitBreakerRequest(
+      probing,
+      deadline + CIRCUIT_BREAKER_PROBE_TIMEOUT_MS
+    )
+    expect(readmitted.admitted).toBe(true)
+    expect(readmitted.state.halfOpenSince).toBe(
+      deadline + CIRCUIT_BREAKER_PROBE_TIMEOUT_MS
+    )
   })
 
-  test('a real response clears the whole state', () => {
+  test('a failed probe re-arms the backoff and clears the probe slot', () => {
+    const now = 1_000_000
+    const open = openBreaker(now)
+    const deadline = open.nextRetryTime!
+    const probing = admitCircuitBreakerRequest(open, deadline).state
+
+    const failed = recordCircuitBreakerFailure(probing, deadline + 30_000)
+
+    expect(failed.isOpen).toBe(true)
+    expect(failed.halfOpenSince).toBeNull()
+    expect(failed.failureCount).toBe(open.failureCount + 1)
+    expect(failed.nextRetryTime).toBe(
+      deadline + 30_000 + circuitBreakerBackoffMs(failed.failureCount)
+    )
+    expect(admitCircuitBreakerRequest(failed, deadline + 30_001).admitted).toBe(false)
+  })
+
+  test('a successful probe clears the whole state', () => {
     expect(resetCircuitBreaker()).toEqual(initialCircuitBreakerState)
     expect(resetCircuitBreaker()).not.toBe(initialCircuitBreakerState)
+    expect(isCircuitBreakerBlocked(resetCircuitBreaker())).toBe(false)
+  })
+
+  test('isCircuitBreakerBlocked reports the open state without admitting', () => {
+    const now = 1_000_000
+    const open = openBreaker(now)
+
+    // Past the deadline a probe COULD be admitted, but a read-only check must
+    // not hand out that slot — the queued-request path relies on this.
+    expect(isCircuitBreakerBlocked(open)).toBe(true)
+    expect(open.halfOpenSince).toBeNull()
   })
 })

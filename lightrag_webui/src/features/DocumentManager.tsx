@@ -54,12 +54,14 @@ import {
 } from '@/features/documentStatusFilters'
 import { hasDocumentWarning } from '@/features/documentRecoveryWarnings'
 import {
-  evaluateCircuitBreaker,
+  admitCircuitBreakerRequest,
   initialCircuitBreakerState,
+  isCircuitBreakerBlocked,
   recordCircuitBreakerFailure,
   resetCircuitBreaker,
   type CircuitBreakerState
 } from '@/features/documentRefreshCircuitBreaker'
+import { classifyDocumentRefreshError } from '@/features/documentRefreshErrors'
 
 type StatusDisplayConfig = {
   labelKey: string
@@ -370,6 +372,10 @@ type RefreshRequest =
     query: QuerySnapshot;
     customTimeout?: number;
     requestVersion: number;
+    // Issued by the polling timer / activity probe rather than by a user
+    // action. Only these are subject to the circuit breaker: a page change or
+    // a manual refresh is an explicit intent and stays the escape hatch.
+    auto?: boolean;
   }
   | {
     type: 'manual';
@@ -750,43 +756,29 @@ export default function DocumentManager() {
   }, []);
 
 
-  // Enhanced error classification
-  const classifyError = useCallback((error: any) => {
-    if (error.name === 'AbortError') {
-      return { type: 'cancelled', shouldRetry: false, shouldShowToast: false };
-    }
-
-    if (error.message === 'Request timeout') {
-      return { type: 'timeout', shouldRetry: true, shouldShowToast: true };
-    }
-
-    if (error.message?.includes('Network Error') || error.code === 'NETWORK_ERROR') {
-      return { type: 'network', shouldRetry: true, shouldShowToast: true };
-    }
-
-    if (error.status >= 500) {
-      return { type: 'server', shouldRetry: true, shouldShowToast: true };
-    }
-
-    if (error.status >= 400 && error.status < 500) {
-      return { type: 'client', shouldRetry: false, shouldShowToast: true };
-    }
-
-    return { type: 'unknown', shouldRetry: true, shouldShowToast: true };
-  }, []);
-
   // Circuit breaker utility functions. State lives in a ref, not useState: the
   // breaker is read from timer callbacks only, and a state write would change
   // startPollingInterval's identity and make the polling useEffect tear down
   // and recreate the interval, resetting its phase on every failure.
-  const isCircuitBreakerOpen = useCallback(() => {
-    const { state, isOpen } = evaluateCircuitBreaker(
+  // Ask for permission to issue one automatic request. Past the backoff
+  // deadline this admits a single half-open probe and keeps the breaker open
+  // until that probe settles, so the ticks that arrive during its (up to 30s)
+  // lifetime do not slip through behind it.
+  const admitAutomaticRefresh = useCallback(() => {
+    const { state, admitted } = admitCircuitBreakerRequest(
       circuitBreakerRef.current,
       Date.now()
     );
     circuitBreakerRef.current = state;
-    return isOpen;
+    return admitted;
   }, []);
+
+  // Read-only check for a request that was already queued: it must not take
+  // the half-open slot, so it only gets to run while the breaker is closed.
+  const isAutomaticRefreshBlocked = useCallback(
+    () => isCircuitBreakerBlocked(circuitBreakerRef.current),
+    []
+  );
 
   const recordFailure = useCallback(() => {
     circuitBreakerRef.current = recordCircuitBreakerFailure(
@@ -907,7 +899,7 @@ export default function DocumentManager() {
 
     } catch (err) {
       if (isMountedRef.current) {
-        const errorClassification = classifyError(err);
+        const errorClassification = classifyDocumentRefreshError(err);
 
         if (errorClassification.shouldShowToast) {
           toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }));
@@ -925,7 +917,6 @@ export default function DocumentManager() {
   }, [
     t,
     updateComponentState,
-    classifyError,
     recordFailure,
     recordSuccess,
     handlePageSizeChange,
@@ -939,13 +930,33 @@ export default function DocumentManager() {
       return;
     }
 
+    // A queued automatic refresh must clear the breaker again before it runs:
+    // the request it waited behind may have been the half-open probe, and the
+    // breaker admitted exactly one request, not a follow-up. Dropping it is
+    // safe — the polling timer re-issues one as soon as the breaker allows.
+    const takeNextRequest = (): RefreshRequest | null => {
+      const pending = pendingRefreshRequestRef.current;
+      pendingRefreshRequestRef.current = null;
+
+      if (
+        pending &&
+        pending.type === 'intelligent' &&
+        pending.auto &&
+        isAutomaticRefreshBlocked()
+      ) {
+        return null;
+      }
+
+      return pending;
+    };
+
     const refreshLoopPromise = (async () => {
       let nextRequest: RefreshRequest | null = refreshRequest;
 
       while (nextRequest) {
         pendingRefreshRequestRef.current = null;
         await runRefreshRequest(nextRequest);
-        nextRequest = pendingRefreshRequestRef.current;
+        nextRequest = takeNextRequest();
       }
     })();
 
@@ -959,14 +970,16 @@ export default function DocumentManager() {
       }
       pendingRefreshRequestRef.current = null;
     }
-  }, [runRefreshRequest]);
+  }, [runRefreshRequest, isAutomaticRefreshBlocked]);
 
   // Intelligent refresh function: handles all boundary cases
-  const handleIntelligentRefresh = useCallback(async (
-    targetPage?: number,
-    resetToFirst?: boolean,
+  const handleIntelligentRefresh = useCallback(async (options: {
+    targetPage?: number
+    resetToFirst?: boolean
     customTimeout?: number
-  ) => {
+    auto?: boolean
+  } = {}) => {
+    const { targetPage, resetToFirst, customTimeout, auto } = options
     const page = resetToFirst ? 1 : (targetPage || pagination.page)
     const query = buildQuerySnapshot({ page })
     const requestVersion = latestRefreshRequestVersionRef.current
@@ -975,7 +988,8 @@ export default function DocumentManager() {
       type: 'intelligent',
       query,
       customTimeout,
-      requestVersion
+      requestVersion,
+      auto
     });
   }, [buildQuerySnapshot, enqueueRefresh, pagination.page]);
 
@@ -986,7 +1000,7 @@ export default function DocumentManager() {
   const refreshDocumentsThrottled = useCallback(() => {
     const fire = () => {
       lastPaginatedAtRef.current = Date.now()
-      handleIntelligentRefresh().catch((err) => {
+      handleIntelligentRefresh({ auto: true }).catch((err) => {
         console.error('Throttled document refresh failed:', err)
       })
     }
@@ -1117,7 +1131,7 @@ export default function DocumentManager() {
 
     pollingIntervalRef.current = setInterval(() => {
       if (!isMountedRef.current) return;
-      if (isCircuitBreakerOpen()) return;
+      if (!admitAutomaticRefresh()) return;
       // refreshDocumentsThrottled is fire-and-forget; the breaker is fed from
       // inside runRefreshRequest (recordSuccess on a real response,
       // recordFailure in its catch), never from this tick — a tick proves
@@ -1125,7 +1139,7 @@ export default function DocumentManager() {
       // the breaker from ever opening.
       refreshDocumentsThrottled();
     }, intervalMs);
-  }, [refreshDocumentsThrottled, clearPollingInterval, isCircuitBreakerOpen]);
+  }, [refreshDocumentsThrottled, clearPollingInterval, admitAutomaticRefresh]);
 
   const scanDocuments = useCallback(async () => {
     try {
