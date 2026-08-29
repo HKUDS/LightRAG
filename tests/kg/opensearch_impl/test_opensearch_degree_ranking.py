@@ -299,13 +299,63 @@ async def test_upsert_edge_deduplicates_a_self_loop():
     assert doc[_EDGE_ENDPOINTS_FIELD] == ["A"]
 
 
-def test_edges_index_mapping_declares_endpoints_as_keyword():
-    """A `dynamic: true` index would map the array as text with a `.keyword`
-    subfield, which cannot be aggregated under the bare field name."""
-    import inspect
+@pytest.mark.asyncio
+async def test_created_edges_index_maps_endpoints_and_stamps_the_flag():
+    """Pinned on the request the storage sends, not on its source text.
 
-    source = inspect.getsource(OpenSearchGraphStorage._create_indices_if_not_exist)
-    assert '_EDGE_ENDPOINTS_FIELD: {"type": "keyword"}' in source
+    Two properties of a freshly created edges index, both of which a later
+    reformatting of the literal must not be able to break:
+
+    `endpoints` is mapped `keyword` explicitly, because the index is
+    `dynamic: true` and a dynamically mapped string array becomes `text` with a
+    `.keyword` subfield, which cannot be aggregated under the bare field name.
+
+    The readiness flag is in the mapping `_meta`, so an index that can never
+    hold a document without the field says so durably instead of leaving the
+    next startup to recount.
+    """
+    storage = OpenSearchGraphStorage.__new__(OpenSearchGraphStorage)
+    storage.workspace = "test"
+    storage._nodes_index = "test-nodes"
+    storage._edges_index = "test-edges"
+    storage._edge_endpoints_ready = False
+    storage.client = AsyncMock()
+    storage.client.indices.exists = AsyncMock(return_value=False)
+
+    await storage._create_indices_if_not_exist()
+
+    bodies = {
+        call.kwargs["index"]: call.kwargs["body"]
+        for call in storage.client.indices.create.await_args_list
+    }
+    mappings = bodies["test-edges"]["mappings"]
+
+    assert mappings["properties"][_EDGE_ENDPOINTS_FIELD] == {"type": "keyword"}
+    assert mappings["_meta"][_EDGE_ENDPOINTS_META_FLAG] is True
+    assert storage._edge_endpoints_ready is True
+
+
+def test_graph_edge_properties_omit_the_endpoints_field():
+    """`endpoints` is storage-internal and duplicates the top-level
+    source/target, so it must not reach the API or the WebUI edge panel."""
+    storage = OpenSearchGraphStorage.__new__(OpenSearchGraphStorage)
+
+    edge = storage._construct_graph_edge(
+        "edge-1",
+        {
+            "source_node_id": "A",
+            "target_node_id": "B",
+            _EDGE_ENDPOINTS_FIELD: _edge_endpoints("A", "B"),
+            "relationship": "r",
+            "weight": 1.0,
+            "description": "d",
+            "source_ids": ["c1"],
+        },
+    )
+
+    assert edge.source == "A"
+    assert edge.target == "B"
+    assert edge.properties == {"weight": 1.0, "description": "d"}
 
 
 # -- backfill --------------------------------------------------------------

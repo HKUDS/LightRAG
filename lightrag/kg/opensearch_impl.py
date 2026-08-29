@@ -3378,6 +3378,14 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                             "file_path": {"type": "keyword"},
                             "created_at": {"type": "long"},
                         },
+                        # Created from the current mapping and holding no
+                        # documents, so every edge it will ever have carries
+                        # `endpoints` from its first write. Stamped here rather
+                        # than left to _ensure_edge_endpoints_ready so the
+                        # promise is durable from the moment the index exists,
+                        # and no later startup rescans an index that cannot
+                        # hold a document without the field.
+                        "_meta": {_EDGE_ENDPOINTS_META_FLAG: True},
                     },
                     "settings": {
                         "index": {
@@ -3387,9 +3395,6 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     },
                 }
                 await self.client.indices.create(index=self._edges_index, body=body)
-                # Created from the current mapping and holding no documents, so
-                # every edge it will ever have carries `endpoints` from its
-                # first write: exact degree ranking with no backfill.
                 self._edge_endpoints_ready = True
                 logger.info(
                     f"[{self.workspace}] Created edges index: {self._edges_index}"
@@ -4987,6 +4992,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     "_id",
                     "source_node_id",
                     "target_node_id",
+                    _EDGE_ENDPOINTS_FIELD,
                     "relationship",
                     "source_ids",
                 )
