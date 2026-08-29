@@ -29,8 +29,11 @@ Object.defineProperty(globalThis, 'sessionStorage', {
 
 // Mock zustand stores — both return a vanilla store-like object with getState()
 let storeApiKey: string | null = null
+let storeWorkspaceId = ''
 let storeIsGuestMode = false
-const fakeSettingsStore = { getState: () => ({ apiKey: storeApiKey }) }
+const fakeSettingsStore = {
+  getState: () => ({ apiKey: storeApiKey, workspaceId: storeWorkspaceId })
+}
 const fakeAuthStore = {
   getState: () => ({
     isGuestMode: storeIsGuestMode,
@@ -171,6 +174,7 @@ afterAll(() => {
 afterEach(() => {
   storageData.clear()
   storeApiKey = null
+  storeWorkspaceId = ''
   storeIsGuestMode = false
 })
 
@@ -217,6 +221,36 @@ describe('queryTextStream — normal path', () => {
 
     expect(chunks).toEqual(['ok', 'more'])
     expect(errors).toEqual(['Something went wrong'])
+  })
+
+  test('forwards token usage metadata to callback', async () => {
+    const tokenUsages: Array<Record<string, number>> = []
+
+    installFetchMock(() =>
+      makeNdjsonResponse([
+        '{"token_usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18, "call_count": 2}}',
+        '{"response": "ok"}',
+      ])
+    )
+
+    await apiModule.queryTextStream(
+      makeQueryRequest(),
+      () => {},
+      () => {},
+      undefined,
+      undefined,
+      undefined,
+      (usage) => tokenUsages.push(usage)
+    )
+
+    expect(tokenUsages).toEqual([
+      {
+        prompt_tokens: 11,
+        completion_tokens: 7,
+        total_tokens: 18,
+        call_count: 2,
+      },
+    ])
   })
 
   test('skips malformed JSON lines', async () => {
@@ -453,6 +487,25 @@ describe('queryTextStream — auth headers', () => {
     expect(sentHeaders['Authorization']).toBe('Bearer test-jwt-token')
     expect(sentHeaders['Accept']).toBe('application/x-ndjson')
     expect(sentHeaders['Content-Type']).toBe('application/json')
+  })
+
+  test('includes workspace header when configured', async () => {
+    storeWorkspaceId = 'tenant-a'
+
+    let capturedHeaders: HeadersInit | undefined
+    installFetchMock((_url: string, init?: RequestInit) => {
+      capturedHeaders = init?.headers
+      return makeNdjsonResponse(['{"response": "ok"}'])
+    })
+
+    await apiModule.queryTextStream(
+      makeQueryRequest(),
+      () => {},
+      () => {}
+    )
+
+    const sentHeaders = capturedHeaders as Record<string, string>
+    expect(sentHeaders['LIGHTRAG-WORKSPACE']).toBe('tenant-a')
   })
 
   test('omits Bearer token when none is stored', async () => {

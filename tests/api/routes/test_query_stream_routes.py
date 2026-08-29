@@ -212,6 +212,12 @@ class TestQueryStreamProtocolOrder:
                 "content": "test response",
             },
             "data": {"references": [{"reference_id": "1", "file_path": "/doc.pdf"}]},
+            "token_usage": {
+                "prompt_tokens": 11,
+                "completion_tokens": 7,
+                "total_tokens": 18,
+                "call_count": 2,
+            },
         }
 
         async def _fake_aquery(*a, **kw):
@@ -266,6 +272,7 @@ class TestQueryStreamProtocolOrder:
             assert not any("response_time" in item for item in lines), (
                 "Default stream must not contain timing metadata"
             )
+            assert lines[0]["token_usage"]["total_tokens"] == 18
         finally:
             sys.argv = original_argv
 
@@ -305,6 +312,7 @@ class TestQueryStreamProtocolOrder:
             assert "response_time" in lines[-1], (
                 "include_progress stream must end with timing metadata"
             )
+            assert lines[-1]["token_usage"]["call_count"] == 2
         finally:
             sys.argv = original_argv
 
@@ -360,3 +368,71 @@ class TestQueryStreamProtocolOrder:
 
         await iterator.aclose()
         assert cleanup_complete.is_set()
+
+
+class TestQueryTokenUsage:
+    @staticmethod
+    def _build_client_with_token_usage():
+        original_argv = sys.argv.copy()
+        sys.argv = ["lightrag-server"]
+        from lightrag.api.config import parse_args
+        from lightrag.api.lightrag_server import create_app
+
+        args = parse_args()
+        mock_rag = MagicMock()
+        token_usage = {
+            "prompt_tokens": 13,
+            "completion_tokens": 5,
+            "total_tokens": 18,
+            "call_count": 2,
+        }
+
+        async def _fake_aquery_llm(*args, **kwargs):
+            return {
+                "llm_response": {
+                    "is_streaming": False,
+                    "content": "token-aware response",
+                },
+                "data": {"references": []},
+                "metadata": {"token_usage": token_usage},
+                "token_usage": token_usage,
+            }
+
+        async def _fake_aquery_data(*args, **kwargs):
+            return {
+                "status": "success",
+                "message": "ok",
+                "data": {"entities": [], "relationships": [], "chunks": [], "references": []},
+                "metadata": {"token_usage": token_usage},
+                "token_usage": token_usage,
+            }
+
+        mock_rag.aquery_llm = MagicMock(side_effect=_fake_aquery_llm)
+        mock_rag.aquery_data = MagicMock(side_effect=_fake_aquery_data)
+
+        with patch("lightrag.api.lightrag_server.LightRAG", return_value=mock_rag):
+            app = create_app(args)
+
+        return TestClient(app), original_argv
+
+    def test_query_returns_token_usage(self):
+        client, original_argv = self._build_client_with_token_usage()
+        try:
+            response = client.post("/query", json={"query": "test", "mode": "mix"})
+            assert response.status_code == 200
+            body = response.json()
+            assert body["token_usage"]["total_tokens"] == 18
+            assert body["token_usage"]["call_count"] == 2
+        finally:
+            sys.argv = original_argv
+
+    def test_query_data_returns_token_usage(self):
+        client, original_argv = self._build_client_with_token_usage()
+        try:
+            response = client.post("/query/data", json={"query": "test", "mode": "mix"})
+            assert response.status_code == 200
+            body = response.json()
+            assert body["token_usage"]["prompt_tokens"] == 13
+            assert body["metadata"]["token_usage"]["completion_tokens"] == 5
+        finally:
+            sys.argv = original_argv

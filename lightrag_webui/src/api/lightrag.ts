@@ -174,6 +174,13 @@ export type LightragStatus = {
  */
 export type QueryMode = 'naive' | 'local' | 'global' | 'hybrid' | 'mix' | 'bypass'
 
+export type TokenUsage = {
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  call_count: number
+}
+
 export type Message = {
   role: 'user' | 'assistant' | 'system'
   content: string
@@ -182,10 +189,13 @@ export type Message = {
   thinkingTime?: number | null
   responseTime?: number | null
   firstTokenTime?: number | null
+  tokenUsage?: TokenUsage | null
 }
 
 export type QueryRequest = {
   query: string
+  /** Workspace identifier used for multi-tenant data isolation. */
+  workspace_id?: string
   /** Specifies the retrieval mode. */
   mode: QueryMode
   /** If True, only returns the retrieved context without generating a response. */
@@ -215,6 +225,8 @@ export type QueryRequest = {
   history_turns?: number
   /** User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template. */
   user_prompt?: string
+  /** Restrict retrieval to chunks, nodes and relationships tied to these document ids. */
+  allowed_doc_ids?: string[]
   /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
   enable_rerank?: boolean
   /** If True, emits retrieval progress events and a final response-time metadata line (streaming only). Default: false. */
@@ -224,6 +236,7 @@ export type QueryRequest = {
 export type QueryResponse = {
   response: string
   response_time?: number
+  token_usage?: TokenUsage
 }
 
 export type EntityUpdateResponse = {
@@ -300,6 +313,7 @@ export type TrackStatusResponse = {
 }
 
 export type DocumentsRequest = {
+  workspace_id?: string
   status_filter?: DocStatus | null
   status_filters?: DocStatus[] | null
   page: number
@@ -439,6 +453,10 @@ axiosInstance.interceptors.request.use((config) => {
   }
   if (apiKey) {
     config.headers['X-API-Key'] = apiKey
+  }
+  const workspaceId = useSettingsStore.getState().workspaceId?.trim()
+  if (workspaceId) {
+    config.headers['LIGHTRAG-WORKSPACE'] = workspaceId
   }
   return config
 })
@@ -630,7 +648,7 @@ export const queryText = async (
   request: QueryRequest,
   signal?: AbortSignal
 ): Promise<QueryResponse> => {
-  const response = await axiosInstance.post('/query', request, { signal })
+  const response = await axiosInstance.post('/query', withWorkspaceId(request), { signal })
   return response.data
 }
 
@@ -656,7 +674,8 @@ async function _readNdjsonStream(
   onChunk: (chunk: string) => void,
   onError: ((error: string) => void) | undefined,
   onResponseTime?: (seconds: number) => void,
-  onProgress?: (event: string) => void
+  onProgress?: (event: string) => void,
+  onTokenUsage?: (usage: TokenUsage) => void
 ): Promise<void> {
   if (!response.body) {
     throw new Error('Response body is null');
@@ -692,6 +711,9 @@ async function _readNdjsonStream(
           } else if (parsed.progress && onProgress) {
             onProgress(parsed.progress);
           }
+          if (parsed.token_usage && onTokenUsage) {
+            onTokenUsage(parsed.token_usage);
+          }
           // references-only lines are silently consumed —
           // the caller only cares about response chunks and errors.
         } catch {
@@ -723,6 +745,9 @@ async function _readNdjsonStream(
       } else if (parsed.progress && onProgress) {
         onProgress(parsed.progress);
       }
+      if (parsed.token_usage && onTokenUsage) {
+        onTokenUsage(parsed.token_usage);
+      }
     } catch {
       console.warn('Failed to parse final NDJSON buffer:', buffer.substring(0, 120));
       onError?.(
@@ -738,6 +763,7 @@ async function _readNdjsonStream(
 function _buildStreamHeaders(): HeadersInit {
   const apiKey = useSettingsStore.getState().apiKey;
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
+  const workspaceId = useSettingsStore.getState().workspaceId?.trim();
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
     Accept: 'application/x-ndjson',
@@ -748,7 +774,27 @@ function _buildStreamHeaders(): HeadersInit {
   if (apiKey) {
     headers['X-API-Key'] = apiKey;
   }
+  if (workspaceId) {
+    headers['LIGHTRAG-WORKSPACE'] = workspaceId;
+  }
   return headers;
+}
+
+function withWorkspaceId<T extends { workspace_id?: string }>(request: T): T {
+  const requestWorkspace = request.workspace_id?.trim()
+  if (requestWorkspace) {
+    return request
+  }
+
+  const workspaceId = useSettingsStore.getState().workspaceId?.trim()
+  if (!workspaceId) {
+    return request
+  }
+
+  return {
+    ...request,
+    workspace_id: workspaceId
+  }
 }
 
 /**
@@ -831,15 +877,17 @@ export const queryTextStream = async (
   onError?: (error: string) => void,
   signal?: AbortSignal,
   onResponseTime?: (seconds: number) => void,
-  onProgress?: (event: string) => void
+  onProgress?: (event: string) => void,
+  onTokenUsage?: (usage: TokenUsage) => void
 ) => {
   const headers = _buildStreamHeaders();
+  const requestPayload = withWorkspaceId(request);
 
   try {
     const response = await fetch(`${backendBaseUrl}/query/stream`, {
       method: 'POST',
       headers,
-      body: JSON.stringify(request),
+      body: JSON.stringify(requestPayload),
       signal,
     });
 
@@ -870,7 +918,7 @@ export const queryTextStream = async (
             retryResponse = await fetch(`${backendBaseUrl}/query/stream`, {
               method: 'POST',
               headers: retryHeaders,
-              body: JSON.stringify(request),
+              body: JSON.stringify(requestPayload),
               signal,
             });
           } catch (refreshError) {
@@ -910,7 +958,14 @@ export const queryTextStream = async (
     }
 
     // --- Read the NDJSON stream (happy path or refreshed retry) ------------
-    await _readNdjsonStream(activeResponse, onChunk, onError, onResponseTime, onProgress);
+    await _readNdjsonStream(
+      activeResponse,
+      onChunk,
+      onError,
+      onResponseTime,
+      onProgress,
+      onTokenUsage
+    );
   } catch (error) {
     const classified = _classifyStreamError(error, signal);
     if (classified === null) {
@@ -921,22 +976,44 @@ export const queryTextStream = async (
   }
 };
 
-export const insertText = async (text: string): Promise<DocActionResponse> => {
-  const response = await axiosInstance.post('/documents/text', { text })
+export const insertText = async (
+  text: string,
+  options?: { workspaceId?: string; docId?: string }
+): Promise<DocActionResponse> => {
+  const response = await axiosInstance.post('/documents/text', {
+    text,
+    workspace_id: options?.workspaceId || useSettingsStore.getState().workspaceId?.trim(),
+    doc_id: options?.docId
+  })
   return response.data
 }
 
-export const insertTexts = async (texts: string[]): Promise<DocActionResponse> => {
-  const response = await axiosInstance.post('/documents/texts', { texts })
+export const insertTexts = async (
+  texts: string[],
+  options?: { workspaceId?: string; docIds?: string[] }
+): Promise<DocActionResponse> => {
+  const response = await axiosInstance.post('/documents/texts', {
+    texts,
+    workspace_id: options?.workspaceId || useSettingsStore.getState().workspaceId?.trim(),
+    doc_ids: options?.docIds
+  })
   return response.data
 }
 
 export const uploadDocument = async (
   file: File,
-  onUploadProgress?: (percentCompleted: number) => void
+  onUploadProgress?: (percentCompleted: number) => void,
+  options?: { workspaceId?: string; docId?: string }
 ): Promise<DocActionResponse> => {
   const formData = new FormData()
   formData.append('file', file)
+  const workspaceId = options?.workspaceId || useSettingsStore.getState().workspaceId?.trim()
+  if (workspaceId) {
+    formData.append('workspace_id', workspaceId)
+  }
+  if (options?.docId) {
+    formData.append('doc_id', options.docId)
+  }
 
   const response = await axiosInstance.post('/documents/upload', formData, {
     headers: {
@@ -956,13 +1033,14 @@ export const uploadDocument = async (
 
 export const batchUploadDocuments = async (
   files: File[],
-  onUploadProgress?: (fileName: string, percentCompleted: number) => void
+  onUploadProgress?: (fileName: string, percentCompleted: number) => void,
+  options?: { workspaceId?: string }
 ): Promise<DocActionResponse[]> => {
   return await Promise.all(
     files.map(async (file) => {
       return await uploadDocument(file, (percentCompleted) => {
         onUploadProgress?.(file.name, percentCompleted)
-      })
+      }, options)
     })
   )
 }

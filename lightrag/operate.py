@@ -59,6 +59,7 @@ from lightrag.utils import (
     _cooperative_yield,
     wait_tasks_with_drain,
     performance_timing_log,
+    TokenTracker,
 )
 from lightrag.base import (
     BaseGraphStorage,
@@ -710,6 +711,7 @@ def _handle_single_entity_extraction(
     chunk_key: str,
     timestamp: int,
     file_path: str = "unknown_source",
+    doc_ids: Any = None,
 ):
     if len(record_attributes) != 4 or "entity" not in record_attributes[0]:
         if len(record_attributes) > 1 and "entity" in record_attributes[0]:
@@ -753,6 +755,7 @@ def _handle_single_entity_extraction(
             entity_type=entity_type,
             description=entity_description,
             source_id=chunk_key,
+            doc_ids=_serialize_doc_ids(_normalize_doc_id_values(doc_ids)),
             file_path=file_path,
             timestamp=timestamp,
         )
@@ -774,6 +777,7 @@ def _handle_single_relationship_extraction(
     chunk_key: str,
     timestamp: int,
     file_path: str = "unknown_source",
+    doc_ids: Any = None,
 ):
     if (
         len(record_attributes) != 5 or "relation" not in record_attributes[0]
@@ -833,6 +837,7 @@ def _handle_single_relationship_extraction(
             description=edge_description,
             keywords=edge_keywords,
             source_id=edge_source_id,
+            doc_ids=_serialize_doc_ids(_normalize_doc_id_values(doc_ids)),
             file_path=file_path,
             timestamp=timestamp,
         )
@@ -907,6 +912,7 @@ async def _process_json_extraction_result(
     chunk_key: str,
     timestamp: int,
     file_path: str = "unknown_source",
+    doc_ids: Any = None,
 ) -> tuple[dict, dict]:
     """Process a JSON-formatted extraction result from LLM.
 
@@ -998,6 +1004,7 @@ async def _process_json_extraction_result(
                 entity_type=entity_type,
                 description=entity_description,
                 source_id=chunk_key,
+                doc_ids=_serialize_doc_ids(_normalize_doc_id_values(doc_ids)),
                 file_path=file_path,
                 timestamp=timestamp,
             )
@@ -1074,6 +1081,7 @@ async def _process_json_extraction_result(
                 description=edge_description,
                 keywords=edge_keywords,
                 source_id=chunk_key,
+                doc_ids=_serialize_doc_ids(_normalize_doc_id_values(doc_ids)),
                 file_path=file_path,
                 timestamp=timestamp,
             )
@@ -1499,6 +1507,7 @@ async def _process_extraction_result(
     chunk_key: str,
     timestamp: int,
     file_path: str = "unknown_source",
+    doc_ids: Any = None,
     tuple_delimiter: str = "<|#|>",
     completion_delimiter: str = "<|COMPLETE|>",
 ) -> tuple[dict, dict]:
@@ -1586,7 +1595,7 @@ async def _process_extraction_result(
 
         # Try to parse as entity
         entity_data = _handle_single_entity_extraction(
-            record_attributes, chunk_key, timestamp, file_path
+            record_attributes, chunk_key, timestamp, file_path, doc_ids=doc_ids
         )
         if entity_data is not None:
             truncated_name = _truncate_entity_identifier(
@@ -1602,7 +1611,7 @@ async def _process_extraction_result(
 
         # Try to parse as relationship
         relationship_data = _handle_single_relationship_extraction(
-            record_attributes, chunk_key, timestamp, file_path
+            record_attributes, chunk_key, timestamp, file_path, doc_ids=doc_ids
         )
         if relationship_data is not None:
             truncated_source = _truncate_entity_identifier(
@@ -1655,6 +1664,7 @@ async def _rebuild_from_extraction_result(
         if chunk_data
         else "unknown_source"
     )
+    doc_ids = _record_doc_ids_from_fields(chunk_data or {})
 
     # Auto-detect format: try JSON first if the result looks like JSON
     if _looks_like_json_extraction_result(extraction_result):
@@ -1664,6 +1674,7 @@ async def _rebuild_from_extraction_result(
             chunk_id,
             timestamp,
             file_path,
+            doc_ids=doc_ids,
         )
         # If JSON parsing yielded results, use them
         if nodes or edges:
@@ -1676,6 +1687,7 @@ async def _rebuild_from_extraction_result(
         chunk_id,
         timestamp,
         file_path,
+        doc_ids=doc_ids,
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
     )
@@ -1748,6 +1760,7 @@ async def _rebuild_single_entity(
                 "description": final_description,
                 "entity_type": entity_type,
                 "source_id": GRAPH_FIELD_SEP.join(source_chunk_ids),
+                "doc_ids": current_entity.get("doc_ids", ""),
                 "file_path": GRAPH_FIELD_SEP.join(file_paths)
                 if file_paths
                 else current_entity.get("file_path", "unknown_source"),
@@ -1772,6 +1785,7 @@ async def _rebuild_single_entity(
                     "source_id": updated_entity_data["source_id"],
                     "description": final_description,
                     "entity_type": entity_type,
+                    "doc_ids": updated_entity_data["doc_ids"],
                     "file_path": updated_entity_data["file_path"],
                 }
             }
@@ -2195,6 +2209,7 @@ async def _rebuild_single_relationship(
         "keywords": combined_keywords,
         "weight": weight,
         "source_id": GRAPH_FIELD_SEP.join(limited_chunk_ids),
+        "doc_ids": current_relationship.get("doc_ids", ""),
         "file_path": GRAPH_FIELD_SEP.join([fp for fp in file_paths_list if fp])
         if file_paths_list
         else current_relationship.get("file_path", "unknown_source"),
@@ -2415,6 +2430,7 @@ async def _merge_nodes_then_upsert(
         already_source_ids = []
         already_description = []
         already_file_paths = []
+        already_doc_ids = []
 
         # 1. Get existing node data from knowledge graph
         already_node = await knowledge_graph_inst.get_node(entity_name)
@@ -2447,6 +2463,9 @@ async def _merge_nodes_then_upsert(
             existing_desc = (already_node.get("description") or "").strip()
             if existing_desc:
                 already_description.extend(existing_desc.split(GRAPH_FIELD_SEP))
+            already_doc_ids.extend(
+                _normalize_doc_id_values(already_node.get("doc_ids"))
+            )
 
         new_source_ids = [dp["source_id"] for dp in nodes_data if dp.get("source_id")]
 
@@ -2688,11 +2707,18 @@ async def _merge_nodes_then_upsert(
             logger.debug(status_message)
 
         # 11. Update both graph and vector db
+        serialized_doc_ids = _serialize_doc_ids(
+            _merge_doc_id_values(
+                already_doc_ids,
+                *[dp.get("doc_ids") for dp in nodes_data if dp.get("doc_ids")],
+            )
+        )
         node_data = dict(
             entity_id=entity_name,
             entity_type=entity_type,
             description=description,
             source_id=source_id,
+            doc_ids=serialized_doc_ids,
             file_path=file_path,
             created_at=int(time.time()),
             truncate=truncation_info,
@@ -2716,6 +2742,7 @@ async def _merge_nodes_then_upsert(
                     "entity_type": entity_type,
                     "content": entity_content,
                     "source_id": source_id,
+                    "doc_ids": serialized_doc_ids,
                     "file_path": file_path,
                 }
             }
@@ -2778,6 +2805,7 @@ async def _merge_edges_then_upsert(
         already_description = []
         already_keywords = []
         already_file_paths = []
+        already_doc_ids = []
 
         # 1. Get existing edge data from graph storage
         if await knowledge_graph_inst.has_edge(src_id, tgt_id):
@@ -2812,6 +2840,9 @@ async def _merge_edges_then_upsert(
                             already_edge["keywords"], [GRAPH_FIELD_SEP]
                         )
                     )
+                already_doc_ids.extend(
+                    _normalize_doc_id_values(already_edge.get("doc_ids"))
+                )
 
         new_source_ids = [dp["source_id"] for dp in edges_data if dp.get("source_id")]
 
@@ -3119,6 +3150,12 @@ async def _merge_edges_then_upsert(
             logger.debug(status_message)
 
         # 11. Update both graph and vector db.
+        serialized_doc_ids = _serialize_doc_ids(
+            _merge_doc_id_values(
+                already_doc_ids,
+                *[dp.get("doc_ids") for dp in edges_data if dp.get("doc_ids")],
+            )
+        )
         for need_insert_id in [src_id, tgt_id]:
             # Optimization: Use get_node instead of has_node + get_node
             existing_node = await knowledge_graph_inst.get_node(need_insert_id)
@@ -3129,6 +3166,7 @@ async def _merge_edges_then_upsert(
                 node_data = {
                     "entity_id": need_insert_id,
                     "source_id": source_id,
+                    "doc_ids": serialized_doc_ids,
                     "description": description,
                     "entity_type": "UNKNOWN",
                     "file_path": file_path,
@@ -3154,6 +3192,7 @@ async def _merge_edges_then_upsert(
                             "content": entity_content,
                             "entity_name": need_insert_id,
                             "source_id": source_id,
+                            "doc_ids": serialized_doc_ids,
                             "entity_type": "UNKNOWN",
                             "file_path": file_path,
                         }
@@ -3198,6 +3237,7 @@ async def _merge_edges_then_upsert(
                             "entity_type": "UNKNOWN",
                             "description": description,
                             "source_id": source_id,
+                            "doc_ids": serialized_doc_ids,
                             "file_path": file_path,
                             "created_at": node_created_at,
                         }
@@ -3269,12 +3309,22 @@ async def _merge_edges_then_upsert(
 
                 # 5. Update graph database and vector database with limited source_ids (conditional)
                 limited_source_id_str = GRAPH_FIELD_SEP.join(limited_source_ids)
+                merged_node_doc_ids = _serialize_doc_ids(
+                    _merge_doc_id_values(
+                        existing_node.get("doc_ids"),
+                        serialized_doc_ids,
+                    )
+                )
 
-                if limited_source_id_str != existing_node.get("source_id", ""):
+                if (
+                    limited_source_id_str != existing_node.get("source_id", "")
+                    or merged_node_doc_ids != (existing_node.get("doc_ids") or "")
+                ):
                     updated = True
                     updated_node_data = {
                         **existing_node,
                         "source_id": limited_source_id_str,
+                        "doc_ids": merged_node_doc_ids,
                     }
 
                     # Construct and verify the VDB payload BEFORE the first
@@ -3294,6 +3344,7 @@ async def _merge_edges_then_upsert(
                                 "content": entity_content,
                                 "entity_name": need_insert_id,
                                 "source_id": limited_source_id_str,
+                                "doc_ids": merged_node_doc_ids,
                                 "entity_type": existing_node.get(
                                     "entity_type", "UNKNOWN"
                                 ),
@@ -3363,6 +3414,7 @@ async def _merge_edges_then_upsert(
                     "src_id": vdb_src_id,
                     "tgt_id": vdb_tgt_id,
                     "source_id": source_id,
+                    "doc_ids": serialized_doc_ids,
                     "content": rel_content,
                     "keywords": keywords,
                     "description": description,
@@ -3380,6 +3432,7 @@ async def _merge_edges_then_upsert(
                 description=description,
                 keywords=keywords,
                 source_id=source_id,
+                doc_ids=serialized_doc_ids,
                 file_path=file_path,
                 created_at=edge_created_at,
                 truncate=truncation_info,
@@ -3399,6 +3452,7 @@ async def _merge_edges_then_upsert(
             description=description,
             keywords=keywords,
             source_id=source_id,
+            doc_ids=serialized_doc_ids,
             file_path=file_path,
             created_at=edge_created_at,
             truncate=truncation_info,
@@ -4026,6 +4080,7 @@ async def extract_entities(
         content = strip_internal_multimodal_markup_for_extraction(chunk_dp["content"])
         # Get file path from chunk data or use default
         file_path = chunk_dp.get("file_path", "unknown_source")
+        chunk_doc_ids = _record_doc_ids_from_fields(chunk_dp)
 
         # Build the optional `---Section Context---` block from the chunk's
         # heading breadcrumb. The marker/wrapping lives entirely in the prompt
@@ -4129,6 +4184,7 @@ async def extract_entities(
                 chunk_key,
                 timestamp,
                 file_path,
+                doc_ids=chunk_doc_ids,
             )
         else:
             maybe_nodes, maybe_edges = await _process_extraction_result(
@@ -4136,6 +4192,7 @@ async def extract_entities(
                 chunk_key,
                 timestamp,
                 file_path,
+                doc_ids=chunk_doc_ids,
                 tuple_delimiter=context_base["tuple_delimiter"],
                 completion_delimiter=context_base["completion_delimiter"],
             )
@@ -4195,6 +4252,7 @@ async def extract_entities(
                     chunk_key,
                     timestamp,
                     file_path,
+                    doc_ids=chunk_doc_ids,
                 )
             else:
                 glean_nodes, glean_edges = await _process_extraction_result(
@@ -4202,6 +4260,7 @@ async def extract_entities(
                     chunk_key,
                     timestamp,
                     file_path,
+                    doc_ids=chunk_doc_ids,
                     tuple_delimiter=context_base["tuple_delimiter"],
                     completion_delimiter=context_base["completion_delimiter"],
                 )
@@ -4515,6 +4574,7 @@ async def kg_query(
     system_prompt: str | None = None,
     chunks_vdb: BaseVectorStorage = None,
     progress_callback: ProgressCallback | None = None,
+    token_tracker: TokenTracker | None = None,
 ) -> QueryResult | None:
     """
     Execute knowledge graph query and return unified QueryResult object.
@@ -4554,11 +4614,16 @@ async def kg_query(
         global_config["role_llm_funcs"]["query"], _priority=DEFAULT_QUERY_PRIORITY
     )
     llm_cache_identity = get_llm_cache_identity(global_config, "query")
+    query_token_tracker = token_tracker or TokenTracker()
 
     if progress_callback:
         await progress_callback(QueryProgress.EXTRACTING_KEYWORDS)
     hl_keywords, ll_keywords = await get_keywords_from_query(
-        query, query_param, global_config, hashing_kv
+        query,
+        query_param,
+        global_config,
+        hashing_kv,
+        token_tracker=query_token_tracker,
     )
 
     logger.debug(f"High-level keywords: {hl_keywords}")
@@ -4678,6 +4743,7 @@ async def kg_query(
             history_messages=query_param.conversation_history,
             enable_cot=True,
             stream=query_param.stream,
+            token_tracker=query_token_tracker,
         )
 
         if (
@@ -4743,6 +4809,7 @@ async def get_keywords_from_query(
     query_param: QueryParam,
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
+    token_tracker: TokenTracker | None = None,
 ) -> tuple[list[str], list[str]]:
     """
     Retrieves high-level and low-level keywords for RAG operations.
@@ -4765,7 +4832,7 @@ async def get_keywords_from_query(
 
     # Extract keywords directly from the current query text.
     hl_keywords, ll_keywords = await extract_keywords_only(
-        query, query_param, global_config, hashing_kv
+        query, query_param, global_config, hashing_kv, token_tracker=token_tracker
     )
     return hl_keywords, ll_keywords
 
@@ -4880,6 +4947,7 @@ async def extract_keywords_only(
     param: QueryParam,
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
+    token_tracker: TokenTracker | None = None,
 ) -> tuple[list[str], list[str]]:
     """
     Extract high-level and low-level keywords from the given 'text' using the LLM.
@@ -4941,7 +5009,11 @@ async def extract_keywords_only(
         global_config["role_llm_funcs"]["keyword"], _priority=DEFAULT_QUERY_PRIORITY
     )
 
-    result = await use_model_func(kw_prompt, response_format={"type": "json_object"})
+    result = await use_model_func(
+        kw_prompt,
+        response_format={"type": "json_object"},
+        token_tracker=token_tracker,
+    )
 
     # 5. Parse out JSON from the LLM response with tolerant provider normalization
     _, hl_keywords, ll_keywords = _parse_keywords_payload(result)
@@ -5029,6 +5101,9 @@ async def _get_vector_context(
                 "content": result["content"],
                 "created_at": result.get("created_at", None),
                 "file_path": result.get("file_path", "unknown_source"),
+                "doc_id": result.get("doc_id") or result.get("full_doc_id"),
+                "doc_ids": result.get("doc_ids"),
+                "full_doc_id": result.get("full_doc_id"),
                 "source_type": "vector",  # Mark the source type
                 "chunk_id": result.get("id"),  # Add chunk_id for deduplication
             }
@@ -5038,6 +5113,108 @@ async def _get_vector_context(
         f"Naive query: {len(valid_chunks)} chunks (chunk_top_k:{search_top_k} cosine:{cosine_threshold})"
     )
     return valid_chunks
+
+
+def _normalize_doc_id_values(raw_value: Any) -> list[str]:
+    """Normalize one ``doc_id`` / ``doc_ids`` field into a de-duplicated list."""
+    if raw_value is None:
+        return []
+
+    if isinstance(raw_value, str):
+        values = split_string_by_multi_markers(raw_value, [GRAPH_FIELD_SEP])
+    elif isinstance(raw_value, (list, tuple, set)):
+        values = list(raw_value)
+    else:
+        values = [raw_value]
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            normalized.append(text)
+    return normalized
+
+
+def _merge_doc_id_values(*raw_values: Any) -> list[str]:
+    """Merge multiple provenance payloads into one de-duplicated list."""
+    merged: list[str] = []
+    seen: set[str] = set()
+    for raw_value in raw_values:
+        for doc_id in _normalize_doc_id_values(raw_value):
+            if doc_id not in seen:
+                seen.add(doc_id)
+                merged.append(doc_id)
+    return merged
+
+
+def _serialize_doc_ids(doc_ids: list[str]) -> str:
+    """Serialize document provenance for graph/vector storage backends."""
+    return GRAPH_FIELD_SEP.join(_normalize_doc_id_values(doc_ids))
+
+
+def _record_doc_ids_from_fields(record: dict[str, Any]) -> list[str]:
+    """Extract document provenance already present on a record."""
+    doc_ids = _normalize_doc_id_values(record.get("doc_ids"))
+    if doc_ids:
+        return doc_ids
+
+    single_doc_id = record.get("doc_id") or record.get("full_doc_id")
+    return _normalize_doc_id_values(single_doc_id)
+
+
+async def _resolve_record_doc_ids(
+    record: dict[str, Any],
+    text_chunks_db: BaseKVStorage,
+) -> list[str]:
+    """Resolve a record's document provenance, falling back to source chunks."""
+    doc_ids = _record_doc_ids_from_fields(record)
+    if doc_ids:
+        return doc_ids
+
+    source_id = record.get("source_id")
+    if not source_id:
+        return []
+
+    chunk_ids = split_string_by_multi_markers(source_id, [GRAPH_FIELD_SEP])
+    chunk_ids = [chunk_id for chunk_id in chunk_ids if chunk_id]
+    if not chunk_ids:
+        return []
+
+    chunk_rows = await text_chunks_db.get_by_ids(chunk_ids)
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for chunk_row in chunk_rows:
+        if not isinstance(chunk_row, dict):
+            continue
+        for doc_id in _record_doc_ids_from_fields(chunk_row):
+            if doc_id not in seen:
+                seen.add(doc_id)
+                resolved.append(doc_id)
+    return resolved
+
+
+async def _filter_records_by_allowed_doc_ids(
+    records: list[dict[str, Any]],
+    text_chunks_db: BaseKVStorage,
+    allowed_doc_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Keep only records whose provenance intersects the allowlist."""
+    if not allowed_doc_ids:
+        return records
+
+    filtered: list[dict[str, Any]] = []
+    for record in records:
+        doc_ids = await _resolve_record_doc_ids(record, text_chunks_db)
+        if not doc_ids:
+            continue
+        if allowed_doc_ids.intersection(doc_ids):
+            record["doc_ids"] = doc_ids
+            if "doc_id" not in record and len(doc_ids) == 1:
+                record["doc_id"] = doc_ids[0]
+            filtered.append(record)
+    return filtered
 
 
 async def _perform_kg_search(
@@ -5251,6 +5428,36 @@ async def _perform_kg_search(
     logger.info(
         f"Raw search results: {len(final_entities)} entities, {len(final_relations)} relations, {len(vector_chunks)} vector chunks"
     )
+
+    allowed_doc_ids = {
+        doc_id.strip()
+        for doc_id in getattr(query_param, "allowed_doc_ids", []) or []
+        if str(doc_id).strip()
+    }
+    if allowed_doc_ids:
+        final_entities = await _filter_records_by_allowed_doc_ids(
+            final_entities, text_chunks_db, allowed_doc_ids
+        )
+        final_relations = await _filter_records_by_allowed_doc_ids(
+            final_relations, text_chunks_db, allowed_doc_ids
+        )
+        vector_chunks = await _filter_records_by_allowed_doc_ids(
+            vector_chunks, text_chunks_db, allowed_doc_ids
+        )
+        chunk_tracking = {
+            chunk_id: metadata
+            for chunk_id, metadata in chunk_tracking.items()
+            if any(
+                chunk.get("chunk_id") == chunk_id or chunk.get("id") == chunk_id
+                for chunk in vector_chunks
+            )
+        }
+        logger.info(
+            "Applied allowed_doc_ids filter: %d entities, %d relations, %d vector chunks remain",
+            len(final_entities),
+            len(final_relations),
+            len(vector_chunks),
+        )
 
     return {
         "final_entities": final_entities,
@@ -6142,12 +6349,23 @@ async def _find_related_text_unit_from_entities(
     chunk_data_list = await text_chunks_db.get_by_ids(unique_chunk_ids)
 
     # Step 6: Build result chunks with valid data and update chunk tracking
+    allowed_doc_ids = {
+        doc_id.strip()
+        for doc_id in getattr(query_param, "allowed_doc_ids", []) or []
+        if str(doc_id).strip()
+    }
     result_chunks = []
     for i, (chunk_id, chunk_data) in enumerate(zip(unique_chunk_ids, chunk_data_list)):
         if chunk_data is not None and "content" in chunk_data:
+            chunk_doc_ids = _record_doc_ids_from_fields(chunk_data)
+            if allowed_doc_ids and not allowed_doc_ids.intersection(chunk_doc_ids):
+                continue
             chunk_data_copy = chunk_data.copy()
             chunk_data_copy["source_type"] = "entity"
             chunk_data_copy["chunk_id"] = chunk_id  # Add chunk_id for deduplication
+            chunk_data_copy["doc_ids"] = chunk_doc_ids
+            if chunk_doc_ids and "doc_id" not in chunk_data_copy:
+                chunk_data_copy["doc_id"] = chunk_doc_ids[0]
             result_chunks.append(chunk_data_copy)
 
             # Update chunk tracking if provided
@@ -6437,12 +6655,23 @@ async def _find_related_text_unit_from_relations(
     chunk_data_list = await text_chunks_db.get_by_ids(unique_chunk_ids)
 
     # Step 6: Build result chunks with valid data and update chunk tracking
+    allowed_doc_ids = {
+        doc_id.strip()
+        for doc_id in getattr(query_param, "allowed_doc_ids", []) or []
+        if str(doc_id).strip()
+    }
     result_chunks = []
     for i, (chunk_id, chunk_data) in enumerate(zip(unique_chunk_ids, chunk_data_list)):
         if chunk_data is not None and "content" in chunk_data:
+            chunk_doc_ids = _record_doc_ids_from_fields(chunk_data)
+            if allowed_doc_ids and not allowed_doc_ids.intersection(chunk_doc_ids):
+                continue
             chunk_data_copy = chunk_data.copy()
             chunk_data_copy["source_type"] = "relationship"
             chunk_data_copy["chunk_id"] = chunk_id  # Add chunk_id for deduplication
+            chunk_data_copy["doc_ids"] = chunk_doc_ids
+            if chunk_doc_ids and "doc_id" not in chunk_data_copy:
+                chunk_data_copy["doc_id"] = chunk_doc_ids[0]
             result_chunks.append(chunk_data_copy)
 
             # Update chunk tracking if provided
@@ -6491,6 +6720,7 @@ async def naive_query(
     system_prompt: str | None = None,
     text_chunks_db: BaseKVStorage | None = None,
     progress_callback: ProgressCallback | None = None,
+    token_tracker: TokenTracker | None = None,
 ) -> QueryResult | None:
     """
     Execute naive query and return unified QueryResult object.
@@ -6521,6 +6751,7 @@ async def naive_query(
         global_config["role_llm_funcs"]["query"], _priority=DEFAULT_QUERY_PRIORITY
     )
     llm_cache_identity = get_llm_cache_identity(global_config, "query")
+    query_token_tracker = token_tracker or TokenTracker()
 
     tokenizer: Tokenizer = global_config["tokenizer"]
     if not tokenizer:
@@ -6682,6 +6913,7 @@ async def naive_query(
             history_messages=query_param.conversation_history,
             enable_cot=True,
             stream=query_param.stream,
+            token_tracker=query_token_tracker,
         )
 
         if (

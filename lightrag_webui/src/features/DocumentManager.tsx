@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSettingsStore } from '@/stores/settings'
 import Button from '@/components/ui/Button'
+import Input from '@/components/ui/Input'
 import { cn } from '@/lib/utils'
 import {
   Table,
@@ -428,6 +429,8 @@ export default function DocumentManager() {
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
 
   const currentTab = useSettingsStore.use.currentTab()
+  const workspaceId = useSettingsStore.use.workspaceId()
+  const setWorkspaceId = useSettingsStore.use.setWorkspaceId()
   const showFileName = useSettingsStore.use.showFileName()
   const setShowFileName = useSettingsStore.use.setShowFileName()
   const documentsPageSize = useSettingsStore.use.documentsPageSize()
@@ -754,12 +757,13 @@ export default function DocumentManager() {
     query: QuerySnapshot,
     page: number = query.page
   ): DocumentsRequest => ({
+    workspace_id: workspaceId.trim() || undefined,
     ...getStatusRequestFilters(query.statusFilter),
     page,
     page_size: query.pageSize,
     sort_field: query.sortField,
     sort_direction: query.sortDirection
-  }), [])
+  }), [workspaceId])
 
   // Utility function to update component state.
   //
@@ -1272,7 +1276,7 @@ export default function DocumentManager() {
 
   useEffect(() => {
     latestRefreshRequestVersionRef.current += 1
-  }, [pagination.page, pagination.page_size, statusFilter, sortField, sortDirection])
+  }, [pagination.page, pagination.page_size, statusFilter, sortField, sortDirection, workspaceId])
 
   // Monitor pipelineActive changes and trigger an immediate refresh. The
   // polling interval is reconciled by the main polling useEffect below
@@ -1444,19 +1448,22 @@ export default function DocumentManager() {
     page: pagination.page,
     statusFilter,
     sortField,
-    sortDirection
+    sortDirection,
+    workspaceId
   })
   if (
     previousSelectionDeps.page !== pagination.page ||
     previousSelectionDeps.statusFilter !== statusFilter ||
     previousSelectionDeps.sortField !== sortField ||
-    previousSelectionDeps.sortDirection !== sortDirection
+    previousSelectionDeps.sortDirection !== sortDirection ||
+    previousSelectionDeps.workspaceId !== workspaceId
   ) {
     setPreviousSelectionDeps({
       page: pagination.page,
       statusFilter,
       sortField,
-      sortDirection
+      sortDirection,
+      workspaceId
     })
     setSelectedDocIds([])
   }
@@ -1485,6 +1492,18 @@ export default function DocumentManager() {
       <CardContent className="flex-1 flex flex-col min-h-0 overflow-auto">
         <div className="flex justify-between items-center gap-2 mb-2">
           <div className="flex gap-2">
+            <div className="flex items-center gap-2">
+              <label htmlFor="documents-workspace" className="text-sm text-gray-500">
+                Workspace
+              </label>
+              <Input
+                id="documents-workspace"
+                value={workspaceId}
+                onChange={(e) => setWorkspaceId(e.target.value)}
+                placeholder="default"
+                className="h-9 w-40"
+              />
+            </div>
             <Button
               variant="outline"
               onClick={scanDocuments}

@@ -9,6 +9,9 @@ type Language = 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW' | 'ru' | 'ja' | 'de' | 'uk' 
 type Tab = 'documents' | 'knowledge-graph' | 'retrieval'
 
 interface SettingsState {
+  workspaceId: string
+  setWorkspaceId: (workspaceId: string) => void
+
   // Document manager settings
   showFileName: boolean
   setShowFileName: (show: boolean) => void
@@ -86,6 +89,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     (set) => ({
       theme: 'system',
       language: 'en',
+      workspaceId: '',
       showPropertyPanel: true,
       showNodeSearchBar: true,
       showLegend: false,
@@ -129,8 +133,11 @@ const useSettingsStoreBase = create<SettingsState>()(
         stream: true,
         history_turns: 0,
         user_prompt: '',
-        enable_rerank: true
+        enable_rerank: true,
+        allowed_doc_ids: []
       },
+
+      setWorkspaceId: (workspaceId: string) => set({ workspaceId }),
 
       setTheme: (theme: Theme) => set({ theme }),
 
@@ -229,7 +236,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 21,
+      version: 22,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -348,6 +355,12 @@ const useSettingsStoreBase = create<SettingsState>()(
           // longer exists and leave the content area empty.
           if (state.currentTab === 'api') {
             state.currentTab = 'documents'
+          }
+        }
+        if (version < 22) {
+          state.workspaceId = state.workspaceId ?? ''
+          if (state.querySettings) {
+            state.querySettings.allowed_doc_ids = state.querySettings.allowed_doc_ids ?? []
           }
         }
         return state

@@ -68,7 +68,15 @@ export const ChatMessage = ({
   const [isThinkingExpanded, setIsThinkingExpanded] = useState<boolean>(false)
 
   // Directly use props passed from the parent.
-  const { thinkingContent, displayContent, thinkingTime, responseTime, firstTokenTime, isThinking } = message
+  const {
+    thinkingContent,
+    displayContent,
+    thinkingTime,
+    responseTime,
+    firstTokenTime,
+    isThinking,
+    tokenUsage
+  } = message
 
   // Reset expansion state when new thinking starts.
   // Render-time comparison avoids cascading renders from setState-in-useEffect.
@@ -181,6 +189,11 @@ export const ChatMessage = ({
           <span className="flex items-center gap-1 tabular-nums">
             <ZapIcon className="size-3" />
             {t('retrievePanel.chatMessage.firstTokenTime', { time: firstTokenTime.toFixed(1) })}
+          </span>
+        )}
+        {tokenUsage && (
+          <span className="tabular-nums">
+            Tokens {tokenUsage.total_tokens} ({tokenUsage.prompt_tokens}/{tokenUsage.completion_tokens}, {tokenUsage.call_count} calls)
           </span>
         )}
         {!hasContent && activeProgress && (
