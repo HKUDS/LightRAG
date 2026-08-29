@@ -467,10 +467,14 @@ export default function DocumentManager() {
   const prevPipelineActiveRef = useRef<boolean | undefined>(undefined);
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const latestRefreshRequestVersionRef = useRef(0);
-  // Throttle gate: all auto-driven /documents/paginated entrances funnel through
-  // refreshDocumentsThrottled() to enforce a minimum 2s wall-clock interval.
+  // Throttle gate: every /documents/paginated entrance that is not a direct
+  // page/filter/sort change funnels through refreshDocumentsThrottled() to
+  // enforce a minimum 2s wall-clock interval.
   const lastPaginatedAtRef = useRef(0);
   const pendingPaginatedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Intent tag the pending trailing timer will fire with. Held outside the
+  // closure so a user-intent call arriving during the wait can upgrade it.
+  const pendingPaginatedIsAutoRef = useRef(true);
   // Activity probe: exponential-backoff burst of /health calls that stops once
   // pipelineActive flips true. Holds the pending setTimeout ids so re-entry can
   // reset the schedule to t=0.
@@ -1006,19 +1010,32 @@ export default function DocumentManager() {
   // here. If the wall-clock gap since the last paginated request is >= 2s, fire
   // immediately; otherwise schedule a single trailing call at the 2s boundary
   // and drop any further calls into that pending slot (natural coalescing).
-  const refreshDocumentsThrottled = useCallback(() => {
-    const fire = () => {
+  const refreshDocumentsThrottled = useCallback((options: { auto?: boolean } = {}) => {
+    // Defaults to automatic: the timers are the common caller. Callers that
+    // follow a user action (upload, scan, delete) pass auto: false so the
+    // breaker cannot refuse the refresh their action earned.
+    const auto = options.auto ?? true
+    const fire = (isAuto: boolean) => {
       lastPaginatedAtRef.current = Date.now()
-      handleIntelligentRefresh({ auto: true }).catch((err) => {
+      handleIntelligentRefresh({ auto: isAuto }).catch((err) => {
         console.error('Throttled document refresh failed:', err)
       })
     }
     const gap = Date.now() - lastPaginatedAtRef.current
     if (gap >= 2000) {
-      fire()
+      fire(auto)
       return
     }
-    if (pendingPaginatedTimerRef.current !== null) return
+    if (pendingPaginatedTimerRef.current !== null) {
+      // A user-intent call arriving while an automatic trailing timer waits
+      // must UPGRADE it, not be dropped — the same defect the refresh queue's
+      // pending slot had, one layer up. The tag decides whether the queue's
+      // admission gate may refuse this request 2s from now, so dropping the
+      // call here would make the queue's priority rule unreachable.
+      // Monotonic: once intent, intent for the rest of this window.
+      if (!auto) pendingPaginatedIsAutoRef.current = false
+      return
+    }
     // Snapshot the query identity. If page/filter/sort changes while we wait,
     // the page-change useEffect bumps latestRefreshRequestVersionRef AND fires
     // its own paginated request on the new query. Our trailing closure still
@@ -1027,11 +1044,12 @@ export default function DocumentManager() {
     // (its requestVersion would be the newly-bumped value, so the in-flight
     // stale-check inside runRefreshRequest can't catch it).
     const versionAtSchedule = latestRefreshRequestVersionRef.current
+    pendingPaginatedIsAutoRef.current = auto
     pendingPaginatedTimerRef.current = setTimeout(() => {
       pendingPaginatedTimerRef.current = null
       if (!isMountedRef.current) return
       if (versionAtSchedule !== latestRefreshRequestVersionRef.current) return
-      fire()
+      fire(pendingPaginatedIsAutoRef.current)
     }, 2000 - gap)
   }, [handleIntelligentRefresh]);
 
@@ -1050,6 +1068,11 @@ export default function DocumentManager() {
     const timers: ReturnType<typeof setTimeout>[] = []
     const probeSchedule = [0, 1000, 2000, 4000, 8000, 16000] as const
     const refreshAt = new Set<number>([0, 2000, 4000, 8000, 16000])
+    // The probe follows a user action (scan / upload), so its FIRST refresh
+    // carries that intent and must not be refusable by the breaker. The rest
+    // of the burst is speculative — it polls for work the action may have
+    // started — so tagging all five as intent would let one click bypass the
+    // breaker five times.
     const cleanup = () => {
       timers.forEach((id) => clearTimeout(id))
       if (probeTimersRef.current === timers) {
@@ -1073,7 +1096,7 @@ export default function DocumentManager() {
           return
         }
         if (refreshAt.has(delay)) {
-          refreshDocumentsThrottled()
+          refreshDocumentsThrottled({ auto: delay !== 0 })
         }
         // Exit conditions (in priority order):
         //  - pipelineActive=true AND the document list has caught up: the 5s
@@ -1173,7 +1196,7 @@ export default function DocumentManager() {
         // scanning_skipped_pipeline_busy: a single check+refresh is enough,
         // no need to start the probe (pipeline is already active).
         useBackendState.getState().check().catch(() => undefined);
-        refreshDocumentsThrottled();
+        refreshDocumentsThrottled({ auto: false });
       }
     } catch (err) {
       if (isMountedRef.current) {
@@ -1296,9 +1319,13 @@ export default function DocumentManager() {
     // Reset health check timer with 1 second delay to avoid race condition
     useBackendState.getState().resetHealthCheckTimerDelayed(1000)
 
+    // A completed delete is user intent: refresh unconditionally rather than
+    // waiting for a poll tick the breaker may refuse.
+    refreshDocumentsThrottled({ auto: false })
+
     // Schedule a health check 2 seconds after successful clear
     startPollingInterval(2000)
-  }, [startPollingInterval])
+  }, [refreshDocumentsThrottled, startPollingInterval])
 
   // Handle documents cleared callback with proper interval reset
   const handleDocumentsCleared = useCallback(async () => {
@@ -1459,7 +1486,7 @@ export default function DocumentManager() {
             ) : null}
             <UploadDocumentsDialog
               onUploadBatchAccepted={() => startActivityProbe('upload')}
-              onDocumentsUploaded={async () => { refreshDocumentsThrottled() }}
+              onDocumentsUploaded={async () => { refreshDocumentsThrottled({ auto: false }) }}
             />
             <PipelineStatusDialog
               open={showPipelineStatus}
