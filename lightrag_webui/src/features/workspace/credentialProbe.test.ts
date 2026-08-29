@@ -181,3 +181,94 @@ describe('handleApiKeyDialogClose', () => {
     expect(useBackendState.getState().message).toBeNull()
   })
 })
+
+/**
+ * Concurrency: only the NEWEST probe may write.
+ *
+ * The entry re-probes on every dialog save, so a user who saves a wrong key
+ * and immediately saves the right one leaves two requests in flight. Whoever
+ * settles LAST would otherwise decide the outcome, and the orders that hurt
+ * are the ones where the stale probe settles second — the reason
+ * `runCredentialProbe` stamps a generation and both continuations check it.
+ *
+ * Neither direction was covered: deleting either guard, or simply not
+ * incrementing the counter, left this suite green. Both are asserted here,
+ * because they fail differently — one reopens a dialog over a key that now
+ * works, the other silently erases the error that should have opened it.
+ *
+ * The sibling implementations of this same pattern (`stores/customization`'s
+ * requestCounter, `stores/state`'s healthCheckGeneration) are already pinned;
+ * this closes the third.
+ */
+describe('runCredentialProbe generation guard', () => {
+  /** A promise whose settlement this test controls. */
+  const deferred = () => {
+    let resolve!: () => void
+    let reject!: (error: unknown) => void
+    const promise = new Promise<void>((res, rej) => {
+      resolve = res as () => void
+      reject = rej
+    })
+    return { promise, resolve, reject }
+  }
+
+  // The probe chains .then/.catch onto the stubbed promise, so a settlement
+  // needs several microtask turns to reach the store.
+  const flush = async () => {
+    for (let turn = 0; turn < 5; turn++) await Promise.resolve()
+  }
+
+  test('a stale FAILURE cannot reopen the dialog over a key that now works', async () => {
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const stale = deferred()
+      const newest = deferred()
+      verifySpy.mockImplementationOnce(() => stale.promise)
+      verifySpy.mockImplementationOnce(() => newest.promise)
+
+      probe.runCredentialProbe() // wrong key
+      probe.runCredentialProbe() // corrected key, supersedes the first
+      const before = probe.useCredentialProbeStore.getState().apiKeyDialogRequests
+
+      newest.resolve()
+      await flush()
+      // The superseded probe only now comes back, rejected.
+      stale.reject(new Error('403 Forbidden\n{"detail":"Invalid API Key"}'))
+      await flush()
+
+      expect(probe.useCredentialProbeStore.getState().apiKeyDialogRequests).toBe(before)
+      expect(useBackendState.getState().message).toBeNull()
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
+  test('a stale SUCCESS cannot erase the error a newer probe just raised', async () => {
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const stale = deferred()
+      const newest = deferred()
+      verifySpy.mockImplementationOnce(() => stale.promise)
+      verifySpy.mockImplementationOnce(() => newest.promise)
+
+      probe.runCredentialProbe() // key still valid at this point
+      probe.runCredentialProbe() // key rotated server-side, supersedes it
+
+      newest.reject(new Error('403 Forbidden\n{"detail":"API Key required"}'))
+      await flush()
+      const requested = probe.useCredentialProbeStore.getState().apiKeyDialogRequests
+      expect(useBackendState.getState().message).toContain('API Key required')
+
+      // The superseded probe returns successfully afterwards; its "credentials
+      // accepted" cleanup must not run, or the dialog opens on a blank slate
+      // with nothing explaining why.
+      stale.resolve()
+      await flush()
+
+      expect(useBackendState.getState().message).toContain('API Key required')
+      expect(probe.useCredentialProbeStore.getState().apiKeyDialogRequests).toBe(requested)
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+})
