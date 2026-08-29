@@ -13,6 +13,13 @@ export type PaginationControlsProps = {
   totalCount: number
   onPageChange: (page: number) => void
   onPageSizeChange: (pageSize: number) => void
+  /**
+   * Disables every control while a refresh runs. This is UX — no double-submit
+   * flicker — NOT the correctness guarantee: DocumentManager's refresh queue
+   * serializes requests and requestVersion discards stale responses, so even a
+   * click landing in the gap between paint and effect flush resolves to the
+   * user's last intent.
+   */
   isLoading?: boolean
   compact?: boolean
   className?: string
