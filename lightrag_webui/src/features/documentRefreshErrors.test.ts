@@ -80,6 +80,19 @@ describe('classifyDocumentRefreshError', () => {
     expect(classifyDocumentRefreshError(coded).type).toBe('network')
   })
 
+  test('the code axios actually uses is recognised', () => {
+    // AxiosError.ERR_NETWORK, not 'NETWORK_ERROR'. The message fallback covered
+    // this in practice, but only while the browser's ProgressEvent carries no
+    // message of its own — adapters/xhr.js prefers event.message when present.
+    const coded = new Error('') as Error & { code?: string }
+    coded.code = 'ERR_NETWORK'
+
+    const classification = classifyDocumentRefreshError(coded)
+    expect(classification.type).toBe('network')
+    expect(classification.shouldRetry).toBe(true)
+    expect(classification.provesBackendResponsive).toBe(false)
+  })
+
   test('anything unrecognised stays retryable', () => {
     expect(classifyDocumentRefreshError(new Error('boom'))).toEqual({
       type: 'unknown',

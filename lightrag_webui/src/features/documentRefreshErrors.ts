@@ -95,7 +95,18 @@ export const classifyDocumentRefreshError = (
     }
   }
 
-  if (message.includes('Network Error') || candidate?.code === 'NETWORK_ERROR') {
+  // axios reports transport failures as AxiosError.ERR_NETWORK; the legacy
+  // 'NETWORK_ERROR' spelling this used to check never matches anything it
+  // throws. The message test alone is not enough either: axios only falls back
+  // to the literal 'Network Error' when the browser's ProgressEvent carries no
+  // message of its own (adapters/xhr.js), so a browser that supplies one drops
+  // the failure into 'unknown'. Same retry treatment either way, but the type
+  // is what anything reading these classifications branches on.
+  if (
+    message.includes('Network Error') ||
+    candidate?.code === 'ERR_NETWORK' ||
+    candidate?.code === 'NETWORK_ERROR'
+  ) {
     return {
       type: 'network',
       shouldRetry: true,
