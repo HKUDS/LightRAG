@@ -46,6 +46,17 @@ def create_ui_customization_routes(
         "description": webui_description or "Simple and Fast RAG",
     }
 
+    # asset_id -> asset, built once. The snapshot keys assets by
+    # (asset_hash, asset_id) because a URL must match BOTH parts, but a
+    # locale references its logo by asset_id alone; asset_ids are unique
+    # within a bundle (BRAND_LOGO_ASSET_ID plus one "logo-<locale>" per
+    # locale), so this index is exact and saves a per-request scan.
+    assets_by_id = (
+        {asset.asset_id: asset for asset in snapshot.assets.values()}
+        if snapshot is not None
+        else {}
+    )
+
     @router.get("")
     async def get_ui_customization(
         request: Request,
@@ -70,23 +81,19 @@ def create_ui_customization_routes(
         resolved, fallback_used = snapshot.resolve_locale(requested)
         content = snapshot.locales[resolved]
 
+        # URL and alt text are ONE decision: a response carrying an alt text
+        # for a logo it could not name would describe an image the page never
+        # renders. Resolved in a single branch so the two cannot diverge.
         logo_url = None
         logo_alt = None
-        if content.logo_asset_id is not None:
-            asset = next(
-                (
-                    a
-                    for (digest, asset_id), a in snapshot.assets.items()
-                    if asset_id == content.logo_asset_id
-                ),
-                None,
-            )
-            if asset is not None:
-                root = request.scope.get("root_path", "")
-                logo_url = (
-                    f"{root}/ui/customization/assets/{asset.sha256}/{asset.asset_id}"
-                )
-        if content.logo_asset_id is not None:
+        asset = (
+            assets_by_id.get(content.logo_asset_id)
+            if content.logo_asset_id is not None
+            else None
+        )
+        if asset is not None:
+            root = request.scope.get("root_path", "")
+            logo_url = f"{root}/ui/customization/assets/{asset.sha256}/{asset.asset_id}"
             logo_alt = content.logo_alt
 
         return JSONResponse(

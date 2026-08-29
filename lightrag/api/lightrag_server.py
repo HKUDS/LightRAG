@@ -3023,13 +3023,18 @@ def create_app(args):
             /workspace/index.html) and the URL would stop indicating the
             entry. Same-entry explicit filenames (/webui/index.html,
             /workspace/workspace.html) stay reachable.
+
+            Matched case-INSENSITIVELY: on a case-insensitive filesystem
+            (macOS, Windows) the underlying StaticFiles would happily serve
+            /webui/WORKSPACE.HTML, so an exact-case check would leave the
+            alias open exactly where the OS opens it.
             """
             super().__init__(*args, **kwargs)
             self.index_file = index_file
-            self.blocked_html = set(blocked_html)
+            self.blocked_html = {name.lower() for name in blocked_html}
 
         async def get_response(self, path: str, scope):
-            if path in self.blocked_html:
+            if path.lower() in self.blocked_html:
                 raise HTTPException(status_code=404, detail="Not Found")
 
             # Rewrite the mount-root request ('' / '.') to this mount's own

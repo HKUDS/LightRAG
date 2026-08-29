@@ -183,6 +183,23 @@ class TestDualMount:
         assert client.get("/workspace/index.html").status_code == 404
         assert client.get("/webui/workspace.html").status_code == 404
 
+    def test_cross_entry_html_rejected_case_insensitively(self, tmp_path, monkeypatch):
+        """The block must not depend on the request's letter case.
+
+        On a case-insensitive filesystem (macOS, Windows) StaticFiles would
+        resolve /webui/WORKSPACE.HTML to the real workspace.html, so an
+        exact-case check would leave the cross-entry alias open exactly on
+        the platforms whose filesystem opens it.
+        """
+        client = _client(tmp_path, monkeypatch)
+        for path in (
+            "/webui/WORKSPACE.HTML",
+            "/webui/Workspace.html",
+            "/workspace/INDEX.HTML",
+            "/workspace/Index.Html",
+        ):
+            assert client.get(path).status_code == 404, path
+
     def test_same_entry_explicit_filename_still_served(self, tmp_path, monkeypatch):
         client = _client(tmp_path, monkeypatch)
 

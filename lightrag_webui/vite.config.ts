@@ -216,11 +216,13 @@ export default defineConfig(({ mode }) => {
       outDir: path.resolve(import.meta.dirname, '../lightrag/api/webui'),
       emptyOutDir: true,
       chunkSizeWarningLimit: 3800,
-      // Chunk-graph evidence for the workspace first-load dependency audit:
-      // ManifestChunk.imports / dynamicImports prove mermaid is reached only
-      // through a dynamic edge. Complemented by the source-module audit below
-      // (the manifest cannot list a chunk's internal source modules).
-      manifest: true,
+      // NOTE: `manifest: true` is deliberately NOT set. The first-load audit
+      // reads the chunk graph straight off Rollup's in-memory `bundle` in
+      // generateBundle, so a manifest file adds no evidence — it would only
+      // drop a ~63 KB .vite/manifest.json INSIDE the served static directory,
+      // which both UI mounts would then hand out publicly
+      // (/webui/.vite/manifest.json), exposing the whole chunk graph and the
+      // source module paths for nothing.
       rollupOptions: {
         // One build, two HTML entries — both land at the output directory
         // root so `base: './'` resolves ./assets/... correctly under either

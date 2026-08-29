@@ -22,6 +22,8 @@ from fastapi.testclient import TestClient
 
 from lightrag.api.ui_customization import (
     UICustomizationError,
+    UICustomizationSnapshot,
+    UILocaleContent,
     WEBUI_CHROME_LOCALES,
     chrome_language_for,
     load_ui_customization_snapshot,
@@ -684,3 +686,61 @@ class TestChromeTranslationCoverage:
         assert not any(
             "no interface translation" in record.getMessage() for record in records
         )
+
+
+class TestLogoUrlAltCoupling:
+    """`logo_url` and `logo_alt` are one decision, never two.
+
+    A response that names no logo must not still carry alt text for it: the
+    page renders the <img> only when a URL is present, so a lone alt text
+    describes an image nobody sees, and a client that keys on `logo_alt`
+    being non-null would render a broken image. A validated bundle cannot
+    reach that state (every declared `logo_asset_id` is loaded alongside its
+    locale), so the coupling is asserted against a hand-built snapshot whose
+    locale points at an asset id the snapshot does not carry.
+    """
+
+    def _app(self, snapshot):
+        from fastapi import FastAPI
+        from lightrag.api.routers.ui_customization_routes import (
+            create_ui_customization_routes,
+        )
+
+        app = FastAPI()
+        app.include_router(create_ui_customization_routes(snapshot, "ACME", "desc"))
+        return app
+
+    def test_alt_is_dropped_when_the_asset_cannot_be_named(self):
+        snapshot = UICustomizationSnapshot(
+            default_locale="en",
+            locales={
+                "en": UILocaleContent(
+                    welcome="w",
+                    query_empty="q",
+                    logo_alt="ACME",
+                    logo_asset_id="brand-logo",
+                )
+            },
+            fallbacks={},
+            assets={},  # the referenced asset is absent
+            bundle_revision="deadbeef",
+        )
+        data = TestClient(self._app(snapshot)).get("/ui/customization").json()
+        assert data["brand"]["logo_url"] is None
+        assert data["brand"]["logo_alt"] is None
+
+    def test_explicit_no_logo_carries_neither(self):
+        snapshot = UICustomizationSnapshot(
+            default_locale="en",
+            locales={
+                "en": UILocaleContent(
+                    welcome="w", query_empty="q", logo_alt="ACME", logo_asset_id=None
+                )
+            },
+            fallbacks={},
+            assets={},
+            bundle_revision="deadbeef",
+        )
+        data = TestClient(self._app(snapshot)).get("/ui/customization").json()
+        assert data["brand"]["logo_url"] is None
+        assert data["brand"]["logo_alt"] is None
