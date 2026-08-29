@@ -49,6 +49,33 @@ export function loginIdentityFromToken(token: string): string {
 }
 
 /**
+ * Whether arriving at `identity` from the recorded `previous` is a genuine
+ * identity change — the single rule BOTH the same-tab activation and the
+ * cross-tab `storage` handler decide on, so a browser cannot answer it one
+ * way for its own tab and another way for the tab next to it.
+ *
+ * A NULL `previous` is the ABSENCE of evidence, not evidence of a change,
+ * and it survives only until this build's first activation — every
+ * activation path records the marker. So it means one of exactly two things:
+ *
+ *   * a browser that never ran ANY build — both histories are empty and
+ *     clearing them is a no-op either way; or
+ *   * a browser upgrading from a build that recorded the marker ONLY on a
+ *     login-form submit or a logout. There, a NAMED user could not
+ *     accumulate history without also recording it, so a history found
+ *     beside a missing marker was written by guest use.
+ *
+ * An incoming guest is therefore the same identity that owns that history
+ * and must not destroy it — least of all on the one load where the storage
+ * split has just migrated it. An incoming NAMED user is a real transition
+ * (guest use before the first login) and still counts.
+ */
+function isIdentityChange(previous: string | null, identity: string): boolean {
+  if (previous === null) return identity !== GUEST_IDENTITY
+  return previous !== identity
+}
+
+/**
  * Record `identity` as the browser's current user, clearing BOTH entries'
  * retrieval histories when it differs from the stored one. Returns whether
  * the histories were cleared.
@@ -61,23 +88,7 @@ export function applyLoginIdentity(identity: string): boolean {
     console.error('Failed to read previous user identity:', error)
   }
 
-  // A MISSING marker is the ABSENCE of evidence, not evidence of a change,
-  // and it survives only until this build's first activation — every
-  // activation path writes it. So it means one of exactly two things:
-  //
-  //   * a browser that never ran ANY build — both histories are empty and
-  //     clearing them is a no-op either way; or
-  //   * a browser upgrading from a build that wrote the marker ONLY on a
-  //     login-form submit or a logout. There, a NAMED user could not
-  //     accumulate history without also writing the marker, so a history
-  //     found beside a missing marker was written by guest use.
-  //
-  // An incoming guest is therefore the same identity that owns that history
-  // and must not destroy it — least of all on the one load where the storage
-  // split has just migrated it. An incoming NAMED user is a real transition
-  // (guest use before the first login) and still clears.
-  const identityChanged =
-    previous === null ? identity !== GUEST_IDENTITY : previous !== identity
+  const identityChanged = isIdentityChange(previous, identity)
   if (identityChanged) {
     // A different person (or a guest after a named user): neither entry may
     // show the previous identity's conversations.
@@ -121,11 +132,19 @@ export const useIdentityEpochStore = create<{ epoch: number }>(() => ({ epoch: 0
 
 /**
  * Storage-event handler for cross-tab identity changes. `storage` events
- * fire only in OTHER tabs and only when the value actually changed, so a
- * matching event is always a genuine identity transition performed
- * elsewhere: clear this tab's LIVE history state (the other tab already
- * cleared the persisted envelopes; clearing again is idempotent) and bump
- * the epoch so mounted query sessions remount empty.
+ * fire only in OTHER tabs and only when the value actually changed — but a
+ * changed value is not yet a changed IDENTITY: the marker's FIRST write
+ * (oldValue null) is the other tab merely recording what this browser
+ * already was, and for a guest that is `isIdentityChange`'s absence-of-
+ * evidence case. Deciding it here by any other rule would undo, from the
+ * neighbouring tab, exactly what `applyLoginIdentity` refuses to do in its
+ * own — the workspace tab sitting on the welcome page would clear (and
+ * persist empty) the history the split migration had just moved, the moment
+ * an admin tab activated its guest.
+ *
+ * On a real transition: clear this tab's LIVE history state (the other tab
+ * already cleared the persisted envelopes; clearing again is idempotent) and
+ * bump the epoch so mounted query sessions remount empty.
  */
 export function handleIdentityStorageEvent(event: {
   key: string | null
@@ -145,7 +164,10 @@ export function handleIdentityStorageEvent(event: {
     return
   }
   if (event.key !== PREVIOUS_USER_KEY) return
-  if (event.newValue == null || event.newValue === event.oldValue) return
+  // A removal (newValue null) is not a transition either: logout deliberately
+  // PRESERVES the histories, and the next activation decides.
+  if (event.newValue == null) return
+  if (!isIdentityChange(event.oldValue ?? null, event.newValue)) return
   useWebuiRetrievalHistoryStore.getState().clearHistory()
   useWorkspaceRetrievalHistoryStore.getState().clearHistory()
   useIdentityEpochStore.setState((state) => ({ epoch: state.epoch + 1 }))

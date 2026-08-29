@@ -226,6 +226,49 @@ describe('handleIdentityStorageEvent (cross-tab identity change)', () => {
     expect(useIdentityEpochStore.getState().epoch).toBe(before + 1)
   })
 
+  test('the marker\'s FIRST write by a GUEST tab is not a transition', () => {
+    // Regression, and the cross-tab half of the same-tab rule above: the
+    // marker's first write (oldValue null) is another tab recording what
+    // this browser already was. In an auth-disabled deployment that is the
+    // ONLY way it ever gets written, so the sequence is ordinary — /workspace
+    // sits on the welcome page, its migration having just moved the legacy
+    // history into place, while a second tab loads /webui and its guest
+    // activation records the marker. Treating that as a transition cleared
+    // the live stores here and persisted the empty result over the migrated
+    // history.
+    seedHistories()
+    const before = useIdentityEpochStore.getState().epoch
+
+    handleIdentityStorageEvent({
+      key: PREVIOUS_USER_KEY,
+      oldValue: null,
+      newValue: 'guest'
+    })
+
+    expect(useWebuiRetrievalHistoryStore.getState().history).toHaveLength(1)
+    expect(useWorkspaceRetrievalHistoryStore.getState().history).toHaveLength(1)
+    // No remount either: the live session belongs to that same guest.
+    expect(useIdentityEpochStore.getState().epoch).toBe(before)
+  })
+
+  test('the marker\'s FIRST write by a NAMED tab IS a transition', () => {
+    // The other side: guest use before the first login. A named identity
+    // appearing beside a missing marker is a real change, so the guest's
+    // conversations must not survive into it.
+    seedHistories()
+    const before = useIdentityEpochStore.getState().epoch
+
+    handleIdentityStorageEvent({
+      key: PREVIOUS_USER_KEY,
+      oldValue: null,
+      newValue: 'alice'
+    })
+
+    expect(useWebuiRetrievalHistoryStore.getState().history).toEqual([])
+    expect(useWorkspaceRetrievalHistoryStore.getState().history).toEqual([])
+    expect(useIdentityEpochStore.getState().epoch).toBe(before + 1)
+  })
+
   test('other keys, unchanged values and key removals are ignored', () => {
     seedHistories()
     const before = useIdentityEpochStore.getState().epoch
