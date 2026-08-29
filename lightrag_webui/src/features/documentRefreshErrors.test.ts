@@ -19,7 +19,8 @@ describe('classifyDocumentRefreshError', () => {
     expect(classifyDocumentRefreshError(error)).toEqual({
       type: 'cancelled',
       shouldRetry: false,
-      shouldShowToast: false
+      shouldShowToast: false,
+      provesBackendResponsive: false
     })
   })
 
@@ -30,7 +31,8 @@ describe('classifyDocumentRefreshError', () => {
     expect(classifyDocumentRefreshError(new Error(documentFetchTimeoutMessage))).toEqual({
       type: 'timeout',
       shouldRetry: true,
-      shouldShowToast: true
+      shouldShowToast: true,
+      provesBackendResponsive: false
     })
   })
 
@@ -44,6 +46,9 @@ describe('classifyDocumentRefreshError', () => {
       expect(classification.type).toBe('client')
       expect(classification.shouldRetry).toBe(false)
       expect(classification.shouldShowToast).toBe(true)
+      // The application answered, so the reachability breaker must be cleared
+      // rather than left holding a stale failure count.
+      expect(classification.provesBackendResponsive).toBe(true)
     }
   })
 
@@ -60,6 +65,10 @@ describe('classifyDocumentRefreshError', () => {
       const classification = classifyDocumentRefreshError(httpError(status))
       expect(classification.type).toBe('server')
       expect(classification.shouldRetry).toBe(true)
+      // A 502/504 is the standard signal of a stalled backend or the proxy in
+      // front of it — exactly what the breaker exists to detect. It must never
+      // read as proof of life, however much it is "an HTTP response".
+      expect(classification.provesBackendResponsive).toBe(false)
     }
   })
 
@@ -75,7 +84,8 @@ describe('classifyDocumentRefreshError', () => {
     expect(classifyDocumentRefreshError(new Error('boom'))).toEqual({
       type: 'unknown',
       shouldRetry: true,
-      shouldShowToast: true
+      shouldShowToast: true,
+      provesBackendResponsive: false
     })
     expect(classifyDocumentRefreshError(null).type).toBe('unknown')
     expect(classifyDocumentRefreshError(undefined).type).toBe('unknown')

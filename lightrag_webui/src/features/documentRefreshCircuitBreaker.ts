@@ -19,11 +19,17 @@
  *    success hook right after a fire-and-forget refresh, so every polling tick
  *    cleared the failure counter and the breaker never opened at all.
  * 3. **Half-open admits exactly one probe.** The breaker stays OPEN while the
- *    probe is in flight; only its settlement (recordSuccess / recordFailure)
- *    moves it on. Simply flipping `isOpen` to false at the deadline would let
- *    every subsequent poll tick through for as long as the probe takes to
- *    fail — with a 5s poll cadence and a 30s request timeout, that is several
- *    ticks, and the request they queue up would bypass the breaker entirely.
+ *    probe is in flight; only its settlement moves it on. Simply flipping
+ *    `isOpen` to false at the deadline would let every subsequent poll tick
+ *    through for as long as the probe takes to fail — with a 5s poll cadence
+ *    and a 30s request timeout, that is several ticks, and the request they
+ *    queue up would bypass the breaker entirely.
+ * 4. **Every outcome settles the probe.** There are three, not two:
+ *    recordSuccess (a response arrived), recordCircuitBreakerFailure (no
+ *    answer, or an answer that is itself a back-off signal), and
+ *    settleCircuitBreakerProbe (the outcome proves nothing but the slot must
+ *    still be returned). A path that records none of them holds the slot until
+ *    the probe timeout, stalling automatic refreshes for 45s at a time.
  */
 
 export type CircuitBreakerState = {
@@ -49,12 +55,17 @@ export const CIRCUIT_BREAKER_MAX_FAILURE_COUNT = 6
 export const CIRCUIT_BREAKER_MAX_BACKOFF_MS = 60_000
 
 /**
- * How long a half-open probe may stay unsettled before the breaker admits
- * another one. Every admitted probe should settle through recordSuccess /
- * recordFailure (the paginated fetch has its own 30s timeout), but an admission
- * that never turns into a request — the caller's throttle gate can coalesce it
- * into an already-running refresh — would otherwise wedge the breaker closed
- * forever. Must stay above the request timeout so it never races a live probe.
+ * Last-resort ceiling on how long a half-open probe may stay unsettled before
+ * the breaker admits another one.
+ *
+ * Every outcome settles the probe at once — success and retryable failure
+ * through recordSuccess / recordFailure, everything else through
+ * settleCircuitBreakerProbe at the caller's single exit point. If this timeout
+ * is ever what unblocks the breaker, a settle path was missed; that is a bug,
+ * not the design. It exists only so such a bug degrades into a slow retry
+ * instead of a permanent wedge.
+ *
+ * Must stay above the request timeout so it never races a live probe.
  */
 export const CIRCUIT_BREAKER_PROBE_TIMEOUT_MS = 45_000
 
@@ -97,6 +108,39 @@ export const recordCircuitBreakerFailure = (
 export const resetCircuitBreaker = (): CircuitBreakerState => ({
   ...initialCircuitBreakerState
 })
+
+/**
+ * Settle a half-open probe whose outcome says nothing about reachability — a
+ * cancelled request, or a caller that returned before it could record either
+ * side.
+ *
+ * The slot is held for the lifetime of ONE real request and every exit path
+ * must return it: leaving `halfOpenSince` stamped blocks every automatic
+ * refresh until CIRCUIT_BREAKER_PROBE_TIMEOUT_MS, which is 45s of stalled
+ * polling bought by a request that may have taken 50ms.
+ *
+ * The failure counter must not move — nothing was learned — but the backoff
+ * window IS re-stamped: `nextRetryTime` is already in the past by the time a
+ * probe is running, so returning the slot without it would let the very next
+ * poll tick admit another probe immediately.
+ *
+ * A no-op when no probe is in flight, so callers may invoke it unconditionally
+ * from a single choke point.
+ */
+export const settleCircuitBreakerProbe = (
+  state: CircuitBreakerState,
+  now: number
+): CircuitBreakerState => {
+  if (state.halfOpenSince === null) {
+    return state
+  }
+
+  return {
+    ...state,
+    halfOpenSince: null,
+    nextRetryTime: now + circuitBreakerBackoffMs(state.failureCount)
+  }
+}
 
 
 /**

@@ -59,6 +59,7 @@ import {
   isCircuitBreakerBlocked,
   recordCircuitBreakerFailure,
   resetCircuitBreaker,
+  settleCircuitBreakerProbe,
   type CircuitBreakerState
 } from '@/features/documentRefreshCircuitBreaker'
 import { classifyDocumentRefreshError } from '@/features/documentRefreshErrors'
@@ -793,6 +794,16 @@ export default function DocumentManager() {
     circuitBreakerRef.current = resetCircuitBreaker();
   }, []);
 
+  // Return the half-open probe slot for an outcome that proves nothing about
+  // reachability. Idempotent, so it can be called unconditionally from the one
+  // place every request path passes through.
+  const settleProbe = useCallback(() => {
+    circuitBreakerRef.current = settleCircuitBreakerProbe(
+      circuitBreakerRef.current,
+      Date.now()
+    );
+  }, []);
+
   // Handle page size change - update state and save to store
   const handlePageSizeChange = useCallback((newPageSize: number) => {
     if (newPageSize === pagination.page_size) return;
@@ -900,15 +911,35 @@ export default function DocumentManager() {
       if (isMountedRef.current) {
         const errorClassification = classifyDocumentRefreshError(err);
 
+        if (errorClassification.shouldRetry) {
+          // No answer at all, or an answer that is itself a back-off signal
+          // (408/429). shouldRetry outranks provesBackendResponsive by design.
+          recordFailure();
+        } else if (errorClassification.provesBackendResponsive) {
+          // A permanent 4xx: the application parsed and routed the request and
+          // answered. Reachability is proven, so the breaker must be CLEARED
+          // rather than left holding a stale failure count that would let three
+          // non-consecutive failures open it.
+          recordSuccess();
+        }
+        // Anything left — a cancellation — proves nothing and must not reset,
+        // but must not keep holding the probe slot either: the finally settles
+        // it below.
+
         if (errorClassification.shouldShowToast) {
           toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }));
         }
-
-        if (errorClassification.shouldRetry) {
-          recordFailure();
-        }
       }
     } finally {
+      // The probe slot is held for the lifetime of ONE real request, so every
+      // exit path must return it. recordSuccess / recordFailure already clear
+      // it; this covers the paths that do neither — a cancellation, and the
+      // unmount early return at the top of this function, which precedes every
+      // record call. Idempotent, hence unconditional: the invariant is "every
+      // exit returns the slot", and finally is the only construct that states
+      // it. An else-branch in the catch would cover today's paths and silently
+      // reopen the hole the next time an early return is added.
+      settleProbe();
       if (isMountedRef.current) {
         setIsRefreshing(false);
       }
@@ -918,6 +949,7 @@ export default function DocumentManager() {
     updateComponentState,
     recordFailure,
     recordSuccess,
+    settleProbe,
     handlePageSizeChange,
     buildDocumentsRequest
   ]);

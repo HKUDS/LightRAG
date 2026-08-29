@@ -11,6 +11,7 @@ import {
   isCircuitBreakerBlocked,
   recordCircuitBreakerFailure,
   resetCircuitBreaker,
+  settleCircuitBreakerProbe,
   type CircuitBreakerState
 } from '@/features/documentRefreshCircuitBreaker'
 
@@ -156,5 +157,92 @@ describe('documentRefreshCircuitBreaker', () => {
     expect(isCircuitBreakerBlocked(open, now + 1)).toBe(true)
     expect(isCircuitBreakerBlocked(open, open.nextRetryTime!)).toBe(false)
     expect(open.halfOpenSince).toBeNull()
+  })
+
+  describe('settleCircuitBreakerProbe', () => {
+    const openWithProbe = (now: number) => {
+      let state = initialCircuitBreakerState
+      for (let i = 0; i < CIRCUIT_BREAKER_FAILURE_THRESHOLD; i += 1) {
+        state = recordCircuitBreakerFailure(state, now)
+      }
+      const admission = admitCircuitBreakerRequest(state, state.nextRetryTime!)
+      expect(admission.admitted).toBe(true)
+      return admission.state
+    }
+
+    test('returns the probe slot without moving the failure counter', () => {
+      const probing = openWithProbe(1_000)
+      const settledAt = probing.halfOpenSince! + 50
+
+      const settled = settleCircuitBreakerProbe(probing, settledAt)
+
+      expect(settled.halfOpenSince).toBeNull()
+      expect(settled.failureCount).toBe(probing.failureCount)
+      expect(settled.isOpen).toBe(true)
+    })
+
+    test('re-stamps the backoff instead of leaving nextRetryTime in the past', () => {
+      // Returning the slot alone is not enough: nextRetryTime is already past
+      // by the time a probe runs, so the very next poll tick would be admitted
+      // as another probe immediately.
+      const probing = openWithProbe(1_000)
+      const settledAt = probing.halfOpenSince! + 50
+
+      const settled = settleCircuitBreakerProbe(probing, settledAt)
+      const expected = settledAt + circuitBreakerBackoffMs(settled.failureCount)
+
+      expect(settled.nextRetryTime).toBe(expected)
+      expect(admitCircuitBreakerRequest(settled, expected - 1).admitted).toBe(false)
+      expect(admitCircuitBreakerRequest(settled, expected).admitted).toBe(true)
+    })
+
+    test('an unsettled probe blocks automatic refreshes for the whole probe timeout', () => {
+      // The regression: a request that recorded neither side left halfOpenSince
+      // stamped, so every tick was refused until CIRCUIT_BREAKER_PROBE_TIMEOUT_MS
+      // — 45s of stalled polling bought by a request that took 50ms.
+      const probing = openWithProbe(1_000)
+      const respondedAt = probing.halfOpenSince! + 50
+
+      expect(admitCircuitBreakerRequest(probing, respondedAt).admitted).toBe(false)
+      expect(
+        admitCircuitBreakerRequest(
+          probing,
+          probing.halfOpenSince! + CIRCUIT_BREAKER_PROBE_TIMEOUT_MS - 1
+        ).admitted
+      ).toBe(false)
+
+      // Settling it releases the breaker on its own backoff instead.
+      const settled = settleCircuitBreakerProbe(probing, respondedAt)
+      expect(settled.nextRetryTime).toBeLessThan(
+        probing.halfOpenSince! + CIRCUIT_BREAKER_PROBE_TIMEOUT_MS
+      )
+    })
+
+    test('is a no-op when no probe is in flight', () => {
+      // The precondition for calling it unconditionally from a finally block.
+      const closed = initialCircuitBreakerState
+      expect(settleCircuitBreakerProbe(closed, 5_000)).toBe(closed)
+
+      const failedOnce = recordCircuitBreakerFailure(closed, 5_000)
+      expect(settleCircuitBreakerProbe(failedOnce, 6_000)).toBe(failedOnce)
+    })
+  })
+
+  test('an answer from the application does not leave a stale failure count', () => {
+    // Consumer contract, pinned here because DocumentManager has no component
+    // test: a permanent 4xx resets the breaker, so failures separated by one
+    // cannot accumulate. CIRCUIT_BREAKER_FAILURE_THRESHOLD documents itself as
+    // CONSECUTIVE failures, and only a reset makes that true.
+    let state = initialCircuitBreakerState
+    state = recordCircuitBreakerFailure(state, 1_000)
+    state = recordCircuitBreakerFailure(state, 2_000)
+    expect(state.isOpen).toBe(false)
+
+    // ... a 403 arrives: the application answered, so the breaker resets.
+    state = resetCircuitBreaker()
+
+    state = recordCircuitBreakerFailure(state, 4_000)
+    expect(state.failureCount).toBe(1)
+    expect(state.isOpen).toBe(false)
   })
 })

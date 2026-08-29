@@ -11,6 +11,23 @@ export type RefreshErrorClassification = {
   type: 'cancelled' | 'timeout' | 'network' | 'server' | 'client' | 'unknown'
   shouldRetry: boolean
   shouldShowToast: boolean
+  /**
+   * The application parsed and routed this request and answered definitively.
+   * That is positive proof the backend is healthy, so the reachability breaker
+   * must be CLEARED, not merely left alone: `failureCount` only ever resets on
+   * proof of life, and keeping a stale count across such an answer lets three
+   * NON-consecutive failures open a breaker whose threshold is documented as
+   * consecutive.
+   *
+   * Deliberately false for 5xx: a 502/504 is the standard signal of a stalled
+   * backend or the proxy in front of it, which is exactly what this breaker
+   * exists to detect. False for a cancellation or a transport failure too — no
+   * answer was received at all.
+   *
+   * `shouldRetry` outranks this at the consumer: a 429 does prove the backend
+   * answered, but it is also an instruction to slow down, so backoff wins.
+   */
+  provesBackendResponsive: boolean
 }
 
 // 408 Request Timeout and 429 Too Many Requests are the two 4xx codes that
@@ -38,33 +55,59 @@ export const classifyDocumentRefreshError = (
   } | null
 
   if (candidate?.name === 'AbortError') {
-    return { type: 'cancelled', shouldRetry: false, shouldShowToast: false }
+    return {
+      type: 'cancelled',
+      shouldRetry: false,
+      shouldShowToast: false,
+      provesBackendResponsive: false
+    }
   }
 
   const message = typeof candidate?.message === 'string' ? candidate.message : ''
 
   if (message === documentFetchTimeoutMessage) {
-    return { type: 'timeout', shouldRetry: true, shouldShowToast: true }
+    return {
+      type: 'timeout',
+      shouldRetry: true,
+      shouldShowToast: true,
+      provesBackendResponsive: false
+    }
   }
 
   const status = typeof candidate?.status === 'number' ? candidate.status : null
 
   if (status !== null) {
     if (status >= 500) {
-      return { type: 'server', shouldRetry: true, shouldShowToast: true }
+      return {
+        type: 'server',
+        shouldRetry: true,
+        shouldShowToast: true,
+        provesBackendResponsive: false
+      }
     }
     if (status >= 400) {
       return {
         type: 'client',
         shouldRetry: RETRYABLE_CLIENT_STATUSES.has(status),
-        shouldShowToast: true
+        shouldShowToast: true,
+        provesBackendResponsive: true
       }
     }
   }
 
   if (message.includes('Network Error') || candidate?.code === 'NETWORK_ERROR') {
-    return { type: 'network', shouldRetry: true, shouldShowToast: true }
+    return {
+      type: 'network',
+      shouldRetry: true,
+      shouldShowToast: true,
+      provesBackendResponsive: false
+    }
   }
 
-  return { type: 'unknown', shouldRetry: true, shouldShowToast: true }
+  return {
+    type: 'unknown',
+    shouldRetry: true,
+    shouldShowToast: true,
+    provesBackendResponsive: false
+  }
 }
