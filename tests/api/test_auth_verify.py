@@ -14,6 +14,9 @@ profile (LIGHTRAG_API_KEY set, no AUTH_ACCOUNTS):
 and for the fully open profile: 200 with no credentials — while /health keeps
 answering 200 "healthy" to unauthenticated callers in BOTH profiles (the very
 property that makes it unusable as a credential probe).
+
+Both profiles require AUTH_ACCOUNTS to be absent. That is a claim about
+module-level state, not about the environment — see `_pin_auth_profile`.
 """
 
 import pytest
@@ -47,9 +50,40 @@ def _isolate_env(monkeypatch):
     config._initialized = False
 
 
+def _pin_auth_profile(monkeypatch):
+    """Pin the module-level auth state to "no AUTH_ACCOUNTS".
+
+    Clearing the ENVIRONMENT does not clear the auth PROFILE. `auth_handler`
+    is a singleton built from `global_args` when lightrag.api.auth is first
+    imported, and `utils_api.auth_configured` is evaluated once at that same
+    import; neither is rebuilt by the `initialize_config(force=True)` inside
+    `_build_app`. Whichever test imported those modules first therefore fixes
+    the profile for the whole session — and on a developer machine whose .env
+    sets AUTH_ACCOUNTS that profile is password auth. `combined_dependency`
+    then took its `auth_configured` branch and answered 401 where these tests
+    assert 403/200, and `/auth-status` read the stale `auth_handler.accounts`
+    and reported `auth_configured: True`. CI runs `-m offline` with no .env,
+    so it never saw it. Same staleness tests/api/conftest.py documents, same
+    remedy as tests/api/test_health_auth.py::_set_auth_mode.
+
+    MUST be called AFTER `_build_app`. It is what runs `parse_args()` with a
+    controlled `sys.argv` and initializes `global_args`; importing utils_api
+    before that point constructs `AuthHandler` against an uninitialized config,
+    which re-enters `parse_args()` with pytest's own argv and exits.
+
+    `accounts` is patched on the SINGLETON, so every module holding a
+    reference (utils_api, lightrag_server) observes the same object.
+    """
+    import lightrag.api.utils_api as utils_api
+
+    monkeypatch.setattr(utils_api.auth_handler, "accounts", {})
+    monkeypatch.setattr(utils_api, "auth_configured", False)
+
+
 def _client(tmp_path, monkeypatch, *cli_args):
     _stage_build(tmp_path)
     app = _build_app(tmp_path, monkeypatch, *cli_args)
+    _pin_auth_profile(monkeypatch)
     return TestClient(app)
 
 
