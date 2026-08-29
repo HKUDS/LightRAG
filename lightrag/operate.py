@@ -902,51 +902,64 @@ def _looks_like_json_extraction_result(result: str) -> bool:
     return False
 
 
-async def _process_json_extraction_result(
-    result: str,
-    chunk_key: str,
-    timestamp: int,
-    file_path: str = "unknown_source",
-) -> tuple[dict, dict]:
-    """Process a JSON-formatted extraction result from LLM.
+def _load_json_extraction_payload(result: str, chunk_key: str) -> dict[str, Any] | None:
+    """Recover the JSON object from an extraction response, or None.
 
-    This function parses the LLM response as JSON and extracts entities and relationships.
-    It uses :func:`tolerant_load_json_dict` to recover JSON from fenced,
-    prose-wrapped, or slightly malformed responses from weaker models.
+    ``tolerant_load_json_dict`` strips fences, tolerates leading/trailing prose
+    (including trailing braces), and repairs the malformed-object slips
+    ``json_repair`` fixes. It never raises and returns ``{}`` for unparseable
+    input or a top-level array (callers require exactly one object). Note:
+    because the helper absorbs the underlying parse exception, only this single
+    "empty or unrecoverable" warning is logged — the low-level decode error is
+    no longer surfaced.
 
-    Args:
-        result: The JSON extraction result from LLM
-        chunk_key: The chunk key for source tracking
-        timestamp: The timestamp for the extraction
-        file_path: The file path for citation
-
-    Returns:
-        tuple: (nodes_dict, edges_dict) containing the extracted entities and relationships
+    ``None`` means the response was not recoverable as a single JSON object.
     """
-    maybe_nodes = defaultdict(list)
-    maybe_edges = defaultdict(list)
-
-    # tolerant_load_json_dict strips fences, tolerates leading/trailing prose
-    # (including trailing braces), and repairs the malformed-object slips
-    # json_repair fixes. It never raises and returns {} for unparseable input or
-    # a top-level array (callers require exactly one object). Note: because the
-    # helper absorbs the underlying parse exception, only this single "empty or
-    # unrecoverable" warning is logged — the low-level decode error is no longer
-    # surfaced.
     parsed = tolerant_load_json_dict(result)
     if not parsed:
         logger.warning(
             f"{chunk_key}: JSON extraction result is empty or unrecoverable"
             f"{_truncation_cause_suffix(result)}"
         )
-        return dict(maybe_nodes), dict(maybe_edges)
+        return None
 
     # Models quoting LaTeX in descriptions routinely under-escape backslashes
     # ("\frac" is valid JSON meaning form feed + "rac"); restore the zero-risk
     # cases before sanitization would otherwise delete the control characters
     # and leave a maimed formula. Covers initial extraction, gleaning, and
     # cache-rebuild — all three flow through this parser.
-    parsed = repair_vlm_json_escape_damage_nested(parsed, context=chunk_key)
+    return repair_vlm_json_escape_damage_nested(parsed, context=chunk_key)
+
+
+def _has_json_extraction_shape(payload: dict[str, Any]) -> bool:
+    """Whether a parsed object answered in the extraction schema.
+
+    Either list field being present and actually a list is enough. A chunk
+    that holds no reliable facts legitimately comes back as
+    ``{"entities": [], "relationships": []}``, so it is the presence of the
+    fields — never the presence of items in them — that says the model answered
+    in the schema rather than returning some unrelated object. The field names
+    are the ones :func:`_extract_from_json_payload` reads.
+    """
+    return any(
+        isinstance(payload.get(field), list) for field in ("entities", "relationships")
+    )
+
+
+def _extract_from_json_payload(
+    parsed: dict[str, Any],
+    chunk_key: str,
+    timestamp: int,
+    file_path: str = "unknown_source",
+) -> tuple[dict, dict]:
+    """Build the entity and relationship dicts from an already-parsed payload.
+
+    Split out of :func:`_process_json_extraction_result` so the cache-rebuild
+    path can decide whether the response parsed as JSON before it has any
+    entities to look at.
+    """
+    maybe_nodes = defaultdict(list)
+    maybe_edges = defaultdict(list)
 
     # Process entities
     entities_list = parsed.get("entities", [])
@@ -1086,6 +1099,33 @@ async def _process_json_extraction_result(
             continue
 
     return dict(maybe_nodes), dict(maybe_edges)
+
+
+async def _process_json_extraction_result(
+    result: str,
+    chunk_key: str,
+    timestamp: int,
+    file_path: str = "unknown_source",
+) -> tuple[dict, dict]:
+    """Process a JSON-formatted extraction result from LLM.
+
+    This function parses the LLM response as JSON and extracts entities and relationships.
+    It uses :func:`tolerant_load_json_dict` to recover JSON from fenced,
+    prose-wrapped, or slightly malformed responses from weaker models.
+
+    Args:
+        result: The JSON extraction result from LLM
+        chunk_key: The chunk key for source tracking
+        timestamp: The timestamp for the extraction
+        file_path: The file path for citation
+
+    Returns:
+        tuple: (nodes_dict, edges_dict) containing the extracted entities and relationships
+    """
+    payload = _load_json_extraction_payload(result, chunk_key)
+    if payload is None:
+        return {}, {}
+    return _extract_from_json_payload(payload, chunk_key, timestamp, file_path)
 
 
 async def rebuild_knowledge_from_chunks(
@@ -1635,8 +1675,10 @@ async def _rebuild_from_extraction_result(
     """Parse cached extraction result using the same logic as extract_entities.
 
     Supports both JSON and delimiter-based formats for backward compatibility.
-    Attempts JSON parsing first; if the cached result looks like JSON (starts with '{'),
-    uses the JSON parser. Otherwise, falls back to the traditional delimiter-based parser.
+    A result carrying the extraction schema is answered from JSON however empty
+    it turns out to be; the delimiter parser is the fallback for a result that
+    is not recoverable as an extraction object, or that appends delimiter
+    records to one (see the call site).
 
     Args:
         text_chunks_storage: Text chunks storage to get chunk data
@@ -1659,15 +1701,28 @@ async def _rebuild_from_extraction_result(
     # Auto-detect format: try JSON first if the result looks like JSON
     if _looks_like_json_extraction_result(extraction_result):
         # Likely JSON format (from entity_extraction_use_json mode)
-        nodes, edges = await _process_json_extraction_result(
-            extraction_result,
-            chunk_id,
-            timestamp,
-            file_path,
-        )
-        # If JSON parsing yielded results, use them
-        if nodes or edges:
-            return nodes, edges
+        payload = _load_json_extraction_payload(extraction_result, chunk_id)
+        if payload is not None and _has_json_extraction_shape(payload):
+            nodes, edges = _extract_from_json_payload(
+                payload, chunk_id, timestamp, file_path
+            )
+            # A response in the extraction schema is authoritative even when
+            # both arrays are empty — the chunk held no reliable facts, which
+            # is a normal answer. Deciding that on the entity count instead
+            # sent every such cache entry through the delimiter parser, whose
+            # only output was a misleading "Complete delimiter can not be
+            # found" warning (issue #3744).
+            #
+            # The one shape the old test rescued is a JSON object with
+            # delimiter records appended, which the JSON prompt never asks for
+            # but tolerant_load_json_dict accepts as trailing prose. Its
+            # terminator is what says so, and a response carrying one reaches
+            # the delimiter parser without the spurious warning, so the rescue
+            # costs nothing to keep.
+            if nodes or edges:
+                return nodes, edges
+            if PROMPTS["DEFAULT_COMPLETION_DELIMITER"] not in extraction_result:
+                return nodes, edges
         # Otherwise fall through to text-based parsing
 
     # Fall back to traditional delimiter-based parsing
