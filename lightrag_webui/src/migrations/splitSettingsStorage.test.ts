@@ -7,6 +7,7 @@ import {
   wasHistoryDroppedDuringMigration,
   SETTINGS_STORAGE_VERSION_AFTER_SPLIT
 } from './splitSettingsStorage'
+import { LEGACY_SETTINGS_VERSION_CAP } from './legacySettingsChain'
 import {
   LEGACY_SETTINGS_STORAGE_KEY,
   QUERY_SETTINGS_STORAGE_KEY,
@@ -617,43 +618,63 @@ describe('quota degradation under a byte budget', () => {
     expect(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)).not.toBeNull()
   })
 
-  test('an ALREADY-over-quota store keeps its envelope instead of losing it', () => {
-    // Regression. The rewrite path removes the key first so an engine that
-    // cannot replace a value in place can still shrink it — sound while the
-    // store has headroom, because writing back something smaller lowers the
-    // total. On a store already OVER quota it was not: the retry failed, the
-    // restore of the exact bytes just removed failed too (the comment
-    // claiming it "always fits" was the wrong premise), and the envelope was
-    // gone. The reload below is the real damage — the next run reads "no
-    // legacy data", returns early with NO error, and the app starts on
-    // defaults having migrated nothing.
+  test('a store with room to complete is NOT dead-ended by caution', () => {
+    // The other side of the ladder, and the reason it is not gated on a
+    // probe write. A probe can only certify SLACK, while the removal needs
+    // something weaker — that the store is over quota by no more than the
+    // removal frees, which here is the whole legacy history. Gating on one
+    // therefore refuses the very cases the removal exists to rescue: this
+    // store has room to finish, and a gated version reports a failure whose
+    // retry can never succeed, pinning the user on MigrationErrorScreen.
     //
-    // freeOnReplace: true is the engine that DOES release the replaced value
-    // before checking, i.e. the one that never needed the removal at all.
+    // freeOnReplace: false is the engine that cannot shrink a key in place,
+    // i.e. the one whose first write fails for reasons that have nothing to
+    // do with how full the store is.
+    const quotaStorage = new ByteQuotaStorage(100000, false)
+    quotaStorage.setItem(LEGACY_SETTINGS_STORAGE_KEY, legacyWithBigHistory())
+    // Tight, but the legacy history it is about to shed is far larger than
+    // anything still to be written.
+    quotaStorage.budget = 1300
+
+    runSettingsStorageSplitMigration(quotaStorage)
+
+    expectCompletedWithEmptyHistory(quotaStorage)
+  })
+
+  test('an over-quota store keeps a MIGRATABLE envelope rather than none', () => {
+    // Regression. The rewrite path removes the key first so an engine that
+    // cannot replace a value in place can still shrink it, and the payload
+    // is never larger than what it replaces — so the removal can never be
+    // what pushes a store over its quota. It CAN still fail on a store
+    // already over quota, and there the bytes just removed are larger still,
+    // so the faithful restore fails too. What must not happen is the key
+    // ending up ABSENT: the next run would read "no legacy data", return
+    // early with NO error, and the app would start on defaults having
+    // migrated nothing — a silent total loss instead of a visible failure.
+    //
+    // Hence the write-back ladder's last rung: the minimal envelope fits in
+    // a window where the real bytes do not.
     const quotaStorage = new ByteQuotaStorage(100000, true)
     quotaStorage.setItem(LEGACY_SETTINGS_STORAGE_KEY, legacyWithBigHistory())
-    quotaStorage.setItem('unrelated::blob', 'y'.repeat(1500))
+    quotaStorage.setItem('unrelated::blob', 'y'.repeat(1200))
     // The quota shrinks below what the store already holds.
-    quotaStorage.budget = 1411
+    quotaStorage.budget = 1300
 
     runSettingsStorageSplitMigration(quotaStorage)
 
-    // Nothing could be written, so the run reports rather than pretending…
+    // Nothing of substance could be written, so the run reports rather than
+    // pretending it succeeded…
     expect(getSettingsMigrationError()).not.toBeNull()
-    // …and the envelope is still there, unchanged.
-    expect(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)).toBe(
-      legacyWithBigHistory()
-    )
+    // …and what is left is still an envelope the chain will migrate, not a
+    // browser that looks like it never had one.
+    const left = quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)
+    expect(left).not.toBeNull()
+    expect(JSON.parse(left!).version).toBeLessThanOrEqual(LEGACY_SETTINGS_VERSION_CAP)
 
-    // The reload: it must still find legacy data to work on, never conclude
-    // the split is done. (Space is still short, so it reports again.)
+    // The reload keeps finding legacy data to work on, and keeps reporting.
     resetSettingsMigrationErrorForTests()
     runSettingsStorageSplitMigration(quotaStorage)
-
-    expect(getSettingsMigrationError()).not.toBeNull()
-    expect(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)).toBe(
-      legacyWithBigHistory()
-    )
+    expect(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)).not.toBeNull()
   })
 
   test('a PRE-EXISTING history key is never reclaimed (rule 4 still wins)', () => {

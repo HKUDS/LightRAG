@@ -129,42 +129,20 @@ export function wasHistoryDroppedDuringMigration(): boolean {
   return historyDroppedDuringMigration
 }
 
-/** Scratch key for the headroom probe below: written and removed on the
- * quota-failure path only, and deliberately tiny — its own size must not be
- * what decides the answer. Nothing ever reads it. */
-const QUOTA_PROBE_KEY = 'lightrag::q'
-
 /**
- * Whether the store can still accept ANY write.
- *
- * This is the precondition for REMOVING the legacy envelope. Removing a key
- * and writing back something strictly smaller lowers the store's total, so
- * on a store that is merely unable to replace a key in place, the retry must
- * succeed. There is exactly one state where it cannot: a store that is
- * ALREADY over quota — a quota that shrank under existing data (other
- * origins, an eviction-policy change, another tab's writes). Removal is
- * unrecoverable there, because restoring even the exact bytes just removed
- * fails too.
- *
- * The smallest write there is separates the two: it is rejected only in that
- * already-over-quota state. A store with too little headroom for the probe
- * but enough for the payload is judged unsafe, which costs an in-place
- * rewrite this run and nothing else — the caller records the failure and the
- * next reload retries against whatever space has been freed by then.
+ * The smallest envelope that still says "there is legacy data here": no
+ * state, stamped at the version the chain normalizes to. Written only as the
+ * last step of the write-back ladder below, when the real bytes will not fit.
+ * It forfeits the fields the split does not migrate (theme, language,
+ * apiKey) — they are already unwritable at that point — but it keeps the
+ * NEXT run from reading "no legacy data" and declaring the split done over
+ * data it never migrated, which is the difference between a visible failure
+ * and a silent one.
  */
-function hasWriteHeadroom(storage: Storage): boolean {
-  try {
-    storage.setItem(QUOTA_PROBE_KEY, '')
-  } catch {
-    return false
-  }
-  try {
-    storage.removeItem(QUOTA_PROBE_KEY)
-  } catch {
-    // An 11-byte scratch key left behind is harmless; nothing reads it.
-  }
-  return true
-}
+const MINIMAL_LEGACY_ENVELOPE = JSON.stringify({
+  state: {},
+  version: LEGACY_SETTINGS_VERSION_CAP
+})
 
 /**
  * Write the legacy envelope, surviving an engine that charges the value it is
@@ -172,33 +150,25 @@ function hasWriteHeadroom(storage: Storage): boolean {
  * key — phase 2 strips the two migrated fields, `freeLegacyHistory` strips
  * the history — so a quota rejection normally means not "the new value does
  * not fit" but "old and new cannot be charged at once". Removing the key
- * first settles that.
+ * first settles that, and because the payload is never larger than what it
+ * replaces, the rewrite can never raise the store's total: the removal
+ * cannot be what pushes a store over its quota.
  *
- * It settles it ONLY while the store has headroom, which is why the removal
- * is gated on `hasWriteHeadroom`. Without that gate an already-over-quota
- * store took the same path and lost the envelope outright: the retry failed,
- * and so did restoring the bytes just removed. The next run then read "no
- * legacy data", returned early with NO recorded error, and the app started
- * on defaults — theme, language, apiKey and querySettings all gone, none of
- * them ever migrated.
+ * It CAN still fail, on a store already over quota by more than the removal
+ * frees (roughly the whole legacy history here). Nothing avoids that: at
+ * that point the store rejects the payload, and the bytes just removed are
+ * larger still. Predicting it is not possible either — a probe write can
+ * only certify SLACK, whereas what this needs to know is that the excess is
+ * bounded by what the removal releases. Gating on a probe therefore refuses
+ * the very cases the removal exists to rescue, and measurably dead-ends far
+ * more stores than it saves (a retry that can never succeed pins the user on
+ * MigrationErrorScreen).
  *
- * The remaining cost is a window in which the envelope is absent, and each
- * caller accepts it against a worse alternative: for phase 2 the loss of the
- * very history copy the split just placed (and by then every target key
- * exists — rule 5 — so only the fields the split does NOT migrate are
- * exposed to a crash here); for `freeLegacyHistory` a migration that no
- * reload can ever complete.
- *
- * The write-back is a genuine LAST resort, not a second guarantee: it puts
- * back MORE bytes than the payload that just failed, so it can only succeed
- * if the store gained room in between. The probe above is what upholds the
- * invariant; this is what covers a quota that shrank after it. It restores
- * the value actually READ FROM THE KEY rather than the run's original `raw`
- * — the ladder calls this twice, and after `freeLegacyHistory` the key holds
- * the reduced envelope, so `raw` would be the wrong bytes and a needlessly
- * large write. (No quota model reproduces that second removal today, since
- * freeing the history leaves phase 2's write succeeding outright; the point
- * is that this function is correct without depending on that.)
+ * So the removal is attempted, and the write-back below is a ladder from the
+ * most faithful restoration to the least, each rung smaller than the last:
+ * the bytes actually removed, then the minimal envelope. The last rung
+ * matters because it fits in a window where the others do not, and it is
+ * what keeps a failure VISIBLE to the next run.
  */
 function writeShrunkLegacyEnvelope(storage: Storage, payload: string): void {
   const removed = storage.getItem(LEGACY_SETTINGS_STORAGE_KEY)
@@ -207,19 +177,21 @@ function writeShrunkLegacyEnvelope(storage: Storage, payload: string): void {
     return
   } catch (error) {
     if (!isQuotaExceededError(error)) throw error
-    // Nothing can be written at all: keep the envelope rather than trade it
-    // for a retry that cannot succeed and a write-back that cannot either.
-    if (!hasWriteHeadroom(storage)) throw error
   }
   storage.removeItem(LEGACY_SETTINGS_STORAGE_KEY)
   try {
     storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, payload)
   } catch (writeBackError) {
-    if (removed !== null) {
+    // Restore the value actually READ FROM THE KEY, not the run's original
+    // `raw`: the ladder calls this twice, and after `freeLegacyHistory` the
+    // key holds the reduced envelope.
+    for (const fallback of [removed, MINIMAL_LEGACY_ENVELOPE]) {
+      if (fallback === null) continue
       try {
-        storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, removed)
+        storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, fallback)
+        break
       } catch {
-        // Nothing further is possible; the error below is what gets recorded.
+        // Try the next, smaller rung; the error below is what gets recorded.
       }
     }
     throw writeBackError
