@@ -1,5 +1,12 @@
 import axios, { AxiosError } from 'axios'
-import { backendBaseUrl, popularLabelsDefaultLimit, searchLabelsDefaultLimit } from '@/lib/constants'
+import {
+  backendBaseUrl,
+  documentFetchTimeoutMessage,
+  healthCheckTimeout,
+  pipelineStatusTimeout,
+  popularLabelsDefaultLimit,
+  searchLabelsDefaultLimit
+} from '@/lib/constants'
 import type { SupportedFileTypes } from '@/lib/fileTypes'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
@@ -437,6 +444,29 @@ axiosInstance.interceptors.request.use((config) => {
 })
 
 // Interceptor：handle token renewal and authentication errors
+/**
+ * An HTTP error surfaced by the response interceptor.
+ *
+ * The status is carried as a property, not only inside the message: callers
+ * branch on it (e.g. the document list treats a 4xx as a permanent client
+ * error that must not trip its circuit breaker), and a plain Error left them
+ * unable to tell a 404 from a network failure.
+ */
+export type HttpRequestError = Error & { status?: number }
+
+export const toHttpRequestError = (
+  status: number,
+  statusText: string,
+  data: unknown,
+  url?: string
+): HttpRequestError => {
+  const error = new Error(
+    `${status} ${statusText}\n${JSON.stringify(data)}\n${url}`
+  ) as HttpRequestError
+  error.status = status
+  return error
+}
+
 axiosInstance.interceptors.response.use(
   (response) => {
     // ========== Check for new token from backend ==========
@@ -520,10 +550,11 @@ axiosInstance.interceptors.response.use(
         navigationService.navigateToLogin();
         return Promise.reject(new Error('Authentication required'));
       }
-      throw new Error(
-        `${error.response.status} ${error.response.statusText}\n${JSON.stringify(
-          error.response.data
-        )}\n${error.config?.url}`
+      throw toHttpRequestError(
+        error.response.status,
+        error.response.statusText,
+        error.response.data,
+        error.config?.url
       )
     }
     throw error
@@ -559,7 +590,13 @@ export const checkHealth = async (): Promise<
   LightragStatus | { status: 'error'; message: string }
 > => {
   try {
-    const response = await axiosInstance.get('/health')
+    // Explicit timeout: the axios instance sets none, so a backend whose
+    // event loop is blocked would leave this request hanging and the health
+    // state would neither succeed nor fail. Kept below healthCheckInterval
+    // so probes cannot pile up.
+    const response = await axiosInstance.get('/health', {
+      timeout: healthCheckTimeout * 1000
+    })
     return response.data
   } catch (error) {
     return {
@@ -1013,7 +1050,9 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
 }
 
 export const getPipelineStatus = async (): Promise<PipelineStatusResponse> => {
-  const response = await axiosInstance.get('/documents/pipeline_status')
+  const response = await axiosInstance.get('/documents/pipeline_status', {
+    timeout: pipelineStatusTimeout * 1000
+  })
   return response.data
 }
 
@@ -1229,6 +1268,14 @@ export const __setPaginatedDocumentsPostForTests = (
 }
 
 /**
+ * Swap the axios adapter so a test can drive a response (or an HTTP failure)
+ * through the real request/response interceptors. Pass undefined to restore.
+ */
+export const __setAxiosAdapterForTests = (adapter: any): void => {
+  axiosInstance.defaults.adapter = adapter
+}
+
+/**
  * Get documents with pagination support
  * @param request The pagination request parameters
  * @returns Promise with paginated documents response
@@ -1246,7 +1293,7 @@ export const getDocumentsPaginated = async (request: DocumentsRequest): Promise<
 export const getDocumentsPaginatedWithTimeout = (
   request: DocumentsRequest,
   timeoutMs: number = 30000,
-  errorMsg: string = 'Document fetch timeout'
+  errorMsg: string = documentFetchTimeoutMessage
 ): Promise<PaginatedDocsResponse> => {
   const { requestEntry, release } = subscribeToPaginatedDocumentsRequest(request)
 

@@ -38,6 +38,16 @@ export const minNodeSize = 4
 export const maxNodeSize = 20
 
 export const healthCheckInterval = 15 // seconds
+// Request timeouts for the short polling endpoints. Kept below their own
+// polling interval so a stalled backend fails fast instead of leaving
+// requests hanging forever (the axios instance sets no global timeout —
+// /query and document uploads are legitimately long-running).
+export const healthCheckTimeout = 10 // seconds
+export const pipelineStatusTimeout = 10 // seconds
+// Message carried by the getDocumentsPaginatedWithTimeout timeout error.
+// Lives here so the refresh error classifier can recognise it without
+// importing the API module (which creates the axios instance on load).
+export const documentFetchTimeoutMessage = 'Document fetch timeout'
 
 export const defaultQueryLabel = '*'
 

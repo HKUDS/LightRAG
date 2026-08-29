@@ -28,8 +28,8 @@ interface BackendState {
   // Resolve `apiDocsCapability` alone, without touching the shared backend
   // health state. Needed when periodic health checks are disabled: reusing
   // `check()` there would let a single failed probe latch `health: false`,
-  // which stops the document list polling for good and re-opens the API key
-  // alert on every dismissal (RFC #3671).
+  // which drops the document list to its idle polling cadence and re-opens the
+  // API key alert on every dismissal (RFC #3671).
   probeApiDocsCapability: () => Promise<void>
   clear: () => void
   setErrorMessage: (message: string, messageTitle: string) => void
