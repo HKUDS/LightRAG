@@ -412,6 +412,10 @@ export default function DocumentManager() {
     return () => {
       isMountedRef.current = false;
       window.removeEventListener('beforeunload', handleBeforeUnload);
+      // The Toaster is mounted above the router, so the outage notice outlives
+      // this component: without this it would still be on screen after a
+      // logout, with nothing left that could ever dismiss it.
+      toast.dismiss(DOCUMENT_REFRESH_FAILURE_TOAST_ID);
     };
   }, []);
 
@@ -1293,6 +1297,15 @@ export default function DocumentManager() {
   useEffect(() => {
     if (currentTab !== 'documents') {
       clearPollingInterval();
+      // Retiring the notice with the polling that would clear it. Nothing
+      // refreshes the document list while another tab is up, so a standing
+      // outage notice could never be dismissed by a successful response, and
+      // the Toaster renders it globally — it would sit over the graph or
+      // retrieval view indefinitely. An unmount cleanup does not cover this:
+      // TabsContent uses forceMount, so this component stays mounted while
+      // another tab is active. Returning to Documents re-creates the notice on
+      // the next failure, which is the correct behaviour.
+      toast.dismiss(DOCUMENT_REFRESH_FAILURE_TOAST_ID);
       return
     }
 
