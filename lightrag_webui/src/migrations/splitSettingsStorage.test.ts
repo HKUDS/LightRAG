@@ -518,8 +518,11 @@ describe('quota degradation under a byte budget', () => {
     runSettingsStorageSplitMigration(quotaStorage)
 
     const read = (key: string) => JSON.parse(quotaStorage.getItem(key)!)
-    // The legacy envelope was the key rewritten, so it is the only one removed…
-    expect(quotaStorage.removed).toEqual([LEGACY_SETTINGS_STORAGE_KEY])
+    // The legacy envelope is the key being rewritten, so it is the one that
+    // gets removed; the migrated copy must NOT be (the scratch key of the
+    // headroom probe is bookkeeping, so assert the intent, not the list)…
+    expect(quotaStorage.removed).toContain(LEGACY_SETTINGS_STORAGE_KEY)
+    expect(quotaStorage.removed).not.toContain(WEBUI_RETRIEVAL_HISTORY_KEY)
     // …the migrated history survived in full, and no degradation was claimed…
     expect(read(WEBUI_RETRIEVAL_HISTORY_KEY).state.history).toEqual(bigHistory)
     expect(wasHistoryDroppedDuringMigration()).toBe(false)
@@ -612,6 +615,45 @@ describe('quota degradation under a byte budget', () => {
     expect(getSettingsMigrationError()).not.toBeNull()
     expect(wasHistoryDroppedDuringMigration()).toBe(false)
     expect(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)).not.toBeNull()
+  })
+
+  test('an ALREADY-over-quota store keeps its envelope instead of losing it', () => {
+    // Regression. The rewrite path removes the key first so an engine that
+    // cannot replace a value in place can still shrink it — sound while the
+    // store has headroom, because writing back something smaller lowers the
+    // total. On a store already OVER quota it was not: the retry failed, the
+    // restore of the exact bytes just removed failed too (the comment
+    // claiming it "always fits" was the wrong premise), and the envelope was
+    // gone. The reload below is the real damage — the next run reads "no
+    // legacy data", returns early with NO error, and the app starts on
+    // defaults having migrated nothing.
+    //
+    // freeOnReplace: true is the engine that DOES release the replaced value
+    // before checking, i.e. the one that never needed the removal at all.
+    const quotaStorage = new ByteQuotaStorage(100000, true)
+    quotaStorage.setItem(LEGACY_SETTINGS_STORAGE_KEY, legacyWithBigHistory())
+    quotaStorage.setItem('unrelated::blob', 'y'.repeat(1500))
+    // The quota shrinks below what the store already holds.
+    quotaStorage.budget = 1411
+
+    runSettingsStorageSplitMigration(quotaStorage)
+
+    // Nothing could be written, so the run reports rather than pretending…
+    expect(getSettingsMigrationError()).not.toBeNull()
+    // …and the envelope is still there, unchanged.
+    expect(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)).toBe(
+      legacyWithBigHistory()
+    )
+
+    // The reload: it must still find legacy data to work on, never conclude
+    // the split is done. (Space is still short, so it reports again.)
+    resetSettingsMigrationErrorForTests()
+    runSettingsStorageSplitMigration(quotaStorage)
+
+    expect(getSettingsMigrationError()).not.toBeNull()
+    expect(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)).toBe(
+      legacyWithBigHistory()
+    )
   })
 
   test('a PRE-EXISTING history key is never reclaimed (rule 4 still wins)', () => {
