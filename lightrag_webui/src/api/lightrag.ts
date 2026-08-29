@@ -2,6 +2,7 @@ import axios, { AxiosError } from 'axios'
 import { backendBaseUrl, popularLabelsDefaultLimit, searchLabelsDefaultLimit } from '@/lib/constants'
 import type { SupportedFileTypes } from '@/lib/fileTypes'
 import { errorMessage } from '@/lib/utils'
+import { decodeBase64Url } from '@/lib/base64url'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
 import { navigationService } from '@/services/navigation'
@@ -450,9 +451,17 @@ axiosInstance.interceptors.response.use(
         console.log('[Auth] Token auto-renewed by backend');
       }
 
-      // Update auth state with renewal tracking
+      // Update auth state with renewal tracking.
+      //
+      // The payload MUST go through decodeBase64Url, like every other reader
+      // of a JWT here (stores/state.ts, lib/loginIdentity.ts). Bare `atob`
+      // rejects the `-`/`_` alphabet, and the catch below swallows that: the
+      // renewed token is already in localStorage by then, so the session
+      // would carry the NEW token while `lastTokenRenewal` and
+      // `tokenExpiresAt` still described the OLD one.
       try {
-        const payload = JSON.parse(atob(newToken.split('.')[1]));
+        const decodedPayload = decodeBase64Url(newToken.split('.')[1] ?? '');
+        const payload = decodedPayload === null ? {} : JSON.parse(decodedPayload);
         const authStore = useAuthStore.getState();
         if (authStore.isAuthenticated) {
           // Track token renewal time and expiration
