@@ -385,6 +385,13 @@ type RefreshRequest =
     requestVersion: number;
   };
 
+/**
+ * Stable id for the document-refresh failure toast, so repeated failures
+ * update one notice in place instead of stacking. Dismissed by the first
+ * successful response.
+ */
+const DOCUMENT_REFRESH_FAILURE_TOAST_ID = 'document-refresh-failed'
+
 export default function DocumentManager() {
   // Track component mount status
   const isMountedRef = useRef(true);
@@ -847,6 +854,7 @@ export default function DocumentManager() {
       ): Promise<PaginatedDocsResponse> => {
         const response = await getDocumentsPaginatedWithTimeout(pageRequest, timeoutMs)
         recordSuccess()
+        toast.dismiss(DOCUMENT_REFRESH_FAILURE_TOAST_ID)
         return response
       }
 
@@ -931,7 +939,18 @@ export default function DocumentManager() {
         // it below.
 
         if (errorClassification.shouldShowToast) {
-          toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }));
+          // One notice, not one per failure. A backend that is down is polled
+          // for as long as the tab is open (capped by the breaker's backoff at
+          // roughly one probe a minute), and nothing else in the UI reports it
+          // — a failed /health only feeds the API key alert — so going silent
+          // would leave the list stale without saying so.
+          //
+          // Read AFTER the breaker update above: a permanent 4xx closes the
+          // breaker, and that toast should auto-dismiss like any other.
+          toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }), {
+            id: DOCUMENT_REFRESH_FAILURE_TOAST_ID,
+            duration: circuitBreakerRef.current.isOpen ? Infinity : undefined
+          });
         }
       }
     } finally {
