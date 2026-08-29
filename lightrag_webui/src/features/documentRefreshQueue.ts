@@ -2,8 +2,9 @@
  * Serializing queue for document list refreshes.
  *
  * At most one refresh runs at a time; anything arriving while one is in flight
- * collapses into a single pending slot (the newest wins) and runs once the
- * active one settles.
+ * collapses into a single pending slot and runs once the active one settles.
+ * The slot keeps the highest-priority request it has seen, newest first among
+ * equals — see `priority` for why "newest always wins" is not safe here.
  *
  * `admit` is consulted immediately before a request would run — for the first
  * request and for every queued one alike. That placement is the point of this
@@ -21,6 +22,21 @@ export type RefreshQueueHandlers<T> = {
   runRequest: (request: T) => Promise<void>
   /** Return false to drop the request without running it. */
   admit: (request: T) => boolean
+  /**
+   * Rank a request for the single pending slot. A queued request may only be
+   * displaced by one of EQUAL OR HIGHER priority.
+   *
+   * Entering the queue is not the same as running: `admit` is evaluated where
+   * the request is issued, so a request the breaker will refuse there must not
+   * be able to discard one that would have run. Without this, an automatic
+   * refresh landing behind a page change discards it and is then dropped
+   * itself — no fetch, no error, and the page number moves while the rows do
+   * not.
+   *
+   * Equal priority still means newest wins: two consecutive page changes must
+   * resolve to the second one.
+   */
+  priority: (request: T) => number
 }
 
 export type RefreshQueue<T> = {
@@ -43,7 +59,12 @@ export const createRefreshQueue = <T>(): RefreshQueue<T> => {
     currentHandlers = handlers
 
     if (activeLoop) {
-      pendingRequest = request
+      if (
+        pendingRequest === null ||
+        handlers.priority(request) >= handlers.priority(pendingRequest)
+      ) {
+        pendingRequest = request
+      }
       await activeLoop
       return
     }

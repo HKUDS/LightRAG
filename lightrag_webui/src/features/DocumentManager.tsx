@@ -938,7 +938,13 @@ export default function DocumentManager() {
         admit: (request) =>
           request.type !== 'intelligent' ||
           !request.auto ||
-          admitAutomaticRefresh()
+          admitAutomaticRefresh(),
+        // Automatic refreshes rank below everything else in the pending slot.
+        // Admission is evaluated where the request is issued, so an `auto`
+        // request the breaker will refuse there must not be able to discard a
+        // page change or a manual refresh that would have run.
+        priority: (request) =>
+          request.type === 'intelligent' && request.auto ? 0 : 1
       }),
     [refreshQueue, runRefreshRequest, admitAutomaticRefresh]
   );
