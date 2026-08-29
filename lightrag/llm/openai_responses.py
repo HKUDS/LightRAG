@@ -248,6 +248,27 @@ def _usage_counts(usage: Any) -> dict[str, int]:
     }
 
 
+def _failure_reason(terminal: Any) -> str:
+    """Human-readable reason a Responses generation reported ``status: failed``."""
+    error = getattr(terminal, "error", None)
+    message = getattr(error, "message", None) or "unknown failure"
+    code = getattr(error, "code", None)
+    return f"code={code if code is not None else 'n/a'}, {message}"
+
+
+def _account_stream_usage(token_tracker: Any, usage: Any) -> None:
+    """Record what the attempt spent, before any validation raises.
+
+    The request consumed its budget whether or not the output turned out to be
+    usable, and a failed generation is billed the same way a truncated one is.
+    """
+    if token_tracker is None or usage is None:
+        return
+    counts = _usage_counts(usage)
+    token_tracker.add_usage(counts)
+    logger.debug(f"Streaming token usage (from API): {counts}")
+
+
 async def _close_quietly(client: Any) -> None:
     """Close the client, downgrading any close failure to a warning.
 
@@ -438,6 +459,11 @@ async def _stream_response(
     is kept and a warning logged; a truncated stream that yielded nothing
     raises ``EmptyTruncatedResponseError``, matching the non-streaming path's
     rule that budget exhaustion with no usable text is non-retryable.
+
+    Failure: a generation that fails after the request was accepted terminates
+    with ``response.failed``, which is neither of those terminals nor the
+    separate ``error`` event. It raises, so a provider failure never reaches
+    the consumer as a short-but-successful answer.
     """
     cot_active = False
     body_text_seen = False
@@ -492,6 +518,19 @@ async def _stream_response(
                 yield delta
                 continue
 
+            if event_type == "response.failed":
+                # A request the transport accepted can still fail during
+                # generation. That terminates the stream with `response.failed`
+                # -- neither a completed/incomplete terminal nor the separate
+                # `error` event -- so without this branch the iterator would end
+                # successfully on whatever partial text had already been
+                # yielded, discarding the provider's reason.
+                terminal = getattr(event, "response", None)
+                _account_stream_usage(token_tracker, getattr(terminal, "usage", None))
+                raise InvalidResponseError(
+                    f"OpenAI Responses stream failed ({_failure_reason(terminal)})"
+                )
+
             if event_type == "error":
                 message = getattr(event, "message", "") or "unknown streaming error"
                 raise InvalidResponseError(f"OpenAI Responses stream error: {message}")
@@ -500,12 +539,7 @@ async def _stream_response(
             yield "</think>"
             cot_active = False
 
-        # Account usage before any validation raises: the request consumed its
-        # budget whether or not the output turned out to be usable.
-        if token_tracker and final_usage is not None:
-            counts = _usage_counts(final_usage)
-            token_tracker.add_usage(counts)
-            logger.debug(f"Streaming token usage (from API): {counts}")
+        _account_stream_usage(token_tracker, final_usage)
 
         if truncated:
             if body_text_seen or reasoning_text_seen:
@@ -582,6 +616,20 @@ async def _handle_non_streaming(
         usage = getattr(response, "usage", None)
         if token_tracker and usage is not None:
             token_tracker.add_usage(_usage_counts(usage))
+
+        # Same terminal as `response.failed` on the streaming path: a request
+        # accepted at the transport layer that failed during generation returns
+        # status "failed" with the reason in `error`, rather than raising from
+        # responses.create(). Checked before the content walk so the provider's
+        # reason is reported instead of a bare empty-output diagnosis, and so a
+        # failed generation that carried partial output is not returned as a
+        # successful short answer.
+        if getattr(response, "status", None) == "failed":
+            error_message = (
+                f"OpenAI Responses request failed ({_failure_reason(response)})"
+            )
+            logger.error(error_message)
+            raise InvalidResponseError(error_message)
 
         content = _extract_text(response)
         reasoning = _extract_reasoning(response) if enable_cot else ""

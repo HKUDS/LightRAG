@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from tenacity import RetryError
 
 from lightrag.exceptions import EmptyTruncatedResponseError
 from lightrag.llm.openai_responses import (
@@ -526,3 +527,144 @@ async def test_streaming_reasoning_only_truncation_is_not_treated_as_empty(monke
     )
 
     assert await _collect(result) == "<think>thinking</think>"
+
+
+async def test_streaming_failed_terminal_raises_with_the_provider_reason(monkeypatch):
+    """`response.failed` is neither a completed/incomplete terminal nor the
+    separate `error` event, so an unhandled one would end the iterator
+    successfully on the partial text it had already yielded."""
+    stream = _FakeStream(
+        [
+            _delta("response.output_text.delta", "partial"),
+            SimpleNamespace(
+                type="response.failed",
+                response=SimpleNamespace(
+                    status="failed",
+                    error=SimpleNamespace(
+                        code="server_error", message="upstream exploded"
+                    ),
+                    usage=_usage(3, 4),
+                ),
+            ),
+        ]
+    )
+    _patch_client(monkeypatch, stream)
+
+    result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
+
+    with pytest.raises(InvalidResponseError) as excinfo:
+        await _collect(result)
+    assert "server_error" in str(excinfo.value)
+    assert "upstream exploded" in str(excinfo.value)
+
+
+async def test_streaming_failed_terminal_still_counts_usage(monkeypatch):
+    """The attempt was billed whether or not it produced a usable answer,
+    matching how the truncated terminal accounts before raising."""
+    stream = _FakeStream(
+        [
+            SimpleNamespace(
+                type="response.failed",
+                response=SimpleNamespace(
+                    status="failed",
+                    error=SimpleNamespace(code="server_error", message="boom"),
+                    usage=_usage(3, 4),
+                ),
+            ),
+        ]
+    )
+    _patch_client(monkeypatch, stream)
+    recorded: list[dict[str, int]] = []
+    tracker = SimpleNamespace(add_usage=recorded.append)
+
+    result = await openai_responses_complete_if_cache(
+        "gpt-5.6", "hi", stream=True, token_tracker=tracker
+    )
+
+    with pytest.raises(InvalidResponseError):
+        await _collect(result)
+    assert recorded == [{"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}]
+
+
+async def test_streaming_failed_terminal_closes_an_open_think_tag(monkeypatch):
+    """Reasoning already opened `<think>`; the error path must still close it
+    so the consumer is not left holding an unterminated tag."""
+    chunks: list[str] = []
+    stream = _FakeStream(
+        [
+            _delta("response.reasoning_summary_text.delta", "thinking"),
+            SimpleNamespace(
+                type="response.failed",
+                response=SimpleNamespace(
+                    status="failed",
+                    error=SimpleNamespace(code="server_error", message="boom"),
+                    usage=None,
+                ),
+            ),
+        ]
+    )
+    _patch_client(monkeypatch, stream)
+
+    result = await openai_responses_complete_if_cache(
+        "gpt-5.6", "hi", stream=True, enable_cot=True
+    )
+
+    with pytest.raises(InvalidResponseError):
+        async for chunk in result:
+            chunks.append(chunk)
+    assert "".join(chunks) == "<think>thinking</think>"
+
+
+async def _non_streaming_failure(monkeypatch, payload, **kwargs) -> BaseException:
+    """Return the exception a non-streaming call ends on.
+
+    `InvalidResponseError` is in the driver's retry set, so the decorator
+    exhausts its attempts and re-raises as `RetryError`; the real error is only
+    reachable through the last attempt.
+    """
+    _patch_client(monkeypatch, payload)
+
+    with pytest.raises(RetryError) as excinfo:
+        await openai_responses_complete_if_cache("gpt-5.6", "hi", **kwargs)
+    return excinfo.value.last_attempt.exception()
+
+
+async def test_failed_status_raises_rather_than_reporting_empty_output(monkeypatch):
+    """The non-streaming sibling of `response.failed`: a request accepted at
+    the transport layer that failed during generation comes back as a payload
+    with status "failed", not as an exception from responses.create()."""
+    payload = _response(status="failed")
+    payload.error = SimpleNamespace(code="server_error", message="upstream exploded")
+
+    error = await _non_streaming_failure(monkeypatch, payload)
+
+    assert isinstance(error, InvalidResponseError)
+    assert "server_error" in str(error)
+    assert "upstream exploded" in str(error)
+
+
+async def test_failed_status_is_not_masked_by_partial_output(monkeypatch):
+    """Content on a failed payload is the tail of a generation that did not
+    finish, so returning it would present a failure as a short answer."""
+    payload = _response(output=[_message("partial")], status="failed")
+    payload.error = SimpleNamespace(code="server_error", message="boom")
+
+    error = await _non_streaming_failure(monkeypatch, payload)
+
+    assert isinstance(error, InvalidResponseError)
+
+
+async def test_failed_status_counts_usage_before_raising(monkeypatch):
+    payload = _response(status="failed", usage=_usage(5, 2))
+    payload.error = SimpleNamespace(code="server_error", message="boom")
+    recorded: list[dict[str, int]] = []
+    tracker = SimpleNamespace(add_usage=recorded.append)
+
+    await _non_streaming_failure(monkeypatch, payload, token_tracker=tracker)
+
+    # One entry per attempt: each retry is a separately billed request.
+    assert recorded
+    assert all(
+        counts == {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}
+        for counts in recorded
+    )
