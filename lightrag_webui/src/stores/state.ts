@@ -3,6 +3,7 @@ import { createSelectors } from '@/lib/utils'
 import { checkHealth, LightragStatus } from '@/api/lightrag'
 import { useSettingsStore } from './settings'
 import { healthCheckInterval } from '@/lib/constants'
+import { decodeBase64Url } from '@/lib/base64url'
 
 export type ApiDocsCapability = 'unknown' | 'available' | 'unavailable'
 
@@ -263,18 +264,6 @@ const TOKEN_STORAGE_KEY = 'LIGHTRAG-API-TOKEN';
 // localStorage keys that only make sense alongside a valid token; cleared
 // together with it when local validation rejects the token.
 const TOKEN_COMPANION_STORAGE_KEYS = ['LIGHTRAG-LAST-TOKEN-RENEWAL'];
-
-const decodeBase64Url = (value: string): string | null => {
-  try {
-    let base64 = value.replace(/-/g, '+').replace(/_/g, '/');
-    const pad = base64.length % 4;
-    if (pad === 1) return null;
-    if (pad > 0) base64 += '='.repeat(4 - pad);
-    return atob(base64);
-  } catch {
-    return null;
-  }
-};
 
 /**
  * LOCAL token validity check: JWT structure parses and `exp` has not passed.

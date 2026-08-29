@@ -322,6 +322,23 @@ describe('handleIdentityStorageEvent (cross-tab identity change)', () => {
 })
 
 describe('loginIdentityFromToken', () => {
+  test('reads a base64url payload, instead of silently reporting a guest', () => {
+    // Regression: bare `atob` rejects the `-`/`_` alphabet a JWT is entitled
+    // to use, and this function's failure mode is SILENT — it returned the
+    // literal 'guest' for a named user, and applyLoginIdentity would then
+    // have preserved that user's conversations for whoever came next.
+    const payload = JSON.stringify({ sub: 'alice?~', role: 'user' })
+    const base64url = btoa(payload)
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '')
+    // The vector is only meaningful if it actually needs the url alphabet.
+    expect(base64url).toMatch(/[-_]/)
+    expect(() => atob(base64url)).toThrow()
+
+    expect(loginIdentityFromToken(`x.${base64url}.y`)).toBe('alice?~')
+  })
+
   test('reads the JWT sub', () => {
     expect(loginIdentityFromToken(guestToken)).toBe('guest')
     expect(loginIdentityFromToken(makeToken({ sub: 'alice' }))).toBe('alice')

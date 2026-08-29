@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { copyToClipboard } from '@/utils/clipboard'
 import { useDebounce } from '@/hooks/useDebounce'
+import { streamedContentKey } from './streamedContentKey'
 
 /**
  * Shared message list layer: iterates messages, renders `ChatMessage`, the
@@ -182,7 +183,23 @@ export default function MessageList({
     }
   }, [])
 
-  // Use a longer debounce time for better performance with large message updates
+  // Follow the answer as it streams. Keyed on the CONTENT, never on the
+  // `messages` array: the response timer's 100 ms tick replaces that array
+  // and would restart the debounce below forever (100 < 150), which is why
+  // the debounce alone left a long answer scrolling off-screen until the
+  // query finished. `scrollToBottom` re-checks follow state inside its own
+  // rAF, so a queued scroll cannot fire after the user detaches.
+  const contentKey = streamedContentKey(messages)
+  useEffect(() => {
+    if (shouldFollowScrollRef.current) {
+      scrollToBottom()
+    }
+  }, [contentKey, scrollToBottom])
+
+  // Settle-up pass: content whose height lands AFTER its commit (markdown,
+  // KaTeX, a mermaid block finishing) is not covered by the effect above.
+  // This one does follow the array, so the timer keeps it deferred while the
+  // query runs and it fires once the ticks stop.
   const debouncedMessages = useDebounce(messages, 150)
   useEffect(() => {
     if (shouldFollowScrollRef.current) {

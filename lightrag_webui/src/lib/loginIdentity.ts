@@ -6,6 +6,7 @@ import {
   WEBUI_RETRIEVAL_HISTORY_KEY,
   WORKSPACE_RETRIEVAL_HISTORY_KEY
 } from '@/lib/storageKeys'
+import { decodeBase64Url } from '@/lib/base64url'
 
 /**
  * Identity-change cleanup shared by EVERY path that activates a login: the
@@ -34,12 +35,19 @@ const TOKEN_STORAGE_KEY = 'LIGHTRAG-API-TOKEN'
 const GUEST_IDENTITY = 'guest'
 
 /** The identity a token asserts: its JWT `sub`, or "guest" when unreadable
- * (only guest activations call this without knowing the name up front). */
+ * (only guest activations call this without knowing the name up front).
+ *
+ * The payload MUST be read through `decodeBase64Url`: bare `atob` rejects
+ * the `-`/`_` alphabet a JWT is entitled to use, and this function's failure
+ * mode is silent — it would hand back the literal "guest" for a named user,
+ * and `applyLoginIdentity` would then preserve that user's conversations for
+ * whoever came next. */
 export function loginIdentityFromToken(token: string): string {
   try {
     const parts = token.split('.')
     if (parts.length === 3) {
-      const sub: unknown = JSON.parse(atob(parts[1]))?.sub
+      const decoded = decodeBase64Url(parts[1])
+      const sub: unknown = decoded === null ? undefined : JSON.parse(decoded)?.sub
       if (typeof sub === 'string' && sub) return sub
     }
   } catch {
