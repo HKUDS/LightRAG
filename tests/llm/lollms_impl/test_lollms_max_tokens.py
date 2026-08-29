@@ -35,6 +35,42 @@ class FakeSession:
         return FakeResponse()
 
 
+class StreamingFakeResponse:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        return False
+
+    @property
+    def content(self):
+        async def lines():
+            yield b"first chunk\n"
+            yield b"second chunk\n"
+
+        return lines()
+
+
+class StreamingFakeSession:
+    instances = []
+
+    def __init__(self, *args, **kwargs):
+        self.closed = False
+        self.__class__.instances.append(self)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        self.closed = True
+        return False
+
+    def post(self, url, json):
+        if self.closed:
+            raise AssertionError("stream attempted to use a closed ClientSession")
+        return StreamingFakeResponse()
+
+
 async def _sent_request(monkeypatch, **generation_kwargs):
     sent_requests.clear()
     monkeypatch.setattr("lightrag.llm.lollms.aiohttp.ClientSession", FakeSession)
@@ -88,3 +124,20 @@ async def test_max_tokens_alias_precedence(
 
     assert request["n_predict"] == expected_n_predict
     assert "max_tokens" not in request
+
+
+async def test_stream_keeps_client_session_open_while_consumed(monkeypatch):
+    StreamingFakeSession.instances.clear()
+    monkeypatch.setattr(
+        "lightrag.llm.lollms.aiohttp.ClientSession", StreamingFakeSession
+    )
+
+    stream = await lollms_model_if_cache(
+        model="test-model",
+        prompt="hello",
+        stream=True,
+    )
+
+    assert [chunk async for chunk in stream] == ["first chunk", "second chunk"]
+    assert len(StreamingFakeSession.instances) == 1
+    assert StreamingFakeSession.instances[0].closed

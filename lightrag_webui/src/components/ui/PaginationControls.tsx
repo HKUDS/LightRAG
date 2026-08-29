@@ -13,6 +13,13 @@ export type PaginationControlsProps = {
   totalCount: number
   onPageChange: (page: number) => void
   onPageSizeChange: (pageSize: number) => void
+  /**
+   * Disables every control while a refresh runs. This is UX — no double-submit
+   * flicker — NOT the correctness guarantee: DocumentManager's refresh queue
+   * serializes requests and requestVersion discards stale responses, so even a
+   * click landing in the gap between paint and effect flush resolves to the
+   * user's last intent.
+   */
   isLoading?: boolean
   compact?: boolean
   className?: string
@@ -55,6 +62,14 @@ export default function PaginationControls({
 
   // Handle page input submit
   const handlePageInputSubmit = useCallback(() => {
+    if (isLoading) {
+      // Match the four button handlers. The input is disabled while loading, so
+      // the only way in is the browser's blur-on-disable; snap the box back so
+      // a refused submit does not leave a page number that disagrees with the
+      // rows on screen.
+      setInputPage(currentPage.toString())
+      return
+    }
     const pageNum = parseInt(inputPage, 10)
     if (!isNaN(pageNum) && pageNum >= 1 && pageNum <= totalPages) {
       onPageChange(pageNum)
@@ -62,7 +77,7 @@ export default function PaginationControls({
       // Reset to current page if invalid
       setInputPage(currentPage.toString())
     }
-  }, [inputPage, totalPages, onPageChange, currentPage])
+  }, [inputPage, totalPages, onPageChange, currentPage, isLoading])
 
   // Handle page input key press
   const handlePageInputKeyPress = useCallback((e: React.KeyboardEvent) => {

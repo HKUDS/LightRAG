@@ -35,6 +35,7 @@ import {
   DocStatus,
   DocStatusResponse,
   DocumentsRequest,
+  PaginatedDocsResponse,
   PaginationInfo
 } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
@@ -52,6 +53,17 @@ import {
   type StatusFilter
 } from '@/features/documentStatusFilters'
 import { hasDocumentWarning } from '@/features/documentRecoveryWarnings'
+import {
+  admitCircuitBreakerRequest,
+  initialCircuitBreakerState,
+  isCircuitBreakerBlocked,
+  recordCircuitBreakerFailure,
+  resetCircuitBreaker,
+  settleCircuitBreakerProbe,
+  type CircuitBreakerState
+} from '@/features/documentRefreshCircuitBreaker'
+import { classifyDocumentRefreshError } from '@/features/documentRefreshErrors'
+import { createRefreshQueue } from '@/features/documentRefreshQueue'
 
 type StatusDisplayConfig = {
   labelKey: string
@@ -362,12 +374,23 @@ type RefreshRequest =
     query: QuerySnapshot;
     customTimeout?: number;
     requestVersion: number;
+    // Issued by the polling timer / activity probe rather than by a user
+    // action. Only these are subject to the circuit breaker: a page change or
+    // a manual refresh is an explicit intent and stays the escape hatch.
+    auto?: boolean;
   }
   | {
     type: 'manual';
     query: QuerySnapshot;
     requestVersion: number;
   };
+
+/**
+ * Stable id for the document-refresh failure toast, so repeated failures
+ * update one notice in place instead of stacking. Dismissed by the first
+ * successful response.
+ */
+const DOCUMENT_REFRESH_FAILURE_TOAST_ID = 'document-refresh-failed'
 
 export default function DocumentManager() {
   // Track component mount status
@@ -389,6 +412,10 @@ export default function DocumentManager() {
     return () => {
       isMountedRef.current = false;
       window.removeEventListener('beforeunload', handleBeforeUnload);
+      // The Toaster is mounted above the router, so the outage notice outlives
+      // this component: without this it would still be on screen after a
+      // logout, with nothing left that could ever dismiss it.
+      toast.dismiss(DOCUMENT_REFRESH_FAILURE_TOAST_ID);
     };
   }, []);
 
@@ -450,33 +477,25 @@ export default function DocumentManager() {
   // Add refs to track previous pipelineActive state and current interval
   const prevPipelineActiveRef = useRef<boolean | undefined>(undefined);
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const activeRefreshPromiseRef = useRef<Promise<void> | null>(null);
-  const pendingRefreshRequestRef = useRef<RefreshRequest | null>(null);
   const latestRefreshRequestVersionRef = useRef(0);
-  // Throttle gate: all auto-driven /documents/paginated entrances funnel through
-  // refreshDocumentsThrottled() to enforce a minimum 2s wall-clock interval.
+  // Throttle gate: every /documents/paginated entrance that is not a direct
+  // page/filter/sort change funnels through refreshDocumentsThrottled() to
+  // enforce a minimum 2s wall-clock interval.
   const lastPaginatedAtRef = useRef(0);
   const pendingPaginatedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Intent tag the pending trailing timer will fire with. Held outside the
+  // closure so a user-intent call arriving during the wait can upgrade it.
+  const pendingPaginatedIsAutoRef = useRef(true);
   // Activity probe: exponential-backoff burst of /health calls that stops once
   // pipelineActive flips true. Holds the pending setTimeout ids so re-entry can
   // reset the schedule to t=0.
   const probeTimersRef = useRef<ReturnType<typeof setTimeout>[] | null>(null);
   const probeActiveRef = useRef(false);
 
-  // Add retry mechanism state (read by circuit breaker via setRetryState only).
-  const [, setRetryState] = useState({
-    count: 0,
-    lastError: null as Error | null,
-    isBackingOff: false
-  });
-
-  // Add circuit breaker state
-  const [circuitBreakerState, setCircuitBreakerState] = useState({
-    isOpen: false,
-    failureCount: 0,
-    lastFailureTime: null as number | null,
-    nextRetryTime: null as number | null
-  });
+  // Circuit breaker guarding the automatic /documents/paginated polling.
+  // Transitions live in features/documentRefreshCircuitBreaker (unit-tested);
+  // this ref just holds the current state.
+  const circuitBreakerRef = useRef<CircuitBreakerState>(initialCircuitBreakerState);
 
 
   // Handle checkbox change for individual documents
@@ -742,9 +761,17 @@ export default function DocumentManager() {
     sort_direction: query.sortDirection
   }), [])
 
-  // Utility function to update component state
-  const updateComponentState = useCallback((response: any) => {
-    setPagination(response.pagination);
+  // Utility function to update component state.
+  //
+  // `page` is passed in rather than read off the response: the displayed page
+  // number is what THIS request asked for (or an explicit boundary correction),
+  // never what the response echoed back. Request serialization plus the
+  // requestVersion guard make a stale response unreachable today, so this
+  // changes no behaviour; deriving the page locally means neither a backend
+  // echo bug nor a future relaxation of either layer can surface as a page
+  // number rolling backwards under the user.
+  const updateComponentState = useCallback((response: any, page: number) => {
+    setPagination({ ...response.pagination, page });
     setCurrentPageDocs(response.documents);
     setStatusCounts(response.status_counts);
 
@@ -752,83 +779,52 @@ export default function DocumentManager() {
   }, []);
 
 
-  // Enhanced error classification
-  const classifyError = useCallback((error: any) => {
-    if (error.name === 'AbortError') {
-      return { type: 'cancelled', shouldRetry: false, shouldShowToast: false };
-    }
-
-    if (error.message === 'Request timeout') {
-      return { type: 'timeout', shouldRetry: true, shouldShowToast: true };
-    }
-
-    if (error.message?.includes('Network Error') || error.code === 'NETWORK_ERROR') {
-      return { type: 'network', shouldRetry: true, shouldShowToast: true };
-    }
-
-    if (error.status >= 500) {
-      return { type: 'server', shouldRetry: true, shouldShowToast: true };
-    }
-
-    if (error.status >= 400 && error.status < 500) {
-      return { type: 'client', shouldRetry: false, shouldShowToast: true };
-    }
-
-    return { type: 'unknown', shouldRetry: true, shouldShowToast: true };
+  // Circuit breaker utility functions. State lives in a ref, not useState: the
+  // breaker is read from timer callbacks only, and a state write would change
+  // startPollingInterval's identity and make the polling useEffect tear down
+  // and recreate the interval, resetting its phase on every failure.
+  // Ask for permission to issue one automatic request. Past the backoff
+  // deadline this admits a single half-open probe and keeps the breaker open
+  // until that probe settles, so the ticks that arrive during its (up to 30s)
+  // lifetime do not slip through behind it.
+  const admitAutomaticRefresh = useCallback(() => {
+    const { state, admitted } = admitCircuitBreakerRequest(
+      circuitBreakerRef.current,
+      Date.now()
+    );
+    circuitBreakerRef.current = state;
+    return admitted;
   }, []);
 
-  // Circuit breaker utility functions
-  const isCircuitBreakerOpen = useCallback(() => {
-    if (!circuitBreakerState.isOpen) return false;
+  // Read-only check for a request that was already queued: it must not take
+  // the half-open slot, so it only gets to run while the breaker is closed.
+  const isAutomaticRefreshBlocked = useCallback(
+    () => isCircuitBreakerBlocked(circuitBreakerRef.current, Date.now()),
+    []
+  );
 
-    const now = Date.now();
-    if (circuitBreakerState.nextRetryTime && now >= circuitBreakerState.nextRetryTime) {
-      // Reset circuit breaker to half-open state
-      setCircuitBreakerState(prev => ({
-        ...prev,
-        isOpen: false,
-        failureCount: Math.max(0, prev.failureCount - 1)
-      }));
-      return false;
-    }
-
-    return true;
-  }, [circuitBreakerState]);
-
-  const recordFailure = useCallback((error: Error) => {
-    const now = Date.now();
-    setCircuitBreakerState(prev => {
-      const newFailureCount = prev.failureCount + 1;
-      const shouldOpen = newFailureCount >= 3; // Open after 3 failures
-
-      return {
-        isOpen: shouldOpen,
-        failureCount: newFailureCount,
-        lastFailureTime: now,
-        nextRetryTime: shouldOpen ? now + (Math.pow(2, newFailureCount) * 1000) : null
-      };
-    });
-
-    setRetryState(prev => ({
-      count: prev.count + 1,
-      lastError: error,
-      isBackingOff: true
-    }));
+  const recordFailure = useCallback(() => {
+    circuitBreakerRef.current = recordCircuitBreakerFailure(
+      circuitBreakerRef.current,
+      Date.now()
+    );
   }, []);
 
+  // Call ONLY when a response actually came back. Recording success on a
+  // fire-and-forget refresh (what the polling tick used to do) clears the
+  // failure counter on every tick and the breaker can never open.
   const recordSuccess = useCallback(() => {
-    setCircuitBreakerState({
-      isOpen: false,
-      failureCount: 0,
-      lastFailureTime: null,
-      nextRetryTime: null
-    });
+    circuitBreakerRef.current = resetCircuitBreaker();
+  }, []);
 
-    setRetryState({
-      count: 0,
-      lastError: null,
-      isBackingOff: false
-    });
+  // Return the half-open probe slot for an outcome that proves nothing about
+  // reachability. Idempotent, so it can be called unconditionally from the one
+  // place every request path passes through.
+  const settleProbe = useCallback(() => {
+    circuitBreakerRef.current = settleCircuitBreakerProbe(
+      circuitBreakerRef.current,
+      Date.now()
+    );
   }, []);
 
   // Handle page size change - update state and save to store
@@ -860,16 +856,32 @@ export default function DocumentManager() {
       const { query, requestVersion } = refreshRequest
       const isStaleRequest = () => requestVersion !== latestRefreshRequestVersionRef.current
 
+      // Single entrance for the paginated fetch so the circuit breaker is fed
+      // by real responses. A 200 proves the backend is reachable even when the
+      // payload is then discarded as stale, so success is recorded before any
+      // staleness check.
+      const fetchPage = async (
+        pageRequest: DocumentsRequest,
+        timeoutMs?: number
+      ): Promise<PaginatedDocsResponse> => {
+        const response = await getDocumentsPaginatedWithTimeout(pageRequest, timeoutMs)
+        recordSuccess()
+        toast.dismiss(DOCUMENT_REFRESH_FAILURE_TOAST_ID)
+        return response
+      }
+
       if (refreshRequest.type === 'manual') {
         const request = buildDocumentsRequest(query, 1)
-        const response = await getDocumentsPaginatedWithTimeout(request)
+        const response = await fetchPage(request)
 
         if (!isMountedRef.current || isStaleRequest()) return;
 
         if (response.pagination.total_count < query.pageSize && query.pageSize !== 10) {
           handlePageSizeChange(10);
         } else {
-          setPagination(response.pagination);
+          // Manual refresh always requests page 1; same rule as
+          // updateComponentState — the page shown is the page asked for.
+          setPagination({ ...response.pagination, page: 1 });
           setCurrentPageDocs(response.documents);
           setStatusCounts(response.status_counts);
 
@@ -893,7 +905,7 @@ export default function DocumentManager() {
         const { customTimeout } = refreshRequest;
         const pageToFetch = query.page;
         const request = buildDocumentsRequest(query, pageToFetch)
-        const response = await getDocumentsPaginatedWithTimeout(request, customTimeout)
+        const response = await fetchPage(request, customTimeout)
 
         if (!isMountedRef.current || isStaleRequest()) return;
 
@@ -903,15 +915,15 @@ export default function DocumentManager() {
 
           if (pageToFetch !== lastPage) {
             const lastPageRequest = buildDocumentsRequest(query, lastPage)
-            const lastPageResponse = await getDocumentsPaginatedWithTimeout(
-              lastPageRequest,
-              customTimeout
-            )
+            const lastPageResponse = await fetchPage(lastPageRequest, customTimeout)
 
             if (!isMountedRef.current || isStaleRequest()) return;
 
             setPageByStatus(prev => ({ ...prev, [query.statusFilter]: lastPage }));
-            updateComponentState(lastPageResponse);
+            // Explicit: pageByStatus is only read when the status filter
+            // changes, so this call is the only thing moving pagination.page
+            // to the corrected page.
+            updateComponentState(lastPageResponse, lastPage);
             return;
           }
         }
@@ -921,22 +933,73 @@ export default function DocumentManager() {
             ? prev
             : { ...prev, [query.statusFilter]: pageToFetch }
         ));
-        updateComponentState(response);
+        updateComponentState(response, pageToFetch);
       }
 
     } catch (err) {
       if (isMountedRef.current) {
-        const errorClassification = classifyError(err);
-
-        if (errorClassification.shouldShowToast) {
-          toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }));
-        }
+        const errorClassification = classifyDocumentRefreshError(err);
 
         if (errorClassification.shouldRetry) {
-          recordFailure(err as Error);
+          // No answer at all, or an answer that is itself a back-off signal
+          // (408/429). shouldRetry outranks provesBackendResponsive by design.
+          recordFailure();
+        } else if (errorClassification.provesBackendResponsive) {
+          // A permanent 4xx: the application parsed and routed the request and
+          // answered. Reachability is proven, so the breaker must be CLEARED
+          // rather than left holding a stale failure count that would let three
+          // non-consecutive failures open it.
+          recordSuccess();
+        }
+        // Anything left — a cancellation — proves nothing and must not reset,
+        // but must not keep holding the probe slot either: the finally settles
+        // it below.
+
+        if (errorClassification.shouldShowToast) {
+          // One notice for an ongoing outage, not one per failed poll. Every
+          // retryable failure means the list is stale and staying stale, so the
+          // notice stands until a response clears it (fetchPage dismisses it on
+          // success). StatusIndicator's red dot covers the plain "backend is
+          // unreachable" case, but not this one: it tracks /health, so a
+          // backend that answers /health while /documents/paginated keeps
+          // failing shows green over a frozen list, and it is not rendered at
+          // all when the user turns health checks off.
+          //
+          // The stable id alone is NOT enough: it merges into a toast that is
+          // still on screen, and the default 4s lifetime always expires before
+          // the next poll (5s at its fastest, 30s once health drops). Every
+          // failure would create a fresh toast, which is the flood this is
+          // meant to remove. Gating persistence on the breaker being OPEN had
+          // the same hole for the failures that precede the threshold.
+          //
+          // A permanent 4xx is not an outage — the backend answered, and the
+          // breaker has just been cleared above — so it keeps the ordinary
+          // auto-dismissing toast.
+          //
+          // Persistence additionally requires that something still polls: the
+          // interval is the only thing that can produce the successful response
+          // that dismisses this. TabsContent uses forceMount, so a request that
+          // was in flight when the user left the tab keeps running and lands
+          // here up to 30s later, after the polling effect stopped the
+          // interval — an Infinity toast raised then could never be cleared.
+          // Showing it is fine, and intended; making it permanent is not.
+          const clearable = pollingIntervalRef.current !== null
+          toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }), {
+            id: DOCUMENT_REFRESH_FAILURE_TOAST_ID,
+            duration: errorClassification.shouldRetry && clearable ? Infinity : undefined
+          });
         }
       }
     } finally {
+      // The probe slot is held for the lifetime of ONE real request, so every
+      // exit path must return it. recordSuccess / recordFailure already clear
+      // it; this covers the paths that do neither — a cancellation, and the
+      // unmount early return at the top of this function, which precedes every
+      // record call. Idempotent, hence unconditional: the invariant is "every
+      // exit returns the slot", and finally is the only construct that states
+      // it. An else-branch in the catch would cover today's paths and silently
+      // reopen the hole the next time an early return is added.
+      settleProbe();
       if (isMountedRef.current) {
         setIsRefreshing(false);
       }
@@ -944,47 +1007,48 @@ export default function DocumentManager() {
   }, [
     t,
     updateComponentState,
-    classifyError,
     recordFailure,
+    recordSuccess,
+    settleProbe,
     handlePageSizeChange,
     buildDocumentsRequest
   ]);
 
-  const enqueueRefresh = useCallback(async (refreshRequest: RefreshRequest) => {
-    if (activeRefreshPromiseRef.current) {
-      pendingRefreshRequestRef.current = refreshRequest;
-      await activeRefreshPromiseRef.current;
-      return;
-    }
+  // One queue for the component's lifetime: it owns the in-flight/pending
+  // state, so rebuilding it would drop a request mid-flight. The handlers ride
+  // along with each enqueue instead of being captured at construction.
+  const [refreshQueue] = useState(() => createRefreshQueue<RefreshRequest>());
 
-    const refreshLoopPromise = (async () => {
-      let nextRequest: RefreshRequest | null = refreshRequest;
-
-      while (nextRequest) {
-        pendingRefreshRequestRef.current = null;
-        await runRefreshRequest(nextRequest);
-        nextRequest = pendingRefreshRequestRef.current;
-      }
-    })();
-
-    activeRefreshPromiseRef.current = refreshLoopPromise;
-
-    try {
-      await refreshLoopPromise;
-    } finally {
-      if (activeRefreshPromiseRef.current === refreshLoopPromise) {
-        activeRefreshPromiseRef.current = null;
-      }
-      pendingRefreshRequestRef.current = null;
-    }
-  }, [runRefreshRequest]);
+  const enqueueRefresh = useCallback(
+    (refreshRequest: RefreshRequest) =>
+      refreshQueue.enqueue(refreshRequest, {
+        runRequest: runRefreshRequest,
+        // The single admission point for automatic refreshes, evaluated where
+        // the request is actually issued — first request and queued request
+        // alike. Manual refresh and page/filter/sort changes are untagged and
+        // always run: explicit user intent is the escape hatch.
+        admit: (request) =>
+          request.type !== 'intelligent' ||
+          !request.auto ||
+          admitAutomaticRefresh(),
+        // Automatic refreshes rank below everything else in the pending slot.
+        // Admission is evaluated where the request is issued, so an `auto`
+        // request the breaker will refuse there must not be able to discard a
+        // page change or a manual refresh that would have run.
+        priority: (request) =>
+          request.type === 'intelligent' && request.auto ? 0 : 1
+      }),
+    [refreshQueue, runRefreshRequest, admitAutomaticRefresh]
+  );
 
   // Intelligent refresh function: handles all boundary cases
-  const handleIntelligentRefresh = useCallback(async (
-    targetPage?: number,
-    resetToFirst?: boolean,
+  const handleIntelligentRefresh = useCallback(async (options: {
+    targetPage?: number
+    resetToFirst?: boolean
     customTimeout?: number
-  ) => {
+    auto?: boolean
+  } = {}) => {
+    const { targetPage, resetToFirst, customTimeout, auto } = options
     const page = resetToFirst ? 1 : (targetPage || pagination.page)
     const query = buildQuerySnapshot({ page })
     const requestVersion = latestRefreshRequestVersionRef.current
@@ -993,7 +1057,8 @@ export default function DocumentManager() {
       type: 'intelligent',
       query,
       customTimeout,
-      requestVersion
+      requestVersion,
+      auto
     });
   }, [buildQuerySnapshot, enqueueRefresh, pagination.page]);
 
@@ -1001,19 +1066,32 @@ export default function DocumentManager() {
   // here. If the wall-clock gap since the last paginated request is >= 2s, fire
   // immediately; otherwise schedule a single trailing call at the 2s boundary
   // and drop any further calls into that pending slot (natural coalescing).
-  const refreshDocumentsThrottled = useCallback(() => {
-    const fire = () => {
+  const refreshDocumentsThrottled = useCallback((options: { auto?: boolean } = {}) => {
+    // Defaults to automatic: the timers are the common caller. Callers that
+    // follow a user action (upload, scan, delete) pass auto: false so the
+    // breaker cannot refuse the refresh their action earned.
+    const auto = options.auto ?? true
+    const fire = (isAuto: boolean) => {
       lastPaginatedAtRef.current = Date.now()
-      handleIntelligentRefresh().catch((err) => {
+      handleIntelligentRefresh({ auto: isAuto }).catch((err) => {
         console.error('Throttled document refresh failed:', err)
       })
     }
     const gap = Date.now() - lastPaginatedAtRef.current
     if (gap >= 2000) {
-      fire()
+      fire(auto)
       return
     }
-    if (pendingPaginatedTimerRef.current !== null) return
+    if (pendingPaginatedTimerRef.current !== null) {
+      // A user-intent call arriving while an automatic trailing timer waits
+      // must UPGRADE it, not be dropped — the same defect the refresh queue's
+      // pending slot had, one layer up. The tag decides whether the queue's
+      // admission gate may refuse this request 2s from now, so dropping the
+      // call here would make the queue's priority rule unreachable.
+      // Monotonic: once intent, intent for the rest of this window.
+      if (!auto) pendingPaginatedIsAutoRef.current = false
+      return
+    }
     // Snapshot the query identity. If page/filter/sort changes while we wait,
     // the page-change useEffect bumps latestRefreshRequestVersionRef AND fires
     // its own paginated request on the new query. Our trailing closure still
@@ -1022,11 +1100,12 @@ export default function DocumentManager() {
     // (its requestVersion would be the newly-bumped value, so the in-flight
     // stale-check inside runRefreshRequest can't catch it).
     const versionAtSchedule = latestRefreshRequestVersionRef.current
+    pendingPaginatedIsAutoRef.current = auto
     pendingPaginatedTimerRef.current = setTimeout(() => {
       pendingPaginatedTimerRef.current = null
       if (!isMountedRef.current) return
       if (versionAtSchedule !== latestRefreshRequestVersionRef.current) return
-      fire()
+      fire(pendingPaginatedIsAutoRef.current)
     }, 2000 - gap)
   }, [handleIntelligentRefresh]);
 
@@ -1045,6 +1124,11 @@ export default function DocumentManager() {
     const timers: ReturnType<typeof setTimeout>[] = []
     const probeSchedule = [0, 1000, 2000, 4000, 8000, 16000] as const
     const refreshAt = new Set<number>([0, 2000, 4000, 8000, 16000])
+    // The probe follows a user action (scan / upload), so its FIRST refresh
+    // carries that intent and must not be refusable by the breaker. The rest
+    // of the burst is speculative — it polls for work the action may have
+    // started — so tagging all five as intent would let one click bypass the
+    // breaker five times.
     const cleanup = () => {
       timers.forEach((id) => clearTimeout(id))
       if (probeTimersRef.current === timers) {
@@ -1068,7 +1152,7 @@ export default function DocumentManager() {
           return
         }
         if (refreshAt.has(delay)) {
-          refreshDocumentsThrottled()
+          refreshDocumentsThrottled({ auto: delay !== 0 })
         }
         // Exit conditions (in priority order):
         //  - pipelineActive=true AND the document list has caught up: the 5s
@@ -1135,13 +1219,18 @@ export default function DocumentManager() {
 
     pollingIntervalRef.current = setInterval(() => {
       if (!isMountedRef.current) return;
-      if (isCircuitBreakerOpen()) return;
-      // refreshDocumentsThrottled is fire-and-forget; errors are surfaced via
-      // toast/recordFailure inside runRefreshRequest.
+      // Read-only: the admission itself happens in the refresh queue, at the
+      // point the request is issued. Skipping here just avoids walking the
+      // throttle gate for a request that would be dropped anyway.
+      if (isAutomaticRefreshBlocked()) return;
+      // refreshDocumentsThrottled is fire-and-forget; the breaker is fed from
+      // inside runRefreshRequest (recordSuccess on a real response,
+      // recordFailure in its catch), never from this tick — a tick proves
+      // nothing about the backend and clearing the counter here is what kept
+      // the breaker from ever opening.
       refreshDocumentsThrottled();
-      recordSuccess();
     }, intervalMs);
-  }, [refreshDocumentsThrottled, clearPollingInterval, isCircuitBreakerOpen, recordSuccess]);
+  }, [refreshDocumentsThrottled, clearPollingInterval, isAutomaticRefreshBlocked]);
 
   const scanDocuments = useCallback(async () => {
     try {
@@ -1163,7 +1252,7 @@ export default function DocumentManager() {
         // scanning_skipped_pipeline_busy: a single check+refresh is enough,
         // no need to start the probe (pipeline is already active).
         useBackendState.getState().check().catch(() => undefined);
-        refreshDocumentsThrottled();
+        refreshDocumentsThrottled({ auto: false });
       }
     } catch (err) {
       if (isMountedRef.current) {
@@ -1209,14 +1298,30 @@ export default function DocumentManager() {
   // during scan classification / upload enqueue, well before the new doc rows
   // appear in /documents/paginated. Without this, the UI would stall in 30s
   // idle polling for several seconds after the user clicked scan/upload.
+  // A failed health check no longer stops the list: it drops polling to the
+  // idle cadence instead. Latching health=false used to clear the interval
+  // outright, so a single 504 from a busy backend froze the document list until
+  // the next successful /health probe. The circuit breaker (fed by real
+  // responses) is what throttles a backend that is genuinely down.
   useEffect(() => {
-    if (currentTab !== 'documents' || !health) {
+    if (currentTab !== 'documents') {
       clearPollingInterval();
+      // Retiring the notice with the polling that would clear it. Nothing
+      // refreshes the document list while another tab is up, so a standing
+      // outage notice could never be dismissed by a successful response, and
+      // the Toaster renders it globally — it would sit over the graph or
+      // retrieval view indefinitely. An unmount cleanup does not cover this:
+      // TabsContent uses forceMount, so this component stays mounted while
+      // another tab is active. Returning to Documents re-creates the notice on
+      // the next failure, which is the correct behaviour.
+      toast.dismiss(DOCUMENT_REFRESH_FAILURE_TOAST_ID);
       return
     }
 
     const hasActiveDocuments = hasActiveDocumentsStatus(statusCounts);
-    const pollingInterval = (hasActiveDocuments || pipelineActive) ? 5000 : 30000;
+    const pollingInterval = health
+      ? ((hasActiveDocuments || pipelineActive) ? 5000 : 30000)
+      : 30000;
 
     startPollingInterval(pollingInterval);
 
@@ -1279,9 +1384,13 @@ export default function DocumentManager() {
     // Reset health check timer with 1 second delay to avoid race condition
     useBackendState.getState().resetHealthCheckTimerDelayed(1000)
 
+    // A completed delete is user intent: refresh unconditionally rather than
+    // waiting for a poll tick the breaker may refuse.
+    refreshDocumentsThrottled({ auto: false })
+
     // Schedule a health check 2 seconds after successful clear
     startPollingInterval(2000)
-  }, [startPollingInterval])
+  }, [refreshDocumentsThrottled, startPollingInterval])
 
   // Handle documents cleared callback with proper interval reset
   const handleDocumentsCleared = useCallback(async () => {
@@ -1442,7 +1551,7 @@ export default function DocumentManager() {
             ) : null}
             <UploadDocumentsDialog
               onUploadBatchAccepted={() => startActivityProbe('upload')}
-              onDocumentsUploaded={async () => { refreshDocumentsThrottled() }}
+              onDocumentsUploaded={async () => { refreshDocumentsThrottled({ auto: false }) }}
             />
             <PipelineStatusDialog
               open={showPipelineStatus}
