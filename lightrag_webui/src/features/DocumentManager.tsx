@@ -428,6 +428,15 @@ export default function DocumentManager() {
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
 
   const currentTab = useSettingsStore.use.currentTab()
+  // Read from runRefreshRequest's catch, which runs long after the render that
+  // issued the request — a paginated fetch can take up to its 30s timeout to
+  // land. A ref, NOT a dependency of that callback: adding currentTab there
+  // changes its identity on every tab switch, and the central fetch effect
+  // depends on it transitively, so each switch would issue a fresh request.
+  const documentsTabActiveRef = useRef(currentTab === 'documents')
+  useEffect(() => {
+    documentsTabActiveRef.current = currentTab === 'documents'
+  }, [currentTab])
   const showFileName = useSettingsStore.use.showFileName()
   const setShowFileName = useSettingsStore.use.setShowFileName()
   const documentsPageSize = useSettingsStore.use.documentsPageSize()
@@ -955,7 +964,15 @@ export default function DocumentManager() {
         // but must not keep holding the probe slot either: the finally settles
         // it below.
 
-        if (errorClassification.shouldShowToast) {
+        // Report only while the document list is the view the user is on.
+        // TabsContent uses forceMount, so isMountedRef stays true after a tab
+        // switch, and a request that was already in flight when the user left
+        // can land up to 30s later. Without this it would re-create the global
+        // notice that the tab-change effect had just dismissed — with polling
+        // stopped, nothing could ever clear it again. Cancelling those requests
+        // instead would be the heavier fix for the same symptom; not reporting
+        // a list the user is not looking at is the behaviour we want anyway.
+        if (errorClassification.shouldShowToast && documentsTabActiveRef.current) {
           // One notice for an ongoing outage, not one per failed poll. Every
           // retryable failure means the list is stale and staying stale, so the
           // notice stands until a response clears it (fetchPage dismisses it on
