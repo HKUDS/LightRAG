@@ -80,6 +80,7 @@ export function getSettingsMigrationError(): unknown {
 /** Test hook: clear the recorded error between runs. */
 export function resetSettingsMigrationErrorForTests(): void {
   migrationError = null
+  settingsLostToQuota = false
 }
 
 /**
@@ -117,6 +118,7 @@ function writeIfAbsent(
 }
 
 let historyDroppedDuringMigration = false
+let settingsLostToQuota = false
 
 /**
  * True when the last migration run had to DISCARD the legacy retrieval
@@ -130,19 +132,91 @@ export function wasHistoryDroppedDuringMigration(): boolean {
 }
 
 /**
+ * True when THIS run found the legacy envelope marked as destroyed by an
+ * earlier run's quota write-back (see `SETTINGS_LOST_MARKER`), i.e. the
+ * settings the split does not migrate — theme, language, API key — are gone
+ * and the store is starting from defaults.
+ *
+ * The entry shells surface a one-time toast from this. It is deliberately a
+ * notice and not a migration ERROR: the bytes are unrecoverable, so the
+ * error screen's retry could only loop, and the API key in particular is
+ * something the user has to be told to re-enter rather than discover through
+ * a rejected query.
+ */
+export function wereSettingsLostToQuota(): boolean {
+  return settingsLostToQuota
+}
+
+/**
+ * Envelope-level marker (outside `state`, so the legacy chain never sees it)
+ * saying: the settings this envelope used to hold were DESTROYED by the
+ * write-back ladder below, not migrated.
+ *
+ * Without it the last rung is a lie. `{state:{}}` at the chain's cap version
+ * is a perfectly valid empty envelope, so the moment capacity returns the
+ * next run migrates it cleanly — no error, no notice — and the user's theme,
+ * language and API key are gone silently, the retry on MigrationErrorScreen
+ * having converted a visible failure into an invisible one. The marker is
+ * what makes that run report instead: it completes (a retry can never bring
+ * back bytes the store already rejected, so pinning the user on the error
+ * screen forever would be worse) and raises the one-time notice below.
+ */
+const SETTINGS_LOST_MARKER = 'lightragSettingsLostToQuota'
+
+/**
  * The smallest envelope that still says "there is legacy data here": no
- * state, stamped at the version the chain normalizes to. Written only as the
- * last step of the write-back ladder below, when the real bytes will not fit.
- * It forfeits the fields the split does not migrate (theme, language,
- * apiKey) — they are already unwritable at that point — but it keeps the
- * NEXT run from reading "no legacy data" and declaring the split done over
- * data it never migrated, which is the difference between a visible failure
- * and a silent one.
+ * state, stamped at the version the chain normalizes to, and marked as a
+ * loss. Written only as the last step of the write-back ladder below, when
+ * even the reduced bytes will not fit. It forfeits the fields the split does
+ * not migrate (theme, language, apiKey) — they are already unwritable at
+ * that point — but it keeps the NEXT run from reading "no legacy data" (or,
+ * with the marker, "an ordinary empty envelope") and declaring the split
+ * done over data it never migrated.
  */
 const MINIMAL_LEGACY_ENVELOPE = JSON.stringify({
   state: {},
-  version: LEGACY_SETTINGS_VERSION_CAP
+  version: LEGACY_SETTINGS_VERSION_CAP,
+  [SETTINGS_LOST_MARKER]: true
 })
+
+/**
+ * The rung between the real bytes and total loss: the same envelope with
+ * every NON-PRIMITIVE state field dropped.
+ *
+ * Objects and arrays are the unbounded fields (`querySettings`,
+ * `retrievalHistory`, and anything a future version adds); the settings a
+ * user would actually miss — theme, language, apiKey — are scalars, and
+ * together they are a few dozen bytes. Sizing the rung by SHAPE rather than
+ * by a hard-coded field list keeps it correct as the legacy state evolves.
+ *
+ * The version is carried over unchanged, so the reduced envelope means
+ * exactly what the payload it replaces meant (mid-split at the cap version,
+ * or already split at 22) and the next run treats it accordingly.
+ *
+ * Returns null when there is nothing to drop — the payload is already
+ * scalars-only, so this rung would just re-attempt the write that failed.
+ */
+function reducedLegacyPayload(payload: string): string | null {
+  let parsed: any
+  try {
+    parsed = JSON.parse(payload)
+  } catch {
+    return null
+  }
+  const state = parsed?.state
+  if (!state || typeof state !== 'object') return null
+  const scalars: Record<string, unknown> = {}
+  let dropped = false
+  for (const [key, value] of Object.entries(state)) {
+    if (value !== null && typeof value === 'object') {
+      dropped = true
+      continue
+    }
+    scalars[key] = value
+  }
+  if (!dropped) return null
+  return JSON.stringify({ ...parsed, state: scalars })
+}
 
 /**
  * Write the legacy envelope, surviving an engine that charges the value it is
@@ -166,9 +240,11 @@ const MINIMAL_LEGACY_ENVELOPE = JSON.stringify({
  *
  * So the removal is attempted, and the write-back below is a ladder from the
  * most faithful restoration to the least, each rung smaller than the last:
- * the bytes actually removed, then the minimal envelope. The last rung
- * matters because it fits in a window where the others do not, and it is
- * what keeps a failure VISIBLE to the next run.
+ * the bytes actually removed, then the same payload reduced to its scalar
+ * settings, then the marked empty envelope. The lower rungs matter because
+ * they fit in a window where the others do not — the reduced one still
+ * carrying the settings a user would miss — and the last one is what keeps
+ * the failure VISIBLE to the next run.
  */
 function writeShrunkLegacyEnvelope(storage: Storage, payload: string): void {
   const removed = storage.getItem(LEGACY_SETTINGS_STORAGE_KEY)
@@ -185,7 +261,11 @@ function writeShrunkLegacyEnvelope(storage: Storage, payload: string): void {
     // Restore the value actually READ FROM THE KEY, not the run's original
     // `raw`: the ladder calls this twice, and after `freeLegacyHistory` the
     // key holds the reduced envelope.
-    for (const fallback of [removed, MINIMAL_LEGACY_ENVELOPE]) {
+    for (const fallback of [
+      removed,
+      reducedLegacyPayload(payload),
+      MINIMAL_LEGACY_ENVELOPE
+    ]) {
       if (fallback === null) continue
       try {
         storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, fallback)
@@ -325,6 +405,7 @@ export function runSettingsStorageSplitMigration(
 ): void {
   migrationError = null
   historyDroppedDuringMigration = false
+  settingsLostToQuota = false
   if (!storage) return
   let parsedContext: { envelope: any; normalized: any } | null = null
   // Target keys THIS run created; the quota retry may reclaim only those.
@@ -348,6 +429,16 @@ export function runSettingsStorageSplitMigration(
       // Rule 3. Includes our own post-split version (22): nothing left to
       // migrate. Anything higher is unknown — never read, clean or overwrite.
       return
+    }
+
+    if (envelope[SETTINGS_LOST_MARKER] === true) {
+      // An earlier run's write-back ladder bottomed out here: the state this
+      // envelope carried was destroyed, not migrated. Report it, and strip
+      // the marker so the completed v22 envelope does not carry dead
+      // bookkeeping forward — the copy in storage keeps it until that write
+      // lands, so a run that fails again re-raises the notice next time.
+      settingsLostToQuota = true
+      delete envelope[SETTINGS_LOST_MARKER]
     }
 
     const state = envelope.state

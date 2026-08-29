@@ -517,7 +517,8 @@
     "failedTitle": "Failed to prepare local settings",
     "failedBody": "Your saved settings could not be migrated to the new storage format. Nothing was lost — reload to try again.",
     "retry": "Reload",
-    "historyDropped": "Chat history could not fit in browser storage during the upgrade and was discarded. Settings were migrated normally."
+    "historyDropped": "Chat history could not fit in browser storage during the upgrade and was discarded. Settings were migrated normally.",
+    "settingsLost": "Browser storage was full during the upgrade, so saved preferences (theme, language, API key) could not be preserved and have been reset to defaults. Please set them again."
   },
   "retrievalHistory": {
     "quotaDropped": "Browser storage is full: the chat history is no longer being saved. The current conversation stays visible until you leave the page."

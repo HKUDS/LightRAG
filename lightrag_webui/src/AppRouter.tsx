@@ -6,7 +6,8 @@ import { useAuthStore } from '@/stores/state'
 import { navigationService } from '@/services/navigation'
 import {
   getSettingsMigrationError,
-  wasHistoryDroppedDuringMigration
+  wasHistoryDroppedDuringMigration,
+  wereSettingsLostToQuota
 } from '@/migrations/splitSettingsStorage'
 import { toast, Toaster } from 'sonner'
 import i18n from '@/i18n'
@@ -31,6 +32,14 @@ const AppContent = () => {
   useEffect(() => {
     if (wasHistoryDroppedDuringMigration()) {
       toast.warning(i18n.t('migration.historyDropped'))
+    }
+    // One-time notice: an EARLIER run's quota write-back destroyed the legacy
+    // envelope, so the settings the split does not migrate (theme, language,
+    // API key) are gone and this store starts from defaults. The bytes are
+    // unrecoverable, so this is a notice rather than the retryable error
+    // screen — the API key especially must be re-entered knowingly.
+    if (wereSettingsLostToQuota()) {
+      toast.warning(i18n.t('migration.settingsLost'))
     }
   }, [])
 
