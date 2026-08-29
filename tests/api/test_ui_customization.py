@@ -87,7 +87,13 @@ def make_bundle(root, manifest=None, *, extra_files=None):
         manifest = {
             "schema_version": 1,
             "default_locale": "en",
-            "fallbacks": {"ko": ["en"]},
+            # The fallback target must NOT be default_locale. Pointing "ko"
+            # at "en" makes the manifest-fallback path and the default-locale
+            # path land on the same answer, and every assertion about the
+            # former is then satisfied by the latter — short-circuiting the
+            # fallback lookup entirely would keep this suite green. See
+            # TestCustomizationEndpointWithBundle.test_fallback_chain_then_default.
+            "fallbacks": {"ko": ["zh"]},
             "brand": {"logo": "assets/logo.svg"},
             "locales": {
                 "en": {
@@ -476,14 +482,30 @@ class TestCustomizationEndpointWithBundle:
         assert bad.status_code == 400
 
     def test_fallback_chain_then_default(self, tmp_path, monkeypatch):
+        """The two resolution paths are exercised SEPARATELY.
+
+        `fallback_used` is True for both a manifest fallback and the
+        default-locale catch-all, so the flag alone cannot tell them apart —
+        only the resolved locale can, and only while the bundle's fallback
+        target differs from its default_locale (see make_bundle).
+        """
         client = self._client(tmp_path, monkeypatch)
+
+        # Declared in `fallbacks` → that target, NOT default_locale.
         ko = client.get("/ui/customization?locale=ko").json()
-        assert (ko["locale"], ko["fallback_used"]) == ("en", True)
+        assert (ko["locale"], ko["fallback_used"]) == ("zh", True)
+
         # Unknown locale with no fallback entry → the bundle's own default,
         # never the frontend defaults.
         fr = client.get("/ui/customization?locale=fr").json()
         assert (fr["locale"], fr["fallback_used"]) == ("en", True)
         assert fr["customized"] is True
+
+        # Guard on the test's own discriminating power: if a future edit
+        # points the fallback back at default_locale, the two paths collapse
+        # into one answer and the assertions above stop proving that
+        # `fallbacks` is consulted at all.
+        assert ko["locale"] != fr["locale"]
 
     def test_rtl_direction_from_registry(self, tmp_path, monkeypatch):
         bundle = make_bundle(tmp_path)
