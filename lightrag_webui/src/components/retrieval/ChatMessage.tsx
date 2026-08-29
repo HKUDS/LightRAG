@@ -435,7 +435,27 @@ const CodeHighlight = memo(({ inline, className, children, renderAsDiagram = fal
         try {
           mermaid = await loadMermaid();
         } catch (loadError) {
+          // The renderer itself could not be fetched — a deploy invalidated
+          // the hashed chunk mid-session, an offline tab, a flaky network.
+          //
+          // This MUST write something visible, like the two render-failure
+          // paths below. Nothing has been put in the container yet (the
+          // loading indicator is set only after this await), the effect's
+          // dependencies cannot change again once the message settles, so
+          // nothing retries, and the plain-text fallback branch in the
+          // render body only runs while `renderAsDiagram` is false. A bare
+          // return therefore leaves a permanently blank gap where a diagram
+          // belongs, with the source unreachable too.
           console.error('Failed to load mermaid:', loadError);
+          if (mermaidRef.current === container) {
+            const errorMessage =
+              loadError instanceof Error ? loadError.message : String(loadError);
+            const fallbackPre = document.createElement('pre');
+            fallbackPre.className = 'text-red-500 text-xs whitespace-pre-wrap break-words';
+            fallbackPre.textContent = `Mermaid renderer failed to load: ${errorMessage}\n\nContent:\n${String(children).replace(/\n$/, '').trim()}`;
+            container.innerHTML = '';
+            container.appendChild(fallbackPre);
+          }
           return;
         }
         if (mermaidRef.current !== container || hasRendered) return;

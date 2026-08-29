@@ -13,14 +13,23 @@
  * `transformIndexHtml` plugin using `VITE_DEV_API_PREFIX` /
  * `VITE_DEV_WEBUI_PREFIX`, so dev and prod use the same lookup.
  *
- * Always read through {@link normalizeApiPrefix} / {@link normalizeWebuiPrefix}
- * downstream (see `constants.ts`); this module returns the raw injected value.
+ * Always read through {@link normalizeApiPrefix} downstream (see
+ * `constants.ts`); this module returns the raw injected value.
  */
 
 declare global {
   interface Window {
     __LIGHTRAG_CONFIG__?: {
       apiPrefix?: string
+      /**
+       * Still injected by the server and pinned as part of the published
+       * `{apiPrefix, webuiPrefix}` shape (docs/MultiSiteDeployment.md), so
+       * the declaration must keep describing what actually arrives — but
+       * nothing reads it any more. Both former consumers (SiteHeader, the
+       * initializing header in App) now link to their own entry root with
+       * the document-relative `entryHomeHref`, which is what makes one
+       * build serve two entries without either linking into the other.
+       */
       webuiPrefix?: string
     }
   }
@@ -32,9 +41,4 @@ const config =
 /** Browser-visible API prefix; empty string means same-origin / no prefix. */
 export function getRuntimeApiPrefix(): string | undefined {
   return config.apiPrefix
-}
-
-/** Browser-visible WebUI mount path including the trailing slash. */
-export function getRuntimeWebuiPrefix(): string | undefined {
-  return config.webuiPrefix
 }
