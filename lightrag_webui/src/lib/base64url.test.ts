@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readdirSync, readFileSync, statSync } from 'fs'
 import { join } from 'path'
-import { decodeBase64Url } from './base64url'
+import { decodeBase64Url, legacyMojibakeForm } from './base64url'
 
 /**
  * The single decoder every JWT payload in this app goes through.
@@ -38,6 +38,28 @@ describe('decodeBase64Url', () => {
     }
   })
 
+  test('reads the payload as UTF-8, not one character per byte', () => {
+    // `atob` yields a latin-1 byte string, so a non-ASCII name came back
+    // mangled: a wrong username on screen, and a wrong identity string in
+    // the retrieval-history cleanup.
+    for (const sub of ['كظدج', '张三', 'José', 'Ünal', '日本語ユーザー']) {
+      const payload = JSON.stringify({ sub, role: 'user', exp: 9999999999 })
+      expect(decodeBase64Url(encode(payload))).toBe(payload)
+      expect(JSON.parse(decodeBase64Url(encode(payload))!).sub).toBe(sub)
+    }
+  })
+
+  test('rejects invalid UTF-8 instead of substituting replacement characters', () => {
+    // 0xFF is never valid UTF-8. Letting U+FFFD through would yield claims
+    // that parse but say something the token does not.
+    const invalid = Buffer.from([0x7b, 0x22, 0xff, 0x22, 0x7d])
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '')
+    expect(decodeBase64Url(invalid)).toBeNull()
+  })
+
   test('returns null rather than throwing on malformed input', () => {
     // A length of 4n+1 can never be valid base64, padded or not.
     expect(decodeBase64Url('A')).toBeNull()
@@ -66,5 +88,26 @@ describe('no reader decodes a JWT payload on its own', () => {
     )
 
     expect(offenders.map((f) => f.slice(src.length + 1))).toEqual([])
+  })
+})
+
+
+describe('legacyMojibakeForm', () => {
+  test('reproduces what the pre-fix decoder returned', () => {
+    // Pinned so the upgrade path in `isIdentityChange` keeps recognizing
+    // markers written by that build.
+    const sub = 'كظدج'
+    const payload = JSON.stringify({ sub })
+    const oldReading = atob(
+      Buffer.from(payload, 'utf8').toString('base64')
+    )
+    expect(legacyMojibakeForm(payload)).toBe(oldReading)
+    expect(JSON.parse(legacyMojibakeForm(payload)).sub).toBe(legacyMojibakeForm(sub))
+  })
+
+  test('is the identity function for ASCII, so it costs nothing elsewhere', () => {
+    for (const value of ['alice', 'guest', 'user.name-1', '']) {
+      expect(legacyMojibakeForm(value)).toBe(value)
+    }
   })
 })

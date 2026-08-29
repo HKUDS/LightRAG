@@ -6,7 +6,7 @@ import {
   WEBUI_RETRIEVAL_HISTORY_KEY,
   WORKSPACE_RETRIEVAL_HISTORY_KEY
 } from '@/lib/storageKeys'
-import { decodeBase64Url } from '@/lib/base64url'
+import { decodeBase64Url, legacyMojibakeForm } from '@/lib/base64url'
 
 /**
  * Identity-change cleanup shared by EVERY path that activates a login: the
@@ -77,10 +77,18 @@ export function loginIdentityFromToken(token: string): string {
  * and must not destroy it — least of all on the one load where the storage
  * split has just migrated it. An incoming NAMED user is a real transition
  * (guest use before the first login) and still counts.
+ *
+ * A marker written by a build that read JWT payloads as latin-1 holds the
+ * MANGLED spelling of a non-ASCII name (`ÙØ¸Ø¯Ø¬` for `كظدج`). That is the
+ * same person, so it is not a transition — otherwise correcting the decoding
+ * would wipe both histories once, on the upgrade load, for exactly the users
+ * whose names the fix is for. `applyLoginIdentity` then records the corrected
+ * spelling, so the marker self-heals on that same activation.
  */
 function isIdentityChange(previous: string | null, identity: string): boolean {
   if (previous === null) return identity !== GUEST_IDENTITY
-  return previous !== identity
+  if (previous === identity) return false
+  return previous !== legacyMojibakeForm(identity)
 }
 
 /**

@@ -167,6 +167,47 @@ describe('applyLoginIdentity', () => {
     expect(useWorkspaceRetrievalHistoryStore.getState().history).toEqual([])
   })
 
+  test('a marker written with the OLD mangled spelling is the same person', () => {
+    // Correcting the JWT payload decoding (latin-1 -> UTF-8) changes what a
+    // non-ASCII identity string looks like: `كظدج` used to read as
+    // `ÙØ¸Ø¯Ø¬`, and that mangled form is what the previous build persisted.
+    // Treating the two as different would clear both histories once, on the
+    // upgrade load, for exactly the users the decoding fix is for.
+    const identity = 'كظدج'
+    // Derived, not typed: the mangled spelling contains bytes that do not
+    // survive being written as a source literal. This is literally what the
+    // old decoder returned — atob over the payload's base64.
+    const mangled = atob(Buffer.from(identity, 'utf8').toString('base64'))
+    expect(mangled).not.toBe(identity)
+    seedHistories()
+    stub.setItem(PREVIOUS_USER_KEY, mangled)
+
+    const changed = applyLoginIdentity(identity)
+
+    expect(changed).toBe(false)
+    expect(useWebuiRetrievalHistoryStore.getState().history).toHaveLength(1)
+    expect(useWorkspaceRetrievalHistoryStore.getState().history).toHaveLength(1)
+    // …and the marker self-heals to the corrected spelling on that same
+    // activation, so the comparison is needed exactly once.
+    expect(stub.getItem(PREVIOUS_USER_KEY)).toBe(identity)
+  })
+
+  test('a DIFFERENT non-ASCII user still clears', () => {
+    // The equivalence above must not collapse distinct names: it maps one
+    // spelling of ONE identity, not any pair of non-ASCII strings.
+    seedHistories()
+    stub.setItem(
+      PREVIOUS_USER_KEY,
+      atob(Buffer.from('كظدج', 'utf8').toString('base64'))
+    )
+
+    const changed = applyLoginIdentity('محمد')
+
+    expect(changed).toBe(true)
+    expect(useWorkspaceRetrievalHistoryStore.getState().history).toEqual([])
+    expect(stub.getItem(PREVIOUS_USER_KEY)).toBe('محمد')
+  })
+
   test('a NEWER client\'s history envelope is destroyed too, not diverted around', () => {
     // Rollback interaction: a v2 (future) envelope holds the previous
     // identity's conversations. The future-envelope guard would DIVERT the
