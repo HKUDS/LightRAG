@@ -6,6 +6,7 @@ import {
 } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { useBackendState } from '@/stores/state'
+import type { ApiKeyAlertCloseReason } from '@/components/ApiKeyAlert'
 
 /**
  * Credential probe for the workspace entry, shared by the shell (startup and
@@ -63,4 +64,26 @@ export function runCredentialProbe(): void {
       // Anything else (network failure, auth termination that already
       // navigated) is not an API-key problem: leave the dialog alone.
     })
+}
+
+/**
+ * React to the API-key dialog closing.
+ *
+ * Only a SAVE is re-verified — unconditionally, not just when the stored key
+ * changed: saving a blank or unchanged key leaves both `apiKey` and the
+ * backend message identical, so no value-gated trigger would ever reopen the
+ * dialog on a key that is still wrong.
+ *
+ * A plain DISMISSAL submitted nothing, so a probe could only reproduce the
+ * failure that opened the dialog — and the request that failure raises
+ * reopens it. Since the dialog is modal and its overlay covers the header,
+ * that left someone without a valid key unable to close it, log out or reach
+ * the welcome page: an inescapable modal. The dismissal is therefore allowed
+ * to stand; the next query re-requests the dialog if the server still
+ * rejects it on credential grounds.
+ */
+export function handleApiKeyDialogClose(reason?: ApiKeyAlertCloseReason): void {
+  if (reason !== 'save') return
+  useBackendState.getState().clear()
+  runCredentialProbe()
 }

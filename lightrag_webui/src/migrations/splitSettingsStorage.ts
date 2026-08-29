@@ -129,15 +129,54 @@ export function wasHistoryDroppedDuringMigration(): boolean {
   return historyDroppedDuringMigration
 }
 
+/**
+ * Write the legacy envelope, surviving an engine that charges the value it is
+ * about to REPLACE until the write completes. Every caller here SHRINKS the
+ * key — phase 2 strips the two migrated fields, `freeLegacyHistory` strips
+ * the history — so a quota rejection never means "the new value does not
+ * fit", only "old and new cannot be charged at once". Removing the key first
+ * settles that.
+ *
+ * The cost is a window in which the envelope is absent, and each caller
+ * accepts it against a worse alternative: for phase 2 the loss of the very
+ * history copy the split just placed (and by then every target key exists —
+ * rule 5 — so only the fields the split does NOT migrate, theme/language/
+ * apiKey, are exposed to a crash here); for `freeLegacyHistory` a migration
+ * that no reload can ever complete. `raw` is restored if the retry fails
+ * too, so no path can leave the browser with NO legacy envelope (a later run
+ * would read "no legacy data" and declare the split done over data it never
+ * migrated).
+ */
+function writeShrunkLegacyEnvelope(storage: Storage, payload: string, raw: string): void {
+  try {
+    storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, payload)
+    return
+  } catch (error) {
+    if (!isQuotaExceededError(error)) throw error
+  }
+  storage.removeItem(LEGACY_SETTINGS_STORAGE_KEY)
+  try {
+    storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, payload)
+  } catch (writeBackError) {
+    try {
+      // Restoring the exact bytes just removed always fits.
+      storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, raw)
+    } catch {
+      // Nothing further is possible; the error below is what gets recorded.
+    }
+    throw writeBackError
+  }
+}
+
 /** Phases 1+2 of the split (rules 4/5); `dropHistory` is the quota
  * degradation: the history copy is replaced with an empty one. */
 function writeTargetsAndClean(
   storage: Storage,
-  envelope: any,
-  normalized: any,
+  context: { raw: string; envelope: any; normalized: any },
   dropHistory: boolean,
   writtenKeys: Set<string>
 ): void {
+  const { envelope, normalized } = context
   // Phase 1 (rule 4/5): write every missing target key. JSON.stringify
   // drops `undefined` fields, so an envelope that somehow lacks a source
   // field simply lets the store fall back to its defaults on hydration.
@@ -190,13 +229,18 @@ function writeTargetsAndClean(
     normalized.languageUserSelected =
       typeof normalized.language === 'string' && normalized.language !== 'en'
   }
-  storage.setItem(
-    LEGACY_SETTINGS_STORAGE_KEY,
+  // Shrink-safe: this payload has just shed querySettings and the history,
+  // so on an engine that cannot replace a key in place the rejection is
+  // transient — and paying for it by discarding the history copy phase 1
+  // already placed would throw away data that provably fit.
+  writeShrunkLegacyEnvelope(
+    storage,
     JSON.stringify({
       ...envelope,
       state: normalized,
       version: SETTINGS_STORAGE_VERSION_AFTER_SPLIT
-    })
+    }),
+    context.raw
   )
 }
 
@@ -204,11 +248,11 @@ function writeTargetsAndClean(
  * success. */
 function tryWriteDegraded(
   storage: Storage,
-  context: { envelope: any; normalized: any },
+  context: { raw: string; envelope: any; normalized: any },
   writtenKeys: Set<string>
 ): unknown {
   try {
-    writeTargetsAndClean(storage, context.envelope, context.normalized, true, writtenKeys)
+    writeTargetsAndClean(storage, context, true, writtenKeys)
     return null
   } catch (error) {
     return error
@@ -242,29 +286,7 @@ function freeLegacyHistory(
     state: { ...context.normalized, retrievalHistory: undefined },
     version: LEGACY_SETTINGS_VERSION_CAP
   })
-  try {
-    storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, payload)
-  } catch (error) {
-    if (!isQuotaExceededError(error)) throw error
-    // An engine that checks the total BEFORE releasing the replaced value
-    // cannot shrink a key in place. Remove it first: the envelope is absent
-    // for exactly one statement, and the alternative is a migration that can
-    // never succeed on any reload.
-    storage.removeItem(LEGACY_SETTINGS_STORAGE_KEY)
-    try {
-      storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, payload)
-    } catch (writeBackError) {
-      // Never leave the browser with NO legacy envelope: a later run would
-      // read "no legacy data" and declare the split done over data it never
-      // migrated. Restoring the exact bytes just removed always fits.
-      try {
-        storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, context.raw)
-      } catch {
-        // Nothing further is possible; the error below is what gets recorded.
-      }
-      throw writeBackError
-    }
-  }
+  writeShrunkLegacyEnvelope(storage, payload, context.raw)
   delete context.normalized.retrievalHistory
   return true
 }
@@ -306,7 +328,7 @@ export function runSettingsStorageSplitMigration(
     const normalized = migrateLegacySettingsState(state, version)
 
     parsedContext = { raw, envelope, normalized }
-    writeTargetsAndClean(storage, envelope, normalized, false, writtenKeys)
+    writeTargetsAndClean(storage, parsedContext, false, writtenKeys)
   } catch (error) {
     // Quota degradation (product decision: the retrieval history is a
     // non-critical test-chat record). A legacy history near the quota cannot

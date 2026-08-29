@@ -115,3 +115,69 @@ describe('runCredentialProbe', () => {
     expect(probe.useCredentialProbeStore.getState().apiKeyDialogRequests).toBe(before)
   })
 })
+
+describe('handleApiKeyDialogClose', () => {
+  test('a DISMISSAL probes nothing, so the dialog it would reopen stays closed', async () => {
+    // Regression (inescapable modal): every close used to re-probe. The
+    // dialog is modal and its overlay covers the header, its only button
+    // saved, and a probe that fails REQUESTS the dialog again — so a user
+    // without a valid key could not close it, log out, or get back to the
+    // welcome page. A dismissal submits nothing, so its probe could only
+    // reproduce the failure that opened the dialog.
+    useBackendState.getState().setErrorMessage('Invalid API Key', 'API Key required')
+    const requestsBefore = probe.useCredentialProbeStore.getState().apiKeyDialogRequests
+    const callsBefore = verifySpy.mock.calls.length
+
+    probe.handleApiKeyDialogClose('dismiss')
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // The server was never asked, so nothing can request the dialog again…
+    expect(verifySpy.mock.calls.length).toBe(callsBefore)
+    expect(probe.useCredentialProbeStore.getState().apiKeyDialogRequests).toBe(
+      requestsBefore
+    )
+    // …and the message the dialog showed is left as it was.
+    expect(useBackendState.getState().message).toContain('Invalid API Key')
+  })
+
+  test('an undefined reason is treated as a dismissal, not a save', async () => {
+    const callsBefore = verifySpy.mock.calls.length
+
+    probe.handleApiKeyDialogClose()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(verifySpy.mock.calls.length).toBe(callsBefore)
+  })
+
+  test('a SAVE re-verifies, and a still-bad key reopens the dialog', async () => {
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const before = probe.useCredentialProbeStore.getState().apiKeyDialogRequests
+      verifySpy.mockImplementationOnce(apiKeyRejection)
+
+      probe.handleApiKeyDialogClose('save')
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(probe.useCredentialProbeStore.getState().apiKeyDialogRequests).toBe(before + 1)
+      expect(useBackendState.getState().message).toContain('Invalid API Key')
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
+  test('a SAVE that fixes the key clears the stale error and requests nothing', async () => {
+    useBackendState.getState().setErrorMessage('Invalid API Key', 'API Key required')
+    const before = probe.useCredentialProbeStore.getState().apiKeyDialogRequests
+    verifySpy.mockImplementationOnce(() => Promise.resolve())
+
+    probe.handleApiKeyDialogClose('save')
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(probe.useCredentialProbeStore.getState().apiKeyDialogRequests).toBe(before)
+    expect(useBackendState.getState().message).toBeNull()
+  })
+})

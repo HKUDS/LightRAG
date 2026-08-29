@@ -20,10 +20,18 @@ import {
  * server-side, matching what navigation stores after a guest logout) — so a
  * browser last used by a named user must never show that user's
  * conversations to a guest, in EITHER entry's history.
+ *
+ * A browser with NO stored identity yet is the one case where "differs" is
+ * not decidable from the marker alone; see `applyLoginIdentity` for what it
+ * can and cannot imply.
  */
 
 const PREVIOUS_USER_KEY = 'LIGHTRAG-PREVIOUS-USER'
 const TOKEN_STORAGE_KEY = 'LIGHTRAG-API-TOKEN'
+
+/** The identity a guest token asserts (its server-side `sub`), and the
+ * fallback for a token whose payload cannot be read. */
+const GUEST_IDENTITY = 'guest'
 
 /** The identity a token asserts: its JWT `sub`, or "guest" when unreadable
  * (only guest activations call this without knowing the name up front). */
@@ -37,14 +45,13 @@ export function loginIdentityFromToken(token: string): string {
   } catch {
     // Unparseable token: fall through to the guest fallback below.
   }
-  return 'guest'
+  return GUEST_IDENTITY
 }
 
 /**
  * Record `identity` as the browser's current user, clearing BOTH entries'
- * retrieval histories when it differs from the stored one (a missing stored
- * identity counts as different — e.g. anonymous guest use before the first
- * named login). Returns whether the histories were cleared.
+ * retrieval histories when it differs from the stored one. Returns whether
+ * the histories were cleared.
  */
 export function applyLoginIdentity(identity: string): boolean {
   let previous: string | null = null
@@ -54,7 +61,23 @@ export function applyLoginIdentity(identity: string): boolean {
     console.error('Failed to read previous user identity:', error)
   }
 
-  const identityChanged = previous !== identity
+  // A MISSING marker is the ABSENCE of evidence, not evidence of a change,
+  // and it survives only until this build's first activation — every
+  // activation path writes it. So it means one of exactly two things:
+  //
+  //   * a browser that never ran ANY build — both histories are empty and
+  //     clearing them is a no-op either way; or
+  //   * a browser upgrading from a build that wrote the marker ONLY on a
+  //     login-form submit or a logout. There, a NAMED user could not
+  //     accumulate history without also writing the marker, so a history
+  //     found beside a missing marker was written by guest use.
+  //
+  // An incoming guest is therefore the same identity that owns that history
+  // and must not destroy it — least of all on the one load where the storage
+  // split has just migrated it. An incoming NAMED user is a real transition
+  // (guest use before the first login) and still clears.
+  const identityChanged =
+    previous === null ? identity !== GUEST_IDENTITY : previous !== identity
   if (identityChanged) {
     // A different person (or a guest after a named user): neither entry may
     // show the previous identity's conversations.

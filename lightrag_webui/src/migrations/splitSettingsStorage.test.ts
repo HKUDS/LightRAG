@@ -498,19 +498,70 @@ describe('quota degradation under a byte budget', () => {
     expect(quotaStorage.removed).toEqual([])
   })
 
-  test('the copy LANDS and a later write hits the quota: the retry reclaims it', () => {
-    // The sequence that would loop forever without reclamation: writeIfAbsent
-    // preserves the oversized copy this run just made, so the outstanding
-    // write fails identically on this run and on every reload after it.
+  test('the copy LANDS and the cleanup hits the quota: the history is KEPT', () => {
+    // Regression: this used to reclaim the migrated copy — the one piece of
+    // data the split exists to carry across — and rewrite it EMPTY, even
+    // though it had provably fit. The copy is phase 1's last target and
+    // `writeIfAbsent` records a key only once its write returned, so a
+    // failure with the copy present pins the blame on the ONE write after
+    // it: the legacy-envelope cleanup. That payload is SMALLER than what it
+    // replaces (it sheds querySettings and the history), so the rejection is
+    // an engine that cannot shrink a key in place, not a shortage — removing
+    // the key first completes the split with nothing lost.
+    //
     // Budget calibrated so the history copy still fits (total 2908 B) while
-    // the cleanup write that follows it does not (needs 3025 B).
+    // the cleanup write that follows it does not (needs 3025 B); after the
+    // remove it needs only 1614 B.
     const quotaStorage = new ByteQuotaStorage(2950, false)
     quotaStorage.setItem(LEGACY_SETTINGS_STORAGE_KEY, legacyWithBigHistory())
 
     runSettingsStorageSplitMigration(quotaStorage)
 
-    expect(quotaStorage.removed).toEqual([WEBUI_RETRIEVAL_HISTORY_KEY])
-    expectCompletedWithEmptyHistory(quotaStorage)
+    const read = (key: string) => JSON.parse(quotaStorage.getItem(key)!)
+    // The legacy envelope was the key rewritten, so it is the only one removed…
+    expect(quotaStorage.removed).toEqual([LEGACY_SETTINGS_STORAGE_KEY])
+    // …the migrated history survived in full, and no degradation was claimed…
+    expect(read(WEBUI_RETRIEVAL_HISTORY_KEY).state.history).toEqual(bigHistory)
+    expect(wasHistoryDroppedDuringMigration()).toBe(false)
+    expect(getSettingsMigrationError()).toBeNull()
+    // …and the split still completed: every target exists and the legacy
+    // envelope is cleaned and bumped, so the next reload is a no-op.
+    expect(read(QUERY_SETTINGS_STORAGE_KEY).state.querySettings.mode).toBe('hybrid')
+    expect(read(WORKSPACE_RETRIEVAL_HISTORY_KEY).state.history).toEqual([])
+    expect(read(LEGACY_SETTINGS_STORAGE_KEY).version).toBe(
+      SETTINGS_STORAGE_VERSION_AFTER_SPLIT
+    )
+    expect(read(LEGACY_SETTINGS_STORAGE_KEY).state.retrievalHistory).toBeUndefined()
+  })
+
+  test('the cleanup stays impossible even after the remove: the raw envelope returns', () => {
+    // The other side of the shrink-safe write: when removing the key does
+    // NOT make room either (another origin ate the budget between the two
+    // statements), the exact bytes just removed go back. A run that left NO
+    // legacy envelope would let the NEXT run read "no legacy data" and
+    // declare the split done over fields it never migrated.
+    const quotaStorage = new ByteQuotaStorage(2950, false)
+    const raw = legacyWithBigHistory()
+    quotaStorage.setItem(LEGACY_SETTINGS_STORAGE_KEY, raw)
+    const realSetItem = quotaStorage.setItem.bind(quotaStorage)
+    // Reject every legacy-envelope write, including the post-remove retry;
+    // the restore of the original bytes must still be allowed through.
+    quotaStorage.setItem = (key: string, value: string) => {
+      if (key === LEGACY_SETTINGS_STORAGE_KEY && value !== raw) {
+        const error = new Error('quota exceeded (byte budget)')
+        error.name = 'QuotaExceededError'
+        throw error
+      }
+      realSetItem(key, value)
+    }
+
+    runSettingsStorageSplitMigration(quotaStorage)
+
+    // Rules 6/7: the failure is recorded so dependent stores refuse to
+    // hydrate and the entry offers a retry…
+    expect(getSettingsMigrationError()).not.toBeNull()
+    // …and the legacy envelope is back, byte for byte, rather than absent.
+    expect(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)).toBe(raw)
   })
 
   test('the FIRST target write already fails: the legacy history is freed', () => {

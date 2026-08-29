@@ -140,6 +140,33 @@ describe('applyLoginIdentity', () => {
     expect(stub.getItem(PREVIOUS_USER_KEY)).toBe('alice')
   })
 
+  test('a MISSING stored identity does NOT clear for an incoming GUEST', () => {
+    // Regression: the marker is missing on exactly one load — the first
+    // after an upgrade from a build that wrote it only on a login-form
+    // submit or a logout. In an auth-DISABLED deployment neither ever runs
+    // (guests bypass the form and have no logout button), so every such
+    // browser arrives here with a null marker and a guest identity. Treating
+    // that as a change destroyed both histories on the single load where the
+    // storage split had just finished migrating them.
+    //
+    // It is also unnecessary: on that older build a NAMED user could not
+    // accumulate history without writing the marker, so a history sitting
+    // beside a missing marker was written by guest use. The incoming guest
+    // owns it. (The named-user case above still clears — that one IS a
+    // transition.)
+    seedHistories()
+
+    const changed = applyLoginIdentity(loginIdentityFromToken(guestToken))
+
+    expect(changed).toBe(false)
+    expect(useWebuiRetrievalHistoryStore.getState().history).toHaveLength(1)
+    expect(useWorkspaceRetrievalHistoryStore.getState().history).toHaveLength(1)
+    // The marker is still committed, so the NEXT named login clears normally.
+    expect(stub.getItem(PREVIOUS_USER_KEY)).toBe('guest')
+    expect(applyLoginIdentity('alice')).toBe(true)
+    expect(useWorkspaceRetrievalHistoryStore.getState().history).toEqual([])
+  })
+
   test('a NEWER client\'s history envelope is destroyed too, not diverted around', () => {
     // Rollback interaction: a v2 (future) envelope holds the previous
     // identity's conversations. The future-envelope guard would DIVERT the

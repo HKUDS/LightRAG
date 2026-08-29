@@ -3,9 +3,9 @@ import { useTranslation } from 'react-i18next'
 import { ZapIcon, LogOutIcon } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import AppSettings from '@/components/AppSettings'
-import ApiKeyAlert from '@/components/ApiKeyAlert'
+import ApiKeyAlert, { type ApiKeyAlertCloseReason } from '@/components/ApiKeyAlert'
 import ErrorBoundary from '@/components/ErrorBoundary'
-import { useAuthStore, useBackendState } from '@/stores/state'
+import { useAuthStore } from '@/stores/state'
 import { getAuthStatus } from '@/api/lightrag'
 import { useIdentityEpochStore } from '@/lib/loginIdentity'
 import {
@@ -13,7 +13,11 @@ import {
   wasVersionCheckedThisPageLoad
 } from '@/lib/versionCheckCache'
 import { activateSessionFromAuthStatus } from './authBootstrap'
-import { runCredentialProbe, useCredentialProbeStore } from './credentialProbe'
+import {
+  handleApiKeyDialogClose,
+  runCredentialProbe,
+  useCredentialProbeStore
+} from './credentialProbe'
 import { entryHomeHref } from '@/lib/pathPrefix'
 import { navigationService } from '@/services/navigation'
 import WorkspaceQueryView from './WorkspaceQueryView'
@@ -88,15 +92,12 @@ export default function WorkspaceApp() {
   const apiKeyAlertOpen = apiKeyDialogRequests > dismissedDialogRequests
 
   const handleApiKeyAlertOpenChange = useCallback(
-    (open: boolean) => {
+    (open: boolean, reason?: ApiKeyAlertCloseReason) => {
       if (open) return // opening is driven by the probe's request counter
+      // Record the dismissal so the dialog stays closed until a NEW request;
+      // whether the close is worth re-verifying is the probe's decision.
       setDismissedDialogRequests(useCredentialProbeStore.getState().apiKeyDialogRequests)
-      // Re-validate on EVERY dialog close, not only when the stored key
-      // changed: saving a blank or unchanged key leaves both `apiKey` and the
-      // backend message identical, so no value-gated trigger would ever
-      // reopen the dialog. The probe requests it again on a bad result.
-      useBackendState.getState().clear()
-      runCredentialProbe()
+      handleApiKeyDialogClose(reason)
     },
     []
   )
