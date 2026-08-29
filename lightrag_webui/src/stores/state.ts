@@ -232,13 +232,30 @@ const formatTimestampToLocalString = (timestamp: number): string => {
   return `${localTime} (UTC${offsetSign}${offsetHours})`;
 };
 
+/**
+ * Read a JWT's claims.
+ *
+ * MUST use the same decoder as `isTokenLocallyValid` below. Bare `atob`
+ * rejects the `-`/`_` alphabet, so the two would disagree about the very
+ * same token: validation admits it, this returns `{}`, and the session runs
+ * with `username === null`, `isGuestMode === false` and no expiry. The
+ * username is the worst of those — `navigationService` only records
+ * LIGHTRAG-PREVIOUS-USER `if (currentUsername)`, so that user's logout
+ * writes no identity marker at all and the retrieval-history cleanup never
+ * fires for them, leaving their conversations to whoever logs in next.
+ *
+ * Whether a payload needs the url alphabet depends on its exact bytes,
+ * `exp` included — so it varies per token issuance for the SAME user, which
+ * is what made this intermittent rather than reproducible.
+ */
 const parseTokenPayload = (token: string): { sub?: string; role?: string; exp?: number } => {
   try {
     // JWT tokens are in the format: header.payload.signature
     const parts = token.split('.');
     if (parts.length !== 3) return {};
-    const payload = JSON.parse(atob(parts[1]));
-    return payload;
+    const decoded = decodeBase64Url(parts[1]);
+    if (decoded === null) return {};
+    return JSON.parse(decoded);
   } catch (e) {
     console.error('Error parsing token payload:', e);
     return {};

@@ -125,6 +125,37 @@ describe('initAuthState local validation', () => {
     expect(localStorage.getItem('LIGHTRAG-LAST-TOKEN-RENEWAL')).not.toBeNull()
   })
 
+  test('a base64url payload yields the CLAIMS, not a blank authenticated session', () => {
+    // Regression: validation used the url-safe decoder while the claims
+    // parser used bare `atob`, so the two disagreed about the SAME token —
+    // it was admitted, then read as `{}`. The session then ran with no
+    // username, and `navigationService` records LIGHTRAG-PREVIOUS-USER only
+    // `if (currentUsername)`: that user's logout wrote no identity marker at
+    // all, so the retrieval-history cleanup never fired for them and their
+    // conversations were left to whoever logged in next.
+    //
+    // Whether a payload needs the url alphabet depends on its exact bytes,
+    // `exp` included, so it varies per issuance for the SAME user — which is
+    // what made this intermittent. Hence the fixed vector below.
+    //
+    // The sub is ASCII on purpose: `atob` yields one character per BYTE, so
+    // a non-ASCII sub comes back mojibake even once it decodes. That is a
+    // separate defect from this one and is not what this test pins.
+    const token = jwt({ sub: '~~h', role: 'user', exp: 9999999999 })
+    const segment = token.split('.')[1]
+    // Only meaningful if the payload really needs the url alphabet.
+    expect(segment).toMatch(/[-_]/)
+    expect(() => atob(segment)).toThrow()
+
+    seed(token)
+    const state = stateModule.initAuthState()
+
+    expect(state.isAuthenticated).toBe(true)
+    expect(state.username).toBe('~~h')
+    expect(state.isGuestMode).toBe(false)
+    expect(state.tokenExpiresAt).toBe(9999999999 * 1000)
+  })
+
   test('a locally-valid guest token counts as a valid login (welcome page is skipped by it)', () => {
     seed(jwt({ sub: 'guest', role: 'guest', exp: futureExp }))
     const state = stateModule.initAuthState()

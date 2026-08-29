@@ -187,28 +187,40 @@ function hasWriteHeadroom(storage: Storage): boolean {
  * very history copy the split just placed (and by then every target key
  * exists — rule 5 — so only the fields the split does NOT migrate are
  * exposed to a crash here); for `freeLegacyHistory` a migration that no
- * reload can ever complete. `raw` goes back if the retry fails anyway — the
- * quota can shrink between the probe and the write — so no path leaves the
- * browser with NO legacy envelope.
+ * reload can ever complete.
+ *
+ * The write-back is a genuine LAST resort, not a second guarantee: it puts
+ * back MORE bytes than the payload that just failed, so it can only succeed
+ * if the store gained room in between. The probe above is what upholds the
+ * invariant; this is what covers a quota that shrank after it. It restores
+ * the value actually READ FROM THE KEY rather than the run's original `raw`
+ * — the ladder calls this twice, and after `freeLegacyHistory` the key holds
+ * the reduced envelope, so `raw` would be the wrong bytes and a needlessly
+ * large write. (No quota model reproduces that second removal today, since
+ * freeing the history leaves phase 2's write succeeding outright; the point
+ * is that this function is correct without depending on that.)
  */
-function writeShrunkLegacyEnvelope(storage: Storage, payload: string, raw: string): void {
+function writeShrunkLegacyEnvelope(storage: Storage, payload: string): void {
+  const removed = storage.getItem(LEGACY_SETTINGS_STORAGE_KEY)
   try {
     storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, payload)
     return
   } catch (error) {
     if (!isQuotaExceededError(error)) throw error
     // Nothing can be written at all: keep the envelope rather than trade it
-    // for a retry that cannot succeed and a restore that cannot either.
+    // for a retry that cannot succeed and a write-back that cannot either.
     if (!hasWriteHeadroom(storage)) throw error
   }
   storage.removeItem(LEGACY_SETTINGS_STORAGE_KEY)
   try {
     storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, payload)
   } catch (writeBackError) {
-    try {
-      storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, raw)
-    } catch {
-      // Nothing further is possible; the error below is what gets recorded.
+    if (removed !== null) {
+      try {
+        storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, removed)
+      } catch {
+        // Nothing further is possible; the error below is what gets recorded.
+      }
     }
     throw writeBackError
   }
@@ -218,7 +230,7 @@ function writeShrunkLegacyEnvelope(storage: Storage, payload: string, raw: strin
  * degradation: the history copy is replaced with an empty one. */
 function writeTargetsAndClean(
   storage: Storage,
-  context: { raw: string; envelope: any; normalized: any },
+  context: { envelope: any; normalized: any },
   dropHistory: boolean,
   writtenKeys: Set<string>
 ): void {
@@ -285,8 +297,7 @@ function writeTargetsAndClean(
       ...envelope,
       state: normalized,
       version: SETTINGS_STORAGE_VERSION_AFTER_SPLIT
-    }),
-    context.raw
+    })
   )
 }
 
@@ -294,7 +305,7 @@ function writeTargetsAndClean(
  * success. */
 function tryWriteDegraded(
   storage: Storage,
-  context: { raw: string; envelope: any; normalized: any },
+  context: { envelope: any; normalized: any },
   writtenKeys: Set<string>
 ): unknown {
   try {
@@ -324,7 +335,7 @@ function tryWriteDegraded(
  */
 function freeLegacyHistory(
   storage: Storage,
-  context: { raw: string; envelope: any; normalized: any }
+  context: { envelope: any; normalized: any }
 ): boolean {
   if (context.normalized.retrievalHistory === undefined) return false
   const payload = JSON.stringify({
@@ -332,7 +343,7 @@ function freeLegacyHistory(
     state: { ...context.normalized, retrievalHistory: undefined },
     version: LEGACY_SETTINGS_VERSION_CAP
   })
-  writeShrunkLegacyEnvelope(storage, payload, context.raw)
+  writeShrunkLegacyEnvelope(storage, payload)
   delete context.normalized.retrievalHistory
   return true
 }
@@ -343,7 +354,7 @@ export function runSettingsStorageSplitMigration(
   migrationError = null
   historyDroppedDuringMigration = false
   if (!storage) return
-  let parsedContext: { raw: string; envelope: any; normalized: any } | null = null
+  let parsedContext: { envelope: any; normalized: any } | null = null
   // Target keys THIS run created; the quota retry may reclaim only those.
   const writtenKeys = new Set<string>()
   try {
@@ -373,7 +384,7 @@ export function runSettingsStorageSplitMigration(
     // Rule 1: reuse the existing chain to normalize to v21 before splitting.
     const normalized = migrateLegacySettingsState(state, version)
 
-    parsedContext = { raw, envelope, normalized }
+    parsedContext = { envelope, normalized }
     writeTargetsAndClean(storage, parsedContext, false, writtenKeys)
   } catch (error) {
     // Quota degradation (product decision: the retrieval history is a
