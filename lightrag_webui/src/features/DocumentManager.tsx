@@ -757,9 +757,17 @@ export default function DocumentManager() {
     sort_direction: query.sortDirection
   }), [])
 
-  // Utility function to update component state
-  const updateComponentState = useCallback((response: any) => {
-    setPagination(response.pagination);
+  // Utility function to update component state.
+  //
+  // `page` is passed in rather than read off the response: the displayed page
+  // number is what THIS request asked for (or an explicit boundary correction),
+  // never what the response echoed back. Request serialization plus the
+  // requestVersion guard make a stale response unreachable today, so this
+  // changes no behaviour; deriving the page locally means neither a backend
+  // echo bug nor a future relaxation of either layer can surface as a page
+  // number rolling backwards under the user.
+  const updateComponentState = useCallback((response: any, page: number) => {
+    setPagination({ ...response.pagination, page });
     setCurrentPageDocs(response.documents);
     setStatusCounts(response.status_counts);
 
@@ -867,7 +875,9 @@ export default function DocumentManager() {
         if (response.pagination.total_count < query.pageSize && query.pageSize !== 10) {
           handlePageSizeChange(10);
         } else {
-          setPagination(response.pagination);
+          // Manual refresh always requests page 1; same rule as
+          // updateComponentState — the page shown is the page asked for.
+          setPagination({ ...response.pagination, page: 1 });
           setCurrentPageDocs(response.documents);
           setStatusCounts(response.status_counts);
 
@@ -906,7 +916,10 @@ export default function DocumentManager() {
             if (!isMountedRef.current || isStaleRequest()) return;
 
             setPageByStatus(prev => ({ ...prev, [query.statusFilter]: lastPage }));
-            updateComponentState(lastPageResponse);
+            // Explicit: pageByStatus is only read when the status filter
+            // changes, so this call is the only thing moving pagination.page
+            // to the corrected page.
+            updateComponentState(lastPageResponse, lastPage);
             return;
           }
         }
@@ -916,7 +929,7 @@ export default function DocumentManager() {
             ? prev
             : { ...prev, [query.statusFilter]: pageToFetch }
         ));
-        updateComponentState(response);
+        updateComponentState(response, pageToFetch);
       }
 
     } catch (err) {
