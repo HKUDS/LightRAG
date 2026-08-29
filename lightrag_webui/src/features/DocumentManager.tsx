@@ -952,17 +952,28 @@ export default function DocumentManager() {
         // it below.
 
         if (errorClassification.shouldShowToast) {
-          // One notice, not one per failure. A backend that is down is polled
-          // for as long as the tab is open (capped by the breaker's backoff at
-          // roughly one probe a minute), and nothing else in the UI reports it
-          // — a failed /health only feeds the API key alert — so going silent
-          // would leave the list stale without saying so.
+          // One notice for an ongoing outage, not one per failed poll. Every
+          // retryable failure means the list is stale and staying stale, so the
+          // notice stands until a response clears it (fetchPage dismisses it on
+          // success). StatusIndicator's red dot covers the plain "backend is
+          // unreachable" case, but not this one: it tracks /health, so a
+          // backend that answers /health while /documents/paginated keeps
+          // failing shows green over a frozen list, and it is not rendered at
+          // all when the user turns health checks off.
           //
-          // Read AFTER the breaker update above: a permanent 4xx closes the
-          // breaker, and that toast should auto-dismiss like any other.
+          // The stable id alone is NOT enough: it merges into a toast that is
+          // still on screen, and the default 4s lifetime always expires before
+          // the next poll (5s at its fastest, 30s once health drops). Every
+          // failure would create a fresh toast, which is the flood this is
+          // meant to remove. Gating persistence on the breaker being OPEN had
+          // the same hole for the failures that precede the threshold.
+          //
+          // A permanent 4xx is not an outage — the backend answered, and the
+          // breaker has just been cleared above — so it keeps the ordinary
+          // auto-dismissing toast.
           toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }), {
             id: DOCUMENT_REFRESH_FAILURE_TOAST_ID,
-            duration: circuitBreakerRef.current.isOpen ? Infinity : undefined
+            duration: errorClassification.shouldRetry ? Infinity : undefined
           });
         }
       }
