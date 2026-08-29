@@ -1665,8 +1665,9 @@ async def _rebuild_from_extraction_result(
             timestamp,
             file_path,
         )
-        # If JSON parsing yielded results, use them
-        if nodes or edges:
+        # A successful parse (tolerant_load_json_dict's own non-empty-dict
+        # signal) is accepted even when it legitimately yields no nodes/edges.
+        if nodes or edges or tolerant_load_json_dict(extraction_result):
             return nodes, edges
         # Otherwise fall through to text-based parsing
 
