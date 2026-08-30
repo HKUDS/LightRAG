@@ -290,6 +290,12 @@ class TestBundleValidation:
                 b'<svg xmlns="http://www.w3.org/2000/svg"', id="attrs-no-close"
             ),
             pytest.param(b"<!-- brand mark --><svg", id="prologue-then-no-close"),
+            # A `>` INSIDE a quoted attribute value is not the tag's own: XML
+            # permits it there, so these tags never close — and they fit the
+            # sniff window whole, so nothing later can rescue them.
+            pytest.param(b'<svg title=">', id="gt-inside-double-quotes"),
+            pytest.param(b"<svg title='>'", id="gt-inside-single-quotes"),
+            pytest.param(b'<svg a=">" b="', id="gt-quoted-then-unterminated"),
         ],
     )
     def test_xml_without_svg_root_is_rejected(self, tmp_path, content):
@@ -320,6 +326,13 @@ class TestBundleValidation:
             # self-closing element, which is exactly what tightening the
             # slash check must NOT break.
             pytest.param(b'<svg xmlns="http://www.w3.org/2000/svg"/>', id="empty-root"),
+            # The other side of the quote tracking: a literal `>` in an
+            # attribute value is legal XML, and the tag's real `>` follows it.
+            pytest.param(
+                b'<svg data-note="a>b" xmlns="http://www.w3.org/2000/svg">'
+                b"<rect/></svg>",
+                id="gt-in-attribute-value-then-real-close",
+            ),
         ],
     )
     def test_real_svg_variants_are_accepted(self, tmp_path, content):

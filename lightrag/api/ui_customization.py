@@ -145,6 +145,30 @@ def locales_without_chrome_translation(locales: Iterable[str]) -> list[str]:
 _SVG_SNIFF_WINDOW = 4096
 
 
+def _start_tag_closes(after: bytes) -> bool:
+    """Whether the ``<svg`` start tag's OWN ``>`` appears in ``after``.
+
+    Quote state has to be tracked rather than searching for any ``>``: XML
+    permits a literal ``>`` inside an attribute value, so ``<svg title=">``
+    contains one while its tag never closes at all — and a file that short
+    fits the sniff window whole, so nothing later can rescue it.
+
+    This establishes that the root element opens AND closes. It is not a
+    well-formedness check on the rest of the file, which is the renderer's
+    business.
+    """
+    quote = 0
+    for byte in after:
+        if quote:
+            if byte == quote:
+                quote = 0
+        elif byte in (0x22, 0x27):  # " and '
+            quote = byte
+        elif byte == 0x3E:  # >
+            return True
+    return False
+
+
 def _has_svg_root(head: bytes, truncated: bool) -> bool:
     """Whether ``head`` opens an ``<svg>`` element, skipping any XML
     declaration, comments, doctype and processing instructions before it.
@@ -173,11 +197,9 @@ def _has_svg_root(head: bytes, truncated: bool) -> bool:
             if after == b"":
                 return truncated
             if after[:1].isspace():
-                # Attributes follow, and the start tag still has to close.
-                # Any ``>`` proves it does: XML permits a literal ``>`` inside
-                # an attribute value, but one there implies the tag's own ``>``
-                # comes later still.
-                return b">" in after or truncated
+                # Attributes follow, and the start tag still has to close —
+                # on an UNQUOTED ``>``; see `_start_tag_closes`.
+                return _start_tag_closes(after) or truncated
             # ``<svgx…``: a different element name, not an SVG root.
             return False
         # Skip one prologue node; anything else means this is not an SVG.
