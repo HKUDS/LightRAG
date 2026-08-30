@@ -977,4 +977,32 @@ describe('a shed envelope stamped POST-SPLIT still requires acceptance', () => {
     expect(accepted.state.theme).toBe('dark')
     expect(accepted.state.language).toBe('zh')
   })
+
+  test('a STRICTLY future envelope is rule 3\'s, marker or not', () => {
+    // The bound on reading the marker early. Refusing is not where rule 3
+    // ends: the refusal routes the user to `acceptSettingsDataLoss`, which
+    // WRITES — on a newer client's envelope it would rewrite those bytes to
+    // strip a field this build does not own, and it would do so INSTEAD of
+    // the future-envelope handling such an envelope is supposed to get.
+    // A marker above this build's own version is the newer client's to
+    // report, in its own build.
+    storage.setItem(
+      LEGACY_SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        state: { theme: 'dark' },
+        version: SETTINGS_STORAGE_VERSION_AFTER_SPLIT + 1,
+        [SETTINGS_LOST_MARKER_KEY]: true
+      })
+    )
+    const before = storage.getItem(LEGACY_SETTINGS_STORAGE_KEY)
+
+    runSettingsStorageSplitMigration(storage)
+
+    // Rule 3, unchanged: nothing read into a decision, nothing written…
+    expect(getSettingsMigrationError()).toBeNull()
+    expect(storage.getItem(LEGACY_SETTINGS_STORAGE_KEY)).toBe(before)
+    expect(storage.getItem(QUERY_SETTINGS_STORAGE_KEY)).toBeNull()
+    // …and the envelope still reaches the guard that actually owns it.
+    expect(hasFutureSettingsEnvelope(storage)).toBe(true)
+  })
 })

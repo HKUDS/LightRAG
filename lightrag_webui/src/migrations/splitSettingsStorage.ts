@@ -20,7 +20,13 @@
  *  2. The chain lives in a pure module so importing it here cannot create or
  *     hydrate the very store being split.
  *  3. version > cap (rollback-then-upgrade, unknown future): nothing is read,
- *     cleaned, or overwritten; new keys start from defaults.
+ *     cleaned, or overwritten; new keys start from defaults. The ONE field
+ *     still consulted at a version past the cap is the quota loss marker
+ *     (rule 9), and only up to the version this build itself writes (22),
+ *     because "nothing left to migrate" and "part of it is gone" are
+ *     different answers and the second outranks the first. A STRICTLY future
+ *     envelope (> 22) is exempt even from that: it belongs to the newer
+ *     client that wrote it, and `hasFutureSettingsEnvelope` handles it.
  *  4. Migration values are written ONLY for target keys that do not exist;
  *     an existing new key always wins and is never overwritten by old data.
  *  5. ALL new keys are written first; only then are the migrated fields
@@ -36,6 +42,11 @@
  *  8. Both entries run this migration unconditionally; the /workspace entry
  *     may write ALL target keys here (runtime writes to
  *     query-settings-storage remain forbidden for it).
+ *  9. An envelope the quota forced this code to shed state from carries the
+ *     loss marker, and no run may proceed over it — regardless of whether
+ *     there is anything left to migrate, since a shed rung inherits the
+ *     version of the payload it replaced and phase 2's is already v22. Only
+ *     `acceptSettingsDataLoss`, which only a person calls, clears it.
  *
  * No locks and no cross-tab coordination are needed: the target keys are
  * fixed, every executor writes only missing keys, a present key is
@@ -519,6 +530,8 @@ export function runSettingsStorageSplitMigration(
     }
     if (!envelope || typeof envelope !== 'object') return
 
+    const version = typeof envelope.version === 'number' ? envelope.version : 0
+
     // BEFORE the version check, deliberately. A shed rung carries the
     // version of the payload it replaced, so a ladder that ran from PHASE 2
     // leaves a marked envelope stamped 22 — already past the cap. Asking
@@ -526,16 +539,26 @@ export function runSettingsStorageSplitMigration(
     // post-split" and return clean, and the reload after capacity came back
     // would hydrate the partial settings with no error and no acceptance:
     // exactly the silent loss the marker exists to prevent, reintroduced by
-    // the ordering alone. Refusing here touches NOTHING, so it stays within
-    // rule 3's "never read, clean or overwrite" for an unknown-version
-    // envelope too. `acceptSettingsDataLoss` is the only way past it, and
-    // only a person calls that.
-    if (envelope[SETTINGS_LOST_MARKER] === true) {
+    // the ordering alone. `acceptSettingsDataLoss` is the only way past it,
+    // and only a person calls that.
+    //
+    // Bounded to the versions this build itself writes, because refusing is
+    // NOT where rule 3 ends. The refusal routes the user to the acceptance
+    // action, and `acceptSettingsDataLoss` WRITES: on a strictly future
+    // envelope it would rewrite a newer client's bytes to strip a field this
+    // build does not own, and it would do so INSTEAD of the future-envelope
+    // handling (`hasFutureSettingsEnvelope`) that such an envelope is
+    // supposed to get. The marker on a v23 envelope is the newer client's to
+    // report, in its own build. Nothing writes that combination today; the
+    // bound is what keeps it from becoming a rule 3 violation if anything
+    // ever does.
+    if (
+      version <= SETTINGS_STORAGE_VERSION_AFTER_SPLIT &&
+      envelope[SETTINGS_LOST_MARKER] === true
+    ) {
       migrationError = new SettingsDataLostError()
       return
     }
-
-    const version = typeof envelope.version === 'number' ? envelope.version : 0
     if (version > LEGACY_SETTINGS_VERSION_CAP) {
       // Rule 3. Includes our own post-split version (22): nothing left to
       // migrate. Anything higher is unknown — never read, clean or overwrite.
