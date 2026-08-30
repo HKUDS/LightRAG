@@ -279,6 +279,17 @@ class TestBundleValidation:
                 b'<?xml version="1.0" encoding="UTF-8"?>\n<svg/nope>',
                 id="declaration-then-slashed-non-root",
             ),
+            # An UNCLOSED start tag in a file that fits entirely in the sniff
+            # window. There is no "rest of the file" for the `>` to be in, so
+            # these have no root element and must fail startup rather than be
+            # served for a year as an immutable image/svg+xml.
+            pytest.param(b"<svg", id="bare-name-no-close"),
+            pytest.param(b"<svg ", id="name-and-space-no-close"),
+            pytest.param(b"<svg/", id="trailing-slash-no-close"),
+            pytest.param(
+                b'<svg xmlns="http://www.w3.org/2000/svg"', id="attrs-no-close"
+            ),
+            pytest.param(b"<!-- brand mark --><svg", id="prologue-then-no-close"),
         ],
     )
     def test_xml_without_svg_root_is_rejected(self, tmp_path, content):
@@ -316,6 +327,30 @@ class TestBundleValidation:
         (bundle / "assets" / "logo.svg").write_bytes(content)
         snapshot = load_ui_customization_snapshot(bundle)
         assert snapshot.locales["en"].logo_asset_id == "brand-logo"
+        logo = next(
+            asset
+            for asset in snapshot.assets.values()
+            if asset.asset_id == "brand-logo"
+        )
+        assert logo.mime == "image/svg+xml"
+
+    def test_start_tag_past_the_sniff_window_is_still_accepted(self, tmp_path):
+        # The one licence for an unclosed start tag: the file really is longer
+        # than the window and the `>` lies past it. Requiring a close here
+        # would reject a legitimate SVG behind a long prologue, so the
+        # truncation tolerance has to survive the tightening above.
+        from lightrag.api.ui_customization import _SVG_SNIFF_WINDOW
+
+        comment = b"<!--" + b"x" * (_SVG_SNIFF_WINDOW - 11) + b"-->"
+        content = comment + b'<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'
+        # The window ends exactly after the element NAME: no delimiter, no
+        # `>`, nothing but the promise that the file continues.
+        assert content[:_SVG_SNIFF_WINDOW].endswith(b"<svg")
+        assert len(content) > _SVG_SNIFF_WINDOW
+
+        bundle = make_bundle(tmp_path)
+        (bundle / "assets" / "logo.svg").write_bytes(content)
+        snapshot = load_ui_customization_snapshot(bundle)
         logo = next(
             asset
             for asset in snapshot.assets.values()

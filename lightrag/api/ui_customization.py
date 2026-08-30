@@ -140,30 +140,46 @@ def locales_without_chrome_translation(locales: Iterable[str]) -> list[str]:
     return sorted(locale for locale in locales if chrome_language_for(locale) is None)
 
 
-def _has_svg_root(head: bytes) -> bool:
+# How much of a logo is examined for its root element. A start tag can sit
+# behind an arbitrarily long prologue, so the window may cut one in half.
+_SVG_SNIFF_WINDOW = 4096
+
+
+def _has_svg_root(head: bytes, truncated: bool) -> bool:
     """Whether ``head`` opens an ``<svg>`` element, skipping any XML
-    declaration, comments, doctype and processing instructions before it."""
+    declaration, comments, doctype and processing instructions before it.
+
+    The start tag must be CLOSED — ``<svg>``, ``<svg/>``, or ``<svg …>`` — and
+    ``truncated`` is the only licence to accept one that is not. It says
+    ``head`` is a prefix of a larger file, so the missing ``>`` may simply lie
+    past the window; when the whole file fits in the window there is no
+    "later" and an unclosed tag is exactly what it looks like — a file with no
+    root element, which must fail startup rather than be served for a year as
+    an immutable ``image/svg+xml``.
+    """
     rest = head
     while True:
         rest = rest.lstrip(b" \t\r\n")
-        if (
-            rest.startswith(b"<svg")
-            and (
-                len(rest) == 4
-                or rest[4:5].isspace()
-                or rest[4:5] == b">"
-                # A slash after the name opens a root only as the ``/>`` of an
-                # empty element. ``<svg/anything>`` — or even ``<svg/ >``, since
-                # XML allows nothing between the two — is not well-formed and has
-                # no root at all; accepting any slash served such a file as
-                # image/svg+xml under an immutable cache header. The empty
-                # ``rest[5:6]`` is the same truncation tolerance the bare ``<svg``
-                # case gets: ``head`` is a 4 KiB slice and the ``>`` may lie past
-                # its end.
-                or (rest[4:5] == b"/" and rest[5:6] in (b"", b">"))
-            )
-        ):
-            return True
+        if rest.startswith(b"<svg"):
+            after = rest[4:]
+            if after.startswith(b">") or after.startswith(b"/>"):
+                return True
+            if after.startswith(b"/"):
+                # A slash opens a root only as the ``/>`` of an empty element.
+                # ``<svg/anything>`` — or even ``<svg/ >``, since XML allows
+                # nothing between the two — is not well-formed and has no root
+                # at all. A bare trailing ``/`` is an unclosed tag.
+                return truncated and after == b"/"
+            if after == b"":
+                return truncated
+            if after[:1].isspace():
+                # Attributes follow, and the start tag still has to close.
+                # Any ``>`` proves it does: XML permits a literal ``>`` inside
+                # an attribute value, but one there implies the tag's own ``>``
+                # comes later still.
+                return b">" in after or truncated
+            # ``<svgx…``: a different element name, not an SVG root.
+            return False
         # Skip one prologue node; anything else means this is not an SVG.
         if rest.startswith(b"<!--"):
             end = rest.find(b"-->", 4)
@@ -193,8 +209,10 @@ def _sniff_logo_mime(content: bytes, path_label: str) -> str:
     # not an image, and accepting it would serve an unrenderable logo with an
     # immutable image/svg+xml cache header (and contradict the fail-fast
     # promise this function's error message makes).
-    head = content[:4096].lstrip(b"\xef\xbb\xbf \t\r\n")
-    if _has_svg_root(head):
+    head = content[:_SVG_SNIFF_WINDOW].lstrip(b"\xef\xbb\xbf \t\r\n")
+    # Truncation is a property of the FILE, not of `head`: the lstrip above
+    # can shorten the slice without any bytes having been cut off the end.
+    if _has_svg_root(head, truncated=len(content) > _SVG_SNIFF_WINDOW):
         return "image/svg+xml"
     raise UICustomizationError(
         f"logo {path_label!r}: content is not PNG, JPEG, WebP or SVG "
