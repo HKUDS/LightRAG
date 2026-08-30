@@ -244,7 +244,7 @@ const PropertyRow = ({
       </span>:
       <Text
         className="hover:bg-primary/20 rounded p-1 overflow-hidden text-ellipsis"
-        tooltipClassName="max-w-96 -translate-x-13"
+        tooltipClassName="max-w-[min(24rem,calc(100vw-2rem))] -translate-x-13"
         text={formattedValue}
         tooltip={formattedTooltip}
         side="left"

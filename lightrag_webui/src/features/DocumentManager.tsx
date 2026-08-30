@@ -1792,7 +1792,7 @@ export default function DocumentManager() {
                                         {getDisplayFileName(doc, 30)}
                                       </div>
                                     </TooltipTrigger>
-                                    <TooltipContent side="top" className="max-w-2xl">
+                                    <TooltipContent side="top" className="max-w-[min(42rem,calc(100vw-2rem))]">
                                       {doc.file_path}
                                     </TooltipContent>
                                   </Tooltip>
@@ -1805,7 +1805,7 @@ export default function DocumentManager() {
                                       {doc.id}
                                     </div>
                                   </TooltipTrigger>
-                                  <TooltipContent side="top" className="max-w-2xl">
+                                  <TooltipContent side="top" className="max-w-[min(42rem,calc(100vw-2rem))]">
                                     {doc.file_path}
                                   </TooltipContent>
                                 </Tooltip>
@@ -1818,7 +1818,7 @@ export default function DocumentManager() {
                                     {doc.content_summary}
                                   </div>
                                 </TooltipTrigger>
-                                <TooltipContent side="top" className="max-w-2xl">
+                                <TooltipContent side="top" className="max-w-[min(42rem,calc(100vw-2rem))]">
                                   {doc.content_summary}
                                 </TooltipContent>
                               </Tooltip>

@@ -33,7 +33,6 @@ export interface CustomizedContent {
   welcomeMarkdown: string
   queryEmptyMarkdown: string
   brandTitle: string
-  brandDescription: string | null
   /** Login-page blurb; empty when the bundle declares none (or no bundle). */
   loginMarkdown: string
   /** The single user-agreement document, or null when none is declared. */
@@ -118,7 +117,6 @@ export function useCustomizedContent(
       welcomeMarkdown: '',
       queryEmptyMarkdown: '',
       brandTitle: '',
-      brandDescription: null,
       loginMarkdown: '',
       agreementsMarkdown: null,
       consentRequired: false,
@@ -137,7 +135,6 @@ export function useCustomizedContent(
       welcomeMarkdown: snapshot.welcome?.content ?? '',
       queryEmptyMarkdown: snapshot.query_empty?.content ?? '',
       brandTitle: resolveBrandTitle(snapshot.brand.title, authStatusTitle),
-      brandDescription: snapshot.brand.description ?? null,
       loginMarkdown: snapshot.login?.content ?? '',
       agreementsMarkdown: snapshot.agreements?.content ?? null,
       consentRequired: snapshot.consent_required === true,
@@ -155,7 +152,6 @@ export function useCustomizedContent(
     welcomeMarkdown: t('workspace.welcome.defaultMarkdown'),
     queryEmptyMarkdown: t('workspace.queryEmpty.defaultMarkdown'),
     brandTitle: resolveBrandTitle(snapshot?.brand?.title, authStatusTitle),
-    brandDescription: snapshot?.brand?.description ?? null,
     // No bundle, or a hard failure: no deployment-specific agreement text
     // exists to consent TO, so the gate stays off. Fail-open is the only
     // correct end state here — a login page nobody can get past because the

@@ -100,7 +100,7 @@ export default function SiteHeader() {
                 )}
               </a>
             </TooltipTrigger>
-            {webuiTitle && webuiDescription && (
+            {webuiDescription && (
               <TooltipContent side="bottom">
                 {webuiDescription}
               </TooltipContent>
