@@ -137,6 +137,8 @@ from lightrag.namespace import NameSpace
 from lightrag.chunker import chunking_by_token_size
 from lightrag.operate import (
     KGRebuildReport,
+    _attach_token_usage,
+    _role_supports_token_tracker,
     _truncate_vdb_content,
     collect_kg_merge_candidates,
     extract_entities,
@@ -189,6 +191,7 @@ from lightrag.utils import (
     TokenLimitTruncationTally,
     LLM_TRUNCATION_METADATA_KEY,
     merge_truncation_metadata,
+    TokenTracker,
 )
 from lightrag.types import KnowledgeGraph
 from dotenv import load_dotenv
@@ -1204,6 +1207,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         states = getattr(self, "_role_llm_states", None) or {}
         global_config["role_llm_funcs"] = {
             spec.name: states[spec.name].wrapped if spec.name in states else None
+            for spec in ROLES
+        }
+        # Whether each role's bound LLM function accepts a ``token_tracker``
+        # kwarg at all -- see ``_wrap_llm_role_func`` in llm_roles.py for why
+        # this must be checked before ever passing that kwarg: most bindings
+        # forward unrecognized kwargs straight into their SDK client call.
+        global_config["role_supports_token_tracker"] = {
+            spec.name: bool(states[spec.name].metadata.get("supports_token_tracker"))
+            if spec.name in states
+            else False
             for spec in ROLES
         }
         global_config["llm_cache_identities"] = {
@@ -4241,15 +4254,20 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     global_config["role_llm_funcs"]["query"],
                     _priority=DEFAULT_SUMMARY_PRIORITY,
                 )
+                bypass_token_tracker = TokenTracker()
 
                 param.stream = True if param.stream is None else param.stream
-                response = await use_llm_func(
-                    query.strip(),
+                bypass_llm_kwargs: dict[str, Any] = dict(
                     system_prompt=system_prompt,
                     history_messages=param.conversation_history,
                     enable_cot=True,
                     stream=param.stream,
                 )
+                if _role_supports_token_tracker(global_config, "query"):
+                    bypass_llm_kwargs["token_tracker"] = bypass_token_tracker
+                response = await use_llm_func(query.strip(), **bypass_llm_kwargs)
+                bypass_metadata: dict[str, Any] = {}
+                _attach_token_usage({"metadata": bypass_metadata}, bypass_token_tracker)
                 # isinstance, not exact type: a truncated non-streaming
                 # response arrives as TruncatedResponse (a str subclass) and
                 # must not be misclassified as a streaming iterator.
@@ -4258,7 +4276,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         "status": "success",
                         "message": "Bypass mode LLM non streaming response",
                         "data": {},
-                        "metadata": {},
+                        "metadata": bypass_metadata,
                         "llm_response": {
                             "content": response,
                             "response_iterator": None,
@@ -4271,7 +4289,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         "status": "success",
                         "message": "Bypass mode LLM streaming response",
                         "data": {},
-                        "metadata": {},
+                        "metadata": bypass_metadata,
                         "llm_response": {
                             "content": None,
                             "response_iterator": response,
