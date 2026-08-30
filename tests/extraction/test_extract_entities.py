@@ -176,3 +176,55 @@ async def test_gleaning_guard_disabled_when_max_tokens_zero(monkeypatch):
 
     # Guard disabled → gleaning still runs even with tight projected input.
     assert llm_func.await_count == 2
+
+
+class CountingTokenizer(DummyTokenizer):
+    """DummyTokenizer that records every string passed to encode()."""
+
+    def __init__(self):
+        self.encoded: list[str] = []
+
+    def encode(self, content: str):
+        self.encoded.append(content)
+        return super().encode(content)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gleaning_guard_encodes_system_prompt_once(monkeypatch):
+    """The gleaning token guard must not re-encode the chunk-invariant
+    system prompt (which embeds the multi-thousand-token examples block)
+    for every chunk — it is constant for the whole extraction run, so it
+    is encoded exactly once regardless of chunk count."""
+    from lightrag.operate import extract_entities
+
+    monkeypatch.setenv("MAX_EXTRACT_INPUT_TOKENS", "999999")
+
+    inner = CountingTokenizer()
+    global_config = _make_global_config(entity_extract_max_gleaning=1)
+    global_config["tokenizer"] = Tokenizer("counting", inner)
+    llm_func = global_config["llm_model_func"]
+    llm_func.return_value = _EXTRACTION_RESULT
+
+    chunks = {
+        f"chunk-00{i}": {
+            "tokens": 16,
+            "content": f"Test content number {i}.",
+            "full_doc_id": "doc-001",
+            "chunk_order_index": i - 1,
+        }
+        for i in (1, 2, 3)
+    }
+
+    await extract_entities(
+        chunks=chunks,
+        global_config=global_config,
+    )
+
+    # All 3 chunks ran initial extraction + gleaning.
+    assert llm_func.await_count == 6
+
+    # The system prompt is the longest string fed to the tokenizer; it must
+    # be encoded exactly once for the whole run, not once per chunk.
+    longest = max(inner.encoded, key=len)
+    assert sum(1 for s in inner.encoded if s == longest) == 1

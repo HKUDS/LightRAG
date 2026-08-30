@@ -4041,6 +4041,34 @@ async def extract_entities(
             max_entity_records=max_entity_records,
         )
 
+    # The system prompt (and, in JSON mode, the continue prompt) is built
+    # solely from context_base, which is fixed for the whole extraction run.
+    # Format them once and precompute the token counts here instead of
+    # re-encoding these strings — the system prompt embeds the multi-
+    # thousand-token examples block — once per chunk in the gleaning guard.
+    if use_json_extraction:
+        entity_extraction_system_prompt = PROMPTS[
+            "entity_extraction_json_system_prompt"
+        ].format(**context_base)
+        entity_continue_extraction_user_prompt = PROMPTS[
+            "entity_continue_extraction_json_user_prompt"
+        ].format(**context_base)
+        gleaning_invariant_tokens = (
+            len(extract_tokenizer.encode(entity_extraction_system_prompt))
+            + len(extract_tokenizer.encode(entity_continue_extraction_user_prompt))
+            if extract_tokenizer is not None
+            else 0
+        )
+    else:
+        entity_extraction_system_prompt = PROMPTS[
+            "entity_extraction_system_prompt"
+        ].format(**context_base)
+        gleaning_invariant_tokens = (
+            len(extract_tokenizer.encode(entity_extraction_system_prompt))
+            if extract_tokenizer is not None
+            else 0
+        )
+
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
 
@@ -4106,9 +4134,6 @@ async def extract_entities(
 
         if use_json_extraction:
             # JSON mode: use JSON prompts and pass entity_extraction flag to LLM provider
-            entity_extraction_system_prompt = PROMPTS[
-                "entity_extraction_json_system_prompt"
-            ].format(**context_base)
             entity_extraction_user_prompt = PROMPTS[
                 "entity_extraction_json_user_prompt"
             ].format(
@@ -4118,14 +4143,11 @@ async def extract_entities(
                     "heading_context_block": heading_context_block,
                 }
             )
-            entity_continue_extraction_user_prompt = PROMPTS[
-                "entity_continue_extraction_json_user_prompt"
-            ].format(**context_base)
         else:
-            # Text mode: use traditional delimiter-based prompts
-            entity_extraction_system_prompt = PROMPTS[
-                "entity_extraction_system_prompt"
-            ].format(**context_base)
+            # Text mode: use traditional delimiter-based prompts. The continue
+            # prompt is built per chunk here because it embeds the chunk
+            # content; the chunk-invariant system prompt is built once in the
+            # enclosing scope.
             entity_extraction_user_prompt = PROMPTS[
                 "entity_extraction_user_prompt"
             ].format(
@@ -4190,12 +4212,20 @@ async def extract_entities(
             # provider ``context_length_exceeded`` error.  Pre-check here
             # and skip rather than fail.
             gleaning_token_count = (
-                len(extract_tokenizer.encode(entity_extraction_system_prompt))
+                gleaning_invariant_tokens
                 + sum(
                     len(extract_tokenizer.encode(msg.get("content", "") or ""))
                     for msg in history
                 )
-                + len(extract_tokenizer.encode(entity_continue_extraction_user_prompt))
+                + (
+                    # Text mode only: the continue prompt embeds the chunk
+                    # content, so its token count is chunk-specific.
+                    len(
+                        extract_tokenizer.encode(entity_continue_extraction_user_prompt)
+                    )
+                    if not use_json_extraction
+                    else 0
+                )
             )
             if gleaning_token_count > max_extract_input_tokens:
                 logger.warning(
