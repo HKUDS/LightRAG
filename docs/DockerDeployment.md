@@ -250,8 +250,8 @@ This keeps generated host mounts under the same `./data` root used by the defaul
 
 ### Custom UI content
 
-Every bundled compose file mounts `./data/ui_templates` read-only at
-`/app/data/ui_templates`. The mount is inert until you uncomment
+`docker-compose.yml` and `docker-compose-full.yml` mount `./data/ui_templates`
+read-only at `/app/data/ui_templates`. The mount is inert until you uncomment
 `UI_TEMPLATES_DIR` in the `lightrag` service's `environment:` block, at which
 point the server replaces the welcome page, the login-page text and user
 agreement, the query empty state and the brand logo with the bundle's content
@@ -265,6 +265,13 @@ Docker:
 mkdir -p ./data/ui_templates
 cp -r docs/ui_templates_example/* ./data/ui_templates/
 ```
+
+**Podman**: `docker-compose.podman.yml` keeps the mount commented out as well,
+because Podman is stricter than Docker about a bind mount whose host source is
+missing and this feature is off by default. There, create the directory first
+and then uncomment **both** the mount and `UI_TEMPLATES_DIR` — uncommenting the
+environment entry alone leaves the server pointed at a path that is not
+mounted, and it refuses to start.
 
 See [UserDefinedUI.md](./UserDefinedUI.md) ([中文](./UserDefinedUI-zh.md)) for
 the bundle format and the full deployment guide.
