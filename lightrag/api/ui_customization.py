@@ -146,8 +146,22 @@ def _has_svg_root(head: bytes) -> bool:
     rest = head
     while True:
         rest = rest.lstrip(b" \t\r\n")
-        if rest.startswith(b"<svg") and (
-            len(rest) == 4 or rest[4:5].isspace() or rest[4:5] in (b">", b"/")
+        if (
+            rest.startswith(b"<svg")
+            and (
+                len(rest) == 4
+                or rest[4:5].isspace()
+                or rest[4:5] == b">"
+                # A slash after the name opens a root only as the ``/>`` of an
+                # empty element. ``<svg/anything>`` — or even ``<svg/ >``, since
+                # XML allows nothing between the two — is not well-formed and has
+                # no root at all; accepting any slash served such a file as
+                # image/svg+xml under an immutable cache header. The empty
+                # ``rest[5:6]`` is the same truncation tolerance the bare ``<svg``
+                # case gets: ``head`` is a 4 KiB slice and the ``>`` may lie past
+                # its end.
+                or (rest[4:5] == b"/" and rest[5:6] in (b"", b">"))
+            )
         ):
             return True
         # Skip one prologue node; anything else means this is not an SVG.

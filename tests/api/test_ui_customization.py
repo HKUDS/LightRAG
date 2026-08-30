@@ -269,6 +269,16 @@ class TestBundleValidation:
                 id="doctype-without-svg-root",
             ),
             pytest.param(b"<!-- just a comment -->", id="comment-only"),
+            # A slash right after the name is only a root when it is the
+            # ``/>`` of an empty element; XML allows nothing between the two.
+            # These are ill-formed and have no root element at all.
+            pytest.param(b"<svg/not-an-element>", id="slash-then-name"),
+            pytest.param(b"<svg/ >", id="slash-space-gt"),
+            pytest.param(b"<svg//>", id="double-slash"),
+            pytest.param(
+                b'<?xml version="1.0" encoding="UTF-8"?>\n<svg/nope>',
+                id="declaration-then-slashed-non-root",
+            ),
         ],
     )
     def test_xml_without_svg_root_is_rejected(self, tmp_path, content):
@@ -295,6 +305,10 @@ class TestBundleValidation:
                 id="declaration-comment-doctype-then-svg",
             ),
             pytest.param(b"\xef\xbb\xbf\n  " + SVG_BYTES, id="bom-and-whitespace"),
+            # An empty root is still a root: `/` is accepted as the `/>` of a
+            # self-closing element, which is exactly what tightening the
+            # slash check must NOT break.
+            pytest.param(b'<svg xmlns="http://www.w3.org/2000/svg"/>', id="empty-root"),
         ],
     )
     def test_real_svg_variants_are_accepted(self, tmp_path, content):
