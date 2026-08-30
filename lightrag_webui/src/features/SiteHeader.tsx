@@ -85,29 +85,27 @@ export default function SiteHeader() {
             names this entry, so this resolves back to THIS entry — never a
             cross-entry jump, under any proxy prefix or the dev server's
             file-per-entry layout (see entryHomeHref). */}
-        <a href={entryHomeHref(window.location.pathname)} className="flex items-center gap-2">
-          <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
-          <span className="font-bold md:inline-block">{SiteInfo.name}</span>
-        </a>
-        {webuiTitle && (
-          <div className="flex items-center">
-            <span className="mx-1 text-xs text-gray-500 dark:text-gray-400">|</span>
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="font-medium text-sm cursor-default">
-                    {webuiTitle}
-                  </span>
-                </TooltipTrigger>
-                {webuiDescription && (
-                  <TooltipContent side="bottom">
-                    {webuiDescription}
-                  </TooltipContent>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <a href={entryHomeHref(window.location.pathname)} className="flex items-center">
+                <ZapIcon className="mr-2 size-4 text-emerald-400" aria-hidden="true" />
+                <span className="font-bold md:inline-block">{SiteInfo.name}</span>
+                {webuiTitle && (
+                  <>
+                    <span className="mx-1 text-xs text-gray-500 dark:text-gray-400" aria-hidden="true">|</span>
+                    <span className="text-sm font-medium">{webuiTitle}</span>
+                  </>
                 )}
-              </Tooltip>
-            </TooltipProvider>
-          </div>
-        )}
+              </a>
+            </TooltipTrigger>
+            {webuiTitle && webuiDescription && (
+              <TooltipContent side="bottom">
+                {webuiDescription}
+              </TooltipContent>
+            )}
+          </Tooltip>
+        </TooltipProvider>
       </div>
 
       <div className="flex h-10 flex-1 items-center justify-center">
