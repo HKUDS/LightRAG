@@ -907,6 +907,7 @@ async def _process_json_extraction_result(
     chunk_key: str,
     timestamp: int,
     file_path: str = "unknown_source",
+    parsed: dict[str, Any] | None = None,
 ) -> tuple[dict, dict]:
     """Process a JSON-formatted extraction result from LLM.
 
@@ -919,6 +920,13 @@ async def _process_json_extraction_result(
         chunk_key: The chunk key for source tracking
         timestamp: The timestamp for the extraction
         file_path: The file path for citation
+        parsed: Payload already recovered by :func:`tolerant_load_json_dict`,
+            for callers that need the parse outcome themselves rather than
+            only the extracted entities -- an empty result does not say
+            whether the payload was unrecoverable or merely carried nothing,
+            and cache rebuild has to tell those apart. ``None`` means "not
+            supplied" and is unambiguous: the helper always returns a dict,
+            so an unrecoverable payload still arrives here as ``{}``.
 
     Returns:
         tuple: (nodes_dict, edges_dict) containing the extracted entities and relationships
@@ -933,7 +941,8 @@ async def _process_json_extraction_result(
     # helper absorbs the underlying parse exception, only this single "empty or
     # unrecoverable" warning is logged — the low-level decode error is no longer
     # surfaced.
-    parsed = tolerant_load_json_dict(result)
+    if parsed is None:
+        parsed = tolerant_load_json_dict(result)
     if not parsed:
         logger.warning(
             f"{chunk_key}: JSON extraction result is empty or unrecoverable"
@@ -1501,6 +1510,7 @@ async def _process_extraction_result(
     file_path: str = "unknown_source",
     tuple_delimiter: str = "<|#|>",
     completion_delimiter: str = "<|COMPLETE|>",
+    warn_on_missing_completion_delimiter: bool = True,
 ) -> tuple[dict, dict]:
     """Process a single extraction result (either initial or gleaning)
     Args:
@@ -1509,6 +1519,11 @@ async def _process_extraction_result(
         file_path (str): The file path for citation
         tuple_delimiter (str): Delimiter for tuple fields
         completion_delimiter (str): Delimiter for completion
+        warn_on_missing_completion_delimiter (bool): Whether a missing
+            completion delimiter is worth a WARNING. Callers that already
+            reported the failure they are recovering from pass False so the
+            same failure is not announced twice; the missing delimiter is
+            still logged at DEBUG level for diagnosis.
     Returns:
         tuple: (nodes_dict, edges_dict) containing the extracted entities and relationships
     """
@@ -1516,10 +1531,14 @@ async def _process_extraction_result(
     maybe_edges = defaultdict(list)
 
     if completion_delimiter not in result:
-        logger.warning(
+        message = (
             f"{chunk_key}: Complete delimiter can not be found in extraction result"
             f"{_truncation_cause_suffix(result)}"
         )
+        if warn_on_missing_completion_delimiter:
+            logger.warning(message)
+        else:
+            logger.debug(message)
 
     # Split LLL output result to records by "\n"
     records = split_string_by_multi_markers(
@@ -1657,19 +1676,33 @@ async def _rebuild_from_extraction_result(
     )
 
     # Auto-detect format: try JSON first if the result looks like JSON
+    json_parse_reported_failure = False
     if _looks_like_json_extraction_result(extraction_result):
+        # Parse once here and hand the payload down. The parse outcome, not the
+        # emptiness of what was extracted from it, is what decides below whether
+        # the failure being recovered from was already reported -- the two are
+        # different things, and a payload carrying the wrong schema
+        # ({"answer": "none found"}) extracts nothing while parsing perfectly.
+        parsed = tolerant_load_json_dict(extraction_result)
         # Likely JSON format (from entity_extraction_use_json mode)
         nodes, edges = await _process_json_extraction_result(
             extraction_result,
             chunk_id,
             timestamp,
             file_path,
+            parsed=parsed,
         )
         # A successful parse (tolerant_load_json_dict's own non-empty-dict
         # signal) is accepted even when it legitimately yields no nodes/edges.
-        if nodes or edges or tolerant_load_json_dict(extraction_result):
+        if nodes or edges or parsed:
             return nodes, edges
-        # Otherwise fall through to text-based parsing
+        # Only an unrecoverable payload can reach here, and
+        # _process_json_extraction_result has already logged that failure. The
+        # delimiter parser below is a speculative rescue for a payload that
+        # merely looked like JSON, so its own "no completion delimiter"
+        # complaint would report that same single failure a second time; it is
+        # demoted to DEBUG for this call.
+        json_parse_reported_failure = True
 
     # Fall back to traditional delimiter-based parsing
     return await _process_extraction_result(
@@ -1679,6 +1712,7 @@ async def _rebuild_from_extraction_result(
         file_path,
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+        warn_on_missing_completion_delimiter=not json_parse_reported_failure,
     )
 
 
