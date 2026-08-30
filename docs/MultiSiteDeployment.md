@@ -384,7 +384,7 @@ slash form; verify the redirect is reaching nginx (check `X-Forwarded-Prefix` an
 
 ### `apiPrefix` is empty in `window.__LIGHTRAG_CONFIG__` after deploy
 
-View the page source. If you see the literal placeholder `<!-- __LIGHTRAG_RUNTIME_CONFIG__ -->` instead of an injected `<script>` tag, the request did not go through `SmartStaticFiles` — double-check that `lightrag/api/webui/index.html` exists in the running container and that the WebUI mount succeeded (the server logs `WebUI assets mounted at <path>` at startup).
+View the page source. If you see the literal placeholder `<!-- __LIGHTRAG_RUNTIME_CONFIG__ -->` instead of an injected `<script>` tag, the request did not go through `SmartStaticFiles` — double-check that `lightrag/api/webui/index.html` exists in the running container and that the WebUI mount succeeded (the server logs `Admin WebUI mounted at <path>` at startup).
 
 ### `bun run dev` proxy returns 404 with `VITE_DEV_API_PREFIX` set
 
