@@ -22,11 +22,18 @@ import type { MessageWithError } from '@/types/retrieval'
 
 /**
  * Whether a query with these settings produces model-written text at all.
- * Both debug switches short-circuit the answering LLM server-side.
+ *
+ * Both debug switches short-circuit the answering LLM server-side — EXCEPT in
+ * `bypass` mode, which skips retrieval and sends the question straight to the
+ * LLM without ever consulting them (`LightRAG.aquery_llm`). A bypass answer is
+ * always model-written, and a streamed one carries no server verdict to
+ * correct a wrong prediction, so the prediction has to get this case right on
+ * its own.
  */
 export function producesAiGeneratedOutput(
-  settings: Pick<QuerySettings, 'only_need_context' | 'only_need_prompt'>
+  settings: Partial<Pick<QuerySettings, 'mode' | 'only_need_context' | 'only_need_prompt'>>
 ): boolean {
+  if (settings.mode === 'bypass') return true
   return !settings.only_need_context && !settings.only_need_prompt
 }
 

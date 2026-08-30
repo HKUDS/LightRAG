@@ -30,6 +30,20 @@ describe('producesAiGeneratedOutput', () => {
     expect(producesAiGeneratedOutput({ only_need_context: true })).toBe(false)
     expect(producesAiGeneratedOutput({ only_need_prompt: true })).toBe(false)
   })
+
+  test('bypass mode answers are model-written whatever the switches say', () => {
+    // Bypass skips retrieval and asks the LLM directly; the server never reads
+    // the two switches in that mode. A streamed bypass answer carries no
+    // server verdict either, so a false prediction here would silently drop
+    // the notice from a real LLM answer.
+    expect(
+      producesAiGeneratedOutput({ mode: 'bypass', only_need_context: true })
+    ).toBe(true)
+    expect(
+      producesAiGeneratedOutput({ mode: 'bypass', only_need_prompt: true })
+    ).toBe(true)
+    expect(producesAiGeneratedOutput({ mode: 'bypass' })).toBe(true)
+  })
 })
 
 describe('resolveAiGenerated', () => {
