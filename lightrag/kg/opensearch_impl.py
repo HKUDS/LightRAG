@@ -3662,6 +3662,40 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             )
             raise
 
+    @staticmethod
+    def _edge_missing_endpoints_query() -> dict[str, Any]:
+        """Edge docs the degree aggregation should see but cannot.
+
+        Only docs the ranking could ever use: one missing an endpoint id
+        cannot be given an ``endpoints`` value and must not hold the readiness
+        flag back forever.
+        """
+        return {
+            "bool": {
+                "must": [
+                    {"exists": {"field": "source_node_id"}},
+                    {"exists": {"field": "target_node_id"}},
+                ],
+                "must_not": [{"exists": {"field": _EDGE_ENDPOINTS_FIELD}}],
+            }
+        }
+
+    async def _edges_missing_endpoints_exist(self) -> bool:
+        """Whether any rankable edge doc still lacks ``endpoints``.
+
+        ``terminate_after`` bounds the documents collected, not the shards
+        consulted, so this is cheaper than the backfill's count only when the
+        answer is yes. That is the right way round: a clean index pays one
+        zero-hit query, and an index with a backlog stops at the first hit
+        instead of sizing a backlog it is about to refill anyway.
+        """
+        probe = await self.client.count(
+            index=self._edges_index,
+            body={"query": self._edge_missing_endpoints_query()},
+            terminate_after=1,
+        )
+        return bool(probe["count"])
+
     async def _ensure_edge_endpoints_ready(self) -> None:
         """Land the ``endpoints`` mapping and backfill it on legacy edge docs.
 
@@ -3678,8 +3712,25 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         error, a huge index mid-reindex) keeps serving the approximate ranking
         rather than refusing to start. Every subsequent ``initialize`` retries.
 
-        Idempotent via an index ``_meta`` flag, so a completed backfill costs
-        one mapping read per startup rather than a rescan.
+        **The ``_meta`` flag records that a backfill completed, not that the
+        field is still universal.** It cannot be the latter: nothing fences
+        writes against an old-version process, so during a rolling deploy a
+        worker running the previous release can index an edge without
+        ``endpoints`` after this one has stamped the flag. Trusting the flag
+        alone would leave that edge outside the aggregation permanently -- the
+        degree ranking would silently lose it, with no operation short of
+        clearing the flag by hand to bring it back. So every startup that finds
+        an existing index revalidates coverage, and a dirty one re-runs the
+        backfill; the flag saves the ``update_by_query`` and the ``_meta``
+        write on the clean path, not the query that asks. A startup that
+        *creates* the index is exempt, and safely: it holds the data-init lock
+        and the index it stamps is empty.
+
+        Revalidation closes the window rather than eliminating it: an edge
+        written by an old-version worker after the last startup stays uncovered
+        until the next one. That is as far as this can go without a write
+        fence, and it costs ranking quality alone -- never a wrong edge, only
+        an entity ranked from a degree short of its real one.
         """
         if self._edge_endpoints_ready:
             return
@@ -3692,9 +3743,33 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             mapping = await self.client.indices.get_mapping(index=self._edges_index)
             index_mapping = mapping.get(self._edges_index, {}).get("mappings", {})
             meta = index_mapping.get("_meta", {})
-            if meta.get(_EDGE_ENDPOINTS_META_FLAG):
-                self._edge_endpoints_ready = True
-                return
+            flagged = bool(meta.get(_EDGE_ENDPOINTS_META_FLAG))
+            if flagged:
+                try:
+                    dirty = await self._edges_missing_endpoints_exist()
+                except OpenSearchException as e:
+                    # Revalidation is a guard on top of a promise the flag
+                    # already made. Failing it must fall back to that promise,
+                    # not below it: the alternative downgrades a healthy index
+                    # to the approximate ranking for the life of the process,
+                    # which would make this check the likeliest cause of the
+                    # degradation it exists to prevent.
+                    logger.warning(
+                        f"[{self.workspace}] Could not revalidate "
+                        f"{_EDGE_ENDPOINTS_FIELD} coverage on "
+                        f"{self._edges_index}: {e}; trusting the readiness flag"
+                    )
+                    self._edge_endpoints_ready = True
+                    return
+                if not dirty:
+                    self._edge_endpoints_ready = True
+                    return
+                logger.warning(
+                    f"[{self.workspace}] Edge docs without {_EDGE_ENDPOINTS_FIELD} "
+                    f"found in {self._edges_index} after the readiness flag was "
+                    f"set; an old-version writer during a rolling deploy is the "
+                    f"usual cause. Re-running the backfill"
+                )
 
             if _EDGE_ENDPOINTS_FIELD not in index_mapping.get("properties", {}):
                 # Explicit keyword mapping: the index is `dynamic: true`, and a
@@ -3710,18 +3785,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     f"{self._edges_index}"
                 )
 
-            # Only docs the ranking could ever use: one missing an endpoint id
-            # cannot be given an `endpoints` value and must not hold the flag
-            # back forever.
-            missing_query = {
-                "bool": {
-                    "must": [
-                        {"exists": {"field": "source_node_id"}},
-                        {"exists": {"field": "target_node_id"}},
-                    ],
-                    "must_not": [{"exists": {"field": _EDGE_ENDPOINTS_FIELD}}],
-                }
-            }
+            missing_query = self._edge_missing_endpoints_query()
             remaining = (
                 await self.client.count(
                     index=self._edges_index, body={"query": missing_query}

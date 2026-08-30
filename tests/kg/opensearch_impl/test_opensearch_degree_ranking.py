@@ -29,6 +29,7 @@ pytest.importorskip(
 from lightrag.kg.opensearch_impl import (  # noqa: E402
     _EDGE_ENDPOINTS_FIELD,
     _EDGE_ENDPOINTS_META_FLAG,
+    _EDGE_ID_CANONICAL_META_FLAG,
     OpenSearchGraphStorage,
     _edge_endpoints,
 )
@@ -361,16 +362,50 @@ def test_graph_edge_properties_omit_the_endpoints_field():
 # -- backfill --------------------------------------------------------------
 
 
-def _migration_storage():
+def _counter(*, probe_missing=0, backfill_counts=()):
+    """Answer both count shapes from one stub.
+
+    The coverage probe and the backfill's own count run the same query against
+    the same client; `terminate_after` is what tells them apart, and it is
+    capped at 1 because the probe only ever asks a boolean.
+    """
+    remaining = list(backfill_counts)
+
+    async def count(*, index=None, body=None, **kwargs):
+        if kwargs.get("terminate_after"):
+            return {"count": min(probe_missing, 1)}
+        return {"count": remaining.pop(0)}
+
+    return AsyncMock(side_effect=count)
+
+
+def _migration_storage(*, flagged=False, missing_after_flag=0, backfill_counts=()):
     storage = OpenSearchGraphStorage.__new__(OpenSearchGraphStorage)
     storage.workspace = "test"
     storage._edges_index = "test-edges"
     storage._edge_endpoints_ready = False
     storage.client = AsyncMock()
     storage.client.indices.exists = AsyncMock(return_value=True)
-    storage.client.indices.get_mapping = AsyncMock(
-        return_value={"test-edges": {"mappings": {"properties": {}, "_meta": {}}}}
+    properties = {_EDGE_ENDPOINTS_FIELD: {"type": "keyword"}} if flagged else {}
+    # A real flagged index also carries the canonical-edge-id flag, so the
+    # re-stamp on the dirty path has something to preserve.
+    meta = (
+        {
+            _EDGE_ENDPOINTS_META_FLAG: True,
+            _EDGE_ID_CANONICAL_META_FLAG: True,
+        }
+        if flagged
+        else {}
     )
+    storage.client.indices.get_mapping = AsyncMock(
+        return_value={
+            "test-edges": {"mappings": {"properties": properties, "_meta": meta}}
+        }
+    )
+    if flagged:
+        storage.client.count = _counter(
+            probe_missing=missing_after_flag, backfill_counts=backfill_counts
+        )
     return storage
 
 
@@ -412,23 +447,85 @@ async def test_backfill_leaves_flag_unset_when_docs_remain():
 
 @pytest.mark.asyncio
 async def test_completed_backfill_skips_the_rescan():
-    storage = _migration_storage()
-    storage.client.indices.get_mapping = AsyncMock(
-        return_value={
-            "test-edges": {
-                "mappings": {
-                    "properties": {_EDGE_ENDPOINTS_FIELD: {"type": "keyword"}},
-                    "_meta": {_EDGE_ENDPOINTS_META_FLAG: True},
-                }
-            }
-        }
+    storage = _migration_storage(flagged=True)
+
+    await storage._ensure_edge_endpoints_ready()
+
+    assert storage._edge_endpoints_ready is True
+    # The flag's remaining job: the coverage probe still runs, the backfill and
+    # the _meta write it guards do not.
+    storage.client.count.assert_awaited_once()
+    storage.client.update_by_query.assert_not_awaited()
+    storage.client.indices.put_mapping.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_coverage_probe_is_bounded_to_a_single_hit():
+    """The question is a boolean, so the probe must not pay for counting a
+    whole backlog on an index the backfill has not reached yet."""
+    storage = _migration_storage(flagged=True)
+
+    await storage._ensure_edge_endpoints_ready()
+
+    call = storage.client.count.await_args
+    assert call.kwargs["terminate_after"] == 1
+    assert call.kwargs["body"]["query"] == storage._edge_missing_endpoints_query()
+
+
+@pytest.mark.asyncio
+async def test_flagged_index_with_missing_docs_is_backfilled_again():
+    """Nothing fences writes against an old-version process, so a rolling
+    deploy can index an edge without `endpoints` after the flag is stamped.
+    Trusting the flag alone would leave that edge outside the aggregation
+    permanently."""
+    storage = _migration_storage(
+        flagged=True, missing_after_flag=1, backfill_counts=(1, 0)
     )
+
+    await storage._ensure_edge_endpoints_ready()
+
+    storage.client.update_by_query.assert_awaited_once()
+    assert storage._edge_endpoints_ready is True
+    # The re-stamp must not clobber the canonical-edge-id flag sharing _meta;
+    # losing it would re-trigger that whole migration on every startup.
+    restamped = [
+        call.kwargs["body"]["_meta"]
+        for call in storage.client.indices.put_mapping.await_args_list
+        if "_meta" in call.kwargs["body"]
+    ]
+    assert restamped == [
+        {_EDGE_ENDPOINTS_META_FLAG: True, _EDGE_ID_CANONICAL_META_FLAG: True}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_flagged_index_that_cannot_be_repaired_keeps_the_legacy_ranking():
+    """A backfill that does not finish must not leave the ranking claiming an
+    exactness the field no longer has."""
+    storage = _migration_storage(
+        flagged=True, missing_after_flag=1, backfill_counts=(5, 2)
+    )
+
+    await storage._ensure_edge_endpoints_ready()
+
+    assert storage._edge_endpoints_ready is False
+
+
+@pytest.mark.asyncio
+async def test_probe_failure_falls_back_to_the_flag_rather_than_below_it():
+    """Revalidation guards a promise the flag already made. A search rejection
+    or a transport error must not downgrade a healthy migrated index to the
+    approximate ranking for the life of the process, which would make the
+    guard the likeliest cause of the degradation it prevents."""
+    from opensearchpy.exceptions import OpenSearchException
+
+    storage = _migration_storage(flagged=True)
+    storage.client.count = AsyncMock(side_effect=OpenSearchException("rejected"))
 
     await storage._ensure_edge_endpoints_ready()
 
     assert storage._edge_endpoints_ready is True
     storage.client.update_by_query.assert_not_awaited()
-    storage.client.indices.put_mapping.assert_not_awaited()
 
 
 @pytest.mark.asyncio
