@@ -1501,6 +1501,7 @@ async def _process_extraction_result(
     file_path: str = "unknown_source",
     tuple_delimiter: str = "<|#|>",
     completion_delimiter: str = "<|COMPLETE|>",
+    warn_on_missing_completion_delimiter: bool = True,
 ) -> tuple[dict, dict]:
     """Process a single extraction result (either initial or gleaning)
     Args:
@@ -1509,6 +1510,11 @@ async def _process_extraction_result(
         file_path (str): The file path for citation
         tuple_delimiter (str): Delimiter for tuple fields
         completion_delimiter (str): Delimiter for completion
+        warn_on_missing_completion_delimiter (bool): Whether a missing
+            completion delimiter is worth a WARNING. Callers that already
+            reported the failure they are recovering from pass False so the
+            same failure is not announced twice; the missing delimiter is
+            still logged at DEBUG level for diagnosis.
     Returns:
         tuple: (nodes_dict, edges_dict) containing the extracted entities and relationships
     """
@@ -1516,10 +1522,14 @@ async def _process_extraction_result(
     maybe_edges = defaultdict(list)
 
     if completion_delimiter not in result:
-        logger.warning(
+        message = (
             f"{chunk_key}: Complete delimiter can not be found in extraction result"
             f"{_truncation_cause_suffix(result)}"
         )
+        if warn_on_missing_completion_delimiter:
+            logger.warning(message)
+        else:
+            logger.debug(message)
 
     # Split LLL output result to records by "\n"
     records = split_string_by_multi_markers(
@@ -1657,6 +1667,7 @@ async def _rebuild_from_extraction_result(
     )
 
     # Auto-detect format: try JSON first if the result looks like JSON
+    json_parse_reported_failure = False
     if _looks_like_json_extraction_result(extraction_result):
         # Likely JSON format (from entity_extraction_use_json mode)
         nodes, edges = await _process_json_extraction_result(
@@ -1668,7 +1679,12 @@ async def _rebuild_from_extraction_result(
         # If JSON parsing yielded results, use them
         if nodes or edges:
             return nodes, edges
-        # Otherwise fall through to text-based parsing
+        # Otherwise fall through to text-based parsing. _process_json_extraction_result
+        # has already logged the parse failure, and the delimiter parser below is a
+        # speculative rescue for a payload that only looked like JSON -- its own
+        # "no completion delimiter" complaint would report that same single failure a
+        # second time, so it is demoted to DEBUG for this call only.
+        json_parse_reported_failure = True
 
     # Fall back to traditional delimiter-based parsing
     return await _process_extraction_result(
@@ -1678,6 +1694,7 @@ async def _rebuild_from_extraction_result(
         file_path,
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+        warn_on_missing_completion_delimiter=not json_parse_reported_failure,
     )
 
 
