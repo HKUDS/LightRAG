@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/Select'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 import { useSettingsStore } from '@/stores/settings'
+import { useQuerySettingsStore } from '@/stores/querySettings'
 import { useTranslation } from 'react-i18next'
 import { RotateCcw } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -41,11 +42,11 @@ const ResetButton = ({ onClick, title }: { onClick: () => void; title: string })
 
 export default function QuerySettings() {
   const { t } = useTranslation()
-  const querySettings = useSettingsStore((state) => state.querySettings)
+  const querySettings = useQuerySettingsStore((state) => state.querySettings)
   const userPromptHistory = useSettingsStore((state) => state.userPromptHistory)
 
   const handleChange = useCallback((key: keyof QueryRequest, value: any) => {
-    useSettingsStore.getState().updateQuerySettings({ [key]: value })
+    useQuerySettingsStore.getState().updateQuerySettings({ [key]: value })
   }, [])
 
   const handleSelectFromHistory = useCallback((prompt: string) => {

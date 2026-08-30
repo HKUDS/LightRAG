@@ -501,5 +501,28 @@
     "prevPage": "上一頁",
     "nextPage": "下一頁",
     "lastPage": "最後一頁"
+  },
+  "workspace": {
+    "welcome": {
+      "defaultMarkdown": "歡迎使用！您可以就知識庫內容提問，並獲得帶引用的回答。登入後即可開始。",
+      "enterButton": "進入工作區",
+      "loginButton": "登入",
+      "enterFailed": "無法連接伺服器，請重試。"
+    },
+    "queryEmpty": {
+      "defaultMarkdown": "輸入您想了解的問題，開始查詢知識庫。"
+    }
+  },
+  "migration": {
+    "failedTitle": "本機設定準備失敗",
+    "failedBody": "您儲存的設定暫時無法遷移到新的儲存格式。資料未遺失——請重新整理重試。",
+    "dataLostTitle": "部分已儲存的設定無法復原",
+    "dataLostBody": "瀏覽器儲存空間已滿，您的部分設定（主題、語言、API 金鑰）未能保留，且已無法復原。繼續將保留尚存的設定，其餘使用預設值。",
+    "continueAfterLoss": "繼續",
+    "retry": "重新載入",
+    "historyDropped": "升級時聊天歷史超出瀏覽器儲存空間，已被捨棄。其餘設定已正常遷移。"
+  },
+  "retrievalHistory": {
+    "quotaDropped": "瀏覽器儲存空間已滿：聊天歷史已停止儲存。目前對話在離開頁面前仍然可見。"
   }
 }

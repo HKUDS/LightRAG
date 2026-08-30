@@ -9,9 +9,11 @@ import {
 } from '@/lib/constants'
 import type { SupportedFileTypes } from '@/lib/fileTypes'
 import { errorMessage } from '@/lib/utils'
+import { decodeBase64Url } from '@/lib/base64url'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
 import { navigationService } from '@/services/navigation'
+import { AuthenticationRequiredError, isAuthenticationRequiredError } from '@/api/errors'
 
 // Types
 export type LightragNodeType = {
@@ -479,9 +481,17 @@ axiosInstance.interceptors.response.use(
         console.log('[Auth] Token auto-renewed by backend');
       }
 
-      // Update auth state with renewal tracking
+      // Update auth state with renewal tracking.
+      //
+      // The payload MUST go through decodeBase64Url, like every other reader
+      // of a JWT here (stores/state.ts, lib/loginIdentity.ts). Bare `atob`
+      // rejects the `-`/`_` alphabet, and the catch below swallows that: the
+      // renewed token is already in localStorage by then, so the session
+      // would carry the NEW token while `lastTokenRenewal` and
+      // `tokenExpiresAt` still described the OLD one.
       try {
-        const payload = JSON.parse(atob(newToken.split('.')[1]));
+        const decodedPayload = decodeBase64Url(newToken.split('.')[1] ?? '');
+        const payload = decodedPayload === null ? {} : JSON.parse(decodedPayload);
         const authStore = useAuthStore.getState();
         if (authStore.isAuthenticated) {
           // Track token renewal time and expiration
@@ -516,8 +526,8 @@ axiosInstance.interceptors.response.use(
 
         // 2. Prevent infinite retry
         if (originalRequest && (originalRequest as any)._retry) {
-          navigationService.navigateToLogin();
-          return Promise.reject(new Error('Authentication required'));
+          navigationService.navigateToUnauthenticated();
+          return Promise.reject(new AuthenticationRequiredError());
         }
 
         // 3. Check if in guest mode
@@ -541,14 +551,18 @@ axiosInstance.interceptors.response.use(
           } catch (refreshError) {
             console.error('Failed to refresh guest token:', refreshError);
             // Refresh failed, navigate to login
-            navigationService.navigateToLogin();
-            return Promise.reject(new Error('Failed to refresh authentication'));
+            navigationService.navigateToUnauthenticated();
+            return Promise.reject(
+              new AuthenticationRequiredError('Failed to refresh authentication', {
+                cause: refreshError,
+              })
+            );
           }
         }
 
         // 5. Non-guest mode: navigate to login page
-        navigationService.navigateToLogin();
-        return Promise.reject(new Error('Authentication required'));
+        navigationService.navigateToUnauthenticated();
+        return Promise.reject(new AuthenticationRequiredError());
       }
       throw toHttpRequestError(
         error.response.status,
@@ -604,6 +618,19 @@ export const checkHealth = async (): Promise<
       message: errorMessage(error)
     }
   }
+}
+
+/**
+ * Probe whether the caller's credentials satisfy the API's combined auth.
+ * /health CANNOT serve this purpose: it sits on the default whitelist and
+ * deliberately answers "healthy" to unauthenticated callers, so it never
+ * distinguishes valid, invalid and missing API keys. /auth/verify always
+ * runs the combined dependency — a missing or wrong X-API-Key REJECTS with
+ * the standard 403 detail ("API Key required" / "Invalid API Key"), which
+ * the axios interceptor surfaces in the thrown error's message.
+ */
+export const verifyCredentials = async (): Promise<void> => {
+  await axiosInstance.get('/auth/verify')
 }
 
 export const getDocuments = async (): Promise<DocsStatusesResponse> => {
@@ -766,15 +793,23 @@ function _classifyStreamError(
 
   const message = errorMessage(error);
 
-  if (message === 'Authentication required') {
-    return 'Authentication required';
-  }
-
   const statusCodeMatch = message.match(/^(\d{3})\s/);
   if (statusCodeMatch) {
     const statusCode = parseInt(statusCodeMatch[1], 10);
     switch (statusCode) {
       case 403:
+        // A 403 raised by the API-key check must KEEP that detail: the
+        // workspace entry recognizes these messages to re-probe credentials
+        // and reopen its API-key dialog, which is the only way back in after
+        // a key is rotated (and streaming is the default query mode, so
+        // flattening them here disabled that path entirely). Unrelated 403s
+        // keep the generic wording.
+        if (message.includes(InvalidApiKeyError)) {
+          return `${InvalidApiKeyError} (403 Forbidden)`;
+        }
+        if (message.includes(RequireApiKeError)) {
+          return `${RequireApiKeError} (403 Forbidden)`;
+        }
         return 'You do not have permission to access this resource (403 Forbidden)';
       case 404:
         return 'The requested resource does not exist (404 Not Found)';
@@ -881,8 +916,8 @@ export const queryTextStream = async (
               'Failed to refresh guest token for streaming:',
               refreshError
             );
-            navigationService.navigateToLogin();
-            throw new Error('Failed to refresh authentication', {
+            navigationService.navigateToUnauthenticated();
+            throw new AuthenticationRequiredError('Failed to refresh authentication', {
               cause: refreshError,
             });
           }
@@ -890,8 +925,8 @@ export const queryTextStream = async (
           if (!retryResponse.ok) {
             if (retryResponse.status === 401) {
               // Refreshed token still rejected → genuine auth failure
-              navigationService.navigateToLogin();
-              throw new Error('Authentication required');
+              navigationService.navigateToUnauthenticated();
+              throw new AuthenticationRequiredError();
             }
             // Non-auth HTTP error on retry → classify like the first response
             await _throwStreamHttpError(retryResponse);
@@ -900,8 +935,8 @@ export const queryTextStream = async (
           activeResponse = retryResponse;
         } else {
           // Non-guest 401 → login
-          navigationService.navigateToLogin();
-          throw new Error('Authentication required');
+          navigationService.navigateToUnauthenticated();
+          throw new AuthenticationRequiredError();
         }
       } else {
         // --- Other HTTP errors ---------------------------------------------
@@ -912,6 +947,13 @@ export const queryTextStream = async (
     // --- Read the NDJSON stream (happy path or refreshed retry) ------------
     await _readNdjsonStream(activeResponse, onChunk, onError, onResponseTime, onProgress);
   } catch (error) {
+    // Auth termination is NOT an answer failure: navigation to the entry's
+    // unauthenticated route already happened above. Rethrow the typed error
+    // so the query session ends quietly instead of rendering it as an
+    // assistant error via onError.
+    if (isAuthenticationRequiredError(error)) {
+      throw error;
+    }
     const classified = _classifyStreamError(error, signal);
     if (classified === null) {
       return; // User abort — silent exit

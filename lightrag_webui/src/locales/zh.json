@@ -501,5 +501,28 @@
     "prevPage": "上一页",
     "nextPage": "下一页",
     "lastPage": "末页"
+  },
+  "workspace": {
+    "welcome": {
+      "defaultMarkdown": "欢迎使用！您可以就知识库内容提问，并获得带引用的回答。登录后即可开始。",
+      "enterButton": "进入工作区",
+      "loginButton": "登录",
+      "enterFailed": "无法连接服务器，请重试。"
+    },
+    "queryEmpty": {
+      "defaultMarkdown": "输入您想了解的问题，开始查询知识库。"
+    }
+  },
+  "migration": {
+    "failedTitle": "本地设置准备失败",
+    "failedBody": "您保存的设置暂时无法迁移到新的存储格式。数据未丢失——请刷新重试。",
+    "dataLostTitle": "部分已保存的设置无法恢复",
+    "dataLostBody": "浏览器存储空间已满，您的部分设置（主题、语言、API 密钥）未能保留，且已无法恢复。继续将保留尚存的设置，其余使用默认值。",
+    "continueAfterLoss": "继续",
+    "retry": "重新加载",
+    "historyDropped": "升级时聊天历史超出浏览器存储空间，已被放弃。其余设置已正常迁移。"
+  },
+  "retrievalHistory": {
+    "quotaDropped": "浏览器存储空间已满：聊天历史已停止保存。当前对话在离开页面前仍然可见。"
   }
 }

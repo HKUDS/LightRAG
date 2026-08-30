@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/state'
-import { useSettingsStore } from '@/stores/settings'
+import { activateLoginIdentityFromToken } from '@/lib/loginIdentity'
+import { markVersionCheckedFromLogin } from '@/lib/versionCheckCache'
 import { loginToServer, getAuthStatus } from '@/api/lightrag'
+import logoUrl from '@/assets/logo.svg'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 import { Card, CardContent, CardHeader } from '@/components/ui/Card'
@@ -11,7 +13,18 @@ import Button from '@/components/ui/Button'
 import { ZapIcon } from 'lucide-react'
 import AppSettings from '@/components/AppSettings'
 
-const LoginPage = () => {
+interface LoginPageProps {
+  /**
+   * Whether an auth-disabled deployment may activate the guest token right
+   * here. The admin entry keeps the historical auto-login; the WORKSPACE
+   * entry passes false — its guest activation happens ONLY through the
+   * welcome page's explicit action (PRD §6.3), so a direct or bookmarked
+   * #/login visit redirects there instead of silently activating a token.
+   */
+  autoActivateGuest?: boolean
+}
+
+const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
   const navigate = useNavigate()
   const { login, isAuthenticated } = useAuthStore()
   const { t } = useTranslation()
@@ -47,11 +60,20 @@ const LoginPage = () => {
 
         // Set session flag for version check to avoid duplicate checks in App component
         if (status.core_version || status.api_version) {
-          sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true');
+          markVersionCheckedFromLogin();
         }
 
         if (!status.auth_configured && status.access_token) {
-          // If auth is not configured, use the guest token and redirect
+          if (!autoActivateGuest) {
+            // Workspace entry: guest activation belongs to the welcome page's
+            // explicit action — never to a (possibly bookmarked) login visit.
+            navigate('/welcome', { replace: true })
+            return
+          }
+          // If auth is not configured, use the guest token and redirect.
+          // Guest activation is an identity transition: a different stored
+          // identity means the previous user's histories must not be shown.
+          activateLoginIdentityFromToken(status.access_token)
           login(status.access_token, true, status.core_version, status.api_version, status.webui_title || null, status.webui_description || null)
           if (status.message) {
             toast.info(status.message)
@@ -77,7 +99,7 @@ const LoginPage = () => {
     // Cleanup function to prevent state updates after unmount
     return () => {
     }
-  }, [isAuthenticated, login, navigate])
+  }, [isAuthenticated, login, navigate, autoActivateGuest])
 
   // Don't render anything while checking auth
   if (checkingAuth) {
@@ -95,23 +117,15 @@ const LoginPage = () => {
       setLoading(true)
       const response = await loginToServer(username, password)
 
-      // Get previous username from localStorage
-      const previousUsername = localStorage.getItem('LIGHTRAG-PREVIOUS-USER')
-
-      // Check if it's the same user logging in again
-      const isSameUser = previousUsername === username
-
-      // If it's not the same user, clear chat history
-      if (isSameUser) {
-        console.log('Same user logging in, preserving chat history')
-      } else {
-        console.log('Different user logging in, clearing chat history')
-        // Directly clear chat history instead of setting a flag
-        useSettingsStore.getState().setRetrievalHistory([])
-      }
-
-      // Update previous username
-      localStorage.setItem('LIGHTRAG-PREVIOUS-USER', username)
+      // Identity-change cleanup, shared with the guest activation paths: a
+      // different user must not see the previous user's conversations in
+      // EITHER entry — the rule applies to both split histories.
+      const identityChanged = activateLoginIdentityFromToken(response.access_token)
+      console.log(
+        identityChanged
+          ? 'Different user logging in, clearing chat history'
+          : 'Same user logging in, preserving chat history'
+      )
 
       // Check authentication mode
       const isGuestMode = response.auth_mode === 'disabled'
@@ -119,7 +133,7 @@ const LoginPage = () => {
 
       // Set session flag for version check
       if (response.core_version || response.api_version) {
-        sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true');
+        markVersionCheckedFromLogin();
       }
 
       if (isGuestMode) {
@@ -145,15 +159,31 @@ const LoginPage = () => {
   }
 
   return (
-    <div className="flex h-screen w-screen items-center justify-center bg-gradient-to-br from-emerald-50 to-teal-100 dark:from-gray-900 dark:to-gray-800">
-      <div className="absolute top-4 right-4 flex items-center gap-2">
+    <div
+      // min-h-dvh, not h-screen: mobile browsers include their collapsing
+      // chrome in 100vh, which can push the form under the toolbar; dvh
+      // tracks the actually visible viewport, and min- lets small screens
+      // scroll instead of clipping.
+      className="flex min-h-dvh w-screen items-center justify-center bg-gradient-to-br from-emerald-50 to-teal-100 dark:from-gray-900 dark:to-gray-800"
+      style={{
+        padding:
+          'calc(env(safe-area-inset-top) + 1rem) calc(env(safe-area-inset-right) + 1rem) calc(env(safe-area-inset-bottom) + 1rem) calc(env(safe-area-inset-left) + 1rem)'
+      }}
+    >
+      <div
+        className="absolute flex items-center gap-2"
+        style={{
+          top: 'calc(env(safe-area-inset-top) + 1rem)',
+          right: 'calc(env(safe-area-inset-right) + 1rem)'
+        }}
+      >
         <AppSettings className="bg-white/30 dark:bg-gray-800/30 backdrop-blur-sm rounded-md" />
       </div>
       <Card className="w-full max-w-[480px] shadow-lg mx-4">
         <CardHeader className="flex items-center justify-center space-y-2 pb-8 pt-6">
           <div className="flex flex-col items-center space-y-4">
             <div className="flex items-center gap-3">
-              <img src="logo.svg" alt="LightRAG Logo" className="h-12 w-12" />
+              <img src={logoUrl} alt="LightRAG Logo" className="h-12 w-12" />
               <ZapIcon className="size-10 text-emerald-400" aria-hidden="true" />
             </div>
             <div className="text-center space-y-2">

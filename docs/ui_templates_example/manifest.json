@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "default_locale": "en",
+  "fallbacks": {
+    "ko": ["en"],
+    "ja": ["en"]
+  },
+  "brand": {
+    "logo": "assets/logo.svg"
+  },
+  "locales": {
+    "en": {
+      "welcome": "locales/en/welcome.md",
+      "query_empty": "locales/en/query_empty.md",
+      "logo_alt": "Example Corp"
+    },
+    "zh": {
+      "welcome": "locales/zh/welcome.md",
+      "query_empty": "locales/zh/query_empty.md",
+      "logo_alt": "示例公司"
+    },
+    "zh-TW": {
+      "welcome": "locales/zh-TW/welcome.md",
+      "query_empty": "locales/zh-TW/query_empty.md",
+      "logo_alt": "範例公司"
+    }
+  }
+}

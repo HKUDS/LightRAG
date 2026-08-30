@@ -3,6 +3,7 @@ import { createSelectors } from '@/lib/utils'
 import { checkHealth, LightragStatus } from '@/api/lightrag'
 import { useSettingsStore } from './settings'
 import { healthCheckInterval } from '@/lib/constants'
+import { decodeBase64Url } from '@/lib/base64url'
 
 export type ApiDocsCapability = 'unknown' | 'available' | 'unavailable'
 
@@ -62,6 +63,14 @@ interface AuthState {
 // mounts effects twice, and the probe is idempotent but not free.
 let apiDocsProbeInFlight: Promise<void> | null = null
 
+// Last-caller-wins guard for health checks: concurrent check() calls (a
+// credential probe racing a save-triggered re-probe, or overlapping periodic
+// checks) must not let COMPLETION ORDER decide the shared state — a stale
+// request finishing last would overwrite health/message with an outdated
+// result (e.g. the previous API key's failure after the replacement already
+// validated). Only the newest in-flight check may write.
+let healthCheckGeneration = 0
+
 const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
   health: true,
   message: null,
@@ -76,7 +85,14 @@ const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
   healthCheckIntervalValue: healthCheckInterval * 1000, // Use constant from lib/constants
 
   check: async () => {
+    const generation = ++healthCheckGeneration
     const health = await checkHealth()
+    if (generation !== healthCheckGeneration) {
+      // Superseded mid-flight by a newer check: discard this result entirely
+      // (no state, version, title, or graph-limit writes) and report the
+      // state the newest check established.
+      return get().health
+    }
     if (health.status === 'healthy') {
       // Update version information if health check returns it
       if (health.core_version || health.api_version) {
@@ -216,13 +232,30 @@ const formatTimestampToLocalString = (timestamp: number): string => {
   return `${localTime} (UTC${offsetSign}${offsetHours})`;
 };
 
+/**
+ * Read a JWT's claims.
+ *
+ * MUST use the same decoder as `isTokenLocallyValid` below. Bare `atob`
+ * rejects the `-`/`_` alphabet, so the two would disagree about the very
+ * same token: validation admits it, this returns `{}`, and the session runs
+ * with `username === null`, `isGuestMode === false` and no expiry. The
+ * username is the worst of those — `navigationService` only records
+ * LIGHTRAG-PREVIOUS-USER `if (currentUsername)`, so that user's logout
+ * writes no identity marker at all and the retrieval-history cleanup never
+ * fires for them, leaving their conversations to whoever logs in next.
+ *
+ * Whether a payload needs the url alphabet depends on its exact bytes,
+ * `exp` included — so it varies per token issuance for the SAME user, which
+ * is what made this intermittent rather than reproducible.
+ */
 const parseTokenPayload = (token: string): { sub?: string; role?: string; exp?: number } => {
   try {
     // JWT tokens are in the format: header.payload.signature
     const parts = token.split('.');
     if (parts.length !== 3) return {};
-    const payload = JSON.parse(atob(parts[1]));
-    return payload;
+    const decoded = decodeBase64Url(parts[1]);
+    if (decoded === null) return {};
+    return JSON.parse(decoded);
   } catch (e) {
     console.error('Error parsing token payload:', e);
     return {};
@@ -244,12 +277,60 @@ const getTokenExpiresAt = (token: string): number | null => {
   return payload.exp ? payload.exp * 1000 : null; // Convert to milliseconds
 };
 
-const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean; coreVersion: string | null; apiVersion: string | null; username: string | null; webuiTitle: string | null; webuiDescription: string | null; lastTokenRenewal: string | null; tokenExpiresAt: number | null } => {
-  const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
+const TOKEN_STORAGE_KEY = 'LIGHTRAG-API-TOKEN';
+// localStorage keys that only make sense alongside a valid token; cleared
+// together with it when local validation rejects the token.
+const TOKEN_COMPANION_STORAGE_KEYS = ['LIGHTRAG-LAST-TOKEN-RENEWAL'];
+
+/**
+ * LOCAL token validity check: JWT structure parses and `exp` has not passed.
+ *
+ * This deliberately replaces the old "token exists ⇒ authenticated" rule: an
+ * expired or structurally broken token used to render the whole app before a
+ * 401 bounced the user back. It does NOT take over authentication — a token
+ * that only the server can reject (invalid signature, revoked) still passes
+ * here and is corrected by the usual 401 path.
+ */
+export const isTokenLocallyValid = (token: string): boolean => {
+  const parts = token.split('.');
+  if (parts.length !== 3) return false;
+  const decoded = decodeBase64Url(parts[1]);
+  if (decoded === null) return false;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(decoded);
+  } catch {
+    return false;
+  }
+  if (!payload || typeof payload !== 'object') return false;
+  const exp = (payload as { exp?: unknown }).exp;
+  if (typeof exp !== 'number') return false;
+  return exp * 1000 > Date.now();
+};
+
+/** Remove a locally-invalid token together with its companion keys. */
+export const clearLocalToken = (): void => {
+  localStorage.removeItem(TOKEN_STORAGE_KEY);
+  for (const key of TOKEN_COMPANION_STORAGE_KEYS) {
+    localStorage.removeItem(key);
+  }
+};
+
+export const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean; coreVersion: string | null; apiVersion: string | null; username: string | null; webuiTitle: string | null; webuiDescription: string | null; lastTokenRenewal: string | null; tokenExpiresAt: number | null } => {
+  let token = localStorage.getItem(TOKEN_STORAGE_KEY);
+  if (token && !isTokenLocallyValid(token)) {
+    // Expired or structurally broken: clear it (and its companions) and
+    // proceed as "no valid token" — the entry's unauthenticated default page
+    // (login / welcome) takes over instead of the app rendering first.
+    clearLocalToken();
+    token = null;
+  }
   const coreVersion = localStorage.getItem('LIGHTRAG-CORE-VERSION');
   const apiVersion = localStorage.getItem('LIGHTRAG-API-VERSION');
   const webuiTitle = localStorage.getItem('LIGHTRAG-WEBUI-TITLE');
   const webuiDescription = localStorage.getItem('LIGHTRAG-WEBUI-DESCRIPTION');
+  // Read AFTER the validity check above so a just-cleared companion key is
+  // not resurrected into the store.
   const lastTokenRenewal = localStorage.getItem('LIGHTRAG-LAST-TOKEN-RENEWAL');
   const username = token ? getUsernameFromToken(token) : null;
   const tokenExpiresAt = token ? getTokenExpiresAt(token) : null;
