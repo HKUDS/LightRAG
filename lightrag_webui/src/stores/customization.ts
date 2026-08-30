@@ -117,6 +117,33 @@ export function needsCustomizationLoad(
   return failedAttempts < MAX_CUSTOMIZATION_ATTEMPTS
 }
 
+/**
+ * Whether the CONSENT verdict for `locale` is still unknown.
+ *
+ * Sibling of `needsCustomizationLoad`, and deliberately not the same
+ * question as `status === 'loading'`: a language switch keeps the previous
+ * snapshot and a 'ready' status on screen (rule 2 above) so the welcome page
+ * does not flash a spinner, but that snapshot carries the OLD locale's
+ * `consent_required`. Branding text merely looking briefly out of date is
+ * the intended trade; a login gate reading briefly out of date is not — an
+ * ungated → gated switch would leave the form submittable for the duration
+ * of the request.
+ *
+ * Bounded by the same `failedAttempts` budget the retry gate uses, so it can
+ * outlive neither the request nor its one retry: once the store stops
+ * retrying, the last known verdict stands rather than wedging the login page
+ * shut on an unreachable endpoint.
+ */
+export function isConsentVerdictPending(
+  status: CustomizationStatus,
+  locale: string,
+  loadedLocale: string | null,
+  failedAttempts = 0
+): boolean {
+  if (status === 'loading') return true
+  return loadedLocale !== locale && failedAttempts < MAX_CUSTOMIZATION_ATTEMPTS
+}
+
 let requestCounter = 0
 
 export const useCustomizationStore = create<CustomizationState>((set, get) => ({

@@ -24,9 +24,11 @@ import CustomizedMarkdown from '@/components/customization/CustomizedMarkdown'
 import { useCustomizedContent } from '@/components/customization/useCustomizedContent'
 import {
   CONSENT_LABEL_MARKER,
+  isAgreedTo,
   isLoginBlockedByConsent,
   shouldShowLoginConsent,
-  splitConsentLabel
+  splitConsentLabel,
+  type LoginConsentTick
 } from '@/features/loginConsent'
 
 interface LoginPageProps {
@@ -48,15 +50,23 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [checkingAuth, setCheckingAuth] = useState(true)
-  const [consentAgreed, setConsentAgreed] = useState(false)
+  // The tick is stored WITH the document it was given for; a language switch
+  // replaces that document, and consent must not survive the swap.
+  const [consentTick, setConsentTick] = useState<LoginConsentTick>({
+    document: null,
+    agreed: false
+  })
   const [agreementsOpen, setAgreementsOpen] = useState(false)
   const authCheckRef = useRef(false); // Prevent duplicate calls in Vite dev mode
 
   // Fired in PARALLEL with the /auth-status probe below (both are effects of
   // this same mount), so the consent gate costs no serial round trip.
   const content = useCustomizedContent()
+  const consentAgreed = isAgreedTo(consentTick, content.agreementsMarkdown)
   const consentState = {
-    loading: content.loading,
+    // NOT content.loading: on a language switch the store keeps the previous
+    // locale's snapshot on screen, and its verdict does not carry.
+    pending: content.consentPending,
     consentRequired: content.consentRequired,
     agreed: consentAgreed
   }
@@ -282,7 +292,12 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
                 <Checkbox
                   id="login-consent"
                   checked={consentAgreed}
-                  onCheckedChange={(checked) => setConsentAgreed(checked === true)}
+                  onCheckedChange={(checked) =>
+                    setConsentTick({
+                      document: content.agreementsMarkdown,
+                      agreed: checked === true
+                    })
+                  }
                   // The visible text is split around the document link, so the
                   // control's accessible name is spelled out here in full
                   // rather than assembled from the label fragments.

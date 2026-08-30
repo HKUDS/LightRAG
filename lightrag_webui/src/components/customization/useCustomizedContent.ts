@@ -1,7 +1,11 @@
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSettingsStore } from '@/stores/settings'
-import { needsCustomizationLoad, useCustomizationStore } from '@/stores/customization'
+import {
+  isConsentVerdictPending,
+  needsCustomizationLoad,
+  useCustomizationStore
+} from '@/stores/customization'
 import { resolveUiLanguage } from '@/lib/browserLanguage'
 import defaultLogoUrl from '@/assets/logo.svg'
 
@@ -37,12 +41,28 @@ export interface CustomizedContent {
    * Whether the login page must gate submission behind the consent checkbox.
    * Comes STRAIGHT from the server's `consent_required` — this hook never
    * re-derives it from the two markdown fields, so one authority decides
-   * whether a login-blocking control exists. False while `loading` is true,
-   * which is why the login page must not render its form until then (an
-   * agreeing-by-being-fast window is exactly what a consent gate cannot
-   * have).
+   * whether a login-blocking control exists. Only meaningful once
+   * `consentPending` is false.
    */
   consentRequired: boolean
+  /**
+   * Whether the verdict for the locale currently TARGETED is still unknown.
+   *
+   * Deliberately not `loading`: on a language switch the store keeps the
+   * previous snapshot on screen (status stays 'ready') so the welcome page
+   * does not flash a spinner — but that snapshot is the OLD locale's, and
+   * its `consent_required` does not carry. Switching from an ungated locale
+   * to a gated one would otherwise leave the form submittable for the
+   * duration of the request. Consent is the one field that must distrust a
+   * stale-but-displayed snapshot; branding text merely looks briefly out of
+   * date, which is the intended trade.
+   *
+   * Bounded, so it can never wedge a deployment shut: it clears once the
+   * store stops retrying (`MAX_CUSTOMIZATION_ATTEMPTS`), after which the
+   * last known verdict stands — fail-open for the same reason the
+   * default-content branch below is.
+   */
+  consentPending: boolean
 }
 
 export function useCustomizedContent(): CustomizedContent {
@@ -79,6 +99,13 @@ export function useCustomizedContent(): CustomizedContent {
     }
   }, [locale, targetLocale, loadedLocale, failedAttempts])
 
+  const consentPending = isConsentVerdictPending(
+    status,
+    locale,
+    loadedLocale,
+    failedAttempts
+  )
+
   if (status === 'loading') {
     return {
       loading: true,
@@ -91,7 +118,8 @@ export function useCustomizedContent(): CustomizedContent {
       brandDescription: null,
       loginMarkdown: '',
       agreementsMarkdown: null,
-      consentRequired: false
+      consentRequired: false,
+      consentPending: true
     }
   }
 
@@ -109,7 +137,8 @@ export function useCustomizedContent(): CustomizedContent {
       brandDescription: snapshot.brand.description ?? null,
       loginMarkdown: snapshot.login?.content ?? '',
       agreementsMarkdown: snapshot.agreements?.content ?? null,
-      consentRequired: snapshot.consent_required === true
+      consentRequired: snapshot.consent_required === true,
+      consentPending
     }
   }
 
@@ -130,6 +159,7 @@ export function useCustomizedContent(): CustomizedContent {
     // branding endpoint is unreachable would lock out the deployment.
     loginMarkdown: '',
     agreementsMarkdown: null,
-    consentRequired: false
+    consentRequired: false,
+    consentPending
   }
 }
