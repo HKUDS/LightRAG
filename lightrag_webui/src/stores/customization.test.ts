@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test'
 import type { UICustomization } from '@/api/customization'
 import {
   MAX_CUSTOMIZATION_ATTEMPTS,
+  isConsentVerdictPending,
   needsCustomizationLoad
 } from './customization'
 
@@ -258,6 +259,43 @@ describe('needsCustomizationLoad (the hook\'s gate)', () => {
     // The budget is per target: switching language must never be blocked by
     // the previous locale's failures.
     expect(needsCustomizationLoad('de', 'fr', null, 99)).toBe(true)
+  })
+})
+
+describe('isConsentVerdictPending (the login gate\'s freshness rule)', () => {
+  test('unknown before the first response', () => {
+    expect(isConsentVerdictPending('loading', 'en', null)).toBe(true)
+  })
+
+  test('known once the targeted locale is the loaded one', () => {
+    expect(isConsentVerdictPending('ready', 'en', 'en')).toBe(false)
+  })
+
+  test('a language switch makes it unknown again, though status stays ready', () => {
+    // The regression: the store deliberately keeps the PREVIOUS snapshot and
+    // a 'ready' status while the new locale is in flight, so the welcome page
+    // does not flash a spinner. Reading consent off that snapshot would leave
+    // an ungated → gated switch submittable for the length of the request.
+    expect(isConsentVerdictPending('ready', 'zh', 'en')).toBe(true)
+    expect(isConsentVerdictPending('ready', 'zh', 'en', 1)).toBe(true)
+  })
+
+  test('it clears when the store stops retrying — never wedges login shut', () => {
+    // Same bound as the retry gate: an unreachable endpoint must leave the
+    // last known verdict standing, not a login page nobody can get past.
+    expect(
+      isConsentVerdictPending('ready', 'zh', 'en', MAX_CUSTOMIZATION_ATTEMPTS)
+    ).toBe(false)
+    expect(isConsentVerdictPending('error', 'zh', null, MAX_CUSTOMIZATION_ATTEMPTS)).toBe(
+      false
+    )
+  })
+
+  test('a hard first-load failure is still unknown while a retry remains', () => {
+    // status flips to 'error' on the FIRST failure when no snapshot exists,
+    // but the hook re-arms and tries once more — the verdict is not settled
+    // until that budget is actually spent.
+    expect(isConsentVerdictPending('error', 'en', null, 1)).toBe(true)
   })
 })
 

@@ -56,6 +56,10 @@ export default function WorkspaceWelcome() {
       return
     }
     // Auth disabled: NOW fetch and activate the guest token.
+    //
+    // No consent gate here, deliberately: the login-page gate binds an
+    // agreement to a user, and this path has no user to bind it to. See the
+    // guest branch of LoginPage.checkAuthConfig for the full reasoning.
     setEntering(true)
     try {
       const status = await getAuthStatus()

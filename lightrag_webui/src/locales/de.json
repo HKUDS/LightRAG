@@ -32,7 +32,10 @@
     "errorEmptyFields": "Bitte geben Sie Ihren Benutzernamen und Ihr Passwort ein",
     "errorInvalidCredentials": "Anmeldung fehlgeschlagen, bitte überprüfen Sie Benutzername und Passwort",
     "authDisabled": "Authentifizierung ist deaktiviert. Verwenden des anmeldefreien Modus.",
-    "guestMode": "Anmeldefrei"
+    "guestMode": "Anmeldefrei",
+    "consentLabel": "Ich stimme der {{documents}} zu",
+    "consentDocuments": "Datenschutzerklärung und der Modellservice-Vereinbarung",
+    "errorConsentRequired": "Bitte lesen und akzeptieren Sie die Vereinbarungen vor der Anmeldung"
   },
   "common": {
     "cancel": "Abbrechen",

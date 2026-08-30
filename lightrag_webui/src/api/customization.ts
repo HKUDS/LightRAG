@@ -32,6 +32,19 @@ export interface UICustomization {
   brand: UICustomizationBrand
   welcome?: UICustomizationContent
   query_empty?: UICustomizationContent
+  /** Optional login-page blurb; `null` when the locale declares none. */
+  login?: UICustomizationContent | null
+  /** ONE document covering the privacy policy AND the model service
+   * agreement — the consent checkbox carries a single link. */
+  agreements?: UICustomizationContent | null
+  /**
+   * Whether the login page must gate submission behind the consent checkbox.
+   * Decided by the SERVER (see `UILocaleContent.consent_required`) and obeyed
+   * here — never recomputed from `login`/`agreements`, which travel in this
+   * response only so the page can render them. Absent on a `customized:
+   * false` response, where the whole default representation applies anyway.
+   */
+  consent_required?: boolean
 }
 
 /**
