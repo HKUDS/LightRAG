@@ -144,11 +144,16 @@ def locales_without_chrome_translation(locales: Iterable[str]) -> list[str]:
 # accepts \v and \f, neither of which XML allows between tokens).
 _XML_SPACE = frozenset(b" \t\r\n")
 _QUOTE_BYTES = frozenset(b"\"'")
-_LT = 0x3C  # <
 _GT = 0x3E  # >
 _SLASH = 0x2F  # /
+_EQUALS = 0x3D  # =
 _LBRACKET = 0x5B  # [
 _RBRACKET = 0x5D  # ]
+# What terminates an attribute NAME. Deliberately permissive about the name's
+# own characters (XML's NameChar is a large Unicode set, and a name's validity
+# is not what decides whether a root element is there); what matters is that
+# the name stops where the grammar says the next token begins.
+_ATTR_NAME_END = frozenset(b" \t\r\n=></\"'")
 
 
 def _end_of_markup_declaration(content: bytes, index: int) -> int | None:
@@ -201,47 +206,79 @@ def _end_of_markup_declaration(content: bytes, index: int) -> int | None:
     return None
 
 
-def _svg_start_tag_closes(content: bytes, index: int) -> bool:
-    """Whether the ``<svg`` start tag ending at ``index`` opens AND closes.
+def _completes_svg_start_tag(content: bytes, index: int) -> bool:
+    """Whether the ``<svg`` ending at ``index`` is a complete start tag.
 
-    ``index`` points just past the element NAME, so this decides both that
-    the name ends there (rather than being ``<svgx…``) and that the tag has
-    its own ``>``:
+    Parses XML's own productions rather than hunting for a delimiter::
 
-      * ``>``  — closed;
-      * ``/>`` — closed, empty element. A slash is nothing else: XML allows
-        no character between it and the bracket, so ``<svg/x>`` and
-        ``<svg/ >`` have no root element at all;
-      * XML whitespace — attributes follow, and the tag's own ``>`` must
-        appear OUTSIDE any literal. A ``>`` inside an attribute value is
-        legal and is not the tag's (``<svg title=">`` never closes).
+        STag         ::= '<' Name (S Attribute)* S? '>'
+        EmptyElemTag ::= '<' Name (S Attribute)* S? '/>'
+        Attribute    ::= Name Eq AttValue
+        Eq           ::= S? '=' S?
+        AttValue     ::= '"' [^<&"]* '"' | "'" [^<&']* "'"
 
-    A raw ``<`` outside a literal ends the search unsuccessfully: XML forbids
-    it inside a start tag, so reaching one means the tag was abandoned and any
-    ``>`` beyond it belongs to a different element.
+    Deciding by delimiter is what kept failing: every review round found
+    another byte that looks like the tag's end without being it — a ``>``
+    inside an attribute value, a ``<`` belonging to the NEXT element, a ``/``
+    that is not the one in ``/>``. Parsing the production leaves no such
+    residue, and everything it rejects is a fatal XML error: a file no
+    renderer would draw, which is exactly what must not be labelled
+    ``image/svg+xml`` and cached for a year.
+
+    ``index`` points just past the element NAME, so this also decides that
+    the name ends there rather than continuing (``<svgx…``).
     """
-    if index >= len(content):
+    n = len(content)
+    i = index
+    if i >= n:
         return False  # `<svg` and then nothing: an unclosed tag, not a root.
-    byte = content[index]
+    byte = content[i]
     if byte == _GT:
         return True
     if byte == _SLASH:
-        return content.startswith(b"/>", index)
+        return content.startswith(b"/>", i)
     if byte not in _XML_SPACE:
         return False  # `<svgx…`: a different element name.
-    quote = 0
-    for i in range(index + 1, len(content)):
+
+    while True:
+        # `S` before an attribute is REQUIRED; before `>` or `/>` optional.
+        separated_at = i
+        while i < n and content[i] in _XML_SPACE:
+            i += 1
+        if i >= n:
+            return False  # the tag never closes
         byte = content[i]
-        if quote:
-            if byte == quote:
-                quote = 0
-        elif byte in _QUOTE_BYTES:
-            quote = byte
-        elif byte == _LT:
-            return False
-        elif byte == _GT:
+        if byte == _GT:
             return True
-    return False
+        if byte == _SLASH:
+            # A slash is legal only as the `/>` of an empty element: XML
+            # allows nothing between it and the bracket, so `<svg /x>` and
+            # `<svg / >` are tags that never close.
+            return content.startswith(b"/>", i)
+        if i == separated_at:
+            return False  # `<svg a="1"b="2">`: attributes need whitespace
+
+        # Attribute ::= Name Eq AttValue
+        name_start = i
+        while i < n and content[i] not in _ATTR_NAME_END:
+            i += 1
+        if i == name_start:
+            return False  # no name where an attribute must begin
+        while i < n and content[i] in _XML_SPACE:
+            i += 1
+        if i >= n or content[i] != _EQUALS:
+            return False
+        i += 1
+        while i < n and content[i] in _XML_SPACE:
+            i += 1
+        if i >= n or content[i] not in _QUOTE_BYTES:
+            return False  # an unquoted value is not an AttValue at all
+        closing = content.find(content[i : i + 1], i + 1)
+        if closing == -1:
+            return False  # unterminated literal
+        if content.find(b"<", i + 1, closing) != -1:
+            return False  # AttValue excludes `<`
+        i = closing + 1
 
 
 def _has_svg_root(content: bytes) -> bool:
@@ -265,7 +302,8 @@ def _has_svg_root(content: bytes) -> bool:
     which is the renderer's business. A root reached through a namespace
     PREFIX (``<s:svg>``) is not recognised, nor is a UTF-16/32 encoded file —
     both are legal XML that no SVG tool emits, and both have always been
-    rejected here.
+    rejected here. Attribute NAMES are not validated against XML's NameChar
+    set either: a name's validity does not decide whether a root is present.
     """
     i = 3 if content.startswith(b"\xef\xbb\xbf") else 0
     n = len(content)
@@ -273,7 +311,7 @@ def _has_svg_root(content: bytes) -> bool:
         while i < n and content[i] in _XML_SPACE:
             i += 1
         if content.startswith(b"<svg", i):
-            return _svg_start_tag_closes(content, i + 4)
+            return _completes_svg_start_tag(content, i + 4)
         if content.startswith(b"<!--", i):
             end = content.find(b"-->", i + 4)
             if end == -1:

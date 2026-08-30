@@ -301,6 +301,20 @@ class TestBundleValidation:
             # A raw `<` cannot appear in a start tag, so a tag abandoned
             # before its `>` must not borrow the NEXT element's.
             pytest.param(b"<svg foo\n<rect>", id="lt-inside-start-tag"),
+            pytest.param(b'<svg t="a<b">', id="lt-inside-attribute-value"),
+            # A slash is legal only as the `/>` of an empty element — a rule
+            # that whitespace after the name must not smuggle past.
+            pytest.param(b"<svg /x>", id="space-then-slash-then-name"),
+            pytest.param(b"<svg / >", id="space-then-slash-space-gt"),
+            pytest.param(b"<svg //>", id="space-then-double-slash"),
+            pytest.param(b'<svg a="1" /x>', id="attr-then-slash-then-name"),
+            # The rest of the start-tag production, which a delimiter scan
+            # never checked at all. Each is a fatal XML error, so each is a
+            # file no renderer would draw.
+            pytest.param(b"<svg width=100>", id="unquoted-attribute-value"),
+            pytest.param(b'<svg a="1"b="2">', id="attributes-without-separator"),
+            pytest.param(b"<svg foo>", id="attribute-without-value"),
+            pytest.param(b'<svg ="1">', id="value-without-name"),
             # Neither \v nor \f is XML whitespace, so neither delimits the
             # element name (`bytes.isspace()` would have said otherwise).
             pytest.param(b"<svg\x0bfoo>", id="vertical-tab-is-not-xml-space"),
@@ -381,6 +395,26 @@ class TestBundleValidation:
             # PI content has no quote semantics at all, so it is never
             # quote-tracked either.
             pytest.param(b"<?ps don't?>" + SVG_BYTES, id="pi-with-lone-apostrophe"),
+            # The accepting side of the start-tag production: everything a
+            # real SVG's root tag does, which tightening it must not break.
+            pytest.param(b'<svg xmlns="x" />', id="space-before-empty-close"),
+            pytest.param(b'<svg xmlns="x" ><rect/></svg>', id="space-before-close"),
+            pytest.param(
+                b'<svg\n  xmlns="http://www.w3.org/2000/svg"\n'
+                b'  xmlns:xlink="http://www.w3.org/1999/xlink"\n'
+                b'  version="1.1"\n  viewBox="0 0 24 24">\n<rect/></svg>',
+                id="multiline-attribute-list",
+            ),
+            pytest.param(b'<svg xmlns = "x"><rect/></svg>', id="spaces-around-equals"),
+            pytest.param(b"<svg xmlns='x'><rect/></svg>", id="single-quoted-value"),
+            pytest.param(
+                b'<svg title="a&gt;b" xmlns="x"><rect/></svg>',
+                id="entity-reference-in-value",
+            ),
+            pytest.param(
+                b'<svg style="fill:red;\n stroke:blue" xmlns="x"><rect/></svg>',
+                id="newline-inside-attribute-value",
+            ),
             pytest.param(
                 b"<!-- a [ \" ' ] brand mark -->" + SVG_BYTES,
                 id="comment-with-brackets-and-quotes",
