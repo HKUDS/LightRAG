@@ -475,6 +475,60 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     )
 
 
+def test_generate_docker_compose_respects_long_syntax_ui_template_mounts(
+    tmp_path: Path,
+) -> None:
+    """A long-syntax mount already covering a managed target blocks injection.
+
+    Compose's long form names the container path under ``target:``, so a
+    parser that only splits ``source:target`` strings sees no mount and the
+    generator appends a SECOND entry for the same container path -- which
+    Compose rejects as a duplicate mount point, and which would displace the
+    operator's own bundle source. Both key orders are exercised: ``type:``
+    first (the common form) and ``target:`` first (legal, and the one a
+    list-item-only parser is most likely to misread).
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    volumes:",
+            "      - ./data/rag_storage:/app/data/rag_storage",
+            "      - type: bind",
+            "        source: ./branding/acme",
+            "        target: /app/data/ui_templates",
+            "        read_only: true",
+            "      - target: /app/data/prompts",
+            "        type: bind",
+            "        source: ./branding/prompts",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert generated_compose.count("/app/data/prompts") == 1
+    assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
+    assert "./data/prompts:/app/data/prompts" not in generated_compose
+    # The operator's own sources survive untouched.
+    assert "        source: ./branding/acme\n" in generated_compose
+    assert "        source: ./branding/prompts\n" in generated_compose
+
+
 def test_generate_docker_compose_preserves_non_managed_named_volumes(
     tmp_path: Path,
 ) -> None:

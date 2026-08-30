@@ -412,15 +412,53 @@ service across regenerations.
 ### 7.4 Kubernetes
 
 The bundled Helm chart has no dedicated value for this yet, so mount the
-bundle by patching the deployment. Text files fit a ConfigMap; a binary logo
-goes in the same ConfigMap's `binaryData` (or a PVC, if the bundle is large):
+bundle by patching the deployment.
+
+**A ConfigMap has no directories.** Its keys are flat, and every key becomes a
+file directly under the mount — `--from-file=<dir>` packages that directory's
+files under their bare basenames and skips subdirectories entirely. So a
+bundle delivered as a ConfigMap must be flat, with a manifest whose paths are
+exactly those keys. Copying the nested example layout as-is fails startup with
+`'locales/en/welcome.md' does not exist or is not a file`.
+
+Write a flat manifest for this deployment:
+
+```json
+{
+  "schema_version": 1,
+  "default_locale": "en",
+  "brand": { "logo": "logo.svg" },
+  "locales": {
+    "en": {
+      "welcome": "welcome.en.md",
+      "query_empty": "query_empty.en.md",
+      "login": "login.en.md",
+      "agreements": "agreements.en.md",
+      "logo_alt": "Example Corp"
+    }
+  }
+}
+```
+
+and name every referenced file explicitly, the logo included — the `key=path`
+form does the flattening, so your source tree can stay nested. A file the
+manifest references but the ConfigMap omits fails startup:
 
 ```bash
 kubectl create configmap lightrag-ui-templates \
-  --from-file=manifest.json=./ui_templates/manifest.json \
-  --from-file=./ui_templates/locales/en \
+  --from-file=manifest.json=./k8s/ui-manifest.json \
+  --from-file=welcome.en.md=./ui_templates/locales/en/welcome.md \
+  --from-file=query_empty.en.md=./ui_templates/locales/en/query_empty.md \
+  --from-file=login.en.md=./ui_templates/locales/en/login.md \
+  --from-file=agreements.en.md=./ui_templates/locales/en/agreements.md \
+  --from-file=logo.svg=./ui_templates/assets/logo.svg \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
+
+`kubectl` places a non-UTF-8 logo (PNG, JPEG, WebP) into the ConfigMap's
+`binaryData` automatically. Note that a ConfigMap is capped at ~1 MiB in
+total, well below this feature's 2 MiB per-logo limit: a bundle with a large
+logo needs a PVC instead, which also lets you keep the nested layout.
 
 Then add to the container:
 
@@ -438,9 +476,10 @@ Then add to the container:
             name: lightrag-ui-templates
 ```
 
-A ConfigMap flattens directories, so either keep the bundle flat and write the
-manifest paths to match, or use several ConfigMaps mounted at subpaths. Whatever
-the layout, the manifest's relative paths must resolve inside the mount.
+Keep `mountPath` equal to `UI_TEMPLATES_DIR`. The projected volume's internal
+`..data` symlinks stay inside the mount, so the bundle's containment checks are
+satisfied — a flat ConfigMap mount loads exactly like a directory on disk.
+Updating the ConfigMap does **not** reload the bundle; restart the pods (§7.5).
 
 ### 7.5 Applying changes
 

@@ -1720,11 +1720,32 @@ _lightrag_volumes_have_container_target() {
         in_volumes="no"
       elif [[ "$in_volumes" == "yes" && "$line" =~ ^[[:space:]]{6}-[[:space:]](.+)$ ]]; then
         mount_spec="$(_strip_wrapping_quotes "${BASH_REMATCH[1]}")"
+        # Long syntax whose first key is the target (`- target: /app/x`).
+        # Compose's long form names the container path under `target:`, so a
+        # short `source:target` split would never see it and the caller would
+        # append a SECOND mount for the same container path -- which Compose
+        # rejects as a duplicate mount point, or which silently displaces the
+        # user's own source.
+        if [[ "$mount_spec" =~ ^target:[[:space:]]+(.+)$ ]]; then
+          container_path="$(_strip_wrapping_quotes "${BASH_REMATCH[1]}")"
+          if [[ "$container_path" == "$target_path" ]]; then
+            return 0
+          fi
+          continue
+        fi
         remainder="${mount_spec#*:}"
         if [[ "$remainder" == "$mount_spec" ]]; then
           continue
         fi
         container_path="${remainder%%:*}"
+        if [[ "$container_path" == "$target_path" ]]; then
+          return 0
+        fi
+      elif [[ "$in_volumes" == "yes" && "$line" =~ ^[[:space:]]{8,}target:[[:space:]]+(.+)$ ]]; then
+        # A continuation line of a long-syntax entry (`- type: bind` first,
+        # then `  target: …`). Deeper indentation than a list item, so it
+        # cannot be confused with a short-syntax mount.
+        container_path="$(_strip_wrapping_quotes "${BASH_REMATCH[1]}")"
         if [[ "$container_path" == "$target_path" ]]; then
           return 0
         fi

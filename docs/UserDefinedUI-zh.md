@@ -379,15 +379,49 @@ grep ui_templates docker-compose.final.yml
 ### 7.4 Kubernetes
 
 自带的 Helm Chart 目前还没有专门的配置项，因此需要自行修改 Deployment 来挂载模板包。
-文本文件适合放进 ConfigMap；二进制 Logo 可以放进同一个 ConfigMap 的 `binaryData`
-（模板包较大时改用 PVC）：
+
+**ConfigMap 没有目录结构。** 它的 key 是扁平的，每个 key 直接成为挂载点下的一个文件；
+`--from-file=<目录>` 只会把该目录下的文件按其基本名打包，并跳过所有子目录。因此以
+ConfigMap 方式交付的模板包必须是扁平的，且 manifest 中的路径要与这些 key 完全一致。
+直接照搬嵌套的示例布局会导致启动失败，报
+`'locales/zh/welcome.md' does not exist or is not a file`。
+
+为这种部署单独写一份扁平的 manifest：
+
+```json
+{
+  "schema_version": 1,
+  "default_locale": "zh",
+  "brand": { "logo": "logo.svg" },
+  "locales": {
+    "zh": {
+      "welcome": "welcome.zh.md",
+      "query_empty": "query_empty.zh.md",
+      "login": "login.zh.md",
+      "agreements": "agreements.zh.md",
+      "logo_alt": "示例公司"
+    }
+  }
+}
+```
+
+并逐个显式指定被引用的文件（包括 Logo）——`key=路径` 的形式已经完成了扁平化，因此你的
+源码目录可以保持嵌套。manifest 引用了但 ConfigMap 中缺失的文件会导致启动失败：
 
 ```bash
 kubectl create configmap lightrag-ui-templates \
-  --from-file=manifest.json=./ui_templates/manifest.json \
-  --from-file=./ui_templates/locales/zh \
+  --from-file=manifest.json=./k8s/ui-manifest.json \
+  --from-file=welcome.zh.md=./ui_templates/locales/zh/welcome.md \
+  --from-file=query_empty.zh.md=./ui_templates/locales/zh/query_empty.md \
+  --from-file=login.zh.md=./ui_templates/locales/zh/login.md \
+  --from-file=agreements.zh.md=./ui_templates/locales/zh/agreements.md \
+  --from-file=logo.svg=./ui_templates/assets/logo.svg \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
+
+非 UTF-8 的 Logo（PNG、JPEG、WebP）会被 `kubectl` 自动放入 ConfigMap 的
+`binaryData`。但请注意 ConfigMap 总大小上限约为 1 MiB，低于本功能单个 Logo 2 MiB 的
+限制：Logo 较大的模板包需要改用 PVC，PVC 同时也允许保留嵌套目录结构。
 
 然后在容器上添加：
 
@@ -405,9 +439,9 @@ kubectl create configmap lightrag-ui-templates \
             name: lightrag-ui-templates
 ```
 
-ConfigMap 会把目录结构展平，所以要么把模板包做成扁平结构并让 manifest 路径与之匹配，
-要么用多个 ConfigMap 挂载到不同子路径。无论采用哪种布局，manifest 中的相对路径都必须
-能在挂载点内解析成功。
+`mountPath` 要与 `UI_TEMPLATES_DIR` 保持一致。投射卷内部的 `..data` 符号链接始终指向
+挂载点内部，因此模板包的路径包含性校验可以通过——扁平的 ConfigMap 挂载与磁盘上的普通
+目录加载表现完全一致。更新 ConfigMap **不会**重新加载模板包，请重启 Pod（见 §7.5）。
 
 ### 7.5 让修改生效
 
