@@ -39,7 +39,7 @@ Each request for `index.html` goes through `SmartStaticFiles` in `lightrag/api/l
 1. Reads the static `index.html` produced by `bun run build`.
 2. Looks for the placeholder comment `<!-- __LIGHTRAG_RUNTIME_CONFIG__ -->`.
 3. Replaces it with
-   `<script>window.__LIGHTRAG_CONFIG__ = {"apiPrefix":"…","webuiPrefix":"…"}</script>`,
+   `<script>window.__LIGHTRAG_CONFIG__ = {"apiPrefix":"…","webuiPrefix":"…","webuiTitle":"…"}</script>`,
    computed from the configured `LIGHTRAG_API_PREFIX` (the in-app `/webui` mount is hardcoded server-side).
 
 Sequence — browser request to a site-prefixed instance:
@@ -76,7 +76,7 @@ and in-app links.
 | `LIGHTRAG_API_PREFIX` | `""` | Reverse-proxy mount prefix. The backend accepts both strip and verbatim forwarding — pick whichever fits your proxy stack. Passed to FastAPI as `root_path`. |
 | `LIGHTRAG_DEFAULT_UI` | `webui` | Which UI entry the root path `/` redirects to: `webui` (admin) or `workspace` (query-only entry). Controls ONLY the `/` redirect; both entries stay mounted regardless. Any other value fails startup. |
 
-There are TWO WebUI entries, both mounted server-side from one shared build: the admin UI at `/webui` and the query-user entry at `/workspace` (each serving its own entry HTML from the same static directory; requesting the other entry's HTML file returns 404). `window.__LIGHTRAG_CONFIG__` keeps the published shape `{apiPrefix, webuiPrefix}`; `webuiPrefix` is computed as `LIGHTRAG_API_PREFIX + "/webui/"` and injected identically for both entries — you do **not** set it yourself, and there is no entry-mode field (the entry identity IS the loaded HTML product). Behind a prefix, browsers see `/site01/webui/` and `/site01/workspace/`.
+There are TWO WebUI entries, both mounted server-side from one shared build: the admin UI at `/webui` and the query-user entry at `/workspace` (each serving its own entry HTML from the same static directory; requesting the other entry's HTML file returns 404). `window.__LIGHTRAG_CONFIG__` keeps the published shape `{apiPrefix, webuiPrefix, webuiTitle}`; `webuiPrefix` is computed as `LIGHTRAG_API_PREFIX + "/webui/"` and injected identically for both entries — you do **not** set it yourself, and there is no entry-mode field (the entry identity IS the loaded HTML product). Behind a prefix, browsers see `/site01/webui/` and `/site01/workspace/`. `webuiTitle` carries `WEBUI_TITLE` (null when unset) and is applied to the browser tab title by the same injected snippet, so the tab shows the deployment's own name from the first paint instead of the bundled default.
 
 There are no longer any frontend `VITE_API_PREFIX` / `VITE_WEBUI_PREFIX` variables. Setting them has no effect (they are ignored by the build).
 
