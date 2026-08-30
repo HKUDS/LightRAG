@@ -803,11 +803,21 @@ describe('quota degradation under a byte budget', () => {
   })
 
   test('the scalar rung keeps theme/language/apiKey when the payload cannot fit', () => {
-    // Regression (P1, the other half). Between "the real bytes" and "nothing"
-    // there is a rung worth having: the same envelope minus its non-primitive
-    // fields. The unbounded fields are objects (querySettings, the history);
-    // the settings a user would actually miss are scalars worth a few dozen
-    // bytes, and they fit in windows where the payload does not.
+    // Between "the real bytes" and "nothing" there is a rung worth having:
+    // the same envelope minus its non-primitive fields. The unbounded fields
+    // are objects (querySettings, the history); the settings a user would
+    // actually miss are scalars worth a few dozen bytes, and they fit in
+    // windows where the payload does not.
+    //
+    // Regression (P1) on the SECOND half of that rung: whether shedding the
+    // objects is free. This run never wrote the query-settings target — the
+    // ladder is reached from `freeLegacyHistory`, which exists precisely for
+    // the case where the FIRST target write already failed — so dropping
+    // `querySettings` here drops the only copy that exists. The rung used to
+    // be unmarked unconditionally ("objects are already in their own keys"),
+    // so the reload migrated the reduced envelope successfully, the store
+    // hydrated default query settings, and `acceptSettingsDataLoss` was
+    // never offered for settings the browser never handed over.
     const quotaStorage = new ByteQuotaStorage(100000, true)
     quotaStorage.setItem(
       LEGACY_SETTINGS_STORAGE_KEY,
@@ -824,15 +834,74 @@ describe('quota degradation under a byte budget', () => {
 
     runSettingsStorageSplitMigration(quotaStorage)
 
-    // Still a failure to report — nothing was migrated…
-    expect(getSettingsMigrationError()).not.toBeNull()
-    // …but the settings survived it, and the envelope is not marked as lost.
+    // The scalars still survive the rung — that half is unchanged…
     const left = JSON.parse(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)!)
     expect(left.state).toEqual({ theme: 'dark', language: 'zh', apiKey: 'secret' })
-    expect('lightragSettingsLostToQuota' in left).toBe(false)
+    // …and the query settings that went with it are nowhere else.
+    expect(quotaStorage.getItem(QUERY_SETTINGS_STORAGE_KEY)).toBeNull()
+    // So it IS a loss, said so on the envelope and on this run's error.
+    expect(left[SETTINGS_LOST_MARKER_KEY]).toBe(true)
+    expect(isSettingsDataLostError(getSettingsMigrationError())).toBe(true)
 
-    // When capacity returns they migrate normally — no loss notice, because
-    // there was no loss to report. Only querySettings fell back to defaults.
+    // Capacity returns and the user reloads: still refused, and nothing
+    // written — no query-settings target invented from a field that is gone.
+    quotaStorage.data.delete('unrelated::blob')
+    quotaStorage.budget = 100000
+    resetSettingsMigrationErrorForTests()
+
+    runSettingsStorageSplitMigration(quotaStorage)
+
+    expect(isSettingsDataLostError(getSettingsMigrationError())).toBe(true)
+    expect(quotaStorage.getItem(QUERY_SETTINGS_STORAGE_KEY)).toBeNull()
+
+    // Only the person gets past it, and the scalars they still have survive.
+    acceptSettingsDataLoss(quotaStorage)
+    resetSettingsMigrationErrorForTests()
+    runSettingsStorageSplitMigration(quotaStorage)
+
+    expect(getSettingsMigrationError()).toBeNull()
+    const migrated = JSON.parse(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)!)
+    expect(migrated.version).toBe(SETTINGS_STORAGE_VERSION_AFTER_SPLIT)
+    expect(migrated.state.theme).toBe('dark')
+    expect(migrated.state.language).toBe('zh')
+    expect(migrated.state.apiKey).toBe('secret')
+    // The query settings really are gone — now behind an explicit acceptance
+    // instead of behind nothing at all.
+    expect(parsedFrom(quotaStorage, QUERY_SETTINGS_STORAGE_KEY).state).toEqual({})
+  })
+
+  test('the object rung is FREE when every dropped field already has its key', () => {
+    // The other side of the same rule, and what keeps the fix from being a
+    // blanket "objects are always a loss". Rule 4 makes a PRE-EXISTING
+    // query-settings key authoritative — the legacy copy was never going to
+    // be written anywhere — so shedding `querySettings` from the envelope
+    // forfeits nothing and must not raise a loss the user has to accept.
+    const quotaStorage = new ByteQuotaStorage(100000, true)
+    quotaStorage.setItem(
+      QUERY_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ state: { querySettings: { mode: 'local' } }, version: 1 })
+    )
+    quotaStorage.setItem(
+      LEGACY_SETTINGS_STORAGE_KEY,
+      legacyEnvelope(21, {
+        ...v21State(),
+        querySettings: { mode: 'hybrid', top_k: 7, blob: 'q'.repeat(600) },
+        retrievalHistory: bigHistory
+      })
+    )
+    quotaStorage.setItem('unrelated::blob', 'y'.repeat(1200))
+    quotaStorage.budget = 1500
+
+    runSettingsStorageSplitMigration(quotaStorage)
+
+    const left = JSON.parse(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)!)
+    expect(left.state).toEqual({ theme: 'dark', language: 'zh', apiKey: 'secret' })
+    // No marker: nothing the rung dropped existed only in this envelope.
+    expect(SETTINGS_LOST_MARKER_KEY in left).toBe(false)
+    expect(isSettingsDataLostError(getSettingsMigrationError())).toBe(false)
+
+    // So when capacity returns it migrates normally, with no acceptance —
+    // and the user's own query-settings key is still the authoritative one.
     quotaStorage.data.delete('unrelated::blob')
     quotaStorage.budget = 100000
     resetSettingsMigrationErrorForTests()
@@ -840,14 +909,9 @@ describe('quota degradation under a byte budget', () => {
     runSettingsStorageSplitMigration(quotaStorage)
 
     expect(getSettingsMigrationError()).toBeNull()
-    // Dropping objects forfeits nothing (they are already in their own keys),
-    // so this rung is NOT a loss: no marker, nothing to report.
-    expect(isSettingsDataLostError(getSettingsMigrationError())).toBe(false)
-    const migrated = JSON.parse(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)!)
-    expect(migrated.version).toBe(SETTINGS_STORAGE_VERSION_AFTER_SPLIT)
-    expect(migrated.state.theme).toBe('dark')
-    expect(migrated.state.language).toBe('zh')
-    expect(migrated.state.apiKey).toBe('secret')
+    expect(parsedFrom(quotaStorage, QUERY_SETTINGS_STORAGE_KEY).state.querySettings.mode).toBe(
+      'local'
+    )
   })
 
   test('a PRE-EXISTING history key is never reclaimed (rule 4 still wins)', () => {
@@ -976,6 +1040,70 @@ describe('a shed envelope stamped POST-SPLIT still requires acceptance', () => {
     expect('lightragSettingsLostToQuota' in accepted).toBe(false)
     expect(accepted.state.theme).toBe('dark')
     expect(accepted.state.language).toBe('zh')
+  })
+
+  test('a field the split copies NOWHERE is a loss wherever it is shed', () => {
+    // Regression (P1). The object rung's premise — "already written to their
+    // own keys by phase 1" — holds only for the two fields the split
+    // actually copies. `userPromptHistory` is not one of them: nothing
+    // migrates it, the legacy chain writes it into every normalized
+    // envelope, and it lives in this envelope exactly the way theme,
+    // language and apiKey do. Shedding it used to be silent.
+    //
+    // Here every target already exists, so phase 1 writes nothing and the
+    // quota can only bite on phase 2's cleanup — which means the shed rung
+    // inherits that payload's v22 stamp. The refusal on reload therefore
+    // depends on the marker being read BEFORE the version gate as well;
+    // these two fixes hold this case together.
+    const quotaStorage = new ByteQuotaStorage(100000, true)
+    quotaStorage.setItem(
+      QUERY_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ state: { querySettings: { mode: 'hybrid' } }, version: 1 })
+    )
+    quotaStorage.setItem(
+      WORKSPACE_RETRIEVAL_HISTORY_KEY,
+      JSON.stringify({ state: { history: [] }, version: 1 })
+    )
+    quotaStorage.setItem(
+      WEBUI_RETRIEVAL_HISTORY_KEY,
+      JSON.stringify({ state: { history: [] }, version: 1 })
+    )
+    quotaStorage.setItem(
+      LEGACY_SETTINGS_STORAGE_KEY,
+      legacyEnvelope(21, {
+        theme: 'dark',
+        language: 'zh',
+        apiKey: 'secret',
+        querySettings: { mode: 'hybrid', top_k: 7 },
+        userPromptHistory: [
+          'how does the graph index work?',
+          'summarise the release notes'
+        ],
+        retrievalHistory: []
+      })
+    )
+    // Mid-window (384..432): room for the scalar-only rung, not for the
+    // payload that still carries the prompt history.
+    quotaStorage.budget = 408
+
+    runSettingsStorageSplitMigration(quotaStorage)
+
+    const shed = JSON.parse(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)!)
+    // The migrated field's own key is right there, so it is NOT what made
+    // this a loss — the prompt history is.
+    expect(quotaStorage.getItem(QUERY_SETTINGS_STORAGE_KEY)).not.toBeNull()
+    expect(shed.state.userPromptHistory).toBeUndefined()
+    expect(shed.state.theme).toBe('dark')
+    expect(shed.version).toBe(SETTINGS_STORAGE_VERSION_AFTER_SPLIT)
+    expect(shed[SETTINGS_LOST_MARKER_KEY]).toBe(true)
+    expect(isSettingsDataLostError(getSettingsMigrationError())).toBe(true)
+
+    // …and the reload refuses rather than completing over it.
+    quotaStorage.budget = 100000
+    resetSettingsMigrationErrorForTests()
+    runSettingsStorageSplitMigration(quotaStorage)
+    expect(isSettingsDataLostError(getSettingsMigrationError())).toBe(true)
+    expect(JSON.parse(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)!)).toEqual(shed)
   })
 
   test('a STRICTLY future envelope is rule 3\'s, marker or not', () => {

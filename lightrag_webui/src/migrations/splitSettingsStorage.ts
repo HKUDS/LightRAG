@@ -42,11 +42,15 @@
  *  8. Both entries run this migration unconditionally; the /workspace entry
  *     may write ALL target keys here (runtime writes to
  *     query-settings-storage remain forbidden for it).
- *  9. An envelope the quota forced this code to shed state from carries the
- *     loss marker, and no run may proceed over it — regardless of whether
- *     there is anything left to migrate, since a shed rung inherits the
- *     version of the payload it replaced and phase 2's is already v22. Only
- *     `acceptSettingsDataLoss`, which only a person calls, clears it.
+ *  9. An envelope the quota forced this code to shed a field from carries
+ *     the loss marker whenever that field existed NOWHERE ELSE — which is
+ *     decided per field against the storage as it stands, not by the
+ *     field's shape: a scalar always qualifies, and so does an object the
+ *     split copies nowhere (`userPromptHistory`) or one whose copy has not
+ *     landed yet. No run may proceed over a marked envelope, regardless of
+ *     whether there is anything left to migrate, since a shed rung inherits
+ *     the version of the payload it replaced and phase 2's is already v22.
+ *     Only `acceptSettingsDataLoss`, which only a person calls, clears it.
  *
  * No locks and no cross-tab coordination are needed: the target keys are
  * fixed, every executor writes only missing keys, a present key is
@@ -259,14 +263,44 @@ const MINIMAL_LEGACY_ENVELOPE = JSON.stringify({
  * keeps this correct as the legacy state evolves. The version is carried over
  * unchanged so a reduced envelope means what the payload it replaces meant.
  *
- * Only the SCALAR rungs carry the loss marker, and the distinction is not
- * cosmetic. By the time this runs, the object fields have already been
- * written to their own keys by phase 1 — dropping them from the legacy
- * envelope forfeits nothing. The scalars have nowhere else to go: theme,
- * language and apiKey exist only here, so shedding one is a real loss and
- * must be reported rather than migrated over.
+ * Whether a rung carries the loss marker is decided PER FIELD, against the
+ * storage as it stands, and the rule is the same for objects and scalars:
+ * shedding a field is free only when its content still exists SOMEWHERE
+ * ELSE. Two ways it does not:
+ *
+ *  * an object field the split copies nowhere. `userPromptHistory` is one,
+ *    and the legacy chain writes it into every normalized envelope — it
+ *    lives only here, exactly like theme, language and apiKey do;
+ *  * a field the split DOES copy, on a run where the copy has not landed.
+ *    `freeLegacyHistory` is reached precisely when the first target write
+ *    already failed, so `querySettings` can still be sitting only in this
+ *    envelope when the ladder drops it.
+ *
+ * Treating the object rung as free unconditionally was the defect: the
+ * reduced envelope migrated "successfully" on the next reload, the store
+ * hydrated defaults for query settings the browser had never handed over,
+ * and `acceptSettingsDataLoss` — the whole point of the marker — was never
+ * offered. The scalars have nowhere else to go by construction, so their
+ * rungs are always marked.
  */
-function* reducedLegacyPayloads(payload: string): Generator<string> {
+
+/**
+ * The fields the split copies out, and the target key that holds the copy.
+ * A field listed here is free to shed once its target EXISTS; one that is
+ * not listed has no copy anywhere and is never free.
+ *
+ * `retrievalHistory` is inert today — both callers strip it before the
+ * ladder can see it (phase 2 deletes it, `freeLegacyHistory` blanks it), and
+ * its forfeit is governed by the degradation policy and reported through
+ * `wasHistoryDroppedDuringMigration` instead. It is listed so the mapping is
+ * the same fixed spec as the split's own, not a subset that happens to work.
+ */
+const MIGRATED_FIELD_TARGETS: Record<string, string> = {
+  querySettings: QUERY_SETTINGS_STORAGE_KEY,
+  retrievalHistory: WEBUI_RETRIEVAL_HISTORY_KEY
+}
+
+function* reducedLegacyPayloads(payload: string, storage: Storage): Generator<string> {
   let parsed: any
   try {
     parsed = JSON.parse(payload)
@@ -278,9 +312,16 @@ function* reducedLegacyPayloads(payload: string): Generator<string> {
 
   const scalars: Record<string, unknown> = {}
   let droppedObjects = false
+  // Set when at least one dropped object exists ONLY in this envelope, so
+  // the rung below has to be reported rather than quietly migrated over.
+  let droppedUnsavedObject = false
   for (const [key, value] of Object.entries(state)) {
     if (value !== null && typeof value === 'object') {
       droppedObjects = true
+      const target = MIGRATED_FIELD_TARGETS[key]
+      if (target === undefined || storage.getItem(target) == null) {
+        droppedUnsavedObject = true
+      }
       continue
     }
     scalars[key] = value
@@ -292,8 +333,9 @@ function* reducedLegacyPayloads(payload: string): Generator<string> {
         : { ...parsed, state: fields }
     )
 
-  // Objects only: already migrated to their own keys, so nothing is lost.
-  if (droppedObjects) yield rung(scalars, false)
+  // Objects only. Free when every one of them is already in its own key;
+  // a loss the moment one of them is not (see the rule above).
+  if (droppedObjects) yield rung(scalars, droppedUnsavedObject)
 
   // Biggest scalar first: each step buys the most room per field forfeited.
   const byCost = Object.keys(scalars).sort(
@@ -354,7 +396,7 @@ function writeShrunkLegacyEnvelope(storage: Storage, payload: string): void {
     let restored: string | null = null
     for (const fallback of [
       removed,
-      ...reducedLegacyPayloads(payload),
+      ...reducedLegacyPayloads(payload, storage),
       MINIMAL_LEGACY_ENVELOPE
     ]) {
       if (fallback === null) continue
@@ -489,8 +531,10 @@ function tryWriteDegraded(
  *
  * The reduced envelope KEEPS querySettings and is stamped at the normalized
  * cap version, so a crash right here leaves a valid, still-migratable
- * envelope — the next run re-normalizes it as a no-op and splits it. Only the
- * already-forfeited history is gone.
+ * envelope — the next run re-normalizes it as a no-op and splits it, and only
+ * the already-forfeited history is gone. When even THAT does not fit, the
+ * write-back ladder sheds further and more than the history goes; it marks
+ * what it sheds, so the next run refuses instead of completing over it.
  */
 function freeLegacyHistory(
   storage: Storage,
