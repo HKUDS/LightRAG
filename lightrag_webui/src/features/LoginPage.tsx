@@ -117,6 +117,17 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
           // If auth is not configured, use the guest token and redirect.
           // Guest activation is an identity transition: a different stored
           // identity means the previous user's histories must not be shown.
+          //
+          // NOT gated by the consent checkbox, deliberately. The gate binds
+          // an agreement to a user, and an auth-disabled deployment has no
+          // user to bind it to -- every visitor is the same anonymous guest,
+          // so a tick here would record nothing and prove nothing. It is a
+          // development and demo posture, not a production one; a deployment
+          // that needs the agreement accepted configures AUTH_ACCOUNTS and
+          // gets the gate on the credentialed form below. The same reasoning
+          // covers the workspace entry's guest activation in
+          // WorkspaceWelcome.handlePrimaryAction. Documented in
+          // docs/ui_templates_example/README.md.
           activateLoginIdentityFromToken(status.access_token)
           login(status.access_token, true, status.core_version, status.api_version, status.webui_title || null, status.webui_description || null)
           if (status.message) {

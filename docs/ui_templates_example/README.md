@@ -44,6 +44,12 @@ Copy this directory, replace the texts and the logo, then restart the server
     cover (or route uncovered locales there through `fallbacks`).
   - A declared file that is empty fails startup — the gate must never point
     at a blank document.
+  - The gate covers **credentialed sign-in only**. A deployment with
+    authentication disabled (`AUTH_ACCOUNTS` unset) admits visitors as
+    guests without it, and that is deliberate rather than a gap: with no
+    authentication there is no identified user to hold to an agreement, and
+    auth-disabled is a development and demo posture, not a production one.
+    Configure `AUTH_ACCOUNTS` if the agreement has to be accepted.
 - `fallbacks` maps uncovered locales to an ordered list of DECLARED locales;
   resolution is single-level (uncovered locale → first declared target →
   `default_locale`). Content is never mixed field-by-field with the
