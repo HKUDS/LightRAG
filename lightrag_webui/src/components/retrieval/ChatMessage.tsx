@@ -41,6 +41,17 @@ export type { MessageWithError } from '@/types/retrieval'
 // full Mermaid support in both entries.
 const loadMermaid = () => import('mermaid').then((m) => m.default)
 
+/**
+ * Tables scroll INSIDE their own block. The message list scrolls vertically
+ * only (see MessageList), so a table wider than the conversation column would
+ * otherwise be clipped and unreachable on a narrow screen.
+ */
+const ScrollableTable = ({ children }: { children?: ReactNode }) => (
+  <div className="my-2 max-w-full overflow-x-auto">
+    <table>{children}</table>
+  </div>
+)
+
 // Restore original component definition and export
 export const ChatMessage = ({
   message,
@@ -148,11 +159,13 @@ export const ChatMessage = ({
     h4: ({ children }: { children?: ReactNode }) => <h4 className="text-base font-semibold mt-3 mb-2">{children}</h4>,
     ul: ({ children }: { children?: ReactNode }) => <ul className="list-disc pl-5 my-2">{children}</ul>,
     ol: ({ children }: { children?: ReactNode }) => <ol className="list-decimal pl-5 my-2">{children}</ol>,
-    li: ({ children }: { children?: ReactNode }) => <li className="my-1">{children}</li>
+    li: ({ children }: { children?: ReactNode }) => <li className="my-1">{children}</li>,
+    table: ScrollableTable
   }), [message.mermaidRendered, message.role]);
 
   const thinkingMarkdownComponents = useMemo(() => ({
-    code: (props: any) => (<CodeHighlight {...props} renderAsDiagram={message.mermaidRendered ?? false} messageRole={message.role} />)
+    code: (props: any) => (<CodeHighlight {...props} renderAsDiagram={message.mermaidRendered ?? false} messageRole={message.role} />),
+    table: ScrollableTable
   }), [message.mermaidRendered, message.role]);
 
   // Whether the assistant has begun emitting visible answer text. Drives both
@@ -188,6 +201,11 @@ export const ChatMessage = ({
       </div>
     ) : null
 
+  // The bubble shares its flex row with a fixed-width copy button (24px plus
+  // an 8px gap), and its percentage width knows nothing about that. `min-w-0`
+  // is therefore required, not cosmetic: without it the flex item's automatic
+  // minimum size pins the bubble at 95% and the row overflows by ~32px on a
+  // phone-width screen.
   return (
     <div
       className={`${
@@ -196,7 +214,7 @@ export const ChatMessage = ({
           : message.isError
             ? 'w-[95%] bg-red-100 text-red-600 dark:bg-red-950 dark:text-red-400'
             : 'w-[95%] bg-muted'
-      } rounded-lg px-4 py-2`}
+      } min-w-0 rounded-lg px-4 py-2`}
     >
       {/* Before any answer text: the timing row sits on top and the thinking
           hint appears beneath it, so the time doesn't jump when "Thinking..."
