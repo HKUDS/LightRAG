@@ -13,6 +13,7 @@
     "apiDocs": "Tài liệu API",
     "projectRepository": "Kho dự án",
     "appSettings": "Cài đặt",
+    "deploymentInfo": "Thông tin triển khai",
     "logout": "Đăng xuất",
     "frontendNeedsRebuild": "Giao diện cần được xây dựng lại",
     "themeToggle": {

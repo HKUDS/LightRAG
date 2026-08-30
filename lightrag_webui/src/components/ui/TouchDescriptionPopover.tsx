@@ -1,4 +1,5 @@
 import { InfoIcon } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import Button from '@/components/ui/Button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
 
@@ -7,6 +8,8 @@ interface TouchDescriptionPopoverProps {
 }
 
 export default function TouchDescriptionPopover({ description }: TouchDescriptionPopoverProps) {
+  const { t } = useTranslation()
+
   if (!description) return null
 
   return (
@@ -16,8 +19,8 @@ export default function TouchDescriptionPopover({ description }: TouchDescriptio
           type="button"
           variant="ghost"
           size="icon"
-          className="hidden shrink-0 [@media(any-hover:none)]:inline-flex"
-          aria-label={description}
+          className="relative hidden h-9 w-9 shrink-0 after:absolute after:-inset-1 after:content-[''] [@media(any-hover:none)]:inline-flex"
+          aria-label={t('header.deploymentInfo')}
         >
           <InfoIcon aria-hidden="true" />
         </Button>

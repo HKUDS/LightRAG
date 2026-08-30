@@ -13,6 +13,7 @@
     "apiDocs": "Documentation de l'API",
     "projectRepository": "Référentiel du projet",
     "appSettings": "Paramètres",
+    "deploymentInfo": "Informations sur le déploiement",
     "logout": "Déconnexion",
     "frontendNeedsRebuild": "Le frontend nécessite une reconstruction",
     "themeToggle": {

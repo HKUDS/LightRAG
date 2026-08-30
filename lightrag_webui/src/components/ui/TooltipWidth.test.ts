@@ -25,7 +25,7 @@ const viewportAwareWidths = [
 describe('tooltip viewport width constraints', () => {
   test('preserves the viewport clamp when a caller requests a desktop maximum', () => {
     for (const width of viewportAwareWidths) {
-      expect(cn('max-w-[calc(100vw-2rem)]', width)).toContain('calc(100vw-2rem)')
+      expect(cn('max-w-[calc(100vw-2rem)]', width)).toBe(width)
     }
   })
 

@@ -13,6 +13,7 @@
     "apiDocs": "API Documentation",
     "projectRepository": "Project Repository",
     "appSettings": "Settings",
+    "deploymentInfo": "Deployment information",
     "logout": "Logout",
     "frontendNeedsRebuild": "Frontend needs rebuild",
     "themeToggle": {
