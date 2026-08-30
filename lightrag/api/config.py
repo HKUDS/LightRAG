@@ -852,6 +852,18 @@ def parse_args() -> argparse.Namespace:
     # RFC #3671). Any route audit must condition the same set on this flag.
     args.enable_api_docs = get_env_value("ENABLE_API_DOCS", True, bool)
 
+    # AI-generated content notice shown under every answer in the two query
+    # UIs (the admin /webui retrieval panel and the /workspace query entry).
+    # Deployments that must label machine-generated output (a regulatory
+    # requirement in several jurisdictions) turn it on here; the default keeps
+    # the existing chat appearance untouched. The flag is deployment-level
+    # display configuration like WEBUI_TITLE, so it travels to the frontend on
+    # the same responses (/auth-status, /login, /health) and never in the
+    # answer text itself.
+    args.enable_ai_content_notice = get_env_value(
+        "ENABLE_AI_CONTENT_NOTICE", False, bool
+    )
+
     # Optional external UI customization bundle (workspace-entry PRD §8).
     # Empty/unset means "no customization" — the normal state, not an error;
     # a set value must point at a bundle that validates completely or the

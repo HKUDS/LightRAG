@@ -407,6 +407,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "محتوى من إنتاج الذكاء الاصطناعي — يُرجى التحقق منه.",
       "copyTooltip": "نسخ إلى الحافظة",
       "copyError": "فشل نسخ النص إلى الحافظة",
       "copyEmpty": "لا يوجد محتوى للنسخ",

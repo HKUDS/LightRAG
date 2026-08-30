@@ -407,6 +407,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "内容由AI生成，請注意辨別",
       "copyTooltip": "複製到剪貼簿",
       "copyError": "複製文字到剪貼簿失敗",
       "copyEmpty": "沒有內容可複製",

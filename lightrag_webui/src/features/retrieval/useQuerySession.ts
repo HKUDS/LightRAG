@@ -6,8 +6,14 @@ import { errorMessage } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
 import type { MessageWithError } from '@/types/retrieval'
 import type { QuerySettings } from '@/stores/querySettings'
+import {
+  producesAiGeneratedOutput,
+  resolveAiGenerated,
+  restoredAiGeneratedFlag
+} from '@/lib/aiContentNotice'
 import type { RetrievalHistoryStore } from '@/stores/retrievalHistory'
 import { serializeQueryRequest } from './serializeQueryRequest'
+import { streamErrorChunk } from './streamErrorChunk'
 
 /**
  * Shared query-session controller used by BOTH query pages (`RetrievalView`
@@ -160,7 +166,11 @@ export function useQuerySession({
             ...msg,
             id: msg.id || `hist-${Date.now()}-${index}`, // Add ID if missing
             mermaidRendered: msg.mermaidRendered ?? true, // Assume historical mermaid is rendered
-            latexRendered: msg.latexRendered ?? true // Assume historical LaTeX is rendered
+            latexRendered: msg.latexRendered ?? true, // Assume historical LaTeX is rendered
+            // Conversations persisted before the flag existed carry no
+            // origin; resolve it once here so the renderer only ever sees an
+            // explicit boolean.
+            aiGenerated: restoredAiGeneratedFlag(msg)
           }
         } catch (error) {
           console.error('Error processing message:', error)
@@ -257,7 +267,12 @@ export function useQuerySession({
         thinkingTime: null,
         thinkingContent: undefined,
         displayContent: undefined,
-        isThinking: false
+        isThinking: false,
+        // Flipped on by the first chunk of real model output (see
+        // updateAssistantMessage). Explicit rather than left undefined so a
+        // debug-mode answer stays distinguishable from a pre-flag one after a
+        // history round-trip.
+        aiGenerated: false
       }
 
       const prevMessages = [...messages]
@@ -284,6 +299,13 @@ export function useQuerySession({
       const snapshot: QuerySettings = options.modeOverride
         ? { ...baseSnapshot, mode: options.modeOverride }
         : baseSnapshot
+
+      // Whether the text this query brings back is model-written. Predicted
+      // from the request (the two debug switches short-circuit the answering
+      // LLM) and then corrected by the server, which is the only side that
+      // knows a query found no context and got the canned reply instead of an
+      // LLM call. Older servers report nothing and the prediction stands.
+      let llmGenerated = producesAiGeneratedOutput(snapshot)
 
       // Start the live response timer.
       responseStartRef.current = Date.now()
@@ -320,6 +342,12 @@ export function useQuerySession({
           firstTokenRecordedRef.current = true
           const ttft = (Date.now() - responseStartRef.current) / 1000
           assistantMessage.firstTokenTime = parseFloat(ttft.toFixed(1))
+        }
+        // Any non-error chunk of a query that actually calls the answering LLM
+        // is model-written text — including the partial answer a stream that
+        // later fails has already delivered.
+        if (!isError && chunk && llmGenerated) {
+          assistantMessage.aiGenerated = true
         }
         assistantMessage.content += chunk
 
@@ -382,6 +410,7 @@ export function useQuerySession({
               displayContent: assistantMessage.displayContent,
               isThinking: assistantMessage.isThinking,
               isError: isError,
+              aiGenerated: assistantMessage.aiGenerated,
               mermaidRendered: assistantMessage.mermaidRendered,
               latexRendered: assistantMessage.latexRendered,
               thinkingTime: assistantMessage.thinkingTime,
@@ -425,20 +454,29 @@ export function useQuerySession({
             },
             (event) => {
               setQueryProgress(event)
+            },
+            // Carried on the SAME line as a complete (non-streamed) response,
+            // so it lands before that content reaches updateAssistantMessage.
+            (reported) => {
+              llmGenerated = resolveAiGenerated(llmGenerated, reported)
             }
           )
           if (streamError) {
             onQueryError?.(streamError)
-            if (assistantMessage.content) {
-              streamError = assistantMessage.content + '\n' + streamError
-            }
-            updateAssistantMessage(streamError, true)
+            // Append the error ALONE: the partial answer is already in the
+            // message (the updater appends), so passing it back in duplicated
+            // the whole answer in the bubble.
+            updateAssistantMessage(
+              streamErrorChunk(assistantMessage.content, streamError),
+              true
+            )
           }
         } else {
           const response = await queryText(queryParams, controller.signal)
           if (typeof response.response_time === 'number') {
             serverResponseTimeRef.current = response.response_time
           }
+          llmGenerated = resolveAiGenerated(llmGenerated, response.llm_generated)
           updateAssistantMessage(response.response)
         }
       } catch (err) {
