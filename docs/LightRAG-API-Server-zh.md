@@ -248,7 +248,7 @@ lightrag-server --port 9621
 - `/workspace` 的查询参数**只继承、不可编辑**：每次查询使用同一浏览器中 `/webui` 保存的 `querySettings`（未保存时使用前端默认值）。这是按浏览器的本地配置，不是服务端全局策略。**因此后台保存的查询 `mode` 同时决定查询入口的行为**——包括 `bypass`（跳过检索、携带最近 3 轮对话直接询问 LLM）。唯二例外是调试开关 `only_need_context` / `only_need_prompt`：`/workspace` 始终以 `false` 提交，管理员调试后忘记关闭也不会让查询用户拿到原始上下文而非答案。
 - 两个入口的查询历史相互独立：管理员的调试对话不会出现在查询入口（也不会作为其 `bypass` 上下文发送），反之亦然。
 - `UI_TEMPLATES_DIR` 指向可选的只读多语言 UI Bundle，可在不重建前端的情况下替换欢迎页文案、查询空白态文案和品牌 Logo——参见 `docs/ui_templates_example/`。未设置即使用前端内置品牌内容（这是常态）；显式设置但 Bundle 非法会导致启动失败。修改内容需重启；文案以 `no-store` 提供、Logo 通过内容哈希的 immutable URL 提供，无需手动清缓存。 Bundle 的语言集合与 WebUI 自身的界面语言（`en`、`zh`、`zh-TW`、`fr`、`ar`、`ru`、`ja`、`de`、`uk`、`ko`、`vi`）相互独立：Bundle 可声明任意合法 BCP 47 locale，但界面语言之外的 locale，其内容虽能正确渲染，周围的按钮与设置仍停留在访问者解析出的 UI 语言上；启动时会记录一条警告列出这些 locale。
-- `ENABLE_AI_CONTENT_NOTICE=true` 会在**两个查询界面**（`/workspace` 与 `/webui` 的检索面板）中，在每条回答底部的响应时间行末尾追加 AI 生成内容提示（不独占一行），文案随界面语言变化（中文为“由AI生成、请注意鉴别”）。默认关闭。该提示只是界面元素：不会写入 `/query` 响应、不会进入复制的消息文本，也不会存入聊天历史。开关通过 `/auth-status`、`/login` 与 `/health` 的 `ai_content_notice_enabled` 字段下发，两个入口在启动时读取。
+- `ENABLE_AI_CONTENT_NOTICE=true` 会在**两个查询界面**（`/workspace` 与 `/webui` 的检索面板）中，在每条回答底部的响应时间行末尾追加 AI 生成内容提示（不独占一行），文案随界面语言变化（中文为“由AI生成、请注意鉴别”）。默认关闭。该提示只是界面元素：不会写入 `/query` 响应、不会进入复制的消息文本，也不会存入聊天历史。开关通过 `/auth-status`、`/login` 与 `/health` 的 `ai_content_notice_enabled` 字段下发，两个入口在启动时读取。只有确实由 LLM 生成的文本才会被标注：`/query` 与 `/query/stream` 逐条响应返回 `llm_generated`，无检索上下文时的固定回复以及 `only_need_context` / `only_need_prompt` 调试输出均为 false。
 - `/health` 分别报告 `webui_available` 与 `workspace_available`；旧构建产物缺少 `workspace.html` 时 `/webui` 完整可用，`/workspace` 返回固定 JSON 提示（绝不重定向到 API 文档）。
 
 对查询用户隐藏后台界面是 UX 分流，**不是**安全边界：所有接口的授权仍由服务端强制执行。

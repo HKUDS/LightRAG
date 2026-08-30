@@ -8,6 +8,7 @@ import type { MessageWithError } from '@/types/retrieval'
 import type { QuerySettings } from '@/stores/querySettings'
 import {
   producesAiGeneratedOutput,
+  resolveAiGenerated,
   restoredAiGeneratedFlag
 } from '@/lib/aiContentNotice'
 import type { RetrievalHistoryStore } from '@/stores/retrievalHistory'
@@ -299,6 +300,13 @@ export function useQuerySession({
         ? { ...baseSnapshot, mode: options.modeOverride }
         : baseSnapshot
 
+      // Whether the text this query brings back is model-written. Predicted
+      // from the request (the two debug switches short-circuit the answering
+      // LLM) and then corrected by the server, which is the only side that
+      // knows a query found no context and got the canned reply instead of an
+      // LLM call. Older servers report nothing and the prediction stands.
+      let llmGenerated = producesAiGeneratedOutput(snapshot)
+
       // Start the live response timer.
       responseStartRef.current = Date.now()
       serverResponseTimeRef.current = null
@@ -338,7 +346,7 @@ export function useQuerySession({
         // Any non-error chunk of a query that actually calls the answering LLM
         // is model-written text — including the partial answer a stream that
         // later fails has already delivered.
-        if (!isError && chunk && producesAiGeneratedOutput(snapshot)) {
+        if (!isError && chunk && llmGenerated) {
           assistantMessage.aiGenerated = true
         }
         assistantMessage.content += chunk
@@ -446,6 +454,11 @@ export function useQuerySession({
             },
             (event) => {
               setQueryProgress(event)
+            },
+            // Carried on the SAME line as a complete (non-streamed) response,
+            // so it lands before that content reaches updateAssistantMessage.
+            (reported) => {
+              llmGenerated = resolveAiGenerated(llmGenerated, reported)
             }
           )
           if (streamError) {
@@ -463,6 +476,7 @@ export function useQuerySession({
           if (typeof response.response_time === 'number') {
             serverResponseTimeRef.current = response.response_time
           }
+          llmGenerated = resolveAiGenerated(llmGenerated, response.llm_generated)
           updateAssistantMessage(response.response)
         }
       } catch (err) {

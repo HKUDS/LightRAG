@@ -31,6 +31,18 @@ export function producesAiGeneratedOutput(
 }
 
 /**
+ * Reconcile the client's prediction with what the server reported.
+ *
+ * The server is authoritative: only it knows whether the answering LLM ran —
+ * a query that finds no context gets the canned `PROMPTS["fail_response"]`
+ * back without one, which no client can tell from the text. The prediction
+ * above is the fallback for servers older than the `llm_generated` field.
+ */
+export function resolveAiGenerated(predicted: boolean, reported: unknown): boolean {
+  return typeof reported === 'boolean' ? reported : predicted
+}
+
+/**
  * The flag for a message restored from the retrieval history.
  *
  * Messages written since the flag exists always carry an explicit boolean, so

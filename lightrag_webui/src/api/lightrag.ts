@@ -229,6 +229,13 @@ export type QueryRequest = {
 export type QueryResponse = {
   response: string
   response_time?: number
+  /**
+   * Whether the answering LLM actually wrote this response. False for text a
+   * query path produced without calling it — the canned no-context reply and
+   * the only_need_context / only_need_prompt debug output. Absent on servers
+   * older than the field.
+   */
+  llm_generated?: boolean
 }
 
 export type EntityUpdateResponse = {
@@ -692,11 +699,33 @@ async function _readNdjsonStream(
   onChunk: (chunk: string) => void,
   onError: ((error: string) => void) | undefined,
   onResponseTime?: (seconds: number) => void,
-  onProgress?: (event: string) => void
+  onProgress?: (event: string) => void,
+  onLlmGenerated?: (llmGenerated: boolean) => void
 ): Promise<void> {
   if (!response.body) {
     throw new Error('Response body is null');
   }
+
+  // One dispatcher for both readers below (the loop and the trailing buffer).
+  // `llm_generated` is checked FIRST and separately: the server carries it on
+  // the SAME line as a complete (non-streamed) response, and the caller must
+  // know what the content is before the content arrives.
+  const dispatch = (parsed: any): void => {
+    if (typeof parsed.llm_generated === 'boolean') {
+      onLlmGenerated?.(parsed.llm_generated);
+    }
+    if (parsed.response) {
+      onChunk(parsed.response);
+    } else if (parsed.error) {
+      onError?.(parsed.error);
+    } else if (parsed.response_time !== undefined && onResponseTime) {
+      onResponseTime(parsed.response_time);
+    } else if (parsed.progress && onProgress) {
+      onProgress(parsed.progress);
+    }
+    // references-only lines are silently consumed —
+    // the caller only cares about response chunks and errors.
+  };
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -718,18 +747,7 @@ async function _readNdjsonStream(
         if (!trimmed) continue;
 
         try {
-          const parsed = JSON.parse(trimmed);
-          if (parsed.response) {
-            onChunk(parsed.response);
-          } else if (parsed.error) {
-            onError?.(parsed.error);
-          } else if (parsed.response_time !== undefined && onResponseTime) {
-            onResponseTime(parsed.response_time);
-          } else if (parsed.progress && onProgress) {
-            onProgress(parsed.progress);
-          }
-          // references-only lines are silently consumed —
-          // the caller only cares about response chunks and errors.
+          dispatch(JSON.parse(trimmed));
         } catch {
           // Truncated or malformed JSON — log and skip the line so one
           // bad line does not kill the whole stream.
@@ -749,16 +767,7 @@ async function _readNdjsonStream(
   // Process any remaining data in the buffer after the stream ends
   if (buffer.trim()) {
     try {
-      const parsed = JSON.parse(buffer);
-      if (parsed.response) {
-        onChunk(parsed.response);
-      } else if (parsed.error) {
-        onError?.(parsed.error);
-      } else if (parsed.response_time !== undefined && onResponseTime) {
-        onResponseTime(parsed.response_time);
-      } else if (parsed.progress && onProgress) {
-        onProgress(parsed.progress);
-      }
+      dispatch(JSON.parse(buffer));
     } catch {
       console.warn('Failed to parse final NDJSON buffer:', buffer.substring(0, 120));
       onError?.(
@@ -875,7 +884,11 @@ export const queryTextStream = async (
   onError?: (error: string) => void,
   signal?: AbortSignal,
   onResponseTime?: (seconds: number) => void,
-  onProgress?: (event: string) => void
+  onProgress?: (event: string) => void,
+  // Reports the server's verdict on whether the answering LLM wrote the
+  // content of a complete (non-streamed) response line. Streamed chunks carry
+  // no flag — they always come from the LLM.
+  onLlmGenerated?: (llmGenerated: boolean) => void
 ) => {
   const headers = _buildStreamHeaders();
 
@@ -954,7 +967,14 @@ export const queryTextStream = async (
     }
 
     // --- Read the NDJSON stream (happy path or refreshed retry) ------------
-    await _readNdjsonStream(activeResponse, onChunk, onError, onResponseTime, onProgress);
+    await _readNdjsonStream(
+      activeResponse,
+      onChunk,
+      onError,
+      onResponseTime,
+      onProgress,
+      onLlmGenerated
+    );
   } catch (error) {
     // Auth termination is NOT an answer failure: navigation to the entry's
     // unauthenticated route already happened above. Rethrow the typed error

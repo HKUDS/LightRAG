@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 
 import {
   producesAiGeneratedOutput,
+  resolveAiGenerated,
   restoredAiGeneratedFlag,
   shouldShowAiContentNotice
 } from './aiContentNotice'
@@ -28,6 +29,22 @@ describe('producesAiGeneratedOutput', () => {
     // AI-generated would be false.
     expect(producesAiGeneratedOutput({ only_need_context: true })).toBe(false)
     expect(producesAiGeneratedOutput({ only_need_prompt: true })).toBe(false)
+  })
+})
+
+describe('resolveAiGenerated', () => {
+  test('the server overrides the prediction in both directions', () => {
+    // A query that finds no context gets the canned PROMPTS["fail_response"]
+    // back without an LLM call — the client predicted "generated" and only the
+    // server can correct it.
+    expect(resolveAiGenerated(true, false)).toBe(false)
+    expect(resolveAiGenerated(false, true)).toBe(true)
+  })
+
+  test('a server too old to report it leaves the prediction standing', () => {
+    expect(resolveAiGenerated(true, undefined)).toBe(true)
+    expect(resolveAiGenerated(false, undefined)).toBe(false)
+    expect(resolveAiGenerated(true, 'false')).toBe(true)
   })
 })
 
