@@ -206,9 +206,26 @@ shape:
 - `zh_TW` (underscore) is rejected — write `zh-TW`;
 - `zh-tw` is rejected too: the key must already be normalized (`zh-TW`).
 
-Any valid BCP 47 tag is accepted, not only the languages the WebUI itself
-ships — but read [§5.3](#53-interface-languages-vs-bundle-locales) before
-declaring one.
+The accepted set is **language-first BCP 47 tags** — far wider than the
+languages the WebUI itself ships, but not literally every valid tag:
+
+| Rule | Accepted | Rejected |
+|---|---|---|
+| Primary subtag is 2–8 letters | `en`, `zh`, `art-lojban` | `x-acme`, `i-klingon` — private-use and grandfathered tags open with a single letter |
+| Every later subtag is 1–8 alphanumerics | `zh-Hant-TW`, `de-CH-1901`, `sl-rozaj-biske` | `abcdefghi` |
+| The whole tag is ≤ 35 characters | | anything longer |
+
+So script, region, variant and extension subtags all work — `zh-Hant-TW`,
+`ar-aao-Latn`, `en-US-u-VA-posix` — and the practical exclusions are the
+private-use (`x-…`) and grandfathered (`i-…`) forms.
+
+Note that normalization is positional and applies to *every* subtag, including
+an extension's own values: `en-US-u-va-posix` normalizes to
+`en-US-u-VA-posix`, and since the key must already be normalized, that is the
+form to write.
+
+Read [§5.3](#53-interface-languages-vs-bundle-locales) before declaring a
+locale outside the WebUI's own languages.
 
 ### 4.4 Limits and formats
 
@@ -568,6 +585,7 @@ leave you believing customer branding is live when it is not.
 | `missing required field(s) [...]` | Add the field. Note `brand.logo` is required — use an explicit `null` for "no logo". |
 | `unsupported schema_version` | Must be exactly `1`. |
 | `locales: key 'zh_TW' uses the underscore form` | Write `zh-TW`. |
+| `locales: key 'x-acme' has an invalid language subtag` | The primary subtag must be 2–8 letters, so private-use (`x-…`) and grandfathered (`i-…`) tags are not supported — see [§4.3](#43-locale-keys). |
 | `locales: key 'zh-tw' must be written in its normalized form 'zh-TW'` | Fix the casing. |
 | `default_locale '…' is not a declared locale` | `default_locale` must appear in `locales`. |
 | `fallbacks.xx: target 'yy' is not a declared locale` | Fallback targets must be declared; only sources may be uncovered. |

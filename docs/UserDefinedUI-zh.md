@@ -198,8 +198,23 @@ key 是 BCP 47 标签的**连字符**形式，且必须写成已归一化的形�
 - `zh_TW`（下划线）会被拒绝——请写 `zh-TW`；
 - `zh-tw` 同样会被拒绝：key 必须已经是归一化形式（`zh-TW`）。
 
-任何合法的 BCP 47 标签都被接受，不限于前端自带的语言——但在声明之前请先阅读
-[§5.3](#53-界面语言与-bundle-语言)。
+接受的范围是**以语言子标签开头的 BCP 47 标签**——远比前端自带的语言宽，但并非字面意义上
+的「任何合法标签」：
+
+| 规则 | 接受 | 拒绝 |
+|---|---|---|
+| 主语言子标签为 2–8 个字母 | `en`、`zh`、`art-lojban` | `x-acme`、`i-klingon`——私有用途与 grandfathered 标签以单个字母开头 |
+| 其后每个子标签为 1–8 个字母数字 | `zh-Hant-TW`、`de-CH-1901`、`sl-rozaj-biske` | `abcdefghi` |
+| 整个标签不超过 35 个字符 | | 更长的标签 |
+
+因此 script、地区、variant 和 extension 子标签都可用——`zh-Hant-TW`、`ar-aao-Latn`、
+`en-US-u-VA-posix`——实际排除的是私有用途（`x-…`）和 grandfathered（`i-…`）两种形式。
+
+另请注意：归一化是按位置作用于*每一个*子标签的，包括 extension 自身的取值——
+`en-US-u-va-posix` 会被归一化为 `en-US-u-VA-posix`，而 key 必须已经是归一化形式，
+所以要按后者书写。
+
+若要声明前端自带语言之外的 locale，请先阅读 [§5.3](#53-界面语言与-bundle-语言)。
 
 ### 4.4 限制与格式
 
@@ -522,6 +537,7 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
 | `missing required field(s) [...]` | 补上该字段。注意 `brand.logo` 是必填的——不显示 Logo 请显式写 `null`。 |
 | `unsupported schema_version` | 必须恰好为 `1`。 |
 | `locales: key 'zh_TW' uses the underscore form` | 请写 `zh-TW`。 |
+| `locales: key 'x-acme' has an invalid language subtag` | 主语言子标签必须是 2–8 个字母，因此私有用途（`x-…`）和 grandfathered（`i-…`）标签不受支持——见 [§4.3](#43-locale-key-的写法)。 |
 | `locales: key 'zh-tw' must be written in its normalized form 'zh-TW'` | 修正大小写。 |
 | `default_locale '…' is not a declared locale` | `default_locale` 必须出现在 `locales` 中。 |
 | `fallbacks.xx: target 'yy' is not a declared locale` | fallback 的目标必须已声明；只有来源可以是未覆盖的 locale。 |
