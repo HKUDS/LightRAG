@@ -2196,6 +2196,57 @@ def canonicalize_archived_file_variant_basename(
     return normalize_file_path(f"{stem}{path.suffix}")
 
 
+def find_downloadable_source_file(input_dir: Path, file_path: str) -> Path | None:
+    """Find the on-disk file backing a document's canonical ``file_path``.
+
+    Checks ``input_dir`` first, then its ``__parsed__`` archive: once parsing
+    finishes, ``move_file_to_parsed_dir`` relocates the source there (it is
+    NOT left behind in ``input_dir``), so a successfully -- or even
+    unsuccessfully but already-parsed -- processed document's original is
+    normally found only in ``__parsed__``. This mirrors the two-directory
+    scan and archive-suffix canonicalization
+    :func:`delete_file_variants_by_file_path` already uses to find the same
+    files for deletion; unlike that function this returns a single path, so
+    when a document was re-processed and left multiple numbered variants
+    behind (``report.pdf``, ``report_001.pdf``, ...), the most recently
+    modified one is returned as the current source.
+    """
+    if not file_path or file_path == UNKNOWN_FILE_SOURCE:
+        return None
+    canonical = normalize_file_path(file_path)
+    if canonical == UNKNOWN_FILE_SOURCE:
+        return None
+
+    found = find_existing_file_by_file_path(input_dir, canonical)
+    if found is not None:
+        return found
+
+    parsed_dir = input_dir / PARSED_DIR_NAME
+    try:
+        candidates = list(parsed_dir.iterdir())
+    except FileNotFoundError:
+        return None
+
+    matches: list[Path] = []
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        if (
+            canonicalize_archived_file_variant_basename(
+                candidate.name, strip_archive_suffix=True
+            )
+            != canonical
+        ):
+            continue
+        safe_candidate = validate_file_path_security(candidate.name, parsed_dir)
+        if safe_candidate is not None and safe_candidate.is_file():
+            matches.append(safe_candidate)
+
+    if not matches:
+        return None
+    return max(matches, key=lambda p: p.stat().st_mtime)
+
+
 def _file_path_for_parsed_artifact_dir(dir_name: str) -> str | None:
     """Return the canonical source basename for a parser artifact dir.
 
@@ -6602,11 +6653,12 @@ def create_document_routes(
         Download a document's original source file.
 
         Returns the file exactly as it was uploaded, located on disk via the
-        document's stored ``file_path`` basename (the same canonical name
-        ``find_existing_file_by_file_path`` already uses to locate and delete
-        source files elsewhere in this router). Documents inserted directly
-        as text (``/documents/text``, ``/documents/texts``) carry no source
-        file and always 404 here.
+        document's stored ``file_path`` basename -- checking both the input
+        directory and its ``__parsed__`` archive, since a processed
+        document's source normally lives only in the latter (see
+        ``find_downloadable_source_file``). Documents inserted directly as
+        text (``/documents/text``, ``/documents/texts``) carry no source file
+        and always 404 here.
 
         Args:
             doc_id (str): The document ID returned by upload/scan/insert.
@@ -6643,7 +6695,7 @@ def create_document_routes(
                     detail=f"Document {doc_id} has no associated source file",
                 )
 
-            found_path = find_existing_file_by_file_path(
+            found_path = find_downloadable_source_file(
                 doc_manager.input_dir, canonical_file_path
             )
             if found_path is None:

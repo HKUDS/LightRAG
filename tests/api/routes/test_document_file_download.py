@@ -1,4 +1,5 @@
 import importlib
+import os
 import sys
 from types import SimpleNamespace
 
@@ -50,8 +51,19 @@ def _client(tmp_path):
 
     (doc_manager.input_dir / "report.pdf").write_bytes(b"%PDF-1.4 fake content")
 
+    # move_file_to_parsed_dir relocates every source file here once parsing
+    # finishes -- it does not leave a copy behind in input_dir -- so this is
+    # the normal on-disk location for a processed document's source, not an
+    # edge case. Confirmed against a real lightrag-server run: uploading a
+    # .txt file and downloading it back 404'd ("missing from disk") until the
+    # handler was taught to check this directory too.
+    parsed_dir = doc_manager.input_dir / "__parsed__"
+    parsed_dir.mkdir()
+    (parsed_dir / "archived.pdf").write_bytes(b"%PDF-1.4 archived content")
+
     docs = {
         "doc-with-file": _doc("report.pdf"),
+        "doc-with-archived-file": _doc("archived.pdf"),
         "doc-missing-on-disk": _doc("vanished.pdf"),
         "doc-text-only": _doc(UNKNOWN_FILE_SOURCE),
     }
@@ -77,6 +89,14 @@ def test_download_returns_the_source_file(_client):
     assert response.status_code == 200
     assert response.content == b"%PDF-1.4 fake content"
     assert "report.pdf" in response.headers["content-disposition"]
+
+
+def test_download_finds_the_file_in_the_parsed_archive_dir(_client):
+    response = _client.get("/documents/doc-with-archived-file/file", headers=_headers)
+
+    assert response.status_code == 200
+    assert response.content == b"%PDF-1.4 archived content"
+    assert "archived.pdf" in response.headers["content-disposition"]
 
 
 def test_download_requires_auth(_client):
@@ -109,3 +129,26 @@ def test_download_400s_for_whitespace_only_doc_id(_client):
     response = _client.get("/documents/%20/file", headers=_headers)
 
     assert response.status_code == 400
+
+
+def test_find_downloadable_source_file_prefers_newest_archived_variant(tmp_path):
+    # A document reprocessed more than once can leave several numbered
+    # variants in __parsed__ (report.pdf, report_001.pdf, ...); the helper
+    # must pick the current one deterministically rather than whatever
+    # os.scandir happens to yield first.
+    find_downloadable_source_file = _document_routes.find_downloadable_source_file
+    doc_manager = DocumentManager(str(tmp_path))
+    parsed_dir = doc_manager.input_dir / "__parsed__"
+    parsed_dir.mkdir()
+
+    older = parsed_dir / "report.pdf"
+    newer = parsed_dir / "report_001.pdf"
+    older.write_bytes(b"stale")
+    newer.write_bytes(b"current")
+    os.utime(older, (1_700_000_000, 1_700_000_000))
+    os.utime(newer, (1_700_000_100, 1_700_000_100))
+
+    found = find_downloadable_source_file(doc_manager.input_dir, "report.pdf")
+
+    assert found == newer
+    assert found.read_bytes() == b"current"
