@@ -860,6 +860,37 @@ _strip_wrapping_quotes() {
   printf '%s' "$value"
 }
 
+# Drop a YAML inline comment from a scalar value.
+#
+# A comment opens at a `#` that FOLLOWS whitespace; a `#` inside a token is
+# literal, so `/app/a#b` is a path and not a path plus a comment. A quoted
+# scalar has no inline comment before its closing quote, so
+# `"/app/a # b"` is one path. Compose files are hand-edited, and
+# `target: /app/data/ui_templates # branding` is ordinary in them: without
+# this, the trailing comment rides along in the parsed value, an existing
+# mount goes unrecognised, and the caller appends a duplicate for the same
+# container path.
+_strip_yaml_inline_comment() {
+  local value="$1"
+  local quote="${value:0:1}"
+  local body=""
+
+  if [[ "$quote" == \" || "$quote" == \' ]]; then
+    body="${value:1}"
+    if [[ "$body" == *"$quote"* ]]; then
+      printf '%s%s%s' "$quote" "${body%%"$quote"*}" "$quote"
+      return 0
+    fi
+    # Unterminated quote: fall through and treat it as a plain scalar.
+  fi
+
+  # `%%` strips the LONGEST matching suffix, which is the one opening at the
+  # EARLIEST ` #` -- exactly where YAML starts the comment.
+  value="${value%%[[:space:]]#*}"
+  # Trailing whitespace is not part of the scalar.
+  printf '%s' "${value%"${value##*[![:space:]]}"}"
+}
+
 read_service_environment_value() {
   local compose_file="$1"
   local service_name="$2"
@@ -1719,7 +1750,8 @@ _lightrag_volumes_have_container_target() {
       elif [[ "$in_volumes" == "yes" && "$line" =~ ^[[:space:]]{4}[^[:space:]-] ]]; then
         in_volumes="no"
       elif [[ "$in_volumes" == "yes" && "$line" =~ ^[[:space:]]{6}-[[:space:]](.+)$ ]]; then
-        mount_spec="$(_strip_wrapping_quotes "${BASH_REMATCH[1]}")"
+        mount_spec="$(_strip_wrapping_quotes \
+          "$(_strip_yaml_inline_comment "${BASH_REMATCH[1]}")")"
         # Long syntax whose first key is the target (`- target: /app/x`).
         # Compose's long form names the container path under `target:`, so a
         # short `source:target` split would never see it and the caller would
@@ -1745,7 +1777,8 @@ _lightrag_volumes_have_container_target() {
         # A continuation line of a long-syntax entry (`- type: bind` first,
         # then `  target: …`). Deeper indentation than a list item, so it
         # cannot be confused with a short-syntax mount.
-        container_path="$(_strip_wrapping_quotes "${BASH_REMATCH[1]}")"
+        container_path="$(_strip_wrapping_quotes \
+          "$(_strip_yaml_inline_comment "${BASH_REMATCH[1]}")")"
         if [[ "$container_path" == "$target_path" ]]; then
           return 0
         fi

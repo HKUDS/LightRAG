@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 
 import pytest
@@ -527,6 +528,81 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     # The operator's own sources survive untouched.
     assert "        source: ./branding/acme\n" in generated_compose
     assert "        source: ./branding/prompts\n" in generated_compose
+
+
+def test_generate_docker_compose_respects_commented_volume_targets(
+    tmp_path: Path,
+) -> None:
+    """An inline YAML comment must not hide an existing managed target.
+
+    Compose files are hand-edited, so `target: /app/data/ui_templates
+    # branding` is ordinary. Comparing the unparsed scalar leaves the comment
+    in the value, the existing mount goes unrecognised, and a duplicate for
+    the same container path is appended. Covers the long form and the short
+    form, the latter being the pre-existing `/app/data/prompts` check.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    volumes:",
+            "      - type: bind",
+            "        source: ./branding/acme",
+            "        target: /app/data/ui_templates # acme branding",
+            "      - ./branding/prompts:/app/data/prompts   # custom profiles",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert generated_compose.count("/app/data/prompts") == 1
+    assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
+    assert "./data/prompts:/app/data/prompts\n" not in generated_compose
+
+
+def test_strip_yaml_inline_comment_respects_quotes_and_bare_hashes() -> None:
+    """A `#` only opens a comment after whitespace, and never inside quotes."""
+    cases = [
+        ("/app/data/ui_templates", "/app/data/ui_templates"),
+        ("/app/data/ui_templates # branding", "/app/data/ui_templates"),
+        # The EARLIEST ` #` wins, not the last.
+        ("/app/x # a # b", "/app/x"),
+        # A bare `#` inside a token is part of the path.
+        ("/app/a#b", "/app/a#b"),
+        ("/app/a#b # note", "/app/a#b"),
+        # Quoted scalars carry their `#` literally.
+        ('"/app/x # y"', '"/app/x # y"'),
+        ('"/app/x # y" # real comment', '"/app/x # y"'),
+        ("'/app/q # z'", "'/app/q # z'"),
+        ("/app/x\t# tab comment", "/app/x"),
+        ("./a:/app/b:ro # note", "./a:/app/b:ro"),
+    ]
+    script_lines = [
+        "set -euo pipefail",
+        f'source "{REPO_ROOT}/scripts/setup/setup.sh"',
+    ]
+    for value, _ in cases:
+        script_lines.append(f"_strip_yaml_inline_comment {shlex.quote(value)}; echo")
+    # `run_bash` returns stdout; take the last len(cases) lines so anything
+    # `setup.sh` prints while sourcing cannot shift the alignment.
+    output = run_bash("\n".join(script_lines)).splitlines()[-len(cases) :]
+    for (value, expected), actual in zip(cases, output):
+        assert actual == expected, f"{value!r} -> {actual!r}, expected {expected!r}"
 
 
 def test_generate_docker_compose_preserves_non_managed_named_volumes(
