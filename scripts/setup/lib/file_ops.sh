@@ -412,7 +412,7 @@ _WIZARD_COMPOSE_LIGHTRAG_KEYS=(
   "EMBEDDING_BINDING_HOST" "RERANK_BINDING_HOST" "LLM_BINDING_HOST"
   "REDIS_URI" "MONGO_URI" "NEO4J_URI" "MILVUS_URI" "QDRANT_URL" "MEMGRAPH_URI" "OPENSEARCH_HOSTS"
   "POSTGRES_HOST" "POSTGRES_PORT" "PORT" "HOST" "SSL_CERTFILE" "SSL_KEYFILE"
-  "WORKING_DIR" "INPUT_DIR" "PROMPT_DIR"
+  "WORKING_DIR" "INPUT_DIR" "PROMPT_DIR" "UI_TEMPLATES_DIR"
 )
 
 _managed_service_root_name() {
@@ -1229,7 +1229,9 @@ generate_docker_compose() {
   _FILE_OPS_CLEANUP_TMP+=("$service_blocks_file")
   local template_file
   local lightrag_mounts=()
-  local lightrag_env_entries=()
+  local lightrag_env_entries=(
+    "UI_TEMPLATES_DIR=${COMPOSE_LIGHTRAG_UI_TEMPLATES_DIR:-/app/data/ui_templates}"
+  )
   local key
   local root_service
 
@@ -1996,7 +1998,7 @@ inject_lightrag_bind_mounts() {
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$in_lightrag" == "yes" && "$in_volumes" == "yes" ]]; then
-      if [[ "$line" =~ ^[[:space:]]{4}[^[:space:]-] || "$line" =~ ^[[:space:]]{2}[^[:space:]] || "$line" =~ ^(volumes|networks): ]]; then
+      if [[ "$line" =~ ^[[:space:]]{4}[^[:space:]-] || "$line" =~ ^[[:space:]]{2}[^[:space:]] || "$line" =~ ^[^[:space:]] ]]; then
         if [[ "$inserted" == "no" ]]; then
           for mount in "${mounts[@]}"; do
             printf '      - %s\n' "$mount" >> "$tmp_file"
@@ -2005,7 +2007,9 @@ inject_lightrag_bind_mounts() {
         fi
         in_volumes="no"
       fi
-    elif [[ "$in_lightrag" == "yes" && "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "  lightrag:" ]]; then
+    elif [[ "$in_lightrag" == "yes" && \
+            ( "$line" =~ ^[[:space:]]{2}[^[:space:]] || "$line" =~ ^[^[:space:]] ) && \
+            "$line" != "  lightrag:" ]]; then
       if [[ "$inserted" == "no" ]]; then
         printf '    volumes:\n' >> "$tmp_file"
         for mount in "${mounts[@]}"; do

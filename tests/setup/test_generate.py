@@ -20,6 +20,14 @@ from tests.setup._helpers import (
 pytestmark = pytest.mark.offline
 
 
+def _count_ui_template_mount_targets(compose: str) -> int:
+    """Count UI bundle mount targets without counting the environment value."""
+    return sum(
+        "/app/data/ui_templates" in line and "UI_TEMPLATES_DIR" not in line
+        for line in compose.splitlines()
+    )
+
+
 def test_generate_files_keep_host_env_values_and_inject_compose_overrides(
     tmp_path: Path,
 ) -> None:
@@ -102,10 +110,10 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml\"
     assert "env_file:" not in generated_compose
 
 
-def test_generate_docker_compose_removes_lightrag_env_file_to_preserve_dollar_values(
+def test_generate_docker_compose_replaces_env_file_with_required_environment(
     tmp_path: Path,
 ) -> None:
-    """Generated compose should remove `env_file` and skip empty environment blocks."""
+    """Generated compose should remove ``env_file`` and inject required settings."""
     write_text_lines(
         tmp_path / "docker-compose.yml",
         [
@@ -130,8 +138,9 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml\"
     generated_compose = (tmp_path / "docker-compose.generated.yml").read_text(
         encoding="utf-8"
     )
+    assert '      UI_TEMPLATES_DIR: "/app/data/ui_templates"' in generated_compose
     assert "env_file:" not in generated_compose
-    assert "environment:" not in generated_compose
+    assert "environment:" in generated_compose
     assert "container_name:" not in generated_compose
     assert "- ./.env:/app/.env" in generated_compose
 
@@ -147,6 +156,8 @@ def test_generate_docker_compose_removes_lightrag_container_name_from_existing_o
             "  lightrag:",
             "    container_name: lightrag",
             "    image: example/lightrag:test",
+            "    environment:",
+            '      UI_TEMPLATES_DIR: "/custom/ui_templates"',
         ],
     )
     run_bash(f"""
@@ -161,6 +172,8 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
         encoding="utf-8"
     )
     assert "container_name:" not in generated_compose
+    assert '      UI_TEMPLATES_DIR: "/app/data/ui_templates"' in generated_compose
+    assert "/custom/ui_templates" not in generated_compose
 
 
 def test_generate_docker_compose_preserves_list_style_lightrag_environment(
@@ -472,6 +485,8 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     assert (
         "      - ./data/prompts:/app/data/prompts\n"
         "      - ./data/ui_templates:/app/data/ui_templates:ro\n"
+        "    environment:\n"
+        '      UI_TEMPLATES_DIR: "/app/data/ui_templates"\n'
         "\n  sidecar:\n" in generated_compose
     )
 
@@ -521,7 +536,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
         encoding="utf-8"
     )
-    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert _count_ui_template_mount_targets(generated_compose) == 1
     assert generated_compose.count("/app/data/prompts") == 1
     assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
     assert "./data/prompts:/app/data/prompts" not in generated_compose
@@ -569,7 +584,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
         encoding="utf-8"
     )
-    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert _count_ui_template_mount_targets(generated_compose) == 1
     assert generated_compose.count("/app/data/prompts") == 1
     assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
     assert "./data/prompts:/app/data/prompts\n" not in generated_compose
@@ -654,7 +669,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
         encoding="utf-8"
     )
-    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert _count_ui_template_mount_targets(generated_compose) == 1
     assert generated_compose.count("/app/data/prompts") == 1
     assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
     assert "${UI_BUNDLE_SOURCE:-./branding}" in generated_compose
@@ -751,7 +766,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
         encoding="utf-8"
     )
-    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert _count_ui_template_mount_targets(generated_compose) == 1
     assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
 
 
@@ -791,7 +806,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
         encoding="utf-8"
     )
-    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert _count_ui_template_mount_targets(generated_compose) == 1
     assert generated_compose.count("/app/data/prompts") == 1
     assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
 
@@ -834,7 +849,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
         encoding="utf-8"
     )
-    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert _count_ui_template_mount_targets(generated_compose) == 1
     assert generated_compose.count("/app/data/prompts") == 1
     assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
 
@@ -981,7 +996,15 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     assert "  vllm-rerank:" not in result
     assert "__WIZARD_MANAGED_SERVICES__" not in result
     assert "depends_on:" not in result
-    assert "        max_attempts: 10\n\nnetworks:\n" in result
+    assert (
+        "        max_attempts: 10\n\n"
+        "    volumes:\n"
+        "      - ./data/prompts:/app/data/prompts\n"
+        "      - ./data/ui_templates:/app/data/ui_templates:ro\n"
+        "    environment:\n"
+        '      UI_TEMPLATES_DIR: "/app/data/ui_templates"\n\n'
+        "networks:\n" in result
+    )
 
 
 def test_generate_docker_compose_keeps_blank_line_between_managed_service_and_top_level_sections(
@@ -1016,10 +1039,8 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
     assert "  vllm-embed:" in result
     assert (
-        """        max_attempts: 10
-    depends_on:
-"""
-        in result
+        '      UI_TEMPLATES_DIR: "/app/data/ui_templates"\n'
+        "    depends_on:\n" in result
     )
     assert "    restart: unless-stopped\n\nnetworks:\n" in result
 
