@@ -469,7 +469,9 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     )
     assert "        max_attempts: 10\n\n    volumes:\n" in generated_compose
     assert (
-        "      - ./data/prompts:/app/data/prompts\n\n  sidecar:\n" in generated_compose
+        "      - ./data/prompts:/app/data/prompts\n"
+        "      - ./data/ui_templates:/app/data/ui_templates:ro\n"
+        "\n  sidecar:\n" in generated_compose
     )
 
 

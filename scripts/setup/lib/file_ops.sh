@@ -1218,6 +1218,16 @@ generate_docker_compose() {
     lightrag_mounts+=("./data/prompts:/app/data/prompts")
   fi
 
+  # Ensure the optional user-defined UI template bundle mount exists so a
+  # deployment can replace the welcome page, the login blurb plus user
+  # agreement and the query empty state without rebuilding the frontend.
+  # Mounted read-only (the server only ever reads it) and INERT until
+  # UI_TEMPLATES_DIR names it: an absent or empty ./data/ui_templates changes
+  # nothing. See docs/UserDefinedUI.md.
+  if ! _lightrag_volumes_have_container_target "$tmp_file" "/app/data/ui_templates"; then
+    lightrag_mounts+=("./data/ui_templates:/app/data/ui_templates:ro")
+  fi
+
   append_lightrag_ssl_mount lightrag_mounts "${COMPOSE_ENV_OVERRIDES[SSL_CERTFILE]:-}" || return 1
   append_lightrag_ssl_mount lightrag_mounts "${COMPOSE_ENV_OVERRIDES[SSL_KEYFILE]:-}" || return 1
   if ((${#lightrag_mounts[@]} > 0)); then
