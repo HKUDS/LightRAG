@@ -489,6 +489,7 @@ Entries marked 🇨🇳 also ship a Chinese translation as `*-zh.md` in the same
 | Document | What it covers |
 |---|---|
 | [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md) [🇨🇳](./docs/LightRAG-API-Server-zh.md) | The complete server guide: startup, configuration, authentication, REST endpoints, and WebUI usage |
+| [UserDefinedUI.md](./docs/UserDefinedUI.md) [🇨🇳](./docs/UserDefinedUI-zh.md) | Replacing the welcome page, login-page text, user agreement, query empty state and brand logo per language (`UI_TEMPLATES_DIR`) |
 
 **Document Processing**
 
