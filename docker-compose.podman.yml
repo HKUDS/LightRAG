@@ -29,7 +29,14 @@ services:
       # Optional user-defined UI content bundle (welcome page, login blurb
       # and user agreement, query empty state, brand logo). Read-only: the
       # server only ever reads it. See docs/UserDefinedUI.md.
-      - ./data/ui_templates:/app/data/ui_templates:ro
+      #
+      # Left commented out here, unlike docker-compose.yml: Podman is stricter
+      # than Docker about a bind mount whose host source is missing, and this
+      # feature is off by default, so an unconditional mount would make an
+      # optional feature a startup prerequisite for everyone. Uncomment this
+      # line together with UI_TEMPLATES_DIR below, after creating the
+      # directory:  mkdir -p ./data/ui_templates
+      # - ./data/ui_templates:/app/data/ui_templates:ro
       - ./config.ini:/app/config.ini
       - ./.env:/app/.env
     restart: on-failure:10

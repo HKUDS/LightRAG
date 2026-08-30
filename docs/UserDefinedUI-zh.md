@@ -366,8 +366,8 @@ WARNING: UI customization: the WebUI ships no interface translation for ['nl'] �
 
 ### 7.2 Docker Compose
 
-`docker-compose.yml`、`docker-compose-full.yml` 和 `docker-compose.podman.yml`
-都已内置该挂载，并附带一行注释掉的启用配置：
+`docker-compose.yml` 和 `docker-compose-full.yml` 都已内置该挂载，并附带一行注释掉的
+启用配置：
 
 ```yaml
 services:
@@ -386,6 +386,10 @@ services:
 - **首次 `up` 之前先创建该目录。** 如果交给 Docker 自动创建，目录属主会是 `root`，
   之后往里复制文件需要 `sudo`。
 - `:ro` 是刻意的——服务器只读取模板包，从不写入。
+- **Podman**：`docker-compose.podman.yml` 里连挂载本身也是注释掉的。Podman 对「宿主机源
+  不存在」的绑定挂载比 Docker 更严格，无条件挂载会把一个默认关闭的功能变成所有人的启动
+  前置条件。在那里请先 `mkdir -p ./data/ui_templates`，再同时取消注释挂载和
+  `UI_TEMPLATES_DIR`。
 
 在 `.env` 里设置 `UI_TEMPLATES_DIR` 同样有效（该文件会被挂载进容器），但更适合放在
 compose 的 `environment:` 块中：这个值是*容器内*路径，把容器路径挡在 `.env` 之外，

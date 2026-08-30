@@ -405,8 +405,8 @@ starts.
 
 ### 7.2 Docker Compose
 
-`docker-compose.yml`, `docker-compose-full.yml` and `docker-compose.podman.yml`
-all ship the mount already, plus the activation line commented out:
+`docker-compose.yml` and `docker-compose-full.yml` ship the mount already, plus
+the activation line commented out:
 
 ```yaml
 services:
@@ -426,6 +426,11 @@ Two practical notes:
 - **Create the directory before the first `up`.** If Docker creates it for you
   it will be owned by `root`, and you will need `sudo` to copy files into it.
 - `:ro` is intentional — the server only ever reads the bundle.
+- **Podman**: `docker-compose.podman.yml` keeps the mount itself commented out
+  as well, because Podman is stricter than Docker about a bind mount whose
+  host source is missing — an unconditional mount would turn an off-by-default
+  feature into a startup prerequisite. There, uncomment the mount *and*
+  `UI_TEMPLATES_DIR`, after `mkdir -p ./data/ui_templates`.
 
 Setting `UI_TEMPLATES_DIR` in `.env` also works (the file is mounted into the
 container), but the compose `environment:` block is the better home for it: the
