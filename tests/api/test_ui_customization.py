@@ -279,10 +279,9 @@ class TestBundleValidation:
                 b'<?xml version="1.0" encoding="UTF-8"?>\n<svg/nope>',
                 id="declaration-then-slashed-non-root",
             ),
-            # An UNCLOSED start tag in a file that fits entirely in the sniff
-            # window. There is no "rest of the file" for the `>` to be in, so
-            # these have no root element and must fail startup rather than be
-            # served for a year as an immutable image/svg+xml.
+            # An UNCLOSED start tag. Whatever the file's length, a root that
+            # never closes has to fail startup rather than be served for a
+            # year as an immutable image/svg+xml.
             pytest.param(b"<svg", id="bare-name-no-close"),
             pytest.param(b"<svg ", id="name-and-space-no-close"),
             pytest.param(b"<svg/", id="trailing-slash-no-close"),
@@ -291,11 +290,27 @@ class TestBundleValidation:
             ),
             pytest.param(b"<!-- brand mark --><svg", id="prologue-then-no-close"),
             # A `>` INSIDE a quoted attribute value is not the tag's own: XML
-            # permits it there, so these tags never close — and they fit the
-            # sniff window whole, so nothing later can rescue them.
+            # permits it there, so these tags never close.
             pytest.param(b'<svg title=">', id="gt-inside-double-quotes"),
             pytest.param(b"<svg title='>'", id="gt-inside-single-quotes"),
             pytest.param(b'<svg a=">" b="', id="gt-quoted-then-unterminated"),
+            # LENGTH is not evidence. The same unterminated literal padded
+            # past any window is still an unclosed tag: the whole file is in
+            # memory, so it is scanned rather than assumed.
+            pytest.param(b'<svg title="' + b"x" * 5000, id="unterminated-quote-padded"),
+            # A raw `<` cannot appear in a start tag, so a tag abandoned
+            # before its `>` must not borrow the NEXT element's.
+            pytest.param(b"<svg foo\n<rect>", id="lt-inside-start-tag"),
+            # Neither \v nor \f is XML whitespace, so neither delimits the
+            # element name (`bytes.isspace()` would have said otherwise).
+            pytest.param(b"<svg\x0bfoo>", id="vertical-tab-is-not-xml-space"),
+            # A prologue node that never ends leaves no root to find.
+            pytest.param(b"<!-- brand mark", id="unterminated-comment"),
+            pytest.param(b'<?xml version="1.0"', id="unterminated-pi"),
+            pytest.param(
+                b'<!DOCTYPE svg [<!ENTITY x "foo">' + SVG_BYTES,
+                id="unterminated-doctype-subset",
+            ),
         ],
     )
     def test_xml_without_svg_root_is_rejected(self, tmp_path, content):
@@ -333,6 +348,43 @@ class TestBundleValidation:
                 b"<rect/></svg>",
                 id="gt-in-attribute-value-then-real-close",
             ),
+            # Every prologue node can hold a `>` that is NOT its terminator.
+            # Ending one at the first `>` rejects a VALID logo, and a bundle
+            # whose logo is rejected aborts server startup.
+            pytest.param(
+                b'<?xml-stylesheet type="text/css" href="a>b.css"?>' + SVG_BYTES,
+                id="pi-pseudo-attribute-holds-gt",
+            ),
+            pytest.param(
+                b'<!DOCTYPE svg SYSTEM "a>b.dtd">' + SVG_BYTES,
+                id="doctype-system-literal-holds-gt",
+            ),
+            pytest.param(
+                b'<!DOCTYPE svg [<!ENTITY x "foo">]>' + SVG_BYTES,
+                id="doctype-internal-subset",
+            ),
+            pytest.param(
+                b'<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" '
+                b'"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd" [\n'
+                b'<!ENTITY ns_extend "http://ns.adobe.com/Extensibility/1.0/">\n'
+                b'<!ENTITY ns_ai "http://ns.adobe.com/AdobeIllustrator/10.0/">\n'
+                b"]>" + SVG_BYTES,
+                id="illustrator-multi-entity-subset",
+            ),
+            # Sub-nodes inside the subset are skipped WHOLE. Quote-tracking
+            # through them would read this apostrophe as an unterminated
+            # literal and reject the file.
+            pytest.param(
+                b"<!DOCTYPE svg [<!-- don't -->]>" + SVG_BYTES,
+                id="subset-comment-with-apostrophe",
+            ),
+            # PI content has no quote semantics at all, so it is never
+            # quote-tracked either.
+            pytest.param(b"<?ps don't?>" + SVG_BYTES, id="pi-with-lone-apostrophe"),
+            pytest.param(
+                b"<!-- a [ \" ' ] brand mark -->" + SVG_BYTES,
+                id="comment-with-brackets-and-quotes",
+            ),
         ],
     )
     def test_real_svg_variants_are_accepted(self, tmp_path, content):
@@ -347,19 +399,14 @@ class TestBundleValidation:
         )
         assert logo.mime == "image/svg+xml"
 
-    def test_start_tag_past_the_sniff_window_is_still_accepted(self, tmp_path):
-        # The one licence for an unclosed start tag: the file really is longer
-        # than the window and the `>` lies past it. Requiring a close here
-        # would reject a legitimate SVG behind a long prologue, so the
-        # truncation tolerance has to survive the tightening above.
-        from lightrag.api.ui_customization import _SVG_SNIFF_WINDOW
-
-        comment = b"<!--" + b"x" * (_SVG_SNIFF_WINDOW - 11) + b"-->"
+    def test_a_long_prologue_does_not_hide_the_root(self, tmp_path):
+        # There is no sniff window any more, and this is what its removal is
+        # for. A prologue longer than the old 4 KiB slice used to push the
+        # start tag out of view, and the code accepted it UNSEEN — "it must
+        # close later" — which is how an unterminated literal padded past the
+        # window got in. The file is already in memory: read it.
+        comment = b"<!--" + b"x" * 5000 + b"-->"
         content = comment + b'<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'
-        # The window ends exactly after the element NAME: no delimiter, no
-        # `>`, nothing but the promise that the file continues.
-        assert content[:_SVG_SNIFF_WINDOW].endswith(b"<svg")
-        assert len(content) > _SVG_SNIFF_WINDOW
 
         bundle = make_bundle(tmp_path)
         (bundle / "assets" / "logo.svg").write_bytes(content)

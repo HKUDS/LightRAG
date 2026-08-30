@@ -140,79 +140,155 @@ def locales_without_chrome_translation(locales: Iterable[str]) -> list[str]:
     return sorted(locale for locale in locales if chrome_language_for(locale) is None)
 
 
-# How much of a logo is examined for its root element. A start tag can sit
-# behind an arbitrarily long prologue, so the window may cut one in half.
-_SVG_SNIFF_WINDOW = 4096
+# XML's S production — exactly these four, not `bytes.isspace()` (which also
+# accepts \v and \f, neither of which XML allows between tokens).
+_XML_SPACE = frozenset(b" \t\r\n")
+_QUOTE_BYTES = frozenset(b"\"'")
+_LT = 0x3C  # <
+_GT = 0x3E  # >
+_SLASH = 0x2F  # /
+_LBRACKET = 0x5B  # [
+_RBRACKET = 0x5D  # ]
 
 
-def _start_tag_closes(after: bytes) -> bool:
-    """Whether the ``<svg`` start tag's OWN ``>`` appears in ``after``.
+def _end_of_markup_declaration(content: bytes, index: int) -> int | None:
+    """Index just past a ``<!…>`` declaration whose body starts at ``index``.
 
-    Quote state has to be tracked rather than searching for any ``>``: XML
-    permits a literal ``>`` inside an attribute value, so ``<svg title=">``
-    contains one while its tag never closes at all — and a file that short
-    fits the sniff window whole, so nothing later can rescue it.
+    Used for the DOCTYPE (and any other top-level ``<!`` node). Its end is the
+    first ``>`` that is BOTH outside a literal and outside the internal
+    subset, because everything else can legitimately contain one:
 
-    This establishes that the root element opens AND closes. It is not a
-    well-formedness check on the rest of the file, which is the renderer's
-    business.
+      * ``<!DOCTYPE svg SYSTEM "a>b.dtd">`` — inside a system literal;
+      * ``<!DOCTYPE svg [<!ENTITY x "foo">]>`` — inside the subset, which
+        Illustrator has emitted for years.
+
+    Sub-nodes are skipped WHOLE rather than scanned for quotes: a comment in
+    the subset may hold an apostrophe (``<!-- don't -->``) that quote tracking
+    would read as an unterminated literal, rejecting a valid file.
+
+    Returns None when the declaration never ends.
     """
+    depth = 0
+    i = index
+    n = len(content)
+    while i < n:
+        byte = content[i]
+        if byte in _QUOTE_BYTES:
+            end = content.find(content[i : i + 1], i + 1)
+            if end == -1:
+                return None
+            i = end + 1
+        elif content.startswith(b"<!--", i):
+            end = content.find(b"-->", i + 4)
+            if end == -1:
+                return None
+            i = end + 3
+        elif content.startswith(b"<?", i):
+            end = content.find(b"?>", i + 2)
+            if end == -1:
+                return None
+            i = end + 2
+        elif byte == _LBRACKET:
+            depth += 1
+            i += 1
+        elif byte == _RBRACKET:
+            depth = max(depth - 1, 0)
+            i += 1
+        elif byte == _GT and depth == 0:
+            return i + 1
+        else:
+            i += 1
+    return None
+
+
+def _svg_start_tag_closes(content: bytes, index: int) -> bool:
+    """Whether the ``<svg`` start tag ending at ``index`` opens AND closes.
+
+    ``index`` points just past the element NAME, so this decides both that
+    the name ends there (rather than being ``<svgx…``) and that the tag has
+    its own ``>``:
+
+      * ``>``  — closed;
+      * ``/>`` — closed, empty element. A slash is nothing else: XML allows
+        no character between it and the bracket, so ``<svg/x>`` and
+        ``<svg/ >`` have no root element at all;
+      * XML whitespace — attributes follow, and the tag's own ``>`` must
+        appear OUTSIDE any literal. A ``>`` inside an attribute value is
+        legal and is not the tag's (``<svg title=">`` never closes).
+
+    A raw ``<`` outside a literal ends the search unsuccessfully: XML forbids
+    it inside a start tag, so reaching one means the tag was abandoned and any
+    ``>`` beyond it belongs to a different element.
+    """
+    if index >= len(content):
+        return False  # `<svg` and then nothing: an unclosed tag, not a root.
+    byte = content[index]
+    if byte == _GT:
+        return True
+    if byte == _SLASH:
+        return content.startswith(b"/>", index)
+    if byte not in _XML_SPACE:
+        return False  # `<svgx…`: a different element name.
     quote = 0
-    for byte in after:
+    for i in range(index + 1, len(content)):
+        byte = content[i]
         if quote:
             if byte == quote:
                 quote = 0
-        elif byte in (0x22, 0x27):  # " and '
+        elif byte in _QUOTE_BYTES:
             quote = byte
-        elif byte == 0x3E:  # >
+        elif byte == _LT:
+            return False
+        elif byte == _GT:
             return True
     return False
 
 
-def _has_svg_root(head: bytes, truncated: bool) -> bool:
-    """Whether ``head`` opens an ``<svg>`` element, skipping any XML
-    declaration, comments, doctype and processing instructions before it.
+def _has_svg_root(content: bytes) -> bool:
+    """Whether ``content`` opens an ``<svg>`` root element.
 
-    The start tag must be CLOSED — ``<svg>``, ``<svg/>``, or ``<svg …>`` — and
-    ``truncated`` is the only licence to accept one that is not. It says
-    ``head`` is a prefix of a larger file, so the missing ``>`` may simply lie
-    past the window; when the whole file fits in the window there is no
-    "later" and an unclosed tag is exactly what it looks like — a file with no
-    root element, which must fail startup rather than be served for a year as
-    an immutable ``image/svg+xml``.
+    Scans the WHOLE file — it is already in memory — skipping each prologue
+    node by its own terminator, since every one of them can contain a ``>``
+    that is not its end:
+
+      * comment       ``<!--`` … ``-->``
+      * PI / XML decl ``<?`` … ``?>``   (NOT the first ``>``: a pseudo
+        attribute may hold one, e.g. ``<?xml-stylesheet href="a>b.css"?>``.
+        PI content has no quote semantics, so it is never quote-tracked —
+        doing so would trip over an apostrophe in prose.)
+      * ``<!…>``      see `_end_of_markup_declaration`
+
+    Anything else before a root means this is not an SVG.
+
+    DECLARED BOUNDARIES. This establishes that an ``<svg>`` root element
+    opens and closes; it is not a well-formedness check on the document,
+    which is the renderer's business. A root reached through a namespace
+    PREFIX (``<s:svg>``) is not recognised, nor is a UTF-16/32 encoded file —
+    both are legal XML that no SVG tool emits, and both have always been
+    rejected here.
     """
-    rest = head
+    i = 3 if content.startswith(b"\xef\xbb\xbf") else 0
+    n = len(content)
     while True:
-        rest = rest.lstrip(b" \t\r\n")
-        if rest.startswith(b"<svg"):
-            after = rest[4:]
-            if after.startswith(b">") or after.startswith(b"/>"):
-                return True
-            if after.startswith(b"/"):
-                # A slash opens a root only as the ``/>`` of an empty element.
-                # ``<svg/anything>`` — or even ``<svg/ >``, since XML allows
-                # nothing between the two — is not well-formed and has no root
-                # at all. A bare trailing ``/`` is an unclosed tag.
-                return truncated and after == b"/"
-            if after == b"":
-                return truncated
-            if after[:1].isspace():
-                # Attributes follow, and the start tag still has to close —
-                # on an UNQUOTED ``>``; see `_start_tag_closes`.
-                return _start_tag_closes(after) or truncated
-            # ``<svgx…``: a different element name, not an SVG root.
-            return False
-        # Skip one prologue node; anything else means this is not an SVG.
-        if rest.startswith(b"<!--"):
-            end = rest.find(b"-->", 4)
+        while i < n and content[i] in _XML_SPACE:
+            i += 1
+        if content.startswith(b"<svg", i):
+            return _svg_start_tag_closes(content, i + 4)
+        if content.startswith(b"<!--", i):
+            end = content.find(b"-->", i + 4)
             if end == -1:
                 return False
-            rest = rest[end + 3 :]
-        elif rest.startswith(b"<?") or rest.startswith(b"<!"):
-            end = rest.find(b">")
+            i = end + 3
+        elif content.startswith(b"<?", i):
+            end = content.find(b"?>", i + 2)
             if end == -1:
                 return False
-            rest = rest[end + 1 :]
+            i = end + 2
+        elif content.startswith(b"<!", i):
+            end = _end_of_markup_declaration(content, i + 2)
+            if end is None:
+                return False
+            i = end
         else:
             return False
 
@@ -231,10 +307,7 @@ def _sniff_logo_mime(content: bytes, path_label: str) -> str:
     # not an image, and accepting it would serve an unrenderable logo with an
     # immutable image/svg+xml cache header (and contradict the fail-fast
     # promise this function's error message makes).
-    head = content[:_SVG_SNIFF_WINDOW].lstrip(b"\xef\xbb\xbf \t\r\n")
-    # Truncation is a property of the FILE, not of `head`: the lstrip above
-    # can shorten the slice without any bytes having been cut off the end.
-    if _has_svg_root(head, truncated=len(content) > _SVG_SNIFF_WINDOW):
+    if _has_svg_root(content):
         return "image/svg+xml"
     raise UICustomizationError(
         f"logo {path_label!r}: content is not PNG, JPEG, WebP or SVG "
