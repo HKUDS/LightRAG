@@ -24,8 +24,12 @@ Kubernetes 三种部署方式、如何验证，以及每一条启动错误的含
 
 Bundle **不能**设置的内容：
 
-- 浏览器标签标题，以及登录卡片上 LightRAG 字样下方的副标题。它们来自
-  `WEBUI_TITLE` / `WEBUI_DESCRIPTION` 环境变量，manifest 有意不允许覆盖。
+- 浏览器标签标题，以及登录卡片自身的 `LightRAG` 标题与副标题。这些都**硬编码在前端**——
+  `index.html` 与 `workspace.html` 里的 `<title>Lightrag</title>`，以及 `LoginPage.tsx`
+  里的标题和走 i18n 的 `login.description`。Bundle 和任何环境变量都改不了它们，只能修改
+  前端源码并重新构建。
+- **登录之后**显示的应用头部（`/webui` 的 `SiteHeader`、`/workspace` 的工作区头部）。这一处
+  由 `WEBUI_TITLE` / `WEBUI_DESCRIPTION` 环境变量设置，manifest 有意不允许覆盖。
 - 内容周围的按钮、菜单和设置项——参见
   [§5.3 界面语言与 Bundle 语言](#53-界面语言与-bundle-语言)。
 - 文字方向。方向由 locale 推导（见 [§5.2](#52-文字方向rtl)），绝不取自
