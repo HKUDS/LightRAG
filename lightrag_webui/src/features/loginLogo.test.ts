@@ -10,6 +10,8 @@ describe('login logo customization wiring', () => {
     expect(source).toContain('content.logoUrl && failedLogoUrl !== content.logoUrl')
     expect(source).toContain('src={content.logoUrl}')
     expect(source).toContain('alt={content.logoAlt}')
+    expect(source).not.toContain('import { ZapIcon } from \'lucide-react\'')
+    expect(source).not.toContain('<ZapIcon')
   })
 
   test('latches a failed URL without blocking a later locale logo', () => {

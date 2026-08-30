@@ -17,7 +17,6 @@ import {
   DialogTitle
 } from '@/components/ui/Dialog'
 import { ScrollArea } from '@/components/ui/ScrollArea'
-import { ZapIcon } from 'lucide-react'
 import AppSettings from '@/components/AppSettings'
 import CustomizedMarkdown from '@/components/customization/CustomizedMarkdown'
 import { useCustomizedContent } from '@/components/customization/useCustomizedContent'
@@ -252,17 +251,14 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
       <Card className="w-full max-w-[480px] shadow-lg mx-4">
         <CardHeader className="flex items-center justify-center space-y-2 pb-8 pt-6">
           <div className="flex flex-col items-center space-y-4">
-            <div className="flex items-center gap-3">
-              {content.logoUrl && failedLogoUrl !== content.logoUrl && (
-                <img
-                  src={content.logoUrl}
-                  alt={content.logoAlt}
-                  className="h-12 w-12 object-contain"
-                  onError={() => setFailedLogoUrl(content.logoUrl)}
-                />
-              )}
-              <ZapIcon className="size-10 text-emerald-400" aria-hidden="true" />
-            </div>
+            {content.logoUrl && failedLogoUrl !== content.logoUrl && (
+              <img
+                src={content.logoUrl}
+                alt={content.logoAlt}
+                className="h-12 w-12 object-contain"
+                onError={() => setFailedLogoUrl(content.logoUrl)}
+              />
+            )}
             <div className="text-center space-y-2">
               <h1 className="text-3xl font-bold tracking-tight">LightRAG</h1>
               <p className="text-muted-foreground text-sm">
