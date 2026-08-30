@@ -2,44 +2,73 @@
  * Browser tab title (`document.title`).
  *
  * The entry HTML ships a static `<title>LightRAG</title>`, which a deployment
- * that set `WEBUI_TITLE` overrides. Two paths keep the tab correct, and both
- * are needed:
+ * that set `WEBUI_TITLE` overrides. Two sources carry that value, and they
+ * differ in AGE, which is what the two entry points below are about:
  *
- * 1. FIRST PAINT — the server's runtime-config snippet (see `runtimeConfig`)
- *    assigns `document.title` inline in `<head>`, before the bundle loads.
- *    Under `bun run dev` there is no such injection, so this path is absent.
- * 2. LIVE VALUE — the auth store's `webuiTitle`, refreshed from `/health` and
- *    the login response, so restarting the server with a new `WEBUI_TITLE`
- *    reaches an already-open tab on the next poll (same tier as the header
- *    title it matches).
+ * - INJECTED — the server's runtime-config snippet (see `runtimeConfig`)
+ *   assigns `document.title` inline in `<head>`, before the bundle loads, so
+ *   the tab is right from the first paint. It is a snapshot of the moment the
+ *   page was served and never changes afterwards. Under `bun run dev` there is
+ *   no injection at all.
+ * - REPORTED — the auth store's `webuiTitle`, refreshed from `/health` and the
+ *   login response, so restarting the server with a different `WEBUI_TITLE`
+ *   reaches an already-open tab on the next poll (same tier as the header
+ *   title it matches).
  *
- * The store wins whenever it holds a title, because it is the fresher of the
- * two; the injected value backs it up while the store is still empty (a first
- * visit, before any authenticated request has returned a title) so the tab
- * never falls back from the deployment's name to the generic default.
+ * A reported value is always the fresher of the two and REPLACES the injected
+ * one — including a reported `null`, which says the deployment now has no
+ * title and must revert the tab to the default. Falling back to the injected
+ * value there would pin the tab to a name the server no longer uses until the
+ * next reload, while the header beside it already showed the default.
+ *
+ * The injected value is therefore only consulted BEFORE the server has
+ * reported anything in this page's lifetime — `applyInitialDocumentTitle`,
+ * called once at store construction. Every later change to the store's
+ * `webuiTitle` comes from `login()` or `setCustomTitle()`, i.e. straight from
+ * a server response, and goes through `applyServerDocumentTitle`.
  */
 import { getRuntimeWebuiTitle } from '@/lib/runtimeConfig'
 
 /** Shown when the deployment sets no `WEBUI_TITLE`. Matches the entry HTML. */
 export const DEFAULT_DOCUMENT_TITLE = 'LightRAG'
 
-/** The tab title for a given store value. Blank/whitespace counts as unset. */
-export function resolveDocumentTitle(webuiTitle?: string | null): string {
-  const fromStore = (webuiTitle ?? '').trim()
-  if (fromStore) return fromStore
+const clean = (value: string | null | undefined): string => (value ?? '').trim()
 
-  const injected = (getRuntimeWebuiTitle() ?? '').trim()
-  if (injected) return injected
-
-  return DEFAULT_DOCUMENT_TITLE
+const setTitle = (title: string): void => {
+  if (typeof document === 'undefined') return
+  if (document.title !== title) {
+    document.title = title
+  }
 }
 
-/** Write {@link resolveDocumentTitle} to the document, if there is one. */
-export function applyDocumentTitle(webuiTitle?: string | null): void {
-  if (typeof document === 'undefined') return
+/**
+ * The title before any server response has landed in this page's lifetime.
+ *
+ * `cachedTitle` is the store's start value, restored from localStorage — a
+ * title this browser saw on some EARLIER visit. The injected value wins over
+ * it because it came from the response that served this very page, so it
+ * cannot be out of date; the cache is what carries a title in dev, where
+ * nothing is injected.
+ */
+export function resolveInitialDocumentTitle(cachedTitle?: string | null): string {
+  return clean(getRuntimeWebuiTitle()) || clean(cachedTitle) || DEFAULT_DOCUMENT_TITLE
+}
 
-  const next = resolveDocumentTitle(webuiTitle)
-  if (document.title !== next) {
-    document.title = next
-  }
+/**
+ * The title for a value the server just reported. `null`/blank means the
+ * deployment has no `WEBUI_TITLE`, and reverts the tab to the default — the
+ * injected value is NOT consulted, see the module comment.
+ */
+export function resolveServerDocumentTitle(reportedTitle?: string | null): string {
+  return clean(reportedTitle) || DEFAULT_DOCUMENT_TITLE
+}
+
+/** Apply {@link resolveInitialDocumentTitle}, if there is a document. */
+export function applyInitialDocumentTitle(cachedTitle?: string | null): void {
+  setTitle(resolveInitialDocumentTitle(cachedTitle))
+}
+
+/** Apply {@link resolveServerDocumentTitle}, if there is a document. */
+export function applyServerDocumentTitle(reportedTitle?: string | null): void {
+  setTitle(resolveServerDocumentTitle(reportedTitle))
 }

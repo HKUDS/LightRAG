@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import {
   DEFAULT_DOCUMENT_TITLE,
-  applyDocumentTitle,
-  resolveDocumentTitle
+  applyInitialDocumentTitle,
+  applyServerDocumentTitle,
+  resolveInitialDocumentTitle,
+  resolveServerDocumentTitle
 } from './documentTitle'
 
 /**
@@ -30,70 +32,78 @@ afterEach(() => {
   delete g.document
 })
 
-describe('resolveDocumentTitle', () => {
-  test('uses the store title when the deployment set one', () => {
+describe('resolveInitialDocumentTitle', () => {
+  test('prefers the injected title over the cached one', () => {
+    // The injected value came from the response that served THIS page; the
+    // cached one is from some earlier visit, so it may name a title the
+    // deployment has since changed.
+    setInjectedTitle('Current KB')
+    expect(resolveInitialDocumentTitle('Stale KB')).toBe('Current KB')
+  })
+
+  test('uses the cached title when nothing was injected (dev server)', () => {
+    g.window = {}
+    expect(resolveInitialDocumentTitle('My Graph KB')).toBe('My Graph KB')
+  })
+
+  test('falls back to the default when neither source has a title', () => {
     setInjectedTitle(null)
-    expect(resolveDocumentTitle('My Graph KB')).toBe('My Graph KB')
-  })
-
-  test('falls back to the default when nothing is configured', () => {
-    setInjectedTitle(null)
-    expect(resolveDocumentTitle(null)).toBe(DEFAULT_DOCUMENT_TITLE)
-    expect(resolveDocumentTitle(undefined)).toBe(DEFAULT_DOCUMENT_TITLE)
-    expect(resolveDocumentTitle('   ')).toBe(DEFAULT_DOCUMENT_TITLE)
-  })
-
-  test('falls back to the server-injected title before the store has one', () => {
-    // First visit: the tab already shows the deployment's name (the snippet in
-    // <head> set it), and the store is still empty because no authenticated
-    // request has returned a title yet. Falling back to the generic default
-    // here would visibly rename the tab a moment after it loaded.
-    setInjectedTitle('My Graph KB')
-    expect(resolveDocumentTitle(null)).toBe('My Graph KB')
-  })
-
-  test('prefers the store title over the injected one', () => {
-    // The injected value is frozen at page load; the store is refreshed by the
-    // /health poll, so a server restarted with a new WEBUI_TITLE wins.
-    setInjectedTitle('Old Name')
-    expect(resolveDocumentTitle('New Name')).toBe('New Name')
+    expect(resolveInitialDocumentTitle(null)).toBe(DEFAULT_DOCUMENT_TITLE)
+    expect(resolveInitialDocumentTitle(undefined)).toBe(DEFAULT_DOCUMENT_TITLE)
+    expect(resolveInitialDocumentTitle('   ')).toBe(DEFAULT_DOCUMENT_TITLE)
   })
 
   test('ignores a blank injected title', () => {
     setInjectedTitle('  ')
-    expect(resolveDocumentTitle(null)).toBe(DEFAULT_DOCUMENT_TITLE)
-  })
-
-  test('tolerates a page served without the runtime-config snippet', () => {
-    g.window = {}
-    expect(resolveDocumentTitle('My Graph KB')).toBe('My Graph KB')
-    expect(resolveDocumentTitle(null)).toBe(DEFAULT_DOCUMENT_TITLE)
+    expect(resolveInitialDocumentTitle(null)).toBe(DEFAULT_DOCUMENT_TITLE)
+    expect(resolveInitialDocumentTitle('My Graph KB')).toBe('My Graph KB')
   })
 
   test('tolerates a missing window (SSR / non-browser import)', () => {
-    expect(resolveDocumentTitle('My Graph KB')).toBe('My Graph KB')
-    expect(resolveDocumentTitle(null)).toBe(DEFAULT_DOCUMENT_TITLE)
+    expect(resolveInitialDocumentTitle('My Graph KB')).toBe('My Graph KB')
+    expect(resolveInitialDocumentTitle(null)).toBe(DEFAULT_DOCUMENT_TITLE)
   })
 })
 
-describe('applyDocumentTitle', () => {
-  test('writes the resolved title to the document', () => {
-    setInjectedTitle(null)
-    g.document = { title: 'LightRAG' }
-
-    applyDocumentTitle('My Graph KB')
-    expect(g.document.title).toBe('My Graph KB')
-
-    applyDocumentTitle(null)
-    expect(g.document.title).toBe(DEFAULT_DOCUMENT_TITLE)
+describe('resolveServerDocumentTitle', () => {
+  test('uses what the server reported', () => {
+    setInjectedTitle('Old KB')
+    expect(resolveServerDocumentTitle('New KB')).toBe('New KB')
   })
 
-  test('leaves the injected title in place when the store is empty', () => {
+  test('a cleared title reverts to the default, NOT to the injected one', () => {
+    // Regression: the server restarted with WEBUI_TITLE unset, so /health
+    // reports null. The injected value is a snapshot of the old config and
+    // must not resurrect it — the header beside the tab already shows the
+    // default, and the tab would stay wrong until a reload.
+    setInjectedTitle('Old KB')
+    expect(resolveServerDocumentTitle(null)).toBe(DEFAULT_DOCUMENT_TITLE)
+    expect(resolveServerDocumentTitle(undefined)).toBe(DEFAULT_DOCUMENT_TITLE)
+    expect(resolveServerDocumentTitle('   ')).toBe(DEFAULT_DOCUMENT_TITLE)
+  })
+})
+
+describe('applying the title', () => {
+  test('the initial pass keeps the injected title while the store is empty', () => {
+    // First visit: the tab already shows the deployment's name (the snippet in
+    // <head> set it) and the store has nothing cached yet. Overwriting it with
+    // the generic default would visibly rename the tab a moment after load.
     setInjectedTitle('My Graph KB')
     g.document = { title: 'My Graph KB' }
 
-    applyDocumentTitle(null)
+    applyInitialDocumentTitle(null)
     expect(g.document.title).toBe('My Graph KB')
+  })
+
+  test('a server update writes through, and a cleared title resets', () => {
+    setInjectedTitle('My Graph KB')
+    g.document = { title: 'My Graph KB' }
+
+    applyServerDocumentTitle('Renamed KB')
+    expect(g.document.title).toBe('Renamed KB')
+
+    applyServerDocumentTitle(null)
+    expect(g.document.title).toBe(DEFAULT_DOCUMENT_TITLE)
   })
 
   test('does not write when the title is already correct', () => {
@@ -110,16 +120,17 @@ describe('applyDocumentTitle', () => {
       }
     }
 
-    applyDocumentTitle('My Graph KB')
+    applyServerDocumentTitle('My Graph KB')
     expect(writes).toBe(0)
 
-    applyDocumentTitle('Other KB')
+    applyServerDocumentTitle('Other KB')
     expect(writes).toBe(1)
     expect(stored).toBe('Other KB')
   })
 
   test('is a no-op without a document', () => {
     setInjectedTitle('My Graph KB')
-    expect(() => applyDocumentTitle('My Graph KB')).not.toThrow()
+    expect(() => applyInitialDocumentTitle(null)).not.toThrow()
+    expect(() => applyServerDocumentTitle(null)).not.toThrow()
   })
 })
