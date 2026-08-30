@@ -12,6 +12,7 @@ import { errorMessage } from '@/lib/utils'
 import { decodeBase64Url } from '@/lib/base64url'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
+import { applyAiContentNoticeFlag } from '@/stores/aiContentNotice'
 import { navigationService } from '@/services/navigation'
 import { AuthenticationRequiredError, isAuthenticationRequiredError } from '@/api/errors'
 
@@ -163,6 +164,8 @@ export type LightragStatus = {
   }
   webui_title?: string
   webui_description?: string
+  /** Whether answers are labelled as AI-generated in the query UIs. */
+  ai_content_notice_enabled?: boolean
 }
 
 /**
@@ -339,6 +342,8 @@ export type AuthStatusResponse = {
   api_version?: string
   webui_title?: string
   webui_description?: string
+  /** Whether answers are labelled as AI-generated in the query UIs. */
+  ai_content_notice_enabled?: boolean
 }
 
 export type PipelineStatusResponse = {
@@ -363,6 +368,8 @@ export type LoginResponse = {
   api_version?: string
   webui_title?: string
   webui_description?: string
+  /** Whether answers are labelled as AI-generated in the query UIs. */
+  ai_content_notice_enabled?: boolean
 }
 
 export const InvalidApiKeyError = 'Invalid API Key'
@@ -397,6 +404,8 @@ const silentRefreshGuestToken = async (): Promise<string> => {
         // This request must skip the interceptor to avoid adding expired token
         headers: { 'X-Skip-Interceptor': 'true' }
       });
+
+      applyAiContentNoticeFlag(response.data?.ai_content_notice_enabled);
 
       if (response.data.access_token && !response.data.auth_configured) {
         const newToken = response.data.access_token;
@@ -1054,6 +1063,12 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
       };
     }
 
+    // Deployment display configuration the caller never looks at: adopted here,
+    // once, before the validation below picks one of its several return shapes
+    // (this is the request BOTH entries make at boot, so it is the one place
+    // that covers the admin shell, the login page and the workspace entry).
+    applyAiContentNoticeFlag(response.data?.ai_content_notice_enabled);
+
     // Strict validation of the response data
     if (response.data &&
         typeof response.data === 'object' &&
@@ -1115,6 +1130,8 @@ export const loginToServer = async (username: string, password: string): Promise
   const response = await axiosInstance.post('/login', formData, {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
   });
+
+  applyAiContentNoticeFlag(response.data?.ai_content_notice_enabled);
 
   return response.data;
 }

@@ -18,6 +18,7 @@ import { oneLight, oneDark } from 'react-syntax-highlighter/dist/cjs/styles/pris
 
 import { LoaderIcon, ChevronDownIcon, ClockIcon, ZapIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { useAiContentNoticeStore } from '@/stores/aiContentNotice'
 
 // KaTeX configuration options interface
 interface KaTeXOptions {
@@ -69,6 +70,10 @@ export const ChatMessage = ({
 }) => {
   const { t } = useTranslation()
   const { theme } = useTheme()
+  // Deployment-level switch (ENABLE_AI_CONTENT_NOTICE), read from the server at
+  // boot. Both query entries render answers through this component, so gating
+  // it here is what covers /webui and /workspace alike.
+  const aiContentNoticeEnabled = useAiContentNoticeStore((state) => state.enabled)
   const [katexPlugin, setKatexPlugin] = useState<((options?: KaTeXOptions) => any) | null>(null)
   const [isThinkingExpanded, setIsThinkingExpanded] = useState<boolean>(false)
 
@@ -317,6 +322,18 @@ export const ChatMessage = ({
       {message.isAborted && (
         <div className="mt-1 text-xs italic text-muted-foreground">
           {t('retrievePanel.retrieval.userTerminated')}
+        </div>
+      )}
+      {/* AI-generated content notice: the LAST line of every answer, so it
+          reads as a label on the whole message. Only for assistant messages
+          that actually carry an answer — a user's own text is not generated,
+          and an error bubble (or a message still waiting for its first token)
+          has no generated content to label yet. It lives outside the markdown
+          and outside `message.content`, so it never reaches the copy button,
+          the retrieval history or the API response. */}
+      {aiContentNoticeEnabled && message.role === 'assistant' && !message.isError && hasContent && (
+        <div className="mt-1 text-xs italic text-muted-foreground" data-testid="ai-content-notice">
+          {t('retrievePanel.chatMessage.aiContentNotice')}
         </div>
       )}
       {/* Loading indicator — only in the active tab, and only as a fallback when

@@ -404,6 +404,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "AI가 생성한 내용입니다. 내용을 확인해 주세요.",
       "copyTooltip": "클립보드에 복사",
       "copyError": "텍스트를 클립보드에 복사 실패",
       "copyEmpty": "복사할 내용이 없습니다",

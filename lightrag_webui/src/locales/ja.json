@@ -404,6 +404,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "AI により生成された内容です。内容をご確認ください。",
       "copyTooltip": "クリップボードにコピー",
       "copyError": "クリップボードへのテキストコピーに失敗しました",
       "copyEmpty": "コピーするコンテンツがありません",
