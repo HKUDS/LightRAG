@@ -224,6 +224,52 @@ def test_caller_supplied_chunk_options_reach_chunker(tmp_path, monkeypatch):
 
 
 @pytest.mark.offline
+def test_t_strategy_dispatch_forwards_file_path_and_caller_options(
+    tmp_path, monkeypatch
+):
+    """process_options="T" reaches chunking_by_tree_sitter with the
+    document's own file_path (for language inference) plus any
+    caller-supplied chunk_options, exercising the pipeline dispatch branch
+    itself rather than just the chunker function in isolation."""
+    import lightrag.chunker as chunker_pkg
+
+    captured: dict = {}
+
+    def _t_spy(tokenizer, content, chunk_token_size, **kwargs):
+        captured["chunk_token_size"] = chunk_token_size
+        captured["kwargs"] = dict(kwargs)
+        return [
+            {"tokens": 5, "content": "stub", "chunk_order_index": 0},
+        ]
+
+    monkeypatch.setattr(chunker_pkg, "chunking_by_tree_sitter", _t_spy)
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "def foo():\n    pass\n",
+                file_paths="module.[native-T].py",
+                track_id="track-t",
+                process_options="T",
+                chunk_options={
+                    "chunk_token_size": 900,
+                    "tree_sitter": {"language": "python"},
+                },
+            )
+            await rag.apipeline_process_enqueue_documents()
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+    assert captured.get("chunk_token_size") == 900
+    assert captured["kwargs"]["language"] == "python"
+    assert captured["kwargs"]["file_path"] == "module.py"
+
+
+@pytest.mark.offline
 def test_per_file_chunk_options_list(tmp_path, monkeypatch):
     """A ``chunk_options`` list aligned with ``input`` writes
     independent snapshots per doc.

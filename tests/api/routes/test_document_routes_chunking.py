@@ -45,6 +45,7 @@ from lightrag.constants import (  # noqa: E402
     PROCESS_OPTION_CHUNK_FIXED,
     PROCESS_OPTION_CHUNK_PARAGRAH,
     PROCESS_OPTION_CHUNK_RECURSIVE,
+    PROCESS_OPTION_CHUNK_TREE_SITTER,
     PROCESS_OPTION_CHUNK_VECTOR,
 )
 from lightrag.parser.routing import default_chunker_config  # noqa: E402
@@ -56,6 +57,7 @@ _ALL_STRATEGY_KEYS = {
     "recursive_character",
     "semantic_vector",
     "paragraph_semantic",
+    "tree_sitter",
 }
 
 
@@ -155,6 +157,15 @@ _ALL_STRATEGY_KEYS = {
         {"strategy": "fixed_token", "params": {"bogus": 1}},
         {"strategy": "fixed_token", "params": {"separators": ["x"]}},
         {"strategy": "recursive_character", "params": {"buffer_size": 1}},
+        {"strategy": "tree_sitter", "params": {"chunk_token_size": 0}},
+        {"strategy": "tree_sitter", "params": {"chunk_token_size": "5"}},
+        {"strategy": "tree_sitter", "params": {"language": 123}},
+        {"strategy": "tree_sitter", "params": {"bogus": 1}},
+        {"strategy": "tree_sitter", "params": {"separators": ["x"]}},
+        {
+            "strategy": "tree_sitter",
+            "params": {"chunk_token_size": 100, "chunk_overlap_token_size": 200},
+        },
     ],
 )
 def test_chunking_config_rejects_malformed(body):
@@ -303,6 +314,7 @@ def test_resolve_none_keeps_default_fixed():
         ("recursive_character", PROCESS_OPTION_CHUNK_RECURSIVE, "recursive_character"),
         ("semantic_vector", PROCESS_OPTION_CHUNK_VECTOR, "semantic_vector"),
         ("paragraph_semantic", PROCESS_OPTION_CHUNK_PARAGRAH, "paragraph_semantic"),
+        ("tree_sitter", PROCESS_OPTION_CHUNK_TREE_SITTER, "tree_sitter"),
     ],
 )
 def test_resolve_maps_strategy_and_writes_size_into_subdict(strategy, expected_po, key):
@@ -329,6 +341,20 @@ def test_resolve_merges_strategy_params():
     _, chunk_options = _resolve_text_chunking(cfg, _stub_rag())
     assert chunk_options["recursive_character"]["separators"] == ["A", "B"]
     assert chunk_options["recursive_character"]["chunk_overlap_token_size"] == 0
+
+
+def test_resolve_merges_tree_sitter_language():
+    cfg = TextChunkingConfig.model_validate(
+        {"strategy": "tree_sitter", "params": {"language": "javascript"}}
+    )
+    process_options, chunk_options = _resolve_text_chunking(cfg, _stub_rag())
+    assert process_options == PROCESS_OPTION_CHUNK_TREE_SITTER
+    assert chunk_options["tree_sitter"]["language"] == "javascript"
+
+
+def test_chunking_config_tree_sitter_language_defaults_to_none():
+    cfg = TextChunkingConfig.model_validate({"strategy": "tree_sitter"})
+    assert cfg.params.get("language") is None
 
 
 def test_chunking_config_accepts_a_separator_cascade_at_the_cap():
