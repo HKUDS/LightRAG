@@ -5,7 +5,8 @@ import {
   hasFutureSettingsEnvelope,
   resetSettingsMigrationErrorForTests,
   wasHistoryDroppedDuringMigration,
-  wereSettingsLostToQuota,
+  acceptSettingsDataLoss,
+  isSettingsDataLostError,
   SETTINGS_STORAGE_VERSION_AFTER_SPLIT
 } from './splitSettingsStorage'
 import { LEGACY_SETTINGS_VERSION_CAP } from './legacySettingsChain'
@@ -81,6 +82,11 @@ beforeEach(() => {
 })
 
 const parsed = (key: string) => JSON.parse(storage.getItem(key)!)
+
+/** Envelope-level loss marker, by literal name (it is module-private).*/
+const SETTINGS_LOST_MARKER_KEY = 'lightragSettingsLostToQuota'
+
+const parsedFrom = (s: Storage, key: string) => JSON.parse(s.getItem(key)!)
 
 describe('field mapping (fixed and exhaustive)', () => {
   test('querySettings → query-settings key, retrievalHistory → webui history, workspace history = []', () => {
@@ -678,46 +684,122 @@ describe('quota degradation under a byte budget', () => {
     expect(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)).not.toBeNull()
   })
 
-  test('a destroyed envelope is REPORTED once when capacity returns', () => {
-    // Regression (P1). The last rung used to write a bare `{state:{}}` at the
-    // chain's cap version — a perfectly ordinary EMPTY envelope. So the moment
-    // capacity returned, the next run migrated it cleanly: no error, no
-    // notice, and the theme, language and API key the split does not migrate
-    // were gone. The error screen's retry turned a visible failure into a
-    // silent one.
-    //
-    // The bytes are unrecoverable by then (the store rejected them twice), so
-    // the fix is not to keep retrying — it is that the emptied envelope
-    // carries a marker no run can complete quietly.
+  test('a destroyed envelope is REFUSED, not completed, when capacity returns', () => {
+    // The defect codex reported. The last rung used to be a bare
+    // `{state:{}, version:21}` — a perfectly VALID envelope. Once the user
+    // freed space and pressed the error screen's own Reload, the next run
+    // migrated its empty state successfully, stamped v22 and never retried:
+    // theme, language and apiKey gone, app starting clean, no error anywhere.
+    // The retry button converted a visible failure into silent data loss.
     const quotaStorage = new ByteQuotaStorage(100000, true)
     quotaStorage.setItem(LEGACY_SETTINGS_STORAGE_KEY, legacyWithBigHistory())
     quotaStorage.setItem('unrelated::blob', 'y'.repeat(1200))
-    // Below what the store already holds, and below even the scalar rung.
     quotaStorage.budget = 1300
 
     runSettingsStorageSplitMigration(quotaStorage)
-    expect(getSettingsMigrationError()).not.toBeNull()
-    expect(JSON.parse(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)!).state).toEqual({})
+    // Reported as unrecoverable from the FIRST screen, not as "try again".
+    expect(isSettingsDataLostError(getSettingsMigrationError())).toBe(true)
+    const tombstone = quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)
+    expect(JSON.parse(tombstone!).state).toEqual({})
 
-    // The user frees space (or the browser raises the quota) and reloads.
+    // Capacity returns and the user reloads — the sequence that used to lose
+    // the settings for good.
     quotaStorage.data.delete('unrelated::blob')
     quotaStorage.budget = 100000
     resetSettingsMigrationErrorForTests()
+    runSettingsStorageSplitMigration(quotaStorage)
+
+    // Still refused, still as unrecoverable, and NOTHING written: no targets
+    // invented from an empty state, no v22 stamp over data never read.
+    expect(isSettingsDataLostError(getSettingsMigrationError())).toBe(true)
+    expect(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)).toBe(tombstone)
+    expect(quotaStorage.getItem(QUERY_SETTINGS_STORAGE_KEY)).toBeNull()
+  })
+
+  test('accepting the loss is what clears it, and only then', () => {
+    const quotaStorage = new ByteQuotaStorage(100000, true)
+    quotaStorage.setItem(LEGACY_SETTINGS_STORAGE_KEY, legacyWithBigHistory())
+    quotaStorage.setItem('unrelated::blob', 'y'.repeat(1200))
+    quotaStorage.budget = 1300
+    runSettingsStorageSplitMigration(quotaStorage)
+    expect(isSettingsDataLostError(getSettingsMigrationError())).toBe(true)
+
+    // Only a person gets past it; nothing does this on its own.
+    quotaStorage.budget = 100000
+    acceptSettingsDataLoss(quotaStorage)
+    expect(getSettingsMigrationError()).toBeNull()
+    // Nothing survived, so the key goes and the reload starts from defaults.
+    expect(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)).toBeNull()
+    runSettingsStorageSplitMigration(quotaStorage)
+    expect(getSettingsMigrationError()).toBeNull()
+  })
+
+  test('scalars are shed one at a time before the envelope is emptied', () => {
+    // The hole the object-only rung left. By the time the ladder reaches a
+    // payload the split has already stripped of its objects, "drop the
+    // non-primitives" finds nothing to drop — so without a scalar ladder the
+    // next rung was the empty envelope and EVERY scalar went at once. Here
+    // the largest one goes and the cheap ones survive.
+    const quotaStorage = new ByteQuotaStorage(100000, true)
+    quotaStorage.setItem(
+      LEGACY_SETTINGS_STORAGE_KEY,
+      legacyEnvelope(21, {
+        theme: 'dark',
+        language: 'zh',
+        apiKey: 'k'.repeat(60),
+        querySettings: { mode: 'hybrid', top_k: 7, history_turns: 0 },
+        retrievalHistory: bigHistory
+      })
+    )
+    quotaStorage.setItem('unrelated::blob', 'y'.repeat(1200))
+    // Sized to fit the envelope minus its biggest scalar, but not the whole
+    // one (see the rung ladder in reducedLegacyPayloads).
+    quotaStorage.budget = 1340
 
     runSettingsStorageSplitMigration(quotaStorage)
 
-    // It completes — a retry could only loop over bytes that no longer exist…
-    expect(getSettingsMigrationError()).toBeNull()
-    // …but it does NOT pretend the settings were migrated.
-    expect(wereSettingsLostToQuota()).toBe(true)
+    const left = JSON.parse(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)!)
+    // The oversized apiKey was shed; the cheap scalars survived.
+    expect(left.state.apiKey).toBeUndefined()
+    expect(left.state.theme).toBe('dark')
+    expect(left.state.language).toBe('zh')
+    // A scalar was genuinely lost, so it is marked and reported: an unmarked
+    // partial envelope would migrate "successfully" on the next load.
+    expect(left[SETTINGS_LOST_MARKER_KEY]).toBe(true)
+    expect(isSettingsDataLostError(getSettingsMigrationError())).toBe(true)
+  })
 
-    // And it says so exactly once: the completed envelope carries no marker.
-    const cleaned = JSON.parse(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)!)
-    expect(cleaned.version).toBe(SETTINGS_STORAGE_VERSION_AFTER_SPLIT)
-    expect('lightragSettingsLostToQuota' in cleaned).toBe(false)
+  test('accepting a PARTIAL loss keeps what survived', () => {
+    // The counterpart to the empty case: acceptance adapts to what is left,
+    // so a user who says "continue" still gets the settings that fit.
+    const quotaStorage = new ByteQuotaStorage(100000, true)
+    quotaStorage.setItem(
+      LEGACY_SETTINGS_STORAGE_KEY,
+      legacyEnvelope(21, {
+        theme: 'dark',
+        language: 'zh',
+        apiKey: 'k'.repeat(60),
+        querySettings: { mode: 'hybrid', top_k: 7, history_turns: 0 },
+        retrievalHistory: bigHistory
+      })
+    )
+    quotaStorage.setItem('unrelated::blob', 'y'.repeat(1200))
+    quotaStorage.budget = 1340
+    runSettingsStorageSplitMigration(quotaStorage)
+    expect(isSettingsDataLostError(getSettingsMigrationError())).toBe(true)
+
+    quotaStorage.budget = 100000
+    acceptSettingsDataLoss(quotaStorage)
+    // Fields remained, so the key stays (un-marked) and the reload migrates
+    // them instead of starting from defaults.
+    const kept = JSON.parse(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)!)
+    expect(kept[SETTINGS_LOST_MARKER_KEY]).toBeUndefined()
+    expect(kept.state.theme).toBe('dark')
+
     resetSettingsMigrationErrorForTests()
     runSettingsStorageSplitMigration(quotaStorage)
-    expect(wereSettingsLostToQuota()).toBe(false)
+    expect(getSettingsMigrationError()).toBeNull()
+    expect(parsedFrom(quotaStorage, LEGACY_SETTINGS_STORAGE_KEY).state.theme).toBe('dark')
   })
 
   test('the scalar rung keeps theme/language/apiKey when the payload cannot fit', () => {
@@ -758,7 +840,9 @@ describe('quota degradation under a byte budget', () => {
     runSettingsStorageSplitMigration(quotaStorage)
 
     expect(getSettingsMigrationError()).toBeNull()
-    expect(wereSettingsLostToQuota()).toBe(false)
+    // Dropping objects forfeits nothing (they are already in their own keys),
+    // so this rung is NOT a loss: no marker, nothing to report.
+    expect(isSettingsDataLostError(getSettingsMigrationError())).toBe(false)
     const migrated = JSON.parse(quotaStorage.getItem(LEGACY_SETTINGS_STORAGE_KEY)!)
     expect(migrated.version).toBe(SETTINGS_STORAGE_VERSION_AFTER_SPLIT)
     expect(migrated.state.theme).toBe('dark')

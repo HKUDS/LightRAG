@@ -80,7 +80,6 @@ export function getSettingsMigrationError(): unknown {
 /** Test hook: clear the recorded error between runs. */
 export function resetSettingsMigrationErrorForTests(): void {
   migrationError = null
-  settingsLostToQuota = false
 }
 
 /**
@@ -118,7 +117,6 @@ function writeIfAbsent(
 }
 
 let historyDroppedDuringMigration = false
-let settingsLostToQuota = false
 
 /**
  * True when the last migration run had to DISCARD the legacy retrieval
@@ -132,36 +130,85 @@ export function wasHistoryDroppedDuringMigration(): boolean {
 }
 
 /**
- * True when THIS run found the legacy envelope marked as destroyed by an
- * earlier run's quota write-back (see `SETTINGS_LOST_MARKER`), i.e. the
- * settings the split does not migrate — theme, language, API key — are gone
- * and the store is starting from defaults.
+ * Envelope-level marker (outside `state`, so the legacy chain never sees it)
+ * saying: this envelope is NOT what the browser used to hold — the write-back
+ * ladder below had to shed fields, or everything, to make it fit.
  *
- * The entry shells surface a one-time toast from this. It is deliberately a
- * notice and not a migration ERROR: the bytes are unrecoverable, so the
- * error screen's retry could only loop, and the API key in particular is
- * something the user has to be told to re-enter rather than discover through
- * a rejected query.
+ * Without it the reduced rungs are a lie. `{state:{}}` at the chain's cap
+ * version is a perfectly valid empty envelope, so the moment capacity returns
+ * the next run migrates it cleanly — no error, no notice — and the user's
+ * theme, language and API key are gone silently, the retry on
+ * MigrationErrorScreen having converted a visible failure into an invisible
+ * one. A partially shed envelope is the same lie in miniature: it migrates
+ * "successfully" while the fields that did not fit are simply absent.
+ *
+ * A run that reads the marker REFUSES and reports, rather than completing
+ * over settings it never had. Only `acceptSettingsDataLoss` clears it, and
+ * only because a person chose it — losing an API key is not something to
+ * discover later through a rejected query.
  */
-export function wereSettingsLostToQuota(): boolean {
-  return settingsLostToQuota
+const SETTINGS_LOST_MARKER = 'lightragSettingsLostToQuota'
+
+/**
+ * Some of what the legacy envelope held is GONE — as opposed to a migration
+ * that merely failed and may well succeed on the next load. The two need
+ * different words and a different offer on the error screen, so they are
+ * different types rather than one flag.
+ */
+export class SettingsDataLostError extends Error {
+  constructor() {
+    super(
+      'The legacy settings envelope could not be preserved while the browser ' +
+        'storage was over quota; some of its contents are unrecoverable.'
+    )
+    this.name = 'SettingsDataLostError'
+  }
+}
+
+/** `instanceof` plus a name check, so the signal survives duplicated module
+ * instances (dev HMR, test module registries). */
+export function isSettingsDataLostError(error: unknown): boolean {
+  return (
+    error instanceof SettingsDataLostError ||
+    (error instanceof Error && error.name === 'SettingsDataLostError')
+  )
 }
 
 /**
- * Envelope-level marker (outside `state`, so the legacy chain never sees it)
- * saying: the settings this envelope used to hold were DESTROYED by the
- * write-back ladder below, not migrated.
+ * The user's explicit acceptance of the loss. Strips the marker so the next
+ * run may proceed, and adapts to what actually survived:
  *
- * Without it the last rung is a lie. `{state:{}}` at the chain's cap version
- * is a perfectly valid empty envelope, so the moment capacity returns the
- * next run migrates it cleanly — no error, no notice — and the user's theme,
- * language and API key are gone silently, the retry on MigrationErrorScreen
- * having converted a visible failure into an invisible one. The marker is
- * what makes that run report instead: it completes (a retry can never bring
- * back bytes the store already rejected, so pinning the user on the error
- * screen forever would be worse) and raises the one-time notice below.
+ * - fields remain → keep them, and the reload migrates what is left;
+ * - nothing remains → drop the key, and the reload starts from defaults.
+ *
+ * Deliberately an ACTION, never automatic: the whole point of the marker is
+ * that no run may quietly complete over settings it never had. Callers reload
+ * afterwards, because `skipHydration` was decided when the stores were
+ * created — clearing the error alone leaves them un-hydrated for the session.
  */
-const SETTINGS_LOST_MARKER = 'lightragSettingsLostToQuota'
+export function acceptSettingsDataLoss(
+  storage: Storage | null = typeof localStorage === 'undefined' ? null : localStorage
+): void {
+  migrationError = null
+  if (!storage) return
+  const raw = storage.getItem(LEGACY_SETTINGS_STORAGE_KEY)
+  if (raw == null) return
+  try {
+    const envelope = JSON.parse(raw)
+    delete envelope[SETTINGS_LOST_MARKER]
+    const state = envelope?.state
+    if (state && typeof state === 'object' && Object.keys(state).length > 0) {
+      storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, JSON.stringify(envelope))
+      return
+    }
+    storage.removeItem(LEGACY_SETTINGS_STORAGE_KEY)
+  } catch {
+    // Unparseable, or the un-marked rewrite does not fit either. Either way
+    // the key must not keep blocking startup: drop it and begin from
+    // defaults, which is what the person just asked for.
+    storage.removeItem(LEGACY_SETTINGS_STORAGE_KEY)
+  }
+}
 
 /**
  * The smallest envelope that still says "there is legacy data here": no
@@ -180,42 +227,74 @@ const MINIMAL_LEGACY_ENVELOPE = JSON.stringify({
 })
 
 /**
- * The rung between the real bytes and total loss: the same envelope with
- * every NON-PRIMITIVE state field dropped.
+ * The rungs between the real bytes and total loss: the same envelope shedding
+ * progressively more state, largest field first.
  *
- * Objects and arrays are the unbounded fields (`querySettings`,
- * `retrievalHistory`, and anything a future version adds); the settings a
- * user would actually miss — theme, language, apiKey — are scalars, and
- * together they are a few dozen bytes. Sizing the rung by SHAPE rather than
- * by a hard-coded field list keeps it correct as the legacy state evolves.
+ * Two shapes of saving, in order of what they cost the user:
  *
- * The version is carried over unchanged, so the reduced envelope means
- * exactly what the payload it replaces meant (mid-split at the cap version,
- * or already split at 22) and the next run treats it accordingly.
+ *  1. every NON-PRIMITIVE field at once — `querySettings`, `retrievalHistory`
+ *     and anything a future version adds are the unbounded ones, while the
+ *     settings a user would actually miss (theme, language, apiKey) are
+ *     scalars worth a few dozen bytes;
+ *  2. then those scalars one at a time, biggest first, keeping at least one.
  *
- * Returns null when there is nothing to drop — the payload is already
- * scalars-only, so this rung would just re-attempt the write that failed.
+ * Step 2 exists because step 1 alone leaves a hole. This function's other
+ * caller writes a payload the split has ALREADY stripped of both objects, so
+ * "drop the non-primitives" finds nothing to drop; without step 2 the ladder
+ * fell straight from that payload to the empty envelope and forfeited every
+ * scalar, which is exactly the loss step 1 was introduced to prevent.
+ *
+ * Sizing by SHAPE and by measured length, never by a hard-coded field list,
+ * keeps this correct as the legacy state evolves. The version is carried over
+ * unchanged so a reduced envelope means what the payload it replaces meant.
+ *
+ * Only the SCALAR rungs carry the loss marker, and the distinction is not
+ * cosmetic. By the time this runs, the object fields have already been
+ * written to their own keys by phase 1 — dropping them from the legacy
+ * envelope forfeits nothing. The scalars have nowhere else to go: theme,
+ * language and apiKey exist only here, so shedding one is a real loss and
+ * must be reported rather than migrated over.
  */
-function reducedLegacyPayload(payload: string): string | null {
+function* reducedLegacyPayloads(payload: string): Generator<string> {
   let parsed: any
   try {
     parsed = JSON.parse(payload)
   } catch {
-    return null
+    return
   }
   const state = parsed?.state
-  if (!state || typeof state !== 'object') return null
+  if (!state || typeof state !== 'object') return
+
   const scalars: Record<string, unknown> = {}
-  let dropped = false
+  let droppedObjects = false
   for (const [key, value] of Object.entries(state)) {
     if (value !== null && typeof value === 'object') {
-      dropped = true
+      droppedObjects = true
       continue
     }
     scalars[key] = value
   }
-  if (!dropped) return null
-  return JSON.stringify({ ...parsed, state: scalars })
+  const rung = (fields: Record<string, unknown>, lost: boolean) =>
+    JSON.stringify(
+      lost
+        ? { ...parsed, state: fields, [SETTINGS_LOST_MARKER]: true }
+        : { ...parsed, state: fields }
+    )
+
+  // Objects only: already migrated to their own keys, so nothing is lost.
+  if (droppedObjects) yield rung(scalars, false)
+
+  // Biggest scalar first: each step buys the most room per field forfeited.
+  const byCost = Object.keys(scalars).sort(
+    (a, b) => JSON.stringify(scalars[b]).length - JSON.stringify(scalars[a]).length
+  )
+  const remaining = { ...scalars }
+  // Stop at one field: an empty state here would be the minimal envelope
+  // without being it, and the ladder's last rung already covers that.
+  for (const key of byCost.slice(0, -1)) {
+    delete remaining[key]
+    yield rung(remaining, true)
+  }
 }
 
 /**
@@ -261,18 +340,35 @@ function writeShrunkLegacyEnvelope(storage: Storage, payload: string): void {
     // Restore the value actually READ FROM THE KEY, not the run's original
     // `raw`: the ladder calls this twice, and after `freeLegacyHistory` the
     // key holds the reduced envelope.
+    let restored: string | null = null
     for (const fallback of [
       removed,
-      reducedLegacyPayload(payload),
+      ...reducedLegacyPayloads(payload),
       MINIMAL_LEGACY_ENVELOPE
     ]) {
       if (fallback === null) continue
       try {
         storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, fallback)
+        restored = fallback
         break
       } catch {
         // Try the next, smaller rung; the error below is what gets recorded.
       }
+    }
+    // WHICH rung caught is the difference between "try again later" and
+    // "some of these settings are gone". Only the faithful restore leaves the
+    // browser holding what it held before, so only it keeps the retryable
+    // error; anything lower shed fields, and saying so HERE means the FIRST
+    // screen the user sees already tells the truth instead of promising that
+    // nothing was lost.
+    //
+    // `restored === null` is the residual edge: not even the ~60-byte marked
+    // envelope fits, so the key is absent and a later run will legitimately
+    // read "no legacy data". Nothing can be persisted to say otherwise on a
+    // store that full, so this session is the only place the loss can be
+    // reported — report it.
+    if (restored === null || (restored !== removed && restored.includes(SETTINGS_LOST_MARKER))) {
+      throw new SettingsDataLostError()
     }
     throw writeBackError
   }
@@ -405,7 +501,6 @@ export function runSettingsStorageSplitMigration(
 ): void {
   migrationError = null
   historyDroppedDuringMigration = false
-  settingsLostToQuota = false
   if (!storage) return
   let parsedContext: { envelope: any; normalized: any } | null = null
   // Target keys THIS run created; the quota retry may reclaim only those.
@@ -432,13 +527,13 @@ export function runSettingsStorageSplitMigration(
     }
 
     if (envelope[SETTINGS_LOST_MARKER] === true) {
-      // An earlier run's write-back ladder bottomed out here: the state this
-      // envelope carried was destroyed, not migrated. Report it, and strip
-      // the marker so the completed v22 envelope does not carry dead
-      // bookkeeping forward — the copy in storage keeps it until that write
-      // lands, so a run that fails again re-raises the notice next time.
-      settingsLostToQuota = true
-      delete envelope[SETTINGS_LOST_MARKER]
+      // An earlier run's write-back ladder had to shed state to fit. Refuse
+      // and touch NOTHING: migrating what is left would "succeed" and stamp
+      // v22 over settings this browser never got to read, which is the
+      // silent loss the marker exists to prevent. `acceptSettingsDataLoss`
+      // is the only way past it, and only a person calls that.
+      migrationError = new SettingsDataLostError()
+      return
     }
 
     const state = envelope.state

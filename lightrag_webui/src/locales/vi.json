@@ -516,9 +516,11 @@
   "migration": {
     "failedTitle": "Không thể chuẩn bị cài đặt cục bộ",
     "failedBody": "Không thể di chuyển cài đặt đã lưu sang định dạng lưu trữ mới. Không có gì bị mất — hãy tải lại để thử lại.",
+    "dataLostTitle": "Không thể khôi phục một số cài đặt đã lưu",
+    "dataLostBody": "Bộ nhớ trình duyệt đã đầy nên một số cài đặt của bạn (giao diện, ngôn ngữ, khóa API) không được giữ lại và không còn khôi phục được. Tiếp tục sẽ giữ những gì còn lại và dùng giá trị mặc định cho phần còn lại.",
+    "continueAfterLoss": "Tiếp tục",
     "retry": "Tải lại",
-    "historyDropped": "Lịch sử trò chuyện vượt quá dung lượng lưu trữ của trình duyệt trong quá trình nâng cấp và đã bị loại bỏ. Các cài đặt đã được di chuyển bình thường.",
-    "settingsLost": "Bộ nhớ trình duyệt đã đầy trong quá trình nâng cấp nên các tuỳ chọn đã lưu (giao diện, ngôn ngữ, khoá API) không thể được giữ lại và đã đặt lại về mặc định. Vui lòng thiết lập lại."
+    "historyDropped": "Lịch sử trò chuyện vượt quá dung lượng lưu trữ của trình duyệt trong quá trình nâng cấp và đã bị loại bỏ. Các cài đặt đã được di chuyển bình thường."
   },
   "retrievalHistory": {
     "quotaDropped": "Bộ nhớ trình duyệt đã đầy: lịch sử trò chuyện không còn được lưu. Cuộc trò chuyện hiện tại vẫn hiển thị cho đến khi bạn rời trang."
