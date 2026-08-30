@@ -1037,9 +1037,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         1. ``addon_params['chunker']`` explicit (user-supplied dict that
            already carries the key).
         2. Strategy-specific env (``CHUNK_F_SIZE`` / ``CHUNK_R_SIZE`` /
-           ``CHUNK_V_SIZE`` for per-strategy ``chunk_token_size``;
-           ``CHUNK_F_OVERLAP_SIZE`` / ``CHUNK_R_OVERLAP_SIZE`` /
-           ``CHUNK_P_OVERLAP_SIZE`` for overlap).  These are pre-filled into
+           ``CHUNK_V_SIZE`` / ``CHUNK_T_SIZE`` for per-strategy
+           ``chunk_token_size``; ``CHUNK_F_OVERLAP_SIZE`` /
+           ``CHUNK_R_OVERLAP_SIZE`` / ``CHUNK_P_OVERLAP_SIZE`` /
+           ``CHUNK_T_OVERLAP_SIZE`` for overlap).  These are pre-filled into
            the strategy sub-dict by
            :func:`lightrag.parser.routing.default_chunker_config` when it
            builds the dict from scratch; for a *partial*
@@ -1086,6 +1087,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             "fixed_token",
             "recursive_character",
             "paragraph_semantic",
+            "tree_sitter",
         ):
             sub = chunker_cfg.get(strategy_key)
             if not isinstance(sub, dict):
@@ -1114,21 +1116,22 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             "chunk_token_size",
             _chunk_env_int("CHUNK_P_SIZE", DEFAULT_CHUNK_P_SIZE),
         )
-        # Per-strategy F/R/V chunk_token_size from strategy env
-        # (CHUNK_F_SIZE / CHUNK_R_SIZE / CHUNK_V_SIZE).  Same rationale as the
-        # P backfill above: ``default_chunker_config`` seeds these when it
-        # builds the chunker dict from scratch, but a partial
+        # Per-strategy F/R/V/T chunk_token_size from strategy env
+        # (CHUNK_F_SIZE / CHUNK_R_SIZE / CHUNK_V_SIZE / CHUNK_T_SIZE).  Same
+        # rationale as the P backfill above: ``default_chunker_config`` seeds
+        # these when it builds the chunker dict from scratch, but a partial
         # ``addon_params['chunker']`` skips that builder
         # (``normalize_addon_params`` only defaults the whole ``chunker`` key
         # when it is absent), so this overlay is the last guard.  Unlike P,
         # the slot is filled ONLY when the env is actually set — leaving it
-        # absent otherwise so F/R/V inherit the top-level ``chunk_token_size``
-        # at consumption time.  ``setdefault`` preserves an explicit
-        # caller-supplied value (tier 1 wins over the env tier 2).
+        # absent otherwise so F/R/V/T inherit the top-level
+        # ``chunk_token_size`` at consumption time.  ``setdefault`` preserves
+        # an explicit caller-supplied value (tier 1 wins over the env tier 2).
         for strategy_key, size_env in (
             ("fixed_token", "CHUNK_F_SIZE"),
             ("recursive_character", "CHUNK_R_SIZE"),
             ("semantic_vector", "CHUNK_V_SIZE"),
+            ("tree_sitter", "CHUNK_T_SIZE"),
         ):
             size_val = _chunk_env_int(size_env, None)
             if size_val is None:

@@ -602,6 +602,44 @@ def test_legacy_env_is_final_fallback(tmp_path, monkeypatch):
 
 
 @pytest.mark.offline
+def test_tree_sitter_gets_the_same_overlap_backfill_as_fixed_token(tmp_path):
+    """Regression test: ``LightRAG._apply_chunk_size_overlay`` originally
+    backfilled the legacy overlap default into a hardcoded
+    ``("fixed_token", "recursive_character", "paragraph_semantic")`` tuple
+    that omitted ``tree_sitter``. That left T's overlap slot permanently
+    absent from the resolved snapshot, so a small ``chunk_token_size``
+    request for T silently skipped the API's pre-flight
+    ``_validate_effective_chunk_overlap`` 422 (which only fires when the
+    overlap slot is populated) and only failed later, deep in the
+    background chunker, with a raw ``ValueError`` instead of a clean 422 --
+    exactly the gap this test pins closed. Caught via a real
+    ``lightrag-server`` run: T silently returned 200 and enqueued a
+    document that then failed in the background, while the identical F
+    request correctly 422'd at request time.
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)  # no chunk_overlap_token_size kwarg
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "def foo():\n    pass\n",
+                ids=["doc-t-overlay"],
+                file_paths="overlay.py",
+                track_id="track-t-overlay",
+                process_options="T",
+            )
+            row = await rag.full_docs.get_by_id("doc-t-overlay")
+        finally:
+            await rag.finalize_storages()
+        return row
+
+    row = asyncio.run(_run())
+    assert "chunk_overlap_token_size" in row["chunk_options"]["tree_sitter"]
+    assert row["chunk_options"]["tree_sitter"]["chunk_overlap_token_size"] == 100
+
+
+@pytest.mark.offline
 def test_p_strategy_uses_dedicated_chunk_size_env(tmp_path, monkeypatch):
     """``CHUNK_P_SIZE`` must give P its own ``chunk_token_size``,
     decoupled from the global ``CHUNK_SIZE`` shared by F/R/V."""

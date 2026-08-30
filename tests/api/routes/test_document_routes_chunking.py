@@ -447,6 +447,19 @@ def test_resolve_rejects_size_below_inherited_overlap(monkeypatch):
         _resolve_text_chunking(cfg, _stub_rag(addon))
 
 
+def test_resolve_rejects_tree_sitter_size_below_env_overlap(monkeypatch):
+    # Same check as test_resolve_rejects_size_below_inherited_overlap, for
+    # T's CHUNK_T_OVERLAP_SIZE env tier specifically.
+    monkeypatch.setenv("CHUNK_T_OVERLAP_SIZE", "100")
+    addon = {"chunker": default_chunker_config()}
+    assert addon["chunker"]["tree_sitter"]["chunk_overlap_token_size"] == 100
+    cfg = TextChunkingConfig.model_validate(
+        {"strategy": "tree_sitter", "params": {"chunk_token_size": 50}}
+    )
+    with pytest.raises(ValueError, match="chunk_overlap_token_size"):
+        _resolve_text_chunking(cfg, _stub_rag(addon))
+
+
 def test_resolve_allows_size_above_inherited_overlap(monkeypatch):
     monkeypatch.setenv("CHUNK_F_OVERLAP_SIZE", "100")
     addon = {"chunker": default_chunker_config()}
