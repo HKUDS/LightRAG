@@ -177,14 +177,33 @@ export const ChatMessage = ({
   // where the timing row is placed and whether retrieval progress is shown.
   const hasContent = !!finalDisplayContent && finalDisplayContent.trim() !== ''
 
+  // AI-generated content notice (ENABLE_AI_CONTENT_NOTICE): a trailing item on
+  // the meta row below the answer, never a line of its own. Only for assistant
+  // messages that actually carry an answer — a user's own text is not
+  // generated, and an error bubble (or a message still waiting for its first
+  // token) has no generated content to label yet. It lives outside the
+  // markdown and outside `message.content`, so it never reaches the copy
+  // button, the retrieval history or the API response.
+  const aiContentNotice =
+    aiContentNoticeEnabled &&
+    message.role === 'assistant' &&
+    !message.isError &&
+    hasContent ? (
+        <span className="italic" data-testid="ai-content-notice">
+          {t('retrievePanel.chatMessage.aiContentNotice')}
+        </span>
+      ) : null
+
   // Response time (+ first-token time) row. While no answer text exists yet it
   // sits above the "Thinking..." hint (so the time stays put as the hint
   // appears below it); once content arrives it is relocated to the end of the
   // answer. Retrieval progress trails on the same line, but only before any
-  // answer text is shown.
+  // answer text is shown; the AI-content notice trails it only AFTER content
+  // exists, so the two never share the line. `flex-wrap` keeps the notice from
+  // pushing the row past a phone-width bubble.
   const timingRow =
     message.role === 'assistant' && typeof responseTime === 'number' ? (
-      <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
         <span className="flex items-center gap-1 tabular-nums">
           <ClockIcon className={cn('size-3', isQuerying && 'animate-spin')} />
           {t('retrievePanel.chatMessage.responseTime', { time: responseTime.toFixed(1) })}
@@ -203,6 +222,7 @@ export const ChatMessage = ({
             ({t(`retrievePanel.chatMessage.progress.${activeProgress}`, activeProgress)})
           </span>
         )}
+        {aiContentNotice}
       </div>
     ) : null
 
@@ -324,16 +344,12 @@ export const ChatMessage = ({
           {t('retrievePanel.retrieval.userTerminated')}
         </div>
       )}
-      {/* AI-generated content notice: the LAST line of every answer, so it
-          reads as a label on the whole message. Only for assistant messages
-          that actually carry an answer — a user's own text is not generated,
-          and an error bubble (or a message still waiting for its first token)
-          has no generated content to label yet. It lives outside the markdown
-          and outside `message.content`, so it never reaches the copy button,
-          the retrieval history or the API response. */}
-      {aiContentNoticeEnabled && message.role === 'assistant' && !message.isError && hasContent && (
-        <div className="mt-1 text-xs italic text-muted-foreground" data-testid="ai-content-notice">
-          {t('retrievePanel.chatMessage.aiContentNotice')}
+      {/* Answers restored from the retrieval history carry no timing, so the
+          notice would have nowhere to sit. It then gets the same row on its
+          own rather than being dropped. */}
+      {!timingRow && aiContentNotice && (
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+          {aiContentNotice}
         </div>
       )}
       {/* Loading indicator — only in the active tab, and only as a fallback when
