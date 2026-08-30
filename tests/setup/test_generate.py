@@ -688,6 +688,62 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     assert "./backup:/app/data/ui_templates_backup:ro" in generated_compose
 
 
+@pytest.mark.parametrize(
+    "mount",
+    [
+        # No mode at all: the target ends the spec, which is the match's
+        # end-of-string branch rather than the mode-separator one.
+        "./mybundle:/app/data/ui_templates",
+        # The managed source written by hand, still without a mode.
+        "./data/ui_templates:/app/data/ui_templates",
+        "./mybundle:/app/data/ui_templates:rw",
+        "./mybundle:/app/data/ui_templates:ro",
+        # Several modes at once.
+        "./mybundle:/app/data/ui_templates:ro,z",
+        '"./mybundle:/app/data/ui_templates"',
+        '"${UI_BUNDLE_SOURCE:-./branding}:/app/data/ui_templates"',
+        "./mybundle:/app/data/ui_templates   # branding",
+    ],
+)
+def test_generate_docker_compose_recognizes_target_regardless_of_mode(
+    tmp_path: Path, mount: str
+) -> None:
+    """`:ro` is not required for an existing mount to be recognised.
+
+    The target is matched after a colon and then either the end of the spec
+    or the mode separator, so a hand-written mount with no mode, a different
+    mode, or several modes all count as covering the container path and must
+    not draw a duplicate.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    volumes:",
+            f"      - {mount}",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
+
+
 def test_generate_docker_compose_preserves_non_managed_named_volumes(
     tmp_path: Path,
 ) -> None:
