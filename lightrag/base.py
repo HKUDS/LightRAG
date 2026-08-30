@@ -1783,12 +1783,21 @@ class QueryResult:
         response_iterator: Streaming response iterator for streaming responses
         raw_data: Complete structured data including references and metadata
         is_streaming: Whether this is a streaming result
+        llm_generated: Whether the answering LLM actually wrote this result.
+            False for every result a query path produces WITHOUT calling it:
+            the canned ``PROMPTS["fail_response"]`` returned when no context
+            could be built, and the ``only_need_context`` / ``only_need_prompt``
+            debug outputs (retrieved context and constructed prompt). Consumers
+            that must label machine-written text (the WebUI's AI-content
+            notice) need this distinction, and no consumer can recover it from
+            the text alone.
     """
 
     content: Optional[str] = None
     response_iterator: Optional[AsyncIterator[str]] = None
     raw_data: Optional[Dict[str, Any]] = None
     is_streaming: bool = False
+    llm_generated: bool = True
 
     @property
     def reference_list(self) -> List[Dict[str, str]]:

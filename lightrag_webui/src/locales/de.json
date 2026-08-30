@@ -410,6 +410,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "KI-generierter Inhalt – bitte prüfen.",
       "copyTooltip": "In Zwischenablage kopieren",
       "copyError": "Text konnte nicht in die Zwischenablage kopiert werden",
       "copyEmpty": "Kein Inhalt zum Kopieren",

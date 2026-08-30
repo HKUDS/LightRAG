@@ -18,6 +18,8 @@ import { oneLight, oneDark } from 'react-syntax-highlighter/dist/cjs/styles/pris
 
 import { LoaderIcon, ChevronDownIcon, ClockIcon, ZapIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { useAiContentNoticeStore } from '@/stores/aiContentNotice'
+import { shouldShowAiContentNotice } from '@/lib/aiContentNotice'
 
 // KaTeX configuration options interface
 interface KaTeXOptions {
@@ -69,6 +71,10 @@ export const ChatMessage = ({
 }) => {
   const { t } = useTranslation()
   const { theme } = useTheme()
+  // Deployment-level switch (ENABLE_AI_CONTENT_NOTICE), read from the server at
+  // boot. Both query entries render answers through this component, so gating
+  // it here is what covers /webui and /workspace alike.
+  const aiContentNoticeEnabled = useAiContentNoticeStore((state) => state.enabled)
   const [katexPlugin, setKatexPlugin] = useState<((options?: KaTeXOptions) => any) | null>(null)
   const [isThinkingExpanded, setIsThinkingExpanded] = useState<boolean>(false)
 
@@ -172,14 +178,34 @@ export const ChatMessage = ({
   // where the timing row is placed and whether retrieval progress is shown.
   const hasContent = !!finalDisplayContent && finalDisplayContent.trim() !== ''
 
+  // AI-generated content notice (ENABLE_AI_CONTENT_NOTICE): a trailing item on
+  // the meta row below the answer, never a line of its own. What may carry the
+  // label is decided by the query session and travels on the message
+  // (`aiGenerated`) — a context-only debug response is not generated, while a
+  // stream that failed after emitting real answer text still is. It lives
+  // outside the markdown and outside `message.content`, so it never reaches
+  // the copy button, the retrieval history or the API response.
+  const aiContentNotice = shouldShowAiContentNotice({
+    enabled: aiContentNoticeEnabled,
+    role: message.role,
+    aiGenerated: message.aiGenerated,
+    hasContent
+  }) ? (
+      <span className="italic" data-testid="ai-content-notice">
+        {t('retrievePanel.chatMessage.aiContentNotice')}
+      </span>
+    ) : null
+
   // Response time (+ first-token time) row. While no answer text exists yet it
   // sits above the "Thinking..." hint (so the time stays put as the hint
   // appears below it); once content arrives it is relocated to the end of the
   // answer. Retrieval progress trails on the same line, but only before any
-  // answer text is shown.
+  // answer text is shown; the AI-content notice trails it only AFTER content
+  // exists, so the two never share the line. `flex-wrap` keeps the notice from
+  // pushing the row past a phone-width bubble.
   const timingRow =
     message.role === 'assistant' && typeof responseTime === 'number' ? (
-      <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
         <span className="flex items-center gap-1 tabular-nums">
           <ClockIcon className={cn('size-3', isQuerying && 'animate-spin')} />
           {t('retrievePanel.chatMessage.responseTime', { time: responseTime.toFixed(1) })}
@@ -198,6 +224,7 @@ export const ChatMessage = ({
             ({t(`retrievePanel.chatMessage.progress.${activeProgress}`, activeProgress)})
           </span>
         )}
+        {aiContentNotice}
       </div>
     ) : null
 
@@ -317,6 +344,14 @@ export const ChatMessage = ({
       {message.isAborted && (
         <div className="mt-1 text-xs italic text-muted-foreground">
           {t('retrievePanel.retrieval.userTerminated')}
+        </div>
+      )}
+      {/* Answers restored from the retrieval history carry no timing, so the
+          notice would have nowhere to sit. It then gets the same row on its
+          own rather than being dropped. */}
+      {!timingRow && aiContentNotice && (
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+          {aiContentNotice}
         </div>
       )}
       {/* Loading indicator — only in the active tab, and only as a fallback when

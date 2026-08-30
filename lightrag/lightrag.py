@@ -4263,6 +4263,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             "content": response,
                             "response_iterator": None,
                             "is_streaming": False,
+                            "llm_generated": True,
                         },
                     }
                 else:
@@ -4275,6 +4276,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             "content": None,
                             "response_iterator": response,
                             "is_streaming": True,
+                            "llm_generated": True,
                         },
                     }
             else:
@@ -4296,6 +4298,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         "content": PROMPTS["fail_response"],
                         "response_iterator": None,
                         "is_streaming": False,
+                        # Canned text: no answering LLM was invoked.
+                        "llm_generated": False,
                     },
                 }
 
@@ -4309,6 +4313,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 if query_result.is_streaming
                 else None,
                 "is_streaming": query_result.is_streaming,
+                "llm_generated": query_result.llm_generated,
             }
 
             return raw_data
@@ -4325,6 +4330,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     "content": None,
                     "response_iterator": None,
                     "is_streaming": False,
+                    "llm_generated": False,
                 },
             }
 

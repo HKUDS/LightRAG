@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { createSelectors } from '@/lib/utils'
 import { checkHealth, LightragStatus } from '@/api/lightrag'
 import { useSettingsStore } from './settings'
+import { applyAiContentNoticeFlag } from './aiContentNotice'
 import { healthCheckInterval } from '@/lib/constants'
 import { decodeBase64Url } from '@/lib/base64url'
 
@@ -109,6 +110,12 @@ const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
           'webui_description' in health ? (health.webui_description ?? null) : null
         );
       }
+
+      // Same tier as the title: deployment display configuration the poll keeps
+      // fresh, so toggling ENABLE_AI_CONTENT_NOTICE and restarting the server
+      // reaches an already-open admin shell without a reload. Ignored unless
+      // the server actually sent a boolean (older servers omit the field).
+      applyAiContentNoticeFlag(health.ai_content_notice_enabled);
 
       // Extract and store backend max graph nodes limit
       if (health.configuration?.max_graph_nodes) {

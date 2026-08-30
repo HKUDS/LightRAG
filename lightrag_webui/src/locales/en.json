@@ -410,6 +410,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "AI-generated content — please verify.",
       "copyTooltip": "Copy to clipboard",
       "copyError": "Failed to copy text to clipboard",
       "copyEmpty": "No content to copy",

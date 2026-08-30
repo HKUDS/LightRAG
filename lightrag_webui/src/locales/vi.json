@@ -410,6 +410,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "Nội dung do AI tạo — vui lòng kiểm chứng.",
       "copyTooltip": "Sao chép vào bộ nhớ tạm",
       "copyError": "Sao chép văn bản vào bộ nhớ tạm thất bại",
       "copyEmpty": "Không có nội dung để sao chép",

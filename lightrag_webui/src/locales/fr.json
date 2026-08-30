@@ -410,6 +410,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "Contenu généré par IA — à vérifier.",
       "copyTooltip": "Copier dans le presse-papiers",
       "copyError": "Échec de la copie du texte dans le presse-papiers",
       "copyEmpty": "Aucun contenu à copier",
