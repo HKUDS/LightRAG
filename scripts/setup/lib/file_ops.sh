@@ -1777,7 +1777,12 @@ _lightrag_volumes_have_container_target() {
         in_volumes="yes"
       elif [[ "$in_volumes" == "yes" && "$line" =~ ^[[:space:]]{4}[^[:space:]-] ]]; then
         in_volumes="no"
-      elif [[ "$in_volumes" == "yes" && "$line" =~ ^[[:space:]]{6}-[[:space:]](.+)$ ]]; then
+      elif [[ "$in_volumes" == "yes" && "$line" =~ ^[[:space:]]{6}-[[:space:]]+(.+)$ ]]; then
+        # `+` not `{1}`: YAML allows any run of spaces after the list dash, and
+        # the run is insignificant. Bash's regex is greedy, so the capture now
+        # starts at the first non-space -- otherwise `-   target: /app/x` was
+        # captured as `  target: /app/x`, matched neither the long-form nor the
+        # short-form shape, and the caller appended a duplicate mount.
         mount_spec="$(_strip_wrapping_quotes \
           "$(_strip_yaml_inline_comment "${BASH_REMATCH[1]}")")"
         # Long syntax whose first key is the target (`- target: /app/x`).

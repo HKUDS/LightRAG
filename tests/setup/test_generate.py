@@ -796,6 +796,49 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
 
 
+def test_generate_docker_compose_tolerates_extra_list_item_spacing(
+    tmp_path: Path,
+) -> None:
+    """Any run of spaces may follow the list dash; YAML treats it as one.
+
+    `-   target: /app/data/ui_templates` is the same mapping as `- target: …`,
+    so leaving the extra spaces in the captured scalar made it match neither
+    the long-form nor the short-form shape, and a duplicate mount was appended
+    for a container path already mounted. Covers both syntaxes.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    volumes:",
+            "      -   target: /app/data/ui_templates",
+            "          type: bind",
+            "          source: ./branding/acme",
+            "      -    ./branding/prompts:/app/data/prompts",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert generated_compose.count("/app/data/prompts") == 1
+    assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
+
+
 def test_generate_docker_compose_preserves_non_managed_named_volumes(
     tmp_path: Path,
 ) -> None:
