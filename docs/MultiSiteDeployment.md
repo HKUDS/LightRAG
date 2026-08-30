@@ -69,7 +69,7 @@ and in-app links.
 
 ---
 
-## One backend variable, that's it
+## Two backend variables, that's it
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
