@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/state'
-import { applyLoginIdentity, loginIdentityFromToken } from '@/lib/loginIdentity'
+import { activateLoginIdentityFromToken } from '@/lib/loginIdentity'
 import { markVersionCheckedFromLogin } from '@/lib/versionCheckCache'
 import { loginToServer, getAuthStatus } from '@/api/lightrag'
 import logoUrl from '@/assets/logo.svg'
@@ -73,7 +73,7 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
           // If auth is not configured, use the guest token and redirect.
           // Guest activation is an identity transition: a different stored
           // identity means the previous user's histories must not be shown.
-          applyLoginIdentity(loginIdentityFromToken(status.access_token))
+          activateLoginIdentityFromToken(status.access_token)
           login(status.access_token, true, status.core_version, status.api_version, status.webui_title || null, status.webui_description || null)
           if (status.message) {
             toast.info(status.message)
@@ -120,7 +120,7 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
       // Identity-change cleanup, shared with the guest activation paths: a
       // different user must not see the previous user's conversations in
       // EITHER entry — the rule applies to both split histories.
-      const identityChanged = applyLoginIdentity(username)
+      const identityChanged = activateLoginIdentityFromToken(response.access_token)
       console.log(
         identityChanged
           ? 'Different user logging in, clearing chat history'

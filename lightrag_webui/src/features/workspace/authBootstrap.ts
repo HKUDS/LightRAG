@@ -1,6 +1,6 @@
 import type { AuthStatusResponse } from '@/api/lightrag'
 import { useAuthStore } from '@/stores/state'
-import { applyLoginIdentity, loginIdentityFromToken } from '@/lib/loginIdentity'
+import { activateLoginIdentityFromToken } from '@/lib/loginIdentity'
 
 /**
  * Reconcile the workspace session with what `/auth-status` reports, at the
@@ -32,7 +32,7 @@ export function activateSessionFromAuthStatus(
   storedToken: string | null
 ): void {
   if (!status.auth_configured && status.access_token) {
-    applyLoginIdentity(loginIdentityFromToken(status.access_token))
+    activateLoginIdentityFromToken(status.access_token)
     useAuthStore
       .getState()
       .login(

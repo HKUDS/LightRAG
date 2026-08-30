@@ -136,6 +136,25 @@ export function applyLoginIdentity(identity: string): boolean {
 }
 
 /**
+ * Activate the identity a TOKEN asserts — the entry point every login path
+ * uses, because the token is the only thing that says who was actually
+ * authenticated.
+ *
+ * The login form must not pass its typed username here: when authentication
+ * is disabled server-side, `/login` returns a guest token whatever was
+ * submitted (see `create_token(username="guest", ...)` in the API server).
+ * A form that had rendered before the operator disabled auth would then
+ * record the TYPED name, and a user typing the previous named identity would
+ * look like "same user" — preserving that user's conversations for a session
+ * that is really a guest's, and, in bypass mode, resending them to the LLM.
+ * Deriving from the response token makes the decision follow the identity
+ * that was granted rather than the one that was requested.
+ */
+export function activateLoginIdentityFromToken(token: string): boolean {
+  return applyLoginIdentity(loginIdentityFromToken(token))
+}
+
+/**
  * Cross-tab identity epoch. Bumped when ANOTHER tab records a different
  * identity (see below); the query pages key their session view on it, so a
  * remount drops the live component state — `useQuerySession` copies history

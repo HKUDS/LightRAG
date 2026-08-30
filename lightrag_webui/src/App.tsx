@@ -9,8 +9,7 @@ import { useBackendState, useAuthStore } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
 import { getAuthStatus } from '@/api/lightrag'
 import {
-  applyLoginIdentity,
-  loginIdentityFromToken,
+  activateLoginIdentityFromToken,
   useIdentityEpochStore
 } from '@/lib/loginIdentity'
 import {
@@ -137,7 +136,7 @@ function App() {
         // A fresh guest activation is an identity transition: clear the previous
         // identity's histories when it differs (same rule as the login page).
         if (!status.auth_configured && status.access_token) {
-          applyLoginIdentity(loginIdentityFromToken(status.access_token))
+          activateLoginIdentityFromToken(status.access_token)
           useAuthStore.getState().login(
             status.access_token, // Use the new token
             true, // Guest mode

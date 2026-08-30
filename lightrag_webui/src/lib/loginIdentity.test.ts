@@ -1,4 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import { WORKSPACE_RETRIEVAL_HISTORY_KEY } from '@/lib/storageKeys'
 
 /**
@@ -35,6 +37,7 @@ const stub = {
 let previousDescriptor: PropertyDescriptor | undefined
 
 let applyLoginIdentity: typeof import('./loginIdentity').applyLoginIdentity
+let activateLoginIdentityFromToken: typeof import('./loginIdentity').activateLoginIdentityFromToken
 let handleIdentityStorageEvent: typeof import('./loginIdentity').handleIdentityStorageEvent
 let loginIdentityFromToken: typeof import('./loginIdentity').loginIdentityFromToken
 let useIdentityEpochStore: typeof import('./loginIdentity').useIdentityEpochStore
@@ -62,6 +65,7 @@ beforeAll(async () => {
 
   const identityModule = await import('./loginIdentity')
   applyLoginIdentity = identityModule.applyLoginIdentity
+  activateLoginIdentityFromToken = identityModule.activateLoginIdentityFromToken
   handleIdentityStorageEvent = identityModule.handleIdentityStorageEvent
   loginIdentityFromToken = identityModule.loginIdentityFromToken
   useIdentityEpochStore = identityModule.useIdentityEpochStore
@@ -389,5 +393,62 @@ describe('loginIdentityFromToken', () => {
     expect(loginIdentityFromToken('not-a-jwt')).toBe('guest')
     expect(loginIdentityFromToken('a.!!!.c')).toBe('guest')
     expect(loginIdentityFromToken(`x.${btoa('{}')}.y`)).toBe('guest')
+  })
+})
+
+describe('activateLoginIdentityFromToken (the login form\'s only entry point)', () => {
+  test('a guest token after a named user CLEARS, even when the typed name matched', () => {
+    // Regression (P1). The submit handler used to record the TYPED username.
+    // If the operator disables authentication while the form is open, /login
+    // answers with a guest token whatever was submitted — and a user typing
+    // the identity the browser last held made `isIdentityChange` see no
+    // transition, so alice's conversations survived into a session that is
+    // really a guest's (and, in bypass mode, would be resent to the LLM).
+    seedHistories()
+    stub.setItem(PREVIOUS_USER_KEY, 'alice')
+
+    // What the form knows: the typed name. What the server granted: guest.
+    const typedUsername = 'alice'
+    expect(applyLoginIdentity(typedUsername)).toBe(false) // the old decision…
+
+    seedHistories()
+    stub.setItem(PREVIOUS_USER_KEY, 'alice')
+    expect(activateLoginIdentityFromToken(guestToken)).toBe(true) // …the right one
+    expect(useWebuiRetrievalHistoryStore.getState().history).toEqual([])
+    expect(useWorkspaceRetrievalHistoryStore.getState().history).toEqual([])
+    expect(stub.getItem(PREVIOUS_USER_KEY)).toBe('guest')
+  })
+
+  test('an ordinary named login still records the granted identity', () => {
+    seedHistories()
+    stub.setItem(PREVIOUS_USER_KEY, 'alice')
+    expect(activateLoginIdentityFromToken(makeToken({ sub: 'alice' }))).toBe(false)
+    expect(useWorkspaceRetrievalHistoryStore.getState().history).toHaveLength(1)
+
+    expect(activateLoginIdentityFromToken(makeToken({ sub: 'bob' }))).toBe(true)
+    expect(useWorkspaceRetrievalHistoryStore.getState().history).toEqual([])
+    expect(stub.getItem(PREVIOUS_USER_KEY)).toBe('bob')
+  })
+
+  test('no activation path decides the identity from anything but its token', () => {
+    // Structural pin: `applyLoginIdentity` takes a bare name, so any caller
+    // COULD pass a typed username again and every behavioral test above
+    // would still pass. The four activation sites must go through the
+    // token-derived entry point instead.
+    for (const file of [
+      'features/LoginPage.tsx',
+      'features/workspace/WorkspaceWelcome.tsx',
+      'features/workspace/authBootstrap.ts',
+      'App.tsx'
+    ]) {
+      const source = readFileSync(join(import.meta.dir, '..', file), 'utf8')
+      expect({ file, calls: source.includes('applyLoginIdentity(') }).toEqual({
+        file,
+        calls: false
+      })
+      expect({ file, activates: source.includes('activateLoginIdentityFromToken(') }).toEqual(
+        { file, activates: true }
+      )
+    }
   })
 })
