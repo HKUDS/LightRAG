@@ -290,7 +290,14 @@ export default function MessageList({
     <div className="relative grow">
       <div
         ref={messagesContainerRef}
-        className="bg-primary-foreground/60 absolute inset-0 flex flex-col overflow-auto rounded-lg border p-2"
+        // Vertical scrolling only. The list must NEVER scroll horizontally:
+        // its children legitimately paint outside the content box (the copy
+        // buttons' ::after touch targets extend 10px past the message row),
+        // and wide answer content scrolls INSIDE its own block (code, tables)
+        // rather than widening the conversation. Plain `overflow-auto` turned
+        // both into a horizontal scrollbar on narrow screens — visible from
+        // the very first short message.
+        className="bg-primary-foreground/60 absolute inset-0 flex flex-col overflow-y-auto overflow-x-hidden rounded-lg border p-2"
       >
         <div className="flex min-h-0 flex-1 flex-col gap-2">
           {messages.length === 0 ? (
