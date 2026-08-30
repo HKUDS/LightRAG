@@ -126,6 +126,9 @@
       "pipelineStatusTooltip": "Status der Dokumentverarbeitungs-Pipeline anzeigen",
       "uploadedTitle": "Hochgeladene Dokumente",
       "uploadedDescription": "Liste der hochgeladenen Dokumente und ihrer Status.",
+      "loading": "Dokumente werden geladen...",
+      "loadErrorTitle": "Dokumente konnten nicht geladen werden",
+      "retry": "Erneut versuchen",
       "emptyTitle": "Keine Dokumente",
       "emptyDescription": "Es wurden noch keine Dokumente hochgeladen.",
       "columns": {

@@ -126,6 +126,9 @@
       "pipelineStatusTooltip": "ドキュメント処理パイプラインのステータスを表示",
       "uploadedTitle": "アップロードされたドキュメント",
       "uploadedDescription": "アップロードされたドキュメントとそのステータスのリスト。",
+      "loading": "ドキュメントを読み込んでいます...",
+      "loadErrorTitle": "ドキュメントを読み込めませんでした",
+      "retry": "再試行",
       "emptyTitle": "ドキュメントなし",
       "emptyDescription": "まだアップロードされたドキュメントがありません。",
       "columns": {
