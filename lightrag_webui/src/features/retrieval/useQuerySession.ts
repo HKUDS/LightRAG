@@ -12,6 +12,7 @@ import {
 } from '@/lib/aiContentNotice'
 import type { RetrievalHistoryStore } from '@/stores/retrievalHistory'
 import { serializeQueryRequest } from './serializeQueryRequest'
+import { streamErrorChunk } from './streamErrorChunk'
 
 /**
  * Shared query-session controller used by BOTH query pages (`RetrievalView`
@@ -449,10 +450,13 @@ export function useQuerySession({
           )
           if (streamError) {
             onQueryError?.(streamError)
-            if (assistantMessage.content) {
-              streamError = assistantMessage.content + '\n' + streamError
-            }
-            updateAssistantMessage(streamError, true)
+            // Append the error ALONE: the partial answer is already in the
+            // message (the updater appends), so passing it back in duplicated
+            // the whole answer in the bubble.
+            updateAssistantMessage(
+              streamErrorChunk(assistantMessage.content, streamError),
+              true
+            )
           }
         } else {
           const response = await queryText(queryParams, controller.signal)
