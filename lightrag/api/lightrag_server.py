@@ -2999,14 +2999,25 @@ def create_app(args):
     # `</` → `<\/` escaping prevents an embedded "</script>" sequence from
     # breaking out of the inline script (defense-in-depth — values come from
     # admin config, not user input).
+    #
+    # `webuiTitle` (WEBUI_TITLE) rides along and is applied to `document.title`
+    # in the same snippet: the tag sits in <head> right after the static
+    # <title>, so the tab carries the deployment's own name from the FIRST
+    # paint. Waiting for the SPA to read it from /health would show "LightRAG"
+    # until the bundle boots, and browsers cache that first title for history
+    # entries and bookmarks. `or None` normalizes an unset/empty variable to a
+    # single falsy value, which the client reads as "no custom title".
     _runtime_config_payload = json.dumps(
         {
             "apiPrefix": api_prefix,
             "webuiPrefix": f"{api_prefix}{webui_path}/",
+            "webuiTitle": webui_title or None,
         }
     ).replace("</", "<\\/")
     runtime_config_script = (
-        f"<script>window.__LIGHTRAG_CONFIG__ = {_runtime_config_payload};</script>"
+        f"<script>window.__LIGHTRAG_CONFIG__ = {_runtime_config_payload};"
+        "if(window.__LIGHTRAG_CONFIG__.webuiTitle)"
+        "{document.title=window.__LIGHTRAG_CONFIG__.webuiTitle;}</script>"
     )
 
     # Custom StaticFiles class for smart caching + runtime config injection
