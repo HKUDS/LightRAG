@@ -16,11 +16,11 @@ A ready-to-copy bundle lives in [`docs/ui_templates_example/`](./ui_templates_ex
 | **Query empty state** | `/workspace` query page, while the conversation is empty (and again after *Clear*) | `query_empty` (required) |
 | **Login page text** | Above the username/password form, on **both** entries (`/webui/#/login` and `/workspace/#/login`) | `login` (optional) |
 | **User agreement + consent checkbox** | A checkbox on the login page, whose link opens the document in a dialog; the WebUI's Login button stays disabled until it is ticked — a WebUI prompt, not server-side enforcement ([§6](#6-the-login-consent-gate)) | `agreements` (optional, pairs with `login`) |
-| **Brand logo** | Welcome page and query empty state | `brand.logo`, per-locale `logo`, `logo_alt` |
+| **Brand logo** | Welcome page, query empty state and login page | `brand.logo`, per-locale `logo`, `logo_alt` |
 
 What you **cannot** set from the bundle:
 
-- The browser tab title and the login card's own `LightRAG` heading and subtitle. These are **hardcoded in the frontend** — `<title>Lightrag</title>` in `index.html` and `workspace.html`, and the heading plus the localized `login.description` in `LoginPage.tsx`. Neither the bundle nor any environment variable changes them; that needs a WebUI edit and rebuild.
+- The browser tab title and the login card's heading and subtitle. The manifest cannot set them: `WEBUI_TITLE` supplies both the browser tab title and login heading (falling back to `LightRAG`), while the subtitle remains the localized `login.description` in `LoginPage.tsx`.
 - The in-app header shown **after sign-in** (`SiteHeader` on `/webui`, the workspace header on `/workspace`). That one is set by the `WEBUI_TITLE` / `WEBUI_DESCRIPTION` environment variables, and the manifest deliberately cannot override them.
 - The buttons, menus and settings around your content — see [§5.3 Interface languages](#53-interface-languages-vs-bundle-locales).
 - Text direction. It is derived from the locale (see [§5.2](#52-text-direction-rtl)), never taken from bundle markup.

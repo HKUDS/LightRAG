@@ -4,7 +4,6 @@ import { useAuthStore } from '@/stores/state'
 import { activateLoginIdentityFromToken } from '@/lib/loginIdentity'
 import { markVersionCheckedFromLogin } from '@/lib/versionCheckCache'
 import { loginToServer, getAuthStatus } from '@/api/lightrag'
-import logoUrl from '@/assets/logo.svg'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 import { Card, CardContent, CardHeader } from '@/components/ui/Card'
@@ -18,7 +17,6 @@ import {
   DialogTitle
 } from '@/components/ui/Dialog'
 import { ScrollArea } from '@/components/ui/ScrollArea'
-import { ZapIcon } from 'lucide-react'
 import AppSettings from '@/components/AppSettings'
 import CustomizedMarkdown from '@/components/customization/CustomizedMarkdown'
 import { useCustomizedContent } from '@/components/customization/useCustomizedContent'
@@ -50,6 +48,7 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [checkingAuth, setCheckingAuth] = useState(true)
+  const [authStatusTitle, setAuthStatusTitle] = useState<string | null>(null)
   // The tick is stored WITH the document it was given for; a language switch
   // replaces that document, and consent must not survive the swap.
   const [consentTick, setConsentTick] = useState<LoginConsentTick>({
@@ -57,11 +56,14 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
     agreed: false
   })
   const [agreementsOpen, setAgreementsOpen] = useState(false)
+  // Latch the URL that failed, not a boolean: a language switch may supply
+  // a different logo URL that should get its own load attempt.
+  const [failedLogoUrl, setFailedLogoUrl] = useState<string | null>(null)
   const authCheckRef = useRef(false); // Prevent duplicate calls in Vite dev mode
 
   // Fired in PARALLEL with the /auth-status probe below (both are effects of
   // this same mount), so the consent gate costs no serial round trip.
-  const content = useCustomizedContent()
+  const content = useCustomizedContent(authStatusTitle)
   const consentAgreed = isAgreedTo(consentTick, content.agreementsMarkdown)
   const consentState = {
     // NOT content.loading: on a language switch the store keeps the previous
@@ -101,6 +103,7 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
 
         // Check auth status
         const status = await getAuthStatus()
+        setAuthStatusTitle(status.webui_title || null)
 
         // Set session flag for version check to avoid duplicate checks in App component
         if (status.core_version || status.api_version) {
@@ -250,12 +253,16 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
       <Card className="w-full max-w-[480px] shadow-lg mx-4">
         <CardHeader className="flex items-center justify-center space-y-2 pb-8 pt-6">
           <div className="flex flex-col items-center space-y-4">
-            <div className="flex items-center gap-3">
-              <img src={logoUrl} alt="LightRAG Logo" className="h-12 w-12" />
-              <ZapIcon className="size-10 text-emerald-400" aria-hidden="true" />
-            </div>
+            {content.logoUrl && failedLogoUrl !== content.logoUrl && (
+              <img
+                src={content.logoUrl}
+                alt={content.logoAlt}
+                className="h-12 w-12 object-contain"
+                onError={() => setFailedLogoUrl(content.logoUrl)}
+              />
+            )}
             <div className="text-center space-y-2">
-              <h1 className="text-3xl font-bold tracking-tight">LightRAG</h1>
+              <h1 className="text-3xl font-bold tracking-tight">{content.brandTitle}</h1>
               <p className="text-muted-foreground text-sm">
                 {t('login.description')}
               </p>

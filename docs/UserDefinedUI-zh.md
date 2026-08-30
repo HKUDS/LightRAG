@@ -16,11 +16,11 @@ LightRAG 支持用**你自己的**欢迎页、登录页文案、用户协议、�
 | **查询空白页** | `/workspace` 查询页，对话为空时（点击 *Clear* 后会再次出现） | `query_empty`（必填） |
 | **登录页文案** | 用户名/密码表单上方，**两个入口都生效**（`/webui/#/login` 与 `/workspace/#/login`） | `login`（可选） |
 | **用户协议 + 同意勾选框** | 登录页上的勾选框，其链接以弹窗打开协议文档；未勾选时前端登录按钮保持禁用——这是前端提示，不是服务端强制（见 [§6](#6-登录同意门禁)） | `agreements`（可选，与 `login` 成对生效） |
-| **品牌 Logo** | 欢迎页与查询空白页 | `brand.logo`、locale 级 `logo`、`logo_alt` |
+| **品牌 Logo** | 欢迎页、查询空白页与登录页 | `brand.logo`、locale 级 `logo`、`logo_alt` |
 
 Bundle **不能**设置的内容：
 
-- 浏览器标签标题，以及登录卡片自身的 `LightRAG` 标题与副标题。这些都**硬编码在前端**—— `index.html` 与 `workspace.html` 里的 `<title>Lightrag</title>`，以及 `LoginPage.tsx` 里的标题和走 i18n 的 `login.description`。Bundle 和任何环境变量都改不了它们，只能修改前端源码并重新构建。
+- 浏览器标签标题，以及登录卡片的标题和副标题。manifest 不能设置这些内容：`WEBUI_TITLE` 同时控制浏览器标签标题和登录页标题（未提供时回退为 `LightRAG`），副标题仍为 `LoginPage.tsx` 中走 i18n 的 `login.description`。
 - **登录之后**显示的应用头部（`/webui` 的 `SiteHeader`、`/workspace` 的工作区头部）。这一处由 `WEBUI_TITLE` / `WEBUI_DESCRIPTION` 环境变量设置，manifest 有意不允许覆盖。
 - 内容周围的按钮、菜单和设置项——参见 [§5.3 界面语言与 Bundle 语言](#53-界面语言与-bundle-语言)。
 - 文字方向。方向由 locale 推导（见 [§5.2](#52-文字方向rtl)），绝不取自 Bundle 中的标记。
