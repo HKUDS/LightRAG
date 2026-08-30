@@ -1,7 +1,7 @@
 # Example UI customization bundle
 
-A ready-to-copy example for `UI_TEMPLATES_DIR` (the workspace entry's
-customizable welcome page and query empty state). This directory is
+A ready-to-copy example for `UI_TEMPLATES_DIR` (the customizable welcome
+page, query empty state and login page). This directory is
 **documentation only** — the server never loads or bundles it.
 
 ## Usage
@@ -28,6 +28,22 @@ Copy this directory, replace the texts and the logo, then restart the server
   Omitting it fails startup (a missing logo must never silently fall back to
   the LightRAG logo under customer texts).
 - A locale entry may override the logo with its own `logo` path (or `null`).
+- `login` and `agreements` are OPTIONAL per locale, and together they switch
+  on the **login consent gate**: when a locale declares both, the login page
+  shows the `login` text plus a checkbox ("I agree to the Privacy Policy and
+  Model Service Agreement"), and sign-in stays disabled until it is ticked.
+  The checkbox carries ONE link, which opens `agreements` in a dialog — so
+  write the privacy policy and the model service agreement into that single
+  file (headings are the way to separate them) rather than expecting the
+  reader to find two documents.
+  - Declaring only one of the two leaves the gate OFF: a branded login page
+    with nothing to agree to, or an agreement document no page links to, is
+    a half-finished configuration and is treated as such.
+  - Both are per LOCALE. A visitor resolving to a locale that declares
+    neither sees no checkbox, so declare them for every locale the gate must
+    cover (or route uncovered locales there through `fallbacks`).
+  - A declared file that is empty fails startup — the gate must never point
+    at a blank document.
 - `fallbacks` maps uncovered locales to an ordered list of DECLARED locales;
   resolution is single-level (uncovered locale → first declared target →
   `default_locale`). Content is never mixed field-by-field with the

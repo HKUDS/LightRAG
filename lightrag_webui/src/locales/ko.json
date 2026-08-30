@@ -32,7 +32,10 @@
     "errorEmptyFields": "사용자 이름과 비밀번호를 입력하세요",
     "errorInvalidCredentials": "로그인 실패, 사용자 이름과 비밀번호를 확인하세요",
     "authDisabled": "인증이 비활성화되었습니다. 게스트 모드를 사용합니다.",
-    "guestMode": "게스트 모드"
+    "guestMode": "게스트 모드",
+    "consentLabel": "{{documents}}에 동의합니다",
+    "consentDocuments": "「개인정보 처리방침」 및 「모델 서비스 이용약관」",
+    "errorConsentRequired": "로그인하기 전에 약관을 읽고 동의해 주세요"
   },
   "common": {
     "cancel": "취소",

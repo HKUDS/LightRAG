@@ -32,7 +32,10 @@
     "errorEmptyFields": "请输入您的用户名和密码",
     "errorInvalidCredentials": "登录失败，请检查用户名和密码",
     "authDisabled": "认证已禁用，使用无需登陆模式。",
-    "guestMode": "无需登陆"
+    "guestMode": "无需登陆",
+    "consentLabel": "同意{{documents}}",
+    "consentDocuments": "《用户隐私协议》和《模型服务协议》",
+    "errorConsentRequired": "请先阅读并同意相关协议后再登录"
   },
   "common": {
     "cancel": "取消",

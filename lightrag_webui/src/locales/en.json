@@ -32,7 +32,10 @@
     "errorEmptyFields": "Please enter your username and password",
     "errorInvalidCredentials": "Login failed, please check username and password",
     "authDisabled": "Authentication is disabled. Using login free mode.",
-    "guestMode": "Login Free"
+    "guestMode": "Login Free",
+    "consentLabel": "I agree to the {{documents}}",
+    "consentDocuments": "Privacy Policy and Model Service Agreement",
+    "errorConsentRequired": "Please read and agree to the agreements before signing in"
   },
   "common": {
     "cancel": "Cancel",

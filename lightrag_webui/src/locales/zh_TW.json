@@ -32,7 +32,10 @@
     "errorEmptyFields": "請輸入您的帳號和密碼",
     "errorInvalidCredentials": "登入失敗，請檢查帳號和密碼",
     "authDisabled": "認證已停用，使用免登入模式",
-    "guestMode": "免登入"
+    "guestMode": "免登入",
+    "consentLabel": "同意{{documents}}",
+    "consentDocuments": "《使用者隱私協議》和《模型服務協議》",
+    "errorConsentRequired": "請先閱讀並同意相關協議後再登入"
   },
   "common": {
     "cancel": "取消",

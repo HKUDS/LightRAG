@@ -247,7 +247,7 @@ lightrag-server --port 9621
 - `LIGHTRAG_DEFAULT_UI` / `--default-ui`（默认 `webui`，可选 `workspace`）只控制一件事：根路径 `/` 跳转到哪个入口。两个入口始终都会挂载；非法值会导致启动失败。
 - `/workspace` 的查询参数**只继承、不可编辑**：每次查询使用同一浏览器中 `/webui` 保存的 `querySettings`（未保存时使用前端默认值）。这是按浏览器的本地配置，不是服务端全局策略。**因此后台保存的查询 `mode` 同时决定查询入口的行为**——包括 `bypass`（跳过检索、携带最近 3 轮对话直接询问 LLM）。唯二例外是调试开关 `only_need_context` / `only_need_prompt`：`/workspace` 始终以 `false` 提交，管理员调试后忘记关闭也不会让查询用户拿到原始上下文而非答案。
 - 两个入口的查询历史相互独立：管理员的调试对话不会出现在查询入口（也不会作为其 `bypass` 上下文发送），反之亦然。
-- `UI_TEMPLATES_DIR` 指向可选的只读多语言 UI Bundle，可在不重建前端的情况下替换欢迎页文案、查询空白态文案和品牌 Logo——参见 `docs/ui_templates_example/`。未设置即使用前端内置品牌内容（这是常态）；显式设置但 Bundle 非法会导致启动失败。修改内容需重启；文案以 `no-store` 提供、Logo 通过内容哈希的 immutable URL 提供，无需手动清缓存。 Bundle 的语言集合与 WebUI 自身的界面语言（`en`、`zh`、`zh-TW`、`fr`、`ar`、`ru`、`ja`、`de`、`uk`、`ko`、`vi`）相互独立：Bundle 可声明任意合法 BCP 47 locale，但界面语言之外的 locale，其内容虽能正确渲染，周围的按钮与设置仍停留在访问者解析出的 UI 语言上；启动时会记录一条警告列出这些 locale。
+- `UI_TEMPLATES_DIR` 指向可选的只读多语言 UI Bundle，可在不重建前端的情况下替换欢迎页文案、查询空白态文案和品牌 Logo，并可为登录页添加定制文案与协议同意勾选框——参见 `docs/ui_templates_example/`。未设置即使用前端内置品牌内容（这是常态）；显式设置但 Bundle 非法会导致启动失败。修改内容需重启；文案以 `no-store` 提供、Logo 通过内容哈希的 immutable URL 提供，无需手动清缓存。 若某个 locale 同时声明了 `login`（登录页定制文案）与 `agreements`（把《用户隐私协议》和《模型服务协议》合并在一起的单份文档），则该 locale 启用登录页协议同意勾选框：登录页显示「同意《用户隐私协议》和《模型服务协议》」，其中的唯一链接弹窗展示该文档，未勾选则不允许登录。仅声明其中一项时该功能不启用；声明了但内容为空的文件会导致启动失败。 Bundle 的语言集合与 WebUI 自身的界面语言（`en`、`zh`、`zh-TW`、`fr`、`ar`、`ru`、`ja`、`de`、`uk`、`ko`、`vi`）相互独立：Bundle 可声明任意合法 BCP 47 locale，但界面语言之外的 locale，其内容虽能正确渲染，周围的按钮与设置仍停留在访问者解析出的 UI 语言上；启动时会记录一条警告列出这些 locale。
 - `/health` 分别报告 `webui_available` 与 `workspace_available`；旧构建产物缺少 `workspace.html` 时 `/webui` 完整可用，`/workspace` 返回固定 JSON 提示（绝不重定向到 API 文档）。
 
 对查询用户隐藏后台界面是 UX 分流，**不是**安全边界：所有接口的授权仍由服务端强制执行。

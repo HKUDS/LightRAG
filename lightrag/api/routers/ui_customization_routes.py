@@ -32,6 +32,17 @@ ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
 ASSET_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
 
 
+def _markdown_or_none(content: str | None) -> dict[str, str] | None:
+    """An optional template as the same ``{format, content}`` shape, or null.
+
+    Null rather than an empty-content object, because "this locale declares
+    none" is a state the client acts on (no login blurb, no agreement link) --
+    not a template that happens to have no text, which the loader rejects
+    outright for these fields.
+    """
+    return None if content is None else {"format": "markdown", "content": content}
+
+
 def create_ui_customization_routes(
     snapshot: UICustomizationSnapshot | None,
     webui_title: str | None,
@@ -110,6 +121,15 @@ def create_ui_customization_routes(
                 },
                 "welcome": {"format": "markdown", "content": content.welcome},
                 "query_empty": {"format": "markdown", "content": content.query_empty},
+                "login": _markdown_or_none(content.login),
+                "agreements": _markdown_or_none(content.agreements),
+                # The login page's consent gate, decided HERE and obeyed by
+                # the frontend rather than re-derived there: one authority
+                # over what turns a login-blocking control on. Its two inputs
+                # are in the same response purely so the page can render the
+                # blurb and the agreement dialog -- not so a client can
+                # recompute the flag from them.
+                "consent_required": content.consent_required,
             },
             headers={"Cache-Control": "no-store"},
         )

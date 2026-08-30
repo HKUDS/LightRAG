@@ -17,13 +17,18 @@ import { cn } from '@/lib/utils'
  */
 export default function CustomizedMarkdown({
   content,
-  className
+  className,
+  dir
 }: {
   content: string
   className?: string
+  /** Writing direction for this block, from the server's resolved locale
+   * (never from bundle-provided markup). Omit to inherit the page's. */
+  dir?: 'ltr' | 'rtl'
 }) {
   return (
     <div
+      dir={dir}
       className={cn(
         'prose dark:prose-invert max-w-none break-words prose-p:my-2 prose-headings:my-3',
         className

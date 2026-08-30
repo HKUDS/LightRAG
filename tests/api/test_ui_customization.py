@@ -120,6 +120,26 @@ def make_bundle(root, manifest=None, *, extra_files=None):
     return bundle
 
 
+def add_login_consent(bundle, *, locale="zh", login="# 登录说明", agreements="# 协议"):
+    """Declare the login-page blurb and/or the merged agreement document.
+
+    `None` for either leaves the field UNDECLARED (the manifest key is not
+    written at all), which is how the half-configured cases are staged.
+    """
+    manifest = json.loads((bundle / "manifest.json").read_text("utf-8"))
+    for field_name, text in (("login", login), ("agreements", agreements)):
+        if text is None:
+            manifest["locales"][locale].pop(field_name, None)
+            continue
+        rel = f"locales/{locale}/{field_name}.md"
+        target = bundle / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, "utf-8")
+        manifest["locales"][locale][field_name] = rel
+    (bundle / "manifest.json").write_text(json.dumps(manifest), "utf-8")
+    return bundle
+
+
 # --------------------------------------------------------------------------- #
 # Snapshot loader
 # --------------------------------------------------------------------------- #
@@ -489,6 +509,100 @@ class TestBundleValidation:
         assert mimes == {"brand-logo": "image/svg+xml", "logo-zh": "image/png"}
 
 
+class TestLoginConsentBundle:
+    """The login-page consent gate: BOTH optional templates or no gate."""
+
+    def test_absent_by_default(self, tmp_path):
+        snapshot = load_ui_customization_snapshot(make_bundle(tmp_path))
+        content = snapshot.locales["zh"]
+        assert content.login is None
+        assert content.agreements is None
+        assert content.consent_required is False
+
+    def test_both_declared_turns_the_gate_on(self, tmp_path):
+        bundle = add_login_consent(make_bundle(tmp_path))
+        snapshot = load_ui_customization_snapshot(bundle)
+        assert snapshot.locales["zh"].login == "# 登录说明"
+        assert snapshot.locales["zh"].agreements == "# 协议"
+        assert snapshot.locales["zh"].consent_required is True
+        # Per LOCALE, not per bundle: "en" declared neither.
+        assert snapshot.locales["en"].consent_required is False
+
+    @pytest.mark.parametrize(
+        "login, agreements",
+        [
+            ("# 登录说明", None),  # a branded login page, nothing to agree to
+            (None, "# 协议"),  # an agreement document no page links to
+        ],
+    )
+    def test_half_a_configuration_leaves_the_gate_off(
+        self, tmp_path, login, agreements
+    ):
+        bundle = add_login_consent(make_bundle(tmp_path), login=login, agreements=agreements)
+        snapshot = load_ui_customization_snapshot(bundle)
+        assert snapshot.locales["zh"].consent_required is False
+
+    def test_explicit_null_is_undeclared(self, tmp_path):
+        bundle = make_bundle(tmp_path)
+        manifest = json.loads((bundle / "manifest.json").read_text("utf-8"))
+        manifest["locales"]["zh"].update(login=None, agreements=None)
+        (bundle / "manifest.json").write_text(json.dumps(manifest))
+        snapshot = load_ui_customization_snapshot(bundle)
+        assert snapshot.locales["zh"].consent_required is False
+
+    @pytest.mark.parametrize("field_name", ["login", "agreements"])
+    def test_blank_template_is_rejected(self, tmp_path, field_name):
+        """Declared-but-empty is a misconfiguration, not a declaration.
+
+        Whether the file exists is the switch, so a blank one would put a
+        consent checkbox in front of an empty document — startup naming the
+        file beats a user meeting an empty dialog.
+        """
+        bundle = add_login_consent(make_bundle(tmp_path), **{field_name: "   \n"})
+        with pytest.raises(UICustomizationError, match=f"locales.zh.{field_name}"):
+            load_ui_customization_snapshot(bundle)
+
+    @pytest.mark.parametrize("field_name", ["login", "agreements"])
+    def test_optional_templates_obey_the_required_ones_rules(self, tmp_path, field_name):
+        """Path containment, existence and the size limit are NOT relaxed."""
+        for bad_path, match in (
+            ("../../etc/passwd", "traversal"),
+            ("/etc/passwd", "absolute"),
+            ("locales/zh/missing.md", "does not exist"),
+        ):
+            bundle = make_bundle(tmp_path / bad_path.replace("/", "_"))
+            manifest = json.loads((bundle / "manifest.json").read_text("utf-8"))
+            manifest["locales"]["zh"][field_name] = bad_path
+            (bundle / "manifest.json").write_text(json.dumps(manifest))
+            with pytest.raises(UICustomizationError, match=match):
+                load_ui_customization_snapshot(bundle)
+
+        oversized = make_bundle(tmp_path / "oversized")
+        (oversized / "locales" / "zh" / "big.md").write_text("x" * 70000, "utf-8")
+        manifest = json.loads((oversized / "manifest.json").read_text("utf-8"))
+        manifest["locales"]["zh"][field_name] = "locales/zh/big.md"
+        (oversized / "manifest.json").write_text(json.dumps(manifest))
+        with pytest.raises(UICustomizationError, match="byte limit"):
+            load_ui_customization_snapshot(oversized)
+
+    @pytest.mark.parametrize("field_name", ["login", "agreements"])
+    def test_non_string_path_is_rejected(self, tmp_path, field_name):
+        bundle = make_bundle(tmp_path)
+        manifest = json.loads((bundle / "manifest.json").read_text("utf-8"))
+        manifest["locales"]["zh"][field_name] = 42
+        (bundle / "manifest.json").write_text(json.dumps(manifest))
+        with pytest.raises(UICustomizationError, match="path string or null"):
+            load_ui_customization_snapshot(bundle)
+
+    def test_consent_templates_participate_in_the_revision(self, tmp_path):
+        """Editing the agreement text must invalidate the bundle revision."""
+        bundle = add_login_consent(make_bundle(tmp_path))
+        before = load_ui_customization_snapshot(bundle)
+        (bundle / "locales" / "zh" / "agreements.md").write_text("# 协议 v2", "utf-8")
+        after = load_ui_customization_snapshot(bundle)
+        assert before.bundle_revision != after.bundle_revision
+
+
 class TestRevisionBoundaries:
     def test_deterministic_across_loads(self, tmp_path):
         bundle = make_bundle(tmp_path)
@@ -608,6 +722,8 @@ class TestCustomizationEndpointNoBundle:
         assert data["customized"] is False
         assert data["brand"]["title"]
         assert "welcome" not in data
+        # No bundle ⇒ no deployment agreement text ⇒ no login consent gate.
+        assert not data.get("consent_required")
         assert resp.headers["cache-control"] == "no-store"
         assert "etag" not in resp.headers
 
@@ -620,11 +736,47 @@ class TestCustomizationEndpointNoBundle:
 
 
 class TestCustomizationEndpointWithBundle:
-    def _client(self, tmp_path, monkeypatch, *cli_args, workspace=True):
+    def _client(self, tmp_path, monkeypatch, *cli_args, workspace=True, consent=False):
         bundle = make_bundle(tmp_path)
+        if consent:
+            add_login_consent(bundle)
         monkeypatch.setenv("UI_TEMPLATES_DIR", str(bundle))
         _stage_frontend(tmp_path, workspace=workspace)
         return TestClient(_build_app(tmp_path, monkeypatch, *cli_args))
+
+    def test_login_consent_absent_by_default(self, tmp_path, monkeypatch):
+        data = self._client(tmp_path, monkeypatch).get(
+            "/ui/customization?locale=zh"
+        ).json()
+        assert data["login"] is None
+        assert data["agreements"] is None
+        assert data["consent_required"] is False
+
+    def test_login_consent_served(self, tmp_path, monkeypatch):
+        client = self._client(tmp_path, monkeypatch, consent=True)
+        data = client.get("/ui/customization?locale=zh").json()
+        assert data["login"] == {"format": "markdown", "content": "# 登录说明"}
+        assert data["agreements"] == {"format": "markdown", "content": "# 协议"}
+        assert data["consent_required"] is True
+
+    def test_consent_follows_the_resolved_locale(self, tmp_path, monkeypatch):
+        """The gate is a property of the locale actually served.
+
+        A visitor falling back to a locale that declares no agreement text
+        must not be shown a checkbox pointing at nothing — the flag and the
+        documents come from the same resolved locale, together.
+        """
+        client = self._client(tmp_path, monkeypatch, consent=True)
+        # "en" is declared but carries neither template.
+        en = client.get("/ui/customization?locale=en").json()
+        assert en["locale"] == "en"
+        assert en["consent_required"] is False
+        assert en["agreements"] is None
+        # "ko" falls back to "zh", which carries both.
+        ko = client.get("/ui/customization?locale=ko").json()
+        assert (ko["locale"], ko["fallback_used"]) == ("zh", True)
+        assert ko["consent_required"] is True
+        assert ko["agreements"]["content"] == "# 协议"
 
     def test_full_representation(self, tmp_path, monkeypatch):
         client = self._client(tmp_path, monkeypatch)

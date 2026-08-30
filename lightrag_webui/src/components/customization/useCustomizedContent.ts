@@ -6,8 +6,9 @@ import { resolveUiLanguage } from '@/lib/browserLanguage'
 import defaultLogoUrl from '@/assets/logo.svg'
 
 /**
- * Resolves the branding content the workspace entry shows (welcome page and
- * query empty state), following the atomicity rule of the workspace-entry
+ * Resolves the branding content the WebUI shows (welcome page, query empty
+ * state, and the login page's blurb plus consent gate), following the
+ * atomicity rule of the workspace-entry
  * PRD §8.3: a locale's representation comes ENTIRELY from the active bundle,
  * or ENTIRELY from the frontend defaults (no bundle → `customized: false`,
  * or a hard first-load failure) — never a field-by-field mix.
@@ -28,6 +29,20 @@ export interface CustomizedContent {
   queryEmptyMarkdown: string
   brandTitle: string
   brandDescription: string | null
+  /** Login-page blurb; empty when the bundle declares none (or no bundle). */
+  loginMarkdown: string
+  /** The single user-agreement document, or null when none is declared. */
+  agreementsMarkdown: string | null
+  /**
+   * Whether the login page must gate submission behind the consent checkbox.
+   * Comes STRAIGHT from the server's `consent_required` — this hook never
+   * re-derives it from the two markdown fields, so one authority decides
+   * whether a login-blocking control exists. False while `loading` is true,
+   * which is why the login page must not render its form until then (an
+   * agreeing-by-being-fast window is exactly what a consent gate cannot
+   * have).
+   */
+  consentRequired: boolean
 }
 
 export function useCustomizedContent(): CustomizedContent {
@@ -73,7 +88,10 @@ export function useCustomizedContent(): CustomizedContent {
       welcomeMarkdown: '',
       queryEmptyMarkdown: '',
       brandTitle: '',
-      brandDescription: null
+      brandDescription: null,
+      loginMarkdown: '',
+      agreementsMarkdown: null,
+      consentRequired: false
     }
   }
 
@@ -88,7 +106,10 @@ export function useCustomizedContent(): CustomizedContent {
       welcomeMarkdown: snapshot.welcome?.content ?? '',
       queryEmptyMarkdown: snapshot.query_empty?.content ?? '',
       brandTitle: snapshot.brand.title || 'LightRAG',
-      brandDescription: snapshot.brand.description ?? null
+      brandDescription: snapshot.brand.description ?? null,
+      loginMarkdown: snapshot.login?.content ?? '',
+      agreementsMarkdown: snapshot.agreements?.content ?? null,
+      consentRequired: snapshot.consent_required === true
     }
   }
 
@@ -102,6 +123,13 @@ export function useCustomizedContent(): CustomizedContent {
     welcomeMarkdown: t('workspace.welcome.defaultMarkdown'),
     queryEmptyMarkdown: t('workspace.queryEmpty.defaultMarkdown'),
     brandTitle: snapshot?.brand?.title || 'LightRAG',
-    brandDescription: snapshot?.brand?.description ?? null
+    brandDescription: snapshot?.brand?.description ?? null,
+    // No bundle, or a hard failure: no deployment-specific agreement text
+    // exists to consent TO, so the gate stays off. Fail-open is the only
+    // correct end state here — a login page nobody can get past because the
+    // branding endpoint is unreachable would lock out the deployment.
+    loginMarkdown: '',
+    agreementsMarkdown: null,
+    consentRequired: false
   }
 }
