@@ -13,6 +13,7 @@
     "apiDocs": "وثائق واجهة برمجة التطبيقات",
     "projectRepository": "مستودع المشروع",
     "appSettings": "الإعدادات",
+    "deploymentInfo": "معلومات النشر",
     "logout": "تسجيل الخروج",
     "frontendNeedsRebuild": "الواجهة الأمامية تحتاج إلى إعادة البناء",
     "themeToggle": {

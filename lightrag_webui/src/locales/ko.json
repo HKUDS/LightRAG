@@ -13,6 +13,7 @@
     "apiDocs": "API 문서",
     "projectRepository": "프로젝트 저장소",
     "appSettings": "설정",
+    "deploymentInfo": "배포 정보",
     "logout": "로그아웃",
     "frontendNeedsRebuild": "프론트엔드 재빌드 필요",
     "themeToggle": {

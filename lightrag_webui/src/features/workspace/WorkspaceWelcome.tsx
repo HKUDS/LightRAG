@@ -138,11 +138,6 @@ export default function WorkspaceWelcome() {
               />
             )}
             <h1 className="text-2xl font-bold tracking-tight">{content.brandTitle}</h1>
-            {content.brandDescription && (
-              <p className="text-muted-foreground -mt-4 text-sm">
-                {content.brandDescription}
-              </p>
-            )}
             <CustomizedMarkdown
               content={content.welcomeMarkdown}
               className="text-left text-sm"
