@@ -866,3 +866,115 @@ describe('quota degradation under a byte budget', () => {
     expect(quotaStorage.getItem(WEBUI_RETRIEVAL_HISTORY_KEY)).toBe(userHistory)
   })
 })
+
+/**
+ * A budget that COLLAPSES partway through the run — another origin (or
+ * another tab of this one) consumed the space while the split was writing.
+ * It is the only way the PHASE-2 ladder is reachable: phase 2's payload is
+ * strictly smaller than the envelope it replaces, so under a fixed budget
+ * the removal always makes room for it.
+ */
+class CollapsingQuotaStorage implements Storage {
+  data = new Map<string, string>()
+  private writes = 0
+  constructor(
+    public budget: number,
+    private collapseAfterWrites: number,
+    private collapsedBudget: number
+  ) {}
+  get length() {
+    return this.data.size
+  }
+  private used(exceptKey?: string) {
+    let total = 0
+    for (const [key, value] of this.data) {
+      if (key !== exceptKey) total += key.length + value.length
+    }
+    return total
+  }
+  clear() {
+    this.data.clear()
+  }
+  getItem(key: string) {
+    return this.data.get(key) ?? null
+  }
+  key(index: number) {
+    return [...this.data.keys()][index] ?? null
+  }
+  removeItem(key: string) {
+    this.data.delete(key)
+  }
+  setItem(key: string, value: string) {
+    if (this.used(key) + key.length + value.length > this.budget) {
+      const error = new Error('quota exceeded (byte budget)')
+      error.name = 'QuotaExceededError'
+      throw error
+    }
+    this.data.set(key, value)
+    if (++this.writes === this.collapseAfterWrites) this.budget = this.collapsedBudget
+  }
+}
+
+describe('a shed envelope stamped POST-SPLIT still requires acceptance', () => {
+  const shedAtPhaseTwo = () => {
+    // Seed write + the three phase-1 target writes, then the budget collapses
+    // to a window that fits neither the phase-2 payload nor the bytes just
+    // removed — but does fit a scalar rung, which carries phase 2's OWN
+    // version (22) along with the loss marker.
+    const storage = new CollapsingQuotaStorage(100000, 4, 1400)
+    storage.setItem(
+      LEGACY_SETTINGS_STORAGE_KEY,
+      legacyEnvelope(21, {
+        theme: 'dark',
+        language: 'zh',
+        apiKey: 'k'.repeat(400),
+        querySettings: { mode: 'hybrid', top_k: 7 },
+        retrievalHistory: [{ id: 'h1', role: 'user', content: 'x'.repeat(900) }]
+      })
+    )
+    storage.budget = 3000
+    runSettingsStorageSplitMigration(storage)
+    return storage
+  }
+
+  test('the reload REFUSES instead of migrating the surviving fields', () => {
+    // Regression (P1). The marker check used to sit BELOW the version guard,
+    // and a rung shed at phase 2 keeps that payload's version — 22, already
+    // past the cap. So the reload answered "post-split, nothing to migrate"
+    // and returned clean, never reaching the marker: the partial settings
+    // hydrated with no error and no acceptance, and the API key that did not
+    // fit was gone silently. Exactly the loss the marker exists to report.
+    const storage = shedAtPhaseTwo()
+
+    // The run that did the shedding reports it…
+    expect(isSettingsDataLostError(getSettingsMigrationError())).toBe(true)
+    const shed = JSON.parse(storage.getItem(LEGACY_SETTINGS_STORAGE_KEY)!)
+    expect(shed.version).toBe(SETTINGS_STORAGE_VERSION_AFTER_SPLIT) // past the cap
+    expect(shed.lightragSettingsLostToQuota).toBe(true)
+    expect(shed.state.apiKey).toBeUndefined() // the field that did not fit
+    expect(shed.state.theme).toBe('dark') // what the rung saved
+
+    // …and so does the reload, once there is room again.
+    storage.budget = 100000
+    resetSettingsMigrationErrorForTests()
+    runSettingsStorageSplitMigration(storage)
+    expect(isSettingsDataLostError(getSettingsMigrationError())).toBe(true)
+    // Refusing touched nothing.
+    expect(JSON.parse(storage.getItem(LEGACY_SETTINGS_STORAGE_KEY)!)).toEqual(shed)
+  })
+
+  test('acceptance keeps the surviving fields and stops the refusal', () => {
+    const storage = shedAtPhaseTwo()
+    storage.budget = 100000
+
+    acceptSettingsDataLoss(storage)
+
+    resetSettingsMigrationErrorForTests()
+    runSettingsStorageSplitMigration(storage)
+    expect(getSettingsMigrationError()).toBeNull()
+    const accepted = JSON.parse(storage.getItem(LEGACY_SETTINGS_STORAGE_KEY)!)
+    expect('lightragSettingsLostToQuota' in accepted).toBe(false)
+    expect(accepted.state.theme).toBe('dark')
+    expect(accepted.state.language).toBe('zh')
+  })
+})

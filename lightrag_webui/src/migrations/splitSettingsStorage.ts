@@ -519,20 +519,26 @@ export function runSettingsStorageSplitMigration(
     }
     if (!envelope || typeof envelope !== 'object') return
 
+    // BEFORE the version check, deliberately. A shed rung carries the
+    // version of the payload it replaced, so a ladder that ran from PHASE 2
+    // leaves a marked envelope stamped 22 — already past the cap. Asking
+    // "is there anything left to migrate?" first would answer "no, this is
+    // post-split" and return clean, and the reload after capacity came back
+    // would hydrate the partial settings with no error and no acceptance:
+    // exactly the silent loss the marker exists to prevent, reintroduced by
+    // the ordering alone. Refusing here touches NOTHING, so it stays within
+    // rule 3's "never read, clean or overwrite" for an unknown-version
+    // envelope too. `acceptSettingsDataLoss` is the only way past it, and
+    // only a person calls that.
+    if (envelope[SETTINGS_LOST_MARKER] === true) {
+      migrationError = new SettingsDataLostError()
+      return
+    }
+
     const version = typeof envelope.version === 'number' ? envelope.version : 0
     if (version > LEGACY_SETTINGS_VERSION_CAP) {
       // Rule 3. Includes our own post-split version (22): nothing left to
       // migrate. Anything higher is unknown — never read, clean or overwrite.
-      return
-    }
-
-    if (envelope[SETTINGS_LOST_MARKER] === true) {
-      // An earlier run's write-back ladder had to shed state to fit. Refuse
-      // and touch NOTHING: migrating what is left would "succeed" and stamp
-      // v22 over settings this browser never got to read, which is the
-      // silent loss the marker exists to prevent. `acceptSettingsDataLoss`
-      // is the only way past it, and only a person calls that.
-      migrationError = new SettingsDataLostError()
       return
     }
 
