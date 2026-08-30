@@ -143,7 +143,7 @@ class TestWebuiTitleInjection:
         Defense in depth — the value comes from admin config, not user input —
         matching the existing `</` escaping on the prefixes.
         """
-        client = _client(tmp_path, monkeypatch, '</script><script>alert(1)</script>')
+        client = _client(tmp_path, monkeypatch, "</script><script>alert(1)</script>")
 
         body = client.get("/webui/").text
         assert "</script><script>alert(1)" not in body
