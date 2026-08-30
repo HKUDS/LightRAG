@@ -126,6 +126,9 @@
       "pipelineStatusTooltip": "문서 처리 파이프라인 상태 보기",
       "uploadedTitle": "업로드된 문서",
       "uploadedDescription": "업로드된 문서 목록 및 상태.",
+      "loading": "문서를 불러오는 중...",
+      "loadErrorTitle": "문서를 불러올 수 없습니다",
+      "retry": "다시 시도",
       "emptyTitle": "문서 없음",
       "emptyDescription": "아직 업로드된 문서가 없습니다.",
       "columns": {

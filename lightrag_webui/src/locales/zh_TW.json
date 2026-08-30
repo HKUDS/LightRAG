@@ -126,6 +126,9 @@
       "pipelineStatusTooltip": "查看文件處理管線狀態",
       "uploadedTitle": "已上傳文件",
       "uploadedDescription": "已上傳文件清單及其狀態",
+      "loading": "正在載入文件...",
+      "loadErrorTitle": "無法載入文件",
+      "retry": "重試",
       "emptyTitle": "無文件",
       "emptyDescription": "尚未上傳任何文件",
       "columns": {

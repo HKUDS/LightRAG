@@ -126,6 +126,9 @@
       "pipelineStatusTooltip": "Xem trạng thái quy trình xử lý tài liệu",
       "uploadedTitle": "Tài Liệu Đã Tải Lên",
       "uploadedDescription": "Danh sách các tài liệu đã tải lên và trạng thái của chúng.",
+      "loading": "Đang tải tài liệu...",
+      "loadErrorTitle": "Không thể tải tài liệu",
+      "retry": "Thử lại",
       "emptyTitle": "Không Có Tài Liệu",
       "emptyDescription": "Chưa có tài liệu nào được tải lên.",
       "columns": {

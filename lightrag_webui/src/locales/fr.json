@@ -126,6 +126,9 @@
       "pipelineStatusTooltip": "Voir l'état du pipeline de traitement des documents",
       "uploadedTitle": "Documents téléchargés",
       "uploadedDescription": "Liste des documents téléchargés et leurs statuts.",
+      "loading": "Chargement des documents...",
+      "loadErrorTitle": "Impossible de charger les documents",
+      "retry": "Réessayer",
       "emptyTitle": "Aucun document",
       "emptyDescription": "Il n'y a pas encore de documents téléchargés.",
       "columns": {

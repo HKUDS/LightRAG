@@ -126,6 +126,9 @@
       "pipelineStatusTooltip": "عرض حالة خط معالجة المستندات",
       "uploadedTitle": "المستندات المرفوعة",
       "uploadedDescription": "قائمة المستندات المرفوعة وحالاتها.",
+      "loading": "جارٍ تحميل المستندات...",
+      "loadErrorTitle": "تعذر تحميل المستندات",
+      "retry": "إعادة المحاولة",
       "emptyTitle": "لا توجد مستندات",
       "emptyDescription": "لا توجد مستندات مرفوعة بعد.",
       "columns": {
