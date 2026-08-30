@@ -21,7 +21,7 @@ A ready-to-copy bundle lives in [`docs/ui_templates_example/`](./ui_templates_ex
 | **Welcome page** | `/workspace` entry, before sign-in (`/workspace/#/welcome`) | `welcome` (required) |
 | **Query empty state** | `/workspace` query page, while the conversation is empty (and again after *Clear*) | `query_empty` (required) |
 | **Login page text** | Above the username/password form, on **both** entries (`/webui/#/login` and `/workspace/#/login`) | `login` (optional) |
-| **User agreement + consent checkbox** | A checkbox on the login page, whose link opens the document in a dialog; sign-in is blocked until it is ticked | `agreements` (optional, pairs with `login`) |
+| **User agreement + consent checkbox** | A checkbox on the login page, whose link opens the document in a dialog; the WebUI's Login button stays disabled until it is ticked — a WebUI prompt, not server-side enforcement ([§6](#6-the-login-consent-gate)) | `agreements` (optional, pairs with `login`) |
 | **Brand logo** | Welcome page and query empty state | `brand.logo`, per-locale `logo`, `logo_alt` |
 
 What you **cannot** set from the bundle:
@@ -318,6 +318,21 @@ that locale shows:
 The **Login** button stays disabled until the box is ticked, and pressing
 Enter in the form is refused the same way.
 
+> **What this gate is, precisely — read before relying on it.** It is a
+> **WebUI control, not server-side enforcement.** The server computes
+> `consent_required` and the WebUI obeys it, but `POST /login` takes only the
+> standard credential fields: it neither requires nor records acceptance, and
+> stores nothing about which revision of the document a user agreed to. A
+> client posting credentials straight to `/login` — curl, a script, the Ollama
+> -compatible API, another frontend — receives a token without ever seeing the
+> checkbox.
+>
+> So treat it as an **informed-consent prompt for people using the WebUI**,
+> not as an access control, and do not treat it as evidence that a particular
+> user accepted a particular revision. If your deployment needs enforceable,
+> auditable acceptance, it has to be built server-side; this feature does not
+> provide it.
+
 ### 6.1 One document, not two
 
 The checkbox carries exactly **one** link. Write both the privacy policy and
@@ -354,6 +369,8 @@ document's headings consistent with that wording.
   is bound to the exact document text on screen, so it is asked for on every
   visit. Switching the interface language mid-page replaces the document and
   clears the tick, unless the new locale's text is byte-for-byte identical.
+- **WebUI only, not the API.** As above: `POST /login` has no consent field,
+  so the gate constrains the WebUI's login form and nothing else.
 - **Credentialed sign-in only.** A deployment with authentication disabled
   (`AUTH_ACCOUNTS` unset) admits visitors as guests without the gate. That is
   deliberate rather than a gap: with no authentication there is no identified
