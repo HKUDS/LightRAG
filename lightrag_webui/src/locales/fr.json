@@ -32,7 +32,10 @@
     "errorEmptyFields": "Veuillez saisir votre nom d'utilisateur et mot de passe",
     "errorInvalidCredentials": "Échec de la connexion, veuillez vérifier le nom d'utilisateur et le mot de passe",
     "authDisabled": "L'authentification est désactivée. Utilisation du mode sans connexion.",
-    "guestMode": "Mode sans connexion"
+    "guestMode": "Mode sans connexion",
+    "consentLabel": "J'accepte la {{documents}}",
+    "consentDocuments": "Politique de confidentialité et les Conditions du service de modèle",
+    "errorConsentRequired": "Veuillez lire et accepter les conditions avant de vous connecter"
   },
   "common": {
     "cancel": "Annuler",
@@ -126,6 +129,9 @@
       "pipelineStatusTooltip": "Voir l'état du pipeline de traitement des documents",
       "uploadedTitle": "Documents téléchargés",
       "uploadedDescription": "Liste des documents téléchargés et leurs statuts.",
+      "loading": "Chargement des documents...",
+      "loadErrorTitle": "Impossible de charger les documents",
+      "retry": "Réessayer",
       "emptyTitle": "Aucun document",
       "emptyDescription": "Il n'y a pas encore de documents téléchargés.",
       "columns": {
@@ -404,6 +410,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "Contenu généré par IA — à vérifier.",
       "copyTooltip": "Copier dans le presse-papiers",
       "copyError": "Échec de la copie du texte dans le presse-papiers",
       "copyEmpty": "Aucun contenu à copier",

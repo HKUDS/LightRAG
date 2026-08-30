@@ -12,16 +12,22 @@
     "en": {
       "welcome": "locales/en/welcome.md",
       "query_empty": "locales/en/query_empty.md",
+      "login": "locales/en/login.md",
+      "agreements": "locales/en/agreements.md",
       "logo_alt": "Example Corp"
     },
     "zh": {
       "welcome": "locales/zh/welcome.md",
       "query_empty": "locales/zh/query_empty.md",
+      "login": "locales/zh/login.md",
+      "agreements": "locales/zh/agreements.md",
       "logo_alt": "示例公司"
     },
     "zh-TW": {
       "welcome": "locales/zh-TW/welcome.md",
       "query_empty": "locales/zh-TW/query_empty.md",
+      "login": "locales/zh-TW/login.md",
+      "agreements": "locales/zh-TW/agreements.md",
       "logo_alt": "範例公司"
     }
   }

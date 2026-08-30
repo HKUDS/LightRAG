@@ -32,7 +32,10 @@
     "errorEmptyFields": "ユーザー名とパスワードを入力してください",
     "errorInvalidCredentials": "ログインに失敗しました。ユーザー名とパスワードを確認してください",
     "authDisabled": "認証が無効になっています。ログインフリーモードを使用しています。",
-    "guestMode": "ログインフリー"
+    "guestMode": "ログインフリー",
+    "consentLabel": "{{documents}}に同意します",
+    "consentDocuments": "「プライバシーポリシー」および「モデルサービス規約」",
+    "errorConsentRequired": "ログインする前に規約をお読みのうえ同意してください"
   },
   "common": {
     "cancel": "キャンセル",
@@ -126,6 +129,9 @@
       "pipelineStatusTooltip": "ドキュメント処理パイプラインのステータスを表示",
       "uploadedTitle": "アップロードされたドキュメント",
       "uploadedDescription": "アップロードされたドキュメントとそのステータスのリスト。",
+      "loading": "ドキュメントを読み込んでいます...",
+      "loadErrorTitle": "ドキュメントを読み込めませんでした",
+      "retry": "再試行",
       "emptyTitle": "ドキュメントなし",
       "emptyDescription": "まだアップロードされたドキュメントがありません。",
       "columns": {
@@ -404,6 +410,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "AI により生成された内容です。内容をご確認ください。",
       "copyTooltip": "クリップボードにコピー",
       "copyError": "クリップボードへのテキストコピーに失敗しました",
       "copyEmpty": "コピーするコンテンツがありません",

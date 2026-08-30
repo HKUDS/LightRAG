@@ -32,7 +32,10 @@
     "errorEmptyFields": "Vui lòng nhập tên người dùng và mật khẩu",
     "errorInvalidCredentials": "Đăng nhập thất bại, vui lòng kiểm tra tên người dùng và mật khẩu",
     "authDisabled": "Xác thực bị tắt. Đang sử dụng chế độ không cần đăng nhập.",
-    "guestMode": "Không cần đăng nhập"
+    "guestMode": "Không cần đăng nhập",
+    "consentLabel": "Tôi đồng ý với {{documents}}",
+    "consentDocuments": "Chính sách quyền riêng tư và Thỏa thuận dịch vụ mô hình",
+    "errorConsentRequired": "Vui lòng đọc và đồng ý với các thỏa thuận trước khi đăng nhập"
   },
   "common": {
     "cancel": "Hủy",
@@ -126,6 +129,9 @@
       "pipelineStatusTooltip": "Xem trạng thái quy trình xử lý tài liệu",
       "uploadedTitle": "Tài Liệu Đã Tải Lên",
       "uploadedDescription": "Danh sách các tài liệu đã tải lên và trạng thái của chúng.",
+      "loading": "Đang tải tài liệu...",
+      "loadErrorTitle": "Không thể tải tài liệu",
+      "retry": "Thử lại",
       "emptyTitle": "Không Có Tài Liệu",
       "emptyDescription": "Chưa có tài liệu nào được tải lên.",
       "columns": {
@@ -404,6 +410,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "Nội dung do AI tạo — vui lòng kiểm chứng.",
       "copyTooltip": "Sao chép vào bộ nhớ tạm",
       "copyError": "Sao chép văn bản vào bộ nhớ tạm thất bại",
       "copyEmpty": "Không có nội dung để sao chép",

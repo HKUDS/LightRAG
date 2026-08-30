@@ -1597,6 +1597,14 @@ def create_app(args):
     # diverge from the real route table.
     api_docs_enabled = bool(getattr(args, "enable_api_docs", True))
 
+    # Whether the two query UIs label every answer as AI-generated
+    # (ENABLE_AI_CONTENT_NOTICE). Deployment-level display configuration, so
+    # it rides the same responses as webui_title/webui_description: both
+    # entries read it once at boot from /auth-status (or /login), and the
+    # admin shell keeps it fresh from its /health poll. getattr keeps
+    # create_app working for callers that build args programmatically.
+    ai_content_notice_enabled = bool(getattr(args, "enable_ai_content_notice", False))
+
     base_description = (
         "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
     )
@@ -2645,6 +2653,7 @@ def create_app(args):
                 "api_version": api_version_display,
                 "webui_title": webui_title,
                 "webui_description": webui_description,
+                "ai_content_notice_enabled": ai_content_notice_enabled,
             }
 
         return {
@@ -2654,6 +2663,7 @@ def create_app(args):
             "api_version": api_version_display,
             "webui_title": webui_title,
             "webui_description": webui_description,
+            "ai_content_notice_enabled": ai_content_notice_enabled,
         }
 
     # Brute-force protection for /login (CWE-307): throttle failed attempts per
@@ -2682,6 +2692,7 @@ def create_app(args):
                 "api_version": api_version_display,
                 "webui_title": webui_title,
                 "webui_description": webui_description,
+                "ai_content_notice_enabled": ai_content_notice_enabled,
             }
         username = form_data.username
         # Rate-limit key is client IP + username. X-Forwarded-For is NOT trusted
@@ -2740,6 +2751,7 @@ def create_app(args):
             "api_version": api_version_display,
             "webui_title": webui_title,
             "webui_description": webui_description,
+            "ai_content_notice_enabled": ai_content_notice_enabled,
         }
 
     @app.get(
@@ -2875,6 +2887,7 @@ def create_app(args):
                 "api_docs_available": api_docs_enabled,
                 "webui_title": webui_title,
                 "webui_description": webui_description,
+                "ai_content_notice_enabled": ai_content_notice_enabled,
                 "pipeline_busy": pipeline_busy,
                 "pipeline_active": pipeline_active,
             }

@@ -1,8 +1,9 @@
 """UI customization bundle loading and immutable snapshot (workspace-entry PRD §8).
 
 A deployment may point ``UI_TEMPLATES_DIR`` at an external, read-only bundle
-directory that provides the welcome page / query-empty-state texts and brand
-logos for the WebUI entries, per locale. The server validates the WHOLE
+directory that provides the welcome page / query-empty-state texts, the
+optional login-page blurb and user-agreement document, and brand logos for the
+WebUI entries, per locale. The server validates the WHOLE
 bundle at startup and atomically activates it as an immutable in-memory
 snapshot; request handling never touches the disk again.
 
@@ -88,6 +89,10 @@ _LOCALE_SUBTAG_RE = re.compile(r"^[A-Za-z0-9]{1,8}$")
 # language and the script.
 _MAX_EXTLANG_SUBTAGS = 3
 _REQUIRED_LOCALE_FIELDS = ("welcome", "query_empty")
+# Markdown templates a locale MAY declare. Optional individually, but see
+# UILocaleContent.consent_required: the login-page consent gate turns on only
+# when a locale declares BOTH of them.
+_OPTIONAL_LOCALE_TEMPLATE_FIELDS = ("login", "agreements")
 
 
 class UICustomizationError(Exception):
@@ -499,6 +504,31 @@ class UILocaleContent:
     logo_alt: str
     # asset_id of this locale's effective logo, or None for "no logo".
     logo_asset_id: str | None
+    # Optional login-page customization. Both default to None so a bundle
+    # written before these fields existed keeps loading unchanged.
+    login: str | None = None
+    # ONE document covering both the privacy policy and the model service
+    # agreement -- deliberately not two files. The consent checkbox carries a
+    # single link, so a reader opens and scrolls one document instead of
+    # hunting for a second one they are equally required to have read.
+    agreements: str | None = None
+
+    @property
+    def consent_required(self) -> bool:
+        """Whether the login page must gate submission behind the checkbox.
+
+        BOTH parts are required, and the pairing is the point rather than a
+        convenience: the checkbox is a deployment's own legal gate, so it
+        appears only where that deployment has actually said something on the
+        login page (``login``) AND supplied the text the user is agreeing to
+        (``agreements``). Half a configuration -- an agreement document no
+        page links to, or a branded login page with a checkbox pointing at
+        nothing -- is exactly what must NOT switch the gate on.
+
+        Computed here, on the loaded content, so the server is the single
+        authority: the frontend obeys the flag and never re-derives it.
+        """
+        return self.login is not None and self.agreements is not None
 
 
 @dataclass(frozen=True)
@@ -669,7 +699,13 @@ def load_ui_customization_snapshot(bundle_dir: str | Path) -> UICustomizationSna
             raise _fail(f"locales.{key}: must be an object")
         _validate_keys(
             entry,
-            allowed={"welcome", "query_empty", "logo_alt", "logo"},
+            allowed={
+                "welcome",
+                "query_empty",
+                "logo_alt",
+                "logo",
+                *_OPTIONAL_LOCALE_TEMPLATE_FIELDS,
+            },
             required={*_REQUIRED_LOCALE_FIELDS, "logo_alt"},
             context=f"locales.{key}",
         )
@@ -679,6 +715,33 @@ def load_ui_customization_snapshot(bundle_dir: str | Path) -> UICustomizationSna
 
         welcome = read_template(entry["welcome"], f"locales.{key}.welcome")
         query_empty = read_template(entry["query_empty"], f"locales.{key}.query_empty")
+
+        # Optional templates. An explicit null means "this locale declares
+        # none", the same spelling brand.logo already uses; a present path
+        # goes through read_template, so containment, the size limit, UTF-8
+        # validity and bundle_revision participation are the required
+        # templates' rules exactly, not a laxer second set.
+        optional_templates: dict[str, str | None] = {}
+        for field_name in _OPTIONAL_LOCALE_TEMPLATE_FIELDS:
+            context = f"locales.{key}.{field_name}"
+            raw_value = entry.get(field_name)
+            if raw_value is None:
+                optional_templates[field_name] = None
+            elif isinstance(raw_value, str):
+                template = read_template(raw_value, context)
+                if not template.strip():
+                    # Declared-but-blank is rejected where declared-or-not is
+                    # itself the switch: a blank `agreements` would put a
+                    # consent checkbox in front of an empty document, and a
+                    # blank `login` would satisfy the gate's other half with
+                    # nothing on the page. Startup naming the file beats a
+                    # user meeting an empty dialog. (`welcome` and
+                    # `query_empty` stay permissive -- an empty section there
+                    # renders as an empty section and switches nothing on.)
+                    raise _fail(f"{context}: template file is empty")
+                optional_templates[field_name] = template
+            else:
+                raise _fail(f"{context} must be a path string or null")
 
         logo_asset_id: str | None
         if "logo" in entry:
@@ -701,6 +764,7 @@ def load_ui_customization_snapshot(bundle_dir: str | Path) -> UICustomizationSna
             query_empty=query_empty,
             logo_alt=logo_alt,
             logo_asset_id=logo_asset_id,
+            **optional_templates,
         )
 
     # --- default locale ----------------------------------------------------

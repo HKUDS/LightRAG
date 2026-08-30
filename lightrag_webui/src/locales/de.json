@@ -32,7 +32,10 @@
     "errorEmptyFields": "Bitte geben Sie Ihren Benutzernamen und Ihr Passwort ein",
     "errorInvalidCredentials": "Anmeldung fehlgeschlagen, bitte überprüfen Sie Benutzername und Passwort",
     "authDisabled": "Authentifizierung ist deaktiviert. Verwenden des anmeldefreien Modus.",
-    "guestMode": "Anmeldefrei"
+    "guestMode": "Anmeldefrei",
+    "consentLabel": "Ich stimme der {{documents}} zu",
+    "consentDocuments": "Datenschutzerklärung und der Modellservice-Vereinbarung",
+    "errorConsentRequired": "Bitte lesen und akzeptieren Sie die Vereinbarungen vor der Anmeldung"
   },
   "common": {
     "cancel": "Abbrechen",
@@ -126,6 +129,9 @@
       "pipelineStatusTooltip": "Status der Dokumentverarbeitungs-Pipeline anzeigen",
       "uploadedTitle": "Hochgeladene Dokumente",
       "uploadedDescription": "Liste der hochgeladenen Dokumente und ihrer Status.",
+      "loading": "Dokumente werden geladen...",
+      "loadErrorTitle": "Dokumente konnten nicht geladen werden",
+      "retry": "Erneut versuchen",
       "emptyTitle": "Keine Dokumente",
       "emptyDescription": "Es wurden noch keine Dokumente hochgeladen.",
       "columns": {
@@ -404,6 +410,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "KI-generierter Inhalt – bitte prüfen.",
       "copyTooltip": "In Zwischenablage kopieren",
       "copyError": "Text konnte nicht in die Zwischenablage kopiert werden",
       "copyEmpty": "Kein Inhalt zum Kopieren",

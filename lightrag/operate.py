@@ -4582,7 +4582,7 @@ async def kg_query(
         Returns None when no relevant context could be constructed for the query.
     """
     if not query:
-        return QueryResult(content=PROMPTS["fail_response"])
+        return QueryResult(content=PROMPTS["fail_response"], llm_generated=False)
 
     # Apply higher priority (5) to query relation LLM function
     use_model_func = partial(
@@ -4609,7 +4609,7 @@ async def kg_query(
             logger.warning(f"Forced low_level_keywords to origin query: {query}")
             ll_keywords = [query]
         else:
-            return QueryResult(content=PROMPTS["fail_response"])
+            return QueryResult(content=PROMPTS["fail_response"], llm_generated=False)
 
     ll_keywords_str = ", ".join(ll_keywords) if ll_keywords else ""
     hl_keywords_str = ", ".join(hl_keywords) if hl_keywords else ""
@@ -4635,7 +4635,9 @@ async def kg_query(
     # Return different content based on query parameters
     if query_param.only_need_context and not query_param.only_need_prompt:
         return QueryResult(
-            content=context_result.context, raw_data=context_result.raw_data
+            content=context_result.context,
+            raw_data=context_result.raw_data,
+            llm_generated=False,
         )
 
     user_prompt = f"\n\n{query_param.user_prompt}" if query_param.user_prompt else "n/a"
@@ -4657,7 +4659,11 @@ async def kg_query(
 
     if query_param.only_need_prompt:
         prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
-        return QueryResult(content=prompt_content, raw_data=context_result.raw_data)
+        return QueryResult(
+            content=prompt_content,
+            raw_data=context_result.raw_data,
+            llm_generated=False,
+        )
 
     # Call LLM
     tokenizer: Tokenizer = global_config["tokenizer"]
@@ -6549,7 +6555,7 @@ async def naive_query(
     """
 
     if not query:
-        return QueryResult(content=PROMPTS["fail_response"])
+        return QueryResult(content=PROMPTS["fail_response"], llm_generated=False)
 
     # Apply higher priority (5) to query relation LLM function
     use_model_func = partial(
@@ -6560,7 +6566,7 @@ async def naive_query(
     tokenizer: Tokenizer = global_config["tokenizer"]
     if not tokenizer:
         logger.error("Tokenizer not found in global configuration.")
-        return QueryResult(content=PROMPTS["fail_response"])
+        return QueryResult(content=PROMPTS["fail_response"], llm_generated=False)
 
     if progress_callback:
         await progress_callback(QueryProgress.RETRIEVING_CHUNKS)
@@ -6669,7 +6675,9 @@ async def naive_query(
     )
 
     if query_param.only_need_context and not query_param.only_need_prompt:
-        return QueryResult(content=context_content, raw_data=raw_data)
+        return QueryResult(
+            content=context_content, raw_data=raw_data, llm_generated=False
+        )
 
     sys_prompt = sys_prompt_template.format(
         response_type=query_param.response_type,
@@ -6681,7 +6689,9 @@ async def naive_query(
 
     if query_param.only_need_prompt:
         prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
-        return QueryResult(content=prompt_content, raw_data=raw_data)
+        return QueryResult(
+            content=prompt_content, raw_data=raw_data, llm_generated=False
+        )
 
     # Handle cache
     answer_cache_kv = _answer_cache_kv(query_param, hashing_kv)

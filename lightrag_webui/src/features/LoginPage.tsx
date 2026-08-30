@@ -10,8 +10,26 @@ import { useTranslation } from 'react-i18next'
 import { Card, CardContent, CardHeader } from '@/components/ui/Card'
 import Input from '@/components/ui/Input'
 import Button from '@/components/ui/Button'
+import Checkbox from '@/components/ui/Checkbox'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/Dialog'
+import { ScrollArea } from '@/components/ui/ScrollArea'
 import { ZapIcon } from 'lucide-react'
 import AppSettings from '@/components/AppSettings'
+import CustomizedMarkdown from '@/components/customization/CustomizedMarkdown'
+import { useCustomizedContent } from '@/components/customization/useCustomizedContent'
+import {
+  CONSENT_LABEL_MARKER,
+  isAgreedTo,
+  isLoginBlockedByConsent,
+  shouldShowLoginConsent,
+  splitConsentLabel,
+  type LoginConsentTick
+} from '@/features/loginConsent'
 
 interface LoginPageProps {
   /**
@@ -32,7 +50,33 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [checkingAuth, setCheckingAuth] = useState(true)
+  // The tick is stored WITH the document it was given for; a language switch
+  // replaces that document, and consent must not survive the swap.
+  const [consentTick, setConsentTick] = useState<LoginConsentTick>({
+    document: null,
+    agreed: false
+  })
+  const [agreementsOpen, setAgreementsOpen] = useState(false)
   const authCheckRef = useRef(false); // Prevent duplicate calls in Vite dev mode
+
+  // Fired in PARALLEL with the /auth-status probe below (both are effects of
+  // this same mount), so the consent gate costs no serial round trip.
+  const content = useCustomizedContent()
+  const consentAgreed = isAgreedTo(consentTick, content.agreementsMarkdown)
+  const consentState = {
+    // NOT content.loading: on a language switch the store keeps the previous
+    // locale's snapshot on screen, and its verdict does not carry.
+    pending: content.consentPending,
+    consentRequired: content.consentRequired,
+    agreed: consentAgreed
+  }
+  const showConsent = shouldShowLoginConsent(consentState)
+  const consentBlocked = isLoginBlockedByConsent(consentState)
+  const consentDocuments = t('login.consentDocuments')
+  const consentLabelText = t('login.consentLabel', { documents: consentDocuments })
+  const consentLabelParts = splitConsentLabel(
+    t('login.consentLabel', { documents: CONSENT_LABEL_MARKER })
+  )
 
   useEffect(() => {
     console.log('LoginPage mounted')
@@ -73,6 +117,17 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
           // If auth is not configured, use the guest token and redirect.
           // Guest activation is an identity transition: a different stored
           // identity means the previous user's histories must not be shown.
+          //
+          // NOT gated by the consent checkbox, deliberately. The gate binds
+          // an agreement to a user, and an auth-disabled deployment has no
+          // user to bind it to -- every visitor is the same anonymous guest,
+          // so a tick here would record nothing and prove nothing. It is a
+          // development and demo posture, not a production one; a deployment
+          // that needs the agreement accepted configures AUTH_ACCOUNTS and
+          // gets the gate on the credentialed form below. The same reasoning
+          // covers the workspace entry's guest activation in
+          // WorkspaceWelcome.handlePrimaryAction. Documented in
+          // docs/ui_templates_example/README.md.
           activateLoginIdentityFromToken(status.access_token)
           login(status.access_token, true, status.core_version, status.api_version, status.webui_title || null, status.webui_description || null)
           if (status.message) {
@@ -101,8 +156,13 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
     }
   }, [isAuthenticated, login, navigate, autoActivateGuest])
 
-  // Don't render anything while checking auth
-  if (checkingAuth) {
+  // Don't render anything while checking auth, or before the customization
+  // response settles. The second wait is what keeps the consent gate honest:
+  // the flag that decides whether signing in requires agreement is not known
+  // until then, so a form rendered earlier would be submittable ungated on a
+  // deployment that requires the agreement. Both requests are in flight
+  // together, so on a reachable server this is the same single wait as before.
+  if (checkingAuth || content.loading) {
     return null
   }
 
@@ -110,6 +170,14 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
     e.preventDefault()
     if (!username || !password) {
       toast.error(t('login.errorEmptyFields'))
+      return
+    }
+    // The disabled button is the visible half of the gate; this is the half
+    // that actually holds. A form submits on Enter regardless of its submit
+    // button's state, so without this check the keyboard path would bypass
+    // the agreement entirely.
+    if (consentBlocked) {
+      toast.error(t('login.errorConsentRequired'))
       return
     }
 
@@ -164,7 +232,7 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
       // chrome in 100vh, which can push the form under the toolbar; dvh
       // tracks the actually visible viewport, and min- lets small screens
       // scroll instead of clipping.
-      className="flex min-h-dvh w-screen items-center justify-center bg-gradient-to-br from-emerald-50 to-teal-100 dark:from-gray-900 dark:to-gray-800"
+      className="flex min-h-dvh w-full items-center justify-center bg-gradient-to-br from-emerald-50 to-teal-100 dark:from-gray-900 dark:to-gray-800"
       style={{
         padding:
           'calc(env(safe-area-inset-top) + 1rem) calc(env(safe-area-inset-right) + 1rem) calc(env(safe-area-inset-bottom) + 1rem) calc(env(safe-area-inset-left) + 1rem)'
@@ -195,6 +263,13 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
           </div>
         </CardHeader>
         <CardContent className="px-8 pb-8">
+          {content.loginMarkdown && (
+            <CustomizedMarkdown
+              content={content.loginMarkdown}
+              dir={content.direction}
+              className="mb-6 text-sm"
+            />
+          )}
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="flex items-center gap-4">
               <label htmlFor="username-input" className="text-sm font-medium w-16 shrink-0">
@@ -206,7 +281,7 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 required
-                className="h-11 flex-1"
+                className="h-11 min-w-0 flex-1"
               />
             </div>
             <div className="flex items-center gap-4">
@@ -220,19 +295,76 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
-                className="h-11 flex-1"
+                className="h-11 min-w-0 flex-1"
               />
             </div>
+            {showConsent && (
+              <div className="flex items-start gap-2" dir={content.direction}>
+                <Checkbox
+                  id="login-consent"
+                  checked={consentAgreed}
+                  onCheckedChange={(checked) =>
+                    setConsentTick({
+                      document: content.agreementsMarkdown,
+                      agreed: checked === true
+                    })
+                  }
+                  // The visible text is split around the document link, so the
+                  // control's accessible name is spelled out here in full
+                  // rather than assembled from the label fragments.
+                  aria-label={consentLabelText}
+                  className="mt-0.5"
+                />
+                <span className="text-muted-foreground text-sm leading-5">
+                  {/* Two labels around the link, never one wrapping it: a
+                      <label> that contained the button would toggle the
+                      checkbox on every click meant to OPEN the document. */}
+                  {consentLabelParts.before && (
+                    <label htmlFor="login-consent" className="cursor-pointer">
+                      {consentLabelParts.before}
+                    </label>
+                  )}
+                  <button
+                    type="button"
+                    className="text-primary underline underline-offset-2 hover:opacity-80"
+                    onClick={() => setAgreementsOpen(true)}
+                  >
+                    {consentDocuments}
+                  </button>
+                  {consentLabelParts.after && (
+                    <label htmlFor="login-consent" className="cursor-pointer">
+                      {consentLabelParts.after}
+                    </label>
+                  )}
+                </span>
+              </div>
+            )}
             <Button
               type="submit"
               className="w-full h-11 text-base font-medium mt-2"
-              disabled={loading}
+              disabled={loading || consentBlocked}
             >
               {loading ? t('login.loggingIn') : t('login.loginButton')}
             </Button>
           </form>
         </CardContent>
       </Card>
+      {/* Rendered only where the gate exists, so a deployment without an
+          agreement document has no dialog to open. */}
+      {showConsent && content.agreementsMarkdown && (
+        <Dialog open={agreementsOpen} onOpenChange={setAgreementsOpen}>
+          <DialogContent className="max-h-[85vh] max-w-2xl" dir={content.direction}>
+            <DialogHeader>
+              <DialogTitle>{consentDocuments}</DialogTitle>
+            </DialogHeader>
+            <ScrollArea className="max-h-[60vh] pr-4">
+              {/* No text-sm here: this is a document to READ, not a form
+                  caption, so it keeps the prose tier's own sizing. */}
+              <CustomizedMarkdown content={content.agreementsMarkdown} />
+            </ScrollArea>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   )
 }

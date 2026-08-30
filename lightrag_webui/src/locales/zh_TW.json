@@ -32,7 +32,10 @@
     "errorEmptyFields": "請輸入您的帳號和密碼",
     "errorInvalidCredentials": "登入失敗，請檢查帳號和密碼",
     "authDisabled": "認證已停用，使用免登入模式",
-    "guestMode": "免登入"
+    "guestMode": "免登入",
+    "consentLabel": "同意{{documents}}",
+    "consentDocuments": "《使用者隱私協議》和《模型服務協議》",
+    "errorConsentRequired": "請先閱讀並同意相關協議後再登入"
   },
   "common": {
     "cancel": "取消",
@@ -126,6 +129,9 @@
       "pipelineStatusTooltip": "查看文件處理管線狀態",
       "uploadedTitle": "已上傳文件",
       "uploadedDescription": "已上傳文件清單及其狀態",
+      "loading": "正在載入文件...",
+      "loadErrorTitle": "無法載入文件",
+      "retry": "重試",
       "emptyTitle": "無文件",
       "emptyDescription": "尚未上傳任何文件",
       "columns": {
@@ -404,6 +410,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "内容由AI生成，請注意辨別",
       "copyTooltip": "複製到剪貼簿",
       "copyError": "複製文字到剪貼簿失敗",
       "copyEmpty": "沒有內容可複製",

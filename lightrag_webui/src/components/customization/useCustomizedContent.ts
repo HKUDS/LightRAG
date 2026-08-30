@@ -1,13 +1,18 @@
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSettingsStore } from '@/stores/settings'
-import { needsCustomizationLoad, useCustomizationStore } from '@/stores/customization'
+import {
+  isConsentVerdictPending,
+  needsCustomizationLoad,
+  useCustomizationStore
+} from '@/stores/customization'
 import { resolveUiLanguage } from '@/lib/browserLanguage'
 import defaultLogoUrl from '@/assets/logo.svg'
 
 /**
- * Resolves the branding content the workspace entry shows (welcome page and
- * query empty state), following the atomicity rule of the workspace-entry
+ * Resolves the branding content the WebUI shows (welcome page, query empty
+ * state, and the login page's blurb plus consent gate), following the
+ * atomicity rule of the workspace-entry
  * PRD §8.3: a locale's representation comes ENTIRELY from the active bundle,
  * or ENTIRELY from the frontend defaults (no bundle → `customized: false`,
  * or a hard first-load failure) — never a field-by-field mix.
@@ -28,6 +33,36 @@ export interface CustomizedContent {
   queryEmptyMarkdown: string
   brandTitle: string
   brandDescription: string | null
+  /** Login-page blurb; empty when the bundle declares none (or no bundle). */
+  loginMarkdown: string
+  /** The single user-agreement document, or null when none is declared. */
+  agreementsMarkdown: string | null
+  /**
+   * Whether the login page must gate submission behind the consent checkbox.
+   * Comes STRAIGHT from the server's `consent_required` — this hook never
+   * re-derives it from the two markdown fields, so one authority decides
+   * whether a login-blocking control exists. Only meaningful once
+   * `consentPending` is false.
+   */
+  consentRequired: boolean
+  /**
+   * Whether the verdict for the locale currently TARGETED is still unknown.
+   *
+   * Deliberately not `loading`: on a language switch the store keeps the
+   * previous snapshot on screen (status stays 'ready') so the welcome page
+   * does not flash a spinner — but that snapshot is the OLD locale's, and
+   * its `consent_required` does not carry. Switching from an ungated locale
+   * to a gated one would otherwise leave the form submittable for the
+   * duration of the request. Consent is the one field that must distrust a
+   * stale-but-displayed snapshot; branding text merely looks briefly out of
+   * date, which is the intended trade.
+   *
+   * Bounded, so it can never wedge a deployment shut: it clears once the
+   * store stops retrying (`MAX_CUSTOMIZATION_ATTEMPTS`), after which the
+   * last known verdict stands — fail-open for the same reason the
+   * default-content branch below is.
+   */
+  consentPending: boolean
 }
 
 export function useCustomizedContent(): CustomizedContent {
@@ -64,6 +99,13 @@ export function useCustomizedContent(): CustomizedContent {
     }
   }, [locale, targetLocale, loadedLocale, failedAttempts])
 
+  const consentPending = isConsentVerdictPending(
+    status,
+    locale,
+    loadedLocale,
+    failedAttempts
+  )
+
   if (status === 'loading') {
     return {
       loading: true,
@@ -73,7 +115,11 @@ export function useCustomizedContent(): CustomizedContent {
       welcomeMarkdown: '',
       queryEmptyMarkdown: '',
       brandTitle: '',
-      brandDescription: null
+      brandDescription: null,
+      loginMarkdown: '',
+      agreementsMarkdown: null,
+      consentRequired: false,
+      consentPending: true
     }
   }
 
@@ -88,7 +134,11 @@ export function useCustomizedContent(): CustomizedContent {
       welcomeMarkdown: snapshot.welcome?.content ?? '',
       queryEmptyMarkdown: snapshot.query_empty?.content ?? '',
       brandTitle: snapshot.brand.title || 'LightRAG',
-      brandDescription: snapshot.brand.description ?? null
+      brandDescription: snapshot.brand.description ?? null,
+      loginMarkdown: snapshot.login?.content ?? '',
+      agreementsMarkdown: snapshot.agreements?.content ?? null,
+      consentRequired: snapshot.consent_required === true,
+      consentPending
     }
   }
 
@@ -102,6 +152,14 @@ export function useCustomizedContent(): CustomizedContent {
     welcomeMarkdown: t('workspace.welcome.defaultMarkdown'),
     queryEmptyMarkdown: t('workspace.queryEmpty.defaultMarkdown'),
     brandTitle: snapshot?.brand?.title || 'LightRAG',
-    brandDescription: snapshot?.brand?.description ?? null
+    brandDescription: snapshot?.brand?.description ?? null,
+    // No bundle, or a hard failure: no deployment-specific agreement text
+    // exists to consent TO, so the gate stays off. Fail-open is the only
+    // correct end state here — a login page nobody can get past because the
+    // branding endpoint is unreachable would lock out the deployment.
+    loginMarkdown: '',
+    agreementsMarkdown: null,
+    consentRequired: false,
+    consentPending
   }
 }

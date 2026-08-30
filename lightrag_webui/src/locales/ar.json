@@ -32,7 +32,10 @@
     "errorEmptyFields": "الرجاء إدخال اسم المستخدم وكلمة المرور",
     "errorInvalidCredentials": "فشل تسجيل الدخول، يرجى التحقق من اسم المستخدم وكلمة المرور",
     "authDisabled": "تم تعطيل المصادقة. استخدام وضع بدون تسجيل دخول.",
-    "guestMode": "وضع بدون تسجيل دخول"
+    "guestMode": "وضع بدون تسجيل دخول",
+    "consentLabel": "أوافق على {{documents}}",
+    "consentDocuments": "سياسة الخصوصية واتفاقية خدمة النموذج",
+    "errorConsentRequired": "يرجى قراءة الاتفاقيات والموافقة عليها قبل تسجيل الدخول"
   },
   "common": {
     "cancel": "إلغاء",
@@ -126,6 +129,9 @@
       "pipelineStatusTooltip": "عرض حالة خط معالجة المستندات",
       "uploadedTitle": "المستندات المرفوعة",
       "uploadedDescription": "قائمة المستندات المرفوعة وحالاتها.",
+      "loading": "جارٍ تحميل المستندات...",
+      "loadErrorTitle": "تعذر تحميل المستندات",
+      "retry": "إعادة المحاولة",
       "emptyTitle": "لا توجد مستندات",
       "emptyDescription": "لا توجد مستندات مرفوعة بعد.",
       "columns": {
@@ -404,6 +410,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "محتوى من إنتاج الذكاء الاصطناعي — يُرجى التحقق منه.",
       "copyTooltip": "نسخ إلى الحافظة",
       "copyError": "فشل نسخ النص إلى الحافظة",
       "copyEmpty": "لا يوجد محتوى للنسخ",

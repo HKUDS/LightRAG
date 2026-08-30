@@ -64,6 +64,7 @@ import {
 } from '@/features/documentRefreshCircuitBreaker'
 import { classifyDocumentRefreshError } from '@/features/documentRefreshErrors'
 import { createRefreshQueue } from '@/features/documentRefreshQueue'
+import usePageRestoreGeneration from '@/hooks/usePageRestoreGeneration'
 
 type StatusDisplayConfig = {
   labelKey: string
@@ -396,22 +397,17 @@ export default function DocumentManager() {
   // Track component mount status
   const isMountedRef = useRef(true);
 
-  // Set up mount/unmount status tracking. Pending throttle/probe timers are NOT
+  const pageRestoreGeneration = usePageRestoreGeneration()
+
+  // Set up React mount/unmount status tracking. Pending throttle/probe timers are NOT
   // explicitly cleared on unmount — every timer callback checks isMountedRef
-  // before doing any work, so a stray fire is a no-op.
+  // before doing any work, so a stray fire is a no-op. Do not set this false
+  // from beforeunload: BFCache restores the same mounted React tree.
   useEffect(() => {
     isMountedRef.current = true;
 
-    // Handle page reload/unload
-    const handleBeforeUnload = () => {
-      isMountedRef.current = false;
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-
     return () => {
       isMountedRef.current = false;
-      window.removeEventListener('beforeunload', handleBeforeUnload);
       // The Toaster is mounted above the router, so the outage notice outlives
       // this component: without this it would still be on screen after a
       // logout, with nothing left that could ever dismiss it.
@@ -452,6 +448,9 @@ export default function DocumentManager() {
     statusCountsRef.current = statusCounts
   }, [statusCounts])
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [hasLoadedDocuments, setHasLoadedDocuments] = useState(false)
+  const [initialLoadError, setInitialLoadError] = useState<string | null>(null)
+  const hasLoadedDocumentsRef = useRef(false)
 
   // Sort state
   const [sortField, setSortField] = useState<SortField>('updated_at')
@@ -778,6 +777,12 @@ export default function DocumentManager() {
     setDocs(response.pagination.total_count > 0 ? buildLegacyDocs(response.documents) : null);
   }, []);
 
+  const markDocumentsLoaded = useCallback(() => {
+    hasLoadedDocumentsRef.current = true
+    setHasLoadedDocuments(true)
+    setInitialLoadError(null)
+  }, [])
+
 
   // Circuit breaker utility functions. State lives in a ref, not useState: the
   // breaker is read from timer callbacks only, and a state write would change
@@ -851,6 +856,9 @@ export default function DocumentManager() {
     try {
       if (!isMountedRef.current) return;
 
+      if (!hasLoadedDocumentsRef.current) {
+        setInitialLoadError(null)
+      }
       setIsRefreshing(true);
 
       const { query, requestVersion } = refreshRequest
@@ -900,6 +908,7 @@ export default function DocumentManager() {
           } else {
             setDocs(null);
           }
+          markDocumentsLoaded()
         }
       } else {
         const { customTimeout } = refreshRequest;
@@ -924,6 +933,7 @@ export default function DocumentManager() {
             // changes, so this call is the only thing moving pagination.page
             // to the corrected page.
             updateComponentState(lastPageResponse, lastPage);
+            markDocumentsLoaded()
             return;
           }
         }
@@ -934,6 +944,7 @@ export default function DocumentManager() {
             : { ...prev, [query.statusFilter]: pageToFetch }
         ));
         updateComponentState(response, pageToFetch);
+        markDocumentsLoaded()
       }
 
     } catch (err) {
@@ -989,6 +1000,9 @@ export default function DocumentManager() {
             duration: errorClassification.shouldRetry && clearable ? Infinity : undefined
           });
         }
+        if (!hasLoadedDocumentsRef.current) {
+          setInitialLoadError(errorMessage(err))
+        }
       }
     } finally {
       // The probe slot is held for the lifetime of ONE real request, so every
@@ -1011,7 +1025,8 @@ export default function DocumentManager() {
     recordSuccess,
     settleProbe,
     handlePageSizeChange,
-    buildDocumentsRequest
+    buildDocumentsRequest,
+    markDocumentsLoaded
   ]);
 
   // One queue for the component's lifetime: it owns the in-flight/pending
@@ -1328,7 +1343,7 @@ export default function DocumentManager() {
     return () => {
       clearPollingInterval();
     }
-  }, [health, t, currentTab, statusCounts, pipelineActive, startPollingInterval, clearPollingInterval])
+  }, [health, t, currentTab, statusCounts, pipelineActive, pageRestoreGeneration, startPollingInterval, clearPollingInterval])
 
   // Monitor docs changes to check status counts and trigger health check if needed
   useEffect(() => {
@@ -1474,6 +1489,7 @@ export default function DocumentManager() {
     statusFilter,
     sortField,
     sortDirection,
+    pageRestoreGeneration,
     fetchPaginatedDocuments
   ]);
 
@@ -1674,7 +1690,31 @@ export default function DocumentManager() {
           </CardHeader>
 
           <CardContent className="min-h-0 flex-1 relative p-0" ref={cardContentRef}>
-            {!docs && (
+            {!hasLoadedDocuments && initialLoadError === null && (
+              <div
+                className="absolute inset-0 flex min-h-0 items-center justify-center"
+                role="status"
+                aria-label={t('documentPanel.documentManager.loading')}
+              >
+                <RefreshCwIcon className="text-muted-foreground size-8 animate-spin" />
+              </div>
+            )}
+            {!hasLoadedDocuments && initialLoadError !== null && (
+              <div className="absolute inset-0 min-h-0 p-0">
+                <EmptyCard
+                  title={t('documentPanel.documentManager.loadErrorTitle')}
+                  description={initialLoadError}
+                  icon={AlertTriangle}
+                  action={(
+                    <Button variant="outline" onClick={handleManualRefresh} disabled={isRefreshing}>
+                      <RotateCcwIcon className={cn('h-4 w-4', isRefreshing && 'animate-spin')} />
+                      {t('documentPanel.documentManager.retry')}
+                    </Button>
+                  )}
+                />
+              </div>
+            )}
+            {hasLoadedDocuments && !docs && (
               <div className="absolute inset-0 min-h-0 p-0">
                 <EmptyCard
                   title={t('documentPanel.documentManager.emptyTitle')}
@@ -1682,7 +1722,7 @@ export default function DocumentManager() {
                 />
               </div>
             )}
-            {docs && (
+            {hasLoadedDocuments && docs && (
               <div className="absolute inset-0 flex min-h-0 flex-col p-0">
                 <div className="absolute inset-[-1px] flex flex-col p-0 border rounded-md border-gray-200 dark:border-gray-700 overflow-hidden">
                   <TooltipProvider>

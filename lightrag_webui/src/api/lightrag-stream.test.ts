@@ -231,6 +231,53 @@ describe('queryTextStream — normal path', () => {
     expect(errors).toEqual(['Something went wrong'])
   })
 
+  test('reports llm_generated before the content it describes', async () => {
+    // A canned no-context reply comes back as ONE complete line carrying both
+    // the text and the verdict. The consumer decides how to label that text,
+    // so the flag has to reach it BEFORE the chunk does.
+    const events: string[] = []
+
+    installFetchMock(() =>
+      makeNdjsonResponse([
+        '{"response": "Sorry, I am not able to answer.[no-context]", "llm_generated": false}',
+      ])
+    )
+
+    await apiModule.queryTextStream(
+      makeQueryRequest(),
+      () => events.push('chunk'),
+      () => {},
+      undefined,
+      undefined,
+      undefined,
+      (value) => events.push(`llm_generated:${value}`)
+    )
+
+    expect(events).toEqual(['llm_generated:false', 'chunk'])
+  })
+
+  test('streamed chunks carry no verdict and leave the caller\'s default alone', async () => {
+    const reported: boolean[] = []
+    const chunks: string[] = []
+
+    installFetchMock(() =>
+      makeNdjsonResponse(['{"response": "Hello"}', '{"response": " world"}'])
+    )
+
+    await apiModule.queryTextStream(
+      makeQueryRequest(),
+      (c) => chunks.push(c),
+      () => {},
+      undefined,
+      undefined,
+      undefined,
+      (value) => reported.push(value)
+    )
+
+    expect(chunks).toEqual(['Hello', ' world'])
+    expect(reported).toEqual([])
+  })
+
   test('skips malformed JSON lines', async () => {
     const chunks: string[] = []
 

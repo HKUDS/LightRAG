@@ -32,7 +32,10 @@
     "errorEmptyFields": "사용자 이름과 비밀번호를 입력하세요",
     "errorInvalidCredentials": "로그인 실패, 사용자 이름과 비밀번호를 확인하세요",
     "authDisabled": "인증이 비활성화되었습니다. 게스트 모드를 사용합니다.",
-    "guestMode": "게스트 모드"
+    "guestMode": "게스트 모드",
+    "consentLabel": "{{documents}}에 동의합니다",
+    "consentDocuments": "「개인정보 처리방침」 및 「모델 서비스 이용약관」",
+    "errorConsentRequired": "로그인하기 전에 약관을 읽고 동의해 주세요"
   },
   "common": {
     "cancel": "취소",
@@ -126,6 +129,9 @@
       "pipelineStatusTooltip": "문서 처리 파이프라인 상태 보기",
       "uploadedTitle": "업로드된 문서",
       "uploadedDescription": "업로드된 문서 목록 및 상태.",
+      "loading": "문서를 불러오는 중...",
+      "loadErrorTitle": "문서를 불러올 수 없습니다",
+      "retry": "다시 시도",
       "emptyTitle": "문서 없음",
       "emptyDescription": "아직 업로드된 문서가 없습니다.",
       "columns": {
@@ -404,6 +410,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "AI가 생성한 내용입니다. 내용을 확인해 주세요.",
       "copyTooltip": "클립보드에 복사",
       "copyError": "텍스트를 클립보드에 복사 실패",
       "copyEmpty": "복사할 내용이 없습니다",

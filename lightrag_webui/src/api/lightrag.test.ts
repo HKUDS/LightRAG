@@ -305,3 +305,64 @@ describe('response interceptor', () => {
     expect(error.message).toContain('/documents/paginated')
   })
 })
+
+describe('ai content notice flag', () => {
+  const makeResponse = (data: unknown) => async (config: any) => ({
+    data,
+    status: 200,
+    statusText: 'OK',
+    headers: { 'content-type': 'application/json' },
+    config
+  })
+
+  afterEach(() => {
+    apiModule.__setAxiosAdapterForTests(undefined)
+  })
+
+  test('/auth-status carries the deployment flag into the store', async () => {
+    const { useAiContentNoticeStore } = await import('@/stores/aiContentNotice')
+    useAiContentNoticeStore.setState({ enabled: false })
+
+    apiModule.__setAxiosAdapterForTests(
+      makeResponse({
+        auth_configured: false,
+        access_token: 'guest-token',
+        ai_content_notice_enabled: true
+      })
+    )
+
+    await apiModule.getAuthStatus()
+
+    expect(useAiContentNoticeStore.getState().enabled).toBe(true)
+  })
+
+  test('/login carries the deployment flag into the store', async () => {
+    const { useAiContentNoticeStore } = await import('@/stores/aiContentNotice')
+    useAiContentNoticeStore.setState({ enabled: false })
+
+    apiModule.__setAxiosAdapterForTests(
+      makeResponse({
+        access_token: 'user-token',
+        token_type: 'bearer',
+        ai_content_notice_enabled: true
+      })
+    )
+
+    await apiModule.loginToServer('user', 'password')
+
+    expect(useAiContentNoticeStore.getState().enabled).toBe(true)
+  })
+
+  test('a server that omits the field does not turn an enabled notice off', async () => {
+    const { useAiContentNoticeStore } = await import('@/stores/aiContentNotice')
+    useAiContentNoticeStore.setState({ enabled: true })
+
+    apiModule.__setAxiosAdapterForTests(
+      makeResponse({ auth_configured: false, access_token: 'guest-token' })
+    )
+
+    await apiModule.getAuthStatus()
+
+    expect(useAiContentNoticeStore.getState().enabled).toBe(true)
+  })
+})

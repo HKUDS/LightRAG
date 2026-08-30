@@ -256,6 +256,16 @@ class QueryResponse(BaseModel):
         default=None,
         description="Total server-side processing time in seconds (retrieval + LLM generation)",
     )
+    llm_generated: bool = Field(
+        default=True,
+        description=(
+            "Whether the answering LLM actually wrote this response. False when "
+            "the query returned text produced without calling it: the canned "
+            "no-context reply, or the only_need_context / only_need_prompt debug "
+            "output. Clients that label machine-written text cannot recover this "
+            "from the response text alone."
+        ),
+    )
 
 
 class QueryDataResponse(BaseModel):
@@ -303,6 +313,16 @@ class StreamChunkResponse(BaseModel):
     response_time: Optional[float] = Field(
         default=None,
         description="Total server-side processing time in seconds (final metadata line when include_progress=True)",
+    )
+    llm_generated: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Whether the answering LLM wrote the content on this line. Carried "
+            "only on a complete (non-streamed) response line — the canned "
+            "no-context reply and the only_need_context / only_need_prompt debug "
+            "output are the cases that report False. Streamed response chunks "
+            "always come from the LLM and carry no flag."
+        ),
     )
 
 
@@ -538,8 +558,13 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
             # Get the non-streaming response content
             response_content = llm_response.get("content", "")
+            # Whether the answering LLM wrote it. A missing flag means a result
+            # shape that predates it, which only the LLM paths produce.
+            llm_generated = bool(llm_response.get("llm_generated", True))
             if not response_content:
                 response_content = "No relevant context found for the query."
+                # Substituted placeholder: nothing was generated.
+                llm_generated = False
 
             # Enrich references with chunk content if requested
             if request.include_references and request.include_chunk_content:
@@ -570,12 +595,14 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     response=response_content,
                     references=references,
                     response_time=response_time,
+                    llm_generated=llm_generated,
                 )
             else:
                 return QueryResponse(
                     response=response_content,
                     references=None,
                     response_time=response_time,
+                    llm_generated=llm_generated,
                 )
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}", exc_info=True)
@@ -638,10 +665,20 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             else:
                 # Non-streaming: complete response in one message
                 response_content = llm_response.get("content", "")
+                llm_generated = bool(llm_response.get("llm_generated", True))
                 if not response_content:
                     response_content = "No relevant context found for the query."
+                    llm_generated = False
 
-                complete_response = {"response": response_content}
+                # The flag rides this line rather than a separate one: it
+                # describes THIS content, and a client that ignores the key
+                # still reads the response exactly as before. Streamed chunks
+                # (the branch above) always come from the LLM, so they need no
+                # flag.
+                complete_response: dict[str, Any] = {
+                    "response": response_content,
+                    "llm_generated": llm_generated,
+                }
                 if include_references:
                     complete_response["references"] = references
 

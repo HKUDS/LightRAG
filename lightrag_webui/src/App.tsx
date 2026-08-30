@@ -26,6 +26,7 @@ import RetrievalView from '@/features/RetrievalView'
 
 import { Tabs, TabsContent } from '@/components/ui/Tabs'
 import ErrorBoundary from '@/components/ErrorBoundary'
+import usePageRestoreGeneration from '@/hooks/usePageRestoreGeneration'
 
 function App() {
   const message = useBackendState.use.message()
@@ -38,6 +39,7 @@ function App() {
   const identityEpoch = useIdentityEpochStore((s) => s.epoch)
   const versionCheckRef = useRef(false); // Prevent duplicate calls in Vite dev mode
   const healthCheckInitializedRef = useRef(false); // Prevent duplicate health checks in Vite dev mode
+  const pageRestoreGeneration = usePageRestoreGeneration()
 
   const handleApiKeyAlertOpenChange = useCallback((open: boolean) => {
     setApiKeyAlertOpen(open)
@@ -49,20 +51,14 @@ function App() {
   // Track component mount status with useRef
   const isMountedRef = useRef(true);
 
-  // Set up mount/unmount status tracking
+  // Set up React mount/unmount status tracking. Do not treat beforeunload as
+  // an unmount: a BFCache navigation fires it without destroying this React
+  // tree, and the restored page would otherwise keep this ref false forever.
   useEffect(() => {
     isMountedRef.current = true;
 
-    // Handle page reload/unload
-    const handleBeforeUnload = () => {
-      isMountedRef.current = false;
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-
     return () => {
       isMountedRef.current = false;
-      window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, []);
 
@@ -108,7 +104,7 @@ function App() {
     return () => {
       useBackendState.getState().clearHealthCheckTimer();
     };
-  }, [enableHealthCheck, apiKeyAlertOpen]);
+  }, [enableHealthCheck, apiKeyAlertOpen, pageRestoreGeneration]);
 
   // Version check - independent and executed only once
   useEffect(() => {
