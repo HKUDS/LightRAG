@@ -50,6 +50,13 @@ def _message(text: str) -> SimpleNamespace:
     )
 
 
+def _refusal(text: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        type="message",
+        content=[SimpleNamespace(type="refusal", refusal=text)],
+    )
+
+
 def _reasoning(text: str) -> SimpleNamespace:
     return SimpleNamespace(type="reasoning", summary=[SimpleNamespace(text=text)])
 
@@ -179,6 +186,47 @@ async def test_response_format_becomes_text_format(monkeypatch):
     call = client.responses.calls[0]
     assert call["text"] == {"format": {"type": "json_object"}}
     assert "response_format" not in call
+
+
+async def test_json_schema_response_format_is_flattened_for_text_format(monkeypatch):
+    """Chat Completions nests the schema under `json_schema`; Responses wants
+    its keys directly on the format object and 400s on the nested form."""
+    client = _patch_client(monkeypatch, _response(output=[_message('{"a":1}')]))
+    schema = {"type": "object", "properties": {"a": {"type": "integer"}}}
+
+    await openai_responses_complete_if_cache(
+        "gpt-5.6",
+        "hi",
+        response_format={
+            "type": "json_schema",
+            "json_schema": {"name": "answer", "schema": schema, "strict": True},
+        },
+    )
+
+    assert client.responses.calls[0]["text"] == {
+        "format": {
+            "type": "json_schema",
+            "name": "answer",
+            "schema": schema,
+            "strict": True,
+        }
+    }
+
+
+async def test_flat_json_schema_response_format_is_forwarded_untouched(monkeypatch):
+    """A caller who already wrote the Responses spelling must not be reshaped."""
+    client = _patch_client(monkeypatch, _response(output=[_message('{"a":1}')]))
+    text_format = {
+        "type": "json_schema",
+        "name": "answer",
+        "schema": {"type": "object"},
+    }
+
+    await openai_responses_complete_if_cache(
+        "gpt-5.6", "hi", response_format=dict(text_format)
+    )
+
+    assert client.responses.calls[0]["text"] == {"format": text_format}
 
 
 async def test_unsupported_chat_completions_params_are_dropped(monkeypatch):
@@ -482,18 +530,84 @@ async def test_streaming_empty_truncation_raises_non_retryable(monkeypatch):
         await _collect(result)
 
 
-async def test_streaming_incomplete_without_budget_reason_does_not_raise(monkeypatch):
-    """`response.incomplete` also covers non-budget stops (e.g. content filter),
-    which are not token-limit truncation and must not take the raise path."""
+def _incomplete(reason: str, usage: Any = None) -> SimpleNamespace:
+    return SimpleNamespace(
+        type="response.incomplete",
+        response=SimpleNamespace(
+            status="incomplete",
+            incomplete_details=SimpleNamespace(reason=reason),
+            usage=usage,
+        ),
+    )
+
+
+async def test_streaming_non_budget_incomplete_terminal_raises(monkeypatch):
+    """`response.incomplete` also covers stops that are not token-limit
+    truncation. Without a branch of its own, a content-filtered stream with no
+    text ends successfully and empty."""
+    _patch_client(
+        monkeypatch, _FakeStream([_incomplete("content_filter", _usage(3, 0))])
+    )
+
+    result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
+
+    with pytest.raises(InvalidResponseError) as excinfo:
+        await _collect(result)
+    assert "content_filter" in str(excinfo.value)
+
+
+async def test_streaming_non_budget_incomplete_is_not_masked_by_partial_text(
+    monkeypatch,
+):
+    """Text yielded before a stopped terminal is the tail of a generation that
+    did not finish, so it must not be presented as a complete answer."""
     stream = _FakeStream(
         [
+            _delta("response.output_text.delta", "par"),
+            _incomplete("content_filter"),
+        ]
+    )
+    _patch_client(monkeypatch, stream)
+
+    result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
+
+    chunks: list[str] = []
+    with pytest.raises(InvalidResponseError):
+        async for chunk in result:
+            chunks.append(chunk)
+    assert "".join(chunks) == "par"
+
+
+async def test_streaming_non_budget_incomplete_still_counts_usage(monkeypatch):
+    """A stopped generation spent its budget like any other attempt."""
+    _patch_client(
+        monkeypatch, _FakeStream([_incomplete("content_filter", _usage(4, 1))])
+    )
+    recorded: list[dict[str, int]] = []
+
+    result = await openai_responses_complete_if_cache(
+        "gpt-5.6",
+        "hi",
+        stream=True,
+        token_tracker=SimpleNamespace(add_usage=recorded.append),
+    )
+
+    with pytest.raises(InvalidResponseError):
+        await _collect(result)
+    # The attempt spent its budget whether or not the output was usable.
+    assert recorded == [{"prompt_tokens": 4, "completion_tokens": 1, "total_tokens": 5}]
+
+
+async def test_streaming_refusal_deltas_raise_with_the_refusal_text(monkeypatch):
+    """A refusal streams on its own event type and can still end with
+    `response.completed`, so an unhandled one ends the iterator empty."""
+    stream = _FakeStream(
+        [
+            _delta("response.refusal.delta", "I cannot "),
+            _delta("response.refusal.delta", "help with that"),
             SimpleNamespace(
-                type="response.incomplete",
-                response=SimpleNamespace(
-                    status="incomplete",
-                    incomplete_details=SimpleNamespace(reason="content_filter"),
-                    usage=_usage(3, 0),
-                ),
+                type="response.completed",
+                response=SimpleNamespace(status="completed", usage=_usage(6, 4)),
             ),
         ]
     )
@@ -501,7 +615,132 @@ async def test_streaming_incomplete_without_budget_reason_does_not_raise(monkeyp
 
     result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
 
-    assert await _collect(result) == ""
+    with pytest.raises(InvalidResponseError) as excinfo:
+        await _collect(result)
+    assert "I cannot help with that" in str(excinfo.value)
+
+
+async def test_streaming_refusal_done_event_is_used_when_no_deltas_arrived(
+    monkeypatch,
+):
+    """`response.refusal.done` carries the whole refusal, so it is the fallback
+    rather than an addition - using both would duplicate the text."""
+    stream = _FakeStream(
+        [
+            SimpleNamespace(type="response.refusal.done", refusal="policy: no"),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed", usage=None),
+            ),
+        ]
+    )
+    _patch_client(monkeypatch, stream)
+
+    result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
+
+    with pytest.raises(InvalidResponseError) as excinfo:
+        await _collect(result)
+    assert str(excinfo.value).count("policy: no") == 1
+
+
+async def test_streaming_empty_refusal_delta_does_not_disarm_the_done_fallback(
+    monkeypatch,
+):
+    """An empty delta is still a refusal, but it is not the refusal *text*.
+    Letting it stand in for the text would suppress the raise and skip the
+    `.done` event that carries the actual reason."""
+    stream = _FakeStream(
+        [
+            _delta("response.refusal.delta", ""),
+            SimpleNamespace(type="response.refusal.done", refusal="policy: no"),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed", usage=None),
+            ),
+        ]
+    )
+    _patch_client(monkeypatch, stream)
+
+    result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
+
+    with pytest.raises(InvalidResponseError) as excinfo:
+        await _collect(result)
+    assert "policy: no" in str(excinfo.value)
+
+
+async def test_streaming_textless_refusal_still_raises(monkeypatch):
+    """A refusal event with no text anywhere is still a refusal; ending the
+    iterator on it would report the refused turn as an empty answer."""
+    stream = _FakeStream(
+        [
+            _delta("response.refusal.delta", ""),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed", usage=None),
+            ),
+        ]
+    )
+    _patch_client(monkeypatch, stream)
+
+    result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
+
+    with pytest.raises(InvalidResponseError):
+        await _collect(result)
+
+
+async def test_streaming_refusal_falls_back_to_the_terminal_content_parts(monkeypatch):
+    """Sibling of the `_extract_text` fallback: a server that populates the
+    terminal payload without emitting the refusal events must not end the
+    iterator empty and successful."""
+    stream = _FakeStream(
+        [
+            SimpleNamespace(
+                type="response.completed",
+                response=_response(output=[_refusal("I will not answer that")]),
+            ),
+        ]
+    )
+    _patch_client(monkeypatch, stream)
+
+    result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
+
+    with pytest.raises(InvalidResponseError) as excinfo:
+        await _collect(result)
+    assert "I will not answer that" in str(excinfo.value)
+
+
+async def test_streaming_unreadable_incomplete_terminal_raises(monkeypatch):
+    """A terminal this driver cannot read reports "unknown" and takes the
+    stopped-generation path: incomplete is not complete, and guessing which
+    reason it was would be worse."""
+    stream = _FakeStream([SimpleNamespace(type="response.incomplete", response=None)])
+    _patch_client(monkeypatch, stream)
+
+    result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
+
+    with pytest.raises(InvalidResponseError) as excinfo:
+        await _collect(result)
+    assert "unknown" in str(excinfo.value)
+
+
+async def test_streaming_refusal_done_does_not_duplicate_the_deltas(monkeypatch):
+    stream = _FakeStream(
+        [
+            _delta("response.refusal.delta", "no can do"),
+            SimpleNamespace(type="response.refusal.done", refusal="no can do"),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed", usage=None),
+            ),
+        ]
+    )
+    _patch_client(monkeypatch, stream)
+
+    result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
+
+    with pytest.raises(InvalidResponseError) as excinfo:
+        await _collect(result)
+    assert str(excinfo.value).count("no can do") == 1
 
 
 async def test_streaming_reasoning_only_truncation_is_not_treated_as_empty(monkeypatch):
@@ -668,3 +907,51 @@ async def test_failed_status_counts_usage_before_raising(monkeypatch):
         counts == {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}
         for counts in recorded
     )
+
+
+async def test_refusal_content_part_raises_rather_than_reporting_empty_output(
+    monkeypatch,
+):
+    """The non-streaming sibling of the refusal events: a refused turn carries
+    `refusal` content parts, which the body walk skips, so the payload would
+    otherwise be diagnosed as "model produced no output"."""
+    payload = _response(output=[_refusal("I will not answer that")])
+
+    error = await _non_streaming_failure(monkeypatch, payload)
+
+    assert isinstance(error, InvalidResponseError)
+    assert "I will not answer that" in str(error)
+
+
+async def test_non_budget_incomplete_status_raises(monkeypatch):
+    """The non-streaming sibling of the stopped terminal: content on a payload
+    stopped by a content filter is the tail of a generation that did not
+    finish, so returning it would present it as a complete answer."""
+    payload = _response(
+        output=[_message("partial")],
+        status="incomplete",
+        incomplete_reason="content_filter",
+    )
+
+    error = await _non_streaming_failure(monkeypatch, payload)
+
+    assert isinstance(error, InvalidResponseError)
+    assert "content_filter" in str(error)
+
+
+async def test_budget_truncation_still_returns_its_partial_content(monkeypatch):
+    """The one incomplete reason that keeps its output: the model chose where
+    to stop within a limit the caller set."""
+    _patch_client(
+        monkeypatch,
+        _response(
+            output=[_message("partial")],
+            status="incomplete",
+            incomplete_reason="max_output_tokens",
+        ),
+    )
+
+    result = await openai_responses_complete_if_cache("gpt-5.6", "hi")
+
+    assert result == "partial"
+    assert is_truncated_response(result)

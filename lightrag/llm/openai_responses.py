@@ -26,6 +26,8 @@ Reasoning text       ``message.reasoning_content``   ``output[]`` items of type
                                                      ``reasoning``
 Truncation signal    ``finish_reason == "length"``   ``status == "incomplete"`` with
                                                      ``incomplete_details.reason``
+Refusal              ``message.refusal``             ``refusal`` content parts /
+                                                     ``response.refusal.*`` events
 Usage keys           ``prompt_tokens`` /             ``input_tokens`` /
                      ``completion_tokens``           ``output_tokens``
 Streaming unit       ``choices[].delta``             typed events
@@ -100,6 +102,31 @@ _UNSUPPORTED_KWARGS = (
 )
 
 
+def _normalize_text_format(response_format: dict[str, Any]) -> dict[str, Any]:
+    """Reshape a Chat Completions ``response_format`` into a Responses ``text.format``.
+
+    ``{"type": "json_object"}`` is spelled identically in both APIs. A json
+    schema is not: Chat Completions nests ``name`` / ``schema`` / ``strict``
+    under a ``json_schema`` key, while Responses expects them directly on the
+    format object. Forwarding the nested form unchanged is rejected with a 400,
+    so every schema-constrained request would fail on this binding.
+    """
+    if response_format.get("type") != "json_schema":
+        return response_format
+
+    json_schema = response_format.get("json_schema")
+    if not isinstance(json_schema, dict):
+        # Already flat -- i.e. the caller wrote the Responses spelling -- or a
+        # shape this driver does not recognise. Forward it rather than guess.
+        return response_format
+
+    flattened = {
+        key: value for key, value in response_format.items() if key != "json_schema"
+    }
+    flattened.update(json_schema)
+    return flattened
+
+
 def _translate_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     """Translate Chat Completions kwargs into Responses parameters.
 
@@ -127,14 +154,16 @@ def _translate_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
         elif reasoning is None:
             translated["reasoning"] = {"effort": reasoning_effort}
 
-    # Structured output: `response_format` becomes `text.format`.
+    # Structured output: `response_format` becomes `text.format`, after the
+    # json_schema payload is reshaped for this API.
     response_format = translated.pop("response_format", None)
     if isinstance(response_format, dict):
+        text_format = _normalize_text_format(response_format)
         text_param = translated.get("text")
         if isinstance(text_param, dict):
-            text_param.setdefault("format", response_format)
+            text_param.setdefault("format", text_format)
         elif text_param is None:
-            translated["text"] = {"format": response_format}
+            translated["text"] = {"format": text_format}
 
     for unsupported in _UNSUPPORTED_KWARGS:
         if unsupported in translated:
@@ -237,6 +266,32 @@ def _is_truncated(response: Any) -> bool:
         return False
     details = getattr(response, "incomplete_details", None)
     return getattr(details, "reason", None) == "max_output_tokens"
+
+
+def _incomplete_reason(terminal: Any) -> str:
+    """Why a Responses generation reported ``status: incomplete``."""
+    details = getattr(terminal, "incomplete_details", None)
+    reason = getattr(details, "reason", None)
+    return str(reason) if reason is not None else "unknown"
+
+
+def _extract_refusal(response: Any) -> str:
+    """Extract refusal text from a Responses payload.
+
+    A refused turn carries ``refusal`` content parts instead of ``output_text``
+    ones, so the body walk in :func:`_extract_text` sees nothing and the
+    payload would otherwise be diagnosed as empty output.
+    """
+    parts: list[str] = []
+    for item in getattr(response, "output", None) or []:
+        if getattr(item, "type", None) != "message":
+            continue
+        for part in getattr(item, "content", None) or []:
+            if getattr(part, "type", None) == "refusal":
+                text = getattr(part, "refusal", None)
+                if text:
+                    parts.append(text)
+    return "".join(parts)
 
 
 def _usage_counts(usage: Any) -> dict[str, int]:
@@ -342,7 +397,10 @@ async def openai_responses_complete_if_cache(
         cannot be re-wrapped.
 
     Raises:
-        InvalidResponseError: The response carried no usable text.
+        InvalidResponseError: The response carried no usable text, the
+            generation failed after the request was accepted, the model
+            refused, or the generation was stopped for a reason other than
+            the output budget.
         EmptyTruncatedResponseError: Empty output caused by budget exhaustion.
     """
     if history_messages is None:
@@ -464,11 +522,25 @@ async def _stream_response(
     with ``response.failed``, which is neither of those terminals nor the
     separate ``error`` event. It raises, so a provider failure never reaches
     the consumer as a short-but-successful answer.
+
+    Stopped generations: ``response.incomplete`` also carries reasons other
+    than the output budget, ``content_filter`` chief among them. Those are not
+    truncation, so they raise rather than ending the iterator on whatever text
+    had been yielded.
+
+    Refusal: a refused turn streams ``response.refusal.*`` events and can still
+    end with ``response.completed``. The refusal text is collected and raised
+    after the terminal, rather than being dropped for want of an
+    ``output_text`` delta.
     """
     cot_active = False
     body_text_seen = False
     reasoning_text_seen = False
     truncated = False
+    incomplete_reason: str | None = None
+    refusal_parts: list[str] = []
+    refusal_seen = False
+    final_terminal = None
     final_usage = None
     closing_via_generator_exit = False
 
@@ -481,11 +553,20 @@ async def _stream_response(
                 # `response.incomplete` instead of `response.completed`. Both
                 # carry the terminal usage; only the latter is a clean finish.
                 terminal = getattr(event, "response", None)
+                final_terminal = terminal
                 usage = getattr(terminal, "usage", None)
                 if usage is not None:
                     final_usage = usage
                 if event_type == "response.incomplete":
                     truncated = _is_truncated(terminal)
+                    if not truncated:
+                        # An incomplete terminal for any reason other than the
+                        # output budget is not truncation; it is a generation
+                        # that was stopped, most often by a content filter. A
+                        # terminal this driver cannot read reports "unknown"
+                        # and takes the same path: incomplete is not complete,
+                        # and guessing which reason it was would be worse.
+                        incomplete_reason = _incomplete_reason(terminal)
                 continue
 
             if event_type == "response.reasoning_summary_text.delta":
@@ -518,6 +599,31 @@ async def _stream_response(
                 yield delta
                 continue
 
+            if event_type == "response.refusal.delta":
+                # A refusal streams on its own event type and never as body
+                # text, so an unhandled one ends the iterator successfully with
+                # nothing yielded. It is collected here and raised after the
+                # terminal, so the terminal usage is still accounted.
+                #
+                # The event and its text are tracked apart: an empty delta is
+                # still a refusal, and letting it stand in for the text would
+                # both suppress the raise and disarm the `.done` fallback.
+                refusal_seen = True
+                delta = getattr(event, "delta", "") or ""
+                if delta:
+                    refusal_parts.append(delta)
+                continue
+
+            if event_type == "response.refusal.done":
+                # Carries the whole refusal. Only used when the deltas carried
+                # no text, since otherwise it would duplicate them.
+                refusal_seen = True
+                if not refusal_parts:
+                    done_text = getattr(event, "refusal", "") or ""
+                    if done_text:
+                        refusal_parts.append(done_text)
+                continue
+
             if event_type == "response.failed":
                 # A request the transport accepted can still fail during
                 # generation. That terminates the stream with `response.failed`
@@ -540,6 +646,38 @@ async def _stream_response(
             cot_active = False
 
         _account_stream_usage(token_tracker, final_usage)
+
+        refusal = "".join(refusal_parts).strip()
+        if not refusal:
+            # Same fallback as `_extract_text`: a server that populates the
+            # terminal payload but does not emit the refusal events would
+            # otherwise end the iterator empty and successful.
+            refusal = _extract_refusal(final_terminal).strip()
+        if refusal or refusal_seen:
+            error_message = (
+                "OpenAI Responses stream refused the request: "
+                f"{refusal or 'no reason given'}"
+            )
+            logger.error(error_message)
+            # Retryable, like the `error` and `response.failed` terminals: a
+            # refusal is a provider verdict this driver cannot distinguish from
+            # a transient safety-stack failure, and the retry set is the
+            # module's default for everything except budget exhaustion, whose
+            # outcome is fixed by the caller's own max_output_tokens.
+            raise InvalidResponseError(error_message)
+
+        if incomplete_reason is not None:
+            # Text already yielded is the tail of a generation that did not
+            # finish, so ending here would present it as a complete answer. The
+            # budget case below is the one incomplete reason that keeps its
+            # partial output, because the model chose where to stop within a
+            # limit the caller set.
+            error_message = (
+                "OpenAI Responses stream stopped before completion "
+                f"(incomplete_reason={incomplete_reason})"
+            )
+            logger.error(error_message)
+            raise InvalidResponseError(error_message)
 
         if truncated:
             if body_text_seen or reasoning_text_seen:
@@ -631,6 +769,31 @@ async def _handle_non_streaming(
             logger.error(error_message)
             raise InvalidResponseError(error_message)
 
+        # Sibling of the `response.refusal.*` events on the streaming path: a
+        # refused turn carries `refusal` content parts, which the body walk
+        # skips, so without this the refusal would be reported as "model
+        # produced no output" and its reason discarded.
+        refusal = _extract_refusal(response).strip()
+        if refusal:
+            error_message = f"OpenAI Responses request was refused: {refusal}"
+            logger.error(error_message)
+            raise InvalidResponseError(error_message)
+
+        truncated = _is_truncated(response)
+
+        # Sibling of the non-budget `response.incomplete` terminal on the
+        # streaming path. Budget truncation keeps its partial output below,
+        # because the model chose where to stop within a limit the caller set;
+        # any other incomplete reason is a generation that was stopped, and
+        # returning its tail would present it as a complete answer.
+        if getattr(response, "status", None) == "incomplete" and not truncated:
+            error_message = (
+                "OpenAI Responses request stopped before completion "
+                f"(incomplete_reason={_incomplete_reason(response)})"
+            )
+            logger.error(error_message)
+            raise InvalidResponseError(error_message)
+
         content = _extract_text(response)
         reasoning = _extract_reasoning(response) if enable_cot else ""
 
@@ -639,8 +802,6 @@ async def _handle_non_streaming(
             if r"\u" in reasoning:
                 reasoning = safe_unicode_decode(reasoning.encode("utf-8"))
             final_content = f"<think>{reasoning}</think>{final_content}"
-
-        truncated = _is_truncated(response)
 
         if not final_content or not final_content.strip():
             status = getattr(response, "status", None)
