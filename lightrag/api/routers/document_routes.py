@@ -7,6 +7,7 @@ import base64
 import binascii
 import errno
 import math
+import mimetypes
 import os
 import re
 import shutil
@@ -48,6 +49,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
+from fastapi.responses import FileResponse
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -6587,6 +6589,79 @@ def create_document_routes(
             raise
         except Exception as e:
             logger.error(f"Error getting track status for {track_id}: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise internal_server_error(e)
+
+    @router.get(
+        "/{doc_id}/file",
+        dependencies=[Depends(combined_auth)],
+        summary="Download the original source file of a document by its ID.",
+    )
+    async def get_document_file(doc_id: str) -> FileResponse:
+        """
+        Download a document's original source file.
+
+        Returns the file exactly as it was uploaded, located on disk via the
+        document's stored ``file_path`` basename (the same canonical name
+        ``find_existing_file_by_file_path`` already uses to locate and delete
+        source files elsewhere in this router). Documents inserted directly
+        as text (``/documents/text``, ``/documents/texts``) carry no source
+        file and always 404 here.
+
+        Args:
+            doc_id (str): The document ID returned by upload/scan/insert.
+
+        Returns:
+            FileResponse: The original file as a binary attachment, with the
+                canonical file_path basename as the download filename.
+
+        Raises:
+            HTTPException: If doc_id is empty (400); if the document does not
+                exist, has no associated source file, or the source file is no
+                longer present on disk (404); or on an unexpected error (500).
+        """
+        doc_id = doc_id.strip()
+        if not doc_id:
+            raise HTTPException(status_code=400, detail="Document ID cannot be empty")
+
+        try:
+            # doc_status is a raw dict here, not a DocProcessingStatus: unlike
+            # LightRAG.aget_docs_by_ids, the storage layer's get_by_id returns
+            # the untyped row (see DocStatusStorage.get_by_id in base.py and
+            # every kg/*_doc_status_impl.py), the same contract
+            # adelete_by_doc_id relies on via ``.get("file_path")``.
+            doc_status_data = await rag.doc_status.get_by_id(doc_id)
+            if doc_status_data is None:
+                raise HTTPException(
+                    status_code=404, detail=f"Document not found: {doc_id}"
+                )
+
+            canonical_file_path = normalize_file_path(doc_status_data.get("file_path"))
+            if canonical_file_path == UNKNOWN_FILE_SOURCE:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Document {doc_id} has no associated source file",
+                )
+
+            found_path = find_existing_file_by_file_path(
+                doc_manager.input_dir, canonical_file_path
+            )
+            if found_path is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Source file for document {doc_id} is missing from disk",
+                )
+
+            media_type = mimetypes.guess_type(canonical_file_path)[0]
+            return FileResponse(
+                path=found_path,
+                filename=canonical_file_path,
+                media_type=media_type or "application/octet-stream",
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error downloading file for document {doc_id}: {str(e)}")
             logger.error(traceback.format_exc())
             raise internal_server_error(e)
 
