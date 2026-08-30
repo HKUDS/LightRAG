@@ -20,7 +20,7 @@ A ready-to-copy bundle lives in [`docs/ui_templates_example/`](./ui_templates_ex
 
 What you **cannot** set from the bundle:
 
-- The browser tab title and the login card's own `LightRAG` heading and subtitle. Unlike the login card's logo, these are **hardcoded in the frontend** — `<title>Lightrag</title>` in `index.html` and `workspace.html`, and the heading plus the localized `login.description` in `LoginPage.tsx`. Neither the bundle nor any environment variable changes them; that needs a WebUI edit and rebuild.
+- The browser tab title and the login card's heading and subtitle. The manifest cannot set them: `WEBUI_TITLE` supplies both the browser tab title and login heading (falling back to `LightRAG`), while the subtitle remains the localized `login.description` in `LoginPage.tsx`.
 - The in-app header shown **after sign-in** (`SiteHeader` on `/webui`, the workspace header on `/workspace`). That one is set by the `WEBUI_TITLE` / `WEBUI_DESCRIPTION` environment variables, and the manifest deliberately cannot override them.
 - The buttons, menus and settings around your content — see [§5.3 Interface languages](#53-interface-languages-vs-bundle-locales).
 - Text direction. It is derived from the locale (see [§5.2](#52-text-direction-rtl)), never taken from bundle markup.

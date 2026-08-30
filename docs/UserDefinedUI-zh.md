@@ -20,7 +20,7 @@ LightRAG 支持用**你自己的**欢迎页、登录页文案、用户协议、�
 
 Bundle **不能**设置的内容：
 
-- 浏览器标签标题，以及登录卡片自身的 `LightRAG` 标题与副标题。与登录卡片的 Logo 不同，这些内容都**硬编码在前端**—— `index.html` 与 `workspace.html` 里的 `<title>Lightrag</title>`，以及 `LoginPage.tsx` 里的标题和走 i18n 的 `login.description`。Bundle 和任何环境变量都改不了它们，只能修改前端源码并重新构建。
+- 浏览器标签标题，以及登录卡片的标题和副标题。manifest 不能设置这些内容：`WEBUI_TITLE` 同时控制浏览器标签标题和登录页标题（未提供时回退为 `LightRAG`），副标题仍为 `LoginPage.tsx` 中走 i18n 的 `login.description`。
 - **登录之后**显示的应用头部（`/webui` 的 `SiteHeader`、`/workspace` 的工作区头部）。这一处由 `WEBUI_TITLE` / `WEBUI_DESCRIPTION` 环境变量设置，manifest 有意不允许覆盖。
 - 内容周围的按钮、菜单和设置项——参见 [§5.3 界面语言与 Bundle 语言](#53-界面语言与-bundle-语言)。
 - 文字方向。方向由 locale 推导（见 [§5.2](#52-文字方向rtl)），绝不取自 Bundle 中的标记。

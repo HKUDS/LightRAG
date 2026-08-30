@@ -260,7 +260,7 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
               />
             )}
             <div className="text-center space-y-2">
-              <h1 className="text-3xl font-bold tracking-tight">LightRAG</h1>
+              <h1 className="text-3xl font-bold tracking-tight">{content.brandTitle}</h1>
               <p className="text-muted-foreground text-sm">
                 {t('login.description')}
               </p>

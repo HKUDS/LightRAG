@@ -3,6 +3,10 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 
 const source = readFileSync(join(import.meta.dir, 'LoginPage.tsx'), 'utf8')
+const welcomeSource = readFileSync(
+  join(import.meta.dir, 'workspace', 'WorkspaceWelcome.tsx'),
+  'utf8'
+)
 
 describe('login logo customization wiring', () => {
   test('uses the resolved bundle logo instead of importing the built-in asset', () => {
@@ -19,5 +23,11 @@ describe('login logo customization wiring', () => {
       'const [failedLogoUrl, setFailedLogoUrl] = useState<string | null>(null)'
     )
     expect(source).toContain('onError={() => setFailedLogoUrl(content.logoUrl)}')
+  })
+
+  test('uses the same resolved deployment title as the welcome page', () => {
+    expect(source).toContain('{content.brandTitle}</h1>')
+    expect(welcomeSource).toContain('{content.brandTitle}</h1>')
+    expect(source).not.toContain('>LightRAG</h1>')
   })
 })
