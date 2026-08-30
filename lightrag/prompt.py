@@ -325,6 +325,36 @@ Description List:
 ---Output---
 """
 
+PROMPTS["entity_merge_verification"] = """---Role---
+You are a Knowledge Graph Specialist responsible for entity disambiguation.
+
+---Task---
+You are given one "subject" entity and a list of "candidate" entities of the same type, each with its own description. For EVERY candidate, decide whether it refers to the SAME real-world entity as the subject, or a DIFFERENT one.
+
+---Instructions---
+1. Base your decision on the descriptions, not surface-level name similarity. Names can be spelling variants, abbreviations, or translations of the same entity; they can also be genuinely different entities that merely share a similar-looking name.
+2. Merge (same_entity) ONLY when the descriptions indicate the exact same real-world concept: spelling variations, synonyms, abbreviation vs. full form, or language variants of one entity.
+3. Never merge (different_entity) a general category with a specific instance (e.g. "Car" vs. "Tesla Model 3"), a whole with one of its parts, or entities whose descriptions describe different roles, time periods, or contexts even if the names are alike (e.g. "Apple Inc." vs. "Apple fruit").
+4. You MUST return a verdict for every candidate listed below — never omit one. If you are not confident, return "different_entity" rather than guessing; only "same_entity" merges the entities.
+5. Output strictly follows the JSON format below, with no text before or after it.
+
+---Format---
+{{
+    "verdicts": [
+        {{"candidate": "<candidate name, copied exactly>", "decision": "same_entity" | "different_entity", "reason": "<one short sentence>"}}
+    ]
+}}
+
+---Input---
+Subject: {subject_name}
+Subject description: {subject_description}
+
+Candidates:
+{candidates_block}
+
+---Output---
+"""
+
 PROMPTS["fail_response"] = (
     "Sorry, I'm not able to provide an answer to that question.[no-context]"
 )
