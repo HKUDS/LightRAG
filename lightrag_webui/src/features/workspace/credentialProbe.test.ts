@@ -200,6 +200,75 @@ describe('handleApiKeyDialogClose', () => {
  * requestCounter, `stores/state`'s healthCheckGeneration) are already pinned;
  * this closes the third.
  */
+describe('initialDialogAcknowledgement (the shell\'s per-mount baseline)', () => {
+  test('a fresh mount acknowledges the requests an EARLIER mount raised', async () => {
+    // Regression (P2). The counter is module state and outlives the shell,
+    // but the acknowledgement is component state. The shell can mount again
+    // within one page load — a 401 or a cross-tab logout routes to the
+    // welcome page through the hash router and the user enters again — and a
+    // baseline of zero would then compare a fresh component against the old
+    // session's counter: the dialog opened on sight, before any probe, with
+    // a stored key that may well be valid, and a successful probe could not
+    // close it (it clears the message, never the monotonic counter).
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      verifySpy.mockImplementationOnce(apiKeyRejection)
+      probe.runCredentialProbe()
+      await Promise.resolve()
+      await Promise.resolve()
+      const raised = probe.useCredentialProbeStore.getState().apiKeyDialogRequests
+      expect(raised).toBeGreaterThan(0)
+
+      // What the remounted shell starts from, and the visibility it derives.
+      const acknowledged = probe.initialDialogAcknowledgement()
+      expect(acknowledged).toBe(raised)
+      expect(raised > acknowledged).toBe(false) // the dialog stays closed
+
+      // A key that is still bad reopens it: suppressing the stale request
+      // costs nothing, because the shell's startup probe raises a NEW one.
+      verifySpy.mockImplementationOnce(apiKeyRejection)
+      probe.runCredentialProbe()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(probe.useCredentialProbeStore.getState().apiKeyDialogRequests > acknowledged).toBe(
+        true
+      )
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
+  test('it is read per mount, never captured once', async () => {
+    // A baseline captured at module scope would be the same stale value for
+    // every mount — the defect in a different disguise.
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const first = probe.initialDialogAcknowledgement()
+      verifySpy.mockImplementationOnce(apiKeyRejection)
+      probe.runCredentialProbe()
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(probe.initialDialogAcknowledgement()).toBe(first + 1)
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
+  test('the shell actually initializes its acknowledgement from it', async () => {
+    // The rule above is only worth anything where it is wired in, and the
+    // wiring is one argument in a component this repo has no DOM harness to
+    // render. Read the source: `useState(0)` there is the defect itself.
+    const source = await Bun.file(
+      new URL('./WorkspaceApp.tsx', import.meta.url).pathname
+    ).text()
+    const initializer = source.match(
+      /const \[dismissedDialogRequests[^=]*=\s*useState\(\s*([^)]*?)\s*\)/
+    )
+    expect(initializer?.[1]).toBe('initialDialogAcknowledgement')
+  })
+})
+
 describe('runCredentialProbe generation guard', () => {
   /** A promise whose settlement this test controls. */
   const deferred = () => {

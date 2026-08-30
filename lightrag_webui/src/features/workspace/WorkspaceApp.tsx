@@ -15,6 +15,7 @@ import {
 import { activateSessionFromAuthStatus } from './authBootstrap'
 import {
   handleApiKeyDialogClose,
+  initialDialogAcknowledgement,
   runCredentialProbe,
   useCredentialProbeStore
 } from './credentialProbe'
@@ -39,7 +40,13 @@ export default function WorkspaceApp() {
   // monotonic counter and this records the count the user last dismissed, so
   // two consecutive failures with the IDENTICAL message still reopen it (and
   // no effect has to push state, which would cascade renders).
-  const [dismissedDialogRequests, setDismissedDialogRequests] = useState(0)
+  //
+  // The baseline is the counter as it stands at THIS mount, not zero: the
+  // counter is module state that outlives the shell, and the shell can mount
+  // again within the same page load (see `initialDialogAcknowledgement`).
+  const [dismissedDialogRequests, setDismissedDialogRequests] = useState(
+    initialDialogAcknowledgement
+  )
   // Bumped by the cross-tab identity watch: remounting the query view drops
   // the live session state that belonged to the previous identity.
   const identityEpoch = useIdentityEpochStore((s) => s.epoch)

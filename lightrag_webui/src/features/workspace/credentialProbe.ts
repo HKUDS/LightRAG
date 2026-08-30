@@ -34,6 +34,30 @@ const requestApiKeyDialog = (): void => {
   }))
 }
 
+/**
+ * The acknowledgement baseline a FRESHLY MOUNTED shell starts from.
+ *
+ * The shell derives dialog visibility as `requests > acknowledged`, and the
+ * acknowledgement is component state while the counter is module state that
+ * OUTLIVES the shell. Within one page load the shell can mount more than
+ * once — a 401 (or a cross-tab logout) routes to the welcome page and the
+ * user enters again, all through the hash router, with no reload — so
+ * starting the acknowledgement at zero would compare a fresh component
+ * against an old session's counter and open the dialog on sight, before any
+ * probe has run and however valid the stored key now is. Nothing could close
+ * it either: a successful probe clears the error MESSAGE but must not lower
+ * the counter, which is monotonic precisely so two identical failures still
+ * reopen the dialog.
+ *
+ * A new mount therefore acknowledges everything already requested, and
+ * forfeits nothing: the shell's own startup probe runs immediately after and
+ * raises a NEW request if the credentials are still bad. Read it lazily, per
+ * mount — a value captured at module scope would be the same stale zero.
+ */
+export function initialDialogAcknowledgement(): number {
+  return useCredentialProbeStore.getState().apiKeyDialogRequests
+}
+
 let probeGeneration = 0
 
 /**
