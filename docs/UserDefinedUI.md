@@ -212,18 +212,30 @@ shape:
 - `zh_TW` (underscore) is rejected — write `zh-TW`;
 - `zh-tw` is rejected too: the key must already be normalized (`zh-TW`).
 
-The accepted set is **language-first BCP 47 tags** — far wider than the
-languages the WebUI itself ships, but not literally every valid tag:
+What the server applies is a **shape and case check**, not full BCP 47
+validation. It is worth being precise about, because the two differ in both
+directions:
 
 | Rule | Accepted | Rejected |
 |---|---|---|
-| Primary subtag is 2–8 letters | `en`, `zh`, `art-lojban` | `x-acme`, `i-klingon` — private-use and grandfathered tags open with a single letter |
+| Primary subtag is 2–8 letters | `en`, `zh`, `art-lojban` | `x-acme`, `i-klingon` — a single-letter first subtag |
 | Every later subtag is 1–8 alphanumerics | `zh-Hant-TW`, `de-CH-1901`, `sl-rozaj-biske` | `abcdefghi` |
 | The whole tag is ≤ 35 characters | | anything longer |
 
-So script, region, variant and extension subtags all work — `zh-Hant-TW`,
-`ar-aao-Latn`, `en-US-u-VA-posix` — and the practical exclusions are the
-private-use (`x-…`) and grandfathered (`i-…`) forms.
+Script, region, variant and extension subtags all work — `zh-Hant-TW`,
+`ar-aao-Latn`, `en-US-u-VA-posix`.
+
+The exclusion is precisely **a first subtag of one letter**, which is what
+rules out private-use tags (`x-acme`) and the *irregular* grandfathered ones
+(`i-klingon`). It is not "grandfathered tags" as a class: the regular
+grandfathered tags begin with a normal language subtag and are accepted —
+`art-lojban`, `en-GB-oed` and `zh-min-nan` all pass.
+
+In the other direction, the check is looser than BCP 47: `en-u` is accepted
+even though a well-formed tag must follow an extension singleton with at least
+one subtag. Nothing depends on that being caught — an unknown locale simply
+falls back — so treat the table as the contract and BCP 47 as the convention
+the table approximates.
 
 Note that normalization is positional and applies to *every* subtag, including
 an extension's own values: `en-US-u-va-posix` normalizes to
@@ -383,9 +395,17 @@ document's headings consistent with that wording.
   user to bind an agreement to, and auth-disabled is a development/demo
   posture. **If the agreement must be accepted, configure `AUTH_ACCOUNTS`**
   (with `TOKEN_SECRET`).
-- **Fail-open on an unreachable server.** If the customization endpoint cannot
-  be loaded after its retries, the gate stays off rather than locking everyone
-  out of the deployment.
+- **An unreachable endpoint fails open only on the FIRST load.** If the very
+  first customization request fails, no snapshot exists, the frontend falls
+  back to its own default content, and the gate stays off rather than locking
+  everyone out of the deployment.
+- **A failed LANGUAGE SWITCH keeps the last good verdict instead.** Once a
+  snapshot has loaded, a failing request for another locale leaves that
+  snapshot on screen; when the retries are exhausted the gate goes back to
+  obeying it. So if the previously loaded locale required consent, the
+  checkbox stays — the visitor is held to the agreement they were last shown,
+  not released by a network error. This is the safer of the two behaviours and
+  is deliberate: only the case where *nothing* has ever loaded opens the gate.
 
 ---
 
@@ -613,7 +633,7 @@ leave you believing customer branding is live when it is not.
 | `missing required field(s) [...]` | Add the field. Note `brand.logo` is required — use an explicit `null` for "no logo". |
 | `unsupported schema_version` | Must be exactly `1`. |
 | `locales: key 'zh_TW' uses the underscore form` | Write `zh-TW`. |
-| `locales: key 'x-acme' has an invalid language subtag` | The primary subtag must be 2–8 letters, so private-use (`x-…`) and grandfathered (`i-…`) tags are not supported — see [§4.3](#43-locale-keys). |
+| `locales: key 'x-acme' has an invalid language subtag` | The primary subtag must be 2–8 letters, so a one-letter first subtag is rejected — private-use (`x-…`) and irregular grandfathered (`i-…`) tags. Regular grandfathered tags such as `art-lojban` are fine — see [§4.3](#43-locale-keys). |
 | `locales: key 'zh-tw' must be written in its normalized form 'zh-TW'` | Fix the casing. |
 | `default_locale '…' is not a declared locale` | `default_locale` must appear in `locales`. |
 | `fallbacks.xx: target 'yy' is not a declared locale` | Fallback targets must be declared; only sources may be uncovered. |

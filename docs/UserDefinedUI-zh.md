@@ -202,17 +202,26 @@ key 是 BCP 47 标签的**连字符**形式，且必须写成已归一化的形�
 - `zh_TW`（下划线）会被拒绝——请写 `zh-TW`；
 - `zh-tw` 同样会被拒绝：key 必须已经是归一化形式（`zh-TW`）。
 
-接受的范围是**以语言子标签开头的 BCP 47 标签**——远比前端自带的语言宽，但并非字面意义上
-的「任何合法标签」：
+服务端做的是**形状与大小写检查**，而不是完整的 BCP 47 校验。这一点值得说准，因为两者在
+两个方向上都有出入：
 
 | 规则 | 接受 | 拒绝 |
 |---|---|---|
-| 主语言子标签为 2–8 个字母 | `en`、`zh`、`art-lojban` | `x-acme`、`i-klingon`——私有用途与 grandfathered 标签以单个字母开头 |
+| 主语言子标签为 2–8 个字母 | `en`、`zh`、`art-lojban` | `x-acme`、`i-klingon`——首子标签只有一个字母 |
 | 其后每个子标签为 1–8 个字母数字 | `zh-Hant-TW`、`de-CH-1901`、`sl-rozaj-biske` | `abcdefghi` |
 | 整个标签不超过 35 个字符 | | 更长的标签 |
 
-因此 script、地区、variant 和 extension 子标签都可用——`zh-Hant-TW`、`ar-aao-Latn`、
-`en-US-u-VA-posix`——实际排除的是私有用途（`x-…`）和 grandfathered（`i-…`）两种形式。
+script、地区、variant 和 extension 子标签都可用——`zh-Hant-TW`、`ar-aao-Latn`、
+`en-US-u-VA-posix`。
+
+被排除的恰恰是**首子标签只有一个字母**这一条，它顺带排除了私有用途标签（`x-acme`）和
+*不规则*的 grandfathered 标签（`i-klingon`）。这并不等于「排除 grandfathered 这一类」：
+规则型 grandfathered 标签以正常的语言子标签开头，是被接受的——`art-lojban`、`en-GB-oed`、
+`zh-min-nan` 都能通过。
+
+反方向上，这个检查比 BCP 47 更宽松：`en-u` 会被接受，尽管合法标签要求 extension singleton
+之后至少还有一个子标签。这一点没有任何逻辑依赖——未知 locale 只会走回退——所以请以上表为准，
+把 BCP 47 视为该表所近似的惯例。
 
 另请注意：归一化是按位置作用于*每一个*子标签的，包括 extension 自身的取值——
 `en-US-u-va-posix` 会被归一化为 `en-US-u-VA-posix`，而 key 必须已经是归一化形式，
@@ -346,8 +355,12 @@ WARNING: UI customization: the WebUI ships no interface translation for ['nl'] �
   身份直接放行，不受门禁约束。这是刻意设计而非缺口：没有认证就没有可被约束的用户
   身份，而免认证本就是开发/演示形态。**若必须要求接受协议，请配置
   `AUTH_ACCOUNTS`**（并配置 `TOKEN_SECRET`）。
-- **服务不可达时 fail-open。** 若定制内容接口在重试后仍无法加载，门禁会保持关闭，
-  而不是把所有人锁在部署之外。
+- **接口不可达只在「首次加载」时 fail-open。** 若第一次定制内容请求就失败，此时没有任何
+  快照，前端回落到自带的默认内容，门禁保持关闭，而不是把所有人锁在部署之外。
+- **而「语言切换失败」保留的是上一次成功的裁决。** 一旦已经加载过快照，切换到另一个 locale
+  的请求失败时，屏幕上仍是那份旧快照；重试耗尽后门禁重新按它执行。因此若先前加载的 locale
+  需要勾选，勾选框依然存在——访问者仍受其最后看到的那份协议约束，不会因为一次网络故障被放行。
+  这是两者中更安全的一种，且是刻意为之：只有**从未加载成功过**的情况才会打开门禁。
 
 ---
 
@@ -557,7 +570,7 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
 | `missing required field(s) [...]` | 补上该字段。注意 `brand.logo` 是必填的——不显示 Logo 请显式写 `null`。 |
 | `unsupported schema_version` | 必须恰好为 `1`。 |
 | `locales: key 'zh_TW' uses the underscore form` | 请写 `zh-TW`。 |
-| `locales: key 'x-acme' has an invalid language subtag` | 主语言子标签必须是 2–8 个字母，因此私有用途（`x-…`）和 grandfathered（`i-…`）标签不受支持——见 [§4.3](#43-locale-key-的写法)。 |
+| `locales: key 'x-acme' has an invalid language subtag` | 主语言子标签必须是 2–8 个字母，因此首子标签为单字母的会被拒——私有用途（`x-…`）与不规则 grandfathered（`i-…`）。规则型 grandfathered 标签如 `art-lojban` 可用——见 [§4.3](#43-locale-key-的写法)。 |
 | `locales: key 'zh-tw' must be written in its normalized form 'zh-TW'` | 修正大小写。 |
 | `default_locale '…' is not a declared locale` | `default_locale` 必须出现在 `locales` 中。 |
 | `fallbacks.xx: target 'yy' is not a declared locale` | fallback 的目标必须已声明；只有来源可以是未覆盖的 locale。 |
