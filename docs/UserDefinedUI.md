@@ -272,7 +272,7 @@ When a locale declares **both** `login` and `agreements`, the login page for tha
 
 The **Login** button stays disabled until the box is ticked, and pressing Enter in the form is refused the same way.
 
-> **What this gate is, precisely — read before relying on it.** It is a **WebUI control, not server-side enforcement.** The server computes `consent_required` and the WebUI obeys it, but `POST /login` takes only the standard credential fields: it neither requires nor records acceptance, and stores nothing about which revision of the document a user agreed to. A client posting credentials straight to `/login` — curl, a script, the Ollama -compatible API, another frontend — receives a token without ever seeing the checkbox.
+> **What this gate is, precisely — read before relying on it.** It is a **WebUI control, not server-side enforcement.** The server computes `consent_required` and the WebUI obeys it, but `POST /login` takes only the standard credential fields: it neither requires nor records acceptance, and stores nothing about which revision of the document a user agreed to. A client posting credentials straight to `/login` — curl, a script, the Ollama-compatible API, another frontend — receives a token without ever seeing the checkbox.
 >
 > So treat it as an **informed-consent prompt for people using the WebUI**, not as an access control, and do not treat it as evidence that a particular user accepted a particular revision. If your deployment needs enforceable, auditable acceptance, it has to be built server-side; this feature does not provide it.
 
