@@ -43,7 +43,11 @@ export default function WorkspaceQueryView() {
   const session = useQuerySession({
     historyStore: useWorkspaceRetrievalHistoryStore,
     getQuerySettingsSnapshot,
-    onQueryError: handleQueryError
+    onQueryError: handleQueryError,
+    // This entry's stored conversations can only be real answers (the two
+    // debug switches are clamped above), so pre-flag history keeps the
+    // AI-content notice; the admin panel's history cannot say the same.
+    legacyMessagesAreAiGenerated: true
     // No onUserPromptUsed: the inherited user_prompt is not recorded into the
     // admin prompt-history from this entry (that would write settings-storage).
   })

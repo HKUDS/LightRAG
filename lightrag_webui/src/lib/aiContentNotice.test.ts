@@ -70,10 +70,22 @@ describe('restoredAiGeneratedFlag', () => {
     expect(restoredAiGeneratedFlag(assistant({ aiGenerated: false }))).toBe(false)
   })
 
-  test('a pre-flag conversation falls back to assistant-and-not-an-error', () => {
-    expect(restoredAiGeneratedFlag(assistant())).toBe(true)
-    expect(restoredAiGeneratedFlag(assistant({ isError: true }))).toBe(false)
-    expect(restoredAiGeneratedFlag({ id: 'u1', role: 'user', content: 'hi' })).toBe(false)
+  test('a pre-flag message claims nothing by default', () => {
+    // The admin panel takes this default: its history can hold
+    // only_need_context / only_need_prompt dumps, and an origin that was never
+    // persisted must not be asserted onto them.
+    expect(restoredAiGeneratedFlag(assistant())).toBe(false)
+  })
+
+  test('an entry that only ever stored answers keeps labelling them', () => {
+    // The workspace entry clamps both debug switches, so its pre-flag history
+    // is answers — dropping the notice from every restored conversation there
+    // would defeat the setting for exactly the users it is meant for.
+    expect(restoredAiGeneratedFlag(assistant(), true)).toBe(true)
+    expect(restoredAiGeneratedFlag(assistant({ isError: true }), true)).toBe(false)
+    expect(
+      restoredAiGeneratedFlag({ id: 'u1', role: 'user', content: 'hi' }, true)
+    ).toBe(false)
   })
 })
 

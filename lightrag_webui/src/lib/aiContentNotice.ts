@@ -53,14 +53,26 @@ export function resolveAiGenerated(predicted: boolean, reported: unknown): boole
  * The flag for a message restored from the retrieval history.
  *
  * Messages written since the flag exists always carry an explicit boolean, so
- * this only fills in conversations persisted before it — where the origin of
- * the text is genuinely unknown and "an assistant bubble that is not an
- * error" is the best available reading (and what the notice showed when it
- * was first introduced).
+ * this only decides conversations persisted BEFORE it, whose origin was never
+ * recorded and cannot be recovered from the text. Neither answer is right for
+ * every such message, so the entry the history belongs to picks the one that
+ * can actually be wrong there, via `legacyDefault`:
+ *
+ * - the workspace entry clamps both debug switches to false, so its history
+ *   holds answers; labelling them is correct (`true`);
+ * - the admin panel's history can hold `only_need_context` /
+ *   `only_need_prompt` dumps, which must not be labelled — so it claims
+ *   nothing about its own legacy messages (`false`).
+ *
+ * The default is the conservative one: a caller that has not thought about it
+ * asserts no origin.
  */
-export function restoredAiGeneratedFlag(message: MessageWithError): boolean {
+export function restoredAiGeneratedFlag(
+  message: MessageWithError,
+  legacyDefault: boolean = false
+): boolean {
   if (typeof message.aiGenerated === 'boolean') return message.aiGenerated
-  return message.role === 'assistant' && message.isError !== true
+  return legacyDefault && message.role === 'assistant' && message.isError !== true
 }
 
 /**

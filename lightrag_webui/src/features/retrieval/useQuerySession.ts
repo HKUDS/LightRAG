@@ -137,6 +137,14 @@ export interface QuerySessionOptions {
    * This layer stays entry-agnostic: it does not inspect the message.
    */
   onQueryError?: (message: string) => void
+  /**
+   * What to assume about messages restored from a history persisted BEFORE
+   * `aiGenerated` existed (see `restoredAiGeneratedFlag`). The workspace entry
+   * passes true — it can only ever have stored real answers; the admin panel
+   * passes false, because its history may hold context/prompt debug dumps that
+   * must never wear the AI-content notice. Defaults to claiming nothing.
+   */
+  legacyMessagesAreAiGenerated?: boolean
 }
 
 export interface SubmitOptions {
@@ -152,7 +160,8 @@ export function useQuerySession({
   historyStore,
   getQuerySettingsSnapshot,
   onUserPromptUsed,
-  onQueryError
+  onQueryError,
+  legacyMessagesAreAiGenerated = false
 }: QuerySessionOptions) {
   const { t } = useTranslation()
 
@@ -170,7 +179,7 @@ export function useQuerySession({
             // Conversations persisted before the flag existed carry no
             // origin; resolve it once here so the renderer only ever sees an
             // explicit boolean.
-            aiGenerated: restoredAiGeneratedFlag(msg)
+            aiGenerated: restoredAiGeneratedFlag(msg, legacyMessagesAreAiGenerated)
           }
         } catch (error) {
           console.error('Error processing message:', error)
