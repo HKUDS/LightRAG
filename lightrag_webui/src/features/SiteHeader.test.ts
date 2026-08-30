@@ -16,5 +16,6 @@ describe('admin header tooltip accessibility', () => {
     expect(triggerSource).toContain('{SiteInfo.name}')
     expect(triggerSource).toContain('{webuiTitle}')
     expect(triggerSource).toContain('</a>')
+    expect(source).toContain('<TouchDescriptionPopover description={webuiDescription} />')
   })
 })

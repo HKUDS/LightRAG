@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { ZapIcon, LogOutIcon } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
+import TouchDescriptionPopover from '@/components/ui/TouchDescriptionPopover'
 import AppSettings from '@/components/AppSettings'
 import ApiKeyAlert, { type ApiKeyAlertCloseReason } from '@/components/ApiKeyAlert'
 import ErrorBoundary from '@/components/ErrorBoundary'
@@ -144,6 +145,7 @@ export default function WorkspaceApp() {
               )}
             </Tooltip>
           </TooltipProvider>
+          <TouchDescriptionPopover description={webuiDescription} />
           {isGuestMode && (
             <span className="rounded-md bg-amber-100 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-900 dark:text-amber-200">
               {t('login.guestMode', 'Guest Mode')}

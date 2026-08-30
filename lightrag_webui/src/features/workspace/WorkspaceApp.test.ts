@@ -15,5 +15,6 @@ describe('workspace header tooltip accessibility', () => {
     expect(triggerSource).toContain('<a href={entryHomeHref(window.location.pathname)}')
     expect(triggerSource).toContain('{webuiTitle || \'LightRAG\'}')
     expect(triggerSource).toContain('</a>')
+    expect(source).toContain('<TouchDescriptionPopover description={webuiDescription} />')
   })
 })

@@ -11,6 +11,7 @@ import { navigationService } from '@/services/navigation'
 import { ZapIcon, LogOutIcon, BookOpenIcon } from 'lucide-react'
 import GithubIcon from '@/components/icons/GithubIcon'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
+import TouchDescriptionPopover from '@/components/ui/TouchDescriptionPopover'
 
 interface NavigationTabProps {
   value: string
@@ -106,6 +107,7 @@ export default function SiteHeader() {
             )}
           </Tooltip>
         </TooltipProvider>
+        <TouchDescriptionPopover description={webuiDescription} />
       </div>
 
       <div className="flex h-10 flex-1 items-center justify-center">
