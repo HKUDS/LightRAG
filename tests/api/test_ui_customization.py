@@ -27,6 +27,7 @@ from lightrag.api.ui_customization import (
     WEBUI_CHROME_LOCALES,
     chrome_language_for,
     load_ui_customization_snapshot,
+    locale_direction,
     locales_without_chrome_translation,
     normalize_locale,
 )
@@ -649,6 +650,47 @@ class TestCustomizationEndpointWithBundle:
         # into one answer and the assertions above stop proving that
         # `fallbacks` is consulted at all.
         assert ko["locale"] != fr["locale"]
+
+    @pytest.mark.parametrize(
+        ("locale", "direction"),
+        [
+            # The four the hand-curated list happened to hold.
+            ("ar", "rtl"),
+            ("he", "rtl"),
+            ("fa", "rtl"),
+            ("ur", "rtl"),
+            # Regression: RTL languages it did not, so their bundles were laid
+            # out left-to-right. A bundle may declare ANY valid BCP 47 locale.
+            ("ps", "rtl"),
+            ("ckb", "rtl"),
+            ("dv", "rtl"),
+            ("yi", "rtl"),
+            ("nqo", "rtl"),
+            ("syr", "rtl"),
+            # An explicit SCRIPT subtag outranks the language, in BOTH
+            # directions — which is also what proves the language set was not
+            # simply widened until these passed.
+            ("ku-Arab", "rtl"),
+            ("ku", "ltr"),
+            ("az-Arab", "rtl"),
+            ("az", "ltr"),
+            ("pa-Arab", "rtl"),
+            ("pa", "ltr"),
+            ("ar-Latn", "ltr"),
+            # A 4-letter subtag past position 2 is an extension value, not a
+            # script: `ar-u-nu-latn` asks for Latin DIGITS and stays RTL.
+            ("ar-u-nu-latn", "rtl"),
+            ("ar-EG", "rtl"),
+            # Unchanged: every locale the WebUI itself ships chrome for.
+            ("en", "ltr"),
+            ("zh-TW", "ltr"),
+            ("fr", "ltr"),
+            ("ru", "ltr"),
+            ("und", "ltr"),
+        ],
+    )
+    def test_locale_direction_registry(self, locale, direction):
+        assert locale_direction(locale) == direction
 
     def test_rtl_direction_from_registry(self, tmp_path, monkeypatch):
         bundle = make_bundle(tmp_path)

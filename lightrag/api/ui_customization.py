@@ -41,9 +41,46 @@ MAX_LOGO_BYTES = 2 * 1024 * 1024  # per logo file
 
 BRAND_LOGO_ASSET_ID = "brand-logo"
 
-# Languages whose UI direction is right-to-left. Derived from this trusted
-# registry — never from bundle-provided CSS or ``dir`` values.
-_RTL_LANGUAGE_SUBTAGS = frozenset({"ar", "he", "fa", "ur"})
+# Right-to-left writing systems, DERIVED from CLDR 48 (Unicode
+# 16.0.0) rather than curated by hand — the previous four-language
+# list silently laid out Pashto, Central Kurdish, Divehi and every other RTL
+# bundle left-to-right. Two sets, one derivation each:
+#
+#   _RTL_SCRIPT_SUBTAGS   = {script | scriptMetadata[script].rtl == "YES"}
+#   _RTL_LANGUAGE_SUBTAGS = {lang   | likelySubtags[lang] names an RTL script}
+#                           over the BARE language keys (no script, no region,
+#                           excluding "und")
+#
+# Re-running those two rules against a newer CLDR is the only way either set
+# should change. Direction is taken from this trusted registry alone — never
+# from bundle-provided CSS or ``dir`` values.
+_RTL_SCRIPT_SUBTAGS = frozenset(
+    """
+    adlm arab armi avst chrs cprt elym gara hatr hebr hung khar lydi mand
+    mani mend merc mero narb nbat nkoo orkh ougr palm phli phlp phnx prti
+    rohg samr sarb sidt sogd sogo syrc thaa yezi
+    """.split()
+)
+
+_RTL_LANGUAGE_SUBTAGS = frozenset(
+    """
+    aao abh abv acm acq acw acx adf ae aeb aec aee aeq afb aib aii aij aiq
+    amw apc apd ar arc arq ars ary arz ask atn auj auz avd avl ayh ayl ayn
+    ayp azb bal bdz bej bft bgn bgp bhe bhm bhn bjf bjm bqi brh brk bsh bsk
+    chg cja ckb clh czk dcc def deh dgl dmk dml dv ecy esh fa fay faz fia
+    fub gbz ggg gha ghr gig gjk gju glh glk grr gwc gwf gwt gzi hac haz hbo
+    he hkh hnd hno hoh hrt hrz hss huy isk itk iw jad jat jbe jbn jdg ji jnd
+    jog jpa jpr jrb jye kbu kby kcy kfm khw klj kmz kqd ks ktl kvx kxp lad
+    lah lhs lki lrc lrk lrl lsa lsd lss luv luz mby mde mey mfa mfi mhj mid
+    mki mnj mve mvy myz mzb mzn nli nlm nqo ntz nyq oar obm odk oru ota otk
+    oui pal pbt pgd phl phn phr phv plk prc prd prx ps psh psi pst qxq rdb
+    rhg rmt sam sbn scl sd sdb sdf sdg sdh sds sgr sgy shd shm shu shv siy
+    siz skr smp smy sog sqo sqt srh srz ssh sts swb syc syn syr tjo tks tmr
+    tov tra trg trm trw ug ur ush uzs vaf vgr vmh wbk wlo wne wni wsv xco
+    xhe xka xkc xkj xkp xld xly xmn xmr xna xpr xsa xsd xvi ydg yhd yi yih
+    yud zba zdj zrp zum
+    """.split()
+)
 
 _LOCALE_SUBTAG_RE = re.compile(r"^[A-Za-z0-9]{1,8}$")
 _REQUIRED_LOCALE_FIELDS = ("welcome", "query_empty")
@@ -94,9 +131,29 @@ def normalize_locale(value: str) -> str:
 
 
 def locale_direction(locale: str) -> str:
-    """'rtl' / 'ltr' from the trusted registry, by language subtag."""
-    language = locale.split("-", 1)[0].lower()
-    return "rtl" if language in _RTL_LANGUAGE_SUBTAGS else "ltr"
+    """'rtl' / 'ltr' for a BCP 47 locale, from the trusted registry.
+
+    An explicit SCRIPT subtag is authoritative and outranks the language,
+    because saying which script the text is written in is exactly what it is
+    for: ``ku-Arab`` is right-to-left while plain ``ku`` (Latin by default)
+    is not, and the same holds for ``az-Arab``, ``pa-Arab``, ``ha-Arab``…
+
+    Only position 2 is read as a script. A 4-letter alphabetic subtag later
+    in the tag belongs to an extension — ``ar-u-nu-latn`` asks for Latin
+    DIGITS in Arabic text and is still right-to-left — so scanning for one
+    anywhere would flip exactly the locales that spell their preferences out.
+
+    Without a script subtag the language's own default decides. A bundle may
+    declare any valid BCP 47 locale, so the registry covers every language
+    CLDR knows to be RTL by default; for anything it still misses (a private
+    or newly registered code), writing the script subtag is the exact and
+    always-available escape hatch.
+    """
+    subtags = locale.split("-")
+    script = subtags[1] if len(subtags) > 1 else ""
+    if len(script) == 4 and script.isalpha():
+        return "rtl" if script.lower() in _RTL_SCRIPT_SUBTAGS else "ltr"
+    return "rtl" if subtags[0].lower() in _RTL_LANGUAGE_SUBTAGS else "ltr"
 
 
 # The UI languages the bundled WebUI ships CHROME translations for (buttons,
