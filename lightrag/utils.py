@@ -4166,13 +4166,41 @@ async def aexport_data(
                 relations_data.append(relation_row)
 
     # --- Relationships (from VectorDB) ---
-    all_relationships = await relationships_vdb.client_storage
-    for rel in all_relationships["data"]:
-        relationships_data.append(
-            {
-                "relationship_id": rel["__id__"],
-                "data": str(rel),  # Convert to string for compatibility
-            }
+    # ``client_storage`` is a debug/snapshot escape hatch, not part of the
+    # BaseVectorStorage contract: only NanoVectorDBStorage (async property)
+    # and FaissVectorDBStorage (sync property) implement it. Every other
+    # backend (Milvus, Qdrant, Postgres, Redis, MongoDB, OpenSearch) has no
+    # such attribute at all. This section is a supplementary raw-record
+    # dump; the entity/relation data above already carries the authoritative
+    # graph content, so skip it rather than fail the whole export on a
+    # backend that doesn't support it.
+    #
+    # Check the class, not the instance, for attribute presence:
+    # ``hasattr(relationships_vdb, ...)`` would call the getter to answer
+    # the question, and for NanoVectorDB's *async* property that getter
+    # returns a coroutine that ``hasattr`` immediately discards --
+    # "coroutine was never awaited" plus doing the (wasted) work twice.
+    # Attribute access on the class itself returns the property descriptor
+    # without invoking it.
+    if hasattr(type(relationships_vdb), "client_storage"):
+        # The two implementations disagree on sync vs. async (NanoVectorDB's
+        # is async, Faiss's is a plain sync property), so the value itself
+        # decides whether to await -- a fixed isinstance/backend-name check
+        # would silently break the moment either changes.
+        client_storage = relationships_vdb.client_storage
+        if inspect.isawaitable(client_storage):
+            client_storage = await client_storage
+        for rel in client_storage["data"]:
+            relationships_data.append(
+                {
+                    "relationship_id": rel["__id__"],
+                    "data": str(rel),  # Convert to string for compatibility
+                }
+            )
+    else:
+        logger.debug(
+            f"{type(relationships_vdb).__name__} does not expose client_storage; "
+            "skipping the raw VectorDB relationships dump in the export."
         )
 
     # Export based on format

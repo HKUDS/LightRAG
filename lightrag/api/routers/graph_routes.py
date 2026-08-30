@@ -2,10 +2,15 @@
 This module contains all graph-related routes for the LightRAG API.
 """
 
-from typing import Optional, Dict, Any
+import os
+import tempfile
 import traceback
+from pathlib import Path
+from typing import Optional, Dict, Any, Literal
 from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
+from starlette.background import BackgroundTask
 
 from lightrag.base import DeletionResult
 from lightrag.utils import logger
@@ -851,5 +856,75 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             logger.error(error_msg)
             logger.error(traceback.format_exc())
             raise internal_server_error(e)
+
+    _EXPORT_SUFFIXES: dict[str, str] = {
+        "csv": ".csv",
+        "excel": ".xlsx",
+        "md": ".md",
+        "txt": ".txt",
+    }
+    _EXPORT_MEDIA_TYPES: dict[str, str] = {
+        "csv": "text/csv",
+        "excel": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "md": "text/markdown",
+        "txt": "text/plain",
+    }
+
+    @router.get("/graph/export", dependencies=[Depends(combined_auth)])
+    async def export_graph(
+        file_format: Literal["csv", "excel", "md", "txt"] = Query(
+            "csv", description="Export file format"
+        ),
+        include_vector_data: bool = Query(
+            False, description="Include vector database data in the export"
+        ),
+    ) -> FileResponse:
+        """
+        Export the full knowledge graph (all entities, relations, and
+        relationships) as a downloadable file.
+
+        Unlike ``GET /graphs``, which returns a bounded, connected subgraph
+        for interactive viewing, this dumps the entire graph -- intended for
+        offline review, backup, or manual editing outside the running
+        instance. Delegates to :meth:`LightRAG.aexport_data`, writing to a
+        server-managed temporary file (never a client-supplied path) that is
+        removed once the response has been fully sent.
+
+        Args:
+            file_format: Output format -- csv, excel, md, or txt.
+            include_vector_data: Whether to include embedding-vector
+                metadata alongside each entity/relation.
+
+        Returns:
+            FileResponse: The export file as a binary attachment.
+
+        Raises:
+            HTTPException: On an unexpected error while building or writing
+                the export (500).
+        """
+        suffix = _EXPORT_SUFFIXES[file_format]
+        fd, tmp_path_str = tempfile.mkstemp(
+            suffix=suffix, prefix="lightrag_graph_export_"
+        )
+        os.close(fd)
+        tmp_path = Path(tmp_path_str)
+        try:
+            await rag.aexport_data(
+                str(tmp_path),
+                file_format=file_format,
+                include_vector_data=include_vector_data,
+            )
+        except Exception as e:
+            tmp_path.unlink(missing_ok=True)
+            logger.error(f"Error exporting graph as '{file_format}': {str(e)}")
+            logger.error(traceback.format_exc())
+            raise internal_server_error(e)
+
+        return FileResponse(
+            path=tmp_path,
+            filename=f"lightrag_graph_export{suffix}",
+            media_type=_EXPORT_MEDIA_TYPES[file_format],
+            background=BackgroundTask(tmp_path.unlink, missing_ok=True),
+        )
 
     return router
