@@ -538,7 +538,9 @@ class TestLoginConsentBundle:
     def test_half_a_configuration_leaves_the_gate_off(
         self, tmp_path, login, agreements
     ):
-        bundle = add_login_consent(make_bundle(tmp_path), login=login, agreements=agreements)
+        bundle = add_login_consent(
+            make_bundle(tmp_path), login=login, agreements=agreements
+        )
         snapshot = load_ui_customization_snapshot(bundle)
         assert snapshot.locales["zh"].consent_required is False
 
@@ -563,7 +565,9 @@ class TestLoginConsentBundle:
             load_ui_customization_snapshot(bundle)
 
     @pytest.mark.parametrize("field_name", ["login", "agreements"])
-    def test_optional_templates_obey_the_required_ones_rules(self, tmp_path, field_name):
+    def test_optional_templates_obey_the_required_ones_rules(
+        self, tmp_path, field_name
+    ):
         """Path containment, existence and the size limit are NOT relaxed."""
         for bad_path, match in (
             ("../../etc/passwd", "traversal"),
@@ -745,9 +749,11 @@ class TestCustomizationEndpointWithBundle:
         return TestClient(_build_app(tmp_path, monkeypatch, *cli_args))
 
     def test_login_consent_absent_by_default(self, tmp_path, monkeypatch):
-        data = self._client(tmp_path, monkeypatch).get(
-            "/ui/customization?locale=zh"
-        ).json()
+        data = (
+            self._client(tmp_path, monkeypatch)
+            .get("/ui/customization?locale=zh")
+            .json()
+        )
         assert data["login"] is None
         assert data["agreements"] is None
         assert data["consent_required"] is False
