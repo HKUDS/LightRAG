@@ -26,6 +26,17 @@
  * called once at store construction. Every later change to the store's
  * `webuiTitle` comes from `login()` or `setCustomTitle()`, i.e. straight from
  * a server response, and goes through `applyServerDocumentTitle`.
+ *
+ * The injected field is THREE-STATE, and the difference decides whether the
+ * localStorage cache may be used at all:
+ *
+ * - a string — this deployment's title;
+ * - `null` — the server published the field and the deployment has NO title.
+ *   The backend always writes the key (`WEBUI_TITLE` or `None`), so this is a
+ *   statement, not an absence, and it overrides the cache;
+ * - `undefined` — the field was never injected: the dev server publishes only
+ *   the prefixes, and a page may be served by a build older than the field.
+ *   Only here does the cache get a say.
  */
 import { getRuntimeWebuiTitle } from '@/lib/runtimeConfig'
 
@@ -45,13 +56,26 @@ const setTitle = (title: string): void => {
  * The title before any server response has landed in this page's lifetime.
  *
  * `cachedTitle` is the store's start value, restored from localStorage — a
- * title this browser saw on some EARLIER visit. The injected value wins over
- * it because it came from the response that served this very page, so it
- * cannot be out of date; the cache is what carries a title in dev, where
- * nothing is injected.
+ * title this browser saw on some EARLIER visit, so it may name a title the
+ * deployment has since changed or cleared.
+ *
+ * Whenever the page carries an injected field it decides alone, because it
+ * came from the response that served this very page and therefore cannot be
+ * out of date — including when it is `null`, which says the deployment has no
+ * title and must leave the static `LightRAG` in the tab. Falling through to
+ * the cache there would rename the tab to a title the deployment dropped, and
+ * it would stay wrong until a `/health` or login response landed — or forever,
+ * if none does (an unreachable backend, or a user sitting on the login page).
  */
 export function resolveInitialDocumentTitle(cachedTitle?: string | null): string {
-  return clean(getRuntimeWebuiTitle()) || clean(cachedTitle) || DEFAULT_DOCUMENT_TITLE
+  const injected = getRuntimeWebuiTitle()
+  if (injected !== undefined) {
+    return clean(injected) || DEFAULT_DOCUMENT_TITLE
+  }
+
+  // Nothing was injected (dev server, or a build older than the field): the
+  // cache is the only evidence this page has.
+  return clean(cachedTitle) || DEFAULT_DOCUMENT_TITLE
 }
 
 /**

@@ -41,7 +41,24 @@ describe('resolveInitialDocumentTitle', () => {
     expect(resolveInitialDocumentTitle('Stale KB')).toBe('Current KB')
   })
 
+  test('an injected null overrides the cache — the deployment has no title', () => {
+    // Regression: the backend ALWAYS writes the field (WEBUI_TITLE or None),
+    // so a null is the server stating there is no title, not a missing
+    // injection. Reloading after the deployment cleared WEBUI_TITLE must keep
+    // the static default rather than restoring the previous visit's title,
+    // which would otherwise stand until a /health response landed — or
+    // forever, if the backend is unreachable.
+    setInjectedTitle(null)
+    expect(resolveInitialDocumentTitle('Stale KB')).toBe(DEFAULT_DOCUMENT_TITLE)
+  })
+
   test('uses the cached title when nothing was injected (dev server)', () => {
+    // `undefined` is the other state: the dev server publishes only the
+    // prefixes, and an older build may predate the field entirely. There the
+    // cache is the only evidence the page has.
+    g.window = { __LIGHTRAG_CONFIG__: {} }
+    expect(resolveInitialDocumentTitle('My Graph KB')).toBe('My Graph KB')
+
     g.window = {}
     expect(resolveInitialDocumentTitle('My Graph KB')).toBe('My Graph KB')
   })
@@ -53,10 +70,10 @@ describe('resolveInitialDocumentTitle', () => {
     expect(resolveInitialDocumentTitle('   ')).toBe(DEFAULT_DOCUMENT_TITLE)
   })
 
-  test('ignores a blank injected title', () => {
+  test('a blank injected title is a published value, not a missing one', () => {
     setInjectedTitle('  ')
     expect(resolveInitialDocumentTitle(null)).toBe(DEFAULT_DOCUMENT_TITLE)
-    expect(resolveInitialDocumentTitle('My Graph KB')).toBe('My Graph KB')
+    expect(resolveInitialDocumentTitle('Stale KB')).toBe(DEFAULT_DOCUMENT_TITLE)
   })
 
   test('tolerates a missing window (SSR / non-browser import)', () => {
