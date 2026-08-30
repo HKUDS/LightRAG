@@ -1732,7 +1732,6 @@ _lightrag_volumes_have_container_target() {
   local in_lightrag="no"
   local in_volumes="no"
   local mount_spec=""
-  local remainder=""
   local container_path=""
 
   if [[ ! -f "$compose_file" || -z "$target_path" ]]; then
@@ -1765,12 +1764,17 @@ _lightrag_volumes_have_container_target() {
           fi
           continue
         fi
-        remainder="${mount_spec#*:}"
-        if [[ "$remainder" == "$mount_spec" ]]; then
-          continue
-        fi
-        container_path="${remainder%%:*}"
-        if [[ "$container_path" == "$target_path" ]]; then
+        # Short syntax is `source[:target[:mode]]`, and the SOURCE may carry
+        # colons of its own: a Compose default such as
+        # `${UI_BUNDLE_SOURCE:-./branding}` has one inside `:-`, so splitting
+        # left to right lands in the middle of the interpolation and never
+        # reaches the target. Match the target where it actually sits instead
+        # -- after a colon, then either the end of the spec or the mode. What
+        # the source contains cannot mislead this, and a longer path that
+        # merely starts with the target (`…/ui_templates_backup`) still does
+        # not match.
+        if [[ "$mount_spec" == *":${target_path}" || \
+              "$mount_spec" == *":${target_path}:"* ]]; then
           return 0
         fi
       elif [[ "$in_volumes" == "yes" && "$line" =~ ^[[:space:]]{8,}target:[[:space:]]+(.+)$ ]]; then

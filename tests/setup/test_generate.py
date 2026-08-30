@@ -605,6 +605,89 @@ def test_strip_yaml_inline_comment_respects_quotes_and_bare_hashes() -> None:
         assert actual == expected, f"{value!r} -> {actual!r}, expected {expected!r}"
 
 
+def test_generate_docker_compose_respects_interpolated_mount_sources(
+    tmp_path: Path,
+) -> None:
+    """A colon inside the SOURCE must not hide a literal container target.
+
+    Short syntax is `source[:target[:mode]]`, but a Compose default such as
+    `${UI_BUNDLE_SOURCE:-./branding}` carries a colon inside `:-`, so a
+    left-to-right split lands in the middle of the interpolation and never
+    reaches the target. The target itself is literal here and matches the
+    convention (`/app/data/ui_templates`); only the host source is
+    configurable, so the mount must be recognised and not duplicated.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    volumes:",
+            '      - "${UI_BUNDLE_SOURCE:-./branding}:/app/data/ui_templates:ro"',
+            '      - "${PROMPT_SOURCE:-./branding/prompts}:/app/data/prompts"',
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert generated_compose.count("/app/data/prompts") == 1
+    assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
+    assert "${UI_BUNDLE_SOURCE:-./branding}" in generated_compose
+
+
+def test_generate_docker_compose_injects_when_only_a_longer_path_matches(
+    tmp_path: Path,
+) -> None:
+    """A path that merely STARTS with the managed target does not cover it.
+
+    The target is matched after a colon and up to the end of the spec or the
+    mode, so `/app/data/ui_templates_backup` is a different mount and the
+    managed one is still injected. Guards the substring match against the
+    obvious false positive.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    volumes:",
+            "      - ./backup:/app/data/ui_templates_backup:ro",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "./data/ui_templates:/app/data/ui_templates:ro" in generated_compose
+    assert "./backup:/app/data/ui_templates_backup:ro" in generated_compose
+
+
 def test_generate_docker_compose_preserves_non_managed_named_volumes(
     tmp_path: Path,
 ) -> None:
