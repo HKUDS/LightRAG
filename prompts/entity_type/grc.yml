@@ -1,0 +1,116 @@
+### GRC entity-extraction prompt profile.
+### Extracted verbatim from lightrag/prompt_v1.py so the taxonomy and
+### examples are delivered by configuration (ENTITY_TYPE_PROMPT_FILE)
+### instead of by editing imports.
+###
+### Load with:  ENTITY_TYPE_PROMPT_FILE=grc.yml
+### Resolved as: PROMPT_DIR(./prompts)/entity_type/grc.yml
+
+entity_types_guidance: |
+  Classify each entity using one of the following GRC-specific types. If no type fits, use `Other`.
+
+  - Framework: Voluntary frameworks, standards, and models (e.g., ISO/IEC 27001, SOC 2, NIST CSF, COBIT, COSO ERM, ISO 31000, NIST RMF, ISO/IEC 42001, ISO 37301, OCEG GRC Capability Model, Three Lines Model, CSA Cloud Controls Matrix, CIS Critical Security Controls)
+  - Regulation: Laws, directives, regulations, and mandatory or contractually enforced compliance schemes (e.g., GDPR, HIPAA, SOX, NIS2, DORA, CMMC, PCI DSS)
+  - Requirement: A specific clause, article, section, control requirement, or obligation within a Framework or Regulation (e.g., ISO 27001 Clause 6.1.2, GDPR Article 32, PCI DSS Requirement 8.3, SOC 2 CC6.1, NIST CSF PR.AC-1)
+  - Control: An implemented or planned safeguard, countermeasure, or control activity (e.g., multi-factor authentication, encryption at rest, segregation of duties, quarterly access reviews)
+  - ControlObjective: The desired outcome or assurance goal a control is intended to achieve (e.g., ensure only authorized users access production systems)
+  - Policy: Internal governance documents — policies, standards, procedures, guidelines, charters, and plans (e.g., Information Security Policy, Incident Response Plan, Code of Conduct, Risk Appetite Statement)
+  - Risk: An identified risk, risk scenario, or risk category (e.g., third-party risk, data breach risk, operational risk, model risk)
+  - Threat: A threat actor, threat event, or attack technique (e.g., ransomware group, phishing campaign, insider threat)
+  - Vulnerability: A weakness, flaw, or control deficiency that can be exploited (e.g., unpatched CVE, cloud misconfiguration, missing encryption)
+  - Asset: Systems, applications, infrastructure, facilities, and services subject to protection or in scope of compliance (e.g., cardholder data environment, ERP system, cloud tenant, data center)
+  - Data: Data categories and information types (e.g., PII, PHI, cardholder data, special categories of personal data, audit logs, trade secrets)
+  - Process: Business or GRC processes and activities (e.g., risk assessment, vendor due diligence, change management, access provisioning, business continuity planning)
+  - Role: Organizational roles, functions, and bodies with GRC responsibilities (e.g., CISO, DPO, Board of Directors, Audit Committee, First Line, risk owner, data controller, data processor)
+  - Organization: Legal entities and organizational units — companies, business units, regulators, supervisory authorities, auditors, certification bodies, vendors (e.g., SEC, EDPB, external audit firm, cloud service provider)
+  - Assessment: Audits, assessments, certifications, examinations, and tests (e.g., SOC 2 Type II audit, internal audit, penetration test, DPIA, ISO 27001 certification audit, risk assessment exercise)
+  - Finding: Nonconformities, deficiencies, observations, gaps, and exceptions raised by assessments (e.g., major nonconformity, material weakness, control exception, audit observation)
+  - Incident: Security, privacy, or compliance incidents, breaches, and violations that have materialized (e.g., data breach, regulatory violation, service outage)
+  - RemediationAction: Corrective actions, risk treatments, remediation plans, and mitigation measures (e.g., corrective action plan, POA&M item, risk acceptance decision)
+  - Mitigaction: A specific mitigation measure or risk treatment applied to reduce risk (e.g., patching a vulnerability, implementing multi-factor authentication, encrypting sensitive data)
+  - Metric: Measurements, indicators, and thresholds (e.g., KPIs, KRIs, risk appetite, risk tolerance, SLAs, maturity levels, compliance scores)
+  - Risk Officer: An individual responsible for managing and overseeing risk within an organization (e.g., Chief Risk Officer, risk manager)
+  - Auditor: An individual or entity responsible for conducting audits and assessments (e.g., internal auditor, external auditor, certification body)
+  - Management and Executive Leadership: Individuals responsible for strategic decision-making and overall governance within an organization (e.g., CEO, CFO, CIO, Board of Directors)
+  - IT and Technology Teams: Individuals and groups responsible for managing and supporting an organization's technology infrastructure and systems (e.g., IT administrators, network engineers, security operations teams)
+  - Legal and Compliance Teams: Individuals and groups responsible for ensuring an organization's adherence to legal, regulatory, and internal compliance requirements (e.g., legal counsel, compliance officers, privacy officers)
+  - Audit and Assurance Teams: Individuals and groups responsible for conducting audits, assessments, and assurance activities to evaluate an organization's controls, processes, and compliance (e.g., internal audit team, external auditors, certification bodies)
+  - Internal Audit Team: Individuals and groups within an organization responsible for conducting internal audits to assess the effectiveness of controls, risk management, and governance processes
+  - External Audit Team: Individuals and groups outside an organization responsible for conducting independent audits and assessments to evaluate an organization's controls, processes, and compliance (e.g., external auditors, certification bodies)
+  - Process and Control Owners: Individuals responsible for managing and overseeing specific processes, controls, or functions within an organization (e.g., process owners, control owners, risk owners)
+  - Compliance and Legal Teams: Individuals and groups responsible for ensuring an organization's adherence to legal, regulatory, and internal compliance requirements (e.g., legal counsel, compliance officers, privacy officers)
+  - Security and Risk Management Teams: Individuals and groups responsible for managing and overseeing an organization's security and risk management activities (e.g., security operations teams, risk management teams, incident response teams)
+  - External Vendors and Service Providers: Individuals and groups outside an organization that provide goods, services, or support and are subject to contractual obligations and oversight (e.g., cloud service providers, managed service providers, third-party vendors)
+  - Board of Directors or Audit Committee: Individuals responsible for overseeing the overall governance, strategic direction, and risk management of an organization (e.g., members of the board of directors, audit committee members)
+  - Employee or End User: Individuals within an organization who use or interact with systems, processes, or assets as part of their role or responsibilities (e.g., staff members, contractors, temporary workers)
+  - IT Architects and Engineers: Individuals responsible for designing, implementing, and maintaining an organization's technology infrastructure and systems (e.g., network architects, software engineers, system administrators)
+  - Jurisdiction: Geographic or legal jurisdictions where obligations apply (e.g., European Union, United States, California)
+entity_extraction_examples:
+  - |
+    entity{tuple_delimiter}<framework_or_regulation_name>{tuple_delimiter}Framework{tuple_delimiter}<framework_description>
+    entity{tuple_delimiter}<qualified_requirement_id>{tuple_delimiter}Requirement{tuple_delimiter}<requirement_description>
+    entity{tuple_delimiter}<control_name>{tuple_delimiter}Control{tuple_delimiter}<control_description>
+    entity{tuple_delimiter}<risk_name>{tuple_delimiter}Risk{tuple_delimiter}<risk_description>
+    entity{tuple_delimiter}<role_name>{tuple_delimiter}Role{tuple_delimiter}<role_description>
+    relation{tuple_delimiter}<qualified_requirement_id>{tuple_delimiter}<framework_or_regulation_name>{tuple_delimiter}part_of{tuple_delimiter}<relationship_description>
+    relation{tuple_delimiter}<control_name>{tuple_delimiter}<qualified_requirement_id>{tuple_delimiter}implements{tuple_delimiter}<relationship_description>
+    relation{tuple_delimiter}<control_name>{tuple_delimiter}<risk_name>{tuple_delimiter}mitigates{tuple_delimiter}<relationship_description>
+    relation{tuple_delimiter}<role_name>{tuple_delimiter}<risk_name>{tuple_delimiter}owns{tuple_delimiter}<relationship_description>
+    {completion_delimiter}
+entity_extraction_json_examples:
+  - |
+    {
+      "entities": [
+        {
+          "name": "<framework_or_regulation_name>",
+          "type": "Framework",
+          "description": "<framework_description>"
+        },
+        {
+          "name": "<qualified_requirement_id>",
+          "type": "Requirement",
+          "description": "<requirement_description>"
+        },
+        {
+          "name": "<control_name>",
+          "type": "Control",
+          "description": "<control_description>"
+        },
+        {
+          "name": "<risk_name>",
+          "type": "Risk",
+          "description": "<risk_description>"
+        },
+        {
+          "name": "<role_name>",
+          "type": "Role",
+          "description": "<role_description>"
+        }
+      ],
+      "relationships": [
+        {
+          "source": "<qualified_requirement_id>",
+          "target": "<framework_or_regulation_name>",
+          "keywords": "part_of",
+          "description": "<relationship_description>"
+        },
+        {
+          "source": "<control_name>",
+          "target": "<qualified_requirement_id>",
+          "keywords": "implements",
+          "description": "<relationship_description>"
+        },
+        {
+          "source": "<control_name>",
+          "target": "<risk_name>",
+          "keywords": "mitigates",
+          "description": "<relationship_description>"
+        },
+        {
+          "source": "<role_name>",
+          "target": "<risk_name>",
+          "keywords": "owns",
+          "description": "<relationship_description>"
+        }
+      ]
+    }

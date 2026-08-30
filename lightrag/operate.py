@@ -74,7 +74,7 @@ from lightrag.chunk_schema import (
     format_parent_headings,
     strip_internal_multimodal_markup_for_extraction,
 )
-from lightrag.prompt_v1 import PROMPTS, resolve_entity_extraction_prompt_profile
+from lightrag.prompt import PROMPTS, resolve_entity_extraction_prompt_profile
 from lightrag.constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_ENTITY_TOKENS,
