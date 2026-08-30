@@ -6,6 +6,10 @@ import { errorMessage } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
 import type { MessageWithError } from '@/types/retrieval'
 import type { QuerySettings } from '@/stores/querySettings'
+import {
+  producesAiGeneratedOutput,
+  restoredAiGeneratedFlag
+} from '@/lib/aiContentNotice'
 import type { RetrievalHistoryStore } from '@/stores/retrievalHistory'
 import { serializeQueryRequest } from './serializeQueryRequest'
 
@@ -160,7 +164,11 @@ export function useQuerySession({
             ...msg,
             id: msg.id || `hist-${Date.now()}-${index}`, // Add ID if missing
             mermaidRendered: msg.mermaidRendered ?? true, // Assume historical mermaid is rendered
-            latexRendered: msg.latexRendered ?? true // Assume historical LaTeX is rendered
+            latexRendered: msg.latexRendered ?? true, // Assume historical LaTeX is rendered
+            // Conversations persisted before the flag existed carry no
+            // origin; resolve it once here so the renderer only ever sees an
+            // explicit boolean.
+            aiGenerated: restoredAiGeneratedFlag(msg)
           }
         } catch (error) {
           console.error('Error processing message:', error)
@@ -257,7 +265,12 @@ export function useQuerySession({
         thinkingTime: null,
         thinkingContent: undefined,
         displayContent: undefined,
-        isThinking: false
+        isThinking: false,
+        // Flipped on by the first chunk of real model output (see
+        // updateAssistantMessage). Explicit rather than left undefined so a
+        // debug-mode answer stays distinguishable from a pre-flag one after a
+        // history round-trip.
+        aiGenerated: false
       }
 
       const prevMessages = [...messages]
@@ -321,6 +334,12 @@ export function useQuerySession({
           const ttft = (Date.now() - responseStartRef.current) / 1000
           assistantMessage.firstTokenTime = parseFloat(ttft.toFixed(1))
         }
+        // Any non-error chunk of a query that actually calls the answering LLM
+        // is model-written text — including the partial answer a stream that
+        // later fails has already delivered.
+        if (!isError && chunk && producesAiGeneratedOutput(snapshot)) {
+          assistantMessage.aiGenerated = true
+        }
         assistantMessage.content += chunk
 
         // Start thinking timer on first sight of think tag
@@ -382,6 +401,7 @@ export function useQuerySession({
               displayContent: assistantMessage.displayContent,
               isThinking: assistantMessage.isThinking,
               isError: isError,
+              aiGenerated: assistantMessage.aiGenerated,
               mermaidRendered: assistantMessage.mermaidRendered,
               latexRendered: assistantMessage.latexRendered,
               thinkingTime: assistantMessage.thinkingTime,

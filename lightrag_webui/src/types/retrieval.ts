@@ -13,6 +13,16 @@ export type MessageWithError = Message & {
   id: string // Unique identifier for stable React keys
   isError?: boolean
   isThinking?: boolean // Flag to indicate if the message is in a "thinking" state
+  /**
+   * Whether this message's text was written by the answering LLM. Decided by
+   * the query session (see `lib/aiContentNotice.ts`), never re-derived from
+   * the message's shape: a context-only debug response is not generated even
+   * though it is a normal assistant bubble, and a stream that failed midway
+   * IS generated even though it is an error bubble. Drives the optional
+   * AI-generated content notice; persisted with the message so a restored
+   * conversation keeps the distinction.
+   */
+  aiGenerated?: boolean
   isAborted?: boolean // Flag to indicate the user terminated this query (response may be incomplete)
   /**
    * Indicates if the mermaid diagram in this message has been rendered.

@@ -19,6 +19,7 @@ import { oneLight, oneDark } from 'react-syntax-highlighter/dist/cjs/styles/pris
 import { LoaderIcon, ChevronDownIcon, ClockIcon, ZapIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useAiContentNoticeStore } from '@/stores/aiContentNotice'
+import { shouldShowAiContentNotice } from '@/lib/aiContentNotice'
 
 // KaTeX configuration options interface
 interface KaTeXOptions {
@@ -178,21 +179,22 @@ export const ChatMessage = ({
   const hasContent = !!finalDisplayContent && finalDisplayContent.trim() !== ''
 
   // AI-generated content notice (ENABLE_AI_CONTENT_NOTICE): a trailing item on
-  // the meta row below the answer, never a line of its own. Only for assistant
-  // messages that actually carry an answer — a user's own text is not
-  // generated, and an error bubble (or a message still waiting for its first
-  // token) has no generated content to label yet. It lives outside the
-  // markdown and outside `message.content`, so it never reaches the copy
-  // button, the retrieval history or the API response.
-  const aiContentNotice =
-    aiContentNoticeEnabled &&
-    message.role === 'assistant' &&
-    !message.isError &&
-    hasContent ? (
-        <span className="italic" data-testid="ai-content-notice">
-          {t('retrievePanel.chatMessage.aiContentNotice')}
-        </span>
-      ) : null
+  // the meta row below the answer, never a line of its own. What may carry the
+  // label is decided by the query session and travels on the message
+  // (`aiGenerated`) — a context-only debug response is not generated, while a
+  // stream that failed after emitting real answer text still is. It lives
+  // outside the markdown and outside `message.content`, so it never reaches
+  // the copy button, the retrieval history or the API response.
+  const aiContentNotice = shouldShowAiContentNotice({
+    enabled: aiContentNoticeEnabled,
+    role: message.role,
+    aiGenerated: message.aiGenerated,
+    hasContent
+  }) ? (
+      <span className="italic" data-testid="ai-content-notice">
+        {t('retrievePanel.chatMessage.aiContentNotice')}
+      </span>
+    ) : null
 
   // Response time (+ first-token time) row. While no answer text exists yet it
   // sits above the "Thinking..." hint (so the time stays put as the hint
