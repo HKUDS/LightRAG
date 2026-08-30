@@ -63,7 +63,6 @@ from lightrag.base import (
     CURSOR_START,
     CursorAfter,
     CursorPosition,
-    DocProcessingStatus,
     DocStatus,
     SourceAbsent,
     SourceConflict,
@@ -6275,20 +6274,22 @@ def create_document_routes(
                 DocStatus.FAILED,
             )
 
-            tasks = [rag.get_docs_by_status(status) for status in statuses]
-            results: List[Dict[str, DocProcessingStatus]] = await asyncio.gather(*tasks)
+            # One batched read instead of one full scan (and lock
+            # acquisition) per status — DocStatusStorage.get_docs_by_statuses
+            # exists precisely for this listing pattern.
+            all_docs = await rag.doc_status.get_docs_by_statuses(list(statuses))
 
             response = DocsStatusesResponse()
             total_documents = 0
             max_documents = 1000
 
-            # Convert results to lists for easier processing
+            # Bucket by each document's own status
             status_documents = []
-            for idx, result in enumerate(results):
-                status = statuses[idx]
+            for status in statuses:
                 docs_list = []
-                for doc_id, doc_status in result.items():
-                    docs_list.append((doc_id, doc_status))
+                for doc_id, doc_status in all_docs.items():
+                    if doc_status.status == status:
+                        docs_list.append((doc_id, doc_status))
                 status_documents.append((status, docs_list))
 
             # Fair distribution: round-robin across statuses
@@ -6296,18 +6297,9 @@ def create_document_routes(
                 status_documents
             )  # Track current index for each status
             current_status_idx = 0
+            remaining = sum(len(docs_list) for _, docs_list in status_documents)
 
-            while total_documents < max_documents:
-                # Check if we have any documents left to process
-                has_remaining = False
-                for status_idx, (status, docs_list) in enumerate(status_documents):
-                    if status_indices[status_idx] < len(docs_list):
-                        has_remaining = True
-                        break
-
-                if not has_remaining:
-                    break
-
+            while total_documents < max_documents and remaining > 0:
                 # Try to get a document from the current status
                 status, docs_list = status_documents[current_status_idx]
                 current_index = status_indices[current_status_idx]
@@ -6336,6 +6328,7 @@ def create_document_routes(
 
                     status_indices[current_status_idx] += 1
                     total_documents += 1
+                    remaining -= 1
 
                 # Move to next status (round-robin)
                 current_status_idx = (current_status_idx + 1) % len(status_documents)
