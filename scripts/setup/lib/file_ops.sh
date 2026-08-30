@@ -874,13 +874,42 @@ _strip_yaml_inline_comment() {
   local value="$1"
   local quote="${value:0:1}"
   local body=""
+  local scan=0
+  local body_length=0
+  local char=""
 
   if [[ "$quote" == \" || "$quote" == \' ]]; then
     body="${value:1}"
-    if [[ "$body" == *"$quote"* ]]; then
-      printf '%s%s%s' "$quote" "${body%%"$quote"*}" "$quote"
-      return 0
-    fi
+    # Walk to the CLOSING delimiter rather than the first quote byte: both
+    # YAML quoting styles can carry a quote inside the scalar.
+    #
+    #   single-quoted: '' is one literal quote -- './customer''s-brand'
+    #   double-quoted: \" is one literal quote, and \\ is one backslash, so a
+    #                  trailing \\ must not be read as escaping the delimiter
+    #
+    # Cutting at the first quote truncates such a scalar, and a truncated
+    # mount spec no longer shows its container target -- the caller then
+    # appends a duplicate mount for a path that is already mounted.
+    scan=0
+    body_length=${#body}
+    while ((scan < body_length)); do
+      char="${body:scan:1}"
+      if [[ "$quote" == \" && "$char" == "\\" ]]; then
+        scan=$((scan + 2))  # backslash escape: skip the escaped byte whole
+        continue
+      fi
+      if [[ "$char" == "$quote" ]]; then
+        if [[ "$quote" == \' && "${body:scan+1:1}" == "$quote" ]]; then
+          scan=$((scan + 2))  # '' -- an escaped quote, not the delimiter
+          continue
+        fi
+        printf '%s%s%s' "$quote" "${body:0:scan}" "$quote"
+        return 0
+      fi
+      # Assignment form, never `((scan++))`: that evaluates to the OLD
+      # value, so at 0 it returns exit status 1 and trips `set -e`.
+      scan=$((scan + 1))
+    done
     # Unterminated quote: fall through and treat it as a plain scalar.
   fi
 

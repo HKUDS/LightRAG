@@ -591,6 +591,17 @@ def test_strip_yaml_inline_comment_respects_quotes_and_bare_hashes() -> None:
         ("'/app/q # z'", "'/app/q # z'"),
         ("/app/x\t# tab comment", "/app/x"),
         ("./a:/app/b:ro # note", "./a:/app/b:ro"),
+        # `''` is one literal quote inside a single-quoted scalar, so the
+        # closing delimiter is the LAST quote, not the first.
+        (
+            "'./customer''s-brand:/app/x:ro' # branding",
+            "'./customer''s-brand:/app/x:ro'",
+        ),
+        # `\\"` is one literal quote inside a double-quoted scalar.
+        ('"./say-\\"hi\\":/app/x" # note', '"./say-\\"hi\\":/app/x"'),
+        # A trailing `\\\\` is an escaped backslash and must not be read as
+        # escaping the closing delimiter.
+        ('"./win\\\\:/app/x" # note', '"./win\\\\:/app/x"'),
     ]
     script_lines = [
         "set -euo pipefail",
@@ -741,6 +752,47 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
         encoding="utf-8"
     )
     assert generated_compose.count("/app/data/ui_templates") == 1
+    assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
+
+
+def test_generate_docker_compose_respects_escaped_quotes_in_mount_specs(
+    tmp_path: Path,
+) -> None:
+    """A YAML-escaped quote inside a mount spec must not truncate it.
+
+    Both quoting styles can carry a quote inside the scalar: `''` in a
+    single-quoted one, `\\"` in a double-quoted one. Cutting at the first
+    quote byte truncates the spec, the container target disappears with the
+    tail, and a duplicate mount is appended for a path already mounted.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    volumes:",
+            "      - './customer''s-brand:/app/data/ui_templates:ro' # branding",
+            '      - "./say-\\"hi\\":/app/data/prompts" # quoted',
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert generated_compose.count("/app/data/prompts") == 1
     assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
 
 
