@@ -48,6 +48,7 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [checkingAuth, setCheckingAuth] = useState(true)
+  const [authStatusTitle, setAuthStatusTitle] = useState<string | null>(null)
   // The tick is stored WITH the document it was given for; a language switch
   // replaces that document, and consent must not survive the swap.
   const [consentTick, setConsentTick] = useState<LoginConsentTick>({
@@ -62,7 +63,7 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
 
   // Fired in PARALLEL with the /auth-status probe below (both are effects of
   // this same mount), so the consent gate costs no serial round trip.
-  const content = useCustomizedContent()
+  const content = useCustomizedContent(authStatusTitle)
   const consentAgreed = isAgreedTo(consentTick, content.agreementsMarkdown)
   const consentState = {
     // NOT content.loading: on a language switch the store keeps the previous
@@ -102,6 +103,7 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
 
         // Check auth status
         const status = await getAuthStatus()
+        setAuthStatusTitle(status.webui_title || null)
 
         // Set session flag for version check to avoid duplicate checks in App component
         if (status.core_version || status.api_version) {

@@ -30,4 +30,12 @@ describe('login logo customization wiring', () => {
     expect(welcomeSource).toContain('{content.brandTitle}</h1>')
     expect(source).not.toContain('>LightRAG</h1>')
   })
+
+  test('passes the fresh auth-status title into the customization fallback', () => {
+    expect(source).toContain(
+      'const [authStatusTitle, setAuthStatusTitle] = useState<string | null>(null)'
+    )
+    expect(source).toContain('setAuthStatusTitle(status.webui_title || null)')
+    expect(source).toContain('useCustomizedContent(authStatusTitle)')
+  })
 })

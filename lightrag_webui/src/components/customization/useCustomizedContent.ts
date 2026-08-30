@@ -8,6 +8,7 @@ import {
 } from '@/stores/customization'
 import { resolveUiLanguage } from '@/lib/browserLanguage'
 import defaultLogoUrl from '@/assets/logo.svg'
+import { resolveBrandTitle } from '@/components/customization/brandTitle'
 
 /**
  * Resolves the branding content the WebUI shows (welcome page, query empty
@@ -65,7 +66,9 @@ export interface CustomizedContent {
   consentPending: boolean
 }
 
-export function useCustomizedContent(): CustomizedContent {
+export function useCustomizedContent(
+  authStatusTitle?: string | null
+): CustomizedContent {
   const { t } = useTranslation()
   const language = useSettingsStore.use.language()
   const languageUserSelected = useSettingsStore.use.languageUserSelected()
@@ -133,7 +136,7 @@ export function useCustomizedContent(): CustomizedContent {
       logoAlt: snapshot.brand.logo_alt ?? '',
       welcomeMarkdown: snapshot.welcome?.content ?? '',
       queryEmptyMarkdown: snapshot.query_empty?.content ?? '',
-      brandTitle: snapshot.brand.title || 'LightRAG',
+      brandTitle: resolveBrandTitle(snapshot.brand.title, authStatusTitle),
       brandDescription: snapshot.brand.description ?? null,
       loginMarkdown: snapshot.login?.content ?? '',
       agreementsMarkdown: snapshot.agreements?.content ?? null,
@@ -151,7 +154,7 @@ export function useCustomizedContent(): CustomizedContent {
     logoAlt: 'LightRAG',
     welcomeMarkdown: t('workspace.welcome.defaultMarkdown'),
     queryEmptyMarkdown: t('workspace.queryEmpty.defaultMarkdown'),
-    brandTitle: snapshot?.brand?.title || 'LightRAG',
+    brandTitle: resolveBrandTitle(snapshot?.brand?.title, authStatusTitle),
     brandDescription: snapshot?.brand?.description ?? null,
     // No bundle, or a hard failure: no deployment-specific agreement text
     // exists to consent TO, so the gate stays off. Fail-open is the only
