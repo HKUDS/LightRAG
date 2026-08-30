@@ -1039,8 +1039,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
     assert "  vllm-embed:" in result
     assert (
-        '      UI_TEMPLATES_DIR: "/app/data/ui_templates"\n'
-        "    depends_on:\n" in result
+        '      UI_TEMPLATES_DIR: "/app/data/ui_templates"\n    depends_on:\n' in result
     )
     assert "    restart: unless-stopped\n\nnetworks:\n" in result
 
