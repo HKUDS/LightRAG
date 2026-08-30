@@ -3,6 +3,7 @@ import {
   CONSENT_LABEL_MARKER,
   isAgreedTo,
   isLoginBlockedByConsent,
+  resolveConsentDocuments,
   shouldShowLoginConsent,
   splitConsentLabel
 } from './loginConsent'
@@ -126,5 +127,31 @@ describe('isAgreedTo', () => {
   test('there is no agreeing to a document that does not exist', () => {
     expect(isAgreedTo(tick(null, true), null)).toBe(false)
     expect(isAgreedTo(tick('# 协议', true), null)).toBe(false)
+  })
+})
+
+describe('resolveConsentDocuments', () => {
+  const translated = 'Privacy Policy and Model Service Agreement'
+
+  test('the bundle wording wins over the WebUI translation', () => {
+    // The deployment names its document; the translation cannot know it.
+    expect(resolveConsentDocuments('Example Corp Terms of Service', translated)).toBe(
+      'Example Corp Terms of Service'
+    )
+  })
+
+  test('a bundle that declares no name keeps the translated default', () => {
+    // Bundles written before the manifest field existed must keep working.
+    expect(resolveConsentDocuments(null, translated)).toBe(translated)
+    expect(resolveConsentDocuments(undefined, translated)).toBe(translated)
+  })
+
+  test('a blank declaration falls back instead of naming nothing', () => {
+    expect(resolveConsentDocuments('', translated)).toBe(translated)
+    expect(resolveConsentDocuments('   \n ', translated)).toBe(translated)
+  })
+
+  test('surrounding whitespace never reaches the label', () => {
+    expect(resolveConsentDocuments('  Terms  ', translated)).toBe('Terms')
   })
 })

@@ -2,6 +2,25 @@
 
 @plugin 'tailwindcss-animate';
 @plugin 'tailwind-scrollbar';
+/* The `prose` tier the Markdown surfaces are written against: the login
+   page's user-agreement dialog, the customized welcome / query-empty texts
+   and the chat messages all carry `prose dark:prose-invert`. Tailwind v4
+   does not read `tailwind.config.js` unless it is pointed at it, so the
+   plugin has to be registered here — without this line every one of those
+   classes resolves to nothing and the Markdown renders as unstyled text
+   with no heading sizes, list markers, table rules or vertical rhythm. */
+@plugin '@tailwindcss/typography';
+
+/* The typography plugin wraps inline code in literal backticks through
+   `content`. Every Markdown surface here renders `code` as a styled chip
+   (the chat's own <code> classes, the prose tier's monospace run), so the
+   quoting is duplicate punctuation the reader has to look past. Unlayered on
+   purpose: plugin rules live in the `components` layer, and an unlayered
+   rule beats them without a specificity fight. */
+.prose code::before,
+.prose code::after {
+  content: '';
+}
 
 @source '../index.html';
 @source './**/*.{ts,tsx}';

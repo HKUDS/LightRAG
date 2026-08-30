@@ -120,11 +120,20 @@ def make_bundle(root, manifest=None, *, extra_files=None):
     return bundle
 
 
-def add_login_consent(bundle, *, locale="zh", login="# 登录说明", agreements="# 协议"):
+def add_login_consent(
+    bundle,
+    *,
+    locale="zh",
+    login="# 登录说明",
+    agreements="# 协议",
+    consent_documents=None,
+):
     """Declare the login-page blurb and/or the merged agreement document.
 
     `None` for either leaves the field UNDECLARED (the manifest key is not
     written at all), which is how the half-configured cases are staged.
+    `consent_documents` is an INLINE string (the checkbox's link label), not
+    a path, and is likewise only written when given.
     """
     manifest = json.loads((bundle / "manifest.json").read_text("utf-8"))
     for field_name, text in (("login", login), ("agreements", agreements)):
@@ -136,6 +145,8 @@ def add_login_consent(bundle, *, locale="zh", login="# 登录说明", agreements
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, "utf-8")
         manifest["locales"][locale][field_name] = rel
+    if consent_documents is not None:
+        manifest["locales"][locale]["consent_documents"] = consent_documents
     (bundle / "manifest.json").write_text(json.dumps(manifest), "utf-8")
     return bundle
 
@@ -598,6 +609,78 @@ class TestLoginConsentBundle:
         with pytest.raises(UICustomizationError, match="path string or null"):
             load_ui_customization_snapshot(bundle)
 
+
+class TestConsentDocumentsName:
+    """`consent_documents`: how the checkbox NAMES its link.
+
+    An inline string, not a path — the label is one line of text, and a file
+    per language per deployment would be ceremony for it. It names the
+    document the bundle already ships, so it lives beside it in the manifest
+    rather than in the WebUI's translations, which cannot know that a
+    deployment calls its document "Terms of Service".
+    """
+
+    def test_undeclared_by_default(self, tmp_path):
+        snapshot = load_ui_customization_snapshot(make_bundle(tmp_path))
+        assert snapshot.locales["zh"].consent_documents is None
+
+    def test_declared_value_is_carried(self, tmp_path):
+        bundle = add_login_consent(
+            make_bundle(tmp_path), consent_documents="《示例公司服务条款》"
+        )
+        snapshot = load_ui_customization_snapshot(bundle)
+        assert snapshot.locales["zh"].consent_documents == "《示例公司服务条款》"
+        # Per locale, like every other content field.
+        assert snapshot.locales["en"].consent_documents is None
+
+    def test_explicit_null_is_undeclared(self, tmp_path):
+        bundle = add_login_consent(make_bundle(tmp_path), consent_documents=None)
+        manifest = json.loads((bundle / "manifest.json").read_text("utf-8"))
+        manifest["locales"]["zh"]["consent_documents"] = None
+        (bundle / "manifest.json").write_text(json.dumps(manifest), "utf-8")
+        snapshot = load_ui_customization_snapshot(bundle)
+        assert snapshot.locales["zh"].consent_documents is None
+        # The gate is unaffected: the NAME is optional, the documents are not.
+        assert snapshot.locales["zh"].consent_required is True
+
+    def test_it_does_not_switch_the_gate_on(self, tmp_path):
+        """A name without documents is still nothing to agree to.
+
+        `consent_required` stays the login+agreements pair's decision alone,
+        so a stray label can never put a login-blocking checkbox in front of
+        a document that does not exist.
+        """
+        bundle = add_login_consent(
+            make_bundle(tmp_path),
+            login=None,
+            agreements=None,
+            consent_documents="《服务条款》",
+        )
+        snapshot = load_ui_customization_snapshot(bundle)
+        assert snapshot.locales["zh"].consent_documents == "《服务条款》"
+        assert snapshot.locales["zh"].consent_required is False
+
+    @pytest.mark.parametrize("bad", ["", "   \n", 42, [], {"a": 1}, True])
+    def test_blank_or_non_string_is_rejected(self, tmp_path, bad):
+        bundle = make_bundle(tmp_path)
+        manifest = json.loads((bundle / "manifest.json").read_text("utf-8"))
+        manifest["locales"]["zh"]["consent_documents"] = bad
+        (bundle / "manifest.json").write_text(json.dumps(manifest), "utf-8")
+        with pytest.raises(
+            UICustomizationError, match="consent_documents must be a non-empty string"
+        ):
+            load_ui_customization_snapshot(bundle)
+
+    def test_it_participates_in_the_revision(self, tmp_path):
+        """It lives in manifest.json, which the revision already hashes."""
+        first = load_ui_customization_snapshot(
+            add_login_consent(make_bundle(tmp_path), consent_documents="A")
+        ).bundle_revision
+        second = load_ui_customization_snapshot(
+            add_login_consent(make_bundle(tmp_path), consent_documents="B")
+        ).bundle_revision
+        assert first != second
+
     def test_consent_templates_participate_in_the_revision(self, tmp_path):
         """Editing the agreement text must invalidate the bundle revision."""
         bundle = add_login_consent(make_bundle(tmp_path))
@@ -756,6 +839,7 @@ class TestCustomizationEndpointWithBundle:
         )
         assert data["login"] is None
         assert data["agreements"] is None
+        assert data["consent_documents"] is None
         assert data["consent_required"] is False
 
     def test_login_consent_served(self, tmp_path, monkeypatch):
@@ -764,6 +848,25 @@ class TestCustomizationEndpointWithBundle:
         assert data["login"] == {"format": "markdown", "content": "# 登录说明"}
         assert data["agreements"] == {"format": "markdown", "content": "# 协议"}
         assert data["consent_required"] is True
+        # Declared by no locale in this bundle: the WebUI's own translation
+        # names the link, which is why null travels rather than a server-side
+        # default the frontend would have to recognize as one.
+        assert data["consent_documents"] is None
+
+    def test_consent_documents_served(self, tmp_path, monkeypatch):
+        bundle = add_login_consent(
+            make_bundle(tmp_path), consent_documents="《示例公司服务条款》"
+        )
+        monkeypatch.setenv("UI_TEMPLATES_DIR", str(bundle))
+        _stage_frontend(tmp_path, workspace=True)
+        client = TestClient(_build_app(tmp_path, monkeypatch))
+        data = client.get("/ui/customization?locale=zh").json()
+        assert data["consent_documents"] == "《示例公司服务条款》"
+        # The locale that declares none says so, in the same response shape.
+        assert (
+            client.get("/ui/customization?locale=en").json()["consent_documents"]
+            is None
+        )
 
     def test_consent_follows_the_resolved_locale(self, tmp_path, monkeypatch):
         """The gate is a property of the locale actually served.

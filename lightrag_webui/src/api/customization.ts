@@ -38,6 +38,13 @@ export interface UICustomization {
    * agreement — the consent checkbox carries a single link. */
   agreements?: UICustomizationContent | null
   /**
+   * How the consent checkbox NAMES the agreement document in its link
+   * (`locales.<locale>.consent_documents` in the bundle manifest). Absent or
+   * `null` means the bundle declares no name: the WebUI then uses its own
+   * translated default, so this never affects whether the gate exists.
+   */
+  consent_documents?: string | null
+  /**
    * Whether the login page must gate submission behind the consent checkbox.
    * Decided by the SERVER (see `UILocaleContent.consent_required`) and obeyed
    * here — never recomputed from `login`/`agreements`, which travel in this
