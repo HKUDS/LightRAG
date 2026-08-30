@@ -31,6 +31,13 @@ declare global {
        * build serve two entries without either linking into the other.
        */
       webuiPrefix?: string
+      /**
+       * `WEBUI_TITLE`, or absent/null when the deployment sets none. The
+       * server's snippet already assigned it to `document.title` before this
+       * bundle loaded; it is published here so the SPA can fall back to it
+       * while the auth store has no title yet (see `documentTitle`).
+       */
+      webuiTitle?: string | null
     }
   }
 }
@@ -41,4 +48,17 @@ const config =
 /** Browser-visible API prefix; empty string means same-origin / no prefix. */
 export function getRuntimeApiPrefix(): string | undefined {
   return config.apiPrefix
+}
+
+/**
+ * Deployment title (`WEBUI_TITLE`), or undefined/null when none is set.
+ *
+ * Read from the live global rather than the snapshot above: this value is a
+ * display string consulted on demand, so nothing is gained by freezing it at
+ * module-init time, and reading it live keeps the lookup correct whichever
+ * order the snippet and the bundle happen to run in.
+ */
+export function getRuntimeWebuiTitle(): string | null | undefined {
+  if (typeof window === 'undefined') return undefined
+  return window.__LIGHTRAG_CONFIG__?.webuiTitle
 }

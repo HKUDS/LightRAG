@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 
 import pytest
@@ -469,8 +470,373 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     )
     assert "        max_attempts: 10\n\n    volumes:\n" in generated_compose
     assert (
-        "      - ./data/prompts:/app/data/prompts\n\n  sidecar:\n" in generated_compose
+        "      - ./data/prompts:/app/data/prompts\n"
+        "      - ./data/ui_templates:/app/data/ui_templates:ro\n"
+        "\n  sidecar:\n" in generated_compose
     )
+
+
+def test_generate_docker_compose_respects_long_syntax_ui_template_mounts(
+    tmp_path: Path,
+) -> None:
+    """A long-syntax mount already covering a managed target blocks injection.
+
+    Compose's long form names the container path under ``target:``, so a
+    parser that only splits ``source:target`` strings sees no mount and the
+    generator appends a SECOND entry for the same container path -- which
+    Compose rejects as a duplicate mount point, and which would displace the
+    operator's own bundle source. Both key orders are exercised: ``type:``
+    first (the common form) and ``target:`` first (legal, and the one a
+    list-item-only parser is most likely to misread).
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    volumes:",
+            "      - ./data/rag_storage:/app/data/rag_storage",
+            "      - type: bind",
+            "        source: ./branding/acme",
+            "        target: /app/data/ui_templates",
+            "        read_only: true",
+            "      - target: /app/data/prompts",
+            "        type: bind",
+            "        source: ./branding/prompts",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert generated_compose.count("/app/data/prompts") == 1
+    assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
+    assert "./data/prompts:/app/data/prompts" not in generated_compose
+    # The operator's own sources survive untouched.
+    assert "        source: ./branding/acme\n" in generated_compose
+    assert "        source: ./branding/prompts\n" in generated_compose
+
+
+def test_generate_docker_compose_respects_commented_volume_targets(
+    tmp_path: Path,
+) -> None:
+    """An inline YAML comment must not hide an existing managed target.
+
+    Compose files are hand-edited, so `target: /app/data/ui_templates
+    # branding` is ordinary. Comparing the unparsed scalar leaves the comment
+    in the value, the existing mount goes unrecognised, and a duplicate for
+    the same container path is appended. Covers the long form and the short
+    form, the latter being the pre-existing `/app/data/prompts` check.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    volumes:",
+            "      - type: bind",
+            "        source: ./branding/acme",
+            "        target: /app/data/ui_templates # acme branding",
+            "      - ./branding/prompts:/app/data/prompts   # custom profiles",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert generated_compose.count("/app/data/prompts") == 1
+    assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
+    assert "./data/prompts:/app/data/prompts\n" not in generated_compose
+
+
+def test_strip_yaml_inline_comment_respects_quotes_and_bare_hashes() -> None:
+    """A `#` only opens a comment after whitespace, and never inside quotes."""
+    cases = [
+        ("/app/data/ui_templates", "/app/data/ui_templates"),
+        ("/app/data/ui_templates # branding", "/app/data/ui_templates"),
+        # The EARLIEST ` #` wins, not the last.
+        ("/app/x # a # b", "/app/x"),
+        # A bare `#` inside a token is part of the path.
+        ("/app/a#b", "/app/a#b"),
+        ("/app/a#b # note", "/app/a#b"),
+        # Quoted scalars carry their `#` literally.
+        ('"/app/x # y"', '"/app/x # y"'),
+        ('"/app/x # y" # real comment', '"/app/x # y"'),
+        ("'/app/q # z'", "'/app/q # z'"),
+        ("/app/x\t# tab comment", "/app/x"),
+        ("./a:/app/b:ro # note", "./a:/app/b:ro"),
+        # `''` is one literal quote inside a single-quoted scalar, so the
+        # closing delimiter is the LAST quote, not the first.
+        (
+            "'./customer''s-brand:/app/x:ro' # branding",
+            "'./customer''s-brand:/app/x:ro'",
+        ),
+        # `\\"` is one literal quote inside a double-quoted scalar.
+        ('"./say-\\"hi\\":/app/x" # note', '"./say-\\"hi\\":/app/x"'),
+        # A trailing `\\\\` is an escaped backslash and must not be read as
+        # escaping the closing delimiter.
+        ('"./win\\\\:/app/x" # note', '"./win\\\\:/app/x"'),
+    ]
+    script_lines = [
+        "set -euo pipefail",
+        f'source "{REPO_ROOT}/scripts/setup/setup.sh"',
+    ]
+    for value, _ in cases:
+        script_lines.append(f"_strip_yaml_inline_comment {shlex.quote(value)}; echo")
+    # `run_bash` returns stdout; take the last len(cases) lines so anything
+    # `setup.sh` prints while sourcing cannot shift the alignment.
+    output = run_bash("\n".join(script_lines)).splitlines()[-len(cases) :]
+    for (value, expected), actual in zip(cases, output):
+        assert actual == expected, f"{value!r} -> {actual!r}, expected {expected!r}"
+
+
+def test_generate_docker_compose_respects_interpolated_mount_sources(
+    tmp_path: Path,
+) -> None:
+    """A colon inside the SOURCE must not hide a literal container target.
+
+    Short syntax is `source[:target[:mode]]`, but a Compose default such as
+    `${UI_BUNDLE_SOURCE:-./branding}` carries a colon inside `:-`, so a
+    left-to-right split lands in the middle of the interpolation and never
+    reaches the target. The target itself is literal here and matches the
+    convention (`/app/data/ui_templates`); only the host source is
+    configurable, so the mount must be recognised and not duplicated.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    volumes:",
+            '      - "${UI_BUNDLE_SOURCE:-./branding}:/app/data/ui_templates:ro"',
+            '      - "${PROMPT_SOURCE:-./branding/prompts}:/app/data/prompts"',
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert generated_compose.count("/app/data/prompts") == 1
+    assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
+    assert "${UI_BUNDLE_SOURCE:-./branding}" in generated_compose
+
+
+def test_generate_docker_compose_injects_when_only_a_longer_path_matches(
+    tmp_path: Path,
+) -> None:
+    """A path that merely STARTS with the managed target does not cover it.
+
+    The target is matched after a colon and up to the end of the spec or the
+    mode, so `/app/data/ui_templates_backup` is a different mount and the
+    managed one is still injected. Guards the substring match against the
+    obvious false positive.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    volumes:",
+            "      - ./backup:/app/data/ui_templates_backup:ro",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "./data/ui_templates:/app/data/ui_templates:ro" in generated_compose
+    assert "./backup:/app/data/ui_templates_backup:ro" in generated_compose
+
+
+@pytest.mark.parametrize(
+    "mount",
+    [
+        # No mode at all: the target ends the spec, which is the match's
+        # end-of-string branch rather than the mode-separator one.
+        "./mybundle:/app/data/ui_templates",
+        # The managed source written by hand, still without a mode.
+        "./data/ui_templates:/app/data/ui_templates",
+        "./mybundle:/app/data/ui_templates:rw",
+        "./mybundle:/app/data/ui_templates:ro",
+        # Several modes at once.
+        "./mybundle:/app/data/ui_templates:ro,z",
+        '"./mybundle:/app/data/ui_templates"',
+        '"${UI_BUNDLE_SOURCE:-./branding}:/app/data/ui_templates"',
+        "./mybundle:/app/data/ui_templates   # branding",
+    ],
+)
+def test_generate_docker_compose_recognizes_target_regardless_of_mode(
+    tmp_path: Path, mount: str
+) -> None:
+    """`:ro` is not required for an existing mount to be recognised.
+
+    The target is matched after a colon and then either the end of the spec
+    or the mode separator, so a hand-written mount with no mode, a different
+    mode, or several modes all count as covering the container path and must
+    not draw a duplicate.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    volumes:",
+            f"      - {mount}",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
+
+
+def test_generate_docker_compose_respects_escaped_quotes_in_mount_specs(
+    tmp_path: Path,
+) -> None:
+    """A YAML-escaped quote inside a mount spec must not truncate it.
+
+    Both quoting styles can carry a quote inside the scalar: `''` in a
+    single-quoted one, `\\"` in a double-quoted one. Cutting at the first
+    quote byte truncates the spec, the container target disappears with the
+    tail, and a duplicate mount is appended for a path already mounted.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    volumes:",
+            "      - './customer''s-brand:/app/data/ui_templates:ro' # branding",
+            '      - "./say-\\"hi\\":/app/data/prompts" # quoted',
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert generated_compose.count("/app/data/prompts") == 1
+    assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
+
+
+def test_generate_docker_compose_tolerates_extra_list_item_spacing(
+    tmp_path: Path,
+) -> None:
+    """Any run of spaces may follow the list dash; YAML treats it as one.
+
+    `-   target: /app/data/ui_templates` is the same mapping as `- target: …`,
+    so leaving the extra spaces in the captured scalar made it match neither
+    the long-form nor the short-form shape, and a duplicate mount was appended
+    for a container path already mounted. Covers both syntaxes.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    volumes:",
+            "      -   target: /app/data/ui_templates",
+            "          type: bind",
+            "          source: ./branding/acme",
+            "      -    ./branding/prompts:/app/data/prompts",
+        ],
+    )
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert generated_compose.count("/app/data/prompts") == 1
+    assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
 
 
 def test_generate_docker_compose_preserves_non_managed_named_volumes(

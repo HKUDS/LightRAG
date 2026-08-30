@@ -4,6 +4,10 @@ A ready-to-copy example for `UI_TEMPLATES_DIR` (the customizable welcome
 page, query empty state and login page). This directory is
 **documentation only** — the server never loads or bundles it.
 
+For the complete guide — deployment from source / Docker / Kubernetes, the
+full `manifest.json` reference, verification and every startup error — see
+[UserDefinedUI.md](../UserDefinedUI.md) ([中文](../UserDefinedUI-zh.md)).
+
 ## Usage
 
 ```yaml

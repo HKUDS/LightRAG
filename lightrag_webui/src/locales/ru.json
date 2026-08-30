@@ -13,6 +13,7 @@
     "apiDocs": "Документация API",
     "projectRepository": "Репозиторий проекта",
     "appSettings": "Настройки",
+    "deploymentInfo": "Информация о развертывании",
     "logout": "Выйти",
     "frontendNeedsRebuild": "Требуется пересборка фронтенда",
     "themeToggle": {

@@ -860,6 +860,66 @@ _strip_wrapping_quotes() {
   printf '%s' "$value"
 }
 
+# Drop a YAML inline comment from a scalar value.
+#
+# A comment opens at a `#` that FOLLOWS whitespace; a `#` inside a token is
+# literal, so `/app/a#b` is a path and not a path plus a comment. A quoted
+# scalar has no inline comment before its closing quote, so
+# `"/app/a # b"` is one path. Compose files are hand-edited, and
+# `target: /app/data/ui_templates # branding` is ordinary in them: without
+# this, the trailing comment rides along in the parsed value, an existing
+# mount goes unrecognised, and the caller appends a duplicate for the same
+# container path.
+_strip_yaml_inline_comment() {
+  local value="$1"
+  local quote="${value:0:1}"
+  local body=""
+  local scan=0
+  local body_length=0
+  local char=""
+
+  if [[ "$quote" == \" || "$quote" == \' ]]; then
+    body="${value:1}"
+    # Walk to the CLOSING delimiter rather than the first quote byte: both
+    # YAML quoting styles can carry a quote inside the scalar.
+    #
+    #   single-quoted: '' is one literal quote -- './customer''s-brand'
+    #   double-quoted: \" is one literal quote, and \\ is one backslash, so a
+    #                  trailing \\ must not be read as escaping the delimiter
+    #
+    # Cutting at the first quote truncates such a scalar, and a truncated
+    # mount spec no longer shows its container target -- the caller then
+    # appends a duplicate mount for a path that is already mounted.
+    scan=0
+    body_length=${#body}
+    while ((scan < body_length)); do
+      char="${body:scan:1}"
+      if [[ "$quote" == \" && "$char" == "\\" ]]; then
+        scan=$((scan + 2))  # backslash escape: skip the escaped byte whole
+        continue
+      fi
+      if [[ "$char" == "$quote" ]]; then
+        if [[ "$quote" == \' && "${body:scan+1:1}" == "$quote" ]]; then
+          scan=$((scan + 2))  # '' -- an escaped quote, not the delimiter
+          continue
+        fi
+        printf '%s%s%s' "$quote" "${body:0:scan}" "$quote"
+        return 0
+      fi
+      # Assignment form, never `((scan++))`: that evaluates to the OLD
+      # value, so at 0 it returns exit status 1 and trips `set -e`.
+      scan=$((scan + 1))
+    done
+    # Unterminated quote: fall through and treat it as a plain scalar.
+  fi
+
+  # `%%` strips the LONGEST matching suffix, which is the one opening at the
+  # EARLIEST ` #` -- exactly where YAML starts the comment.
+  value="${value%%[[:space:]]#*}"
+  # Trailing whitespace is not part of the scalar.
+  printf '%s' "${value%"${value##*[![:space:]]}"}"
+}
+
 read_service_environment_value() {
   local compose_file="$1"
   local service_name="$2"
@@ -1216,6 +1276,16 @@ generate_docker_compose() {
   # the ./data/inputs and ./data/rag_storage bind layout.
   if ! _lightrag_volumes_have_container_target "$tmp_file" "/app/data/prompts"; then
     lightrag_mounts+=("./data/prompts:/app/data/prompts")
+  fi
+
+  # Ensure the optional user-defined UI template bundle mount exists so a
+  # deployment can replace the welcome page, the login blurb plus user
+  # agreement and the query empty state without rebuilding the frontend.
+  # Mounted read-only (the server only ever reads it) and INERT until
+  # UI_TEMPLATES_DIR names it: an absent or empty ./data/ui_templates changes
+  # nothing. See docs/UserDefinedUI.md.
+  if ! _lightrag_volumes_have_container_target "$tmp_file" "/app/data/ui_templates"; then
+    lightrag_mounts+=("./data/ui_templates:/app/data/ui_templates:ro")
   fi
 
   append_lightrag_ssl_mount lightrag_mounts "${COMPOSE_ENV_OVERRIDES[SSL_CERTFILE]:-}" || return 1
@@ -1691,7 +1761,6 @@ _lightrag_volumes_have_container_target() {
   local in_lightrag="no"
   local in_volumes="no"
   local mount_spec=""
-  local remainder=""
   local container_path=""
 
   if [[ ! -f "$compose_file" || -z "$target_path" ]]; then
@@ -1708,13 +1777,46 @@ _lightrag_volumes_have_container_target() {
         in_volumes="yes"
       elif [[ "$in_volumes" == "yes" && "$line" =~ ^[[:space:]]{4}[^[:space:]-] ]]; then
         in_volumes="no"
-      elif [[ "$in_volumes" == "yes" && "$line" =~ ^[[:space:]]{6}-[[:space:]](.+)$ ]]; then
-        mount_spec="$(_strip_wrapping_quotes "${BASH_REMATCH[1]}")"
-        remainder="${mount_spec#*:}"
-        if [[ "$remainder" == "$mount_spec" ]]; then
+      elif [[ "$in_volumes" == "yes" && "$line" =~ ^[[:space:]]{6}-[[:space:]]+(.+)$ ]]; then
+        # `+` not `{1}`: YAML allows any run of spaces after the list dash, and
+        # the run is insignificant. Bash's regex is greedy, so the capture now
+        # starts at the first non-space -- otherwise `-   target: /app/x` was
+        # captured as `  target: /app/x`, matched neither the long-form nor the
+        # short-form shape, and the caller appended a duplicate mount.
+        mount_spec="$(_strip_wrapping_quotes \
+          "$(_strip_yaml_inline_comment "${BASH_REMATCH[1]}")")"
+        # Long syntax whose first key is the target (`- target: /app/x`).
+        # Compose's long form names the container path under `target:`, so a
+        # short `source:target` split would never see it and the caller would
+        # append a SECOND mount for the same container path -- which Compose
+        # rejects as a duplicate mount point, or which silently displaces the
+        # user's own source.
+        if [[ "$mount_spec" =~ ^target:[[:space:]]+(.+)$ ]]; then
+          container_path="$(_strip_wrapping_quotes "${BASH_REMATCH[1]}")"
+          if [[ "$container_path" == "$target_path" ]]; then
+            return 0
+          fi
           continue
         fi
-        container_path="${remainder%%:*}"
+        # Short syntax is `source[:target[:mode]]`, and the SOURCE may carry
+        # colons of its own: a Compose default such as
+        # `${UI_BUNDLE_SOURCE:-./branding}` has one inside `:-`, so splitting
+        # left to right lands in the middle of the interpolation and never
+        # reaches the target. Match the target where it actually sits instead
+        # -- after a colon, then either the end of the spec or the mode. What
+        # the source contains cannot mislead this, and a longer path that
+        # merely starts with the target (`…/ui_templates_backup`) still does
+        # not match.
+        if [[ "$mount_spec" == *":${target_path}" || \
+              "$mount_spec" == *":${target_path}:"* ]]; then
+          return 0
+        fi
+      elif [[ "$in_volumes" == "yes" && "$line" =~ ^[[:space:]]{8,}target:[[:space:]]+(.+)$ ]]; then
+        # A continuation line of a long-syntax entry (`- type: bind` first,
+        # then `  target: …`). Deeper indentation than a list item, so it
+        # cannot be confused with a short-syntax mount.
+        container_path="$(_strip_wrapping_quotes \
+          "$(_strip_yaml_inline_comment "${BASH_REMATCH[1]}")")"
         if [[ "$container_path" == "$target_path" ]]; then
           return 0
         fi

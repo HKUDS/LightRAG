@@ -17,6 +17,10 @@ services:
       - ./data/inputs:/app/data/inputs
       - ./config.ini:/app/config.ini
       - ./data/prompts:/app/data/prompts
+      # Optional user-defined UI content bundle (welcome page, login blurb
+      # and user agreement, query empty state, brand logo). Read-only: the
+      # server only ever reads it. See docs/UserDefinedUI.md.
+      - ./data/ui_templates:/app/data/ui_templates:ro
       - ./.env:/app/.env
     deploy:
       restart_policy:
@@ -30,6 +34,11 @@ services:
       # so the exposed server is authenticated — without it every endpoint is public.
       HOST: "0.0.0.0"
       PORT: "9621"
+      # Activates the bundle mounted at /app/data/ui_templates. Leave it
+      # commented out to keep the built-in LightRAG branding (the normal
+      # state); uncomment it once ./data/ui_templates holds a complete
+      # bundle. A set but invalid bundle makes the server refuse to start.
+      # UI_TEMPLATES_DIR: "/app/data/ui_templates"
       EMBEDDING_BINDING_HOST: "http://vllm-embed:8001/v1"
       RERANK_BINDING_HOST: "http://vllm-rerank:8000/rerank"
       POSTGRES_HOST: "postgres"

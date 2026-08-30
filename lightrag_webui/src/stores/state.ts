@@ -3,6 +3,7 @@ import { createSelectors } from '@/lib/utils'
 import { checkHealth, LightragStatus } from '@/api/lightrag'
 import { useSettingsStore } from './settings'
 import { applyAiContentNoticeFlag } from './aiContentNotice'
+import { applyInitialDocumentTitle, applyServerDocumentTitle } from '@/lib/documentTitle'
 import { healthCheckInterval } from '@/lib/constants'
 import { decodeBase64Url } from '@/lib/base64url'
 
@@ -499,4 +500,22 @@ export const useAuthStore = create<AuthState>(set => {
       });
     }
   };
+});
+
+// Browser tab title follows the deployment's WEBUI_TITLE, the same value the
+// site header shows. The server stamps it into the entry HTML for the first
+// paint (see lib/documentTitle); this keeps it in sync afterwards — across
+// login, logout, and the /health poll that carries a restarted server's new
+// title — and is the ONLY path that applies it under `bun run dev`, where no
+// server-side injection runs.
+//
+// Every change observed here originates in login() or setCustomTitle(), which
+// carry what the server just said — a cleared title included — so it is
+// applied as a SERVER value: no falling back to the title injected at page
+// load, which by then is known to be out of date.
+applyInitialDocumentTitle(useAuthStore.getState().webuiTitle);
+useAuthStore.subscribe((state, prevState) => {
+  if (state.webuiTitle !== prevState.webuiTitle) {
+    applyServerDocumentTitle(state.webuiTitle);
+  }
 });
