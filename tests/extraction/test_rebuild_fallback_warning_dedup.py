@@ -9,7 +9,10 @@ delimiter is missing because the payload was never delimiter-formatted, which
 is a consequence of the already-reported failure rather than a new finding.
 
 A genuinely delimiter-formatted payload that is missing its terminator is a
-different matter -- nothing else reported it, so that WARNING stays.
+different matter -- nothing else reported it, so that WARNING stays. So is a
+payload that parses cleanly but carries the wrong schema: the JSON parser
+accepts it and says nothing, so demoting there would leave the chunk with no
+parse-level warning at all.
 """
 
 from __future__ import annotations
@@ -103,3 +106,28 @@ async def test_json_payload_rescued_by_the_delimiter_parser_keeps_its_records(
         )
 
     assert "Alice" in nodes
+
+
+@pytest.mark.asyncio
+async def test_wrong_schema_json_payload_keeps_the_fallback_warning(
+    caplog, _propagate_lightrag_logger
+) -> None:
+    """A payload that parses but has none of the extraction fields extracts
+    nothing, and ``_process_json_extraction_result`` reports nothing about it.
+    Demotion keys off the parse outcome rather than off the empty result, so
+    this chunk keeps the one warning it has -- inferring "already reported"
+    from emptiness would silence it entirely."""
+    with caplog.at_level(logging.WARNING, logger="lightrag"):
+        nodes, edges = await _rebuild_from_extraction_result(
+            DummyKV(),
+            '{"answer": "no entities found"}',
+            chunk_id="chunk-4",
+            timestamp=1,
+        )
+
+    assert nodes == {}
+    assert edges == {}
+
+    warnings = _warnings(caplog)
+    assert any(_DELIMITER_WARNING in message for message in warnings), warnings
+    assert not any(_JSON_WARNING in message for message in warnings), warnings

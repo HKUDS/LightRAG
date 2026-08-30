@@ -907,6 +907,7 @@ async def _process_json_extraction_result(
     chunk_key: str,
     timestamp: int,
     file_path: str = "unknown_source",
+    parsed: dict[str, Any] | None = None,
 ) -> tuple[dict, dict]:
     """Process a JSON-formatted extraction result from LLM.
 
@@ -919,6 +920,13 @@ async def _process_json_extraction_result(
         chunk_key: The chunk key for source tracking
         timestamp: The timestamp for the extraction
         file_path: The file path for citation
+        parsed: Payload already recovered by :func:`tolerant_load_json_dict`,
+            for callers that need the parse outcome themselves rather than
+            only the extracted entities -- an empty result does not say
+            whether the payload was unrecoverable or merely carried nothing,
+            and cache rebuild has to tell those apart. ``None`` means "not
+            supplied" and is unambiguous: the helper always returns a dict,
+            so an unrecoverable payload still arrives here as ``{}``.
 
     Returns:
         tuple: (nodes_dict, edges_dict) containing the extracted entities and relationships
@@ -933,7 +941,8 @@ async def _process_json_extraction_result(
     # helper absorbs the underlying parse exception, only this single "empty or
     # unrecoverable" warning is logged — the low-level decode error is no longer
     # surfaced.
-    parsed = tolerant_load_json_dict(result)
+    if parsed is None:
+        parsed = tolerant_load_json_dict(result)
     if not parsed:
         logger.warning(
             f"{chunk_key}: JSON extraction result is empty or unrecoverable"
@@ -1669,22 +1678,31 @@ async def _rebuild_from_extraction_result(
     # Auto-detect format: try JSON first if the result looks like JSON
     json_parse_reported_failure = False
     if _looks_like_json_extraction_result(extraction_result):
+        # Parse here and hand the payload down, so the parse outcome -- not the
+        # emptiness of what was extracted from it -- decides whether the failure
+        # below was already reported. The two differ: a payload that parses but
+        # carries the wrong schema ({"answer": "none found"}) extracts nothing
+        # while _process_json_extraction_result stays silent about it.
+        parsed = tolerant_load_json_dict(extraction_result)
         # Likely JSON format (from entity_extraction_use_json mode)
         nodes, edges = await _process_json_extraction_result(
             extraction_result,
             chunk_id,
             timestamp,
             file_path,
+            parsed=parsed,
         )
         # If JSON parsing yielded results, use them
         if nodes or edges:
             return nodes, edges
-        # Otherwise fall through to text-based parsing. _process_json_extraction_result
-        # has already logged the parse failure, and the delimiter parser below is a
-        # speculative rescue for a payload that only looked like JSON -- its own
-        # "no completion delimiter" complaint would report that same single failure a
-        # second time, so it is demoted to DEBUG for this call only.
-        json_parse_reported_failure = True
+        # Otherwise fall through to text-based parsing. When the payload was
+        # unrecoverable, _process_json_extraction_result has already logged that
+        # failure and the delimiter parser below is only a speculative rescue --
+        # its own "no completion delimiter" complaint would report the same
+        # single failure a second time, so it is demoted to DEBUG for this call.
+        # When the payload parsed, nothing has been reported yet and the
+        # delimiter parser keeps its warning.
+        json_parse_reported_failure = not parsed
 
     # Fall back to traditional delimiter-based parsing
     return await _process_extraction_result(
