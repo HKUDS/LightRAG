@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ZapIcon, LogOutIcon } from 'lucide-react'
 import Button from '@/components/ui/Button'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 import AppSettings from '@/components/AppSettings'
 import ApiKeyAlert, { type ApiKeyAlertCloseReason } from '@/components/ApiKeyAlert'
 import ErrorBoundary from '@/components/ErrorBoundary'
@@ -130,13 +131,19 @@ export default function WorkspaceApp() {
               index.html that the dev server answers `/` with. */}
           <a href={entryHomeHref(window.location.pathname)} className="flex shrink-0 items-center gap-2">
             <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
-            <span className="font-bold">{webuiTitle || 'LightRAG'}</span>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="cursor-default font-bold">{webuiTitle || 'LightRAG'}</span>
+                </TooltipTrigger>
+                {webuiDescription && (
+                  <TooltipContent side="bottom">
+                    {webuiDescription}
+                  </TooltipContent>
+                )}
+              </Tooltip>
+            </TooltipProvider>
           </a>
-          {webuiDescription && (
-            <span className="text-muted-foreground hidden truncate text-xs md:inline">
-              {webuiDescription}
-            </span>
-          )}
           {isGuestMode && (
             <span className="rounded-md bg-amber-100 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-900 dark:text-amber-200">
               {t('login.guestMode', 'Guest Mode')}
