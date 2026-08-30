@@ -109,14 +109,29 @@ async def test_json_payload_rescued_by_the_delimiter_parser_keeps_its_records(
 
 
 @pytest.mark.asyncio
-async def test_wrong_schema_json_payload_keeps_the_fallback_warning(
-    caplog, _propagate_lightrag_logger
+async def test_wrong_schema_json_payload_never_reaches_the_fallback(
+    monkeypatch, caplog, _propagate_lightrag_logger
 ) -> None:
-    """A payload that parses but has none of the extraction fields extracts
+    """A payload that parses but carries none of the extraction fields extracts
     nothing, and ``_process_json_extraction_result`` reports nothing about it.
-    Demotion keys off the parse outcome rather than off the empty result, so
-    this chunk keeps the one warning it has -- inferring "already reported"
-    from emptiness would silence it entirely."""
+
+    This is what makes the demotion above safe to apply unconditionally: such a
+    payload is accepted as a successful parse and returns early, so the
+    delimiter parser is never invoked and there is no warning to lose. Keying
+    the demotion off the empty extraction result instead of off the parse
+    outcome would silence this chunk's only warning the moment that early
+    return went away, so pin the early return itself.
+    """
+    from lightrag import operate
+
+    calls: list[str] = []
+
+    async def _spy(result, chunk_key, *args, **kwargs):
+        calls.append(chunk_key)
+        return {}, {}
+
+    monkeypatch.setattr(operate, "_process_extraction_result", _spy)
+
     with caplog.at_level(logging.WARNING, logger="lightrag"):
         nodes, edges = await _rebuild_from_extraction_result(
             DummyKV(),
@@ -127,7 +142,5 @@ async def test_wrong_schema_json_payload_keeps_the_fallback_warning(
 
     assert nodes == {}
     assert edges == {}
-
-    warnings = _warnings(caplog)
-    assert any(_DELIMITER_WARNING in message for message in warnings), warnings
-    assert not any(_JSON_WARNING in message for message in warnings), warnings
+    assert calls == [], calls
+    assert _warnings(caplog) == []

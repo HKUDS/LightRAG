@@ -1678,11 +1678,11 @@ async def _rebuild_from_extraction_result(
     # Auto-detect format: try JSON first if the result looks like JSON
     json_parse_reported_failure = False
     if _looks_like_json_extraction_result(extraction_result):
-        # Parse here and hand the payload down, so the parse outcome -- not the
-        # emptiness of what was extracted from it -- decides whether the failure
-        # below was already reported. The two differ: a payload that parses but
-        # carries the wrong schema ({"answer": "none found"}) extracts nothing
-        # while _process_json_extraction_result stays silent about it.
+        # Parse once here and hand the payload down. The parse outcome, not the
+        # emptiness of what was extracted from it, is what decides below whether
+        # the failure being recovered from was already reported -- the two are
+        # different things, and a payload carrying the wrong schema
+        # ({"answer": "none found"}) extracts nothing while parsing perfectly.
         parsed = tolerant_load_json_dict(extraction_result)
         # Likely JSON format (from entity_extraction_use_json mode)
         nodes, edges = await _process_json_extraction_result(
@@ -1694,16 +1694,15 @@ async def _rebuild_from_extraction_result(
         )
         # A successful parse (tolerant_load_json_dict's own non-empty-dict
         # signal) is accepted even when it legitimately yields no nodes/edges.
-        if nodes or edges or tolerant_load_json_dict(extraction_result):
+        if nodes or edges or parsed:
             return nodes, edges
-        # Otherwise fall through to text-based parsing. When the payload was
-        # unrecoverable, _process_json_extraction_result has already logged that
-        # failure and the delimiter parser below is only a speculative rescue --
-        # its own "no completion delimiter" complaint would report the same
-        # single failure a second time, so it is demoted to DEBUG for this call.
-        # When the payload parsed, nothing has been reported yet and the
-        # delimiter parser keeps its warning.
-        json_parse_reported_failure = not parsed
+        # Only an unrecoverable payload can reach here, and
+        # _process_json_extraction_result has already logged that failure. The
+        # delimiter parser below is a speculative rescue for a payload that
+        # merely looked like JSON, so its own "no completion delimiter"
+        # complaint would report that same single failure a second time; it is
+        # demoted to DEBUG for this call.
+        json_parse_reported_failure = True
 
     # Fall back to traditional delimiter-based parsing
     return await _process_extraction_result(
