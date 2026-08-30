@@ -83,6 +83,10 @@ _RTL_LANGUAGE_SUBTAGS = frozenset(
 )
 
 _LOCALE_SUBTAG_RE = re.compile(r"^[A-Za-z0-9]{1,8}$")
+
+# BCP 47's ``extlang = 3ALPHA *2("-" 3ALPHA)``: at most three, between the
+# language and the script.
+_MAX_EXTLANG_SUBTAGS = 3
 _REQUIRED_LOCALE_FIELDS = ("welcome", "query_empty")
 
 
@@ -138,10 +142,20 @@ def locale_direction(locale: str) -> str:
     for: ``ku-Arab`` is right-to-left while plain ``ku`` (Latin by default)
     is not, and the same holds for ``az-Arab``, ``pa-Arab``, ``ha-Arab``…
 
-    Only position 2 is read as a script. A 4-letter alphabetic subtag later
-    in the tag belongs to an extension — ``ar-u-nu-latn`` asks for Latin
-    DIGITS in Arabic text and is still right-to-left — so scanning for one
-    anywhere would flip exactly the locales that spell their preferences out.
+    The script's position is DERIVED from the grammar, not assumed::
+
+        langtag  = language ["-" script] ["-" region] …
+        language = 2*3ALPHA ["-" extlang] / 4ALPHA / 5*8ALPHA
+        extlang  = 3ALPHA *2("-" 3ALPHA)
+
+    so it follows the language and up to three extlang subtags (``Latn`` is
+    the THIRD subtag of ``ar-aao-Latn``), and nothing after that. Both bounds
+    matter: a fixed index misses the extlang form, while scanning for any
+    4-letter subtag would read an extension's value as a script — and
+    ``ar-u-nu-latn`` asks for Latin DIGITS in Arabic text while remaining
+    right-to-left. A 3-ALPHA subtag in that window can only be an extlang: a
+    region is 2 letters or 3 digits, and a variant is 5-8 characters (or 4
+    beginning with a digit).
 
     Without a script subtag the language's own default decides. A bundle may
     declare any valid BCP 47 locale, so the registry covers every language
@@ -150,7 +164,15 @@ def locale_direction(locale: str) -> str:
     always-available escape hatch.
     """
     subtags = locale.split("-")
-    script = subtags[1] if len(subtags) > 1 else ""
+    index = 1
+    while (
+        index < len(subtags)
+        and index <= _MAX_EXTLANG_SUBTAGS
+        and len(subtags[index]) == 3
+        and subtags[index].isalpha()
+    ):
+        index += 1
+    script = subtags[index] if index < len(subtags) else ""
     if len(script) == 4 and script.isalpha():
         return "rtl" if script.lower() in _RTL_SCRIPT_SUBTAGS else "ltr"
     return "rtl" if subtags[0].lower() in _RTL_LANGUAGE_SUBTAGS else "ltr"
@@ -204,6 +226,12 @@ _QUOTE_BYTES = frozenset(b"\"'")
 _GT = 0x3E  # >
 _SLASH = 0x2F  # /
 _EQUALS = 0x3D  # =
+_LT = 0x3C  # <
+_AMP = 0x26  # &
+_HEX_DIGITS = frozenset(b"0123456789abcdefABCDEF")
+# What a reference's name cannot span: the delimiters that would mean the
+# reference was never terminated in the first place.
+_REFERENCE_NAME_END = frozenset(b" \t\r\n<&;\"'")
 _LBRACKET = 0x5B  # [
 _RBRACKET = 0x5D  # ]
 # What terminates an attribute NAME. Deliberately permissive about the name's
@@ -261,6 +289,52 @@ def _end_of_markup_declaration(content: bytes, index: int) -> int | None:
         else:
             i += 1
     return None
+
+
+def _is_reference_body(body: bytes) -> bool:
+    """Whether ``&`` + ``body`` + ``;`` is a syntactically valid reference::
+
+        CharRef   ::= '&#' [0-9]+ ';' | '&#x' [0-9a-fA-F]+ ';'
+        EntityRef ::= '&' Name ';'
+
+    The entity NAME is not checked against XML's NameChar set, and the entity
+    is not required to be DECLARED — an internal subset may define its own
+    (``&ns_extend;`` in Illustrator output) and resolving one is the
+    renderer's business, not this sniffer's.
+    """
+    if body[:2].lower() == b"#x":
+        digits = body[2:]
+        return bool(digits) and all(byte in _HEX_DIGITS for byte in digits)
+    if body[:1] == b"#":
+        return body[1:].isdigit()
+    return bool(body) and not any(byte in _REFERENCE_NAME_END for byte in body)
+
+
+def _is_attribute_value(content: bytes, start: int, end: int) -> bool:
+    """Whether ``content[start:end]`` is a legal ``AttValue`` body::
+
+        AttValue ::= '"' ([^<&"] | Reference)* '"'   (and the same with "'")
+
+    The delimiting quote is excluded by construction — ``end`` is where it
+    was found — which leaves two rules. ``<`` is forbidden outright, and a
+    ``&`` is forbidden UNLESS it opens a reference: a bare one makes
+    ``<svg title="&">`` a fatal error, so it is a file no renderer will draw,
+    which is exactly what must not be labelled image/svg+xml and cached for a
+    year.
+    """
+    i = start
+    while i < end:
+        byte = content[i]
+        if byte == _LT:
+            return False
+        if byte != _AMP:
+            i += 1
+            continue
+        semicolon = content.find(b";", i + 1, end)
+        if semicolon == -1 or not _is_reference_body(content[i + 1 : semicolon]):
+            return False
+        i = semicolon + 1
+    return True
 
 
 def _completes_svg_start_tag(content: bytes, index: int) -> bool:
@@ -333,8 +407,8 @@ def _completes_svg_start_tag(content: bytes, index: int) -> bool:
         closing = content.find(content[i : i + 1], i + 1)
         if closing == -1:
             return False  # unterminated literal
-        if content.find(b"<", i + 1, closing) != -1:
-            return False  # AttValue excludes `<`
+        if not _is_attribute_value(content, i + 1, closing):
+            return False
         i = closing + 1
 
 

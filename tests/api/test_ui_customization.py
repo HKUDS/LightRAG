@@ -316,6 +316,15 @@ class TestBundleValidation:
             pytest.param(b'<svg a="1"b="2">', id="attributes-without-separator"),
             pytest.param(b"<svg foo>", id="attribute-without-value"),
             pytest.param(b'<svg ="1">', id="value-without-name"),
+            # `AttValue ::= '"' ([^<&"] | Reference)* '"'` — a bare `&` is a
+            # fatal error, so these are files no renderer will draw.
+            pytest.param(b'<svg title="&"></svg>', id="bare-ampersand"),
+            pytest.param(b'<svg title="a & b"/>', id="ampersand-in-prose"),
+            pytest.param(b'<svg title="&amp"/>', id="reference-without-semicolon"),
+            pytest.param(b'<svg title="&;"/>', id="empty-reference"),
+            pytest.param(b'<svg title="&#xzz;"/>', id="malformed-hex-char-ref"),
+            pytest.param(b'<svg title="&#12a;"/>', id="malformed-decimal-char-ref"),
+            pytest.param(b'<svg title="&a b;"/>', id="whitespace-in-reference-name"),
             # Neither \v nor \f is XML whitespace, so neither delimits the
             # element name (`bytes.isspace()` would have said otherwise).
             pytest.param(b"<svg\x0bfoo>", id="vertical-tab-is-not-xml-space"),
@@ -415,6 +424,21 @@ class TestBundleValidation:
             pytest.param(
                 b'<svg style="fill:red;\n stroke:blue" xmlns="x"><rect/></svg>',
                 id="newline-inside-attribute-value",
+            ),
+            # Every shape of Reference an AttValue may legally hold. The
+            # entity need not be DECLARED here — resolving it is the
+            # renderer's job — and an internal subset may define its own,
+            # which is how Illustrator writes its namespace attributes.
+            pytest.param(b'<svg t="a&amp;b" xmlns="x"/>', id="entity-reference"),
+            pytest.param(b'<svg t="&#169;" xmlns="x"/>', id="decimal-char-reference"),
+            pytest.param(b'<svg t="&#x00A9;" xmlns="x"/>', id="hex-char-reference"),
+            pytest.param(
+                b'<svg t="&#X00a9;" xmlns="x"/>', id="hex-char-reference-upper"
+            ),
+            pytest.param(
+                b'<!DOCTYPE svg [<!ENTITY ns_x "http://x/">]>'
+                b'<svg xmlns:x="&ns_x;" xmlns="x"/>',
+                id="reference-to-subset-declared-entity",
             ),
             pytest.param(
                 b"<!-- a [ \" ' ] brand mark -->" + SVG_BYTES,
@@ -677,9 +701,24 @@ class TestCustomizationEndpointWithBundle:
             ("pa-Arab", "rtl"),
             ("pa", "ltr"),
             ("ar-Latn", "ltr"),
-            # A 4-letter subtag past position 2 is an extension value, not a
-            # script: `ar-u-nu-latn` asks for Latin DIGITS and stays RTL.
+            # A 4-letter subtag past the script's window is an extension
+            # value: `ar-u-nu-latn` asks for Latin DIGITS and stays RTL.
             ("ar-u-nu-latn", "rtl"),
+            ("ar-x-latn", "rtl"),
+            # …but the window is not a fixed index either: BCP 47 puts up to
+            # three extlang subtags between the language and the script, so
+            # `Latn` is the THIRD subtag here and still decides.
+            ("ar-aao-Latn", "ltr"),
+            ("ar-arz-Latn", "ltr"),
+            ("ar-aao-arz-acm-Latn", "ltr"),
+            ("ar-aao-Arab", "rtl"),
+            ("zh-yue-Hant-HK", "ltr"),
+            # Three is the grammar's limit, so a FOURTH 3-letter subtag is
+            # not an extlang and what follows it is not in the script's
+            # window. The tag is malformed; declared behaviour is to ignore
+            # the stray `Latn` and answer from the language, rather than
+            # let an unbounded skip walk to any 4-letter subtag it finds.
+            ("ar-aao-arz-acm-apc-Latn", "rtl"),
             ("ar-EG", "rtl"),
             # Unchanged: every locale the WebUI itself ships chrome for.
             ("en", "ltr"),
