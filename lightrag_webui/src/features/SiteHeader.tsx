@@ -1,5 +1,6 @@
 import Button from '@/components/ui/Button'
-import { SiteInfo, backendBaseUrl, webuiPrefix } from '@/lib/constants'
+import { entryHomeHref } from '@/lib/pathPrefix'
+import { SiteInfo, backendBaseUrl } from '@/lib/constants'
 import AppSettings from '@/components/AppSettings'
 import { TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { useSettingsStore } from '@/stores/settings'
@@ -74,13 +75,17 @@ export default function SiteHeader() {
     : versionDisplay ? `v${versionDisplay}` : '';
 
   const handleLogout = () => {
-    navigationService.navigateToLogin();
+    navigationService.navigateToUnauthenticated();
   }
 
   return (
     <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
       <div className="min-w-[200px] w-auto flex items-center">
-        <a href={webuiPrefix} className="flex items-center gap-2">
+        {/* Document-relative brand link: under HashRouter the pathname always
+            names this entry, so this resolves back to THIS entry — never a
+            cross-entry jump, under any proxy prefix or the dev server's
+            file-per-entry layout (see entryHomeHref). */}
+        <a href={entryHomeHref(window.location.pathname)} className="flex items-center gap-2">
           <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
           <span className="font-bold md:inline-block">{SiteInfo.name}</span>
         </a>

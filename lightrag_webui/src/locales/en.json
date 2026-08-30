@@ -501,5 +501,28 @@
     "prevPage": "Previous Page",
     "nextPage": "Next Page",
     "lastPage": "Last Page"
+  },
+  "workspace": {
+    "welcome": {
+      "defaultMarkdown": "Welcome! Ask questions about the knowledge base and get answers with citations. Sign in to get started.",
+      "enterButton": "Enter workspace",
+      "loginButton": "Sign in",
+      "enterFailed": "Could not reach the server. Please try again."
+    },
+    "queryEmpty": {
+      "defaultMarkdown": "Ask anything about the knowledge base to get started."
+    }
+  },
+  "migration": {
+    "failedTitle": "Failed to prepare local settings",
+    "failedBody": "Your saved settings could not be migrated to the new storage format. Nothing was lost — reload to try again.",
+    "dataLostTitle": "Some saved settings could not be recovered",
+    "dataLostBody": "Browser storage was full, so some of your saved settings (theme, language, API key) could not be preserved and are no longer recoverable. Continuing will keep whatever survived and use defaults for the rest.",
+    "continueAfterLoss": "Continue",
+    "retry": "Reload",
+    "historyDropped": "Chat history could not fit in browser storage during the upgrade and was discarded. Settings were migrated normally."
+  },
+  "retrievalHistory": {
+    "quotaDropped": "Browser storage is full: the chat history is no longer being saved. The current conversation stays visible until you leave the page."
   }
 }

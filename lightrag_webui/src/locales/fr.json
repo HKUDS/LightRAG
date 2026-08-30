@@ -501,5 +501,28 @@
     "prevPage": "Page précédente",
     "nextPage": "Page suivante",
     "lastPage": "Dernière page"
+  },
+  "workspace": {
+    "welcome": {
+      "defaultMarkdown": "Bienvenue ! Posez vos questions sur la base de connaissances et obtenez des réponses avec citations. Connectez-vous pour commencer.",
+      "enterButton": "Entrer dans l'espace",
+      "loginButton": "Se connecter",
+      "enterFailed": "Impossible de joindre le serveur. Veuillez réessayer."
+    },
+    "queryEmpty": {
+      "defaultMarkdown": "Posez une question sur la base de connaissances pour commencer."
+    }
+  },
+  "migration": {
+    "failedTitle": "Échec de la préparation des paramètres locaux",
+    "failedBody": "Vos paramètres n'ont pas pu être migrés vers le nouveau format de stockage. Rien n'a été perdu — rechargez pour réessayer.",
+    "dataLostTitle": "Certains paramètres enregistrés n'ont pas pu être récupérés",
+    "dataLostBody": "Le stockage du navigateur était plein : certains de vos paramètres (thème, langue, clé API) n'ont pas pu être conservés et sont désormais irrécupérables. Continuer conservera ce qui a survécu et utilisera les valeurs par défaut pour le reste.",
+    "continueAfterLoss": "Continuer",
+    "retry": "Recharger",
+    "historyDropped": "L'historique de discussion dépassait le stockage du navigateur pendant la mise à niveau et a été abandonné. Les paramètres ont été migrés normalement."
+  },
+  "retrievalHistory": {
+    "quotaDropped": "Le stockage du navigateur est plein : l'historique de discussion n'est plus enregistré. La conversation en cours reste visible jusqu'à ce que vous quittiez la page."
   }
 }

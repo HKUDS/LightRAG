@@ -372,13 +372,20 @@ def credentials_accepted(
     return False
 
 
-def get_combined_auth_dependency(api_key: Optional[str] = None):
+def get_combined_auth_dependency(
+    api_key: Optional[str] = None, *, respect_whitelist: bool = True
+):
     """
     Create a combined authentication dependency that implements authentication logic
     based on API key, OAuth2 token, and whitelist paths.
 
     Args:
         api_key (Optional[str]): API key for validation
+        respect_whitelist: When False, ``WHITELIST_PATHS`` is ignored and the
+            credential checks always run. Used by ``/auth/verify``, whose whole
+            purpose is to report credential validity: a deployment whose
+            whitelist happens to cover it (e.g. ``/auth/*``) must not turn it
+            into an unconditional 200 while the protected routes still reject.
 
     Returns:
         Callable: A dependency function that implements the authentication logic
@@ -414,7 +421,7 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
         # mount prefix (see get_route_path), and both the whitelist and the
         # renewal skip list below are written as unprefixed route paths.
         path = get_route_path(request.scope)
-        if path_is_whitelisted(request.scope):
+        if respect_whitelist and path_is_whitelisted(request.scope):
             return  # Whitelist path, allow access
 
         # 2. Validate token first if provided in the request (Ensure 401 error if token is invalid)

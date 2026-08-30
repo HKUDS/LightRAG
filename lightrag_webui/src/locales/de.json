@@ -501,5 +501,28 @@
     "prevPage": "Vorherige Seite",
     "nextPage": "Nächste Seite",
     "lastPage": "Letzte Seite"
+  },
+  "workspace": {
+    "welcome": {
+      "defaultMarkdown": "Willkommen! Stellen Sie Fragen zur Wissensdatenbank und erhalten Sie Antworten mit Quellenangaben. Melden Sie sich an, um zu beginnen.",
+      "enterButton": "Arbeitsbereich betreten",
+      "loginButton": "Anmelden",
+      "enterFailed": "Server nicht erreichbar. Bitte versuchen Sie es erneut."
+    },
+    "queryEmpty": {
+      "defaultMarkdown": "Stellen Sie eine Frage zur Wissensdatenbank, um zu beginnen."
+    }
+  },
+  "migration": {
+    "failedTitle": "Lokale Einstellungen konnten nicht vorbereitet werden",
+    "failedBody": "Ihre gespeicherten Einstellungen konnten nicht in das neue Speicherformat migriert werden. Nichts ging verloren — laden Sie die Seite neu, um es erneut zu versuchen.",
+    "dataLostTitle": "Einige gespeicherte Einstellungen konnten nicht wiederhergestellt werden",
+    "dataLostBody": "Der Browser-Speicher war voll, daher konnten einige Ihrer Einstellungen (Design, Sprache, API-Schlüssel) nicht erhalten werden und sind nicht mehr wiederherstellbar. Beim Fortfahren bleiben die erhaltenen Einstellungen bestehen; für die übrigen werden Standardwerte verwendet.",
+    "continueAfterLoss": "Fortfahren",
+    "retry": "Neu laden",
+    "historyDropped": "Der Chat-Verlauf passte beim Upgrade nicht in den Browser-Speicher und wurde verworfen. Die Einstellungen wurden normal migriert."
+  },
+  "retrievalHistory": {
+    "quotaDropped": "Der Browser-Speicher ist voll: Der Chat-Verlauf wird nicht mehr gespeichert. Die aktuelle Unterhaltung bleibt sichtbar, bis Sie die Seite verlassen."
   }
 }

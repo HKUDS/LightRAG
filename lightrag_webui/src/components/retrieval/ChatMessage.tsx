@@ -9,7 +9,6 @@ import rehypeReact from 'rehype-react'
 import rehypeRaw from 'rehype-raw'
 import rehypeSanitize from 'rehype-sanitize'
 import remarkMath from 'remark-math'
-import mermaid from 'mermaid'
 import { remarkFootnotes } from '@/utils/remarkFootnotes'
 import { chatMarkdownSanitizeSchema } from '@/utils/markdownSanitizeSchema'
 
@@ -30,22 +29,17 @@ interface KaTeXOptions {
   errorCallback?: (error: string, latex: string) => void;
 }
 
-export type MessageWithError = Message & {
-  id: string // Unique identifier for stable React keys
-  isError?: boolean
-  isThinking?: boolean // Flag to indicate if the message is in a "thinking" state
-  isAborted?: boolean // Flag to indicate the user terminated this query (response may be incomplete)
-  /**
-   * Indicates if the mermaid diagram in this message has been rendered.
-   * Used to persist the rendering state across updates and prevent flickering.
-   */
-  mermaidRendered?: boolean
-  /**
-   * Indicates if the LaTeX formulas in this message are complete and ready for rendering.
-   * Used to prevent red error text during streaming of incomplete LaTeX formulas.
-   */
-  latexRendered?: boolean
-}
+// MessageWithError moved to the retrieval types module so the UI-free query
+// session controller does not depend on this rendering component; re-exported
+// here for existing importers.
+import type { MessageWithError } from '@/types/retrieval'
+export type { MessageWithError } from '@/types/retrieval'
+
+// Both entries share ChatMessage, so mermaid MUST NOT be a static import —
+// it would land in the workspace entry's first-load closure. It is loaded on
+// demand when a complete ```mermaid``` block is actually rendered, keeping
+// full Mermaid support in both entries.
+const loadMermaid = () => import('mermaid').then((m) => m.default)
 
 // Restore original component definition and export
 export const ChatMessage = ({
@@ -429,11 +423,42 @@ const CodeHighlight = memo(({ inline, className, children, renderAsDiagram = fal
         clearTimeout(debounceTimerRef.current);
       }
 
-      debounceTimerRef.current = setTimeout(() => {
+      debounceTimerRef.current = setTimeout(async () => {
         if (!container) return; // Container might have unmounted
 
         // Double check hasRendered state inside timeout, in case it changed rapidly
         if (hasRendered) return;
+
+        // Dynamic import: mermaid stays out of both entries' first-load
+        // closure and is fetched only when a diagram is actually rendered.
+        let mermaid: Awaited<ReturnType<typeof loadMermaid>>;
+        try {
+          mermaid = await loadMermaid();
+        } catch (loadError) {
+          // The renderer itself could not be fetched — a deploy invalidated
+          // the hashed chunk mid-session, an offline tab, a flaky network.
+          //
+          // This MUST write something visible, like the two render-failure
+          // paths below. Nothing has been put in the container yet (the
+          // loading indicator is set only after this await), the effect's
+          // dependencies cannot change again once the message settles, so
+          // nothing retries, and the plain-text fallback branch in the
+          // render body only runs while `renderAsDiagram` is false. A bare
+          // return therefore leaves a permanently blank gap where a diagram
+          // belongs, with the source unreachable too.
+          console.error('Failed to load mermaid:', loadError);
+          if (mermaidRef.current === container) {
+            const errorMessage =
+              loadError instanceof Error ? loadError.message : String(loadError);
+            const fallbackPre = document.createElement('pre');
+            fallbackPre.className = 'text-red-500 text-xs whitespace-pre-wrap break-words';
+            fallbackPre.textContent = `Mermaid renderer failed to load: ${errorMessage}\n\nContent:\n${String(children).replace(/\n$/, '').trim()}`;
+            container.innerHTML = '';
+            container.appendChild(fallbackPre);
+          }
+          return;
+        }
+        if (mermaidRef.current !== container || hasRendered) return;
 
         try {
           // Initialize mermaid config

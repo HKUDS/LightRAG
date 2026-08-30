@@ -69,13 +69,14 @@ and in-app links.
 
 ---
 
-## One backend variable, that's it
+## Two backend variables, that's it
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `LIGHTRAG_API_PREFIX` | `""` | Reverse-proxy mount prefix. The backend accepts both strip and verbatim forwarding — pick whichever fits your proxy stack. Passed to FastAPI as `root_path`. |
+| `LIGHTRAG_DEFAULT_UI` | `webui` | Which UI entry the root path `/` redirects to: `webui` (admin) or `workspace` (query-only entry). Controls ONLY the `/` redirect; both entries stay mounted regardless. Any other value fails startup. |
 
-The WebUI is always mounted at `/webui` server-side. `window.__LIGHTRAG_CONFIG__.webuiPrefix` is computed as `LIGHTRAG_API_PREFIX + "/webui/"` and injected for the SPA — you do **not** set it yourself.
+There are TWO WebUI entries, both mounted server-side from one shared build: the admin UI at `/webui` and the query-user entry at `/workspace` (each serving its own entry HTML from the same static directory; requesting the other entry's HTML file returns 404). `window.__LIGHTRAG_CONFIG__` keeps the published shape `{apiPrefix, webuiPrefix}`; `webuiPrefix` is computed as `LIGHTRAG_API_PREFIX + "/webui/"` and injected identically for both entries — you do **not** set it yourself, and there is no entry-mode field (the entry identity IS the loaded HTML product). Behind a prefix, browsers see `/site01/webui/` and `/site01/workspace/`.
 
 There are no longer any frontend `VITE_API_PREFIX` / `VITE_WEBUI_PREFIX` variables. Setting them has no effect (they are ignored by the build).
 
@@ -285,7 +286,7 @@ Browser ──► localhost:5173 (Vite) ──► localhost:9621 (backend, no pr
 # lightrag_webui/.env.development (already in repo as sample)
 VITE_BACKEND_URL=http://localhost:9621
 VITE_API_PROXY=true
-VITE_API_ENDPOINTS=/api,/documents,/graphs,/graph,/health,/query,/docs,/redoc,/openapi.json,/login,/auth-status,/static
+VITE_API_ENDPOINTS=/api,/documents,/graphs,/graph,/health,/query,/docs,/redoc,/openapi.json,/login,/auth-status,/auth/verify,/ui/customization,/static
 # VITE_DEV_API_PREFIX=          ← leave empty
 ```
 
@@ -311,7 +312,7 @@ Browser ──► localhost:5173 (Vite + HMR)
 ```bash
 VITE_BACKEND_URL=…                             # see "Where to point VITE_BACKEND_URL" below
 VITE_API_PROXY=true
-VITE_API_ENDPOINTS=/api,/documents,/graphs,/graph,/health,/query,/docs,/redoc,/openapi.json,/login,/auth-status,/static
+VITE_API_ENDPOINTS=/api,/documents,/graphs,/graph,/health,/query,/docs,/redoc,/openapi.json,/login,/auth-status,/auth/verify,/ui/customization,/static
 VITE_DEV_API_PREFIX=/site01
 ```
 
@@ -383,7 +384,7 @@ slash form; verify the redirect is reaching nginx (check `X-Forwarded-Prefix` an
 
 ### `apiPrefix` is empty in `window.__LIGHTRAG_CONFIG__` after deploy
 
-View the page source. If you see the literal placeholder `<!-- __LIGHTRAG_RUNTIME_CONFIG__ -->` instead of an injected `<script>` tag, the request did not go through `SmartStaticFiles` — double-check that `lightrag/api/webui/index.html` exists in the running container and that the WebUI mount succeeded (the server logs `WebUI assets mounted at <path>` at startup).
+View the page source. If you see the literal placeholder `<!-- __LIGHTRAG_RUNTIME_CONFIG__ -->` instead of an injected `<script>` tag, the request did not go through `SmartStaticFiles` — double-check that `lightrag/api/webui/index.html` exists in the running container and that the WebUI mount succeeded (the server logs `Admin WebUI mounted at <path>` at startup).
 
 ### `bun run dev` proxy returns 404 with `VITE_DEV_API_PREFIX` set
 
@@ -391,4 +392,4 @@ Confirm the backend is also running with the matching `LIGHTRAG_API_PREFIX`. The
 
 ### I want to disable the WebUI entirely
 
-Don't build the frontend — `lightrag/api/webui/index.html` will not exist and the server will skip the WebUI mount, redirecting `/` and the WebUI path to `/docs` instead (or, when `ENABLE_API_DOCS=false` also disables the docs, answering them with a small JSON service-info payload whose `health_url` honors the configured prefix). The runtime-config injection is purely opt-in via the existence of the build artifact. The `/docs,/redoc,/openapi.json,/static` entries in the `VITE_API_ENDPOINTS` examples above stay valid with docs disabled — those routes simply return 404 through the proxy.
+Don't build the frontend — `lightrag/api/webui/index.html` will not exist and the server will skip the WebUI mount, redirecting `/` and the WebUI path to `/docs` instead (or, when `ENABLE_API_DOCS=false` also disables the docs, answering them with a small JSON service-info payload whose `health_url` honors the configured prefix). The `/workspace` entry degrades separately: when `workspace.html` is missing (e.g. an older prebuilt bundle), `/webui` stays fully functional while `/workspace` answers with a fixed JSON service-info payload that never redirects to or mentions the API docs; with `LIGHTRAG_DEFAULT_UI=workspace`, `/` follows that same workspace degradation instead of rerouting to `/webui/` or `/docs`. The runtime-config injection is purely opt-in via the existence of the build artifact. The `/docs,/redoc,/openapi.json,/static` entries in the `VITE_API_ENDPOINTS` examples above stay valid with docs disabled — those routes simply return 404 through the proxy.
