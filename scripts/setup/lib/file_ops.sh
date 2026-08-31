@@ -561,13 +561,14 @@ _is_wizard_managed_volume_name() {
 
 # Remove wizard-managed keys from the lightrag service's environment block,
 # leaving any user-added keys intact.
-# A compose environment mapping key at service-property indentation, with
-# YAML's optional quoting: `KEY:`, `"KEY":` and `'KEY':` all name the SAME key.
-# Every parser below must agree on that, because a file that ends up declaring
-# one key twice is not loadable at all -- compose fails with
+# A compose environment mapping key at service-property indentation, in every
+# spelling YAML allows for the SAME key: quoted or bare (`KEY:`, `"KEY":`,
+# `'KEY':`) and with or without space before the colon (`KEY :`). Every parser
+# below must agree on that, because a file that ends up declaring one key twice
+# is not loadable at all -- compose fails with
 # `mapping key "KEY" already defined`. Capture 1 keeps the quotes; run it
 # through _strip_wrapping_quotes before comparing.
-_COMPOSE_ENV_MAPPING_KEY_RE='^[[:space:]]{6}("[A-Z0-9_]+"|'"'"'[A-Z0-9_]+'"'"'|[A-Z0-9_]+):'
+_COMPOSE_ENV_MAPPING_KEY_RE='^[[:space:]]{6}("[A-Z0-9_]+"|'"'"'[A-Z0-9_]+'"'"'|[A-Z0-9_]+)[[:space:]]*:'
 
 _strip_lightrag_wizard_environment_keys() {
   local compose_file="$1"

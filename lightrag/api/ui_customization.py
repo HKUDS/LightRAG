@@ -850,6 +850,10 @@ def resolve_ui_customization_snapshot(
       ``./data/ui_templates`` and sets the variable unconditionally so that
       dropping a bundle in and restarting is the whole activation procedure.
       Failing here would make the shipped compose files refuse to boot.
+      Only a genuinely ABSENT path counts: a ``manifest.json`` that exists as
+      a directory, a dangling symlink or any other non-regular file is an
+      anomaly, not an empty mount point, and it raises rather than degrading
+      to the built-in branding.
     - **``manifest.json`` present** → full validation, unchanged. Fail-fast
       still owns everything from here on: a partial, corrupt or half-copied
       bundle refuses startup rather than silently serving LightRAG content to
@@ -864,6 +868,14 @@ def resolve_ui_customization_snapshot(
     root = Path(bundle_dir)
     if not root.is_dir():
         raise _fail(f"directory {str(root)!r} does not exist or is not a directory")
-    if not (root / BUNDLE_MANIFEST_NAME).is_file():
+    manifest_path = root / BUNDLE_MANIFEST_NAME
+    if not manifest_path.is_file():
+        # exists() follows symlinks, so a dangling one needs is_symlink() to be
+        # told apart from nothing being there at all.
+        if manifest_path.exists() or manifest_path.is_symlink():
+            raise _fail(
+                f"{BUNDLE_MANIFEST_NAME} exists but is not a readable regular "
+                "file (a directory, a broken symlink or similar)"
+            )
         return None
     return load_ui_customization_snapshot(root)

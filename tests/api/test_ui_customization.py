@@ -1190,6 +1190,34 @@ class TestUnpopulatedBundleDirectory:
         (root / "locales" / "en" / "welcome.md").write_text("# hi", "utf-8")
         assert resolve_ui_customization_snapshot(root) is None
 
+    def test_a_manifest_that_is_a_directory_fails(self, tmp_path):
+        """Present-but-unusable is an anomaly, not an empty mount point.
+
+        Degrading to the built-in branding here would drop the fail-fast
+        guarantee the moment an operator has created a manifest entry.
+        """
+        root = tmp_path / "ui_templates"
+        (root / "manifest.json").mkdir(parents=True)
+        with pytest.raises(UICustomizationError, match="not a readable regular"):
+            resolve_ui_customization_snapshot(root)
+
+    def test_a_dangling_manifest_symlink_fails(self, tmp_path):
+        """``exists()`` follows symlinks, so a broken one looks absent to it."""
+        root = tmp_path / "ui_templates"
+        root.mkdir()
+        (root / "manifest.json").symlink_to(root / "nowhere.json")
+        with pytest.raises(UICustomizationError, match="not a readable regular"):
+            resolve_ui_customization_snapshot(root)
+
+    def test_a_manifest_symlink_that_resolves_is_loaded(self, tmp_path):
+        """A resolving symlink is a normal bundle (ConfigMap projections use
+        them), so it must load rather than trip the anomaly branch."""
+        bundle = make_bundle(tmp_path)
+        real = bundle / "manifest.real.json"
+        (bundle / "manifest.json").rename(real)
+        (bundle / "manifest.json").symlink_to(real)
+        assert resolve_ui_customization_snapshot(bundle) is not None
+
     def test_missing_directory_still_fails(self, tmp_path):
         """Pointing the variable at nothing stays a configuration error: a
         bind mount materializes both ends, so only a typo produces it."""

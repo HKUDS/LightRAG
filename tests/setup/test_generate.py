@@ -2312,13 +2312,19 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     assert result.count("UI_TEMPLATES_DIR") == 1
 
 
-@pytest.mark.parametrize("quote", ['"', "'"])
-def test_generate_docker_compose_rewrites_a_quoted_wizard_managed_key(
-    tmp_path: Path, quote: str
-) -> None:
-    """The strip pass must recognize a quoted managed key as the same key.
+# Every spelling YAML accepts for the same mapping key: quoted or bare, colon
+# tight or spaced. Compose reads them all as one key and refuses a file that
+# declares it twice, so every parser has to agree.
+KEY_SPELLINGS = ["{key}:", '"{key}":', "'{key}':", "{key} :", '"{key}" :']
 
-    Missing it left the operator's entry in place and appended the wizard's
+
+@pytest.mark.parametrize("spelling", KEY_SPELLINGS)
+def test_generate_docker_compose_rewrites_a_wizard_managed_key_in_any_spelling(
+    tmp_path: Path, spelling: str
+) -> None:
+    """The strip pass must recognize every spelling as the same key.
+
+    Missing one left the operator's entry in place and appended the wizard's
     own, so the regenerated file declared the key twice and compose refused to
     load it at all.
     """
@@ -2329,8 +2335,8 @@ def test_generate_docker_compose_rewrites_a_quoted_wizard_managed_key(
             "  lightrag:",
             "    image: example/lightrag:test",
             "    environment:",
-            f'      {quote}PORT{quote}: "1234"',
-            f'      {quote}WORKING_DIR{quote}: "/custom/rag"',
+            f'      {spelling.format(key="PORT")} "1234"',
+            f'      {spelling.format(key="WORKING_DIR")} "/custom/rag"',
         ],
     )
     run_bash(f"""
@@ -2362,9 +2368,9 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     assert declarations("WORKING_DIR") == 1
 
 
-@pytest.mark.parametrize("quote", ['"', "'"])
-def test_read_service_environment_value_reads_a_quoted_key(
-    tmp_path: Path, quote: str
+@pytest.mark.parametrize("spelling", KEY_SPELLINGS)
+def test_read_service_environment_value_reads_any_key_spelling(
+    tmp_path: Path, spelling: str
 ) -> None:
     """A quoted key must still be readable back.
 
@@ -2381,7 +2387,7 @@ def test_read_service_environment_value_reads_a_quoted_key(
             "  lightrag:",
             "    image: example/lightrag:test",
             "    environment:",
-            f'      {quote}SSL_CERTFILE{quote}: "/app/data/certs/mine.pem"',
+            f'      {spelling.format(key="SSL_CERTFILE")} "/app/data/certs/mine.pem"',
         ],
     )
     output = run_bash(f"""
@@ -2393,13 +2399,13 @@ read_service_environment_value "{compose_file}" "lightrag" "SSL_CERTFILE"
     assert "/app/data/certs/mine.pem" in output
 
 
-@pytest.mark.parametrize("quote", ['"', "'"])
-def test_generate_docker_compose_preserves_a_quoted_ui_templates_dir(
-    tmp_path: Path, quote: str
+@pytest.mark.parametrize("spelling", KEY_SPELLINGS)
+def test_generate_docker_compose_preserves_ui_templates_dir_in_any_spelling(
+    tmp_path: Path, spelling: str
 ) -> None:
-    """A quoted mapping key is the same key, so it must block the seed.
+    """Any spelling of the key is the same key, so it must block the seed.
 
-    Missing it appended a second entry for a key already present, and compose
+    Missing one appended a second entry for a key already present, and compose
     rejects the file outright: ``mapping key "UI_TEMPLATES_DIR" already
     defined``.
     """
@@ -2410,7 +2416,7 @@ def test_generate_docker_compose_preserves_a_quoted_ui_templates_dir(
             "  lightrag:",
             "    image: example/lightrag:test",
             "    environment:",
-            f'      {quote}UI_TEMPLATES_DIR{quote}: "/custom/ui_templates"',
+            f'      {spelling.format(key="UI_TEMPLATES_DIR")} "/custom/ui_templates"',
         ],
     )
     run_bash(f"""
@@ -2422,7 +2428,10 @@ reset_state
 generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
 """)
     result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
-    assert f'      {quote}UI_TEMPLATES_DIR{quote}: "/custom/ui_templates"' in result
+    assert (
+        f'      {spelling.format(key="UI_TEMPLATES_DIR")} "/custom/ui_templates"'
+        in result
+    )
     assert result.count("UI_TEMPLATES_DIR") == 1
     assert (
         yaml.safe_load(result)["services"]["lightrag"]["environment"][
