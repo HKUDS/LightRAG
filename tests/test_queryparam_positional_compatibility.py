@@ -54,9 +54,7 @@ def test_legacy_positional_field_order_is_unchanged():
 def test_new_fields_are_appended_after_the_legacy_ones():
     names = [f.name for f in dataclasses.fields(QueryParam)]
     assert "disable_user_prompt_prefix" in names
-    assert names.index("disable_user_prompt_prefix") >= len(
-        _LEGACY_POSITIONAL_ORDER
-    )
+    assert names.index("disable_user_prompt_prefix") >= len(_LEGACY_POSITIONAL_ORDER)
 
 
 def test_positional_construction_still_binds_enable_rerank():
