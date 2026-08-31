@@ -22,6 +22,39 @@
   content: '';
 }
 
+/* Markdown whose colors must come from the CONTAINER, not from the prose
+   palette. A chat bubble picks its text color by role — the user's is
+   `text-primary-foreground` on `bg-primary` — but prose paints headings,
+   bold, links, code and quotes with its own body-tier colors, which were
+   chosen against the page background and not against that bubble: on the
+   primary bubble they land near-black in light mode and near-white in dark,
+   i.e. invisible. Pointing the palette at `currentColor` restores plain
+   inheritance for exactly those runs, leaving the typography (sizes, weights,
+   spacing) untouched.
+
+   Unlayered on purpose: it has to outrank both `.prose` and `.prose-invert`,
+   which the plugin emits in the `components` layer. */
+.prose-inherit-color {
+  --tw-prose-body: currentColor;
+  --tw-prose-headings: currentColor;
+  --tw-prose-lead: currentColor;
+  --tw-prose-links: currentColor;
+  --tw-prose-bold: currentColor;
+  --tw-prose-counters: currentColor;
+  --tw-prose-bullets: currentColor;
+  --tw-prose-quotes: currentColor;
+  --tw-prose-captions: currentColor;
+  --tw-prose-kbd: currentColor;
+  --tw-prose-code: currentColor;
+  --tw-prose-pre-code: currentColor;
+  /* Rules and borders keep the same relationship to the text they separate
+     as the bubble's own `border-primary-foreground/30` footnote rule. */
+  --tw-prose-hr: color-mix(in oklab, currentColor 30%, transparent);
+  --tw-prose-quote-borders: color-mix(in oklab, currentColor 30%, transparent);
+  --tw-prose-th-borders: color-mix(in oklab, currentColor 30%, transparent);
+  --tw-prose-td-borders: color-mix(in oklab, currentColor 30%, transparent);
+}
+
 @source '../index.html';
 @source './**/*.{ts,tsx}';
 

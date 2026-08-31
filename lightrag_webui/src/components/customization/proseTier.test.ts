@@ -26,3 +26,39 @@ describe('prose tier registration', () => {
     expect(markdown).toContain('prose dark:prose-invert')
   })
 })
+
+/**
+ * Registering the plugin gives every `.prose` surface the prose PALETTE too,
+ * and that palette was chosen against the page background. A chat bubble sets
+ * its own text color by role, so on the user's `bg-primary` bubble the prose
+ * colors render headings, bold, links, code and quotes near-black in light
+ * mode and near-white in dark — invisible either way. `.prose-inherit-color`
+ * points the palette back at `currentColor` for that container.
+ */
+describe('prose colors inside a colored container', () => {
+  const chat = readFileSync(
+    join(import.meta.dir, '..', 'retrieval', 'ChatMessage.tsx'),
+    'utf8'
+  )
+
+  test('index.css defines the inherit-color palette', () => {
+    expect(css).toContain('.prose-inherit-color {')
+    // The runs that were unreadable: each must resolve to the container's own
+    // color rather than to a prose-tier one.
+    for (const token of [
+      '--tw-prose-body: currentColor',
+      '--tw-prose-headings: currentColor',
+      '--tw-prose-links: currentColor',
+      '--tw-prose-bold: currentColor',
+      '--tw-prose-code: currentColor',
+      '--tw-prose-quotes: currentColor'
+    ]) {
+      expect(css).toContain(token)
+    }
+  })
+
+  test('the user message bubble uses it', () => {
+    // Paired with the role color it corrects; separating them re-breaks it.
+    expect(chat).toContain('\'text-primary-foreground prose-inherit-color\'')
+  })
+})
