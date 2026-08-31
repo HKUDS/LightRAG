@@ -489,8 +489,10 @@
       "streamResponse": "Phản Hồi Theo Luồng",
       "streamResponseTooltip": "Nếu True, bật đầu ra theo luồng cho phản hồi thời gian thực",
       "userPrompt": "Lời Nhắc Đầu Ra Bổ Sung",
-      "userPromptTooltip": "Cung cấp yêu cầu phản hồi bổ sung cho LLM (không liên quan đến nội dung truy vấn, chỉ để xử lý đầu ra).",
+      "userPromptTooltip": "Cung cấp yêu cầu phản hồi bổ sung cho LLM (không liên quan đến nội dung truy vấn, chỉ dùng để xử lý đầu ra). Máy chủ có thể nối một lời nhắc toàn cục vào phía trước.",
       "userPromptPlaceholder": "Nhập lời nhắc tùy chỉnh (tùy chọn)",
+      "disableUserPromptPrefix": "Bỏ qua lời nhắc toàn cục",
+      "disableUserPromptPrefixTooltip": "Không nối lời nhắc đầu ra toàn cục của máy chủ vào trước lời nhắc đầu ra bổ sung ở trên. Bật tùy chọn này để kiểm soát hoàn toàn chỉ dẫn cuối cùng từ đây.",
       "enableRerank": "Bật Xếp Hạng Lại",
       "enableRerankTooltip": "Bật xếp hạng lại cho các đoạn văn bản đã truy xuất. Nếu True nhưng không có mô hình rerank nào được cấu hình, một cảnh báo sẽ được đưa ra. Mặc định là True."
     }

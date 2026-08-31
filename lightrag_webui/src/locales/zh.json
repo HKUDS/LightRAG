@@ -489,8 +489,10 @@
       "streamResponse": "流式响应",
       "streamResponseTooltip": "如果为True，启用实时流式输出响应",
       "userPrompt": "附加输出提示词",
-      "userPromptTooltip": "向LLM提供额外的响应要求（与查询内容无关，仅用于处理输出）。",
+      "userPromptTooltip": "向LLM提供额外的响应要求（与查询内容无关，仅用于处理输出）。服务端可能会在其前面拼接全局提示词。",
       "userPromptPlaceholder": "输入自定义提示词（可选）",
+      "disableUserPromptPrefix": "忽略全局提示词",
+      "disableUserPromptPrefixTooltip": "不要将服务端的全局输出提示词拼接到上面的附加输出提示词前面。开启后由此处完全控制最终指令。",
       "enableRerank": "启用重排",
       "enableRerankTooltip": "为检索到的文本块启用重排。如果为True但未配置重排模型，将发出警告。默认为True。"
     }
