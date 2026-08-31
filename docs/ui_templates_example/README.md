@@ -41,8 +41,11 @@ Copy this directory, replace the texts and the logo, then restart the server
   file (headings are the way to separate them) rather than expecting the
   reader to find two documents.
   - `consent_documents` is what the checkbox CALLS that link — inline text,
-    not a path, per locale. It is optional: leave it out and the WebUI's own
-    translation names the link. It never switches the gate on by itself.
+    not a path, per locale. It is optional: leave it out and the WebUI names
+    the link with its own generic "Privacy Policy Agreement". Set it whenever
+    the file covers more than a privacy policy, so the checkbox does not
+    understate what the visitor is agreeing to. It never switches the gate on
+    by itself.
   - The dialog renders `agreements` AS WRITTEN and prints no title above it,
     so start the file with its own heading — that heading is the document's
     title on screen.

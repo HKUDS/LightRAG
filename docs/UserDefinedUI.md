@@ -16,7 +16,7 @@ A ready-to-copy bundle lives in [`docs/ui_templates_example/`](./ui_templates_ex
 | **Query empty state** | `/workspace` query page, while the conversation is empty (and again after *Clear*) | `query_empty` (required) |
 | **Login page text** | Above the username/password form, on **both** entries (`/webui/#/login` and `/workspace/#/login`) | `login` (optional) |
 | **User agreement + consent checkbox** | A checkbox on the login page, whose link opens the document in a dialog; the WebUI's Login button stays disabled until it is ticked — a WebUI prompt, not server-side enforcement ([§6](#6-the-login-consent-gate)) | `agreements` (optional, pairs with `login`) |
-| **Consent checkbox link text** | The words the checkbox links — *"I agree to …"* | `consent_documents` (optional, defaults to the WebUI's own translation) |
+| **Consent checkbox link text** | The words the checkbox links — *"I agree to …"* | `consent_documents` (optional; falls back to the WebUI's generic *"Privacy Policy Agreement"*) |
 | **Brand logo** | Welcome page, query empty state and login page | `brand.logo`, per-locale `logo`, `logo_alt` |
 
 What you **cannot** set from the bundle:
@@ -282,9 +282,11 @@ The **Login** button stays disabled until the box is ticked, and pressing Enter 
 
 ### 6.1 One document, not two
 
-The checkbox carries exactly **one** link. Write both the privacy policy and the model service agreement into that single `agreements.md`, separating them with headings:
+The checkbox carries exactly **one** link, so everything the visitor has to agree to goes into that single `agreements.md`, separated by headings:
 
 ```markdown
+# Privacy Policy and Model Service Agreement
+
 ## Privacy Policy
 
 …
@@ -294,6 +296,10 @@ The checkbox carries exactly **one** link. Write both the privacy policy and the
 …
 ```
 
+> **A merged document must name itself.** The WebUI's fallback link text is the generic *"Privacy Policy Agreement"*. The moment your file covers anything beyond a privacy policy — a model service agreement, terms of service, an acceptable-use policy — that fallback understates what the visitor is ticking, so set `consent_documents` to the real name.
+>
+> This includes bundles written before the field existed: they keep loading unchanged, but their checkbox now reads *"Privacy Policy Agreement"*. **If your `agreements.md` merges several documents, add `consent_documents` when you upgrade.**
+
 #### Naming the link
 
 `consent_documents` is the text the checkbox turns into the link — set it to whatever your deployment actually calls the document:
@@ -302,7 +308,7 @@ The checkbox carries exactly **one** link. Write both the privacy policy and the
 "consent_documents": "Example Corp Terms of Service"
 ```
 
-The sentence around it (*"I agree to …"*) still comes from the WebUI's own translations, so it reads naturally in each interface language; only the document's name is yours. Leave the field out and that translation supplies the name too — the generic *"Privacy Policy Agreement"* (`《隐私政策协议》` in Chinese, and so on). That default is right for a document that is just a privacy policy; **set the field whenever yours covers more than that** — a model service agreement, terms of service, an acceptable-use policy — because a checkbox that names only the privacy policy is not a fair description of what the visitor is agreeing to.
+The sentence around it (*"I agree to …"*) still comes from the WebUI's own translations, so it reads naturally in each interface language; only the document's name is yours. Leave the field out and that translation names the link too — the generic *"Privacy Policy Agreement"* (`《隐私政策协议》` in Chinese, and so on), which fits a file that really is just a privacy policy and understates every file that is not (see the note above).
 
 #### What the dialog shows
 
@@ -527,6 +533,7 @@ Symptoms that are **not** startup failures:
 |---|---|
 | Server starts, but the page still shows LightRAG branding | `UI_TEMPLATES_DIR` is unset or empty — check the log line and `/ui/customization`. In Docker, remember a compose `environment:` entry overrides `.env`. |
 | Edits do not appear | No hot reload. Restart the server (all workers). |
+| Checkbox says "Privacy Policy Agreement", but the document covers more | That is the WebUI fallback for a locale declaring no `consent_documents`. Name the document yourself ([§6.1](#61-one-document-not-two)) — bundles written before the field existed hit this on upgrade. |
 | Consent dialog has no title | `agreements.md` starts with no heading. The dialog prints the file as written — add a `# Title` line to it ([§6.1](#61-one-document-not-two)). |
 | Consent checkbox missing | The resolved locale declares only one of `login` / `agreements`, or auth is disabled (`AUTH_ACCOUNTS` unset), or the visitor resolved to a different locale than you expected — check `locale` and `consent_required` in the endpoint response. |
 | Content is in your language, buttons are not | The locale is outside the WebUI's interface languages — see [§5.3](#53-interface-languages-vs-bundle-locales) and the startup warning. |
