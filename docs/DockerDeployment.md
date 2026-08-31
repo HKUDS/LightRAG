@@ -251,13 +251,16 @@ This keeps generated host mounts under the same `./data` root used by the defaul
 ### Custom UI content
 
 `docker-compose.yml` and `docker-compose-full.yml` mount `./data/ui_templates`
-read-only at `/app/data/ui_templates`. The mount is inert until you uncomment
-`UI_TEMPLATES_DIR` in the `lightrag` service's `environment:` block, at which
-point the server replaces the welcome page, the login-page text and user
-agreement, the query empty state, the copyright line and the brand logo with
-the bundle's content
-— per language, without rebuilding the frontend. A set but invalid bundle
-makes the server refuse to start.
+read-only at `/app/data/ui_templates` and set `UI_TEMPLATES_DIR` to it. That
+entry overrides the same key in `.env`, like `WORKING_DIR` and `INPUT_DIR`, so
+one `.env` full of host paths keeps serving a source run as well. Both stay
+inert until the directory actually holds a bundle: with no `manifest.json`
+in it the server logs a warning naming the directory and serves its built-in
+branding, so the default deployment starts normally. Drop a bundle in and
+restart, and the server replaces the welcome page, the login-page text and user
+agreement, the query empty state, the copyright line and the brand logo with the
+bundle's content — per language, without rebuilding the frontend. From that point on the bundle
+is validated in full: an invalid one makes the server refuse to start.
 
 Create the directory before the first `up` so it is not created root-owned by
 Docker:
@@ -267,12 +270,11 @@ mkdir -p ./data/ui_templates
 cp -r docs/ui_templates_example/* ./data/ui_templates/
 ```
 
-**Podman**: `docker-compose.podman.yml` keeps the mount commented out as well,
-because Podman is stricter than Docker about a bind mount whose host source is
-missing and this feature is off by default. There, create the directory first
-and then uncomment **both** the mount and `UI_TEMPLATES_DIR` — uncommenting the
-environment entry alone leaves the server pointed at a path that is not
-mounted, and it refuses to start.
+**Podman**: `docker-compose.podman.yml` keeps the mount and `UI_TEMPLATES_DIR`
+commented out, because Podman is stricter than Docker about a bind mount whose
+host source is missing. There, create the directory first and then uncomment
+**both** — uncommenting the environment entry alone leaves the server pointed
+at a path that is not mounted, and it refuses to start.
 
 See [UserDefinedUI.md](./UserDefinedUI.md) ([中文](./UserDefinedUI-zh.md)) for
 the bundle format and the full deployment guide.
