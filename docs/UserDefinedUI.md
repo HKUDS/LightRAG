@@ -173,7 +173,7 @@ Unknown top-level fields are an error, so a typo (`defaultLocale`) is reported a
 | `logo_alt` | yes | string | Non-empty alt text for the logo, in this locale's language. |
 | `logo` | no | string \| `null` | Overrides `brand.logo` for this locale (`null` = no logo here). When the key is **absent**, the locale inherits `brand.logo`. |
 | `login` | no | string \| `null` | Path to the login-page blurb. |
-| `agreements` | no | string \| `null` | Path to the single user-agreement document. |
+| `agreements` | no | string \| `null` | Path to the single user-agreement document. Absent or `null` means this locale has no agreement document: the gate is off and the login page shows no checkbox (see [§6](#6-the-login-consent-gate)). **There is no discovery by conventional filename** — an `agreements.md` that happens to sit in the bundle is never read unless the manifest references it (see [§3](#3-bundle-layout)). |
 | `consent_documents` | no | string \| `null` | **Inline text, not a path**: how the consent checkbox names the document it links to, in this locale's language. Declared-but-blank fails startup. When absent or `null`, the WebUI's own translation is used. |
 | `copyright` | no | string \| `null` | Overrides `brand.copyright` for this locale (`null` = no line here). When the key is **absent**, the locale inherits `brand.copyright`. |
 
@@ -591,6 +591,7 @@ Symptoms that are **not** startup failures:
 | Edits do not appear | No hot reload. Restart the server (all workers). |
 | Checkbox says "Privacy Policy Agreement", but the document covers more | That is the WebUI fallback for a locale declaring no `consent_documents`. Name the document yourself ([§6.1](#61-one-document-not-two)) — bundles written before the field existed hit this on upgrade. |
 | Consent dialog has no title | `agreements.md` starts with no heading. The dialog prints the file as written — add a `# Title` line to it ([§6.1](#61-one-document-not-two)). |
+| An `agreements.md` sits in the directory, but no checkbox ever appears | That locale's manifest entry does not reference it. `manifest.json` is the only index — there is no discovery by filename, so declare `agreements` (and `login`) explicitly ([§4.2](#42-locale-entries)). |
 | Consent checkbox missing | The resolved locale declares only one of `login` / `agreements`, or auth is disabled (`AUTH_ACCOUNTS` unset), or the visitor resolved to a different locale than you expected — check `locale` and `consent_required` in the endpoint response. |
 | Content is in your language, buttons are not | The locale is outside the WebUI's interface languages — see [§5.3](#53-interface-languages-vs-bundle-locales) and the startup warning. |
 | Logo does not show | The locale (or `brand`) resolves to `null`, or the browser failed to load the asset URL — fetch `logo_url` directly and check the status. |

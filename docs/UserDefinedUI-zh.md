@@ -170,7 +170,7 @@ ui_templates/
 | `logo_alt` | 是 | string | 非空的 Logo 替代文本，使用该 locale 的语言书写。 |
 | `logo` | 否 | string \| `null` | 覆盖本 locale 的 `brand.logo`（`null` = 本 locale 不显示 Logo）。key **不存在**时继承 `brand.logo`。 |
 | `login` | 否 | string \| `null` | 登录页文案的路径。 |
-| `agreements` | 否 | string \| `null` | 单份用户协议文档的路径。 |
+| `agreements` | 否 | string \| `null` | 单份用户协议文档的路径。缺省或 `null` 表示本 locale 没有协议文档：门禁关闭，登录页不出现勾选框（见 [§6](#6-登录同意门禁)）。**绝不会按约定文件名自动查找**——即使 Bundle 里恰好存在 `agreements.md`，未被 manifest 引用就不会被读取（见 [§3](#3-目录结构)）。 |
 | `consent_documents` | 否 | string \| `null` | **是文本，不是路径**：同意勾选框如何称呼它所链接的这份文档，用该 locale 的语言书写。声明了却为空会导致启动失败；缺省或为 `null` 时使用前端自带的翻译。 |
 | `copyright` | 否 | string \| `null` | 覆盖本 locale 的 `brand.copyright`（`null` = 本 locale 不显示版权行）。key **不存在**时继承 `brand.copyright`。 |
 
@@ -588,6 +588,7 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
 | 修改后不生效 | 没有热加载。请重启服务器（所有 worker）。 |
 | 勾选框显示「隐私政策协议」，但文档内容不止于此 | 这是该 locale 未声明 `consent_documents` 时的前端兜底。请自己给文档命名（见 [§6.1](#61-一份文档而不是两份)）——该字段出现之前写好的 bundle 在升级后会遇到这种情况。 |
 | 协议弹窗没有标题 | `agreements.md` 开头没有标题行。弹窗是原样渲染该文件的——请给它加上一行 `# 标题`（见 [§6.1](#61-一份文档而不是两份)）。 |
+| 目录里放了 `agreements.md`，但勾选框始终不出现 | 该 locale 的 manifest 条目没有引用它。`manifest.json` 是唯一索引，不存在按文件名的自动发现——请显式声明 `agreements`（以及 `login`），见 [§4.2](#42-locale-条目)。 |
 | 看不到同意勾选框 | 解析到的 locale 只声明了 `login` / `agreements` 之一；或未配置认证（`AUTH_ACCOUNTS` 未设置）；或访问者解析到的 locale 与你预期的不同——检查接口返回中的 `locale` 与 `consent_required`。 |
 | 内容是你的语言，按钮却不是 | 该 locale 不在前端界面语言集合内——见 [§5.3](#53-界面语言与-bundle-语言) 及启动警告。 |
 | Logo 不显示 | 该 locale（或 `brand`）解析结果为 `null`；或浏览器加载资源 URL 失败——直接请求 `logo_url` 查看状态码。 |
