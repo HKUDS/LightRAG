@@ -23,12 +23,31 @@ def test_query_request_rejects_queries_below_weighted_minimum(query):
 
 
 @pytest.mark.parametrize(
-    "query, expected", [("  abc  ", "abc"), ("中a", "中a"), ("中文", "中文")]
+    "query, expected",
+    [
+        ("  abc  ", "abc"),
+        ("中a", "中a"),
+        ("中文", "中文"),
+        ("ねこ", "ねこ"),
+        ("한글", "한글"),
+    ],
 )
 def test_query_request_accepts_english_equivalent_weight_three(query, expected):
     assert QueryRequest(query=query).query == expected
 
 
-@pytest.mark.parametrize("query", ["", "a", "中"])
+@pytest.mark.parametrize("query", ["a", "中", " a "])
 def test_query_request_does_not_apply_rag_minimum_to_bypass(query):
     assert QueryRequest(query=query, mode="bypass").query == query.strip()
+
+
+@pytest.mark.parametrize("mode", ["mix", "naive", "bypass"])
+@pytest.mark.parametrize("query", ["", "   ", "\t\n"])
+def test_query_request_rejects_an_empty_query_in_every_mode(mode, query):
+    """`bypass` is exempt from the RAG minimum, not from carrying a prompt.
+
+    Dropping the field's `min_length=3` for the mode-aware minimum also dropped
+    the only guard that kept an empty string out of the direct-LLM path.
+    """
+    with pytest.raises(ValidationError):
+        QueryRequest(query=query, mode=mode)

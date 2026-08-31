@@ -1,14 +1,28 @@
 /// <reference types="bun" />
 import { describe, expect, test } from 'bun:test'
-import { isRagQueryTooShort, ragQueryWeight } from './queryValidation'
+import {
+  isQueryEmpty,
+  isRagQueryTooShort,
+  meetsMinRagQueryWeight,
+  ragQueryWeight
+} from './queryValidation'
 
 describe('RAG query validation', () => {
-  test('counts each Han character as two English-equivalent characters', () => {
+  test('counts each CJK character as two English-equivalent characters', () => {
     expect(ragQueryWeight('ab')).toBe(2)
     expect(ragQueryWeight('中')).toBe(2)
     expect(ragQueryWeight('中a')).toBe(3)
     expect(ragQueryWeight('中文')).toBe(4)
     expect(ragQueryWeight('  abc  ')).toBe(3)
+  })
+
+  test('weighs kana and Hangul like Han', () => {
+    // Doubling Han alone rejected ordinary two-character Japanese and Korean
+    // words while accepting their Han equivalents.
+    expect(ragQueryWeight('ねこ')).toBe(4)
+    expect(ragQueryWeight('データ')).toBe(6)
+    expect(ragQueryWeight('한글')).toBe(4)
+    expect(ragQueryWeight('오늘')).toBe(4)
   })
 
   test('requires weight three for retrieval modes', () => {
@@ -17,10 +31,44 @@ describe('RAG query validation', () => {
     expect(isRagQueryTooShort('abc', 'local')).toBe(false)
     expect(isRagQueryTooShort('中a', 'global')).toBe(false)
     expect(isRagQueryTooShort('中文', 'hybrid')).toBe(false)
+    expect(isRagQueryTooShort('ねこ', 'mix')).toBe(false)
+    expect(isRagQueryTooShort('한글', 'mix')).toBe(false)
   })
 
   test('does not impose the RAG minimum on bypass mode', () => {
     expect(isRagQueryTooShort('', 'bypass')).toBe(false)
     expect(isRagQueryTooShort('a', 'bypass')).toBe(false)
+  })
+
+  test('flags an empty query independently of the mode', () => {
+    // Exemption from the minimum is not exemption from carrying a prompt.
+    expect(isQueryEmpty('')).toBe(true)
+    expect(isQueryEmpty('   ')).toBe(true)
+    expect(isQueryEmpty('a')).toBe(false)
+  })
+
+  test('the threshold check agrees with the full walk', () => {
+    for (const query of ['', ' ', 'a', 'ab', 'abc', '中', '中a', 'ねこ', '한a']) {
+      expect(meetsMinRagQueryWeight(query)).toBe(ragQueryWeight(query) >= 3)
+    }
+  })
+
+  test('the threshold check stops as soon as the minimum is reached', () => {
+    // Walking the whole 64 KiB a query may carry is pure waste: the answer is
+    // settled by the third character at the latest.
+    let read = 0
+    const counted = {
+      trim: () => ({
+        *[Symbol.iterator]() {
+          for (const character of 'a'.repeat(65536)) {
+            read += 1
+            yield character
+          }
+        }
+      })
+    } as unknown as string
+
+    expect(meetsMinRagQueryWeight(counted)).toBe(true)
+    expect(read).toBe(3)
   })
 })

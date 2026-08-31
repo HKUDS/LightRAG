@@ -53,4 +53,32 @@ describe('prepareQueryInput', () => {
       modeOverride: undefined
     })
   })
+
+  test('accepts two-character Japanese and Korean queries', () => {
+    // Weighing only Han as two rejected these while accepting '猫' and '今日'.
+    for (const query of ['ねこ', '한글', '오늘']) {
+      expect(prepareQueryInput(query, 'mix')).toEqual({
+        ok: true,
+        query,
+        modeOverride: undefined
+      })
+    }
+  })
+
+  test('rejects an empty query in every mode, bypass included', () => {
+    // A prefix can consume the whole input, so the effective query can be
+    // blank even when the raw input is not.
+    expect(prepareQueryInput('/bypass  ', 'mix')).toEqual({
+      ok: false,
+      error: 'queryEmpty'
+    })
+    expect(prepareQueryInput('   ', 'bypass')).toEqual({
+      ok: false,
+      error: 'queryEmpty'
+    })
+    expect(prepareQueryInput('   ', 'mix')).toEqual({
+      ok: false,
+      error: 'queryEmpty'
+    })
+  })
 })

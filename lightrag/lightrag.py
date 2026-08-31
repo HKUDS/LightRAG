@@ -134,7 +134,7 @@ from lightrag.base import (
     QueryResult,
 )
 from lightrag.namespace import NameSpace
-from lightrag.query_validation import validate_rag_query
+from lightrag.query_validation import validate_query_not_empty, validate_rag_query
 from lightrag.chunker import chunking_by_token_size
 from lightrag.operate import (
     KGRebuildReport,
@@ -4087,7 +4087,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             actual data is nested under the 'data' field, with 'status' and 'message'
             fields at the top level.
         """
-        query = query.strip()
+        # `bypass` skips retrieval, so the RAG minimum does not apply to it —
+        # but no mode may forward an empty prompt to the LLM.
+        query = validate_query_not_empty(query)
         if param.mode != "bypass":
             query = validate_rag_query(query)
 
@@ -4207,7 +4209,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             dict[str, Any]: Complete response with structured data and LLM response.
         """
-        query = query.strip()
+        # `bypass` skips retrieval, so the RAG minimum does not apply to it —
+        # but no mode may forward an empty prompt to the LLM.
+        query = validate_query_not_empty(query)
         if param.mode != "bypass":
             query = validate_rag_query(query)
 

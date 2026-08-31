@@ -21,7 +21,11 @@ from lightrag.constants import (
     MAX_REQUEST_TEXT_CHARS,
     MAX_ROLE_CHARS,
 )
-from lightrag.query_validation import RAGQueryTooShortError, validate_rag_query
+from lightrag.query_validation import (
+    QueryValidationError,
+    validate_query_not_empty,
+    validate_rag_query,
+)
 from lightrag.utils import TiktokenTokenizer, acount_tokens
 from lightrag.api.utils_api import get_combined_auth_dependency, internal_server_error
 from fastapi import Depends
@@ -47,12 +51,21 @@ class PayloadTooLargeError(ValueError):
     """
 
 
+def _validate_ollama_query(query: str) -> str:
+    """Reject an empty prompt on every branch, RAG or direct-LLM."""
+
+    try:
+        return validate_query_not_empty(query)
+    except QueryValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def _validate_ollama_rag_query(query: str) -> str:
     """Validate only chat branches that enter the RAG retrieval pipeline."""
 
     try:
         return validate_rag_query(query)
-    except RAGQueryTooShortError as exc:
+    except QueryValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -424,7 +437,9 @@ class OllamaAPI:
                 # Parse the request body manually
                 request = await parse_request_body(raw_request, OllamaGenerateRequest)
 
-                query = request.prompt
+                # Direct-LLM path: exempt from the RAG minimum, not from
+                # having to carry a prompt.
+                query = _validate_ollama_query(request.prompt)
                 start_time = time.time_ns()
                 prompt_tokens = await aestimate_tokens(query)
 
@@ -636,6 +651,10 @@ class OllamaAPI:
                 cleaned_query, mode, only_need_context, user_prompt = parse_query_mode(
                     query
                 )
+
+                # A mode prefix can consume the whole message ("/local[hint]"),
+                # so the cleaned query is checked before either branch runs.
+                cleaned_query = _validate_ollama_query(cleaned_query)
 
                 start_time = time.time_ns()
                 prompt_tokens = await aestimate_tokens(cleaned_query)

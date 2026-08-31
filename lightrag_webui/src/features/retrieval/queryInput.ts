@@ -1,5 +1,5 @@
 import type { QueryMode } from '@/api/lightrag'
-import { isRagQueryTooShort } from '@/utils/queryValidation'
+import { isQueryEmpty, isRagQueryTooShort } from '@/utils/queryValidation'
 
 export const SUPPORTED_QUERY_MODES: readonly QueryMode[] = [
   'naive',
@@ -10,7 +10,11 @@ export const SUPPORTED_QUERY_MODES: readonly QueryMode[] = [
   'bypass'
 ]
 
-export type QueryInputError = 'queryModePrefixInvalid' | 'queryModeError' | 'queryTooShort'
+export type QueryInputError =
+  | 'queryModePrefixInvalid'
+  | 'queryModeError'
+  | 'queryEmpty'
+  | 'queryTooShort'
 
 interface AcceptedQueryInput {
   ok: true
@@ -47,6 +51,12 @@ export function prepareQueryInput(input: string, defaultMode: QueryMode): Prepar
     }
     modeOverride = requestedMode as QueryMode
     query = prefixMatch[2]
+  }
+
+  // A prefix can swallow the whole input ('/bypass  '), so the effective
+  // query is checked for emptiness on every mode, bypass included.
+  if (isQueryEmpty(query)) {
+    return { ok: false, error: 'queryEmpty' }
   }
 
   if (isRagQueryTooShort(query, modeOverride ?? defaultMode)) {

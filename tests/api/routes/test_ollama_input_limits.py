@@ -220,7 +220,7 @@ def test_chat_rejects_short_rag_queries_with_a_client_error(monkeypatch, query, 
     assert reached is False
 
 
-@pytest.mark.parametrize("query", ["abc", "中a", "中文"])
+@pytest.mark.parametrize("query", ["abc", "中a", "中文", "ねこ", "한글"])
 def test_chat_accepts_queries_meeting_the_weighted_minimum(monkeypatch, query):
     captured = {}
 
@@ -244,6 +244,84 @@ def test_chat_accepts_queries_meeting_the_weighted_minimum(monkeypatch, query):
 
     assert response.status_code == 200
     assert captured["query"] == query
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "",  # nothing typed
+        "   ",  # whitespace only
+        "/bypass  ",  # the prefix consumed the whole message
+        "/local[use mermaid]",  # a user_prompt with no question after it
+    ],
+)
+def test_chat_refuses_an_empty_query_on_every_branch(monkeypatch, content):
+    """`bypass` and the Open WebUI metadata task skip the RAG minimum, not the
+    requirement to say something. `parse_query_mode` can strip a message down
+    to nothing, so the check has to sit after it and before the branch split.
+    """
+    reached = False
+
+    async def _count_tokens(_text):
+        return 0
+
+    class _RecordingRAG(_ExplodingRAG):
+        async def aquery(self, query, *, param):  # pragma: no cover - guarded
+            nonlocal reached
+            reached = True
+            return "answer"
+
+        async def _llm(self, prompt, **kwargs):  # pragma: no cover - guarded
+            nonlocal reached
+            reached = True
+            return "answer"
+
+    rag = _RecordingRAG()
+    rag.role_llm_funcs = {"query": rag._llm}
+    monkeypatch.setattr(_ollama_api, "aestimate_tokens", _count_tokens)
+    monkeypatch.setattr(_utils_api, "auth_configured", False)
+    app = FastAPI()
+    app.include_router(_ollama_api.OllamaAPI(rag).router, prefix="/api")
+
+    response = TestClient(app).post(
+        "/api/chat", json=_chat(messages=[{"role": "user", "content": content}])
+    )
+
+    assert response.status_code == 400
+    assert "must not be empty" in response.json()["detail"]
+    assert reached is False
+
+
+@pytest.mark.parametrize("prompt", ["", "   "])
+def test_generate_refuses_an_empty_prompt(monkeypatch, prompt):
+    """`/api/generate` never touches RAG, but an empty prompt is still nothing
+    to send to an LLM."""
+    reached = False
+
+    async def _count_tokens(_text):
+        return 0
+
+    class _RecordingRAG(_ExplodingRAG):
+        async def _llm(self, prompt, **kwargs):  # pragma: no cover - guarded
+            nonlocal reached
+            reached = True
+            return "answer"
+
+    rag = _RecordingRAG()
+    rag.role_llm_funcs = {"query": rag._llm}
+    monkeypatch.setattr(_ollama_api, "aestimate_tokens", _count_tokens)
+    monkeypatch.setattr(_utils_api, "auth_configured", False)
+    app = FastAPI()
+    app.include_router(_ollama_api.OllamaAPI(rag).router, prefix="/api")
+
+    response = TestClient(app).post(
+        "/api/generate",
+        json={"model": "lightrag:latest", "prompt": prompt, "stream": False},
+    )
+
+    assert response.status_code == 400
+    assert "must not be empty" in response.json()["detail"]
+    assert reached is False
 
 
 def test_chat_bypass_does_not_apply_the_rag_minimum(monkeypatch):
