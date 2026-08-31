@@ -111,36 +111,43 @@ describe('RAG query validation', () => {
     expect(meetsMinRagQueryWeight(counted)).toBe(true)
     expect(read).toBe(3)
   })
-  test('every weighted code point is an assigned letter', () => {
-    // The other half of the table invariant. The backend suite asserts no
-    // ASSIGNED code point in the table is a non-letter; it cannot speak for the
-    // unassigned ones, because CPython 3.11 ships UCD 14.0.0 and would call CJK
-    // Extensions H and I unassigned too. This runtime has newer Unicode data,
-    // so it is the side that can reject U+1AFF4/U+1AFFC/U+1AFFF — the gaps that
-    // let two invisible code points clear the minimum.
-    const LETTER = /\p{L}/u
-    const offenders: string[] = []
+  test('the range table matches the backend, entry for entry', () => {
+    // The backend owns the invariant (its `unicodedata` is the oracle; this
+    // runtime's \p{L} is NOT — Bun 1.3.11 calls U+2B73A and even U+323B0,
+    // past the end of CJK Extension H, assigned letters). What this side can
+    // usefully assert is shape, so a hand-edit here is caught before the
+    // cross-language sync test in the Python suite runs.
     for (const [start, end] of WIDE_CODEPOINT_RANGES) {
-      for (let codePoint = start; codePoint <= end; codePoint++) {
-        if (!LETTER.test(String.fromCodePoint(codePoint))) {
-          offenders.push(`U+${codePoint.toString(16).toUpperCase()}`)
-        }
-      }
+      expect(start).toBeLessThanOrEqual(end)
+      expect(Number.isInteger(start) && Number.isInteger(end)).toBe(true)
     }
-    expect(offenders).toEqual([])
+    for (let i = 1; i < WIDE_CODEPOINT_RANGES.length; i++) {
+      expect(WIDE_CODEPOINT_RANGES[i - 1][1]).toBeLessThan(WIDE_CODEPOINT_RANGES[i][0])
+    }
   })
 
   test('unassigned code points are not weighted', () => {
-    for (const codePoint of [0x1aff4, 0x1affc, 0x1afff, 0x3040, 0x3097]) {
+    // Kana Extended-B gaps, Hiragana block gaps, and the CJK Extension C
+    // and E tails — every one of them weighed 2 apiece and cleared the
+    // minimum while the table doubled whole blocks.
+    for (const codePoint of [
+      0x1aff4, 0x1affc, 0x1afff, 0x3040, 0x3097, 0x2b73a, 0x2b73f, 0x2cea2, 0x2cead
+    ]) {
       const query = String.fromCodePoint(codePoint).repeat(2)
       expect(ragQueryWeight(query)).toBe(2)
       expect(isRagQueryTooShort(query, 'mix')).toBe(true)
     }
   })
 
+  test('the last assigned ideograph of each trimmed block still weighs two', () => {
+    // The trim must stop at the tail, not eat the block.
+    for (const codePoint of [0x2b739, 0x2cea1, 0x2ebf0, 0x31350]) {
+      expect(ragQueryWeight(String.fromCodePoint(codePoint).repeat(2))).toBe(4)
+    }
+  })
+
   test('the ideographic zero is weighted despite not being a letter', () => {
     // U+3007 is category Nl — a deliberate exception, because 二〇二五年.
-    expect(/\p{L}/u.test('〇')).toBe(false)
     expect(ragQueryWeight('二〇')).toBe(4)
   })
 })

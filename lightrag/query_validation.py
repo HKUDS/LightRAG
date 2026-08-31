@@ -21,15 +21,14 @@ MIN_RAG_QUERY_WEIGHT = 3
 # U+1AFFF. The line is Unicode general category L*, minus the three fillers,
 # minus everything unassigned.
 #
-# GENERATED, not hand-edited. Regenerate from the newest Unicode data available
-# to BOTH runtimes — the ranges are shared with the WebUI, and a table narrower
-# than one side's data would have the client and server disagree about the same
-# query. Python is the lagging side here (CPython 3.11 ships UCD 14.0.0, which
-# predates CJK Extensions H and I), so the two invariant tests split the work:
-# ``test_no_weighted_code_point_is_an_assigned_non_letter`` checks what CPython
-# can see, and the WebUI's own suite asserts every entry matches ``\p{L}`` on
-# the newer data. A code point assigned after this table was generated simply
-# weighs 1 until it is regenerated — a conservative miss, not a false accept.
+# GENERATED, not hand-edited. The source is CPython's ``unicodedata`` plus the
+# explicit post-UCD-14.0.0 allowlist in ``tests/test_query_validation.py``. A
+# JavaScript runtime's ``\\p{L}`` is NOT a usable oracle here and was tried:
+# Bun 1.3.11 reports U+2B73A-U+2B73F, U+2CEA2-U+2CEAD and even U+323B0 — past
+# the end of Extension H — as assigned letters, so a table generated from it
+# carried unassigned tails. A code point assigned after the allowlist was last
+# refreshed simply weighs 1 until someone adds it — a conservative miss, never
+# a false accept.
 #
 # Keep these ranges in sync with ``lightrag_webui/src/utils/queryValidation.ts``.
 _WIDE_CODEPOINT_RANGES = (
@@ -65,9 +64,9 @@ _WIDE_CODEPOINT_RANGES = (
     (0x1B155, 0x1B155),  # Kana Supplement / Extended-A / Small Kana Ext
     (0x1B164, 0x1B167),  # Kana Supplement / Extended-A / Small Kana Ext
     (0x20000, 0x2A6DF),  # CJK Ext B
-    (0x2A700, 0x2B73F),  # CJK Ext C
+    (0x2A700, 0x2B739),  # CJK Ext C
     (0x2B740, 0x2B81D),  # CJK Ext D
-    (0x2B820, 0x2CEAD),  # CJK Ext E
+    (0x2B820, 0x2CEA1),  # CJK Ext E
     (0x2CEB0, 0x2EBE0),  # CJK Ext F
     (0x2EBF0, 0x2EE5D),  # CJK Ext I
     (0x2F800, 0x2FA1D),  # CJK Compatibility Ideographs Supplement

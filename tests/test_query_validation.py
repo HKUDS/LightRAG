@@ -179,22 +179,35 @@ def test_the_frontend_range_table_matches_this_one():
     assert "codePoint === 0x3007" in source
 
 
-def test_no_weighted_code_point_is_an_assigned_non_letter():
-    """The half of the table invariant CPython's Unicode data can see.
+# Letters assigned after UCD 14.0.0, which the interpreter running these tests
+# cannot see. This is the ONLY hand-maintained part of the weighted table's
+# provenance; everything else comes from ``unicodedata``. Refresh it when the
+# table is regenerated on a newer Python, and delete entries the interpreter has
+# caught up on — ``test_the_post_ucd14_allowlist_has_no_stale_entries`` says
+# which.
+_POST_UCD_14_LETTERS = frozenset(
+    {0x2B739}  # Unicode 15.0, CJK Extension C
+    | {0x1B132, 0x1B155}  # Unicode 15.1, Small Kana Extension
+    | set(range(0x2EBF0, 0x2EE5D + 1))  # Unicode 15.1, CJK Extension I (622)
+    | set(range(0x31350, 0x323AF + 1))  # Unicode 15.0, CJK Extension H (4192)
+)
+
+
+def test_every_weighted_code_point_is_an_assigned_letter():
+    """The table invariant, with no code point skipped.
 
     Doubling whole Unicode blocks is how things that say nothing got weighted:
     "・・" and "゛゜" cleared the minimum, as did two HANGUL FILLERs — which
-    render as nothing at all — and two unassigned code points such as U+1AFFF.
-    Listing those as examples would pin only the ones we happened to notice;
-    this pins the property.
+    render as nothing — and unassigned tails such as U+1AFFF, U+2B73A and
+    U+2CEA2. Listing those as examples would pin only the ones we happened to
+    notice; this pins the property over all 110,000-odd weighted code points.
 
-    Unassigned code points are SKIPPED here rather than rejected, and that is
-    not the escape hatch it looks like: CPython 3.11 ships UCD 14.0.0, which
-    predates CJK Extensions H and I, so "unassigned here" does not mean
-    "unassigned". The table is generated from newer data, and the WebUI suite —
-    running on a newer Unicode — asserts every entry matches \\p{L}, which is
-    what actually excludes the unassigned ones. The two tests are halves of one
-    invariant; neither runtime can state it alone.
+    An entry this interpreter calls unassigned is accepted ONLY if it appears in
+    ``_POST_UCD_14_LETTERS`` — CPython 3.11 ships UCD 14.0.0, which predates CJK
+    Extensions H and I. A JavaScript runtime is deliberately not consulted:
+    Bun 1.3.11 reports U+2B73A-U+2B73F, U+2CEA2-U+2CEAD and U+323B0 (past the
+    end of Extension H) as assigned letters, and generating the table from that
+    is exactly how those tails got in.
     """
     import unicodedata
 
@@ -204,6 +217,8 @@ def test_no_weighted_code_point_is_an_assigned_non_letter():
             character = chr(codepoint)
             name = unicodedata.name(character, None)
             if name is None:
+                if codepoint not in _POST_UCD_14_LETTERS:
+                    offenders.append((codepoint, "unassigned", "-"))
                 continue
             if not unicodedata.category(character).startswith("L"):
                 offenders.append((codepoint, "not a letter", name))
@@ -215,7 +230,46 @@ def test_no_weighted_code_point_is_an_assigned_non_letter():
     )
 
 
-@pytest.mark.parametrize("codepoint", [0x1AFF4, 0x1AFFC, 0x1AFFF, 0x3040, 0x3097])
+def test_the_post_ucd14_allowlist_has_no_stale_entries():
+    """On a newer Python the allowlist shrinks; keep it honest, not cumulative.
+
+    Every entry must be either still-unknown to this interpreter, or a real
+    letter it has since learned — never something that turned out not to be a
+    letter at all.
+    """
+    import unicodedata
+
+    wrong = [
+        cp
+        for cp in sorted(_POST_UCD_14_LETTERS)
+        if unicodedata.name(chr(cp), None) is not None
+        and not unicodedata.category(chr(cp)).startswith("L")
+    ]
+    assert wrong == [], [f"U+{cp:04X}" for cp in wrong]
+
+
+def test_the_allowlist_covers_only_code_points_inside_the_table():
+    """An allowlist entry outside the ranges would silently do nothing."""
+    covered = {
+        cp for start, end in _WIDE_CODEPOINT_RANGES for cp in range(start, end + 1)
+    }
+    assert _POST_UCD_14_LETTERS <= covered
+
+
+@pytest.mark.parametrize(
+    "codepoint",
+    [
+        0x1AFF4,
+        0x1AFFC,
+        0x1AFFF,  # Kana Extended-B gaps
+        0x3040,
+        0x3097,  # Hiragana block gaps
+        0x2B73A,
+        0x2B73F,  # CJK Extension C tail
+        0x2CEA2,
+        0x2CEAD,  # CJK Extension E tail
+    ],
+)
 def test_unassigned_code_points_are_not_weighted(codepoint):
     """Two of anything unassigned must not add up to a meaningful query."""
     query = chr(codepoint) * 2

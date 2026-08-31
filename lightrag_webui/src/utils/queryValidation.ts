@@ -13,9 +13,11 @@ export const MIN_RAG_QUERY_WEIGHT = 3
 // why blocks appear split: doubling whole blocks let '・・', '゛゜', two HANGUL
 // FILLERs and unassigned code points such as U+1AFFF clear the minimum.
 //
-// GENERATED, not hand-edited. Keep in sync with lightrag/query_validation.py —
-// queryValidation.test.ts asserts every entry here matches \p{L}, which is the
-// half of the invariant this runtime's newer Unicode data can see.
+// GENERATED, not hand-edited — from CPython's unicodedata plus an explicit
+// post-UCD-14 allowlist, and verified there. This runtime's \p{L} is NOT the
+// oracle: Bun 1.3.11 calls U+2B73A-U+2B73F, U+2CEA2-U+2CEAD and U+323B0
+// assigned letters, which is how unassigned tails got into this table.
+// Keep in sync with lightrag/query_validation.py.
 export const WIDE_CODEPOINT_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0x1100, 0x115e], // Hangul Jamo
   [0x1161, 0x11ff], // Hangul Jamo
@@ -49,9 +51,9 @@ export const WIDE_CODEPOINT_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0x1b155, 0x1b155], // Kana Supplement / Extended-A / Small Kana Ext
   [0x1b164, 0x1b167], // Kana Supplement / Extended-A / Small Kana Ext
   [0x20000, 0x2a6df], // CJK Ext B
-  [0x2a700, 0x2b73f], // CJK Ext C
+  [0x2a700, 0x2b739], // CJK Ext C
   [0x2b740, 0x2b81d], // CJK Ext D
-  [0x2b820, 0x2cead], // CJK Ext E
+  [0x2b820, 0x2cea1], // CJK Ext E
   [0x2ceb0, 0x2ebe0], // CJK Ext F
   [0x2ebf0, 0x2ee5d], // CJK Ext I
   [0x2f800, 0x2fa1d], // CJK Compatibility Ideographs Supplement
