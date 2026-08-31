@@ -521,6 +521,102 @@ class TestBundleValidation:
         assert mimes == {"brand-logo": "image/svg+xml", "logo-zh": "image/png"}
 
 
+class TestCopyrightBundle:
+    """`brand.copyright` with an optional per-locale override.
+
+    The line is the DEPLOYMENT's own legal assertion, so the only source is
+    the manifest: there is no LightRAG default to inherit, and no bundle text
+    that turns into one.
+    """
+
+    def test_absent_by_default(self, tmp_path):
+        snapshot = load_ui_customization_snapshot(make_bundle(tmp_path))
+        assert snapshot.locales["en"].copyright is None
+        assert snapshot.locales["zh"].copyright is None
+
+    def test_brand_level_applies_to_every_locale(self, tmp_path):
+        bundle = make_bundle(tmp_path)
+        manifest = json.loads((bundle / "manifest.json").read_text("utf-8"))
+        manifest["brand"]["copyright"] = "© 2025 ACME Inc."
+        (bundle / "manifest.json").write_text(json.dumps(manifest), "utf-8")
+        snapshot = load_ui_customization_snapshot(bundle)
+        assert snapshot.locales["en"].copyright == "© 2025 ACME Inc."
+        assert snapshot.locales["zh"].copyright == "© 2025 ACME Inc."
+
+    def test_locale_override_and_explicit_null(self, tmp_path):
+        """Same three-way shape as `logo`: inherit, replace, or opt out."""
+        bundle = make_bundle(tmp_path)
+        manifest = json.loads((bundle / "manifest.json").read_text("utf-8"))
+        manifest["brand"]["copyright"] = "© 2025 ACME Inc."
+        manifest["locales"]["zh"]["copyright"] = "© 2025 ACME 公司"
+        (bundle / "manifest.json").write_text(json.dumps(manifest), "utf-8")
+        snapshot = load_ui_customization_snapshot(bundle)
+        assert snapshot.locales["zh"].copyright == "© 2025 ACME 公司"
+        assert snapshot.locales["en"].copyright == "© 2025 ACME Inc."
+
+        manifest["locales"]["zh"]["copyright"] = None
+        (bundle / "manifest.json").write_text(json.dumps(manifest), "utf-8")
+        snapshot = load_ui_customization_snapshot(bundle)
+        assert snapshot.locales["zh"].copyright is None
+        assert snapshot.locales["en"].copyright == "© 2025 ACME Inc."
+
+    @pytest.mark.parametrize("blank", ["", "   ", "\n\t "])
+    def test_blank_is_none_rather_than_a_startup_failure(self, tmp_path, blank):
+        """Unlike a blank `login`/`agreements`, blank here is not an error.
+
+        Blankness only turns the line OFF — the same end state as omitting the
+        field, and the one an uncustomized deployment is already in. Nothing
+        is silently mis-shown, so refusing to start would cost a deployment
+        more than it protects it.
+        """
+        bundle = make_bundle(tmp_path)
+        manifest = json.loads((bundle / "manifest.json").read_text("utf-8"))
+        manifest["brand"]["copyright"] = blank
+        manifest["locales"]["zh"]["copyright"] = blank
+        (bundle / "manifest.json").write_text(json.dumps(manifest), "utf-8")
+        snapshot = load_ui_customization_snapshot(bundle)
+        assert snapshot.locales["en"].copyright is None
+        assert snapshot.locales["zh"].copyright is None
+
+    def test_surrounding_whitespace_is_stripped(self, tmp_path):
+        bundle = make_bundle(tmp_path)
+        manifest = json.loads((bundle / "manifest.json").read_text("utf-8"))
+        manifest["brand"]["copyright"] = "  © 2025 ACME Inc.  "
+        (bundle / "manifest.json").write_text(json.dumps(manifest), "utf-8")
+        snapshot = load_ui_customization_snapshot(bundle)
+        assert snapshot.locales["en"].copyright == "© 2025 ACME Inc."
+
+    @pytest.mark.parametrize(
+        "mutate, match",
+        [
+            (
+                lambda m: m["brand"].update(copyright=123),
+                "brand.copyright must be a string or null",
+            ),
+            (
+                lambda m: m["locales"]["zh"].update(copyright=["a"]),
+                "locales.zh.copyright must be a string or null",
+            ),
+        ],
+    )
+    def test_non_string_is_rejected(self, tmp_path, mutate, match):
+        bundle = make_bundle(tmp_path)
+        manifest = json.loads((bundle / "manifest.json").read_text("utf-8"))
+        mutate(manifest)
+        (bundle / "manifest.json").write_text(json.dumps(manifest), "utf-8")
+        with pytest.raises(UICustomizationError, match=re.escape(match)):
+            load_ui_customization_snapshot(bundle)
+
+    def test_participates_in_the_bundle_revision(self, tmp_path):
+        """It lives in manifest.json, which is hashed like any other file."""
+        bundle = make_bundle(tmp_path)
+        before = load_ui_customization_snapshot(bundle).bundle_revision
+        manifest = json.loads((bundle / "manifest.json").read_text("utf-8"))
+        manifest["brand"]["copyright"] = "© 2025 ACME Inc."
+        (bundle / "manifest.json").write_text(json.dumps(manifest), "utf-8")
+        assert load_ui_customization_snapshot(bundle).bundle_revision != before
+
+
 class TestLoginConsentBundle:
     """The login-page consent gate: BOTH optional templates or no gate."""
 
@@ -810,6 +906,9 @@ class TestCustomizationEndpointNoBundle:
         assert data["customized"] is False
         assert data["brand"]["title"]
         assert "welcome" not in data
+        # No bundle ⇒ nothing asserts a copyright ⇒ no line for the page to
+        # render. LightRAG never puts its own notice on a deployment's page.
+        assert "copyright" not in data["brand"]
         # No bundle ⇒ no deployment agreement text ⇒ no login consent gate.
         assert not data.get("consent_required")
         assert resp.headers["cache-control"] == "no-store"
@@ -887,6 +986,34 @@ class TestCustomizationEndpointWithBundle:
         assert (ko["locale"], ko["fallback_used"]) == ("zh", True)
         assert ko["consent_required"] is True
         assert ko["agreements"]["content"] == "# 协议"
+
+    def test_copyright_absent_by_default(self, tmp_path, monkeypatch):
+        """A bundle that declares none serves null — never LightRAG's own."""
+        data = (
+            self._client(tmp_path, monkeypatch)
+            .get("/ui/customization?locale=zh")
+            .json()
+        )
+        assert data["brand"]["copyright"] is None
+
+    def test_copyright_served_per_resolved_locale(self, tmp_path, monkeypatch):
+        bundle = make_bundle(tmp_path)
+        manifest = json.loads((bundle / "manifest.json").read_text("utf-8"))
+        manifest["brand"]["copyright"] = "© 2025 ACME Inc."
+        manifest["locales"]["zh"]["copyright"] = "© 2025 ACME 公司"
+        (bundle / "manifest.json").write_text(json.dumps(manifest), "utf-8")
+        monkeypatch.setenv("UI_TEMPLATES_DIR", str(bundle))
+        _stage_frontend(tmp_path)
+        client = TestClient(_build_app(tmp_path, monkeypatch))
+
+        assert (
+            client.get("/ui/customization?locale=en").json()["brand"]["copyright"]
+            == "© 2025 ACME Inc."
+        )
+        # "ko" falls back to "zh", so it gets the zh line, not the brand one.
+        ko = client.get("/ui/customization?locale=ko").json()
+        assert (ko["locale"], ko["fallback_used"]) == ("zh", True)
+        assert ko["brand"]["copyright"] == "© 2025 ACME 公司"
 
     def test_full_representation(self, tmp_path, monkeypatch):
         client = self._client(tmp_path, monkeypatch)

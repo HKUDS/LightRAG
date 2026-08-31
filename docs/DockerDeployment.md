@@ -258,8 +258,8 @@ inert until the directory actually holds a bundle: with no `manifest.json`
 in it the server logs a warning naming the directory and serves its built-in
 branding, so the default deployment starts normally. Drop a bundle in and
 restart, and the server replaces the welcome page, the login-page text and user
-agreement, the query empty state and the brand logo with the bundle's content
-— per language, without rebuilding the frontend. From that point on the bundle
+agreement, the query empty state, the copyright line and the brand logo with the
+bundle's content — per language, without rebuilding the frontend. From that point on the bundle
 is validated in full: an invalid one makes the server refuse to start.
 
 Create the directory before the first `up` so it is not created root-owned by

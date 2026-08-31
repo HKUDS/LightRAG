@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import Button from '@/components/ui/Button'
 import AppSettings from '@/components/AppSettings'
 import CustomizedMarkdown from '@/components/customization/CustomizedMarkdown'
+import CustomizedCopyright from '@/components/customization/CustomizedCopyright'
 import { useCustomizedContent } from '@/components/customization/useCustomizedContent'
 import { useAuthStore } from '@/stores/state'
 import { getAuthStatus } from '@/api/lightrag'
@@ -117,44 +118,55 @@ export default function WorkspaceWelcome() {
       >
         <AppSettings className="bg-white/30 backdrop-blur-sm dark:bg-gray-800/30 rounded-md" />
       </div>
-      <div
-        dir={content.direction}
-        className="flex w-full max-w-[520px] flex-col items-center gap-6 overflow-y-auto rounded-xl bg-white/70 p-8 text-center shadow-lg backdrop-blur dark:bg-gray-900/70"
-      >
-        {content.loading ? (
-          <div
-            className="border-primary size-8 animate-spin rounded-full border-4 border-t-transparent"
-            role="status"
-            aria-label="Loading"
-          />
-        ) : (
-          <>
-            {content.logoUrl && failedLogoUrl !== content.logoUrl && (
-              <img
-                src={content.logoUrl}
-                alt={content.logoAlt}
-                className="max-h-[88px] max-w-[88px] object-contain md:max-h-[120px] md:max-w-[120px]"
-                onError={() => setFailedLogoUrl(content.logoUrl)}
-              />
-            )}
-            <h1 className="text-2xl font-bold tracking-tight">{content.brandTitle}</h1>
-            <CustomizedMarkdown
-              content={content.welcomeMarkdown}
-              className="text-left text-sm"
+      {/* The card centers in the space ABOVE the footer, which keeps the
+          copyright line at the page's bottom edge without overlapping the
+          card on short screens (min-h-0 leaves the card's own scrolling
+          intact). */}
+      <div className="flex min-h-0 w-full flex-1 items-center justify-center">
+        <div
+          dir={content.direction}
+          className="flex max-h-full w-full max-w-[520px] flex-col items-center gap-6 overflow-y-auto rounded-xl bg-white/70 p-8 text-center shadow-lg backdrop-blur dark:bg-gray-900/70"
+        >
+          {content.loading ? (
+            <div
+              className="border-primary size-8 animate-spin rounded-full border-4 border-t-transparent"
+              role="status"
+              aria-label="Loading"
             />
-            <Button
-              type="button"
-              className="h-11 w-full max-w-xs text-base font-medium"
-              disabled={authConfigured === null || entering}
-              onClick={handlePrimaryAction}
-            >
-              {authConfigured === false
-                ? t('workspace.welcome.enterButton', 'Enter workspace')
-                : t('workspace.welcome.loginButton', 'Sign in')}
-            </Button>
-          </>
-        )}
+          ) : (
+            <>
+              {content.logoUrl && failedLogoUrl !== content.logoUrl && (
+                <img
+                  src={content.logoUrl}
+                  alt={content.logoAlt}
+                  className="max-h-[88px] max-w-[88px] object-contain md:max-h-[120px] md:max-w-[120px]"
+                  onError={() => setFailedLogoUrl(content.logoUrl)}
+                />
+              )}
+              <h1 className="text-2xl font-bold tracking-tight">{content.brandTitle}</h1>
+              <CustomizedMarkdown
+                content={content.welcomeMarkdown}
+                className="text-left text-sm"
+              />
+              <Button
+                type="button"
+                className="h-11 w-full max-w-xs text-base font-medium"
+                disabled={authConfigured === null || entering}
+                onClick={handlePrimaryAction}
+              >
+                {authConfigured === false
+                  ? t('workspace.welcome.enterButton', 'Enter workspace')
+                  : t('workspace.welcome.loginButton', 'Sign in')}
+              </Button>
+            </>
+          )}
+        </div>
       </div>
+      <CustomizedCopyright
+        copyright={content.copyright}
+        direction={content.direction}
+        className="pt-4"
+      />
     </div>
   )
 }

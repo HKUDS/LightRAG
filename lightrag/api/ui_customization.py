@@ -2,8 +2,8 @@
 
 A deployment may point ``UI_TEMPLATES_DIR`` at an external, read-only bundle
 directory that provides the welcome page / query-empty-state texts, the
-optional login-page blurb and user-agreement document, and brand logos for the
-WebUI entries, per locale. The server validates the WHOLE
+optional login-page blurb and user-agreement document, the optional copyright
+line, and brand logos for the WebUI entries, per locale. The server validates the WHOLE
 bundle at startup and atomically activates it as an immutable in-memory
 snapshot; request handling never touches the disk again.
 
@@ -528,6 +528,12 @@ class UILocaleContent:
     # default; it is NOT part of `consent_required`, because a missing NAME
     # never justifies dropping a gate whose document is right there.
     consent_documents: str | None = None
+    # The deployment's own copyright line, shown at the foot of the pre-login
+    # pages. Inline manifest text rather than a template file: it is one short
+    # line, and a bundle that says nothing about copyright must produce no
+    # line at all -- LightRAG never asserts a customer's copyright, and never
+    # asserts its own on a customer's page.
+    copyright: str | None = None
 
     @property
     def consent_required(self) -> bool:
@@ -615,6 +621,29 @@ def _validate_keys(obj: dict, allowed: set[str], required: set[str], context: st
         raise _fail(f"{context}: missing required field(s) {sorted(missing)}")
 
 
+def _read_copyright(raw: object, context: str) -> str | None:
+    """A manifest copyright value, normalized to text or None.
+
+    Handled here rather than through ``_OPTIONAL_LOCALE_TEXT_FIELDS``, whose
+    two rules this field deliberately breaks: it inherits a brand-level
+    default when the locale omits it, and it accepts blank (see below) where
+    that loop refuses it.
+
+    Blank is NOT rejected the way a blank ``login``/``agreements`` template is:
+    there, declared-or-not is itself the switch that puts a consent gate in
+    front of the user, so an empty file is a misconfiguration worth failing
+    startup over. Here blankness only turns the line OFF, which is the same
+    end state as omitting the field and the same one an uncustomized
+    deployment is in -- nothing is silently mis-shown, so refusing to start
+    would cost a deployment more than it protects it.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise _fail(f"{context} must be a string or null")
+    return raw.strip() or None
+
+
 def load_ui_customization_snapshot(bundle_dir: str | Path) -> UICustomizationSnapshot:
     """Validate the WHOLE bundle and build the immutable snapshot.
 
@@ -659,10 +688,20 @@ def load_ui_customization_snapshot(bundle_dir: str | Path) -> UICustomizationSna
     # bundle shows no logo"). Omission used to silently fall back to the
     # LightRAG logo — customer texts with the wrong logo is a worse branding
     # accident than a missing one, so the schema makes the gap inexpressible.
-    _validate_keys(brand, allowed={"logo"}, required={"logo"}, context="brand")
+    _validate_keys(
+        brand,
+        allowed={"logo", "copyright"},
+        required={"logo"},
+        context="brand",
+    )
     brand_logo_rel = brand["logo"]
     if brand_logo_rel is not None and not isinstance(brand_logo_rel, str):
         raise _fail("brand.logo must be a path string or an explicit null")
+    # Unlike brand.logo, copyright is OPTIONAL to declare: its omission has
+    # exactly one reading -- no copyright line -- and that is also what an
+    # uncustomized deployment shows, so there is no wrong-content accident for
+    # the schema to make inexpressible.
+    brand_copyright = _read_copyright(brand.get("copyright"), "brand.copyright")
 
     # --- locales ---------------------------------------------------------
     raw_locales = manifest["locales"]
@@ -720,6 +759,7 @@ def load_ui_customization_snapshot(bundle_dir: str | Path) -> UICustomizationSna
                 "query_empty",
                 "logo_alt",
                 "logo",
+                "copyright",
                 *_OPTIONAL_LOCALE_TEMPLATE_FIELDS,
                 *_OPTIONAL_LOCALE_TEXT_FIELDS,
             },
@@ -791,11 +831,22 @@ def load_ui_customization_snapshot(bundle_dir: str | Path) -> UICustomizationSna
                 brand_logo_asset.asset_id if brand_logo_asset is not None else None
             )
 
+        # Same override shape as `logo`: the brand-level value is the default
+        # for every locale, a locale may replace it, and an explicit null
+        # means "no copyright line for this locale" rather than "inherit".
+        if "copyright" in entry:
+            locale_copyright = _read_copyright(
+                entry["copyright"], f"locales.{key}.copyright"
+            )
+        else:
+            locale_copyright = brand_copyright
+
         locales[key] = UILocaleContent(
             welcome=welcome,
             query_empty=query_empty,
             logo_alt=logo_alt,
             logo_asset_id=logo_asset_id,
+            copyright=locale_copyright,
             **optional_templates,
             **optional_texts,
         )
