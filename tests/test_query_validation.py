@@ -2,6 +2,7 @@ import pytest
 
 from lightrag.query_validation import (
     _WIDE_CODEPOINT_RANGES,
+    _WIDE_NUMERAL_RANGES,
     EmptyQueryError,
     RAGQueryTooShortError,
     meets_min_rag_query_weight,
@@ -41,6 +42,14 @@ pytestmark = pytest.mark.offline
         ("コーヒー", 8),
         ("\U0001aff0\U0001aff1", 4),  # Kana Extended-B (Minnan tone marks)
         # … while punctuation, modifier symbols and fillers stay at 1.
+        # Iteration and repeat marks are letters (Lm/Lo) and weigh 2, in both
+        # writing directions — the vertical marks were missing while the
+        # horizontal ones at U+309D-U+309F were already doubled.
+        ("〳〵", 4),  # vertical kana repeat marks
+        ("々々", 4),  # U+3005 ideographic iteration mark
+        ("〆〆", 4),  # U+3006 ideographic closing mark
+        ("〻〼", 4),  # U+303B vertical ideographic iteration, U+303C masu mark
+        ("〡〢", 4),  # Hangzhou numerals, Nl like 〇
         ("・・", 2),  # U+30FB KATAKANA MIDDLE DOT (Po)
         ("゛゜", 2),  # U+309B/U+309C voiced sound marks (Sk)
         ("゠゠", 2),  # U+30A0 KATAKANA-HIRAGANA DOUBLE HYPHEN (Pd)
@@ -144,13 +153,13 @@ def test_halfwidth_punctuation_and_sound_marks_are_not_letters():
     assert rag_query_weight("ﾟ") == 1
 
 
-def test_the_frontend_range_table_matches_this_one():
-    """The two tables are duplicated by necessity and drift silently.
+def test_the_frontend_range_tables_match_these_ones():
+    """The two sides are duplicated by necessity and drift silently.
 
     The WebUI pre-validates so the user is told why before a round trip; the
-    server validates because it is the authority. They only agree if the ranges
-    agree, and a comment asking for that is not a mechanism — the halfwidth
-    kana gap was exactly this drift, present in both files at once.
+    server validates because it is the authority. They only agree if the tables
+    agree, and a comment asking for that is not a mechanism — the halfwidth kana
+    gap was exactly this drift, present in both files at once.
     """
     import re
     from pathlib import Path
@@ -163,20 +172,18 @@ def test_the_frontend_range_table_matches_this_one():
         / "queryValidation.ts"
     ).read_text(encoding="utf-8")
 
-    table = re.search(r"WIDE_CODEPOINT_RANGES[^=]*=\s*\[(.*?)\n\]", source, re.DOTALL)
-    assert table, "could not locate WIDE_CODEPOINT_RANGES in queryValidation.ts"
-
-    frontend = tuple(
-        (int(start, 16), int(end, 16))
-        for start, end in re.findall(
-            r"\[\s*0x([0-9a-fA-F]+)\s*,\s*0x([0-9a-fA-F]+)\s*\]", table.group(1)
+    def parse(name: str) -> tuple[tuple[int, int], ...]:
+        table = re.search(rf"{name}[^=]*=\s*\[(.*?)\n\]", source, re.DOTALL)
+        assert table, f"could not locate {name} in queryValidation.ts"
+        return tuple(
+            (int(start, 16), int(end, 16))
+            for start, end in re.findall(
+                r"\[\s*0x([0-9a-fA-F]+)\s*,\s*0x([0-9a-fA-F]+)\s*\]", table.group(1)
+            )
         )
-    )
 
-    assert frontend == _WIDE_CODEPOINT_RANGES
-
-    # The lone code point outside the ranges has to be mirrored too.
-    assert "codePoint === 0x3007" in source
+    assert parse("WIDE_CODEPOINT_RANGES") == _WIDE_CODEPOINT_RANGES
+    assert parse("WIDE_NUMERAL_RANGES") == _WIDE_NUMERAL_RANGES
 
 
 # Letters assigned after UCD 14.0.0, which the interpreter running these tests
@@ -301,3 +308,131 @@ def test_the_weighted_ranges_are_sorted_and_disjoint():
 def test_punctuation_only_queries_never_clear_the_minimum(query):
     with pytest.raises(RAGQueryTooShortError):
         validate_rag_query(query)
+
+
+def test_the_numeral_ranges_are_exactly_the_block_nl_set():
+    """The second table is closed, not a running list of the ones we noticed.
+
+    〇 was originally a lone special case. It is category Nl rather than L*, so
+    it cannot join the letter table without weakening that table's invariant —
+    but every other Nl character in the CJK Symbols and Punctuation block is the
+    same idea (a CJK numeral written as a character), and leaving them out while
+    doubling 〇 was an inconsistency waiting to be reported.
+    """
+    import unicodedata
+
+    declared = {
+        cp for start, end in _WIDE_NUMERAL_RANGES for cp in range(start, end + 1)
+    }
+    block_nl = {
+        cp
+        for cp in range(0x3000, 0x3040)
+        if unicodedata.name(chr(cp), None) and unicodedata.category(chr(cp)) == "Nl"
+    }
+    assert declared == block_nl
+
+
+# Every Unicode block that carries letters of a script used to write Chinese,
+# Japanese or Korean. The tables were originally assembled block by block from
+# memory, which is how letters sitting in a block named for its punctuation —
+# 々, 〆, the vertical kana repeat marks — went missing, and how Bopomofo went
+# missing entirely. Auditing against this list is what closes that class.
+_CJK_LETTER_BLOCKS = (
+    (0x1100, 0x11FF),  # Hangul Jamo
+    (0x3000, 0x303F),  # CJK Symbols and Punctuation
+    (0x3040, 0x309F),  # Hiragana
+    (0x30A0, 0x30FF),  # Katakana
+    (0x3100, 0x312F),  # Bopomofo
+    (0x3130, 0x318F),  # Hangul Compatibility Jamo
+    (0x3190, 0x319F),  # Kanbun
+    (0x31A0, 0x31BF),  # Bopomofo Extended
+    (0x31C0, 0x31EF),  # CJK Strokes
+    (0x31F0, 0x31FF),  # Katakana Phonetic Extensions
+    (0x3200, 0x33FF),  # Enclosed CJK Letters and Months, CJK Compatibility
+    (0x3400, 0x4DBF),  # CJK Extension A
+    (0x4E00, 0x9FFF),  # CJK Unified Ideographs
+    (0xA960, 0xA97F),  # Hangul Jamo Extended-A
+    (0xAC00, 0xD7AF),  # Hangul Syllables
+    (0xD7B0, 0xD7FF),  # Hangul Jamo Extended-B
+    (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
+    (0xFE30, 0xFE4F),  # CJK Compatibility Forms
+    (0xFF61, 0xFFDC),  # Halfwidth Forms — the CJK part, not fullwidth Latin
+    (0x1AFF0, 0x1AFFF),  # Kana Extended-B
+    (0x1B000, 0x1B16F),  # Kana Supplement / Extended-A / Small Kana Extension
+    (0x1B170, 0x1B2FF),  # Nushu
+    (0x2F800, 0x2FA1F),  # CJK Compatibility Ideographs Supplement
+)
+
+# Letters in those blocks that are deliberately NOT weighted.
+_DELIBERATELY_UNWEIGHTED = {
+    # Fillers render as nothing at all; two of them are not a query.
+    0x115F,
+    0x1160,
+    0x3164,
+    0xFFA0,
+    # The halfwidth sound marks are the other half of the preceding letter —
+    # ｶ + ﾞ is the single syllable fullwidth writes as ガ. Weighting the mark
+    # would make that syllable cost 4 halfwidth against 2 fullwidth, inverting
+    # the equivalence that put halfwidth kana in the table at all.
+    0xFF9E,
+    0xFF9F,
+}
+
+
+def test_no_cjk_letter_lives_outside_the_two_tables():
+    """Closes the class the vertical kana repeat marks belonged to.
+
+    Reporting them one at a time — 〳〵 this round, 々 or ㄅㄆ the next — never
+    ends. Every assigned letter of every CJK-writing script is either weighted
+    or on the short, reasoned exclusion list above.
+
+    Scripts are matched by BLOCK, not by character name: "VERTICAL KANA REPEAT
+    MARK" does not start with "KANA", and "BOPOMOFO LETTER B" contains none of
+    the obvious keywords, so a name-based audit passed while both were missing.
+    """
+    import unicodedata
+
+    weighted = {
+        cp
+        for start, end in _WIDE_CODEPOINT_RANGES + _WIDE_NUMERAL_RANGES
+        for cp in range(start, end + 1)
+    }
+
+    missing = []
+    for block_start, block_end in _CJK_LETTER_BLOCKS:
+        for codepoint in range(block_start, block_end + 1):
+            if codepoint in weighted or codepoint in _DELIBERATELY_UNWEIGHTED:
+                continue
+            character = chr(codepoint)
+            name = unicodedata.name(character, None)
+            if name and unicodedata.category(character).startswith("L"):
+                missing.append((codepoint, name))
+
+    assert missing == [], "\n".join(f"U+{cp:04X} {name}" for cp, name in missing)
+
+
+def test_the_exclusion_list_is_not_a_dumping_ground():
+    """Each deliberate exclusion must be a real letter in a real CJK block."""
+    import unicodedata
+
+    in_blocks = {
+        cp for start, end in _CJK_LETTER_BLOCKS for cp in range(start, end + 1)
+    }
+    for codepoint in sorted(_DELIBERATELY_UNWEIGHTED):
+        assert codepoint in in_blocks, f"U+{codepoint:04X}"
+        assert unicodedata.category(chr(codepoint)).startswith("L")
+
+
+@pytest.mark.parametrize("codepoint", [0xFF9E, 0xFF9F])
+def test_halfwidth_sound_marks_stay_at_one(codepoint):
+    """A deliberate exception to the letters rule, pinned so it stays deliberate.
+
+    U+FF9E/U+FF9F are Lm, so the rule alone would double them — but halfwidth
+    ｶﾞ is the single syllable fullwidth writes as ガ. Weighting the mark would
+    make that syllable weigh 4 halfwidth against 2 fullwidth.
+    """
+    import unicodedata
+
+    assert unicodedata.category(chr(codepoint)) == "Lm"
+    assert rag_query_weight(chr(codepoint)) == 1
+    assert rag_query_weight("ｶ" + chr(codepoint)) == 3

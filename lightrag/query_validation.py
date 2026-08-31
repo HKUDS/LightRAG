@@ -34,12 +34,17 @@ MIN_RAG_QUERY_WEIGHT = 3
 _WIDE_CODEPOINT_RANGES = (
     (0x1100, 0x115E),  # Hangul Jamo
     (0x1161, 0x11FF),  # Hangul Jamo
+    (0x3005, 0x3006),  # Ideographic iteration mark 々 and closing mark 〆
+    (0x3031, 0x3035),  # Vertical kana repeat marks 〱〲〳〴〵
+    (0x303B, 0x303C),  # Vertical ideographic iteration mark 〻, masu mark 〼
     (0x3041, 0x3096),  # Hiragana
     (0x309D, 0x309F),  # Hiragana
     (0x30A1, 0x30FA),  # Katakana
     (0x30FC, 0x30FF),  # Katakana
+    (0x3105, 0x312F),  # Bopomofo (zhuyin) — the phonetic notation used in Taiwan
     (0x3131, 0x3163),  # Hangul Compatibility Jamo
     (0x3165, 0x318E),  # Hangul Compatibility Jamo
+    (0x31A0, 0x31BF),  # Bopomofo Extended
     (0x31F0, 0x31FF),  # Katakana Phonetic Extensions
     (0x3400, 0x4DBF),  # CJK Ext A
     (0x4E00, 0x9FFF),  # CJK Unified Ideographs
@@ -63,6 +68,7 @@ _WIDE_CODEPOINT_RANGES = (
     (0x1B150, 0x1B152),  # Kana Supplement / Extended-A / Small Kana Ext
     (0x1B155, 0x1B155),  # Kana Supplement / Extended-A / Small Kana Ext
     (0x1B164, 0x1B167),  # Kana Supplement / Extended-A / Small Kana Ext
+    (0x1B170, 0x1B2FB),  # Nushu — a script for writing Chinese
     (0x20000, 0x2A6DF),  # CJK Ext B
     (0x2A700, 0x2B739),  # CJK Ext C
     (0x2B740, 0x2B81D),  # CJK Ext D
@@ -78,6 +84,20 @@ _TOO_SHORT_MESSAGE = (
     "RAG query is too short. Enter at least 3 English characters or an "
     "equivalent combination where each Chinese, Japanese or Korean character "
     "counts as 2."
+)
+
+
+# CJK numerals written as characters rather than digits. These are general
+# category Nl, not L*, so they cannot live in the table above without weakening
+# its invariant — but 〇 is how a Chinese year is written (二〇二五年) and the
+# Suzhou/Hangzhou numerals are the same idea, so they weigh the same as the
+# ideographs they stand among. This is the complete Nl set of the CJK Symbols
+# and Punctuation block; ``test_the_numeral_ranges_are_exactly_the_block_nl_set``
+# pins that, so the two tables together leave no third category to forget.
+_WIDE_NUMERAL_RANGES = (
+    (0x3007, 0x3007),  # IDEOGRAPHIC NUMBER ZERO 〇
+    (0x3021, 0x3029),  # HANGZHOU NUMERAL ONE..NINE
+    (0x3038, 0x303A),  # HANGZHOU NUMERAL TEN, TWENTY, THIRTY
 )
 
 
@@ -99,12 +119,10 @@ class RAGQueryTooShortError(QueryValidationError):
 
 
 def _is_wide_character(character: str) -> bool:
-    # U+3007 IDEOGRAPHIC NUMBER ZERO is category Nl rather than L*, so it sits
-    # outside the generated table — but 〇 is how a Chinese year is written
-    # (二〇二五年) and says as much as the digits around it.
     codepoint = ord(character)
-    return codepoint == 0x3007 or any(
-        start <= codepoint <= end for start, end in _WIDE_CODEPOINT_RANGES
+    return any(
+        start <= codepoint <= end
+        for start, end in _WIDE_CODEPOINT_RANGES + _WIDE_NUMERAL_RANGES
     )
 
 

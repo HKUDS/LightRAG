@@ -36,6 +36,28 @@ describe('RAG query validation', () => {
     expect(isRagQueryTooShort('ﾡﾢ', 'mix')).toBe(false)
   })
 
+  test('weighs iteration and repeat marks in both writing directions', () => {
+    // The vertical marks were missing while the horizontal ones at
+    // U+309D-U+309F were already doubled.
+    expect(ragQueryWeight('〳〵')).toBe(4) // vertical kana repeat marks
+    expect(ragQueryWeight('々々')).toBe(4) // U+3005 ideographic iteration mark
+    expect(ragQueryWeight('〆〆')).toBe(4) // U+3006 ideographic closing mark
+    expect(ragQueryWeight('〻〼')).toBe(4) // U+303B, U+303C
+    expect(ragQueryWeight('〡〢')).toBe(4) // Hangzhou numerals, Nl like 〇
+    for (const query of ['〳〵', '々々', '〡〢']) {
+      expect(isRagQueryTooShort(query, 'mix')).toBe(false)
+    }
+  })
+
+  test('leaves the halfwidth sound marks at one', () => {
+    // Lm, so the letters rule alone would double them — but halfwidth ｶﾞ is the
+    // single syllable fullwidth writes as ガ, and doubling the mark would make
+    // that syllable cost more halfwidth than fullwidth.
+    expect(ragQueryWeight('ﾞ')).toBe(1)
+    expect(ragQueryWeight('ﾟ')).toBe(1)
+    expect(ragQueryWeight('ｶﾞ')).toBe(3)
+  })
+
   test('weighs modifier letters that spell real words', () => {
     expect(ragQueryWeight('コーヒー')).toBe(8) // U+30FC prolonged sound mark (Lm)
     expect(ragQueryWeight('\u{1aff0}\u{1aff1}')).toBe(4) // Kana Extended-B

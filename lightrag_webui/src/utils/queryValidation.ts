@@ -21,12 +21,17 @@ export const MIN_RAG_QUERY_WEIGHT = 3
 export const WIDE_CODEPOINT_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0x1100, 0x115e], // Hangul Jamo
   [0x1161, 0x11ff], // Hangul Jamo
+  [0x3005, 0x3006], // Ideographic iteration mark 々 and closing mark 〆
+  [0x3031, 0x3035], // Vertical kana repeat marks 〱〲〳〴〵
+  [0x303b, 0x303c], // Vertical ideographic iteration mark 〻, masu mark 〼
   [0x3041, 0x3096], // Hiragana
   [0x309d, 0x309f], // Hiragana
   [0x30a1, 0x30fa], // Katakana
   [0x30fc, 0x30ff], // Katakana
+  [0x3105, 0x312f], // Bopomofo (zhuyin) — the phonetic notation used in Taiwan
   [0x3131, 0x3163], // Hangul Compatibility Jamo
   [0x3165, 0x318e], // Hangul Compatibility Jamo
+  [0x31a0, 0x31bf], // Bopomofo Extended
   [0x31f0, 0x31ff], // Katakana Phonetic Extensions
   [0x3400, 0x4dbf], // CJK Ext A
   [0x4e00, 0x9fff], // CJK Unified Ideographs
@@ -50,6 +55,7 @@ export const WIDE_CODEPOINT_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0x1b150, 0x1b152], // Kana Supplement / Extended-A / Small Kana Ext
   [0x1b155, 0x1b155], // Kana Supplement / Extended-A / Small Kana Ext
   [0x1b164, 0x1b167], // Kana Supplement / Extended-A / Small Kana Ext
+  [0x1b170, 0x1b2fb], // Nushu — a script for writing Chinese
   [0x20000, 0x2a6df], // CJK Ext B
   [0x2a700, 0x2b739], // CJK Ext C
   [0x2b740, 0x2b81d], // CJK Ext D
@@ -61,14 +67,21 @@ export const WIDE_CODEPOINT_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0x31350, 0x323af] // CJK Ext H
 ]
 
+// CJK numerals written as characters rather than digits — general category Nl,
+// not L*, so they are a second table rather than entries in the one above.
+// 〇 is how a Chinese year is written (二〇二五年); the Suzhou/Hangzhou numerals
+// are the same idea. Mirrors _WIDE_NUMERAL_RANGES in lightrag/query_validation.py.
+export const WIDE_NUMERAL_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x3007, 0x3007], // IDEOGRAPHIC NUMBER ZERO 〇
+  [0x3021, 0x3029], // HANGZHOU NUMERAL ONE..NINE
+  [0x3038, 0x303a] // HANGZHOU NUMERAL TEN, TWENTY, THIRTY
+]
+
 function isWideCharacter(character: string): boolean {
-  // U+3007 is category Nl, so it sits outside the generated table — but 〇 is
-  // how a Chinese year is written (二〇二五年).
   const codePoint = character.codePointAt(0) ?? 0
-  return (
-    codePoint === 0x3007 ||
-    WIDE_CODEPOINT_RANGES.some(([start, end]) => codePoint >= start && codePoint <= end)
-  )
+  const inRange = ([start, end]: readonly [number, number]) =>
+    codePoint >= start && codePoint <= end
+  return WIDE_CODEPOINT_RANGES.some(inRange) || WIDE_NUMERAL_RANGES.some(inRange)
 }
 
 /**
