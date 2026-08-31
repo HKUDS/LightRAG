@@ -6,7 +6,8 @@
     "ja": ["en"]
   },
   "brand": {
-    "logo": "assets/logo.svg"
+    "logo": "assets/logo.svg",
+    "copyright": "© 2025 Example Corp. All rights reserved."
   },
   "locales": {
     "en": {
@@ -23,7 +24,8 @@
       "login": "locales/zh/login.md",
       "agreements": "locales/zh/agreements.md",
       "consent_documents": "《用户隐私协议》和《模型服务协议》",
-      "logo_alt": "示例公司"
+      "logo_alt": "示例公司",
+      "copyright": "© 2025 示例公司 版权所有"
     },
     "zh-TW": {
       "welcome": "locales/zh-TW/welcome.md",
@@ -31,7 +33,8 @@
       "login": "locales/zh-TW/login.md",
       "agreements": "locales/zh-TW/agreements.md",
       "consent_documents": "《使用者隱私協議》與《模型服務協議》",
-      "logo_alt": "範例公司"
+      "logo_alt": "範例公司",
+      "copyright": "© 2025 範例公司 版權所有"
     }
   }
 }

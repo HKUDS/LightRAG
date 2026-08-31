@@ -1,7 +1,7 @@
 # Example UI customization bundle
 
 A ready-to-copy example for `UI_TEMPLATES_DIR` (the customizable welcome
-page, query empty state and login page). This directory is
+page, query empty state, login page and copyright line). This directory is
 **documentation only** — the server never loads or bundles it.
 
 For the complete guide — deployment from source / Docker / Kubernetes, the
@@ -32,6 +32,14 @@ Copy this directory, replace the texts and the logo, then restart the server
   Omitting it fails startup (a missing logo must never silently fall back to
   the LightRAG logo under customer texts).
 - A locale entry may override the logo with its own `logo` path (or `null`).
+- `brand.copyright` is OPTIONAL plain text (written in the manifest, not a
+  Markdown file) shown at the foot of the welcome and login pages, OUTSIDE
+  the card. A locale entry may override it with its own `copyright` (or
+  `null` for "no line here"). Omitted, `null`, empty or whitespace-only all
+  mean the same thing: no copyright line at all — LightRAG ships no default
+  text, so an uncustomized deployment shows none and LightRAG's own notice
+  never appears on customer pages. Unlike a blank `login`/`agreements` file,
+  a blank value here does NOT fail startup: it only turns the line off.
 - `login` and `agreements` are OPTIONAL per locale, and together they switch
   on the **login consent gate**: when a locale declares both, the login page
   shows the `login` text plus a checkbox ("I agree to …"), and sign-in stays

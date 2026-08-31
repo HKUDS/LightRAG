@@ -19,6 +19,7 @@ import {
 import { ScrollArea } from '@/components/ui/ScrollArea'
 import AppSettings from '@/components/AppSettings'
 import CustomizedMarkdown from '@/components/customization/CustomizedMarkdown'
+import CustomizedCopyright from '@/components/customization/CustomizedCopyright'
 import { useCustomizedContent } from '@/components/customization/useCustomizedContent'
 import {
   CONSENT_LABEL_MARKER,
@@ -243,7 +244,7 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
       // chrome in 100vh, which can push the form under the toolbar; dvh
       // tracks the actually visible viewport, and min- lets small screens
       // scroll instead of clipping.
-      className="flex min-h-dvh w-full items-center justify-center bg-gradient-to-br from-emerald-50 to-teal-100 dark:from-gray-900 dark:to-gray-800"
+      className="flex min-h-dvh w-full flex-col items-center justify-center bg-gradient-to-br from-emerald-50 to-teal-100 dark:from-gray-900 dark:to-gray-800"
       style={{
         padding:
           'calc(env(safe-area-inset-top) + 1rem) calc(env(safe-area-inset-right) + 1rem) calc(env(safe-area-inset-bottom) + 1rem) calc(env(safe-area-inset-left) + 1rem)'
@@ -258,112 +259,121 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
       >
         <AppSettings className="bg-white/30 dark:bg-gray-800/30 backdrop-blur-sm rounded-md" />
       </div>
-      <Card className="w-full max-w-[480px] shadow-lg mx-4">
-        <CardHeader className="flex items-center justify-center space-y-2 pb-8 pt-6">
-          <div className="flex flex-col items-center space-y-4">
-            {content.logoUrl && failedLogoUrl !== content.logoUrl && (
-              <img
-                src={content.logoUrl}
-                alt={content.logoAlt}
-                className="h-12 w-12 object-contain"
-                onError={() => setFailedLogoUrl(content.logoUrl)}
-              />
-            )}
-            <div className="text-center space-y-2">
-              <h1 className="text-3xl font-bold tracking-tight">{content.brandTitle}</h1>
-              <p className="text-muted-foreground text-sm">
-                {t('login.description')}
-              </p>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="px-8 pb-8">
-          {content.loginMarkdown && (
-            <CustomizedMarkdown
-              content={content.loginMarkdown}
-              dir={content.direction}
-              className="mb-6 text-sm"
-            />
-          )}
-          <form onSubmit={handleSubmit} className="space-y-6">
-            <div className="flex items-center gap-4">
-              <label htmlFor="username-input" className="text-sm font-medium w-16 shrink-0">
-                {t('login.username')}
-              </label>
-              <Input
-                id="username-input"
-                placeholder={t('login.usernamePlaceholder')}
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                required
-                className="h-11 min-w-0 flex-1"
-              />
-            </div>
-            <div className="flex items-center gap-4">
-              <label htmlFor="password-input" className="text-sm font-medium w-16 shrink-0">
-                {t('login.password')}
-              </label>
-              <Input
-                id="password-input"
-                type="password"
-                placeholder={t('login.passwordPlaceholder')}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                className="h-11 min-w-0 flex-1"
-              />
-            </div>
-            {showConsent && (
-              <div className="flex items-start gap-2" dir={content.direction}>
-                <Checkbox
-                  id="login-consent"
-                  checked={consentAgreed}
-                  onCheckedChange={(checked) =>
-                    setConsentTick({
-                      document: content.agreementsMarkdown,
-                      agreed: checked === true
-                    })
-                  }
-                  // The visible text is split around the document link, so the
-                  // control's accessible name is spelled out here in full
-                  // rather than assembled from the label fragments.
-                  aria-label={consentLabelText}
-                  className="mt-0.5"
+      {/* The card centers in the space ABOVE the footer, so the copyright
+          line sits at the page's bottom edge instead of inside the card. */}
+      <div className="flex w-full flex-1 items-center justify-center">
+        <Card className="w-full max-w-[480px] shadow-lg mx-4">
+          <CardHeader className="flex items-center justify-center space-y-2 pb-8 pt-6">
+            <div className="flex flex-col items-center space-y-4">
+              {content.logoUrl && failedLogoUrl !== content.logoUrl && (
+                <img
+                  src={content.logoUrl}
+                  alt={content.logoAlt}
+                  className="h-12 w-12 object-contain"
+                  onError={() => setFailedLogoUrl(content.logoUrl)}
                 />
-                <span className="text-muted-foreground text-sm leading-5">
-                  {/* Two labels around the link, never one wrapping it: a
-                      <label> that contained the button would toggle the
-                      checkbox on every click meant to OPEN the document. */}
-                  {consentLabelParts.before && (
-                    <label htmlFor="login-consent" className="cursor-pointer">
-                      {consentLabelParts.before}
-                    </label>
-                  )}
-                  <button
-                    type="button"
-                    className="text-primary underline underline-offset-2 hover:opacity-80"
-                    onClick={() => setAgreementsOpen(true)}
-                  >
-                    {consentDocuments}
-                  </button>
-                  {consentLabelParts.after && (
-                    <label htmlFor="login-consent" className="cursor-pointer">
-                      {consentLabelParts.after}
-                    </label>
-                  )}
-                </span>
+              )}
+              <div className="text-center space-y-2">
+                <h1 className="text-3xl font-bold tracking-tight">{content.brandTitle}</h1>
+                <p className="text-muted-foreground text-sm">
+                  {t('login.description')}
+                </p>
               </div>
+            </div>
+          </CardHeader>
+          <CardContent className="px-8 pb-8">
+            {content.loginMarkdown && (
+              <CustomizedMarkdown
+                content={content.loginMarkdown}
+                dir={content.direction}
+                className="mb-6 text-sm"
+              />
             )}
-            <Button
-              type="submit"
-              className="w-full h-11 text-base font-medium mt-2"
-              disabled={loading || consentBlocked}
-            >
-              {loading ? t('login.loggingIn') : t('login.loginButton')}
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
+            <form onSubmit={handleSubmit} className="space-y-6">
+              <div className="flex items-center gap-4">
+                <label htmlFor="username-input" className="text-sm font-medium w-16 shrink-0">
+                  {t('login.username')}
+                </label>
+                <Input
+                  id="username-input"
+                  placeholder={t('login.usernamePlaceholder')}
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  required
+                  className="h-11 min-w-0 flex-1"
+                />
+              </div>
+              <div className="flex items-center gap-4">
+                <label htmlFor="password-input" className="text-sm font-medium w-16 shrink-0">
+                  {t('login.password')}
+                </label>
+                <Input
+                  id="password-input"
+                  type="password"
+                  placeholder={t('login.passwordPlaceholder')}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  className="h-11 min-w-0 flex-1"
+                />
+              </div>
+              {showConsent && (
+                <div className="flex items-start gap-2" dir={content.direction}>
+                  <Checkbox
+                    id="login-consent"
+                    checked={consentAgreed}
+                    onCheckedChange={(checked) =>
+                      setConsentTick({
+                        document: content.agreementsMarkdown,
+                        agreed: checked === true
+                      })
+                    }
+                    // The visible text is split around the document link, so the
+                    // control's accessible name is spelled out here in full
+                    // rather than assembled from the label fragments.
+                    aria-label={consentLabelText}
+                    className="mt-0.5"
+                  />
+                  <span className="text-muted-foreground text-sm leading-5">
+                    {/* Two labels around the link, never one wrapping it: a
+                        <label> that contained the button would toggle the
+                        checkbox on every click meant to OPEN the document. */}
+                    {consentLabelParts.before && (
+                      <label htmlFor="login-consent" className="cursor-pointer">
+                        {consentLabelParts.before}
+                      </label>
+                    )}
+                    <button
+                      type="button"
+                      className="text-primary underline underline-offset-2 hover:opacity-80"
+                      onClick={() => setAgreementsOpen(true)}
+                    >
+                      {consentDocuments}
+                    </button>
+                    {consentLabelParts.after && (
+                      <label htmlFor="login-consent" className="cursor-pointer">
+                        {consentLabelParts.after}
+                      </label>
+                    )}
+                  </span>
+                </div>
+              )}
+              <Button
+                type="submit"
+                className="w-full h-11 text-base font-medium mt-2"
+                disabled={loading || consentBlocked}
+              >
+                {loading ? t('login.loggingIn') : t('login.loginButton')}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+      </div>
+      <CustomizedCopyright
+        copyright={content.copyright}
+        direction={content.direction}
+        className="pt-4"
+      />
       {/* Rendered only where the gate exists, so a deployment without an
           agreement document has no dialog to open. */}
       {showConsent && content.agreementsMarkdown && (
