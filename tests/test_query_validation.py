@@ -1,6 +1,7 @@
 import pytest
 
 from lightrag.query_validation import (
+    _WIDE_CODEPOINT_RANGES,
     EmptyQueryError,
     RAGQueryTooShortError,
     meets_min_rag_query_weight,
@@ -30,6 +31,12 @@ pytestmark = pytest.mark.offline
         ("データ", 6),
         ("한글", 4),
         ("오늘", 4),
+        # Halfwidth forms are the same letters in a legacy encoding — still
+        # typed on Japanese systems — so they weigh what their fullwidth
+        # counterparts do.
+        ("ﾈｺ", 4),
+        ("ｶﾅ", 4),
+        ("ﾡﾢ", 4),
     ],
 )
 def test_rag_query_weight_counts_cjk_as_two(query, expected):
@@ -108,3 +115,57 @@ def test_the_threshold_check_does_not_walk_the_whole_query():
 
     assert meets_min_rag_query_weight(_CountingStr("a" * 65536)) is True
     assert consumed == 3
+
+
+@pytest.mark.parametrize("halfwidth, fullwidth", [("ﾈｺ", "ネコ"), ("ｶﾅ", "カナ")])
+def test_halfwidth_and_fullwidth_kana_weigh_the_same(halfwidth, fullwidth):
+    """The same word must not hinge on which encoding the keyboard emits.
+
+    Halfwidth katakana renders narrow, but the rule counts retrieval signal,
+    not display width — 'ﾈｺ' and 'ネコ' are one word.
+    """
+    assert rag_query_weight(halfwidth) == rag_query_weight(fullwidth)
+    assert validate_rag_query(halfwidth) == halfwidth
+
+
+def test_halfwidth_punctuation_and_sound_marks_are_not_letters():
+    """Only letters weigh 2; the marks around them stay at 1."""
+    assert rag_query_weight("｡") == 1  # HALFWIDTH IDEOGRAPHIC FULL STOP
+    assert rag_query_weight("･") == 1  # HALFWIDTH KATAKANA MIDDLE DOT
+    assert rag_query_weight("ﾞ") == 1  # HALFWIDTH KATAKANA VOICED SOUND MARK
+    assert rag_query_weight("ﾟ") == 1
+
+
+def test_the_frontend_range_table_matches_this_one():
+    """The two tables are duplicated by necessity and drift silently.
+
+    The WebUI pre-validates so the user is told why before a round trip; the
+    server validates because it is the authority. They only agree if the ranges
+    agree, and a comment asking for that is not a mechanism — the halfwidth
+    kana gap was exactly this drift, present in both files at once.
+    """
+    import re
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "lightrag_webui"
+        / "src"
+        / "utils"
+        / "queryValidation.ts"
+    ).read_text(encoding="utf-8")
+
+    table = re.search(r"WIDE_CODEPOINT_RANGES[^=]*=\s*\[(.*?)\n\]", source, re.DOTALL)
+    assert table, "could not locate WIDE_CODEPOINT_RANGES in queryValidation.ts"
+
+    frontend = tuple(
+        (int(start, 16), int(end, 16))
+        for start, end in re.findall(
+            r"\[\s*0x([0-9a-fA-F]+)\s*,\s*0x([0-9a-fA-F]+)\s*\]", table.group(1)
+        )
+    )
+
+    assert frontend == _WIDE_CODEPOINT_RANGES
+
+    # The lone code point outside the ranges has to be mirrored too.
+    assert "codePoint === 0x3007" in source

@@ -9,8 +9,11 @@ MIN_RAG_QUERY_WEIGHT = 3
 # CJK word carries about as much retrieval signal as a three-letter English one.
 # Han ideographs, Japanese kana and Korean Hangul are all included — restricting
 # the doubling to Han alone rejected ordinary two-character Japanese and Korean
-# words ("ねこ", "오늘") while accepting their Han equivalents. Keep these ranges
-# in sync with ``lightrag_webui/src/utils/queryValidation.ts``.
+# words ("ねこ", "오늘") while accepting their Han equivalents. The halfwidth
+# forms are the same letters in a legacy encoding — "ﾈｺ" is the word "ネコ" — so
+# they weigh the same; the rule is about how much a character says, not how wide
+# it renders. Punctuation and the halfwidth sound marks stay at 1.
+# Keep these ranges in sync with ``lightrag_webui/src/utils/queryValidation.ts``.
 _WIDE_CODEPOINT_RANGES = (
     (0x1100, 0x11FF),  # Hangul Jamo
     (0x3040, 0x309F),  # Hiragana
@@ -23,6 +26,8 @@ _WIDE_CODEPOINT_RANGES = (
     (0xAC00, 0xD7A3),  # Hangul Syllables
     (0xD7B0, 0xD7FF),  # Hangul Jamo Extended-B
     (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
+    (0xFF66, 0xFF9D),  # Halfwidth Katakana letters
+    (0xFFA1, 0xFFDC),  # Halfwidth Hangul letters
     (0x1B000, 0x1B16F),  # Kana Supplement / Extended-A / Small Kana Extension
     (0x20000, 0x2A6DF),  # CJK Unified Ideographs Extension B
     (0x2A700, 0x2B73F),  # Extension C

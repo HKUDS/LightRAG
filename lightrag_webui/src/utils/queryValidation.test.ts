@@ -25,6 +25,22 @@ describe('RAG query validation', () => {
     expect(ragQueryWeight('오늘')).toBe(4)
   })
 
+  test('weighs halfwidth kana and Hangul like their fullwidth forms', () => {
+    // Halfwidth katakana renders narrow but is the same word in a legacy
+    // encoding, still emitted by Japanese IMEs — the rule counts retrieval
+    // signal, not display width.
+    expect(ragQueryWeight('ﾈｺ')).toBe(ragQueryWeight('ネコ'))
+    expect(ragQueryWeight('ｶﾅ')).toBe(ragQueryWeight('カナ'))
+    expect(isRagQueryTooShort('ﾈｺ', 'mix')).toBe(false)
+    expect(isRagQueryTooShort('ﾡﾢ', 'mix')).toBe(false)
+  })
+
+  test('leaves halfwidth punctuation and sound marks at one', () => {
+    for (const character of ['｡', '･', 'ﾞ', 'ﾟ']) {
+      expect(ragQueryWeight(character)).toBe(1)
+    }
+  })
+
   test('requires weight three for retrieval modes', () => {
     expect(isRagQueryTooShort('ab', 'mix')).toBe(true)
     expect(isRagQueryTooShort('中', 'naive')).toBe(true)

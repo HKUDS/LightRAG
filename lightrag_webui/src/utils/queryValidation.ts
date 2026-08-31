@@ -5,7 +5,9 @@ export const MIN_RAG_QUERY_WEIGHT = 3
 // East Asian scripts count as two English-equivalent characters. Han ideographs,
 // Japanese kana and Korean Hangul are all included — doubling Han alone rejected
 // ordinary two-character Japanese and Korean words ('ねこ', '오늘') while
-// accepting their Han equivalents.
+// accepting their Han equivalents. The halfwidth forms are the same letters in a
+// legacy encoding — 'ﾈｺ' is the word 'ネコ' — so they weigh the same; the rule is
+// about how much a character says, not how wide it renders.
 // Keep these ranges in sync with lightrag/query_validation.py.
 const WIDE_CODEPOINT_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0x1100, 0x11ff], // Hangul Jamo
@@ -19,6 +21,8 @@ const WIDE_CODEPOINT_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0xac00, 0xd7a3], // Hangul Syllables
   [0xd7b0, 0xd7ff], // Hangul Jamo Extended-B
   [0xf900, 0xfaff], // CJK Compatibility Ideographs
+  [0xff66, 0xff9d], // Halfwidth Katakana letters
+  [0xffa1, 0xffdc], // Halfwidth Hangul letters
   [0x1b000, 0x1b16f], // Kana Supplement / Extended-A / Small Kana Extension
   [0x20000, 0x2a6df], // CJK Unified Ideographs Extension B
   [0x2a700, 0x2b73f], // Extension C
