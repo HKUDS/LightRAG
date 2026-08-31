@@ -1781,9 +1781,11 @@ inject_service_image_override() {
 
 # Return success when the lightrag service's environment block already
 # declares the given key, in either mapping (`KEY: value`, `KEY:`) or list
-# (`- KEY=value`, `- KEY`) style. PRESENCE is the question, never the value: an
-# explicitly empty entry is an operator saying "off", and appending a second
-# entry for a key that is already there makes the compose file invalid.
+# (`- KEY=value`, `- KEY`) style, quoted or not. PRESENCE is the question,
+# never the value: an explicitly empty entry is an operator saying "off", and
+# a second entry for a key that is already there makes the file invalid --
+# compose refuses it outright (`mapping key ... already defined`), which is
+# why a quoted `"KEY":` has to resolve to the same key as a bare one.
 _lightrag_environment_has_key() {
   local compose_file="$1"
   local wanted_key="$2"
@@ -1823,8 +1825,9 @@ _lightrag_environment_has_key() {
       continue
     fi
 
-    if [[ "$line" =~ ^[[:space:]]{6}([A-Z0-9_]+): ]]; then
-      if [[ "${BASH_REMATCH[1]}" == "$wanted_key" ]]; then
+    if [[ "$line" =~ ^[[:space:]]{6}(\"[A-Z0-9_]+\"|\'[A-Z0-9_]+\'|[A-Z0-9_]+): ]]; then
+      key="$(_strip_wrapping_quotes "${BASH_REMATCH[1]}")"
+      if [[ "$key" == "$wanted_key" ]]; then
         return 0
       fi
     elif [[ "$line" =~ ^[[:space:]]{6}-[[:space:]]*(.+)$ ]]; then

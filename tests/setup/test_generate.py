@@ -7,6 +7,7 @@ import shlex
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tests.setup._helpers import (
     PRESERVED_HEADER,
@@ -2309,6 +2310,45 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
     assert '      UI_TEMPLATES_DIR: ""' in result
     assert result.count("UI_TEMPLATES_DIR") == 1
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_generate_docker_compose_preserves_a_quoted_ui_templates_dir(
+    tmp_path: Path, quote: str
+) -> None:
+    """A quoted mapping key is the same key, so it must block the seed.
+
+    Missing it appended a second entry for a key already present, and compose
+    rejects the file outright: ``mapping key "UI_TEMPLATES_DIR" already
+    defined``.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            f'      {quote}UI_TEMPLATES_DIR{quote}: "/custom/ui_templates"',
+        ],
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+    assert f'      {quote}UI_TEMPLATES_DIR{quote}: "/custom/ui_templates"' in result
+    assert result.count("UI_TEMPLATES_DIR") == 1
+    assert (
+        yaml.safe_load(result)["services"]["lightrag"]["environment"][
+            "UI_TEMPLATES_DIR"
+        ]
+        == "/custom/ui_templates"
+    )
 
 
 def test_generate_docker_compose_preserves_a_valueless_list_ui_templates_dir(
