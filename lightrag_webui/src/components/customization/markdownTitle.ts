@@ -9,6 +9,15 @@
  * the printed one are the same words instead of two independent strings that
  * can drift apart.
  *
+ * Deliberately structure-BLIND: the first heading wins, whatever its level
+ * and whatever follows it. A file merged from several agreements carries
+ * several top-level headings and is named after the first of them; the
+ * dialog's job is to show `agreements.md` faithfully, not to infer how many
+ * documents went into it, and keeping the link text (`consent_documents`)
+ * consistent with what the file actually contains is the bundle author's
+ * responsibility. Do not add heuristics here that guess at document
+ * structure — see the merged-document test in markdownTitle.test.ts.
+ *
  * Pure and separately tested because it is parsing, not rendering: the repo's
  * frontend tests cover logic and there is no DOM test setup.
  */
@@ -53,17 +62,16 @@ function isSetextCandidate(line: string): boolean {
   return !/^([>#|]|[-*+]\s|\d+[.)]\s)/.test(trimmed)
 }
 
-interface MarkdownHeading {
-  level: number
-  text: string
-}
-
-/** Every non-empty heading, in document order, ignoring fenced code blocks so
- * a `#` comment inside an example is never read as one. Both spellings count:
- * ATX (`# Title`) and setext (`Title` over `===` / `---`), because a bundle
- * author writes whichever their editor produces. */
-function collectHeadings(markdown: string): MarkdownHeading[] {
-  const headings: MarkdownHeading[] = []
+/**
+ * The document's first heading, as plain text, or null when it has none.
+ *
+ * Fenced code blocks are skipped, so a `#` comment inside an example block is
+ * never mistaken for the title. Both heading spellings count: ATX (`# Title`)
+ * and setext (`Title` over `===`), because a bundle author writes whichever
+ * their editor produces.
+ */
+export function extractMarkdownTitle(markdown: string | null | undefined): string | null {
+  if (!markdown) return null
   const lines = markdown.split(/\r?\n/)
   let fence: string | null = null
   for (let index = 0; index < lines.length; index += 1) {
@@ -82,46 +90,18 @@ function collectHeadings(markdown: string): MarkdownHeading[] {
     }
     const atx = ATX_RE.exec(line)
     if (atx) {
-      // Closing sequence (`## Title ##`) is decoration, not text; an empty
-      // heading is a heading with no title and is not collected.
+      // Closing sequence (`## Title ##`) is decoration, not text.
       const text = stripInlineMarkdown((atx[2] ?? '').replace(/\s+#+\s*$/, ''))
-      if (text) headings.push({ level: atx[1].length, text })
+      // An empty heading is a heading with no title: keep looking rather
+      // than announcing a blank name.
+      if (text) return text
       continue
     }
     const next = lines[index + 1]
     if (next !== undefined && SETEXT_RE.test(next) && isSetextCandidate(line)) {
       const text = stripInlineMarkdown(line)
-      if (text) headings.push({ level: next.trim().startsWith('=') ? 1 : 2, text })
+      if (text) return text
     }
   }
-  return headings
-}
-
-/**
- * The document's own title, as plain text, or null when it has none.
- *
- * NOT simply "the first heading". A heading counts as the document's title
- * only when it both OPENS the document and is the ONLY heading at its level,
- * with nothing shallower anywhere — i.e. it stands over the whole file rather
- * than over the first part of it.
- *
- * The rejected case is the one that matters, and it is a real shape: an
- * agreement written as `## Privacy Policy` … `## Model Service Agreement` has
- * no title, only two peer sections, and the docs shipped exactly that example
- * before the dialog rendered the file as-is. Taking the first of the two would
- * name the dialog "Privacy Policy" for a document that also carries the model
- * service agreement — announcing a NARROWER consent scope than the visitor is
- * being asked for, which is worse than having no title at all. Null sends the
- * caller to the checkbox's own link text, which names the whole document.
- *
- * A single `## Only Heading` is still a title: one section is the document.
- */
-export function extractMarkdownTitle(markdown: string | null | undefined): string | null {
-  if (!markdown) return null
-  const headings = collectHeadings(markdown)
-  if (headings.length === 0) return null
-  const shallowest = Math.min(...headings.map((heading) => heading.level))
-  if (headings[0].level !== shallowest) return null
-  if (headings.filter((heading) => heading.level === shallowest).length > 1) return null
-  return headings[0].text
+  return null
 }

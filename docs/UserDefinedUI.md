@@ -322,7 +322,7 @@ The dialog renders `agreements.md` **as written** — no title is printed above 
 …
 ```
 
-A heading counts as the document's title only if it **opens** the file and is the **only** heading at its level. A file written as two peer `## ` sections therefore has no title — the dialog is then announced by the checkbox's link text, which names the whole document, rather than by the first section, which would understate what is being agreed to. One `# ` line over the sections is all it takes.
+The dialog is *announced* to screen readers by that same first heading, so a file combining several agreements is announced by whichever heading comes first. Nothing inspects the file beyond that — **keeping `consent_documents` consistent with what the document actually contains is yours to maintain.**
 
 Headings, paragraphs, lists, tables, block quotes, code blocks, horizontal rules and links all render with the standard document typography. Raw HTML inside the Markdown is dropped, as in every bundle template — see [§10](#10-content-authoring-rules).
 

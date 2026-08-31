@@ -87,10 +87,8 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
   const consentLabelText = t('login.consentLabel', { documents: consentDocuments })
   // The dialog prints the document AS WRITTEN, so its heading is the visible
   // title and nothing is printed above it. This is the ACCESSIBLE name only
-  // — the same words a sighted reader sees. A file with no title OF ITS OWN
-  // (peer `##` sections and nothing over them) falls back to the link's
-  // wording, which names the whole document: see extractMarkdownTitle for
-  // why naming it after its first section would understate the consent.
+  // — the same words a sighted reader sees, falling back to the link's own
+  // wording for a document that carries no heading.
   const agreementsTitle =
     extractMarkdownTitle(content.agreementsMarkdown) ?? consentDocuments
   const consentLabelParts = splitConsentLabel(
