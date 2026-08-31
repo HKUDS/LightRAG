@@ -1301,18 +1301,19 @@ generate_docker_compose() {
   # manifest.json as "no bundle yet" (warns, keeps the built-in branding), so
   # the seed changes nothing until then.
   #
-  # Two ways this stays the operator's call rather than the wizard's. It is
-  # seeded ONLY when the compose file does not already declare the key, so a
-  # hand-edited value (or an explicit empty one, meaning "off") survives every
-  # regeneration — which is also why the key is absent from
-  # _WIZARD_COMPOSE_LIGHTRAG_KEYS. And the seeded value is an interpolation,
-  # not a literal: a compose `environment:` entry outranks the same key in the
-  # mounted .env, so writing the path literally would silently defeat a value
-  # set there. See docs/UserDefinedUI.md 7.3.
+  # Like WORKING_DIR / INPUT_DIR / PROMPT_DIR, the seeded value is the
+  # container path and it outranks the same key in the mounted .env — that is
+  # what lets one .env hold host paths for a source run and still drive this
+  # deployment correctly.
+  #
+  # Unlike them, it is SEEDED rather than managed: written only when the
+  # compose file does not already declare the key, so a value the operator
+  # edited in (or an explicit empty one, meaning "off") survives every
+  # regeneration. That is also why the key is absent from
+  # _WIZARD_COMPOSE_LIGHTRAG_KEYS, whose strip-then-reinject pass would delete
+  # it. See docs/UserDefinedUI.md 7.3.
   if ! _lightrag_environment_has_key "$tmp_file" "UI_TEMPLATES_DIR"; then
-    lightrag_env_entries+=(
-      "UI_TEMPLATES_DIR=${_COMPOSE_RAW_VALUE_PREFIX}\"\${UI_TEMPLATES_DIR:-${COMPOSE_LIGHTRAG_UI_TEMPLATES_DIR:-/app/data/ui_templates}}\""
-    )
+    lightrag_env_entries+=("UI_TEMPLATES_DIR=${COMPOSE_LIGHTRAG_UI_TEMPLATES_DIR:-/app/data/ui_templates}")
   fi
 
   append_lightrag_ssl_mount lightrag_mounts "${COMPOSE_ENV_OVERRIDES[SSL_CERTFILE]:-}" || return 1

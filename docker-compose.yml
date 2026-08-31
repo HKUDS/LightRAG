@@ -36,9 +36,9 @@ services:
       # Inert until ./data/ui_templates holds a bundle: with no manifest.json
       # in it the server logs a warning and keeps the built-in LightRAG
       # branding. Once a manifest.json is there an invalid bundle makes the
-      # server refuse to start. Written as a DEFAULT, not an override: a
-      # compose `environment:` entry outranks the same key in .env, so the
-      # interpolation hands UI_TEMPLATES_DIR back to .env whenever it sets one
-      # (a CONTAINER path there — .env is mounted into the container).
+      # server refuse to start. This entry deliberately overrides the same key
+      # in the mounted .env, exactly like WORKING_DIR / INPUT_DIR / PROMPT_DIR:
+      # .env holds host paths so one file can serve both a source run and this
+      # deployment, and compose supplies the container path.
       # See docs/UserDefinedUI.md.
-      UI_TEMPLATES_DIR: "${UI_TEMPLATES_DIR:-/app/data/ui_templates}"
+      UI_TEMPLATES_DIR: "/app/data/ui_templates"

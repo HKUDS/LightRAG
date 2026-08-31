@@ -69,7 +69,7 @@ point `UI_TEMPLATES_DIR` at it:
     volumes:
       - ./data/ui_templates:/app/data/ui_templates:ro
     environment:
-      UI_TEMPLATES_DIR: "${UI_TEMPLATES_DIR:-/app/data/ui_templates}"
+      UI_TEMPLATES_DIR: "/app/data/ui_templates"
 ```
 
 So writing the bundle is the whole procedure — there is no compose file to edit:
@@ -323,7 +323,7 @@ services:
     volumes:
       - ./data/ui_templates:/app/data/ui_templates:ro
     environment:
-      UI_TEMPLATES_DIR: "${UI_TEMPLATES_DIR:-/app/data/ui_templates}"
+      UI_TEMPLATES_DIR: "/app/data/ui_templates"
 ```
 
 **Both are inert until you write a bundle.** A configured directory that holds no `manifest.json` is an unpopulated mount point, not a broken bundle: the server logs a warning naming the directory and serves its built-in branding. So the default deployment starts normally, and the whole activation procedure is dropping a bundle into `./data/ui_templates` and restarting — no compose edit, ever.
@@ -337,12 +337,9 @@ Three practical notes:
 - `:ro` is intentional — the server only ever reads the bundle.
 - **Podman**: `docker-compose.podman.yml` keeps the mount *and* `UI_TEMPLATES_DIR` commented out, because Podman is stricter than Docker about a bind mount whose host source is missing — an unconditional mount would turn the feature into a startup prerequisite. There, `mkdir -p ./data/ui_templates` first, then uncomment both.
 
-**The entry is a default, not an override.** A compose `environment:` entry outranks the same key in `.env`, so it is written as an interpolation: set `UI_TEMPLATES_DIR` in `.env` and that value is what the container gets; leave it unset and the container path above applies. Two consequences worth knowing:
+**The compose entry outranks `.env` on purpose.** A compose `environment:` entry wins over the same key in the mounted `.env`, and `UI_TEMPLATES_DIR` uses that deliberately — exactly like `WORKING_DIR`, `INPUT_DIR` and `PROMPT_DIR`. The value is a *container* path, so keeping it out of `.env` is what lets one `.env`, holding host paths such as `./lightrag_webui/ui_templates`, serve a source run and this deployment at the same time. Setting `UI_TEMPLATES_DIR` in `.env` therefore affects the source run only; the container uses the compose value.
 
-- A value in `.env` must be a **container** path, because `.env` is mounted into the container and read there. A source-style `./lightrag_webui/ui_templates` resolves under `/app` inside the container, where it does not exist — and a configured directory that is *missing* is a hard startup error, not the inert state.
-- Compose resolves `${UI_TEMPLATES_DIR}` from the project's `.env` (and the shell environment) at parse time, so `docker compose config` shows you exactly which path the container will see.
-
-Keeping container paths out of `.env` is still what lets the same `.env` stay usable when running from source, so the compose block remains the better home for a Docker-only value.
+To point the container at a different bundle, edit the compose entry (the wizard preserves it — see [§7.3](#73-the-wizard-generated-compose-file)) or change the mount's host side.
 
 ### 7.3 The wizard-generated compose file
 
@@ -353,13 +350,13 @@ make env-server        # or any other make env-* target
 grep ui_templates docker-compose.final.yml
 ```
 
-The wizard also seeds `UI_TEMPLATES_DIR: "${UI_TEMPLATES_DIR:-/app/data/ui_templates}"` into the `lightrag` service's `environment:` block, so a wizard-generated deployment behaves exactly like the shipped compose files: inert until `./data/ui_templates` holds a bundle.
+The wizard also seeds `UI_TEMPLATES_DIR: "/app/data/ui_templates"` into the `lightrag` service's `environment:` block, so a wizard-generated deployment behaves exactly like the shipped compose files: inert until `./data/ui_templates` holds a bundle.
 
-**Seeded, not managed — the wizard never changes a value you set.** Unlike `WORKING_DIR` / `INPUT_DIR` / `PROMPT_DIR`, which the wizard rewrites on every run so a stray `.env` value cannot redirect storage, `UI_TEMPLATES_DIR` is written only when the compose file does not already declare it:
+**Seeded, not managed — the wizard never changes a value you set.** `WORKING_DIR` / `INPUT_DIR` / `PROMPT_DIR` are rewritten on every run, so a hand-edited value there does not survive. `UI_TEMPLATES_DIR` is written only when the compose file does not already declare the key:
 
 - A value you edited by hand in `docker-compose.final.yml` survives every regeneration — including `UI_TEMPLATES_DIR: ""`, which is how a deployment turns the feature off, and `- UI_TEMPLATES_DIR` in a list-style block.
-- A value you set in `.env` is honored too, because the seeded value is an interpolation rather than a literal path.
 - Serving a bundle from another host directory needs no environment edit at all: change the mount's *host* side (`./my-branding:/app/data/ui_templates:ro`).
+- The seeded value still overrides `.env`, which is what keeps a host-path `UI_TEMPLATES_DIR` in `.env` usable for source runs ([§7.2](#72-docker-compose)).
 
 User-added bind mounts and other user-added environment keys are preserved across regenerations as before.
 
