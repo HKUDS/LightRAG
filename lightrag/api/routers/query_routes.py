@@ -22,15 +22,18 @@ from lightrag.constants import (
     MAX_RESPONSE_TYPE_CHARS,
     MAX_ROLE_CHARS,
 )
+from lightrag.query_validation import validate_rag_query
 from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class QueryRequest(BaseModel):
     query: str = Field(
-        min_length=3,
         max_length=MAX_QUERY_CHARS,
-        description="The query text",
+        description=(
+            "The query text. RAG modes require an English-equivalent length of "
+            "at least 3; each Chinese character counts as 2."
+        ),
     )
 
     mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = Field(
@@ -161,11 +164,7 @@ class QueryRequest(BaseModel):
     @field_validator("query", mode="after")
     @classmethod
     def query_strip_after(cls, query: str) -> str:
-        # min_length runs before strip; re-check so pads cannot shrink below 3 chars.
-        stripped = query.strip()
-        if len(stripped) < 3:
-            raise ValueError("query must be at least 3 characters after stripping")
-        return stripped
+        return query.strip()
 
     @field_validator("hl_keywords", "ll_keywords", mode="after")
     @classmethod
@@ -221,6 +220,11 @@ class QueryRequest(BaseModel):
         history dict is forwarded verbatim, so count its serialized form rather
         than only the ``content`` key.
         """
+        if self.mode != "bypass":
+            self.query = validate_rag_query(self.query)
+
+        # Counted AFTER validation, which rewrites self.query.
+        #
         # The server-side user_prompt_prefix is deliberately NOT counted: it is
         # operator configuration, not client-supplied text, and folding it in
         # would make previously-legal requests start failing the moment an
@@ -462,7 +466,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                             "properties": {"detail": {"type": "string"}},
                         },
                         "example": {
-                            "detail": "Query text must be at least 3 characters long"
+                            "detail": "RAG query must have an English-equivalent length of at least 3; each Chinese character counts as 2"
                         },
                     }
                 },
@@ -541,7 +545,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
         Args:
             request (QueryRequest): The request object containing query parameters:
-                - **query**: The question or prompt to process (min 3 characters)
+                - **query**: The question or prompt to process. RAG modes require an English-equivalent length of at least 3; each Chinese character counts as 2. Bypass mode is exempt.
                 - **mode**: Query strategy - "mix" recommended for best results
                 - **include_references**: Whether to include source citations
                 - **response_type**: Format preference (e.g., "Multiple Paragraphs")
@@ -768,7 +772,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                             "properties": {"detail": {"type": "string"}},
                         },
                         "example": {
-                            "detail": "Query text must be at least 3 characters long"
+                            "detail": "RAG query must have an English-equivalent length of at least 3; each Chinese character counts as 2"
                         },
                     }
                 },
@@ -910,7 +914,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
         Args:
             request (QueryRequest): The request object containing query parameters:
-                - **query**: The question or prompt to process (min 3 characters)
+                - **query**: The question or prompt to process. RAG modes require an English-equivalent length of at least 3; each Chinese character counts as 2. Bypass mode is exempt.
                 - **mode**: Query strategy - "mix" recommended for best results
                 - **stream**: Enable streaming (True) or complete response (False)
                 - **include_references**: Whether to include source citations
@@ -1341,7 +1345,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                             "properties": {"detail": {"type": "string"}},
                         },
                         "example": {
-                            "detail": "Query text must be at least 3 characters long"
+                            "detail": "RAG query must have an English-equivalent length of at least 3; each Chinese character counts as 2"
                         },
                     }
                 },
@@ -1441,7 +1445,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
         Args:
             request (QueryRequest): The request object containing query parameters:
-                - **query**: The search query to analyze (min 3 characters)
+                - **query**: The search query to analyze. RAG modes require an English-equivalent length of at least 3; each Chinese character counts as 2. Bypass mode is exempt.
                 - **mode**: Retrieval strategy affecting data types returned
                 - **top_k**: Number of top entities/relationships to retrieve
                 - **chunk_top_k**: Number of text chunks to retrieve

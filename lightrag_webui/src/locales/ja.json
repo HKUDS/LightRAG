@@ -444,7 +444,9 @@
       "placeholder": "クエリを入力（プレフィックス対応: /<クエリモード>）",
       "error": "エラー: 応答の取得に失敗しました",
       "queryModeError": "次のクエリモードのみサポートされています: {{modes}}",
-      "queryModePrefixInvalid": "無効なクエリモードプレフィックス。使用: /<mode> [スペース] クエリ"
+      "queryModePrefixInvalid": "無効なクエリモードプレフィックス。使用: /<mode> [スペース] クエリ",
+      "queryTooShort": "クエリが短すぎます。英字3文字以上または同等の組み合わせを入力してください。漢字1文字は英字2文字として数えます。",
+      "dismissError": "エラーメッセージを閉じる"
     },
     "querySettings": {
       "parametersTitle": "パラメータ",

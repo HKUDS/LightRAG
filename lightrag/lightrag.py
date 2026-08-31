@@ -135,6 +135,7 @@ from lightrag.base import (
     QueryResult,
 )
 from lightrag.namespace import NameSpace
+from lightrag.query_validation import validate_rag_query
 from lightrag.chunker import chunking_by_token_size
 from lightrag.operate import (
     KGRebuildReport,
@@ -4097,6 +4098,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             actual data is nested under the 'data' field, with 'status' and 'message'
             fields at the top level.
         """
+        query = query.strip()
+        if param.mode != "bypass":
+            query = validate_rag_query(query)
+
         global_config = self._build_global_config()
 
         # Create a copy of param to avoid modifying the original
@@ -4124,7 +4129,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         if data_param.mode in ["local", "global", "hybrid", "mix"]:
             logger.debug(f"[aquery_data] Using kg_query for mode: {data_param.mode}")
             query_result = await kg_query(
-                query.strip(),
+                query,
                 self.chunk_entity_relation_graph,
                 self.entities_vdb,
                 self.relationships_vdb,
@@ -4138,7 +4143,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         elif data_param.mode == "naive":
             logger.debug(f"[aquery_data] Using naive_query for mode: {data_param.mode}")
             query_result = await naive_query(
-                query.strip(),
+                query,
                 self.chunks_vdb,
                 data_param,  # Use data_param with only_need_context=True
                 global_config,
@@ -4214,6 +4219,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             dict[str, Any]: Complete response with structured data and LLM response.
         """
+        query = query.strip()
+        if param.mode != "bypass":
+            query = validate_rag_query(query)
+
         logger.debug(f"[aquery_llm] Query param: {param}")
 
         global_config = self._build_global_config()
@@ -4223,7 +4232,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
             if param.mode in ["local", "global", "hybrid", "mix"]:
                 query_result = await kg_query(
-                    query.strip(),
+                    query,
                     self.chunk_entity_relation_graph,
                     self.entities_vdb,
                     self.relationships_vdb,
@@ -4237,7 +4246,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
             elif param.mode == "naive":
                 query_result = await naive_query(
-                    query.strip(),
+                    query,
                     self.chunks_vdb,
                     param,
                     global_config,
@@ -4256,7 +4265,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
                 param.stream = True if param.stream is None else param.stream
                 response = await use_llm_func(
-                    query.strip(),
+                    query,
                     system_prompt=system_prompt,
                     history_messages=param.conversation_history,
                     enable_cot=True,
