@@ -62,31 +62,24 @@ INFO: UI customization bundle active: bundle_revision=1f0c… locales=['en', 'zh
 
 ### 2.2 Docker Compose 部署
 
-仓库自带的 compose 文件已经以只读方式挂载了模板目录：
+仓库自带的 compose 文件已经以只读方式挂载了模板目录，**并且**把 `UI_TEMPLATES_DIR` 指向了它：
 
 ```yaml
     volumes:
       - ./data/ui_templates:/app/data/ui_templates:ro
+    environment:
+      UI_TEMPLATES_DIR: "/app/data/ui_templates"
 ```
 
-因此只需：
+因此写入模板包就是全部步骤，不需要再改 compose 文件：
 
 ```bash
 mkdir -p ./data/ui_templates
 cp -r docs/ui_templates_example/* ./data/ui_templates/
-```
-
-然后在 `lightrag` 服务的 `environment:` 块中取消注释这一行：
-
-```yaml
-      UI_TEMPLATES_DIR: "/app/data/ui_templates"
-```
-
-重启：
-
-```bash
 docker compose up -d --force-recreate lightrag
 ```
+
+在你写入之前，该目录里没有 `manifest.json`，服务器照常提供内置品牌内容，并在启动时记录一行提示。默认部署的行为没有任何变化。
 
 完整说明（含向导生成的 `docker-compose.final.yml` 与 Kubernetes）见 [§7 部署](#7-部署)。
 
@@ -319,7 +312,7 @@ WARNING: UI customization: the WebUI ships no interface translation for ['nl'] �
 
 ### 7.2 Docker Compose
 
-`docker-compose.yml` 和 `docker-compose-full.yml` 都已内置该挂载，并附带一行注释掉的启用配置：
+`docker-compose.yml` 和 `docker-compose-full.yml` 都已内置这两半配置：
 
 ```yaml
 services:
@@ -327,18 +320,23 @@ services:
     volumes:
       - ./data/ui_templates:/app/data/ui_templates:ro
     environment:
-      # UI_TEMPLATES_DIR: "/app/data/ui_templates"
+      UI_TEMPLATES_DIR: "/app/data/ui_templates"
 ```
 
-挂载本身是惰性的：只要 `UI_TEMPLATES_DIR` 未设置，`./data/ui_templates` 不存在或为空都不会有任何影响。取消注释那一行环境变量，是启用该功能的唯一步骤。
+**在你写入模板包之前，两者都是惰性的。** 已配置但不含 `manifest.json` 的目录被视为「尚未填充的挂载点」，而不是「损坏的模板包」：服务器记录一条写明该目录的警告，继续提供内置品牌内容。因此默认部署可以正常启动，而启用该功能的全部步骤就是把模板包放进 `./data/ui_templates` 再重启——永远不需要改 compose。
 
-两点实务提示：
+这种宽容止步于 manifest：一旦 `manifest.json` 存在，模板包就会被完整校验，任何问题都会导致拒绝启动（见 [§9](#9-故障排查)）——复制到一半的模板包绝不会被悄悄降级成 LightRAG 内容。
+
+三点实务提示：
 
 - **首次 `up` 之前先创建该目录。** 如果交给 Docker 自动创建，目录属主会是 `root`，之后往里复制文件需要 `sudo`。
+- **挂载落错位置现在表现为「品牌内容没变」，而不是启动失败**——这是「开箱即可启动」的代价。区分它与「我还没写模板包」的手段是启动警告和 `/ui/customization` 的 `"customized": false`，两者都会写明服务器实际读到的路径。
 - `:ro` 是刻意的——服务器只读取模板包，从不写入。
-- **Podman**：`docker-compose.podman.yml` 里连挂载本身也是注释掉的。Podman 对「宿主机源不存在」的绑定挂载比 Docker 更严格，无条件挂载会把一个默认关闭的功能变成所有人的启动前置条件。在那里请先 `mkdir -p ./data/ui_templates`，再同时取消注释挂载和 `UI_TEMPLATES_DIR`。
+- **Podman**：`docker-compose.podman.yml` 里挂载和 `UI_TEMPLATES_DIR` 都仍是注释掉的。Podman 对「宿主机源不存在」的绑定挂载比 Docker 更严格，无条件挂载会把该功能变成所有人的启动前置条件。在那里请先 `mkdir -p ./data/ui_templates`，再同时取消注释两者。
 
-在 `.env` 里设置 `UI_TEMPLATES_DIR` 同样有效（该文件会被挂载进容器），但更适合放在 compose 的 `environment:` 块中：这个值是*容器内*路径，把容器路径挡在 `.env` 之外，才能让同一份 `.env` 在源码运行时依然可用。另外请注意：compose 的 `environment:` 条目优先级高于 `.env` 中的同名 key。
+**这一条刻意压过 `.env`。** compose 的 `environment:` 条目优先级高于挂载进容器的 `.env` 中的同名 key，`UI_TEMPLATES_DIR` 正是要利用这一点——与 `WORKING_DIR`、`INPUT_DIR`、`PROMPT_DIR` 完全一致。这个值是*容器内*路径，把它挡在 `.env` 之外，才能让同一份 `.env`（里面写的是 `./lightrag_webui/ui_templates` 这类宿主机路径）同时服务源码运行与本部署。因此在 `.env` 里设置 `UI_TEMPLATES_DIR` 只影响源码运行，容器使用的是 compose 中的值。
+
+若要让容器指向别处的模板包，请改 compose 中的这一条（向导会保留它，见 [§7.3](#73-向导生成的-compose-文件)），或改挂载的宿主机一侧。
 
 ### 7.3 向导生成的 compose 文件
 
@@ -349,7 +347,15 @@ make env-server        # 或任意其他 make env-* 目标
 grep ui_templates docker-compose.final.yml
 ```
 
-向导**不会**替你写入 `UI_TEMPLATES_DIR`——请自行把它加到 `docker-compose.final.yml` 中 `lightrag` 服务的 `environment:` 块里。向导在重新生成时会保留该服务中用户新增的环境变量和绑定挂载。
+向导同时会把 `UI_TEMPLATES_DIR: "/app/data/ui_templates"` 作为**种子值**写入 `lightrag` 服务的 `environment:` 块，因此向导生成的部署与仓库自带的 compose 文件行为完全一致：在 `./data/ui_templates` 出现模板包之前保持惰性。
+
+**只播种、不接管——向导绝不改动你填写的值。** `WORKING_DIR` / `INPUT_DIR` / `PROMPT_DIR` 每次运行都会被重写，手工改动不会保留；`UI_TEMPLATES_DIR` 只在 compose 文件尚未声明该键时才写入：
+
+- 你在 `docker-compose.final.yml` 中手工修改的值会在每次重新生成后原样保留——包括 `UI_TEMPLATES_DIR: ""`（部署用它关闭该功能）以及 list 风格下的 `- UI_TEMPLATES_DIR`。
+- 若要从其它宿主机目录提供模板包，完全不需要改环境变量：改挂载的*宿主机*一侧即可（`./my-branding:/app/data/ui_templates:ro`）。
+- 种子值同样压过 `.env`，这正是让 `.env` 中的宿主机路径 `UI_TEMPLATES_DIR` 仍可用于源码运行的前提（见 [§7.2](#72-docker-compose)）。
+
+用户新增的绑定挂载和其它用户新增的环境变量，与之前一样在重新生成时被保留。
 
 ### 7.4 Kubernetes
 
@@ -419,12 +425,15 @@ kubectl create configmap lightrag-ui-templates \
 
 ## 8. 验证部署结果
 
-**启动日志。** 以下两行必有其一：
+**启动日志。** 以下三行必有其一：
 
 ```
-INFO: UI customization: no bundle configured (UI_TEMPLATES_DIR unset)
-INFO: UI customization bundle active: bundle_revision=<sha256> locales=['en', 'zh']
+INFO:    UI customization: no bundle configured (UI_TEMPLATES_DIR unset)
+WARNING: UI customization: UI_TEMPLATES_DIR=/app/data/ui_templates holds no manifest.json — serving the built-in LightRAG branding. …
+INFO:    UI customization bundle active: bundle_revision=<sha256> locales=['en', 'zh']
 ```
+
+中间那一行就是 Docker 默认状态：变量由自带的 compose 文件设置，而挂载的目录还是空的。它被记为 WARNING 而非 INFO，是因为「挂载指向了错误的宿主机目录」也会落到同一状态——日志中写明了服务器实际读取的目录，供你区分这两种情况。
 
 `bundle_revision` 是对所有被引用文件计算出的哈希。如果你改了文件后它没有变化，说明服务器读取的目录并非你以为的那个——或者根本没有真正重启。
 
@@ -457,7 +466,7 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
 
 几个有用的判断点：
 
-- `"customized": false` → 当前没有激活任何模板包（`UI_TEMPLATES_DIR` 未设置或为空），前端显示的是 LightRAG 内置品牌内容。
+- `"customized": false` → 当前没有激活任何模板包（`UI_TEMPLATES_DIR` 未设置，或指向的目录中没有 `manifest.json`），前端显示的是 LightRAG 内置品牌内容。
 - `"fallback_used": true` → 请求的 locale 未被声明，`locale` 字段告诉你最终落到了哪里。
 - `"consent_required"` → 该 locale 下是否会出现同意勾选框。
 - `logo_url: null` → 该 locale 解析结果是*不显示* Logo（某处显式写了 `null`），而不是回退到 LightRAG 的 Logo。
@@ -468,12 +477,13 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
 
 ## 9. 故障排查
 
-只要设置了 `UI_TEMPLATES_DIR`，模板包中任何一处非法都会让服务器**拒绝启动**，错误信息以 `UI_TEMPLATES_DIR bundle invalid:` 开头。这是刻意设计：悄悄回退到 LightRAG 内容会让你误以为客户品牌已经生效，而实际上并没有。
+只要配置的目录中存在 `manifest.json`，模板包中任何一处非法都会让服务器**拒绝启动**，错误信息以 `UI_TEMPLATES_DIR bundle invalid:` 开头。这是刻意设计：悄悄回退到 LightRAG 内容会让你误以为客户品牌已经生效，而实际上并没有。
+
+唯一的例外是「配置的目录中没有 `manifest.json`」——也就是每个默认 Docker 部署启动时所处的未填充状态。它不会导致启动失败，见下方第二张表。
 
 | 错误信息（节选） | 原因 / 处理 |
 |---|---|
 | `directory '…' does not exist or is not a directory` | 路径错误，或容器挂载缺失。进容器确认：`docker compose exec lightrag ls /app/data/ui_templates`。 |
-| `manifest.json is missing` | `manifest.json` 必须直接位于模板包根目录，而不是下一层。常见原因是复制了父目录。 |
 | `manifest.json is not valid JSON` | 多余的逗号或注释。JSON 两者都不允许。 |
 | `unknown field(s) [...]` | 字段名拼写错误；schema 是封闭的，属于有意设计。 |
 | `missing required field(s) [...]` | 补上该字段。注意 `brand.logo` 是必填的——不显示 Logo 请显式写 `null`。 |
@@ -495,7 +505,8 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
 
 | 现象 | 原因 |
 |---|---|
-| 服务器正常启动，但页面仍是 LightRAG 品牌内容 | `UI_TEMPLATES_DIR` 未设置或为空——检查启动日志和 `/ui/customization`。Docker 下请注意 compose 的 `environment:` 会覆盖 `.env`。 |
+| 服务器正常启动，但页面仍是 LightRAG 品牌内容 | `UI_TEMPLATES_DIR` 未设置——检查启动日志和 `/ui/customization`。Docker 下请注意 compose 的 `environment:` 会覆盖 `.env`。 |
+| 启动日志出现 `holds no manifest.json`，品牌内容没有变化 | 配置的目录存在，但里面没有模板包。要么你还没写，要么服务器读到的目录不是你填充的那个——警告中写明了它实际读取的路径。`manifest.json` 必须直接位于模板包根目录，而不是下一层（常见原因是复制了父目录）。进容器确认：`docker compose exec lightrag ls /app/data/ui_templates`。 |
 | 修改后不生效 | 没有热加载。请重启服务器（所有 worker）。 |
 | 看不到同意勾选框 | 解析到的 locale 只声明了 `login` / `agreements` 之一；或未配置认证（`AUTH_ACCOUNTS` 未设置）；或访问者解析到的 locale 与你预期的不同——检查接口返回中的 `locale` 与 `consent_required`。 |
 | 内容是你的语言，按钮却不是 | 该 locale 不在前端界面语言集合内——见 [§5.3](#53-界面语言与-bundle-语言) 及启动警告。 |

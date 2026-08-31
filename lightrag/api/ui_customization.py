@@ -42,6 +42,11 @@ MAX_LOGO_BYTES = 2 * 1024 * 1024  # per logo file
 
 BRAND_LOGO_ASSET_ID = "brand-logo"
 
+# The one file whose presence means "this directory holds a bundle". A
+# configured directory without it is an unpopulated mount point, not a broken
+# bundle — see resolve_ui_customization_snapshot.
+BUNDLE_MANIFEST_NAME = "manifest.json"
+
 # Right-to-left writing systems, DERIVED from CLDR 48 (Unicode
 # 16.0.0) rather than curated by hand — the previous four-language
 # list silently laid out Pashto, Central Kurdish, Divehi and every other RTL
@@ -613,7 +618,7 @@ def load_ui_customization_snapshot(bundle_dir: str | Path) -> UICustomizationSna
     if not root.is_dir():
         raise _fail(f"directory {str(root)!r} does not exist or is not a directory")
 
-    manifest_path = root / "manifest.json"
+    manifest_path = root / BUNDLE_MANIFEST_NAME
     if not manifest_path.is_file():
         raise _fail("manifest.json is missing")
     manifest_bytes = _read_limited(manifest_path, MAX_TEMPLATE_BYTES, "manifest.json")
@@ -826,3 +831,51 @@ def load_ui_customization_snapshot(bundle_dir: str | Path) -> UICustomizationSna
         assets=assets,
         bundle_revision=bundle_revision,
     )
+
+
+def resolve_ui_customization_snapshot(
+    bundle_dir: str | Path,
+) -> UICustomizationSnapshot | None:
+    """Resolve a CONFIGURED ``UI_TEMPLATES_DIR`` into a snapshot, or ``None``.
+
+    Three states, deliberately kept distinct:
+
+    - **directory missing** → :class:`UICustomizationError`. Pointing the
+      variable at nothing is a configuration error, and no deployment shape
+      produces it by accident: a compose bind mount materializes both ends
+      before the container starts, so this only ever fires on a typo.
+    - **directory present, no ``manifest.json``** → ``None`` plus a caller-side
+      warning. This is an unpopulated mount point — the state every default
+      Docker deployment starts in, because the compose file mounts
+      ``./data/ui_templates`` and sets the variable unconditionally so that
+      dropping a bundle in and restarting is the whole activation procedure.
+      Failing here would make the shipped compose files refuse to boot.
+      Only a genuinely ABSENT path counts: a ``manifest.json`` that exists as
+      a directory, a dangling symlink or any other non-regular file is an
+      anomaly, not an empty mount point, and it raises rather than degrading
+      to the built-in branding.
+    - **``manifest.json`` present** → full validation, unchanged. Fail-fast
+      still owns everything from here on: a partial, corrupt or half-copied
+      bundle refuses startup rather than silently serving LightRAG content to
+      an operator who believes their branding is live.
+
+    Emptiness is deliberately NOT judged by "the directory has no entries":
+    a stray ``.DS_Store`` or ``.gitkeep`` — which macOS and git produce
+    unbidden in exactly this directory — would then flip a working deployment
+    into a boot loop. The manifest is the bundle's own entry point, so its
+    absence is the honest test for "nothing to load yet".
+    """
+    root = Path(bundle_dir)
+    if not root.is_dir():
+        raise _fail(f"directory {str(root)!r} does not exist or is not a directory")
+    manifest_path = root / BUNDLE_MANIFEST_NAME
+    if not manifest_path.is_file():
+        # exists() follows symlinks, so a dangling one needs is_symlink() to be
+        # told apart from nothing being there at all.
+        if manifest_path.exists() or manifest_path.is_symlink():
+            raise _fail(
+                f"{BUNDLE_MANIFEST_NAME} exists but is not a readable regular "
+                "file (a directory, a broken symlink or similar)"
+            )
+        return None
+    return load_ui_customization_snapshot(root)

@@ -67,6 +67,7 @@ DEFAULT_RUNTIME_TARGET="host"
 COMPOSE_LIGHTRAG_WORKING_DIR="/app/data/rag_storage"
 COMPOSE_LIGHTRAG_INPUT_DIR="/app/data/inputs"
 COMPOSE_LIGHTRAG_PROMPT_DIR="/app/data/prompts"
+COMPOSE_LIGHTRAG_UI_TEMPLATES_DIR="/app/data/ui_templates"
 # shellcheck disable=SC2034
 COLOR_RESET=""
 COLOR_BOLD=""
