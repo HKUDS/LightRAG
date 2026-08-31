@@ -445,7 +445,8 @@
       "error": "Lỗi: Không thể nhận phản hồi",
       "queryModeError": "Chỉ hỗ trợ các chế độ truy vấn sau: {{modes}}",
       "queryModePrefixInvalid": "Tiền tố chế độ truy vấn không hợp lệ. Dùng: /<mode> [khoảng trắng] truy vấn của bạn",
-      "queryTooShort": "Truy vấn quá ngắn. Hãy nhập ít nhất 3 ký tự tiếng Anh hoặc tổ hợp tương đương; mỗi ký tự tiếng Trung được tính là 2."
+      "queryTooShort": "Truy vấn quá ngắn. Hãy nhập ít nhất 3 ký tự tiếng Anh hoặc tổ hợp tương đương; mỗi ký tự tiếng Trung được tính là 2.",
+      "dismissError": "Đóng thông báo lỗi"
     },
     "querySettings": {
       "parametersTitle": "Tham Số",
