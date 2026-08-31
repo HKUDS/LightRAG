@@ -444,7 +444,9 @@
       "placeholder": "Tapez votre requête (Préfixe de requête : /<Query Mode>)",
       "error": "Erreur : Échec de l'obtention de la réponse",
       "queryModeError": "Seuls les modes de requête suivants sont pris en charge : {{modes}}",
-      "queryModePrefixInvalid": "Préfixe de mode de requête invalide. Utilisez : /<mode> [espace] votre requête"
+      "queryModePrefixInvalid": "Préfixe de mode de requête invalide. Utilisez : /<mode> [espace] votre requête",
+      "queryTooShort": "Votre requête est trop courte. Saisissez au moins 3 caractères anglais ou une combinaison équivalente ; chaque caractère chinois compte pour 2.",
+      "dismissError": "Fermer le message d’erreur"
     },
     "querySettings": {
       "parametersTitle": "Paramètres",

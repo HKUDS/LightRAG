@@ -7,13 +7,14 @@ import { useQuerySession } from '@/features/retrieval/useQuerySession'
 import WorkspaceEmptyState from './WorkspaceEmptyState'
 import type { QuerySettings } from '@/stores/querySettings'
 import { isApiKeyFailure, runCredentialProbe } from './credentialProbe'
+import { useTranslation } from 'react-i18next'
+import { prepareQueryInput, SUPPORTED_QUERY_MODES } from '@/features/retrieval/queryInput'
 
 /**
  * The workspace (query-user) page. Composes the SAME shared query session,
  * message list and composer as the admin `RetrievalView`, with these
  * page-level differences (and only these):
- * - no QuerySettings sidebar and no `/mode` prefix parsing: a question
- *   starting with '/' is submitted as plain text;
+ * - no QuerySettings sidebar; `/mode` prefix parsing matches `/webui`;
  * - the settings snapshot inherits the browser-shared `querySettings` saved
  *   by /webui, read-only, EXCEPT `only_need_context`/`only_need_prompt`
  *   which are clamped to false HERE, at the composition layer (they are
@@ -26,6 +27,8 @@ import { isApiKeyFailure, runCredentialProbe } from './credentialProbe'
  *   startup probe succeeded, and this entry exposes no other way in.
  */
 export default function WorkspaceQueryView() {
+  const { t } = useTranslation()
+
   const getQuerySettingsSnapshot = useCallback((): QuerySettings => {
     const settings = useQuerySettingsStore.getState().querySettings
     return {
@@ -48,17 +51,25 @@ export default function WorkspaceQueryView() {
     // admin prompt-history from this entry (that would write settings-storage).
   })
 
-  // No prefix parsing: submit the input verbatim as the question.
   const handleSend = useCallback(
     (input: string): string | null => {
-      void session.submitQuery(input)
+      const prepared = prepareQueryInput(input, getQuerySettingsSnapshot().mode)
+      if (!prepared.ok) {
+        return t(`retrievePanel.retrieval.${prepared.error}`, {
+          modes: SUPPORTED_QUERY_MODES.join(', ')
+        })
+      }
+      void session.submitQuery(prepared.query, {
+        modeOverride: prepared.modeOverride,
+        displayedInput: input
+      })
       return null
     },
-    [session]
+    [getQuerySettingsSnapshot, session, t]
   )
 
   return (
-    <div className="flex size-full flex-col gap-2 overflow-hidden px-2 pb-2 pt-2 md:gap-4 md:px-4 md:pb-4">
+    <div className="flex size-full flex-col gap-2 overflow-hidden px-2 pt-2 pb-2 md:gap-4 md:px-4 md:pb-4">
       <MessageList
         messages={session.messages}
         isLoading={session.isLoading}
