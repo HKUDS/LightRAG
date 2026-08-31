@@ -59,8 +59,10 @@ export default function RetrievalView() {
     [getQuerySettingsSnapshot, session, t]
   )
 
+  // Match DocumentManager's 24px content padding plus its 8px inner-card
+  // margin. The resulting 32px clearance also stays above StatusIndicator.
   return (
-    <div className="flex size-full gap-2 overflow-hidden px-2 pb-12">
+    <div className="flex size-full gap-2 overflow-hidden px-2 pb-8">
       <div className="flex grow flex-col gap-4">
         <MessageList
           messages={session.messages}
