@@ -16,6 +16,7 @@ LightRAG 支持用**你自己的**欢迎页、登录页文案、用户协议、�
 | **查询空白页** | `/workspace` 查询页，对话为空时（点击 *Clear* 后会再次出现） | `query_empty`（必填） |
 | **登录页文案** | 用户名/密码表单上方，**两个入口都生效**（`/webui/#/login` 与 `/workspace/#/login`） | `login`（可选） |
 | **用户协议 + 同意勾选框** | 登录页上的勾选框，其链接以弹窗打开协议文档；未勾选时前端登录按钮保持禁用——这是前端提示，不是服务端强制（见 [§6](#6-登录同意门禁)） | `agreements`（可选，与 `login` 成对生效） |
+| **同意勾选框的链接文字** | 勾选框中被链接的那几个字——「同意……」 | `consent_documents`（可选；缺省时回退到前端通用的「隐私政策协议」） |
 | **品牌 Logo** | 欢迎页、查询空白页与登录页 | `brand.logo`、locale 级 `logo`、`logo_alt` |
 
 Bundle **不能**设置的内容：
@@ -62,31 +63,24 @@ INFO: UI customization bundle active: bundle_revision=1f0c… locales=['en', 'zh
 
 ### 2.2 Docker Compose 部署
 
-仓库自带的 compose 文件已经以只读方式挂载了模板目录：
+仓库自带的 compose 文件已经以只读方式挂载了模板目录，**并且**把 `UI_TEMPLATES_DIR` 指向了它：
 
 ```yaml
     volumes:
       - ./data/ui_templates:/app/data/ui_templates:ro
+    environment:
+      UI_TEMPLATES_DIR: "/app/data/ui_templates"
 ```
 
-因此只需：
+因此写入模板包就是全部步骤，不需要再改 compose 文件：
 
 ```bash
 mkdir -p ./data/ui_templates
 cp -r docs/ui_templates_example/* ./data/ui_templates/
-```
-
-然后在 `lightrag` 服务的 `environment:` 块中取消注释这一行：
-
-```yaml
-      UI_TEMPLATES_DIR: "/app/data/ui_templates"
-```
-
-重启：
-
-```bash
 docker compose up -d --force-recreate lightrag
 ```
+
+在你写入之前，该目录里没有 `manifest.json`，服务器照常提供内置品牌内容，并在启动时记录一行提示。默认部署的行为没有任何变化。
 
 完整说明（含向导生成的 `docker-compose.final.yml` 与 Kubernetes）见 [§7 部署](#7-部署)。
 
@@ -134,6 +128,7 @@ ui_templates/
       "query_empty": "locales/zh/query_empty.md",
       "login": "locales/zh/login.md",
       "agreements": "locales/zh/agreements.md",
+      "consent_documents": "《用户隐私协议》和《模型服务协议》",
       "logo_alt": "示例公司"
     },
     "en": {
@@ -141,6 +136,7 @@ ui_templates/
       "query_empty": "locales/en/query_empty.md",
       "login": "locales/en/login.md",
       "agreements": "locales/en/agreements.md",
+      "consent_documents": "Privacy Policy and Model Service Agreement",
       "logo_alt": "Example Corp"
     }
   }
@@ -172,8 +168,9 @@ ui_templates/
 | `logo` | 否 | string \| `null` | 覆盖本 locale 的 `brand.logo`（`null` = 本 locale 不显示 Logo）。key **不存在**时继承 `brand.logo`。 |
 | `login` | 否 | string \| `null` | 登录页文案的路径。 |
 | `agreements` | 否 | string \| `null` | 单份用户协议文档的路径。 |
+| `consent_documents` | 否 | string \| `null` | **是文本，不是路径**：同意勾选框如何称呼它所链接的这份文档，用该 locale 的语言书写。声明了却为空会导致启动失败；缺省或为 `null` 时使用前端自带的翻译。 |
 
-`login` 与 `agreements` 同时声明才会开启登录同意门禁——见 [§6](#6-登录同意门禁)。
+`login` 与 `agreements` 同时声明才会开启登录同意门禁——见 [§6](#6-登录同意门禁)。`consent_documents` 只负责给这个门禁**命名**，本身不会开启门禁。
 
 ### 4.3 locale key 的写法
 
@@ -268,7 +265,7 @@ WARNING: UI customization: the WebUI ships no interface translation for ['nl'] �
 当某个 locale **同时**声明了 `login` 和 `agreements` 时，该 locale 的登录页会显示：
 
 - 表单上方你的 `login` Markdown 文案；
-- 一个勾选框，中文界面下文案为「同意《用户隐私协议》和《模型服务协议》」，其中唯一的链接会以弹窗打开你的 `agreements` 文档。
+- 一个勾选框，中文界面下文案为「同意……」，其中唯一的链接——名称来自 `consent_documents`，未声明时来自前端自身的翻译——会以弹窗打开你的 `agreements` 文档。
 
 未勾选时**登录**按钮保持禁用，在表单中按回车同样会被拒绝。
 
@@ -278,9 +275,11 @@ WARNING: UI customization: the WebUI ships no interface translation for ['nl'] �
 
 ### 6.1 一份文档，而不是两份
 
-勾选框只承载**一个**链接。请把隐私协议和模型服务协议写进同一个 `agreements.md`，用标题分隔：
+勾选框只承载**一个**链接，因此访问者需要同意的全部内容都写进同一个 `agreements.md`，用标题分隔：
 
 ```markdown
+# 用户隐私协议与模型服务协议
+
 ## 用户隐私协议
 
 …
@@ -290,13 +289,42 @@ WARNING: UI customization: the WebUI ships no interface translation for ['nl'] �
 …
 ```
 
-勾选框的文案本身不可定制——它来自前端自身的翻译，因此在每种界面语言下都已经是自然的表达。请让你文档中的标题与该文案保持一致。
+> **合并的文档必须自己署名。** 前端的兜底链接文字是通用的「隐私政策协议」。只要你的文件除了隐私政策还包含别的内容——模型服务协议、服务条款、可接受使用政策等——这个兜底就低估了访问者正在勾选的范围，请用 `consent_documents` 填上它真实的名称。
+>
+> 这也包括该字段出现之前写好的 bundle：它们照常加载，但勾选框现在显示的是「隐私政策协议」。**如果你的 `agreements.md` 合并了多份文档，请在升级时补上 `consent_documents`。**
+
+#### 给链接命名
+
+`consent_documents` 就是勾选框中被做成链接的那段文字——填写你的部署对这份文档的真实称呼即可：
+
+```jsonc
+"consent_documents": "《示例公司服务条款》"
+```
+
+链接外围的那句话（「同意……」）仍然来自前端自身的翻译，因此在每种界面语言下都是自然的表达；可定制的只是文档的名称。不写这个字段时，链接的名称也由该翻译提供——即通用的「隐私政策协议」（中文为 `《隐私政策协议》`）：它只适合"确实就是一份隐私政策"的文件，其它情况都会低估实际范围（见上面的提示）。
+
+#### 弹窗会显示什么
+
+弹窗会**原样**渲染 `agreements.md`，不会在其上方再打印一行标题。因此请给这个文件写上它自己的标题：该标题就是屏幕上这份文档的标题。
+
+```markdown
+# 用户隐私协议与模型服务协议
+
+## 用户隐私协议
+
+…
+```
+
+代码不会去读这份文档——弹窗只负责*渲染*它。读屏软件朗读的弹窗名称，取自勾选框自己的链接文字（`consent_documents`，未声明时为前端的兜底值），那也正是访问者刚刚勾选的东西。**这个名称与文件标题是否一致、与文件实际内容是否相符，由你自己维护。**
+
+标题、段落、列表、表格、引用块、代码块、分隔线和链接都会以标准的文档排版渲染。Markdown 中的原始 HTML 会被丢弃——与其它所有 bundle 模板一致，见 [§10](#10-内容撰写规则)。
 
 ### 6.2 需要知道的规则
 
 - **要么都写，要么都不写。** 只写 `login` 会得到一个有品牌文案但没有门禁的登录页；只写 `agreements` 则是一份没有任何入口链接的文档。两者都不会开启门禁——半份配置就按半份配置处理，不会被当作已获得同意。
 - **按 locale 生效。** 解析到的 locale 若两个字段都没声明，访问者就看不到勾选框。请为每个需要门禁的 locale 都声明这一对字段，或者用 `fallbacks` 把未覆盖的 locale 导向已声明的 locale。
-- **声明了但内容为空的文件会导致启动失败。** 门禁绝不能指向一份空白文档。
+- **声明了但内容为空的文件会导致启动失败。** 门禁绝不能指向一份空白文档。`consent_documents` 为空白字符串同样会失败。
+- **链接文字可选，文档不可选。** 单独写 `consent_documents` 永远不会开启门禁；某个 locale 只声明了 `login` + `agreements` 而没写它，勾选框照常工作，只是名称来自前端翻译。
 - **勾选状态不会被记住。** 它只存活于登录页本身，并且绑定到屏幕上那份文档的确切文本，因此每次访问都需要重新勾选。中途切换界面语言会替换文档并清除勾选，除非新 locale 的文本逐字节相同。
 - **仅作用于 WebUI，不覆盖 API。** 同上：`POST /login` 没有同意相关字段，因此该门禁只约束前端登录表单，此外别无约束。
 - **仅覆盖账号密码登录。** 未配置认证（`AUTH_ACCOUNTS` 未设置）的部署会以 guest 身份直接放行，不受门禁约束。这是刻意设计而非缺口：没有认证就没有可被约束的用户身份，而免认证本就是开发/演示形态。**若必须要求接受协议，请配置 `AUTH_ACCOUNTS`**（并配置 `TOKEN_SECRET`）。
@@ -319,7 +347,7 @@ WARNING: UI customization: the WebUI ships no interface translation for ['nl'] �
 
 ### 7.2 Docker Compose
 
-`docker-compose.yml` 和 `docker-compose-full.yml` 都已内置该挂载，并附带一行注释掉的启用配置：
+`docker-compose.yml` 和 `docker-compose-full.yml` 都已内置这两半配置：
 
 ```yaml
 services:
@@ -327,18 +355,23 @@ services:
     volumes:
       - ./data/ui_templates:/app/data/ui_templates:ro
     environment:
-      # UI_TEMPLATES_DIR: "/app/data/ui_templates"
+      UI_TEMPLATES_DIR: "/app/data/ui_templates"
 ```
 
-挂载本身是惰性的：只要 `UI_TEMPLATES_DIR` 未设置，`./data/ui_templates` 不存在或为空都不会有任何影响。取消注释那一行环境变量，是启用该功能的唯一步骤。
+**在你写入模板包之前，两者都是惰性的。** 已配置但不含 `manifest.json` 的目录被视为「尚未填充的挂载点」，而不是「损坏的模板包」：服务器记录一条写明该目录的警告，继续提供内置品牌内容。因此默认部署可以正常启动，而启用该功能的全部步骤就是把模板包放进 `./data/ui_templates` 再重启——永远不需要改 compose。
 
-两点实务提示：
+这种宽容止步于 manifest：一旦 `manifest.json` 存在，模板包就会被完整校验，任何问题都会导致拒绝启动（见 [§9](#9-故障排查)）——复制到一半的模板包绝不会被悄悄降级成 LightRAG 内容。
+
+三点实务提示：
 
 - **首次 `up` 之前先创建该目录。** 如果交给 Docker 自动创建，目录属主会是 `root`，之后往里复制文件需要 `sudo`。
+- **挂载落错位置现在表现为「品牌内容没变」，而不是启动失败**——这是「开箱即可启动」的代价。区分它与「我还没写模板包」的手段是启动警告和 `/ui/customization` 的 `"customized": false`，两者都会写明服务器实际读到的路径。
 - `:ro` 是刻意的——服务器只读取模板包，从不写入。
-- **Podman**：`docker-compose.podman.yml` 里连挂载本身也是注释掉的。Podman 对「宿主机源不存在」的绑定挂载比 Docker 更严格，无条件挂载会把一个默认关闭的功能变成所有人的启动前置条件。在那里请先 `mkdir -p ./data/ui_templates`，再同时取消注释挂载和 `UI_TEMPLATES_DIR`。
+- **Podman**：`docker-compose.podman.yml` 里挂载和 `UI_TEMPLATES_DIR` 都仍是注释掉的。Podman 对「宿主机源不存在」的绑定挂载比 Docker 更严格，无条件挂载会把该功能变成所有人的启动前置条件。在那里请先 `mkdir -p ./data/ui_templates`，再同时取消注释两者。
 
-在 `.env` 里设置 `UI_TEMPLATES_DIR` 同样有效（该文件会被挂载进容器），但更适合放在 compose 的 `environment:` 块中：这个值是*容器内*路径，把容器路径挡在 `.env` 之外，才能让同一份 `.env` 在源码运行时依然可用。另外请注意：compose 的 `environment:` 条目优先级高于 `.env` 中的同名 key。
+**这一条刻意压过 `.env`。** compose 的 `environment:` 条目优先级高于挂载进容器的 `.env` 中的同名 key，`UI_TEMPLATES_DIR` 正是要利用这一点——与 `WORKING_DIR`、`INPUT_DIR`、`PROMPT_DIR` 完全一致。这个值是*容器内*路径，把它挡在 `.env` 之外，才能让同一份 `.env`（里面写的是 `./lightrag_webui/ui_templates` 这类宿主机路径）同时服务源码运行与本部署。因此在 `.env` 里设置 `UI_TEMPLATES_DIR` 只影响源码运行，容器使用的是 compose 中的值。
+
+若要让容器指向别处的模板包，请改 compose 中的这一条（向导会保留它，见 [§7.3](#73-向导生成的-compose-文件)），或改挂载的宿主机一侧。
 
 ### 7.3 向导生成的 compose 文件
 
@@ -349,7 +382,15 @@ make env-server        # 或任意其他 make env-* 目标
 grep ui_templates docker-compose.final.yml
 ```
 
-向导**不会**替你写入 `UI_TEMPLATES_DIR`——请自行把它加到 `docker-compose.final.yml` 中 `lightrag` 服务的 `environment:` 块里。向导在重新生成时会保留该服务中用户新增的环境变量和绑定挂载。
+向导同时会把 `UI_TEMPLATES_DIR: "/app/data/ui_templates"` 作为**种子值**写入 `lightrag` 服务的 `environment:` 块，因此向导生成的部署与仓库自带的 compose 文件行为完全一致：在 `./data/ui_templates` 出现模板包之前保持惰性。
+
+**只播种、不接管——向导绝不改动你填写的值。** `WORKING_DIR` / `INPUT_DIR` / `PROMPT_DIR` 每次运行都会被重写，手工改动不会保留；`UI_TEMPLATES_DIR` 只在 compose 文件尚未声明该键时才写入：
+
+- 你在 `docker-compose.final.yml` 中手工修改的值会在每次重新生成后原样保留——包括 `UI_TEMPLATES_DIR: ""`（部署用它关闭该功能）以及 list 风格下的 `- UI_TEMPLATES_DIR`。
+- 若要从其它宿主机目录提供模板包，完全不需要改环境变量：改挂载的*宿主机*一侧即可（`./my-branding:/app/data/ui_templates:ro`）。
+- 种子值同样压过 `.env`，这正是让 `.env` 中的宿主机路径 `UI_TEMPLATES_DIR` 仍可用于源码运行的前提（见 [§7.2](#72-docker-compose)）。
+
+用户新增的绑定挂载和其它用户新增的环境变量，与之前一样在重新生成时被保留。
 
 ### 7.4 Kubernetes
 
@@ -419,12 +460,15 @@ kubectl create configmap lightrag-ui-templates \
 
 ## 8. 验证部署结果
 
-**启动日志。** 以下两行必有其一：
+**启动日志。** 以下三行必有其一：
 
 ```
-INFO: UI customization: no bundle configured (UI_TEMPLATES_DIR unset)
-INFO: UI customization bundle active: bundle_revision=<sha256> locales=['en', 'zh']
+INFO:    UI customization: no bundle configured (UI_TEMPLATES_DIR unset)
+WARNING: UI customization: UI_TEMPLATES_DIR=/app/data/ui_templates holds no manifest.json — serving the built-in LightRAG branding. …
+INFO:    UI customization bundle active: bundle_revision=<sha256> locales=['en', 'zh']
 ```
+
+中间那一行就是 Docker 默认状态：变量由自带的 compose 文件设置，而挂载的目录还是空的。它被记为 WARNING 而非 INFO，是因为「挂载指向了错误的宿主机目录」也会落到同一状态——日志中写明了服务器实际读取的目录，供你区分这两种情况。
 
 `bundle_revision` 是对所有被引用文件计算出的哈希。如果你改了文件后它没有变化，说明服务器读取的目录并非你以为的那个——或者根本没有真正重启。
 
@@ -451,15 +495,17 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
   "query_empty": { "format": "markdown", "content": "…" },
   "login": { "format": "markdown", "content": "…" },
   "agreements": { "format": "markdown", "content": "…" },
+  "consent_documents": "《用户隐私协议》和《模型服务协议》",
   "consent_required": true
 }
 ```
 
 几个有用的判断点：
 
-- `"customized": false` → 当前没有激活任何模板包（`UI_TEMPLATES_DIR` 未设置或为空），前端显示的是 LightRAG 内置品牌内容。
+- `"customized": false` → 当前没有激活任何模板包（`UI_TEMPLATES_DIR` 未设置，或指向的目录中没有 `manifest.json`），前端显示的是 LightRAG 内置品牌内容。
 - `"fallback_used": true` → 请求的 locale 未被声明，`locale` 字段告诉你最终落到了哪里。
 - `"consent_required"` → 该 locale 下是否会出现同意勾选框。
+- `"consent_documents": null` → 该 locale 未声明链接文字，前端将用自身的翻译来命名这个链接。
 - `logo_url: null` → 该 locale 解析结果是*不显示* Logo（某处显式写了 `null`），而不是回退到 LightRAG 的 Logo。
 
 **浏览器。** 访问 `/workspace` 查看欢迎页，访问 `/workspace/#/login` 或 `/webui/#/login` 查看登录页，并在设置菜单中切换界面语言逐一检查各个 locale。
@@ -468,12 +514,13 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
 
 ## 9. 故障排查
 
-只要设置了 `UI_TEMPLATES_DIR`，模板包中任何一处非法都会让服务器**拒绝启动**，错误信息以 `UI_TEMPLATES_DIR bundle invalid:` 开头。这是刻意设计：悄悄回退到 LightRAG 内容会让你误以为客户品牌已经生效，而实际上并没有。
+只要配置的目录中存在 `manifest.json`，模板包中任何一处非法都会让服务器**拒绝启动**，错误信息以 `UI_TEMPLATES_DIR bundle invalid:` 开头。这是刻意设计：悄悄回退到 LightRAG 内容会让你误以为客户品牌已经生效，而实际上并没有。
+
+唯一的例外是「配置的目录中没有 `manifest.json`」——也就是每个默认 Docker 部署启动时所处的未填充状态。它不会导致启动失败，见下方第二张表。
 
 | 错误信息（节选） | 原因 / 处理 |
 |---|---|
 | `directory '…' does not exist or is not a directory` | 路径错误，或容器挂载缺失。进容器确认：`docker compose exec lightrag ls /app/data/ui_templates`。 |
-| `manifest.json is missing` | `manifest.json` 必须直接位于模板包根目录，而不是下一层。常见原因是复制了父目录。 |
 | `manifest.json is not valid JSON` | 多余的逗号或注释。JSON 两者都不允许。 |
 | `unknown field(s) [...]` | 字段名拼写错误；schema 是封闭的，属于有意设计。 |
 | `missing required field(s) [...]` | 补上该字段。注意 `brand.logo` 是必填的——不显示 Logo 请显式写 `null`。 |
@@ -490,13 +537,17 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
 | `logo '…': content is not PNG, JPEG, WebP or SVG` | 文件字节不匹配任何受支持格式——例如后缀是 `.svg` 实际却是 HTML，或 SVG 缺少根元素/根元素带命名空间前缀。 |
 | `locales.xx.login: template file is empty` | `login` / `agreements` 是「声明与否」的开关，声明了却为空会被拒绝。`welcome` / `query_empty` 允许为空。 |
 | `locales.xx.logo_alt must be a non-empty string` | 为每个 locale 提供真实的替代文本。 |
+| `locales.xx.consent_documents must be a non-empty string or null` | 它是文本而不是路径——空白的标签会让勾选框什么都没指名。删除该 key 即可回退到前端翻译。 |
 
 以下现象**不会**导致启动失败：
 
 | 现象 | 原因 |
 |---|---|
-| 服务器正常启动，但页面仍是 LightRAG 品牌内容 | `UI_TEMPLATES_DIR` 未设置或为空——检查启动日志和 `/ui/customization`。Docker 下请注意 compose 的 `environment:` 会覆盖 `.env`。 |
+| 服务器正常启动，但页面仍是 LightRAG 品牌内容 | `UI_TEMPLATES_DIR` 未设置——检查启动日志和 `/ui/customization`。Docker 下请注意 compose 的 `environment:` 会覆盖 `.env`。 |
+| 启动日志出现 `holds no manifest.json`，品牌内容没有变化 | 配置的目录存在，但里面没有模板包。要么你还没写，要么服务器读到的目录不是你填充的那个——警告中写明了它实际读取的路径。`manifest.json` 必须直接位于模板包根目录，而不是下一层（常见原因是复制了父目录）。进容器确认：`docker compose exec lightrag ls /app/data/ui_templates`。 |
 | 修改后不生效 | 没有热加载。请重启服务器（所有 worker）。 |
+| 勾选框显示「隐私政策协议」，但文档内容不止于此 | 这是该 locale 未声明 `consent_documents` 时的前端兜底。请自己给文档命名（见 [§6.1](#61-一份文档而不是两份)）——该字段出现之前写好的 bundle 在升级后会遇到这种情况。 |
+| 协议弹窗没有标题 | `agreements.md` 开头没有标题行。弹窗是原样渲染该文件的——请给它加上一行 `# 标题`（见 [§6.1](#61-一份文档而不是两份)）。 |
 | 看不到同意勾选框 | 解析到的 locale 只声明了 `login` / `agreements` 之一；或未配置认证（`AUTH_ACCOUNTS` 未设置）；或访问者解析到的 locale 与你预期的不同——检查接口返回中的 `locale` 与 `consent_required`。 |
 | 内容是你的语言，按钮却不是 | 该 locale 不在前端界面语言集合内——见 [§5.3](#53-界面语言与-bundle-语言) 及启动警告。 |
 | Logo 不显示 | 该 locale（或 `brand`）解析结果为 `null`；或浏览器加载资源 URL 失败——直接请求 `logo_url` 查看状态码。 |
@@ -508,7 +559,7 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
 - **Markdown 并支持 GFM**（表格、删除线、任务列表）。链接和图片正常可用，链接会在新标签页打开。
 - **原始 HTML 会被丢弃。** 这是格式边界而非不信任：定制内容这一层根本不开放 HTML 通道。请用 Markdown 表达排版。
 - **方向不由你设置。** 不要写 `dir` 属性或 CSS——见 [§5.2](#52-文字方向rtl)。
-- **保持简短。** 欢迎页文案在手机上位于首屏；查询空白页只是 Logo 下方居中的一段话。
+- **保持简短。** 欢迎页文案在手机上位于首屏；查询空白页只是 Logo 下方居中的一段话。用户协议文档是例外——它在自己的弹窗里以可滚动的文档形式渲染，由它自身的标题层级来组织结构（见 [§6.1](#61-一份文档而不是两份)）。
 
 ---
 

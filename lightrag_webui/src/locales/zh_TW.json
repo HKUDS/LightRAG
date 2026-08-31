@@ -35,7 +35,7 @@
     "authDisabled": "認證已停用，使用免登入模式",
     "guestMode": "免登入",
     "consentLabel": "同意{{documents}}",
-    "consentDocuments": "《使用者隱私協議》和《模型服務協議》",
+    "consentDocuments": "《隱私政策協議》",
     "errorConsentRequired": "請先閱讀並同意相關協議後再登入"
   },
   "common": {

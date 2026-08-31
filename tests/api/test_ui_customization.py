@@ -30,6 +30,7 @@ from lightrag.api.ui_customization import (
     locale_direction,
     locales_without_chrome_translation,
     normalize_locale,
+    resolve_ui_customization_snapshot,
 )
 
 PLACEHOLDER = "<!-- __LIGHTRAG_RUNTIME_CONFIG__ -->"
@@ -120,11 +121,20 @@ def make_bundle(root, manifest=None, *, extra_files=None):
     return bundle
 
 
-def add_login_consent(bundle, *, locale="zh", login="# 登录说明", agreements="# 协议"):
+def add_login_consent(
+    bundle,
+    *,
+    locale="zh",
+    login="# 登录说明",
+    agreements="# 协议",
+    consent_documents=None,
+):
     """Declare the login-page blurb and/or the merged agreement document.
 
     `None` for either leaves the field UNDECLARED (the manifest key is not
     written at all), which is how the half-configured cases are staged.
+    `consent_documents` is an INLINE string (the checkbox's link label), not
+    a path, and is likewise only written when given.
     """
     manifest = json.loads((bundle / "manifest.json").read_text("utf-8"))
     for field_name, text in (("login", login), ("agreements", agreements)):
@@ -136,6 +146,8 @@ def add_login_consent(bundle, *, locale="zh", login="# 登录说明", agreements
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, "utf-8")
         manifest["locales"][locale][field_name] = rel
+    if consent_documents is not None:
+        manifest["locales"][locale]["consent_documents"] = consent_documents
     (bundle / "manifest.json").write_text(json.dumps(manifest), "utf-8")
     return bundle
 
@@ -598,6 +610,78 @@ class TestLoginConsentBundle:
         with pytest.raises(UICustomizationError, match="path string or null"):
             load_ui_customization_snapshot(bundle)
 
+
+class TestConsentDocumentsName:
+    """`consent_documents`: how the checkbox NAMES its link.
+
+    An inline string, not a path — the label is one line of text, and a file
+    per language per deployment would be ceremony for it. It names the
+    document the bundle already ships, so it lives beside it in the manifest
+    rather than in the WebUI's translations, which cannot know that a
+    deployment calls its document "Terms of Service".
+    """
+
+    def test_undeclared_by_default(self, tmp_path):
+        snapshot = load_ui_customization_snapshot(make_bundle(tmp_path))
+        assert snapshot.locales["zh"].consent_documents is None
+
+    def test_declared_value_is_carried(self, tmp_path):
+        bundle = add_login_consent(
+            make_bundle(tmp_path), consent_documents="《示例公司服务条款》"
+        )
+        snapshot = load_ui_customization_snapshot(bundle)
+        assert snapshot.locales["zh"].consent_documents == "《示例公司服务条款》"
+        # Per locale, like every other content field.
+        assert snapshot.locales["en"].consent_documents is None
+
+    def test_explicit_null_is_undeclared(self, tmp_path):
+        bundle = add_login_consent(make_bundle(tmp_path), consent_documents=None)
+        manifest = json.loads((bundle / "manifest.json").read_text("utf-8"))
+        manifest["locales"]["zh"]["consent_documents"] = None
+        (bundle / "manifest.json").write_text(json.dumps(manifest), "utf-8")
+        snapshot = load_ui_customization_snapshot(bundle)
+        assert snapshot.locales["zh"].consent_documents is None
+        # The gate is unaffected: the NAME is optional, the documents are not.
+        assert snapshot.locales["zh"].consent_required is True
+
+    def test_it_does_not_switch_the_gate_on(self, tmp_path):
+        """A name without documents is still nothing to agree to.
+
+        `consent_required` stays the login+agreements pair's decision alone,
+        so a stray label can never put a login-blocking checkbox in front of
+        a document that does not exist.
+        """
+        bundle = add_login_consent(
+            make_bundle(tmp_path),
+            login=None,
+            agreements=None,
+            consent_documents="《服务条款》",
+        )
+        snapshot = load_ui_customization_snapshot(bundle)
+        assert snapshot.locales["zh"].consent_documents == "《服务条款》"
+        assert snapshot.locales["zh"].consent_required is False
+
+    @pytest.mark.parametrize("bad", ["", "   \n", 42, [], {"a": 1}, True])
+    def test_blank_or_non_string_is_rejected(self, tmp_path, bad):
+        bundle = make_bundle(tmp_path)
+        manifest = json.loads((bundle / "manifest.json").read_text("utf-8"))
+        manifest["locales"]["zh"]["consent_documents"] = bad
+        (bundle / "manifest.json").write_text(json.dumps(manifest), "utf-8")
+        with pytest.raises(
+            UICustomizationError, match="consent_documents must be a non-empty string"
+        ):
+            load_ui_customization_snapshot(bundle)
+
+    def test_it_participates_in_the_revision(self, tmp_path):
+        """It lives in manifest.json, which the revision already hashes."""
+        first = load_ui_customization_snapshot(
+            add_login_consent(make_bundle(tmp_path), consent_documents="A")
+        ).bundle_revision
+        second = load_ui_customization_snapshot(
+            add_login_consent(make_bundle(tmp_path), consent_documents="B")
+        ).bundle_revision
+        assert first != second
+
     def test_consent_templates_participate_in_the_revision(self, tmp_path):
         """Editing the agreement text must invalidate the bundle revision."""
         bundle = add_login_consent(make_bundle(tmp_path))
@@ -756,6 +840,7 @@ class TestCustomizationEndpointWithBundle:
         )
         assert data["login"] is None
         assert data["agreements"] is None
+        assert data["consent_documents"] is None
         assert data["consent_required"] is False
 
     def test_login_consent_served(self, tmp_path, monkeypatch):
@@ -764,6 +849,25 @@ class TestCustomizationEndpointWithBundle:
         assert data["login"] == {"format": "markdown", "content": "# 登录说明"}
         assert data["agreements"] == {"format": "markdown", "content": "# 协议"}
         assert data["consent_required"] is True
+        # Declared by no locale in this bundle: the WebUI's own translation
+        # names the link, which is why null travels rather than a server-side
+        # default the frontend would have to recognize as one.
+        assert data["consent_documents"] is None
+
+    def test_consent_documents_served(self, tmp_path, monkeypatch):
+        bundle = add_login_consent(
+            make_bundle(tmp_path), consent_documents="《示例公司服务条款》"
+        )
+        monkeypatch.setenv("UI_TEMPLATES_DIR", str(bundle))
+        _stage_frontend(tmp_path, workspace=True)
+        client = TestClient(_build_app(tmp_path, monkeypatch))
+        data = client.get("/ui/customization?locale=zh").json()
+        assert data["consent_documents"] == "《示例公司服务条款》"
+        # The locale that declares none says so, in the same response shape.
+        assert (
+            client.get("/ui/customization?locale=en").json()["consent_documents"]
+            is None
+        )
 
     def test_consent_follows_the_resolved_locale(self, tmp_path, monkeypatch):
         """The gate is a property of the locale actually served.
@@ -1148,3 +1252,152 @@ class TestLogoUrlAltCoupling:
         data = TestClient(self._app(snapshot)).get("/ui/customization").json()
         assert data["brand"]["logo_url"] is None
         assert data["brand"]["logo_alt"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Unpopulated bundle directory
+# --------------------------------------------------------------------------- #
+class TestUnpopulatedBundleDirectory:
+    """A configured directory holding no manifest.json is "not populated yet",
+    not "broken".
+
+    The shipped compose files mount ./data/ui_templates and set
+    UI_TEMPLATES_DIR unconditionally, so the directory a default deployment
+    boots with is one Docker created empty. Treating that as a bundle error
+    would make `docker compose up` fail out of the box; treating a directory
+    that DOES hold a manifest leniently would give up the fail-fast guarantee
+    that a half-written bundle never silently serves LightRAG content.
+    """
+
+    def test_empty_directory_resolves_to_no_bundle(self, tmp_path):
+        empty = tmp_path / "ui_templates"
+        empty.mkdir()
+        assert resolve_ui_customization_snapshot(empty) is None
+
+    @pytest.mark.parametrize("stray", [".DS_Store", ".gitkeep", "README.md"])
+    def test_stray_files_do_not_make_it_a_bundle(self, tmp_path, stray):
+        """The probe is the manifest, NOT "the directory has zero entries".
+
+        macOS writes .DS_Store into any directory a user opens in Finder and
+        git needs a .gitkeep to track an otherwise empty one — an entry-count
+        test would turn either into a boot loop.
+        """
+        root = tmp_path / "ui_templates"
+        root.mkdir()
+        (root / stray).write_bytes(b"whatever")
+        assert resolve_ui_customization_snapshot(root) is None
+
+    def test_partial_bundle_without_a_manifest_is_not_a_bundle(self, tmp_path):
+        root = tmp_path / "ui_templates"
+        (root / "locales" / "en").mkdir(parents=True)
+        (root / "locales" / "en" / "welcome.md").write_text("# hi", "utf-8")
+        assert resolve_ui_customization_snapshot(root) is None
+
+    def test_a_manifest_that_is_a_directory_fails(self, tmp_path):
+        """Present-but-unusable is an anomaly, not an empty mount point.
+
+        Degrading to the built-in branding here would drop the fail-fast
+        guarantee the moment an operator has created a manifest entry.
+        """
+        root = tmp_path / "ui_templates"
+        (root / "manifest.json").mkdir(parents=True)
+        with pytest.raises(UICustomizationError, match="not a readable regular"):
+            resolve_ui_customization_snapshot(root)
+
+    def test_a_dangling_manifest_symlink_fails(self, tmp_path):
+        """``exists()`` follows symlinks, so a broken one looks absent to it."""
+        root = tmp_path / "ui_templates"
+        root.mkdir()
+        (root / "manifest.json").symlink_to(root / "nowhere.json")
+        with pytest.raises(UICustomizationError, match="not a readable regular"):
+            resolve_ui_customization_snapshot(root)
+
+    def test_a_manifest_symlink_that_resolves_is_loaded(self, tmp_path):
+        """A resolving symlink is a normal bundle (ConfigMap projections use
+        them), so it must load rather than trip the anomaly branch."""
+        bundle = make_bundle(tmp_path)
+        real = bundle / "manifest.real.json"
+        (bundle / "manifest.json").rename(real)
+        (bundle / "manifest.json").symlink_to(real)
+        assert resolve_ui_customization_snapshot(bundle) is not None
+
+    def test_missing_directory_still_fails(self, tmp_path):
+        """Pointing the variable at nothing stays a configuration error: a
+        bind mount materializes both ends, so only a typo produces it."""
+        with pytest.raises(UICustomizationError, match="does not exist"):
+            resolve_ui_customization_snapshot(tmp_path / "nowhere")
+
+    def test_a_file_instead_of_a_directory_still_fails(self, tmp_path):
+        not_a_dir = tmp_path / "ui_templates"
+        not_a_dir.write_text("", "utf-8")
+        with pytest.raises(UICustomizationError, match="is not a directory"):
+            resolve_ui_customization_snapshot(not_a_dir)
+
+    def test_a_present_manifest_keeps_every_validation(self, tmp_path):
+        """The fail-fast half that must survive: once a manifest exists, the
+        bundle is validated exactly as before."""
+        bundle = make_bundle(tmp_path)
+        (bundle / "manifest.json").write_text("{broken", "utf-8")
+        with pytest.raises(UICustomizationError, match="not valid JSON"):
+            resolve_ui_customization_snapshot(bundle)
+
+        bundle2 = make_bundle(tmp_path / "second")
+        (bundle2 / "locales" / "zh" / "welcome.md").unlink()
+        with pytest.raises(UICustomizationError, match="does not exist"):
+            resolve_ui_customization_snapshot(bundle2)
+
+    def test_loader_contract_is_unchanged(self, tmp_path):
+        """resolve_* owns the tri-state; load_* still validates-or-raises, so
+        a direct caller sees no new None to handle."""
+        empty = tmp_path / "ui_templates"
+        empty.mkdir()
+        with pytest.raises(UICustomizationError, match="manifest.json is missing"):
+            load_ui_customization_snapshot(empty)
+
+    def test_startup_survives_an_unpopulated_mount_and_says_so(
+        self, tmp_path, monkeypatch
+    ):
+        """Fix-proof: with the directory Docker auto-creates, the server used
+        to refuse to start (UICustomizationError → restart loop). It now boots
+        with the built-in branding and names the path it found nothing in."""
+        from lightrag.utils import logger as lightrag_logger
+
+        _stage_frontend(tmp_path)
+        mount_point = tmp_path / "data" / "ui_templates"
+        mount_point.mkdir(parents=True)
+        monkeypatch.setenv("UI_TEMPLATES_DIR", str(mount_point))
+
+        records = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        handler = _Capture(level=logging.WARNING)
+        lightrag_logger.addHandler(handler)
+        try:
+            app = _build_app(tmp_path, monkeypatch)
+        finally:
+            lightrag_logger.removeHandler(handler)
+
+        client = TestClient(app)
+        assert client.get("/ui/customization").json()["customized"] is False
+
+        warnings = [
+            record.getMessage()
+            for record in records
+            if record.levelno >= logging.WARNING
+        ]
+        assert any("no manifest.json" in message for message in warnings)
+        # It names the directory, which is what separates "not written yet"
+        # from "the mount did not land where I thought".
+        assert any(str(mount_point) in message for message in warnings)
+
+    def test_startup_still_refuses_a_broken_bundle(self, tmp_path, monkeypatch):
+        """Stability: the leniency stops at the manifest's edge."""
+        _stage_frontend(tmp_path)
+        bundle = make_bundle(tmp_path)
+        (bundle / "manifest.json").write_text("{broken", "utf-8")
+        monkeypatch.setenv("UI_TEMPLATES_DIR", str(bundle))
+        with pytest.raises(UICustomizationError):
+            _build_app(tmp_path, monkeypatch)

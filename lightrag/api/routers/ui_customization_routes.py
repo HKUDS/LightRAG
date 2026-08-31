@@ -123,6 +123,11 @@ def create_ui_customization_routes(
                 "query_empty": {"format": "markdown", "content": content.query_empty},
                 "login": _markdown_or_none(content.login),
                 "agreements": _markdown_or_none(content.agreements),
+                # How the consent checkbox names its link. Bundle content
+                # like the document it points at, so a deployment that calls
+                # its document something else is not stuck with the WebUI's
+                # translated default -- null simply means "use that default".
+                "consent_documents": content.consent_documents,
                 # The login page's consent gate, decided HERE and obeyed by
                 # the frontend rather than re-derived there: one authority
                 # over what turns a login-blocking control on. Its two inputs

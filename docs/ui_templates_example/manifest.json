@@ -14,6 +14,7 @@
       "query_empty": "locales/en/query_empty.md",
       "login": "locales/en/login.md",
       "agreements": "locales/en/agreements.md",
+      "consent_documents": "Privacy Policy and Model Service Agreement",
       "logo_alt": "Example Corp"
     },
     "zh": {
@@ -21,6 +22,7 @@
       "query_empty": "locales/zh/query_empty.md",
       "login": "locales/zh/login.md",
       "agreements": "locales/zh/agreements.md",
+      "consent_documents": "《用户隐私协议》和《模型服务协议》",
       "logo_alt": "示例公司"
     },
     "zh-TW": {
@@ -28,6 +30,7 @@
       "query_empty": "locales/zh-TW/query_empty.md",
       "login": "locales/zh-TW/login.md",
       "agreements": "locales/zh-TW/agreements.md",
+      "consent_documents": "《使用者隱私協議》與《模型服務協議》",
       "logo_alt": "範例公司"
     }
   }

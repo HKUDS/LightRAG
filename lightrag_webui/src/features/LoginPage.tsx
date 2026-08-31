@@ -24,6 +24,7 @@ import {
   CONSENT_LABEL_MARKER,
   isAgreedTo,
   isLoginBlockedByConsent,
+  resolveConsentDocuments,
   shouldShowLoginConsent,
   splitConsentLabel,
   type LoginConsentTick
@@ -74,7 +75,14 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
   }
   const showConsent = shouldShowLoginConsent(consentState)
   const consentBlocked = isLoginBlockedByConsent(consentState)
-  const consentDocuments = t('login.consentDocuments')
+  // How the checkbox NAMES the documents. The bundle owns it (a deployment
+  // may not call its document "Privacy Policy and Model Service Agreement"
+  // at all), and the WebUI translation is only the fallback for a bundle
+  // that declares no name.
+  const consentDocuments = resolveConsentDocuments(
+    content.consentDocuments,
+    t('login.consentDocuments')
+  )
   const consentLabelText = t('login.consentLabel', { documents: consentDocuments })
   const consentLabelParts = splitConsentLabel(
     t('login.consentLabel', { documents: CONSENT_LABEL_MARKER })
@@ -361,13 +369,29 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
       {showConsent && content.agreementsMarkdown && (
         <Dialog open={agreementsOpen} onOpenChange={setAgreementsOpen}>
           <DialogContent className="max-h-[85vh] max-w-2xl" dir={content.direction}>
-            <DialogHeader>
+            {/* Visually hidden, NOT omitted: Radix requires a title for the
+                dialog's accessible name, while the visible one belongs to
+                the document itself — printing the link's wording here too
+                would put a second, different title above the file's own.
+
+                That name is the LINK's wording, never something parsed back
+                out of the document: it is what the visitor just ticked, and
+                the deployment maintains it alongside the file it points at.
+                Nothing here reads the Markdown; the dialog renders it. */}
+            <DialogHeader className="sr-only">
               <DialogTitle>{consentDocuments}</DialogTitle>
             </DialogHeader>
-            <ScrollArea className="max-h-[60vh] pr-4">
+            {/* pr-8 clears the close button, which is positioned against the
+                dialog's physical right edge in both writing directions. */}
+            <ScrollArea className="max-h-[70vh] pr-8">
               {/* No text-sm here: this is a document to READ, not a form
-                  caption, so it keeps the prose tier's own sizing. */}
-              <CustomizedMarkdown content={content.agreementsMarkdown} />
+                  caption, so it keeps the prose tier's own sizing — and the
+                  `document` variant keeps the file's own heading/list/table
+                  rhythm instead of the compact one used for page blurbs. */}
+              <CustomizedMarkdown
+                content={content.agreementsMarkdown}
+                variant="document"
+              />
             </ScrollArea>
           </DialogContent>
         </Dialog>

@@ -73,8 +73,8 @@ from lightrag.api.routers.ollama_api import OllamaAPI
 from lightrag.api.routers.ui_customization_routes import create_ui_customization_routes
 from lightrag.api.ui_customization import (
     WEBUI_CHROME_LOCALES,
-    load_ui_customization_snapshot,
     locales_without_chrome_translation,
+    resolve_ui_customization_snapshot,
 )
 
 from lightrag.utils import logger, set_verbose_debug
@@ -1406,11 +1406,16 @@ def create_app(args):
     # workspace.html never suppresses bundle validation. bundle_revision is
     # logged HERE only — it appears in no /health tier.
     ui_templates_dir = (getattr(args, "ui_templates_dir", "") or "").strip()
+    ui_customization_snapshot = None
     if ui_templates_dir:
         # Raises UICustomizationError → server startup fails (fail-fast; a
         # silent fallback would show LightRAG content while the operator
-        # believes the customer branding is live).
-        ui_customization_snapshot = load_ui_customization_snapshot(ui_templates_dir)
+        # believes the customer branding is live). Returns None for the one
+        # sanctioned exception: a configured directory that holds no
+        # manifest.json yet, i.e. the unpopulated mount every default Docker
+        # deployment starts with (see resolve_ui_customization_snapshot).
+        ui_customization_snapshot = resolve_ui_customization_snapshot(ui_templates_dir)
+    if ui_customization_snapshot is not None:
         logger.info(
             "UI customization bundle active: bundle_revision=%s locales=%s",
             ui_customization_snapshot.bundle_revision,
@@ -1434,8 +1439,18 @@ def create_app(args):
                 len(untranslated),
                 sorted(WEBUI_CHROME_LOCALES),
             )
+    elif ui_templates_dir:
+        # Not an error, but not silent either: the only way to tell "I have
+        # not written my bundle yet" from "my mount did not land where I
+        # thought" is the path this names.
+        logger.warning(
+            "UI customization: UI_TEMPLATES_DIR=%s holds no manifest.json — "
+            "serving the built-in LightRAG branding. Put a bundle there and "
+            "restart to activate it; if you expected one, check that the "
+            "directory is the one you populated.",
+            ui_templates_dir,
+        )
     else:
-        ui_customization_snapshot = None
         logger.info("UI customization: no bundle configured (UI_TEMPLATES_DIR unset)")
 
     # Create unified API version display with warning symbol if frontend is outdated

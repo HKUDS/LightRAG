@@ -35,7 +35,7 @@
     "authDisabled": "認証が無効になっています。ログインフリーモードを使用しています。",
     "guestMode": "ログインフリー",
     "consentLabel": "{{documents}}に同意します",
-    "consentDocuments": "「プライバシーポリシー」および「モデルサービス規約」",
+    "consentDocuments": "「プライバシーポリシー」",
     "errorConsentRequired": "ログインする前に規約をお読みのうえ同意してください"
   },
   "common": {

@@ -35,7 +35,7 @@
     "authDisabled": "L'authentification est désactivée. Utilisation du mode sans connexion.",
     "guestMode": "Mode sans connexion",
     "consentLabel": "J'accepte la {{documents}}",
-    "consentDocuments": "Politique de confidentialité et les Conditions du service de modèle",
+    "consentDocuments": "Politique de confidentialité",
     "errorConsentRequired": "Veuillez lire et accepter les conditions avant de vous connecter"
   },
   "common": {

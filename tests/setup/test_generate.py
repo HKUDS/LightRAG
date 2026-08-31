@@ -7,6 +7,7 @@ import shlex
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tests.setup._helpers import (
     PRESERVED_HEADER,
@@ -18,6 +19,14 @@ from tests.setup._helpers import (
 )
 
 pytestmark = pytest.mark.offline
+
+
+def _count_ui_template_mount_targets(compose: str) -> int:
+    """Count UI bundle mount targets without counting the environment value."""
+    return sum(
+        "/app/data/ui_templates" in line and "UI_TEMPLATES_DIR" not in line
+        for line in compose.splitlines()
+    )
 
 
 def test_generate_files_keep_host_env_values_and_inject_compose_overrides(
@@ -102,10 +111,10 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml\"
     assert "env_file:" not in generated_compose
 
 
-def test_generate_docker_compose_removes_lightrag_env_file_to_preserve_dollar_values(
+def test_generate_docker_compose_replaces_env_file_with_required_environment(
     tmp_path: Path,
 ) -> None:
-    """Generated compose should remove `env_file` and skip empty environment blocks."""
+    """Generated compose should remove ``env_file`` and inject required settings."""
     write_text_lines(
         tmp_path / "docker-compose.yml",
         [
@@ -130,8 +139,9 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml\"
     generated_compose = (tmp_path / "docker-compose.generated.yml").read_text(
         encoding="utf-8"
     )
+    assert '      UI_TEMPLATES_DIR: "/app/data/ui_templates"' in generated_compose
     assert "env_file:" not in generated_compose
-    assert "environment:" not in generated_compose
+    assert "environment:" in generated_compose
     assert "container_name:" not in generated_compose
     assert "- ./.env:/app/.env" in generated_compose
 
@@ -147,6 +157,8 @@ def test_generate_docker_compose_removes_lightrag_container_name_from_existing_o
             "  lightrag:",
             "    container_name: lightrag",
             "    image: example/lightrag:test",
+            "    environment:",
+            '      UI_TEMPLATES_DIR: "/custom/ui_templates"',
         ],
     )
     run_bash(f"""
@@ -161,6 +173,10 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
         encoding="utf-8"
     )
     assert "container_name:" not in generated_compose
+    # UI_TEMPLATES_DIR is seeded, never managed: a value the operator wrote
+    # survives regeneration, and no second entry is appended beside it.
+    assert '      UI_TEMPLATES_DIR: "/custom/ui_templates"' in generated_compose
+    assert generated_compose.count("UI_TEMPLATES_DIR") == 1
 
 
 def test_generate_docker_compose_preserves_list_style_lightrag_environment(
@@ -472,6 +488,9 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     assert (
         "      - ./data/prompts:/app/data/prompts\n"
         "      - ./data/ui_templates:/app/data/ui_templates:ro\n"
+        "    environment:\n"
+        '      UI_TEMPLATES_DIR: "/app/data/ui_templates"'
+        "\n"
         "\n  sidecar:\n" in generated_compose
     )
 
@@ -521,7 +540,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
         encoding="utf-8"
     )
-    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert _count_ui_template_mount_targets(generated_compose) == 1
     assert generated_compose.count("/app/data/prompts") == 1
     assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
     assert "./data/prompts:/app/data/prompts" not in generated_compose
@@ -569,7 +588,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
         encoding="utf-8"
     )
-    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert _count_ui_template_mount_targets(generated_compose) == 1
     assert generated_compose.count("/app/data/prompts") == 1
     assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
     assert "./data/prompts:/app/data/prompts\n" not in generated_compose
@@ -654,7 +673,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
         encoding="utf-8"
     )
-    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert _count_ui_template_mount_targets(generated_compose) == 1
     assert generated_compose.count("/app/data/prompts") == 1
     assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
     assert "${UI_BUNDLE_SOURCE:-./branding}" in generated_compose
@@ -751,7 +770,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
         encoding="utf-8"
     )
-    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert _count_ui_template_mount_targets(generated_compose) == 1
     assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
 
 
@@ -791,7 +810,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
         encoding="utf-8"
     )
-    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert _count_ui_template_mount_targets(generated_compose) == 1
     assert generated_compose.count("/app/data/prompts") == 1
     assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
 
@@ -834,7 +853,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
         encoding="utf-8"
     )
-    assert generated_compose.count("/app/data/ui_templates") == 1
+    assert _count_ui_template_mount_targets(generated_compose) == 1
     assert generated_compose.count("/app/data/prompts") == 1
     assert "./data/ui_templates:/app/data/ui_templates:ro" not in generated_compose
 
@@ -981,7 +1000,16 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     assert "  vllm-rerank:" not in result
     assert "__WIZARD_MANAGED_SERVICES__" not in result
     assert "depends_on:" not in result
-    assert "        max_attempts: 10\n\nnetworks:\n" in result
+    assert (
+        "        max_attempts: 10\n\n"
+        "    volumes:\n"
+        "      - ./data/prompts:/app/data/prompts\n"
+        "      - ./data/ui_templates:/app/data/ui_templates:ro\n"
+        "    environment:\n"
+        '      UI_TEMPLATES_DIR: "/app/data/ui_templates"'
+        "\n\n"
+        "networks:\n" in result
+    )
 
 
 def test_generate_docker_compose_keeps_blank_line_between_managed_service_and_top_level_sections(
@@ -1016,10 +1044,7 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
     assert "  vllm-embed:" in result
     assert (
-        """        max_attempts: 10
-    depends_on:
-"""
-        in result
+        '      UI_TEMPLATES_DIR: "/app/data/ui_templates"\n    depends_on:\n' in result
     )
     assert "    restart: unless-stopped\n\nnetworks:\n" in result
 
@@ -1968,6 +1993,228 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml\"
     assert '      - "${HOST:-0.0.0.0}:${PORT:-9621}:9621"' in generated_compose
 
 
+def test_generate_docker_compose_keeps_the_port_mapping_inside_lightrag_before_a_top_level_section(
+    tmp_path: Path,
+) -> None:
+    """A user-defined top-level section must not swallow the port mapping.
+
+    The port injector closed the lightrag service only on a two-space service
+    header, so with no ``ports:`` block and a top-level ``networks:`` next it
+    took ``  backbone:`` -- that section's first child -- for the next service
+    and wrote ``ports:`` inside ``networks:``. The result did not even parse as
+    YAML, and the mapping was gone from lightrag.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    volumes:",
+            "      - ./.env:/app/.env",
+            "",
+            "networks:",
+            "  backbone:",
+            "    driver: bridge",
+        ],
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+prepare_compose_runtime_overrides
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+    parsed = yaml.safe_load(result)
+    assert parsed["services"]["lightrag"]["ports"] == [
+        "${HOST:-0.0.0.0}:${PORT:-9621}:9621"
+    ]
+    assert parsed["networks"] == {"backbone": {"driver": "bridge"}}
+
+
+def test_inject_lightrag_port_mapping_closes_an_existing_ports_block_at_any_top_level_key(
+    tmp_path: Path,
+) -> None:
+    """The in-block terminator listed ``volumes``/``networks`` by name.
+
+    Every other top-level key (``configs:``, ``secrets:``, ``x-*:``) left the
+    block open, so the entry was appended inside that section. Exercised on the
+    injector directly: through ``generate_docker_compose`` the ``deploy:`` block
+    it writes right after ``ports:`` happens to close the block first, which is
+    why the whole-file path only shows the sibling defect.
+    """
+    compose_file = tmp_path / "docker-compose.yml"
+    write_text_lines(
+        compose_file,
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    ports:",
+            '      - "8000:8000"',
+            "",
+            "configs:",
+            "  myconf:",
+            "    file: ./conf.txt",
+        ],
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+
+inject_lightrag_port_mapping "{compose_file}" "9621:9621"
+""")
+    parsed = yaml.safe_load(compose_file.read_text(encoding="utf-8"))
+    assert parsed["services"]["lightrag"]["ports"] == ["8000:8000", "9621:9621"]
+    assert parsed["configs"] == {"myconf": {"file": "./conf.txt"}}
+
+
+@pytest.mark.parametrize("indent", ["", "  "], ids=["column-zero", "service-indent"])
+def test_inject_lightrag_port_mapping_does_not_end_the_service_on_a_comment(
+    tmp_path: Path, indent: str
+) -> None:
+    """A comment is not a boundary, so it must not open a second ``ports:``.
+
+    Closing the service on a comment line made the injector write its own
+    ``ports:`` key above the operator's block instead of appending to it, and
+    docker compose refuses the result: ``mapping key "ports" already defined``.
+    """
+    compose_file = tmp_path / "docker-compose.yml"
+    write_text_lines(
+        compose_file,
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            f"{indent}# operator comment",
+            "    ports:",
+            '      - "8000:8000"',
+        ],
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+
+inject_lightrag_port_mapping "{compose_file}" "9621:9621"
+""")
+    result = compose_file.read_text(encoding="utf-8")
+    assert result.count("    ports:") == 1
+    assert yaml.safe_load(result)["services"]["lightrag"]["ports"] == [
+        "8000:8000",
+        "9621:9621",
+    ]
+
+
+@pytest.mark.parametrize("indent", ["", "  "], ids=["column-zero", "service-indent"])
+def test_inject_lightrag_bind_mounts_does_not_end_the_service_on_a_comment(
+    tmp_path: Path, indent: str
+) -> None:
+    """The sibling injector shares the boundary, so it shares the defect.
+
+    A comment between the lightrag keys and the operator's ``volumes:`` block
+    made the injector open a second ``volumes:`` key above it.
+    """
+    compose_file = tmp_path / "docker-compose.yml"
+    write_text_lines(
+        compose_file,
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            f"{indent}# operator comment",
+            "    volumes:",
+            "      - ./data:/app/data",
+        ],
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+
+inject_lightrag_bind_mounts "{compose_file}" "./certs:/app/certs:ro"
+""")
+    result = compose_file.read_text(encoding="utf-8")
+    assert result.count("    volumes:") == 1
+    assert yaml.safe_load(result)["services"]["lightrag"]["volumes"] == [
+        "./data:/app/data",
+        "./certs:/app/certs:ro",
+    ]
+
+
+def test_strip_and_inject_ports_stay_idempotent_across_a_comment_in_the_block(
+    tmp_path: Path,
+) -> None:
+    """The strip pass must still find the wizard mapping below a comment.
+
+    Ending the scan on the comment left the wizard's own mapping in place, the
+    injector then appended a second copy -- and the list grew by one entry on
+    every regeneration.
+    """
+    compose_file = tmp_path / "docker-compose.yml"
+    mapping = "${HOST:-0.0.0.0}:${PORT:-9621}:9621"
+    write_text_lines(
+        compose_file,
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    ports:",
+            '      - "80:80"',
+            "# operator comment inside the ports block",
+            f'      - "{mapping}"',
+        ],
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+
+_strip_lightrag_wizard_ports "{compose_file}"
+inject_lightrag_port_mapping "{compose_file}" '{mapping}'
+""")
+    result = compose_file.read_text(encoding="utf-8")
+    assert yaml.safe_load(result)["services"]["lightrag"]["ports"] == [
+        "80:80",
+        mapping,
+    ]
+
+
+@pytest.mark.parametrize("indent", ["", "  "], ids=["column-zero", "service-indent"])
+def test_lightrag_environment_has_key_looks_past_a_comment(
+    tmp_path: Path, indent: str
+) -> None:
+    """Presence must survive a comment inside the environment block.
+
+    The probe ended its scan on the comment and reported the declared key as
+    absent; the seed would then append a second entry for a key that is already
+    there, and compose rejects that outright (see the probe's own docstring).
+    """
+    compose_file = tmp_path / "docker-compose.yml"
+    write_text_lines(
+        compose_file,
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            f"{indent}# operator comment",
+            '      UI_TEMPLATES_DIR: "/custom/ui_templates"',
+        ],
+    )
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+
+if _lightrag_environment_has_key "{compose_file}" "UI_TEMPLATES_DIR"; then
+  echo "declared"
+else
+  echo "absent"
+fi
+""")
+    assert output.strip() == "declared"
+
+
 def test_generate_docker_compose_injects_env_overrides_into_lightrag_not_after_managed_services(
     tmp_path: Path,
 ) -> None:
@@ -2224,3 +2471,224 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     assert "./data/rag_storage:/app/data/rag_storage" in generated_compose
     assert "./data/inputs:/app/data/inputs" in generated_compose
     assert "./.env:/app/.env" in generated_compose
+
+
+def test_generate_docker_compose_seeds_ui_templates_dir_with_the_container_path(
+    tmp_path: Path,
+) -> None:
+    """The seed is the container path, and it outranks a value in .env.
+
+    Same rule as WORKING_DIR / INPUT_DIR / PROMPT_DIR: .env carries host paths
+    so one file also serves a source run, and compose supplies the path that
+    is correct inside the container.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            '      PORT: "9621"',
+        ],
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+ENV_VALUES[UI_TEMPLATES_DIR]="./lightrag_webui/ui_templates"
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+    assert '      UI_TEMPLATES_DIR: "/app/data/ui_templates"' in result
+    assert "./lightrag_webui/ui_templates" not in result
+    assert result.count("UI_TEMPLATES_DIR") == 1
+
+
+def test_generate_docker_compose_preserves_an_empty_ui_templates_dir(
+    tmp_path: Path,
+) -> None:
+    """An explicitly empty value is how a deployment turns the feature off."""
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            '      UI_TEMPLATES_DIR: ""',
+        ],
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+    assert '      UI_TEMPLATES_DIR: ""' in result
+    assert result.count("UI_TEMPLATES_DIR") == 1
+
+
+# Every spelling YAML accepts for the same mapping key: quoted or bare, colon
+# tight or spaced. Compose reads them all as one key and refuses a file that
+# declares it twice, so every parser has to agree.
+KEY_SPELLINGS = ["{key}:", '"{key}":', "'{key}':", "{key} :", '"{key}" :']
+
+
+@pytest.mark.parametrize("spelling", KEY_SPELLINGS)
+def test_generate_docker_compose_rewrites_a_wizard_managed_key_in_any_spelling(
+    tmp_path: Path, spelling: str
+) -> None:
+    """The strip pass must recognize every spelling as the same key.
+
+    Missing one left the operator's entry in place and appended the wizard's
+    own, so the regenerated file declared the key twice and compose refused to
+    load it at all.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            f'      {spelling.format(key="PORT")} "1234"',
+            f'      {spelling.format(key="WORKING_DIR")} "/custom/rag"',
+        ],
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+prepare_compose_env_overrides
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+    environment = yaml.safe_load(result)["services"]["lightrag"]["environment"]
+    # The wizard owns these two, so its values replace the stale ones -- and
+    # each key appears exactly once, which is what YAML requires.
+    assert environment["PORT"] == "9621"
+    assert environment["WORKING_DIR"] == "/app/data/rag_storage"
+
+    # yaml.safe_load silently keeps the last of two duplicate keys, so count
+    # the declarations in the text -- that is what compose refuses to load.
+    def declarations(key: str) -> int:
+        return sum(
+            line.strip().split(":")[0].strip("\"'") == key
+            for line in result.splitlines()
+            if line.startswith("      ")
+        )
+
+    assert declarations("PORT") == 1
+    assert declarations("WORKING_DIR") == 1
+
+
+@pytest.mark.parametrize("spelling", KEY_SPELLINGS)
+def test_read_service_environment_value_reads_any_key_spelling(
+    tmp_path: Path, spelling: str
+) -> None:
+    """A quoted key must still be readable back.
+
+    The wizard reads SSL_CERTFILE / SSL_KEYFILE out of the existing compose to
+    keep a staged certificate across regenerations when its source file is
+    gone; not matching the quoted form turned that into a hard
+    "Invalid SSL_CERTFILE" error instead.
+    """
+    compose_file = tmp_path / "docker-compose.final.yml"
+    write_text_lines(
+        compose_file,
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            f'      {spelling.format(key="SSL_CERTFILE")} "/app/data/certs/mine.pem"',
+        ],
+    )
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+
+read_service_environment_value "{compose_file}" "lightrag" "SSL_CERTFILE"
+""")
+    assert "/app/data/certs/mine.pem" in output
+
+
+@pytest.mark.parametrize("spelling", KEY_SPELLINGS)
+def test_generate_docker_compose_preserves_ui_templates_dir_in_any_spelling(
+    tmp_path: Path, spelling: str
+) -> None:
+    """Any spelling of the key is the same key, so it must block the seed.
+
+    Missing one appended a second entry for a key already present, and compose
+    rejects the file outright: ``mapping key "UI_TEMPLATES_DIR" already
+    defined``.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            f'      {spelling.format(key="UI_TEMPLATES_DIR")} "/custom/ui_templates"',
+        ],
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+    assert (
+        f'      {spelling.format(key="UI_TEMPLATES_DIR")} "/custom/ui_templates"'
+        in result
+    )
+    assert result.count("UI_TEMPLATES_DIR") == 1
+    assert (
+        yaml.safe_load(result)["services"]["lightrag"]["environment"][
+            "UI_TEMPLATES_DIR"
+        ]
+        == "/custom/ui_templates"
+    )
+
+
+def test_generate_docker_compose_preserves_a_valueless_list_ui_templates_dir(
+    tmp_path: Path,
+) -> None:
+    """`- UI_TEMPLATES_DIR` (inherit from the host env) is a declaration too.
+
+    Presence, not a parsed value, is what blocks the seed — otherwise the
+    generated file would carry the key twice, which compose rejects.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            "      - UI_TEMPLATES_DIR",
+        ],
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+    assert "      - UI_TEMPLATES_DIR\n" in result
+    assert result.count("UI_TEMPLATES_DIR") == 1

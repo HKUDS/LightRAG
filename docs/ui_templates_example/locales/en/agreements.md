@@ -1,3 +1,5 @@
+# Privacy Policy and Model Service Agreement
+
 > Replace this file with your deployment's own legal text. It is shown to
 > every visitor before they can sign in.
 
