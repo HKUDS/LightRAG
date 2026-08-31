@@ -955,3 +955,50 @@ async def test_budget_truncation_still_returns_its_partial_content(monkeypatch):
 
     assert result == "partial"
     assert is_truncated_response(result)
+
+
+async def test_streaming_completed_with_no_text_raises_like_non_streaming(
+    monkeypatch,
+):
+    """A clean `response.completed` with no output_text delta and no
+    reasoning delta at all (a forwarded `tools` request that only produced a
+    function call, or a compatible gateway supplying an empty terminal) must
+    not end the iterator successfully on nothing -- `_handle_non_streaming`
+    already raises InvalidResponseError for the equivalent empty,
+    non-truncated payload (see test_empty_output_without_truncation_raises_retryable)."""
+    stream = _FakeStream(
+        [
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(usage=_usage(3, 0)),
+            ),
+        ]
+    )
+    _patch_client(monkeypatch, stream)
+
+    result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
+    with pytest.raises(InvalidResponseError) as excinfo:
+        await _collect(result)
+
+    assert not isinstance(excinfo.value, EmptyTruncatedResponseError)
+
+
+async def test_streaming_completed_with_reasoning_only_does_not_raise(monkeypatch):
+    """The empty-output check must key on body OR reasoning text, not body
+    text alone -- a reasoning-only completed turn is still usable output."""
+    stream = _FakeStream(
+        [
+            _delta("response.reasoning_summary_text.delta", "trace"),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(usage=_usage(3, 4)),
+            ),
+        ]
+    )
+    _patch_client(monkeypatch, stream)
+
+    result = await openai_responses_complete_if_cache(
+        "gpt-5.6", "hi", stream=True, enable_cot=True
+    )
+
+    assert await _collect(result) == "<think>trace</think>"

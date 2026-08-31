@@ -532,6 +532,12 @@ async def _stream_response(
     end with ``response.completed``. The refusal text is collected and raised
     after the terminal, rather than being dropped for want of an
     ``output_text`` delta.
+
+    Usable output: a clean ``response.completed`` with no body text and no
+    reasoning text at all (a forwarded ``tools`` request that only produced a
+    function call, or a compatible gateway supplying an empty terminal)
+    raises rather than ending the iterator on nothing, matching the
+    non-streaming path's rule for the same payload.
     """
     cot_active = False
     body_text_seen = False
@@ -710,6 +716,20 @@ async def _stream_response(
                 # budget, so it raises the non-retryable type rather than
                 # buying two more full-budget generations.
                 raise EmptyTruncatedResponseError(error_message)
+        elif not body_text_seen and not reasoning_text_seen:
+            # A clean `response.completed` with no output_text delta and no
+            # reasoning delta at all -- a forwarded `tools` request that only
+            # produced a function call, or a compatible gateway supplying an
+            # empty terminal -- is exactly the payload `_handle_non_streaming`
+            # raises InvalidResponseError for. Without this check the
+            # generator simply ends here, reporting a clean success with
+            # nothing yielded to the caller.
+            error_message = (
+                "OpenAI Responses stream completed with no usable output "
+                "(no body text and no reasoning text)"
+            )
+            logger.error(error_message)
+            raise InvalidResponseError(error_message)
     except GeneratorExit:
         # Consumer disconnected: the finally block must not yield, or cleanup
         # aborts with "async generator ignored GeneratorExit".
