@@ -62,7 +62,7 @@ def test_inline_trailing_newlines_are_preserved(monkeypatch):
 
 def test_inline_special_characters_are_preserved(monkeypatch):
     """Quotes and '#' are a .env quoting concern, not a loader concern."""
-    value = "Use \"quotes\", it's fine, # too.\n\n"
+    value = 'Use "quotes", it\'s fine, # too.\n\n'
     monkeypatch.setenv("USER_PROMPT_PREFIX", value)
     assert load_user_prompt_prefix_source() == value
 
@@ -159,6 +159,40 @@ def test_undecodable_file_degrades_to_no_prefix(monkeypatch, tmp_path, caplog):
 
     with caplog.at_level("ERROR", logger="lightrag"):
         assert load_user_prompt_prefix_source() == ""
+
+
+def test_unresolvable_prompt_dir_degrades_to_no_prefix(monkeypatch, caplog):
+    """PROMPT_DIR resolution can raise more than ValueError.
+
+    ``Path.expanduser()`` raises RuntimeError when a home directory cannot be
+    determined, and ``Path.resolve()`` raises RuntimeError (<=3.12) or OSError
+    on a symlink loop. A `~unknownuser` prefix triggers the same except branch
+    as a symlink loop while needing no filesystem setup and behaving the same
+    on every platform.
+    """
+    monkeypatch.setenv("PROMPT_DIR", "~nosuchuser12345/prompts")
+    monkeypatch.setenv("USER_PROMPT_PREFIX_FILE", "house.md")
+
+    with caplog.at_level("ERROR", logger="lightrag"):
+        assert load_user_prompt_prefix_source() == ""
+    assert "USER_PROMPT_PREFIX_FILE" in caplog.text
+
+
+def test_unresolvable_prompt_dir_does_not_abort_lightrag_construction(monkeypatch):
+    """The consequence that actually matters, pinned directly.
+
+    The loader runs as a dataclass default_factory, so an escaping exception
+    does not merely skip the prefix -- it makes ``LightRAG()`` unconstructible,
+    with a traceback far from the misconfigured environment variable that
+    caused it.
+    """
+    from lightrag import LightRAG
+
+    monkeypatch.setenv("PROMPT_DIR", "~nosuchuser12345/prompts")
+    monkeypatch.setenv("USER_PROMPT_PREFIX_FILE", "house.md")
+
+    factory = LightRAG.__dataclass_fields__["user_prompt_prefix"].default_factory
+    assert factory() == ""
 
 
 def test_a_rejected_file_does_not_fall_back_to_the_inline_value(

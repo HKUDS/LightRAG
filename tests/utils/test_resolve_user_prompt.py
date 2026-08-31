@@ -100,9 +100,7 @@ def test_prefix_only_is_indistinguishable_from_a_caller_sending_it():
     "user_prompt", [None, "", "   ", "Be concise.", " padded ", "多行\n文本"]
 )
 @pytest.mark.parametrize("prefix", [None, ""])
-def test_unconfigured_prefix_preserves_legacy_cache_key_component(
-    user_prompt, prefix
-):
+def test_unconfigured_prefix_preserves_legacy_cache_key_component(user_prompt, prefix):
     """``text`` must equal the expression the answer cache keyed on before.
 
     ``operate.py`` previously hashed ``query_param.user_prompt or ""``. Keeping

@@ -686,8 +686,19 @@ def load_user_prompt_prefix_source() -> str:
 
     try:
         prefix_path = resolve_user_prompt_prefix_path(file_name)
-    except ValueError as exc:
-        logger.error("Invalid USER_PROMPT_PREFIX_FILE: %s. No prefix applied.", exc)
+    except (ValueError, OSError, RuntimeError) as exc:
+        # ValueError is the sandbox's own rejection. The other two come from
+        # resolving PROMPT_DIR itself: Path.expanduser() raises RuntimeError when
+        # a home directory cannot be determined, and Path.resolve() raises
+        # RuntimeError (<=3.12) or OSError on a symlink loop. Letting either
+        # escape would abort every LightRAG() construction, since this runs as a
+        # dataclass default_factory -- the exact opposite of the degrade-and-log
+        # contract documented above.
+        logger.error(
+            "Cannot resolve USER_PROMPT_PREFIX_FILE '%s': %s. No prefix applied.",
+            file_name,
+            exc,
+        )
         return ""
 
     try:

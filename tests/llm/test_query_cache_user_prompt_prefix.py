@@ -177,7 +177,9 @@ async def _run_kg(param, cfg, cache):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-@pytest.mark.parametrize("runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)])
+@pytest.mark.parametrize(
+    "runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)]
+)
 async def test_prefix_is_prepended_into_the_system_prompt(
     runner, param, stub_query_context
 ):
@@ -196,7 +198,9 @@ async def test_prefix_is_prepended_into_the_system_prompt(
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-@pytest.mark.parametrize("runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)])
+@pytest.mark.parametrize(
+    "runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)]
+)
 async def test_prefix_alone_reaches_the_model_without_a_user_prompt(
     runner, param, stub_query_context
 ):
@@ -218,7 +222,9 @@ async def test_prefix_alone_reaches_the_model_without_a_user_prompt(
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-@pytest.mark.parametrize("runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)])
+@pytest.mark.parametrize(
+    "runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)]
+)
 async def test_changing_the_prefix_does_not_serve_the_old_answer(
     runner, param, stub_query_context
 ):
@@ -241,7 +247,9 @@ async def test_changing_the_prefix_does_not_serve_the_old_answer(
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-@pytest.mark.parametrize("runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)])
+@pytest.mark.parametrize(
+    "runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)]
+)
 async def test_same_prefix_still_hits_the_cache(runner, param, stub_query_context):
     """Partitioning must not degenerate into never caching."""
     cache = _FakeKVStorage()
@@ -258,7 +266,9 @@ async def test_same_prefix_still_hits_the_cache(runner, param, stub_query_contex
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-@pytest.mark.parametrize("runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)])
+@pytest.mark.parametrize(
+    "runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)]
+)
 async def test_prefix_and_user_prompt_do_not_collide_across_the_boundary(
     runner, param, stub_query_context
 ):
@@ -290,7 +300,9 @@ async def test_prefix_and_user_prompt_do_not_collide_across_the_boundary(
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-@pytest.mark.parametrize("runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)])
+@pytest.mark.parametrize(
+    "runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)]
+)
 async def test_disabled_prefix_shares_the_entry_with_no_prefix_configured(
     runner, param, stub_query_context
 ):
@@ -314,7 +326,9 @@ async def test_disabled_prefix_shares_the_entry_with_no_prefix_configured(
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-@pytest.mark.parametrize("runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)])
+@pytest.mark.parametrize(
+    "runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)]
+)
 async def test_disabled_prefix_keeps_the_prefix_out_of_the_prompt(
     runner, param, stub_query_context
 ):
@@ -364,9 +378,10 @@ async def test_kg_entry_written_before_the_prefix_feature_still_hits(
     cfg = _query_global_config(model)
     param = _kg_param(user_prompt=USER_PROMPT)
 
-    cache._store[
-        _preprefix_answer_cache_key(param, cfg, keywords=("", "Tesla"))
-    ] = {"return": "PRE-PREFIX-ANSWER", "create_time": 1}
+    cache._store[_preprefix_answer_cache_key(param, cfg, keywords=("", "Tesla"))] = {
+        "return": "PRE-PREFIX-ANSWER",
+        "create_time": 1,
+    }
 
     result = await _run_kg(param, cfg, cache)
     assert result.content == "PRE-PREFIX-ANSWER"
@@ -375,7 +390,9 @@ async def test_kg_entry_written_before_the_prefix_feature_still_hits(
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-@pytest.mark.parametrize("runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)])
+@pytest.mark.parametrize(
+    "runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)]
+)
 async def test_configured_prefix_does_not_serve_a_pre_prefix_entry(
     runner, param, stub_query_context
 ):
@@ -403,7 +420,9 @@ async def test_configured_prefix_does_not_serve_a_pre_prefix_entry(
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-@pytest.mark.parametrize("runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)])
+@pytest.mark.parametrize(
+    "runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)]
+)
 async def test_cache_metadata_records_the_raw_request_user_prompt(
     runner, param, stub_query_context
 ):
@@ -469,9 +488,7 @@ async def test_prefix_shrinks_the_available_chunk_token_budget(monkeypatch):
             user_prompt=USER_PROMPT,
             disable_user_prompt_prefix=disable,
         )
-        await operate._build_context_str(
-            entities, relations, chunks, QUERY, param, cfg
-        )
+        await operate._build_context_str(entities, relations, chunks, QUERY, param, cfg)
         return limits[-1]
 
     baseline = await _budget_for("", False)
