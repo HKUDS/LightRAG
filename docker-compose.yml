@@ -33,4 +33,8 @@ services:
       HOST: "0.0.0.0"
       PORT: "9621"
       # Loads user-defined UI content from the read-only bundle mounted above.
+      # Inert until ./data/ui_templates holds a bundle: with no manifest.json
+      # in it the server logs a warning and keeps the built-in LightRAG
+      # branding. Once a manifest.json is there an invalid bundle makes the
+      # server refuse to start. See docs/UserDefinedUI.md.
       UI_TEMPLATES_DIR: "/app/data/ui_templates"

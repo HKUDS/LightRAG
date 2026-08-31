@@ -1229,6 +1229,13 @@ generate_docker_compose() {
   _FILE_OPS_CLEANUP_TMP+=("$service_blocks_file")
   local template_file
   local lightrag_mounts=()
+  # Written unconditionally, like the mount above: the server treats a
+  # configured directory with no manifest.json as "no bundle yet" (warns,
+  # keeps the built-in branding), so a generated deployment boots unchanged
+  # and activating the feature is dropping a bundle into ./data/ui_templates.
+  # This makes UI_TEMPLATES_DIR a wizard-managed key — a hand-edited value is
+  # replaced on the next regeneration; point the mount's HOST side elsewhere
+  # instead. See docs/UserDefinedUI.md §7.3.
   local lightrag_env_entries=(
     "UI_TEMPLATES_DIR=${COMPOSE_LIGHTRAG_UI_TEMPLATES_DIR:-/app/data/ui_templates}"
   )
@@ -1283,9 +1290,10 @@ generate_docker_compose() {
   # Ensure the optional user-defined UI template bundle mount exists so a
   # deployment can replace the welcome page, the login blurb plus user
   # agreement and the query empty state without rebuilding the frontend.
-  # Mounted read-only (the server only ever reads it) and INERT until
-  # UI_TEMPLATES_DIR names it: an absent or empty ./data/ui_templates changes
-  # nothing. See docs/UserDefinedUI.md.
+  # Mounted read-only (the server only ever reads it). Paired with the
+  # UI_TEMPLATES_DIR env entry below, and inert until the directory holds a
+  # bundle: without a manifest.json in it the server warns and keeps the
+  # built-in branding. See docs/UserDefinedUI.md.
   if ! _lightrag_volumes_have_container_target "$tmp_file" "/app/data/ui_templates"; then
     lightrag_mounts+=("./data/ui_templates:/app/data/ui_templates:ro")
   fi
