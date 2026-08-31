@@ -152,6 +152,11 @@ export default function WorkspaceWelcome() {
                 ? t('workspace.welcome.enterButton', 'Enter workspace')
                 : t('workspace.welcome.loginButton', 'Sign in')}
             </Button>
+            <p className="text-muted-foreground text-xs">
+              {t('workspace.welcome.copyright', '© {{year}} LightRAG Team. All rights reserved.', {
+                year: new Date().getFullYear()
+              })}
+            </p>
           </>
         )}
       </div>

@@ -515,7 +515,8 @@
       "defaultMarkdown": "欢迎使用！您可以就知识库内容提问，并获得带引用的回答。登录后即可开始。",
       "enterButton": "进入工作区",
       "loginButton": "登录",
-      "enterFailed": "无法连接服务器，请重试。"
+      "enterFailed": "无法连接服务器，请重试。",
+      "copyright": "© {{year}} LightRAG Team. 保留所有权利。"
     },
     "queryEmpty": {
       "defaultMarkdown": "输入您想了解的问题，开始查询知识库。"

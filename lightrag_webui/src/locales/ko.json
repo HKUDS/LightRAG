@@ -515,7 +515,8 @@
       "defaultMarkdown": "환영합니다! 지식 베이스에 대해 질문하고 인용이 포함된 답변을 받아보세요. 로그인하여 시작하세요.",
       "enterButton": "워크스페이스 입장",
       "loginButton": "로그인",
-      "enterFailed": "서버에 연결할 수 없습니다. 다시 시도해 주세요."
+      "enterFailed": "서버에 연결할 수 없습니다. 다시 시도해 주세요.",
+      "copyright": "© {{year}} LightRAG Team. 모든 권리 보유."
     },
     "queryEmpty": {
       "defaultMarkdown": "지식 베이스에 대해 무엇이든 질문하여 시작하세요."

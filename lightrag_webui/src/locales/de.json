@@ -515,7 +515,8 @@
       "defaultMarkdown": "Willkommen! Stellen Sie Fragen zur Wissensdatenbank und erhalten Sie Antworten mit Quellenangaben. Melden Sie sich an, um zu beginnen.",
       "enterButton": "Arbeitsbereich betreten",
       "loginButton": "Anmelden",
-      "enterFailed": "Server nicht erreichbar. Bitte versuchen Sie es erneut."
+      "enterFailed": "Server nicht erreichbar. Bitte versuchen Sie es erneut.",
+      "copyright": "© {{year}} LightRAG Team. Alle Rechte vorbehalten."
     },
     "queryEmpty": {
       "defaultMarkdown": "Stellen Sie eine Frage zur Wissensdatenbank, um zu beginnen."

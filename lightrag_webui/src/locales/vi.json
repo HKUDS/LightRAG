@@ -515,7 +515,8 @@
       "defaultMarkdown": "Chào mừng! Hãy đặt câu hỏi về cơ sở tri thức và nhận câu trả lời kèm trích dẫn. Đăng nhập để bắt đầu.",
       "enterButton": "Vào không gian làm việc",
       "loginButton": "Đăng nhập",
-      "enterFailed": "Không thể kết nối máy chủ. Vui lòng thử lại."
+      "enterFailed": "Không thể kết nối máy chủ. Vui lòng thử lại.",
+      "copyright": "© {{year}} LightRAG Team. Bảo lưu mọi quyền."
     },
     "queryEmpty": {
       "defaultMarkdown": "Hãy đặt bất kỳ câu hỏi nào về cơ sở tri thức để bắt đầu."

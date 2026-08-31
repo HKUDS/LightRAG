@@ -515,7 +515,8 @@
       "defaultMarkdown": "ようこそ！ナレッジベースについて質問すると、引用付きの回答が得られます。ログインして始めましょう。",
       "enterButton": "ワークスペースに入る",
       "loginButton": "ログイン",
-      "enterFailed": "サーバーに接続できませんでした。もう一度お試しください。"
+      "enterFailed": "サーバーに接続できませんでした。もう一度お試しください。",
+      "copyright": "© {{year}} LightRAG Team。無断複写・転載を禁じます。"
     },
     "queryEmpty": {
       "defaultMarkdown": "ナレッジベースについて何でも質問して始めましょう。"
