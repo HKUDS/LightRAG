@@ -35,9 +35,32 @@ describe('RAG query validation', () => {
     expect(isRagQueryTooShort('ﾡﾢ', 'mix')).toBe(false)
   })
 
-  test('leaves halfwidth punctuation and sound marks at one', () => {
-    for (const character of ['｡', '･', 'ﾞ', 'ﾟ']) {
+  test('weighs modifier letters that spell real words', () => {
+    expect(ragQueryWeight('コーヒー')).toBe(8) // U+30FC prolonged sound mark (Lm)
+    expect(ragQueryWeight('\u{1aff0}\u{1aff1}')).toBe(4) // Kana Extended-B
+  })
+
+  test('leaves punctuation, sound marks and fillers at one', () => {
+    // Doubling whole Unicode blocks let a query of pure punctuation clear the
+    // minimum; the ranges are letters only, so these weigh 1 each.
+    for (const character of [
+      '｡', // halfwidth ideographic full stop
+      '･', // halfwidth katakana middle dot
+      'ﾞ', // halfwidth voiced sound mark
+      'ﾟ',
+      '・', // U+30FB KATAKANA MIDDLE DOT (Po)
+      '゛', // U+309B (Sk)
+      '゜', // U+309C (Sk)
+      '゠', // U+30A0 KATAKANA-HIRAGANA DOUBLE HYPHEN (Pd)
+      'ㅤ' // U+3164 HANGUL FILLER — renders as nothing
+    ]) {
       expect(ragQueryWeight(character)).toBe(1)
+    }
+  })
+
+  test('a query of pure punctuation never clears the minimum', () => {
+    for (const query of ['・・', '゛゜', '゠゠', 'ㅤㅤ']) {
+      expect(isRagQueryTooShort(query, 'mix')).toBe(true)
     }
   })
 

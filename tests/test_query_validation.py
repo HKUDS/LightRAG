@@ -37,6 +37,14 @@ pytestmark = pytest.mark.offline
         ("ﾈｺ", 4),
         ("ｶﾅ", 4),
         ("ﾡﾢ", 4),
+        # Modifier LETTERS spell real words and weigh 2 …
+        ("コーヒー", 8),
+        ("\U0001aff0\U0001aff1", 4),  # Kana Extended-B (Minnan tone marks)
+        # … while punctuation, modifier symbols and fillers stay at 1.
+        ("・・", 2),  # U+30FB KATAKANA MIDDLE DOT (Po)
+        ("゛゜", 2),  # U+309B/U+309C voiced sound marks (Sk)
+        ("゠゠", 2),  # U+30A0 KATAKANA-HIRAGANA DOUBLE HYPHEN (Pd)
+        ("ㅤㅤ", 2),  # U+3164 HANGUL FILLER — renders as nothing at all
     ],
 )
 def test_rag_query_weight_counts_cjk_as_two(query, expected):
@@ -169,3 +177,44 @@ def test_the_frontend_range_table_matches_this_one():
 
     # The lone code point outside the ranges has to be mirrored too.
     assert "codePoint === 0x3007" in source
+
+
+def test_every_weighted_code_point_is_a_letter():
+    """The rule for the table, enforced on the table.
+
+    Doubling whole Unicode blocks is how punctuation got in: "・・" and "゛゜"
+    weighed 4 and cleared the minimum, as did two HANGUL FILLERs, which render
+    as nothing at all. Listing those as examples would only pin the ones we
+    happened to notice; this pins the property, so the next block someone adds
+    cannot quietly reopen the hole.
+    """
+    import unicodedata
+
+    offenders = []
+    for start, end in _WIDE_CODEPOINT_RANGES:
+        for codepoint in range(start, end + 1):
+            character = chr(codepoint)
+            name = unicodedata.name(character, None)
+            if name is None:
+                continue  # unassigned: cannot be typed, harmless inside a range
+            if not unicodedata.category(character).startswith("L"):
+                offenders.append((codepoint, "not a letter", name))
+            elif "FILLER" in name:
+                offenders.append((codepoint, "filler", name))
+
+    assert offenders == [], "\n".join(
+        f"U+{cp:04X} {why}: {name}" for cp, why, name in offenders
+    )
+
+
+def test_the_weighted_ranges_are_sorted_and_disjoint():
+    """Several blocks are split around excluded code points; keep it readable."""
+    for earlier, later in zip(_WIDE_CODEPOINT_RANGES, _WIDE_CODEPOINT_RANGES[1:]):
+        assert earlier[0] <= earlier[1]
+        assert earlier[1] < later[0]
+
+
+@pytest.mark.parametrize("query", ["・・", "゛゜", "゠゠", "ㅤㅤ", "。。"])
+def test_punctuation_only_queries_never_clear_the_minimum(query):
+    with pytest.raises(RAGQueryTooShortError):
+        validate_rag_query(query)

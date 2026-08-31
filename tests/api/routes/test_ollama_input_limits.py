@@ -324,6 +324,74 @@ def test_generate_refuses_an_empty_prompt(monkeypatch, prompt):
     assert reached is False
 
 
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "def f():\n    return 1\n\n# complete:\n",  # trailing newline is the cue
+        "    indented block",  # leading indentation is the content
+        "  spaced out  ",
+    ],
+)
+def test_generate_forwards_the_prompt_verbatim(monkeypatch, prompt):
+    """`/api/generate` is a compatibility path: the prompt reaches the provider
+    unchanged. Leading and trailing whitespace is meaningful to a completion
+    model, so the non-empty check must ask about the stripped text without
+    substituting it."""
+    captured = {}
+
+    async def _count_tokens(_text):
+        return 0
+
+    class _RecordingRAG(_ExplodingRAG):
+        async def _llm(self, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return "answer"
+
+    rag = _RecordingRAG()
+    rag.role_llm_funcs = {"query": rag._llm}
+    monkeypatch.setattr(_ollama_api, "aestimate_tokens", _count_tokens)
+    monkeypatch.setattr(_utils_api, "auth_configured", False)
+    app = FastAPI()
+    app.include_router(_ollama_api.OllamaAPI(rag).router, prefix="/api")
+
+    response = TestClient(app).post(
+        "/api/generate",
+        json={"model": "lightrag:latest", "prompt": prompt, "stream": False},
+    )
+
+    assert response.status_code == 200
+    assert captured["prompt"] == prompt
+
+
+def test_chat_bypass_forwards_the_prompt_verbatim(monkeypatch):
+    """Same for the `/api/chat` direct-LLM branch, after the prefix is removed."""
+    prompt = "def f():\n    return 1\n"
+    captured = {}
+
+    async def _count_tokens(_text):
+        return 0
+
+    class _RecordingRAG(_ExplodingRAG):
+        async def _llm(self, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return "answer"
+
+    rag = _RecordingRAG()
+    rag.role_llm_funcs = {"query": rag._llm}
+    monkeypatch.setattr(_ollama_api, "aestimate_tokens", _count_tokens)
+    monkeypatch.setattr(_utils_api, "auth_configured", False)
+    app = FastAPI()
+    app.include_router(_ollama_api.OllamaAPI(rag).router, prefix="/api")
+
+    response = TestClient(app).post(
+        "/api/chat",
+        json=_chat(messages=[{"role": "user", "content": "/bypass " + prompt}]),
+    )
+
+    assert response.status_code == 200
+    assert captured["prompt"] == prompt
+
+
 def test_chat_bypass_does_not_apply_the_rag_minimum(monkeypatch):
     captured = {}
 

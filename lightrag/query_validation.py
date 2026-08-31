@@ -12,13 +12,27 @@ MIN_RAG_QUERY_WEIGHT = 3
 # words ("ねこ", "오늘") while accepting their Han equivalents. The halfwidth
 # forms are the same letters in a legacy encoding — "ﾈｺ" is the word "ネコ" — so
 # they weigh the same; the rule is about how much a character says, not how wide
-# it renders. Punctuation and the halfwidth sound marks stay at 1.
+# it renders.
+#
+# The ranges are therefore LETTERS ONLY, which is why several blocks appear
+# split. Doubling whole blocks let a query of pure punctuation clear the
+# minimum: "・・" (U+30FB, Po) and "゛゜" (U+309B/C, Sk) weighed 4, and two
+# HANGUL FILLERs (U+3164) — which render as nothing at all — weighed 4 as well.
+# The line is Unicode general category L* minus the fillers, which keeps the
+# modifier LETTERS that spell real words (ー, the Minnan tone marks) while
+# dropping the modifier SYMBOLS and combining marks that cannot stand alone.
+# ``test_every_weighted_code_point_is_a_letter`` enforces this on the table.
+#
 # Keep these ranges in sync with ``lightrag_webui/src/utils/queryValidation.ts``.
 _WIDE_CODEPOINT_RANGES = (
-    (0x1100, 0x11FF),  # Hangul Jamo
-    (0x3040, 0x309F),  # Hiragana
-    (0x30A0, 0x30FF),  # Katakana
-    (0x3130, 0x318F),  # Hangul Compatibility Jamo
+    (0x1100, 0x115E),  # Hangul Jamo (choseong)
+    (0x1161, 0x11FF),  # Hangul Jamo (jungseong/jongseong)
+    (0x3041, 0x3096),  # Hiragana letters
+    (0x309D, 0x309F),  # Hiragana iteration marks and digraph
+    (0x30A1, 0x30FA),  # Katakana letters
+    (0x30FC, 0x30FF),  # Katakana prolonged sound, iteration marks, digraph
+    (0x3131, 0x3163),  # Hangul Compatibility Jamo (before the filler)
+    (0x3165, 0x318E),  # Hangul Compatibility Jamo (after the filler)
     (0x31F0, 0x31FF),  # Katakana Phonetic Extensions
     (0x3400, 0x4DBF),  # CJK Unified Ideographs Extension A
     (0x4E00, 0x9FFF),  # CJK Unified Ideographs
@@ -28,6 +42,7 @@ _WIDE_CODEPOINT_RANGES = (
     (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
     (0xFF66, 0xFF9D),  # Halfwidth Katakana letters
     (0xFFA1, 0xFFDC),  # Halfwidth Hangul letters
+    (0x1AFF0, 0x1AFFF),  # Kana Extended-B
     (0x1B000, 0x1B16F),  # Kana Supplement / Extended-A / Small Kana Extension
     (0x20000, 0x2A6DF),  # CJK Unified Ideographs Extension B
     (0x2A700, 0x2B73F),  # Extension C

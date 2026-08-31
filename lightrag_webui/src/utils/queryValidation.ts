@@ -8,12 +8,20 @@ export const MIN_RAG_QUERY_WEIGHT = 3
 // accepting their Han equivalents. The halfwidth forms are the same letters in a
 // legacy encoding — 'ﾈｺ' is the word 'ネコ' — so they weigh the same; the rule is
 // about how much a character says, not how wide it renders.
+//
+// The ranges are LETTERS ONLY (Unicode category L*, minus the fillers), which is
+// why several blocks appear split: doubling whole blocks let '・・' and '゛゜' —
+// pure punctuation — clear the minimum.
 // Keep these ranges in sync with lightrag/query_validation.py.
 const WIDE_CODEPOINT_RANGES: ReadonlyArray<readonly [number, number]> = [
-  [0x1100, 0x11ff], // Hangul Jamo
-  [0x3040, 0x309f], // Hiragana
-  [0x30a0, 0x30ff], // Katakana
-  [0x3130, 0x318f], // Hangul Compatibility Jamo
+  [0x1100, 0x115e], // Hangul Jamo (choseong)
+  [0x1161, 0x11ff], // Hangul Jamo (jungseong/jongseong)
+  [0x3041, 0x3096], // Hiragana letters
+  [0x309d, 0x309f], // Hiragana iteration marks and digraph
+  [0x30a1, 0x30fa], // Katakana letters
+  [0x30fc, 0x30ff], // Katakana prolonged sound, iteration marks, digraph
+  [0x3131, 0x3163], // Hangul Compatibility Jamo (before the filler)
+  [0x3165, 0x318e], // Hangul Compatibility Jamo (after the filler)
   [0x31f0, 0x31ff], // Katakana Phonetic Extensions
   [0x3400, 0x4dbf], // CJK Unified Ideographs Extension A
   [0x4e00, 0x9fff], // CJK Unified Ideographs
@@ -23,6 +31,7 @@ const WIDE_CODEPOINT_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0xf900, 0xfaff], // CJK Compatibility Ideographs
   [0xff66, 0xff9d], // Halfwidth Katakana letters
   [0xffa1, 0xffdc], // Halfwidth Hangul letters
+  [0x1aff0, 0x1afff], // Kana Extended-B
   [0x1b000, 0x1b16f], // Kana Supplement / Extended-A / Small Kana Extension
   [0x20000, 0x2a6df], // CJK Unified Ideographs Extension B
   [0x2a700, 0x2b73f], // Extension C
