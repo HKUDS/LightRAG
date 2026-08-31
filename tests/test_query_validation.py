@@ -179,14 +179,22 @@ def test_the_frontend_range_table_matches_this_one():
     assert "codePoint === 0x3007" in source
 
 
-def test_every_weighted_code_point_is_a_letter():
-    """The rule for the table, enforced on the table.
+def test_no_weighted_code_point_is_an_assigned_non_letter():
+    """The half of the table invariant CPython's Unicode data can see.
 
-    Doubling whole Unicode blocks is how punctuation got in: "・・" and "゛゜"
-    weighed 4 and cleared the minimum, as did two HANGUL FILLERs, which render
-    as nothing at all. Listing those as examples would only pin the ones we
-    happened to notice; this pins the property, so the next block someone adds
-    cannot quietly reopen the hole.
+    Doubling whole Unicode blocks is how things that say nothing got weighted:
+    "・・" and "゛゜" cleared the minimum, as did two HANGUL FILLERs — which
+    render as nothing at all — and two unassigned code points such as U+1AFFF.
+    Listing those as examples would pin only the ones we happened to notice;
+    this pins the property.
+
+    Unassigned code points are SKIPPED here rather than rejected, and that is
+    not the escape hatch it looks like: CPython 3.11 ships UCD 14.0.0, which
+    predates CJK Extensions H and I, so "unassigned here" does not mean
+    "unassigned". The table is generated from newer data, and the WebUI suite —
+    running on a newer Unicode — asserts every entry matches \\p{L}, which is
+    what actually excludes the unassigned ones. The two tests are halves of one
+    invariant; neither runtime can state it alone.
     """
     import unicodedata
 
@@ -196,7 +204,7 @@ def test_every_weighted_code_point_is_a_letter():
             character = chr(codepoint)
             name = unicodedata.name(character, None)
             if name is None:
-                continue  # unassigned: cannot be typed, harmless inside a range
+                continue
             if not unicodedata.category(character).startswith("L"):
                 offenders.append((codepoint, "not a letter", name))
             elif "FILLER" in name:
@@ -205,6 +213,27 @@ def test_every_weighted_code_point_is_a_letter():
     assert offenders == [], "\n".join(
         f"U+{cp:04X} {why}: {name}" for cp, why, name in offenders
     )
+
+
+@pytest.mark.parametrize("codepoint", [0x1AFF4, 0x1AFFC, 0x1AFFF, 0x3040, 0x3097])
+def test_unassigned_code_points_are_not_weighted(codepoint):
+    """Two of anything unassigned must not add up to a meaningful query."""
+    query = chr(codepoint) * 2
+    assert rag_query_weight(query) == 2
+    with pytest.raises(RAGQueryTooShortError):
+        validate_rag_query(query)
+
+
+def test_the_ideographic_zero_is_weighted_despite_not_being_a_letter():
+    """U+3007 is category Nl, so it is a deliberate exception to the table.
+
+    It is how a Chinese year is written — 二〇二五年 — and says as much as the
+    digits it stands in for.
+    """
+    import unicodedata
+
+    assert unicodedata.category("〇") == "Nl"
+    assert rag_query_weight("二〇") == 4
 
 
 def test_the_weighted_ranges_are_sorted_and_disjoint():

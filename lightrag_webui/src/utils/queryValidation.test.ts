@@ -1,5 +1,6 @@
 /// <reference types="bun" />
 import { describe, expect, test } from 'bun:test'
+import { WIDE_CODEPOINT_RANGES } from './queryValidation'
 import {
   isQueryEmpty,
   isRagQueryTooShort,
@@ -109,5 +110,37 @@ describe('RAG query validation', () => {
 
     expect(meetsMinRagQueryWeight(counted)).toBe(true)
     expect(read).toBe(3)
+  })
+  test('every weighted code point is an assigned letter', () => {
+    // The other half of the table invariant. The backend suite asserts no
+    // ASSIGNED code point in the table is a non-letter; it cannot speak for the
+    // unassigned ones, because CPython 3.11 ships UCD 14.0.0 and would call CJK
+    // Extensions H and I unassigned too. This runtime has newer Unicode data,
+    // so it is the side that can reject U+1AFF4/U+1AFFC/U+1AFFF — the gaps that
+    // let two invisible code points clear the minimum.
+    const LETTER = /\p{L}/u
+    const offenders: string[] = []
+    for (const [start, end] of WIDE_CODEPOINT_RANGES) {
+      for (let codePoint = start; codePoint <= end; codePoint++) {
+        if (!LETTER.test(String.fromCodePoint(codePoint))) {
+          offenders.push(`U+${codePoint.toString(16).toUpperCase()}`)
+        }
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+
+  test('unassigned code points are not weighted', () => {
+    for (const codePoint of [0x1aff4, 0x1affc, 0x1afff, 0x3040, 0x3097]) {
+      const query = String.fromCodePoint(codePoint).repeat(2)
+      expect(ragQueryWeight(query)).toBe(2)
+      expect(isRagQueryTooShort(query, 'mix')).toBe(true)
+    }
+  })
+
+  test('the ideographic zero is weighted despite not being a letter', () => {
+    // U+3007 is category Nl — a deliberate exception, because 二〇二五年.
+    expect(/\p{L}/u.test('〇')).toBe(false)
+    expect(ragQueryWeight('二〇')).toBe(4)
   })
 })
