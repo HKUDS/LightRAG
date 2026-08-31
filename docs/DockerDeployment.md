@@ -254,7 +254,8 @@ This keeps generated host mounts under the same `./data` root used by the defaul
 read-only at `/app/data/ui_templates`. The mount is inert until you uncomment
 `UI_TEMPLATES_DIR` in the `lightrag` service's `environment:` block, at which
 point the server replaces the welcome page, the login-page text and user
-agreement, the query empty state and the brand logo with the bundle's content
+agreement, the query empty state, the copyright line and the brand logo with
+the bundle's content
 — per language, without rebuilding the frontend. A set but invalid bundle
 makes the server refuse to start.
 

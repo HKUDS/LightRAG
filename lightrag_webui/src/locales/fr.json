@@ -515,8 +515,7 @@
       "defaultMarkdown": "Bienvenue ! Posez vos questions sur la base de connaissances et obtenez des réponses avec citations. Connectez-vous pour commencer.",
       "enterButton": "Entrer dans l'espace",
       "loginButton": "Se connecter",
-      "enterFailed": "Impossible de joindre le serveur. Veuillez réessayer.",
-      "copyright": "© {{year}} LightRAG Team. Tous droits réservés."
+      "enterFailed": "Impossible de joindre le serveur. Veuillez réessayer."
     },
     "queryEmpty": {
       "defaultMarkdown": "Posez une question sur la base de connaissances pour commencer."

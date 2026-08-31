@@ -6,7 +6,8 @@
     "ja": ["en"]
   },
   "brand": {
-    "logo": "assets/logo.svg"
+    "logo": "assets/logo.svg",
+    "copyright": "© 2025 Example Corp. All rights reserved."
   },
   "locales": {
     "en": {
@@ -21,14 +22,16 @@
       "query_empty": "locales/zh/query_empty.md",
       "login": "locales/zh/login.md",
       "agreements": "locales/zh/agreements.md",
-      "logo_alt": "示例公司"
+      "logo_alt": "示例公司",
+      "copyright": "© 2025 示例公司 版权所有"
     },
     "zh-TW": {
       "welcome": "locales/zh-TW/welcome.md",
       "query_empty": "locales/zh-TW/query_empty.md",
       "login": "locales/zh-TW/login.md",
       "agreements": "locales/zh-TW/agreements.md",
-      "logo_alt": "範例公司"
+      "logo_alt": "範例公司",
+      "copyright": "© 2025 範例公司 版權所有"
     }
   }
 }

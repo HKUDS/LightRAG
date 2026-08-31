@@ -118,6 +118,11 @@ def create_ui_customization_routes(
                     **brand_base,
                     "logo_url": logo_url,
                     "logo_alt": logo_alt,
+                    # Null when the bundle declares none. The uncustomized
+                    # response below carries no such key at all, which is the
+                    # same instruction to the client: render no copyright
+                    # line. LightRAG has no default line to fall back to.
+                    "copyright": content.copyright,
                 },
                 "welcome": {"format": "markdown", "content": content.welcome},
                 "query_empty": {"format": "markdown", "content": content.query_empty},

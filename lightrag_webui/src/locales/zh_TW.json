@@ -515,8 +515,7 @@
       "defaultMarkdown": "歡迎使用！您可以就知識庫內容提問，並獲得帶引用的回答。登入後即可開始。",
       "enterButton": "進入工作區",
       "loginButton": "登入",
-      "enterFailed": "無法連接伺服器，請重試。",
-      "copyright": "© {{year}} LightRAG Team. 保留所有權利。"
+      "enterFailed": "無法連接伺服器，請重試。"
     },
     "queryEmpty": {
       "defaultMarkdown": "輸入您想了解的問題，開始查詢知識庫。"

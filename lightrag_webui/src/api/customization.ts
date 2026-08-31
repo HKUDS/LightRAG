@@ -16,6 +16,14 @@ export interface UICustomizationBrand {
   description?: string | null
   logo_url?: string | null
   logo_alt?: string
+  /**
+   * The deployment's own copyright line, shown at the foot of the pre-login
+   * pages. `null` when the bundle declares none, and ABSENT on a
+   * `customized: false` response — both mean "render no line". LightRAG ships
+   * no default text here: an uncustomized deployment shows no copyright at
+   * all, and a customer's page never carries LightRAG's.
+   */
+  copyright?: string | null
 }
 
 export interface UICustomizationContent {

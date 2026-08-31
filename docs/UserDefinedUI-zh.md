@@ -1,6 +1,6 @@
 # 用户自定义 UI 内容（`UI_TEMPLATES_DIR`）
 
-LightRAG 支持用**你自己的**欢迎页、登录页文案、用户协议、查询空白页和品牌 Logo 替换内置内容，并且可以按语言分别提供——无需重新构建前端。你只需要写一个小目录：若干 Markdown 文件加一个 `manifest.json`，把环境变量 `UI_TEMPLATES_DIR` 指向它，然后重启服务器。
+LightRAG 支持用**你自己的**欢迎页、登录页文案、用户协议、查询空白页、版权声明和品牌 Logo 替换内置内容，并且可以按语言分别提供——无需重新构建前端。你只需要写一个小目录：若干 Markdown 文件加一个 `manifest.json`，把环境变量 `UI_TEMPLATES_DIR` 指向它，然后重启服务器。
 
 本文是完整指南：可定制的内容、Bundle（模板包）的精确格式、源码 / Docker / Kubernetes 三种部署方式、如何验证，以及每一条启动错误的含义。
 
@@ -17,6 +17,7 @@ LightRAG 支持用**你自己的**欢迎页、登录页文案、用户协议、�
 | **登录页文案** | 用户名/密码表单上方，**两个入口都生效**（`/webui/#/login` 与 `/workspace/#/login`） | `login`（可选） |
 | **用户协议 + 同意勾选框** | 登录页上的勾选框，其链接以弹窗打开协议文档；未勾选时前端登录按钮保持禁用——这是前端提示，不是服务端强制（见 [§6](#6-登录同意门禁)） | `agreements`（可选，与 `login` 成对生效） |
 | **品牌 Logo** | 欢迎页、查询空白页与登录页 | `brand.logo`、locale 级 `logo`、`logo_alt` |
+| **版权声明** | 欢迎页与登录页的最下方——在卡片**外部**，贴着页面底边 | `brand.copyright`、locale 级 `copyright`（可选） |
 
 Bundle **不能**设置的内容：
 
@@ -126,7 +127,8 @@ ui_templates/
     "ja": ["en"]
   },
   "brand": {
-    "logo": "assets/logo.svg"
+    "logo": "assets/logo.svg",
+    "copyright": "© 2025 示例公司 版权所有"
   },
   "locales": {
     "zh": {
@@ -155,8 +157,9 @@ ui_templates/
 |---|---|---|---|
 | `schema_version` | 是 | number | 必须为 `1`。 |
 | `default_locale` | 是 | string | 必须是 `locales` 中已声明的某个 key。访问者的 locale 无法匹配时使用。 |
-| `brand` | 是 | object | 有且仅有一个 key：`logo`。 |
+| `brand` | 是 | object | 两个 key：`logo`（必填）与 `copyright`（可选）。 |
 | `brand.logo` | 是 | string \| `null` | 默认 Logo 的路径；显式写 `null` 表示「本部署不显示 Logo」。**缺省该 key 会导致启动失败**——绝不允许在你的文案下方悄悄回退到 LightRAG 的 Logo。 |
+| `brand.copyright` | 否 | string \| `null` | 所有 locale 共用的版权声明，是**直接写在 manifest 里的纯文本**（不是 Markdown 文件路径）。缺省、`null`、空串或纯空白含义相同：**不显示版权行**。没有可继承的 LightRAG 默认文案——见 [§4.5](#45-版权声明)。 |
 | `locales` | 是 | object | 非空的 locale → 条目映射。 |
 | `fallbacks` | 否 | object \| `null` | 把*未覆盖*的 locale 映射到已声明的 locale。见 [§5.1](#51-locale-解析)。 |
 
@@ -172,6 +175,7 @@ ui_templates/
 | `logo` | 否 | string \| `null` | 覆盖本 locale 的 `brand.logo`（`null` = 本 locale 不显示 Logo）。key **不存在**时继承 `brand.logo`。 |
 | `login` | 否 | string \| `null` | 登录页文案的路径。 |
 | `agreements` | 否 | string \| `null` | 单份用户协议文档的路径。 |
+| `copyright` | 否 | string \| `null` | 覆盖本 locale 的 `brand.copyright`（`null` = 本 locale 不显示版权行）。key **不存在**时继承 `brand.copyright`。 |
 
 `login` 与 `agreements` 同时声明才会开启登录同意门禁——见 [§6](#6-登录同意门禁)。
 
@@ -214,6 +218,39 @@ script、地区、variant 和 extension 子标签都可用——`zh-Hant-TW`、`
 | Logo 格式 | PNG、JPEG、WebP、SVG——**依据文件字节判断，而不是扩展名** |
 
 SVG 必须真正存在 `<svg>` 根元素（其前可以有 XML 声明、注释、DOCTYPE 或处理指令）。带命名空间前缀的根元素（`<s:svg>`）以及 UTF-16/32 编码的文件不被识别——没有任何 SVG 工具会产出这类文件。
+
+### 4.5 版权声明
+
+版权声明是**部署方自己的法律声明**，因此 LightRAG 绝不替你写：没有模板包时——或者模板包没有声明版权信息时——页面上不出现任何版权行，LightRAG 自己的版权声明也绝不会印在你的页面上。
+
+显示位置：**欢迎页**与**登录页**的底边，在卡片*外部*，使用小号弱化文字。它和模板包里的其他内容一样属于登录前内容；登录之后的应用内页面不显示它。
+
+声明方式：
+
+```jsonc
+{
+  "brand": {
+    "logo": "assets/logo.svg",
+    "copyright": "© 2025 示例公司 版权所有"                     // 所有 locale
+  },
+  "locales": {
+    "en": {
+      "copyright": "© 2025 Example Corp. All rights reserved." // 本 locale 改用这一行
+    },
+    "zh": {
+      "copyright": null                                        // 本 locale 不显示
+    }
+  }
+}
+```
+
+规则要点：
+
+- **纯文本，不是 Markdown，也不是文件。** 它只有一行，直接写在 `manifest.json` 里；没有模板文件可指向，也不会渲染 Markdown——页脚不是放标题、图片或链接的地方。
+- **与 `logo` 完全相同的三态写法：** key 不存在 → 继承 `brand.copyright`；写字符串 → 使用它；写 `null` → 本 locale 不显示。
+- **空即为无。** `""` 或纯空白与缺省该字段完全等价：不显示。这一点与 `login` / `agreements` 不同——空白的 `login` / `agreements` 会导致启动失败，而这里的空白只是「关掉」某个东西，不存在被悄悄错误展示的内容。
+- **首尾空白会被去除**，所以 manifest 里的缩进不会泄漏到页面上。
+- 它跟随**解析后**的 locale：从 `ko` 回退到 `zh` 的访问者看到的是 `zh` 那一行（见 [§5.1](#51-locale-解析)）。
 
 ---
 
@@ -445,7 +482,8 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
     "title": "My Graph KB",
     "description": "Simple and Fast Graph Based RAG System",
     "logo_url": "/ui/customization/assets/9f2a…/brand-logo",
-    "logo_alt": "示例公司"
+    "logo_alt": "示例公司",
+    "copyright": "© 2025 示例公司 版权所有"
   },
   "welcome": { "format": "markdown", "content": "## 欢迎…" },
   "query_empty": { "format": "markdown", "content": "…" },
@@ -461,6 +499,7 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
 - `"fallback_used": true` → 请求的 locale 未被声明，`locale` 字段告诉你最终落到了哪里。
 - `"consent_required"` → 该 locale 下是否会出现同意勾选框。
 - `logo_url: null` → 该 locale 解析结果是*不显示* Logo（某处显式写了 `null`），而不是回退到 LightRAG 的 Logo。
+- `brand.copyright: null` → 该 locale 不显示版权行。在 `"customized": false` 的响应里这个 key 根本不存在，含义相同：没有可渲染的内容。
 
 **浏览器。** 访问 `/workspace` 查看欢迎页，访问 `/workspace/#/login` 或 `/webui/#/login` 查看登录页，并在设置菜单中切换界面语言逐一检查各个 locale。
 
@@ -490,6 +529,7 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
 | `logo '…': content is not PNG, JPEG, WebP or SVG` | 文件字节不匹配任何受支持格式——例如后缀是 `.svg` 实际却是 HTML，或 SVG 缺少根元素/根元素带命名空间前缀。 |
 | `locales.xx.login: template file is empty` | `login` / `agreements` 是「声明与否」的开关，声明了却为空会被拒绝。`welcome` / `query_empty` 允许为空。 |
 | `locales.xx.logo_alt must be a non-empty string` | 为每个 locale 提供真实的替代文本。 |
+| `brand.copyright must be a string or null` / `locales.xx.copyright must be a string or null` | 版权声明是写在 manifest 里的纯文本——字符串，或用 `null` 表示「不显示」。不是路径，也不能是数字或数组。 |
 
 以下现象**不会**导致启动失败：
 
@@ -500,6 +540,7 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
 | 看不到同意勾选框 | 解析到的 locale 只声明了 `login` / `agreements` 之一；或未配置认证（`AUTH_ACCOUNTS` 未设置）；或访问者解析到的 locale 与你预期的不同——检查接口返回中的 `locale` 与 `consent_required`。 |
 | 内容是你的语言，按钮却不是 | 该 locale 不在前端界面语言集合内——见 [§5.3](#53-界面语言与-bundle-语言) 及启动警告。 |
 | Logo 不显示 | 该 locale（或 `brand`）解析结果为 `null`；或浏览器加载资源 URL 失败——直接请求 `logo_url` 查看状态码。 |
+| 版权行不显示 | `brand.copyright` 与解析后 locale 的 `copyright` 都没有声明文本（或其中之一是 `null` / 空）。用接口响应里的 `brand.copyright` 核对你正在查看的那个 locale。没有 LightRAG 默认文案：不声明就没有版权行（[§4.5](#45-版权声明)）。 |
 
 ---
 

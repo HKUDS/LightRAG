@@ -1,6 +1,6 @@
 # User-Defined UI Content (`UI_TEMPLATES_DIR`)
 
-LightRAG can serve **your own** welcome page, login-page text, user agreement, query empty state and brand logo — in several languages — without rebuilding the WebUI. You write a small directory of Markdown files plus a `manifest.json`, point the `UI_TEMPLATES_DIR` environment variable at it, and restart the server.
+LightRAG can serve **your own** welcome page, login-page text, user agreement, query empty state, copyright line and brand logo — in several languages — without rebuilding the WebUI. You write a small directory of Markdown files plus a `manifest.json`, point the `UI_TEMPLATES_DIR` environment variable at it, and restart the server.
 
 This document is the complete guide: what can be customized, the exact bundle format, how to deploy it from source / Docker / Kubernetes, how to verify it, and what every startup error means.
 
@@ -17,6 +17,7 @@ A ready-to-copy bundle lives in [`docs/ui_templates_example/`](./ui_templates_ex
 | **Login page text** | Above the username/password form, on **both** entries (`/webui/#/login` and `/workspace/#/login`) | `login` (optional) |
 | **User agreement + consent checkbox** | A checkbox on the login page, whose link opens the document in a dialog; the WebUI's Login button stays disabled until it is ticked — a WebUI prompt, not server-side enforcement ([§6](#6-the-login-consent-gate)) | `agreements` (optional, pairs with `login`) |
 | **Brand logo** | Welcome page, query empty state and login page | `brand.logo`, per-locale `logo`, `logo_alt` |
+| **Copyright line** | Foot of the welcome and login pages — **outside** the card, at the bottom edge of the page | `brand.copyright`, per-locale `copyright` (optional) |
 
 What you **cannot** set from the bundle:
 
@@ -126,7 +127,8 @@ The directory names above are a convention, not a rule: every file is located th
     "ja": ["en"]
   },
   "brand": {
-    "logo": "assets/logo.svg"
+    "logo": "assets/logo.svg",
+    "copyright": "© 2025 Example Corp. All rights reserved."
   },
   "locales": {
     "en": {
@@ -155,8 +157,9 @@ The directory names above are a convention, not a rule: every file is located th
 |---|---|---|---|
 | `schema_version` | yes | number | Must be `1`. |
 | `default_locale` | yes | string | Must be one of the declared `locales` keys. Used when a visitor's locale matches nothing. |
-| `brand` | yes | object | Exactly one key: `logo`. |
+| `brand` | yes | object | Two keys: `logo` (required) and `copyright` (optional). |
 | `brand.logo` | yes | string \| `null` | Path to the default logo, or an explicit `null` for "this deployment shows no logo". **Omitting the key fails startup** — a missing logo must never silently fall back to the LightRAG logo underneath your texts. |
+| `brand.copyright` | no | string \| `null` | The copyright line for every locale, as **plain text written in the manifest** (not a Markdown file). Omitted, `null`, empty or whitespace-only all mean the same thing: **no line is shown**. There is no LightRAG default to inherit — see [§4.5](#45-the-copyright-line). |
 | `locales` | yes | object | Non-empty map of locale → entry. |
 | `fallbacks` | no | object \| `null` | Maps *uncovered* locales onto declared ones. See [§5.1](#51-locale-resolution). |
 
@@ -172,6 +175,7 @@ Unknown top-level fields are an error, so a typo (`defaultLocale`) is reported a
 | `logo` | no | string \| `null` | Overrides `brand.logo` for this locale (`null` = no logo here). When the key is **absent**, the locale inherits `brand.logo`. |
 | `login` | no | string \| `null` | Path to the login-page blurb. |
 | `agreements` | no | string \| `null` | Path to the single user-agreement document. |
+| `copyright` | no | string \| `null` | Overrides `brand.copyright` for this locale (`null` = no line here). When the key is **absent**, the locale inherits `brand.copyright`. |
 
 `login` and `agreements` together switch on the login consent gate — see [§6](#6-the-login-consent-gate).
 
@@ -214,6 +218,39 @@ Read [§5.3](#53-interface-languages-vs-bundle-locales) before declaring a local
 | Logo formats | PNG, JPEG, WebP, SVG — **detected from the file's bytes, not its extension** |
 
 For SVG, the file must actually open an `<svg>` root element (an XML declaration, comments, a DOCTYPE or processing instructions may precede it). A namespace-prefixed root (`<s:svg>`) or a UTF-16/32-encoded file is not recognized — no SVG tool emits those.
+
+### 4.5 The copyright line
+
+The copyright line is **your deployment's own legal statement**, so LightRAG never writes one for you: without a bundle — or with a bundle that says nothing about copyright — the pages show no copyright line at all, and LightRAG's own notice is never printed on your pages.
+
+Where it appears: at the bottom edge of the **welcome page** and the **login page**, *outside* the card, in small muted type. It is pre-login content, like everything else in the bundle; the in-app pages after sign-in do not show it.
+
+How to declare it:
+
+```jsonc
+{
+  "brand": {
+    "logo": "assets/logo.svg",
+    "copyright": "© 2025 Example Corp. All rights reserved."   // every locale
+  },
+  "locales": {
+    "zh": {
+      "copyright": "© 2025 示例公司 版权所有"                    // this locale instead
+    },
+    "en": {
+      "copyright": null                                        // no line for en
+    }
+  }
+}
+```
+
+The rules, in short:
+
+- **Plain text, not Markdown, and not a file.** It is one short line, written directly in `manifest.json`; there is no template file to point at, and no Markdown is rendered — a footer is not a place for headings, images or links.
+- **Same three-way shape as `logo`:** key absent → inherit `brand.copyright`; a string → use it; `null` → no line for this locale.
+- **Empty means absent.** `""` or whitespace is treated exactly like omitting the field: no line. Unlike a blank `login` / `agreements` file, it does **not** fail startup — blankness here only turns something off, so there is nothing to be silently mis-shown.
+- **Surrounding whitespace is stripped**, so indentation in the manifest never leaks into the page.
+- It follows the **resolved** locale: a visitor who falls back from `ko` to `zh` sees the `zh` line (see [§5.1](#51-locale-resolution)).
 
 ---
 
@@ -445,7 +482,8 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
     "title": "My Graph KB",
     "description": "Simple and Fast Graph Based RAG System",
     "logo_url": "/ui/customization/assets/9f2a…/brand-logo",
-    "logo_alt": "示例公司"
+    "logo_alt": "示例公司",
+    "copyright": "© 2025 示例公司 版权所有"
   },
   "welcome": { "format": "markdown", "content": "## 欢迎…" },
   "query_empty": { "format": "markdown", "content": "…" },
@@ -461,6 +499,7 @@ Useful checks:
 - `"fallback_used": true` → the requested locale is not declared; `locale` tells you where it landed.
 - `"consent_required"` → whether the checkbox will appear for this locale.
 - `logo_url: null` → this locale resolves to *no* logo (an explicit `null` somewhere), not to the LightRAG logo.
+- `brand.copyright: null` → this locale shows no copyright line. On a `"customized": false` response the key is absent entirely, which means the same thing: nothing to render.
 
 **In the browser.** Visit `/workspace` for the welcome page, `/workspace/#/login` or `/webui/#/login` for the login page, and switch the interface language from the settings menu to check each locale.
 
@@ -490,6 +529,7 @@ If `UI_TEMPLATES_DIR` is set and anything in the bundle is invalid, the server *
 | `logo '…': content is not PNG, JPEG, WebP or SVG` | The bytes do not match any accepted format — e.g. a `.svg` that is really HTML, or an SVG whose root element is missing or prefixed. |
 | `locales.xx.login: template file is empty` | `login` / `agreements` are declared-or-absent switches; a blank declared file is rejected. `welcome` / `query_empty` may be blank. |
 | `locales.xx.logo_alt must be a non-empty string` | Give each locale real alt text. |
+| `brand.copyright must be a string or null` / `locales.xx.copyright must be a string or null` | The copyright line is plain text written in the manifest — a string, or `null` for "no line". Not a path, not a number, not a list. |
 
 Symptoms that are **not** startup failures:
 
@@ -500,6 +540,7 @@ Symptoms that are **not** startup failures:
 | Consent checkbox missing | The resolved locale declares only one of `login` / `agreements`, or auth is disabled (`AUTH_ACCOUNTS` unset), or the visitor resolved to a different locale than you expected — check `locale` and `consent_required` in the endpoint response. |
 | Content is in your language, buttons are not | The locale is outside the WebUI's interface languages — see [§5.3](#53-interface-languages-vs-bundle-locales) and the startup warning. |
 | Logo does not show | The locale (or `brand`) resolves to `null`, or the browser failed to load the asset URL — fetch `logo_url` directly and check the status. |
+| Copyright line does not show | Neither `brand.copyright` nor the resolved locale's `copyright` declares text (or one of them is `null` / empty). Check `brand.copyright` in the endpoint response for the locale you are looking at. There is no LightRAG default: no declaration means no line ([§4.5](#45-the-copyright-line)). |
 
 ---
 
