@@ -110,7 +110,22 @@ class QueryRequest(BaseModel):
     user_prompt: Optional[str] = Field(
         default=None,
         max_length=MAX_QUERY_CHARS,
-        description="User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template.",
+        description=(
+            "Additional instructions for the LLM, injected into the "
+            "'Additional Instructions' section of the answer prompt. It does not "
+            "affect retrieval. The server may prepend a global prefix to this "
+            "value; set disable_user_prompt_prefix to opt out."
+        ),
+    )
+
+    disable_user_prompt_prefix: Optional[bool] = Field(
+        default=None,
+        description=(
+            "If True, the server-side global prompt prefix is not prepended to "
+            "user_prompt, leaving the client in full control of the final "
+            "instruction text. The prefix itself is server configuration and "
+            "cannot be read or replaced by a request. Default is False."
+        ),
     )
 
     enable_rerank: Optional[bool] = Field(
@@ -206,6 +221,10 @@ class QueryRequest(BaseModel):
         history dict is forwarded verbatim, so count its serialized form rather
         than only the ``content`` key.
         """
+        # The server-side user_prompt_prefix is deliberately NOT counted: it is
+        # operator configuration, not client-supplied text, and folding it in
+        # would make previously-legal requests start failing the moment an
+        # operator edits USER_PROMPT_PREFIX.
         total = count_conversation_input_chars(
             self.query,
             self.user_prompt,
