@@ -45,6 +45,34 @@ describe('extractMarkdownTitle', () => {
     expect(extractMarkdownTitle(doc)).toBe('Real Title')
   })
 
+  test('a fence-like line with trailing text does not close the fence', () => {
+    // CommonMark lets a CLOSING fence carry only whitespace, so inside a
+    // fenced Markdown example the ` ```not-a-close ` line is content and the
+    // block runs on through the `#` under it. Closing on the prefix alone
+    // would announce a heading lifted out of the example.
+    const doc = [
+      '```md',
+      '```not-a-close',
+      '# Not the title',
+      '```',
+      '',
+      '# Real Title'
+    ].join('\n')
+    expect(extractMarkdownTitle(doc)).toBe('Real Title')
+  })
+
+  test('an info string still opens a fence', () => {
+    // The same rule must not apply to OPENERS: ` ```bash ` opens normally,
+    // so the `#` comment inside stays out of the title.
+    expect(extractMarkdownTitle('```bash\n# not a heading\n```\n\n# Title')).toBe(
+      'Title'
+    )
+  })
+
+  test('a closing fence may be indented and padded', () => {
+    expect(extractMarkdownTitle('```\n# inside\n   ```   \n\n# Title')).toBe('Title')
+  })
+
   test('a fence closed by a different character stays open', () => {
     // `~~~` cannot close a ``` fence, so everything after it is still code.
     expect(extractMarkdownTitle('```\n~~~\n# inside code\n')).toBeNull()

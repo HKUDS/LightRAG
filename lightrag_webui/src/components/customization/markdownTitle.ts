@@ -22,8 +22,10 @@
  * frontend tests cover logic and there is no DOM test setup.
  */
 
-/** Fence openers/closers: at least three backticks or tildes, indented < 4. */
-const FENCE_RE = /^ {0,3}(`{3,}|~{3,})/
+/** Fence marker: at least three backticks or tildes, indented < 4, plus
+ * whatever follows on the line — an opener may carry an info string
+ * (` ```md `), a CLOSER may not. */
+const FENCE_RE = /^ {0,3}(`{3,}|~{3,})(.*)$/
 /** ATX heading: `#`…`######` plus a space (or the empty `#` line). */
 const ATX_RE = /^ {0,3}(#{1,6})(?:\s+(.*))?$/
 /** Setext underline: `===` (h1) or `---` (h2) under a paragraph line. */
@@ -78,8 +80,17 @@ export function extractMarkdownTitle(markdown: string | null | undefined): strin
     const line = lines[index]
     const fenceMatch = FENCE_RE.exec(line)
     if (fence !== null) {
-      // Inside a fence: only a closer of the SAME character ends it.
-      if (fenceMatch && fenceMatch[1][0] === fence[0] && fenceMatch[1].length >= fence.length) {
+      // Inside a fence: a closer must use the SAME character, be at least as
+      // long, and carry nothing but whitespace after it. That last rule is
+      // not pedantry — ` ```not-a-close ` inside a fenced Markdown example is
+      // CONTENT, and treating it as a closer would let the `#` lines under it
+      // be read as the document's title.
+      if (
+        fenceMatch &&
+        fenceMatch[1][0] === fence[0] &&
+        fenceMatch[1].length >= fence.length &&
+        fenceMatch[2].trim() === ''
+      ) {
         fence = null
       }
       continue
