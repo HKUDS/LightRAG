@@ -16,6 +16,7 @@ A ready-to-copy bundle lives in [`docs/ui_templates_example/`](./ui_templates_ex
 | **Query empty state** | `/workspace` query page, while the conversation is empty (and again after *Clear*) | `query_empty` (required) |
 | **Login page text** | Above the username/password form, on **both** entries (`/webui/#/login` and `/workspace/#/login`) | `login` (optional) |
 | **User agreement + consent checkbox** | A checkbox on the login page, whose link opens the document in a dialog; the WebUI's Login button stays disabled until it is ticked — a WebUI prompt, not server-side enforcement ([§6](#6-the-login-consent-gate)) | `agreements` (optional, pairs with `login`) |
+| **Consent checkbox link text** | The words the checkbox links — *"I agree to …"* | `consent_documents` (optional; falls back to the WebUI's generic *"Privacy Policy Agreement"*) |
 | **Brand logo** | Welcome page, query empty state and login page | `brand.logo`, per-locale `logo`, `logo_alt` |
 
 What you **cannot** set from the bundle:
@@ -130,6 +131,7 @@ The directory names above are a convention, not a rule: every file is located th
       "query_empty": "locales/en/query_empty.md",
       "login": "locales/en/login.md",
       "agreements": "locales/en/agreements.md",
+      "consent_documents": "Privacy Policy and Model Service Agreement",
       "logo_alt": "Example Corp"
     },
     "zh": {
@@ -137,6 +139,7 @@ The directory names above are a convention, not a rule: every file is located th
       "query_empty": "locales/zh/query_empty.md",
       "login": "locales/zh/login.md",
       "agreements": "locales/zh/agreements.md",
+      "consent_documents": "《用户隐私协议》和《模型服务协议》",
       "logo_alt": "示例公司"
     }
   }
@@ -168,8 +171,9 @@ Unknown top-level fields are an error, so a typo (`defaultLocale`) is reported a
 | `logo` | no | string \| `null` | Overrides `brand.logo` for this locale (`null` = no logo here). When the key is **absent**, the locale inherits `brand.logo`. |
 | `login` | no | string \| `null` | Path to the login-page blurb. |
 | `agreements` | no | string \| `null` | Path to the single user-agreement document. |
+| `consent_documents` | no | string \| `null` | **Inline text, not a path**: how the consent checkbox names the document it links to, in this locale's language. Declared-but-blank fails startup. When absent or `null`, the WebUI's own translation is used. |
 
-`login` and `agreements` together switch on the login consent gate — see [§6](#6-the-login-consent-gate).
+`login` and `agreements` together switch on the login consent gate — see [§6](#6-the-login-consent-gate). `consent_documents` only *labels* that gate; it never turns it on.
 
 ### 4.3 Locale keys
 
@@ -264,7 +268,7 @@ Declare a locale from the supported list whenever you want the whole page in one
 When a locale declares **both** `login` and `agreements`, the login page for that locale shows:
 
 - your `login` Markdown above the form, and
-- a checkbox reading (English UI) *"I agree to the Privacy Policy and Model Service Agreement"*, whose single link opens your `agreements` document in a dialog.
+- a checkbox reading (English UI) *"I agree to the …"*, whose single link — named by `consent_documents`, or by the WebUI's own translation when you declare none — opens your `agreements` document in a dialog.
 
 The **Login** button stays disabled until the box is ticked, and pressing Enter in the form is refused the same way.
 
@@ -274,9 +278,11 @@ The **Login** button stays disabled until the box is ticked, and pressing Enter 
 
 ### 6.1 One document, not two
 
-The checkbox carries exactly **one** link. Write both the privacy policy and the model service agreement into that single `agreements.md`, separating them with headings:
+The checkbox carries exactly **one** link, so everything the visitor has to agree to goes into that single `agreements.md`, separated by headings:
 
 ```markdown
+# Privacy Policy and Model Service Agreement
+
 ## Privacy Policy
 
 …
@@ -286,13 +292,42 @@ The checkbox carries exactly **one** link. Write both the privacy policy and the
 …
 ```
 
-The checkbox label itself is not customizable — it comes from the WebUI's own translations, so it already reads naturally in each interface language (`同意《用户隐私协议》和《模型服务协议》` in Chinese, and so on). Keep your document's headings consistent with that wording.
+> **A merged document must name itself.** The WebUI's fallback link text is the generic *"Privacy Policy Agreement"*. The moment your file covers anything beyond a privacy policy — a model service agreement, terms of service, an acceptable-use policy — that fallback understates what the visitor is ticking, so set `consent_documents` to the real name.
+>
+> This includes bundles written before the field existed: they keep loading unchanged, but their checkbox now reads *"Privacy Policy Agreement"*. **If your `agreements.md` merges several documents, add `consent_documents` when you upgrade.**
+
+#### Naming the link
+
+`consent_documents` is the text the checkbox turns into the link — set it to whatever your deployment actually calls the document:
+
+```jsonc
+"consent_documents": "Example Corp Terms of Service"
+```
+
+The sentence around it (*"I agree to …"*) still comes from the WebUI's own translations, so it reads naturally in each interface language; only the document's name is yours. Leave the field out and that translation names the link too — the generic *"Privacy Policy Agreement"* (`《隐私政策协议》` in Chinese, and so on), which fits a file that really is just a privacy policy and understates every file that is not (see the note above).
+
+#### What the dialog shows
+
+The dialog renders `agreements.md` **as written** — no title is printed above it. So give the file its own heading; that heading is the document's title on screen:
+
+```markdown
+# Privacy Policy and Model Service Agreement
+
+## Privacy Policy
+
+…
+```
+
+Nothing reads the document — the dialog *renders* it. Its name for screen readers is the checkbox's own link text (`consent_documents`, or the WebUI's fallback), which is also what the visitor just ticked. **Keeping that name consistent with the file's heading, and with what the file actually contains, is yours to maintain.**
+
+Headings, paragraphs, lists, tables, block quotes, code blocks, horizontal rules and links all render with the standard document typography. Raw HTML inside the Markdown is dropped, as in every bundle template — see [§10](#10-content-authoring-rules).
 
 ### 6.2 Rules to know
 
 - **Both or neither.** Declaring only `login` gives a branded login page with no gate; declaring only `agreements` gives a document nothing links to. Neither turns the gate on — a half-configuration is treated as a half-configuration, not as consent.
 - **Per locale.** A visitor resolving to a locale that declares neither field sees no checkbox. Declare the pair for every locale that must be gated, or route the uncovered ones there with `fallbacks`.
-- **A declared-but-empty file fails startup.** The gate must never point at a blank document.
+- **A declared-but-empty file fails startup.** The gate must never point at a blank document. The same holds for a blank `consent_documents`.
+- **The link text is optional, the documents are not.** `consent_documents` on its own never switches the gate on, and a locale that declares the pair without it still gets a working checkbox — labelled by the WebUI translation.
 - **The tick is not remembered.** It lives only as long as the login page and is bound to the exact document text on screen, so it is asked for on every visit. Switching the interface language mid-page replaces the document and clears the tick, unless the new locale's text is byte-for-byte identical.
 - **WebUI only, not the API.** As above: `POST /login` has no consent field, so the gate constrains the WebUI's login form and nothing else.
 - **Credentialed sign-in only.** A deployment with authentication disabled (`AUTH_ACCOUNTS` unset) admits visitors as guests without the gate. That is deliberate rather than a gap: with no authentication there is no identified user to bind an agreement to, and auth-disabled is a development/demo posture. **If the agreement must be accepted, configure `AUTH_ACCOUNTS`** (with `TOKEN_SECRET`).
@@ -463,6 +498,7 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
   "query_empty": { "format": "markdown", "content": "…" },
   "login": { "format": "markdown", "content": "…" },
   "agreements": { "format": "markdown", "content": "…" },
+  "consent_documents": "《用户隐私协议》和《模型服务协议》",
   "consent_required": true
 }
 ```
@@ -472,6 +508,7 @@ Useful checks:
 - `"customized": false` → no bundle is active (`UI_TEMPLATES_DIR` unset, or pointed at a directory with no `manifest.json`). The frontend is showing LightRAG's built-in branding.
 - `"fallback_used": true` → the requested locale is not declared; `locale` tells you where it landed.
 - `"consent_required"` → whether the checkbox will appear for this locale.
+- `"consent_documents": null` → this locale declares no link text; the WebUI names the link from its own translation.
 - `logo_url: null` → this locale resolves to *no* logo (an explicit `null` somewhere), not to the LightRAG logo.
 
 **In the browser.** Visit `/workspace` for the welcome page, `/workspace/#/login` or `/webui/#/login` for the login page, and switch the interface language from the settings menu to check each locale.
@@ -503,6 +540,7 @@ A configured directory *without* `manifest.json` is the one exception — the un
 | `logo '…': content is not PNG, JPEG, WebP or SVG` | The bytes do not match any accepted format — e.g. a `.svg` that is really HTML, or an SVG whose root element is missing or prefixed. |
 | `locales.xx.login: template file is empty` | `login` / `agreements` are declared-or-absent switches; a blank declared file is rejected. `welcome` / `query_empty` may be blank. |
 | `locales.xx.logo_alt must be a non-empty string` | Give each locale real alt text. |
+| `locales.xx.consent_documents must be a non-empty string or null` | It is inline text, not a path — a blank label would leave the checkbox naming nothing. Remove the key to fall back to the WebUI translation. |
 
 Symptoms that are **not** startup failures:
 
@@ -511,6 +549,8 @@ Symptoms that are **not** startup failures:
 | Server starts, but the page still shows LightRAG branding | `UI_TEMPLATES_DIR` is unset — check the log line and `/ui/customization`. In Docker, remember a compose `environment:` entry overrides `.env`. |
 | Startup logs `holds no manifest.json` and the branding is unchanged | The configured directory exists but has no bundle in it. Either you have not written one yet, or the server is reading a different directory than you populated — the warning names the path it read. `manifest.json` must sit directly in the bundle root, not one level down (a common cause is copying the parent directory). Check it from inside the container: `docker compose exec lightrag ls /app/data/ui_templates`. |
 | Edits do not appear | No hot reload. Restart the server (all workers). |
+| Checkbox says "Privacy Policy Agreement", but the document covers more | That is the WebUI fallback for a locale declaring no `consent_documents`. Name the document yourself ([§6.1](#61-one-document-not-two)) — bundles written before the field existed hit this on upgrade. |
+| Consent dialog has no title | `agreements.md` starts with no heading. The dialog prints the file as written — add a `# Title` line to it ([§6.1](#61-one-document-not-two)). |
 | Consent checkbox missing | The resolved locale declares only one of `login` / `agreements`, or auth is disabled (`AUTH_ACCOUNTS` unset), or the visitor resolved to a different locale than you expected — check `locale` and `consent_required` in the endpoint response. |
 | Content is in your language, buttons are not | The locale is outside the WebUI's interface languages — see [§5.3](#53-interface-languages-vs-bundle-locales) and the startup warning. |
 | Logo does not show | The locale (or `brand`) resolves to `null`, or the browser failed to load the asset URL — fetch `logo_url` directly and check the status. |
@@ -522,7 +562,7 @@ Symptoms that are **not** startup failures:
 - **Markdown with GFM** (tables, strikethrough, task lists). Links and images work normally; links open in a new tab.
 - **Raw HTML is dropped.** This is a format boundary, not distrust: the customization tier simply does not open an HTML path. Express layout with Markdown.
 - **Direction is not yours to set.** No `dir` attribute, no CSS — see [§5.2](#52-text-direction-rtl).
-- **Keep it short.** The welcome text sits above the fold on a phone; the query empty state is a single centred paragraph under the logo.
+- **Keep it short.** The welcome text sits above the fold on a phone; the query empty state is a single centred paragraph under the logo. The agreement document is the exception — it renders as a scrollable document in its own dialog, and its own headings structure it ([§6.1](#61-one-document-not-two)).
 
 ---
 

@@ -35,7 +35,7 @@
     "authDisabled": "Authentifizierung ist deaktiviert. Verwenden des anmeldefreien Modus.",
     "guestMode": "Anmeldefrei",
     "consentLabel": "Ich stimme der {{documents}} zu",
-    "consentDocuments": "Datenschutzerklärung und der Modellservice-Vereinbarung",
+    "consentDocuments": "Datenschutzvereinbarung",
     "errorConsentRequired": "Bitte lesen und akzeptieren Sie die Vereinbarungen vor der Anmeldung"
   },
   "common": {

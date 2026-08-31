@@ -98,6 +98,9 @@ _REQUIRED_LOCALE_FIELDS = ("welcome", "query_empty")
 # UILocaleContent.consent_required: the login-page consent gate turns on only
 # when a locale declares BOTH of them.
 _OPTIONAL_LOCALE_TEMPLATE_FIELDS = ("login", "agreements")
+# Inline (non-path) strings a locale MAY declare, validated like `logo_alt`:
+# present means a non-empty string, absent or explicit null means undeclared.
+_OPTIONAL_LOCALE_TEXT_FIELDS = ("consent_documents",)
 
 
 class UICustomizationError(Exception):
@@ -517,6 +520,14 @@ class UILocaleContent:
     # single link, so a reader opens and scrolls one document instead of
     # hunting for a second one they are equally required to have read.
     agreements: str | None = None
+    # How the consent checkbox NAMES the agreement document in its link --
+    # deployment content, so it belongs to the bundle beside the document it
+    # names, not to the WebUI's own translations (which cannot know that a
+    # deployment calls its document "Terms of Service"). None means the
+    # bundle declares no name and the WebUI falls back to its translated
+    # default; it is NOT part of `consent_required`, because a missing NAME
+    # never justifies dropping a gate whose document is right there.
+    consent_documents: str | None = None
 
     @property
     def consent_required(self) -> bool:
@@ -710,6 +721,7 @@ def load_ui_customization_snapshot(bundle_dir: str | Path) -> UICustomizationSna
                 "logo_alt",
                 "logo",
                 *_OPTIONAL_LOCALE_TEMPLATE_FIELDS,
+                *_OPTIONAL_LOCALE_TEXT_FIELDS,
             },
             required={*_REQUIRED_LOCALE_FIELDS, "logo_alt"},
             context=f"locales.{key}",
@@ -748,6 +760,21 @@ def load_ui_customization_snapshot(bundle_dir: str | Path) -> UICustomizationSna
             else:
                 raise _fail(f"{context} must be a path string or null")
 
+        # Inline strings. Declared-but-blank is rejected for the same reason
+        # a blank template is: an empty link label would leave the consent
+        # checkbox pointing at a document with no name.
+        optional_texts: dict[str, str | None] = {}
+        for field_name in _OPTIONAL_LOCALE_TEXT_FIELDS:
+            raw_value = entry.get(field_name)
+            if raw_value is None:
+                optional_texts[field_name] = None
+            elif isinstance(raw_value, str) and raw_value.strip():
+                optional_texts[field_name] = raw_value
+            else:
+                raise _fail(
+                    f"locales.{key}.{field_name} must be a non-empty string or null"
+                )
+
         logo_asset_id: str | None
         if "logo" in entry:
             locale_logo_rel = entry["logo"]
@@ -770,6 +797,7 @@ def load_ui_customization_snapshot(bundle_dir: str | Path) -> UICustomizationSna
             logo_alt=logo_alt,
             logo_asset_id=logo_asset_id,
             **optional_templates,
+            **optional_texts,
         )
 
     # --- default locale ----------------------------------------------------

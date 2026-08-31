@@ -35,7 +35,7 @@
     "authDisabled": "Authentication is disabled. Using login free mode.",
     "guestMode": "Login Free",
     "consentLabel": "I agree to the {{documents}}",
-    "consentDocuments": "Privacy Policy and Model Service Agreement",
+    "consentDocuments": "Privacy Policy Agreement",
     "errorConsentRequired": "Please read and agree to the agreements before signing in"
   },
   "common": {
