@@ -19,7 +19,6 @@ import {
 import { ScrollArea } from '@/components/ui/ScrollArea'
 import AppSettings from '@/components/AppSettings'
 import CustomizedMarkdown from '@/components/customization/CustomizedMarkdown'
-import { extractMarkdownTitle } from '@/components/customization/markdownTitle'
 import { useCustomizedContent } from '@/components/customization/useCustomizedContent'
 import {
   CONSENT_LABEL_MARKER,
@@ -85,12 +84,6 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
     t('login.consentDocuments')
   )
   const consentLabelText = t('login.consentLabel', { documents: consentDocuments })
-  // The dialog prints the document AS WRITTEN, so its heading is the visible
-  // title and nothing is printed above it. This is the ACCESSIBLE name only
-  // — the same words a sighted reader sees, falling back to the link's own
-  // wording for a document that carries no heading.
-  const agreementsTitle =
-    extractMarkdownTitle(content.agreementsMarkdown) ?? consentDocuments
   const consentLabelParts = splitConsentLabel(
     t('login.consentLabel', { documents: CONSENT_LABEL_MARKER })
   )
@@ -379,9 +372,14 @@ const LoginPage = ({ autoActivateGuest = true }: LoginPageProps) => {
             {/* Visually hidden, NOT omitted: Radix requires a title for the
                 dialog's accessible name, while the visible one belongs to
                 the document itself — printing the link's wording here too
-                would put a second, different title above the file's own. */}
+                would put a second, different title above the file's own.
+
+                That name is the LINK's wording, never something parsed back
+                out of the document: it is what the visitor just ticked, and
+                the deployment maintains it alongside the file it points at.
+                Nothing here reads the Markdown; the dialog renders it. */}
             <DialogHeader className="sr-only">
-              <DialogTitle>{agreementsTitle}</DialogTitle>
+              <DialogTitle>{consentDocuments}</DialogTitle>
             </DialogHeader>
             {/* pr-8 clears the close button, which is positioned against the
                 dialog's physical right edge in both writing directions. */}

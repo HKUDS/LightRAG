@@ -11,18 +11,23 @@ const source = readFileSync(join(import.meta.dir, 'LoginPage.tsx'), 'utf8')
  * hidden one that gives the dialog its accessible name.
  */
 describe('login agreements dialog', () => {
+  const header = source.match(/<DialogHeader[\s\S]*?<\/DialogHeader>/)?.[0] ?? ''
+
   test('prints no title above the document', () => {
-    // The link's wording must not become a second, different heading over
-    // the file's own — the document supplies its title.
-    expect(source).not.toContain('<DialogTitle>{consentDocuments}</DialogTitle>')
-    expect(source).toContain('<DialogHeader className="sr-only">')
+    // The visible title belongs to the file. The dialog's own title element
+    // exists only to give the dialog an accessible name, so it lives inside
+    // the hidden header and nowhere else — a second one on screen would sit
+    // above the document's own heading and disagree with it.
+    expect(header).toContain('className="sr-only"')
+    expect(source.match(/<DialogTitle>/g)).toHaveLength(1)
   })
 
-  test('names the dialog from the document itself', () => {
-    expect(source).toContain(
-      'extractMarkdownTitle(content.agreementsMarkdown) ?? consentDocuments'
-    )
-    expect(source).toContain('<DialogTitle>{agreementsTitle}</DialogTitle>')
+  test('names the dialog with the link text, not with parsed Markdown', () => {
+    // The accessible name is what the visitor just ticked, and the bundle
+    // maintains it beside the file it points at. Nothing reads the document
+    // to name the dialog — the dialog renders the document.
+    expect(header).toContain('<DialogTitle>{consentDocuments}</DialogTitle>')
+    expect(source).not.toContain('extractMarkdownTitle')
   })
 
   test('renders the document with the document typography', () => {

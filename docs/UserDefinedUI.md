@@ -312,7 +312,7 @@ The sentence around it (*"I agree to …"*) still comes from the WebUI's own tra
 
 #### What the dialog shows
 
-The dialog renders `agreements.md` **as written** — no title is printed above it. So give the file its own heading; that heading is the document's title on screen, and the same words are what a screen reader announces when the dialog opens:
+The dialog renders `agreements.md` **as written** — no title is printed above it. So give the file its own heading; that heading is the document's title on screen:
 
 ```markdown
 # Privacy Policy and Model Service Agreement
@@ -322,7 +322,7 @@ The dialog renders `agreements.md` **as written** — no title is printed above 
 …
 ```
 
-The dialog is *announced* to screen readers by that same first heading, so a file combining several agreements is announced by whichever heading comes first. Nothing inspects the file beyond that — **keeping `consent_documents` consistent with what the document actually contains is yours to maintain.**
+Nothing reads the document — the dialog *renders* it. Its name for screen readers is the checkbox's own link text (`consent_documents`, or the WebUI's fallback), which is also what the visitor just ticked. **Keeping that name consistent with the file's heading, and with what the file actually contains, is yours to maintain.**
 
 Headings, paragraphs, lists, tables, block quotes, code blocks, horizontal rules and links all render with the standard document typography. Raw HTML inside the Markdown is dropped, as in every bundle template — see [§10](#10-content-authoring-rules).
 
