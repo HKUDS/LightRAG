@@ -491,7 +491,7 @@
       "streamResponse": "스트림 응답",
       "streamResponseTooltip": "True일 경우, 실시간 응답을 위한 스트리밍 출력을 활성화합니다",
       "userPrompt": "추가 출력 프롬프트",
-      "userPromptTooltip": "LLM에 추가 응답 요구 사항을 제공합니다(쿼리 내용과 무관하며 출력 처리에만 사용). 서버가 이 앞에 전역 프롬프트를 붙일 수 있습니다.",
+      "userPromptTooltip": "LLM에 추가 응답 요구 사항을 제공합니다(쿼리 내용과 무관하며 출력 처리에만 사용). 서버가 이 앞에 전역 프롬프트를 붙일 수 있습니다. 비워 두면 서버의 전역 프롬프트만 전송됩니다.",
       "userPromptPlaceholder": "사용자 지정 프롬프트 입력 (선택 사항)",
       "disableUserPromptPrefix": "전역 프롬프트 무시",
       "disableUserPromptPrefixTooltip": "서버의 전역 출력 프롬프트를 위의 추가 출력 프롬프트 앞에 붙이지 않습니다. 활성화하면 최종 지시문을 여기에서 완전히 제어합니다.",

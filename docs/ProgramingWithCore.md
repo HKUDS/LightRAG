@@ -648,8 +648,26 @@ the prefix with your own `\n\n` so it does not run into the caller's text. The
 prefix comes first because a model weights later instructions more heavily on
 conflict, so the per-request prompt wins.
 
-A request opts out with `disable_user_prompt_prefix`, which is what lets a
-front-end take full control of the final instruction text:
+**An empty `user_prompt` does not disable the prefix.** When a request sends no
+`user_prompt` — `None`, `""`, or the field omitted entirely — the prefix alone
+becomes the instructions sent to the LLM. This is the common deployment: the
+operator sets one policy and callers send nothing.
+
+```python
+# All three send exactly "Answer in the language of the question." to the model.
+rag.query("...", param=QueryParam(mode="hybrid"))
+rag.query("...", param=QueryParam(mode="hybrid", user_prompt=None))
+rag.query("...", param=QueryParam(mode="hybrid", user_prompt=""))
+```
+
+This matters for the WebUI in particular, which ships `user_prompt: ""` as its
+default: leaving the box blank applies the operator's policy rather than
+clearing it. The `Additional Instructions` section falls back to `n/a` only when
+**both** the prefix and the request's `user_prompt` are empty.
+
+A request opts out with `disable_user_prompt_prefix` — the only way to suppress
+the prefix — which is what lets a front-end take full control of the final
+instruction text:
 
 ```python
 QueryParam(user_prompt="...", disable_user_prompt_prefix=True)
@@ -658,12 +676,16 @@ QueryParam(user_prompt="...", disable_user_prompt_prefix=True)
 The prefix is configuration, not request data: a request can decline it but can
 never read or replace it. Three limits are worth knowing:
 
-- **`bypass` mode ignores it**, as it ignores `user_prompt` — that path has no
-  `{user_prompt}` slot and its `system_prompt` argument belongs to the caller.
+- **`bypass` mode ignores it**, as it ignores `user_prompt` entirely — empty or
+  not. That path has no `{user_prompt}` slot and its `system_prompt` argument
+  belongs to the caller, so this is not an exception to the rule above: bypass
+  simply sends no user instructions at all.
 - **`only_need_prompt=True` returns the composed prompt**, so any client that
   can set that debug flag can read the prefix verbatim.
 - **A custom `system_prompt` without a `{user_prompt}` placeholder drops it**,
-  the same way it already drops `user_prompt`.
+  the same way it already drops `user_prompt`. The token budget accounts for
+  this: the prefix is charged against the context allowance only when the
+  template that will actually be rendered has somewhere to put it.
 
 The prefix participates in the answer cache key, so editing it invalidates
 answers generated under the old one. With no prefix configured the key is

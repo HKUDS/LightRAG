@@ -4627,6 +4627,9 @@ async def kg_query(
         query_param,
         chunks_vdb,
         progress_callback=progress_callback,
+        # The token budget must be computed against the template this function
+        # will actually render below, not the default one.
+        system_prompt=system_prompt,
     )
 
     if context_result is None:
@@ -5652,6 +5655,7 @@ async def _build_context_str(
     entity_id_to_original: dict = None,
     relation_id_to_original: dict = None,
     progress_callback: ProgressCallback | None = None,
+    system_prompt: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
     Build the final LLM context string with token processing.
@@ -5679,9 +5683,17 @@ async def _build_context_str(
         global_config.get("max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS),
     )
 
-    # Get the system prompt template from PROMPTS or global_config
-    sys_prompt_template = global_config.get(
-        "system_prompt_template", PROMPTS["rag_response"]
+    # Budget against the template that will ACTUALLY be rendered. `kg_query`
+    # picks its template after this function returns, so without the forwarded
+    # `system_prompt` the estimate silently used the default one -- charging a
+    # caller's custom template at the wrong size, and charging the prefix even
+    # when that template has no {user_prompt} placeholder to render it into.
+    # `system_prompt_template` is kept as a lower-priority fallback: nothing in
+    # this repo writes it, but a downstream user may set it on their own config.
+    sys_prompt_template = (
+        system_prompt
+        or global_config.get("system_prompt_template")
+        or PROMPTS["rag_response"]
     )
 
     kg_context_template = PROMPTS["kg_query_context"]
@@ -5839,6 +5851,7 @@ async def _build_query_context(
     query_param: QueryParam,
     chunks_vdb: BaseVectorStorage = None,
     progress_callback: ProgressCallback | None = None,
+    system_prompt: str | None = None,
 ) -> QueryContextResult | None:
     """
     Main query context building function using the new 4-stage architecture:
@@ -5913,6 +5926,7 @@ async def _build_query_context(
         entity_id_to_original=truncation_result["entity_id_to_original"],
         relation_id_to_original=truncation_result["relation_id_to_original"],
         progress_callback=progress_callback,
+        system_prompt=system_prompt,
     )
 
     # Convert keywords strings to lists and add complete metadata to raw_data

@@ -117,7 +117,9 @@ class QueryRequest(BaseModel):
             "Additional instructions for the LLM, injected into the "
             "'Additional Instructions' section of the answer prompt. It does not "
             "affect retrieval. The server may prepend a global prefix to this "
-            "value; set disable_user_prompt_prefix to opt out."
+            "value; if this field is empty the prefix alone becomes the "
+            "instructions sent to the LLM. Set disable_user_prompt_prefix to "
+            "opt out of the prefix."
         ),
     )
 
@@ -126,7 +128,9 @@ class QueryRequest(BaseModel):
         description=(
             "If True, the server-side global prompt prefix is not prepended to "
             "user_prompt, leaving the client in full control of the final "
-            "instruction text. The prefix itself is server configuration and "
+            "instruction text. This is the only way to suppress the prefix -- "
+            "sending an empty user_prompt does not, it makes the prefix the "
+            "whole instruction. The prefix itself is server configuration and "
             "cannot be read or replaced by a request. Default is False."
         ),
     )

@@ -83,6 +83,29 @@ def test_slot_is_na_only_when_nothing_composed():
     assert resolve_user_prompt("   ", "").slot == "\n\n   "
 
 
+@pytest.mark.parametrize("empty", [None, ""])
+def test_empty_user_prompt_makes_the_prefix_the_whole_instruction(empty):
+    """The governing rule: an empty user_prompt does not disable the prefix.
+
+    When a caller sends nothing, the operator's prefix alone becomes the
+    instructions that reach the LLM. This is the common deployment -- one
+    server-side policy, callers sending no per-request text -- and it is also
+    what the WebUI relies on, since it ships ``user_prompt: ""`` as its default.
+    Only ``disable_prefix`` suppresses the prefix.
+    """
+    prefix = "Answer in the language of the question.\n\n"
+    result = resolve_user_prompt(empty, prefix)
+    assert result.text == prefix
+    assert result.slot == f"\n\n{prefix}"
+
+
+def test_na_requires_both_sides_empty():
+    """The placeholder is reached only when there is nothing at all to say."""
+    assert resolve_user_prompt(None, None).slot == "n/a"
+    assert resolve_user_prompt(None, "House style.").slot != "n/a"
+    assert resolve_user_prompt("Be concise.", None).slot != "n/a"
+
+
 def test_prefix_only_is_indistinguishable_from_a_caller_sending_it():
     """Why prompt.py needs no second placeholder."""
     prefix_only = resolve_user_prompt(None, "House style.")

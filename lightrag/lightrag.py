@@ -469,9 +469,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
     Server-side output policy, sourced from `USER_PROMPT_PREFIX` or
     `USER_PROMPT_PREFIX_FILE`. Concatenated verbatim with no separator inserted:
-    end it with your own newlines so it does not run into the caller's text. A
-    request opts out with `QueryParam.disable_user_prompt_prefix`, but can never
-    read or replace it.
+    end it with your own newlines so it does not run into the caller's text.
+
+    If a request's `user_prompt` is empty, this prefix alone becomes the
+    instructions sent to the LLM. A request opts out with
+    `QueryParam.disable_user_prompt_prefix`, but can never read or replace it.
     """
 
     # Entity extraction

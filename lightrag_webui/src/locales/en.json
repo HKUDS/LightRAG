@@ -491,7 +491,7 @@
       "streamResponse": "Stream Response",
       "streamResponseTooltip": "If True, enables streaming output for real-time responses",
       "userPrompt": "Additional Output Prompt",
-      "userPromptTooltip": "Provide additional response requirements to the LLM (unrelated to query content, only for output processing). The server may prepend a global prompt to this.",
+      "userPromptTooltip": "Provide additional response requirements to the LLM (unrelated to query content, only for output processing). The server may prepend a global prompt to this. Leave it empty to send only the server's global prompt.",
       "userPromptPlaceholder": "Enter custom prompt (optional)",
       "disableUserPromptPrefix": "Ignore Global Prompt",
       "disableUserPromptPrefixTooltip": "Do not prepend the server's global output prompt to the additional output prompt above. Enable this to control the final instructions entirely from here.",

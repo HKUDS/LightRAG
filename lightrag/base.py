@@ -152,17 +152,15 @@ class QueryParam:
     Its purpose is to let the user customize the way LLM generates the response.
 
     The server may prepend a global prefix (``USER_PROMPT_PREFIX`` /
-    ``LightRAG.user_prompt_prefix``) to this value; set
-    ``disable_user_prompt_prefix`` to opt out. Note that ``bypass`` mode ignores
-    this field entirely, and a caller-supplied ``system_prompt`` without a
+    ``LightRAG.user_prompt_prefix``) to this value. **If this field is empty,
+    the prefix alone becomes the instructions sent to the LLM** -- an empty
+    ``user_prompt`` does not disable the prefix. Set
+    ``disable_user_prompt_prefix`` (declared at the end of this class) to opt
+    out instead.
+
+    Two paths do not receive the prefix: ``bypass`` mode ignores this field
+    entirely (empty or not), and a caller-supplied ``system_prompt`` without a
     ``{user_prompt}`` placeholder silently drops it.
-    """
-
-    disable_user_prompt_prefix: bool = False
-    """Do not prepend the server-side global prompt prefix to ``user_prompt``.
-
-    The prefix is operator configuration; a request can only opt out of it, it
-    can never read or replace it. Default ``False``, i.e. the prefix applies.
     """
 
     enable_rerank: bool = os.getenv("RERANK_BY_DEFAULT", "true").lower() == "true"
@@ -174,6 +172,20 @@ class QueryParam:
     """If True, includes reference list in the response for supported endpoints.
     This parameter controls whether the API response includes a references field
     containing citation information for the retrieved content.
+    """
+
+    # Declared last on purpose. QueryParam is a plain dataclass, so SDK callers
+    # may construct it positionally; inserting a field beside `user_prompt`
+    # would silently rebind every positional argument after it (a positional
+    # `False` meant for `enable_rerank` would land here instead). New fields
+    # belong at the end.
+    disable_user_prompt_prefix: bool = False
+    """Do not prepend the server-side global prompt prefix to ``user_prompt``.
+
+    The prefix is operator configuration: a request can only opt out of it, it
+    can never read or replace it. Default ``False``, i.e. the prefix applies --
+    including when ``user_prompt`` is empty, where the prefix alone becomes the
+    instructions. Set this to True to take full control of the final text.
     """
 
 

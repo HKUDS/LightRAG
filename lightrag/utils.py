@@ -408,9 +408,12 @@ def resolve_user_prompt(
     prefix is configured, so existing answer-cache entries keep hitting (see
     :func:`compute_args_hash` call sites in ``operate.py``).
 
-    With only a prefix configured the result is indistinguishable downstream
-    from a caller having sent exactly that text, which is why the prompt
-    templates need no second placeholder.
+    **An empty ``user_prompt`` does not disable the prefix.** When the caller
+    sends nothing, the prefix alone becomes the instructions sent to the LLM --
+    it is indistinguishable downstream from a caller having sent exactly that
+    text, which is also why the prompt templates need no second placeholder.
+    Only ``disable_prefix`` suppresses it. ``"n/a"`` is reached solely when
+    BOTH sides are empty.
     """
 
     resolved_prefix = "" if disable_prefix else (prefix or "")

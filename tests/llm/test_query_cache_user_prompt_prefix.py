@@ -201,15 +201,22 @@ async def test_prefix_is_prepended_into_the_system_prompt(
 @pytest.mark.parametrize(
     "runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)]
 )
+@pytest.mark.parametrize("empty", [None, ""])
 async def test_prefix_alone_reaches_the_model_without_a_user_prompt(
-    runner, param, stub_query_context
+    runner, param, empty, stub_query_context
 ):
-    """The common deployment: operator sets a policy, callers send nothing."""
+    """The common deployment: operator sets a policy, callers send nothing.
+
+    Both spellings of "nothing" must behave identically. ``""`` is not
+    hypothetical -- it is the literal default the WebUI ships in its query
+    settings, so treating it as "suppress the prefix" would silently disable
+    the operator's policy for every WebUI user.
+    """
     cache = _FakeKVStorage()
     model = _RecordingModel()
     cfg = _query_global_config(model, prefix=PREFIX_A)
 
-    await runner(param(), cfg, cache)
+    await runner(param(user_prompt=empty), cfg, cache)
 
     assert PREFIX_A.strip() in model.system_prompts[0]
     assert "n/a" not in model.system_prompts[0]
@@ -497,3 +504,74 @@ async def test_prefix_shrinks_the_available_chunk_token_budget(monkeypatch):
 
     assert with_prefix == baseline - len(prefix)
     assert disabled == baseline
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_budget_charges_the_prefix_only_when_the_template_renders_it(
+    monkeypatch,
+):
+    """kg_query picks its template AFTER the context is built and budgeted.
+
+    Without the forwarded ``system_prompt`` the estimate used the default
+    template unconditionally, so a caller passing a custom one got a budget
+    computed against the wrong text -- and a configured prefix was charged
+    against the chunk allowance even when that template had no
+    ``{user_prompt}`` placeholder to render it into, discarding chunks to make
+    room for text that was never sent.
+    """
+    import lightrag.operate as operate
+
+    limits = []
+    original = operate.process_chunks_unified
+
+    async def _spy(**kwargs):
+        limits.append(kwargs["chunk_token_limit"])
+        return await original(**kwargs)
+
+    monkeypatch.setattr(operate, "process_chunks_unified", _spy)
+
+    entities = [{"entity": "Scrooge", "description": "A miser."}]
+    relations = [{"src": "Scrooge", "tgt": "Marley", "description": "Partners."}]
+    chunks = [
+        {"chunk_id": f"c{i}", "content": f"Chunk {i}.", "file_path": "a.md"}
+        for i in range(5)
+    ]
+    # No {user_prompt} placeholder: nothing this template renders can carry the
+    # prefix, so none of its tokens reach the model.
+    template_without_slot = (
+        "Custom template. Context: {context_data} Type: {response_type}"
+    )
+    prefix = "P" * 3000  # the fake tokenizer is 1 char == 1 token
+
+    async def _budget(prefix_value, system_prompt):
+        cfg = {
+            "tokenizer": _FakeTokenizer(),
+            "max_total_tokens": 30000,
+            "user_prompt_prefix": prefix_value,
+        }
+        param = QueryParam(mode="hybrid", enable_rerank=False, user_prompt=USER_PROMPT)
+        await operate._build_context_str(
+            entities,
+            relations,
+            chunks,
+            QUERY,
+            param,
+            cfg,
+            system_prompt=system_prompt,
+        )
+        return limits[-1]
+
+    # A template that DOES render the prefix still pays for it.
+    default_baseline = await _budget("", None)
+    default_with_prefix = await _budget(prefix, None)
+    assert default_with_prefix == default_baseline - len(prefix)
+
+    # A template that does NOT render it is charged nothing.
+    custom_baseline = await _budget("", template_without_slot)
+    custom_with_prefix = await _budget(prefix, template_without_slot)
+    assert custom_with_prefix == custom_baseline
+
+    # And the custom template is budgeted at its own size, not the default's --
+    # the pre-existing defect this forwarding also repairs.
+    assert custom_baseline != default_baseline

@@ -491,7 +491,7 @@
       "streamResponse": "Réponse en flux",
       "streamResponseTooltip": "Si vrai, active la sortie en flux pour des réponses en temps réel",
       "userPrompt": "Invite de sortie supplémentaire",
-      "userPromptTooltip": "Fournir des exigences de réponse supplémentaires au LLM (sans rapport avec le contenu de la requête, uniquement pour le traitement de la sortie). Le serveur peut y ajouter une invite globale en préfixe.",
+      "userPromptTooltip": "Fournir des exigences de réponse supplémentaires au LLM (sans rapport avec le contenu de la requête, uniquement pour le traitement de la sortie). Le serveur peut y ajouter une invite globale en préfixe. Laissez-le vide pour n'envoyer que l'invite globale du serveur.",
       "userPromptPlaceholder": "Entrez une invite personnalisée (facultatif)",
       "disableUserPromptPrefix": "Ignorer l'invite globale",
       "disableUserPromptPrefixTooltip": "Ne pas placer l'invite de sortie globale du serveur avant l'invite de sortie supplémentaire ci-dessus. Activez cette option pour contrôler entièrement les instructions finales depuis ici.",
