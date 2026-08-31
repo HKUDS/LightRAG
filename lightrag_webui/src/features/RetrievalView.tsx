@@ -8,6 +8,7 @@ import QueryComposer from '@/features/retrieval/QueryComposer'
 import { useQuerySession } from '@/features/retrieval/useQuerySession'
 import { useTranslation } from 'react-i18next'
 import type { QueryMode } from '@/api/lightrag'
+import { isRagQueryTooShort } from '@/utils/queryValidation'
 
 const allowedModes: QueryMode[] = ['naive', 'local', 'global', 'hybrid', 'mix', 'bypass']
 
@@ -65,12 +66,17 @@ export default function RetrievalView() {
         actualQuery = prefixMatch[2]
       }
 
+      const effectiveMode = modeOverride ?? getQuerySettingsSnapshot().mode
+      if (isRagQueryTooShort(actualQuery, effectiveMode)) {
+        return t('retrievePanel.retrieval.queryTooShort')
+      }
+
       // The displayed user message keeps the original input (prefix and all);
       // the request carries the stripped query — same as before extraction.
       void session.submitQuery(actualQuery, { modeOverride, displayedInput: input })
       return null
     },
-    [session, t]
+    [getQuerySettingsSnapshot, session, t]
   )
 
   return (

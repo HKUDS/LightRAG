@@ -444,7 +444,8 @@
       "placeholder": "질문을 입력하세요 (접두사 지원: /<쿼리 모드>)",
       "error": "오류: 응답을 가져오지 못했습니다",
       "queryModeError": "다음 쿼리 모드만 지원합니다: {{modes}}",
-      "queryModePrefixInvalid": "잘못된 쿼리 모드 접두사입니다. 사용법: /<모드> [공백] 질문"
+      "queryModePrefixInvalid": "잘못된 쿼리 모드 접두사입니다. 사용법: /<모드> [공백] 질문",
+      "queryTooShort": "질문이 너무 짧습니다. 영문 3자 이상 또는 이에 해당하는 조합을 입력하세요. 한자는 글자당 영문 2자로 계산됩니다."
     },
     "querySettings": {
       "parametersTitle": "매개변수",

@@ -21,6 +21,7 @@ from lightrag.constants import (
     MAX_REQUEST_TEXT_CHARS,
     MAX_ROLE_CHARS,
 )
+from lightrag.query_validation import RAGQueryTooShortError, validate_rag_query
 from lightrag.utils import TiktokenTokenizer, acount_tokens
 from lightrag.api.utils_api import get_combined_auth_dependency, internal_server_error
 from fastapi import Depends
@@ -44,6 +45,15 @@ class PayloadTooLargeError(ValueError):
     ``parse_request_body`` from having to match on error strings, which would
     silently stop working the next time a message is reworded.
     """
+
+
+def _validate_ollama_rag_query(query: str) -> str:
+    """Validate only chat branches that enter the RAG retrieval pipeline."""
+
+    try:
+        return validate_rag_query(query)
+    except RAGQueryTooShortError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _bound_input_chars(total: int) -> None:
@@ -662,6 +672,7 @@ class OllamaAPI:
                             **role_kwargs,
                         )
                     else:
+                        cleaned_query = _validate_ollama_rag_query(cleaned_query)
                         response = await self.rag.aquery(
                             cleaned_query, param=query_param
                         )
@@ -831,6 +842,7 @@ class OllamaAPI:
                             **role_kwargs,
                         )
                     else:
+                        cleaned_query = _validate_ollama_rag_query(cleaned_query)
                         response_text = await self.rag.aquery(
                             cleaned_query, param=query_param
                         )

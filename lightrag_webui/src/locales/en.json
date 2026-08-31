@@ -444,7 +444,8 @@
       "placeholder": "Enter your query (Support prefix: /<Query Mode>)",
       "error": "Error: Failed to get response",
       "queryModeError": "Only supports the following query modes: {{modes}}",
-      "queryModePrefixInvalid": "Invalid query mode prefix. Use: /<mode> [space] your query"
+      "queryModePrefixInvalid": "Invalid query mode prefix. Use: /<mode> [space] your query",
+      "queryTooShort": "Your query is too short. Enter at least 3 English characters or an equivalent combination; each Chinese character counts as 2."
     },
     "querySettings": {
       "parametersTitle": "Parameters",

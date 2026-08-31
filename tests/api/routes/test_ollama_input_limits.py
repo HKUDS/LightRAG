@@ -189,6 +189,90 @@ def test_chat_forwards_history_shape_counted_by_the_budget(monkeypatch):
     ]
 
 
+@pytest.mark.parametrize(
+    "query, stream",
+    [("a", False), ("ab", False), ("中", False), ("/mix a", False), ("中", True)],
+)
+def test_chat_rejects_short_rag_queries_with_a_client_error(monkeypatch, query, stream):
+    reached = False
+
+    async def _count_tokens(_text):
+        return 0
+
+    class _RecordingRAG(_ExplodingRAG):
+        async def aquery(self, query, *, param):
+            nonlocal reached
+            reached = True
+            return "answer"
+
+    monkeypatch.setattr(_ollama_api, "aestimate_tokens", _count_tokens)
+    monkeypatch.setattr(_utils_api, "auth_configured", False)
+    app = FastAPI()
+    app.include_router(_ollama_api.OllamaAPI(_RecordingRAG()).router, prefix="/api")
+
+    response = TestClient(app).post(
+        "/api/chat",
+        json=_chat(messages=[{"role": "user", "content": query}], stream=stream),
+    )
+
+    assert response.status_code == 400
+    assert "RAG query is too short" in response.json()["detail"]
+    assert reached is False
+
+
+@pytest.mark.parametrize("query", ["abc", "中a", "中文"])
+def test_chat_accepts_queries_meeting_the_weighted_minimum(monkeypatch, query):
+    captured = {}
+
+    async def _count_tokens(_text):
+        return 0
+
+    class _RecordingRAG(_ExplodingRAG):
+        async def aquery(self, query, *, param):
+            captured["query"] = query
+            return "answer"
+
+    monkeypatch.setattr(_ollama_api, "aestimate_tokens", _count_tokens)
+    monkeypatch.setattr(_utils_api, "auth_configured", False)
+    app = FastAPI()
+    app.include_router(_ollama_api.OllamaAPI(_RecordingRAG()).router, prefix="/api")
+
+    response = TestClient(app).post(
+        "/api/chat",
+        json=_chat(messages=[{"role": "user", "content": query}]),
+    )
+
+    assert response.status_code == 200
+    assert captured["query"] == query
+
+
+def test_chat_bypass_does_not_apply_the_rag_minimum(monkeypatch):
+    captured = {}
+
+    async def _count_tokens(_text):
+        return 0
+
+    class _RecordingRAG(_ExplodingRAG):
+        async def _llm(self, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return "answer"
+
+    rag = _RecordingRAG()
+    rag.role_llm_funcs = {"query": rag._llm}
+    monkeypatch.setattr(_ollama_api, "aestimate_tokens", _count_tokens)
+    monkeypatch.setattr(_utils_api, "auth_configured", False)
+    app = FastAPI()
+    app.include_router(_ollama_api.OllamaAPI(rag).router, prefix="/api")
+
+    response = TestClient(app).post(
+        "/api/chat",
+        json=_chat(messages=[{"role": "user", "content": "/bypass a"}]),
+    )
+
+    assert response.status_code == 200
+    assert captured["prompt"] == "a"
+
+
 def test_too_many_messages_are_refused(client):
     response = client.post(
         "/api/chat",
@@ -257,6 +341,33 @@ def test_oversized_prompt_is_refused_before_tokenization(client):
         },
     )
     assert response.status_code == 413
+
+
+def test_generate_does_not_apply_the_rag_minimum(monkeypatch):
+    captured = {}
+
+    async def _count_tokens(_text):
+        return 0
+
+    class _RecordingRAG(_ExplodingRAG):
+        async def _llm(self, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return "answer"
+
+    rag = _RecordingRAG()
+    rag.role_llm_funcs = {"query": rag._llm}
+    monkeypatch.setattr(_ollama_api, "aestimate_tokens", _count_tokens)
+    monkeypatch.setattr(_utils_api, "auth_configured", False)
+    app = FastAPI()
+    app.include_router(_ollama_api.OllamaAPI(rag).router, prefix="/api")
+
+    response = TestClient(app).post(
+        "/api/generate",
+        json={"model": "lightrag:latest", "prompt": "中", "stream": False},
+    )
+
+    assert response.status_code == 200
+    assert captured["prompt"] == "中"
 
 
 def test_generate_is_bounded_by_its_per_field_limits(monkeypatch):

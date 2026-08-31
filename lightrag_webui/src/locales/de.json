@@ -444,7 +444,8 @@
       "placeholder": "Geben Sie Ihre Abfrage ein (Präfix unterstützt: /<Abfragemodus>)",
       "error": "Fehler: Antwort konnte nicht abgerufen werden",
       "queryModeError": "Nur die folgenden Abfragemodi werden unterstützt: {{modes}}",
-      "queryModePrefixInvalid": "Ungültiges Abfragemodus-Präfix. Verwenden Sie: /<mode> [Leerzeichen] Ihre Abfrage"
+      "queryModePrefixInvalid": "Ungültiges Abfragemodus-Präfix. Verwenden Sie: /<mode> [Leerzeichen] Ihre Abfrage",
+      "queryTooShort": "Ihre Abfrage ist zu kurz. Geben Sie mindestens 3 englische Zeichen oder eine gleichwertige Kombination ein; jedes chinesische Zeichen zählt als 2."
     },
     "querySettings": {
       "parametersTitle": "Parameter",

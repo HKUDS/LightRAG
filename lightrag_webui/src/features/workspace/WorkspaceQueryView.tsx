@@ -7,6 +7,8 @@ import { useQuerySession } from '@/features/retrieval/useQuerySession'
 import WorkspaceEmptyState from './WorkspaceEmptyState'
 import type { QuerySettings } from '@/stores/querySettings'
 import { isApiKeyFailure, runCredentialProbe } from './credentialProbe'
+import { useTranslation } from 'react-i18next'
+import { isRagQueryTooShort } from '@/utils/queryValidation'
 
 /**
  * The workspace (query-user) page. Composes the SAME shared query session,
@@ -26,6 +28,8 @@ import { isApiKeyFailure, runCredentialProbe } from './credentialProbe'
  *   startup probe succeeded, and this entry exposes no other way in.
  */
 export default function WorkspaceQueryView() {
+  const { t } = useTranslation()
+
   const getQuerySettingsSnapshot = useCallback((): QuerySettings => {
     const settings = useQuerySettingsStore.getState().querySettings
     return {
@@ -51,10 +55,13 @@ export default function WorkspaceQueryView() {
   // No prefix parsing: submit the input verbatim as the question.
   const handleSend = useCallback(
     (input: string): string | null => {
+      if (isRagQueryTooShort(input, getQuerySettingsSnapshot().mode)) {
+        return t('retrievePanel.retrieval.queryTooShort')
+      }
       void session.submitQuery(input)
       return null
     },
-    [session]
+    [getQuerySettingsSnapshot, session, t]
   )
 
   return (
