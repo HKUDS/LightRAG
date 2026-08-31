@@ -138,7 +138,10 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml\"
     generated_compose = (tmp_path / "docker-compose.generated.yml").read_text(
         encoding="utf-8"
     )
-    assert '      UI_TEMPLATES_DIR: "/app/data/ui_templates"' in generated_compose
+    assert (
+        '      UI_TEMPLATES_DIR: "${UI_TEMPLATES_DIR:-/app/data/ui_templates}"'
+        in generated_compose
+    )
     assert "env_file:" not in generated_compose
     assert "environment:" in generated_compose
     assert "container_name:" not in generated_compose
@@ -172,8 +175,10 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
         encoding="utf-8"
     )
     assert "container_name:" not in generated_compose
-    assert '      UI_TEMPLATES_DIR: "/app/data/ui_templates"' in generated_compose
-    assert "/custom/ui_templates" not in generated_compose
+    # UI_TEMPLATES_DIR is seeded, never managed: a value the operator wrote
+    # survives regeneration, and no second entry is appended beside it.
+    assert '      UI_TEMPLATES_DIR: "/custom/ui_templates"' in generated_compose
+    assert generated_compose.count("UI_TEMPLATES_DIR") == 1
 
 
 def test_generate_docker_compose_preserves_list_style_lightrag_environment(
@@ -486,7 +491,8 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
         "      - ./data/prompts:/app/data/prompts\n"
         "      - ./data/ui_templates:/app/data/ui_templates:ro\n"
         "    environment:\n"
-        '      UI_TEMPLATES_DIR: "/app/data/ui_templates"\n'
+        '      UI_TEMPLATES_DIR: "${UI_TEMPLATES_DIR:-/app/data/ui_templates}"'
+        "\n"
         "\n  sidecar:\n" in generated_compose
     )
 
@@ -1002,7 +1008,8 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
         "      - ./data/prompts:/app/data/prompts\n"
         "      - ./data/ui_templates:/app/data/ui_templates:ro\n"
         "    environment:\n"
-        '      UI_TEMPLATES_DIR: "/app/data/ui_templates"\n\n'
+        '      UI_TEMPLATES_DIR: "${UI_TEMPLATES_DIR:-/app/data/ui_templates}"'
+        "\n\n"
         "networks:\n" in result
     )
 
@@ -1039,7 +1046,8 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
     assert "  vllm-embed:" in result
     assert (
-        '      UI_TEMPLATES_DIR: "/app/data/ui_templates"\n    depends_on:\n' in result
+        '      UI_TEMPLATES_DIR: "${UI_TEMPLATES_DIR:-/app/data/ui_templates}"'
+        "\n    depends_on:\n" in result
     )
     assert "    restart: unless-stopped\n\nnetworks:\n" in result
 
@@ -2244,3 +2252,98 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml"
     assert "./data/rag_storage:/app/data/rag_storage" in generated_compose
     assert "./data/inputs:/app/data/inputs" in generated_compose
     assert "./.env:/app/.env" in generated_compose
+
+
+def test_generate_docker_compose_seeds_ui_templates_dir_deferring_to_env(
+    tmp_path: Path,
+) -> None:
+    """The seeded entry is an interpolation, so a value in .env still wins.
+
+    A compose ``environment:`` entry outranks the same key in the mounted
+    .env, so seeding the literal path would silently defeat whatever the
+    operator configured there.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            '      PORT: "9621"',
+        ],
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+    assert (
+        '      UI_TEMPLATES_DIR: "${UI_TEMPLATES_DIR:-/app/data/ui_templates}"'
+        in result
+    )
+    # The interpolation repeats the name inside the value, so count entries,
+    # not occurrences.
+    assert result.count("      UI_TEMPLATES_DIR") == 1
+
+
+def test_generate_docker_compose_preserves_an_empty_ui_templates_dir(
+    tmp_path: Path,
+) -> None:
+    """An explicitly empty value is how a deployment turns the feature off."""
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            '      UI_TEMPLATES_DIR: ""',
+        ],
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+    assert '      UI_TEMPLATES_DIR: ""' in result
+    assert result.count("UI_TEMPLATES_DIR") == 1
+
+
+def test_generate_docker_compose_preserves_a_valueless_list_ui_templates_dir(
+    tmp_path: Path,
+) -> None:
+    """`- UI_TEMPLATES_DIR` (inherit from the host env) is a declaration too.
+
+    Presence, not a parsed value, is what blocks the seed — otherwise the
+    generated file would carry the key twice, which compose rejects.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            "      - UI_TEMPLATES_DIR",
+        ],
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+    assert "      - UI_TEMPLATES_DIR\n" in result
+    assert result.count("UI_TEMPLATES_DIR") == 1

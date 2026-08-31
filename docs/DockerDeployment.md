@@ -251,8 +251,10 @@ This keeps generated host mounts under the same `./data` root used by the defaul
 ### Custom UI content
 
 `docker-compose.yml` and `docker-compose-full.yml` mount `./data/ui_templates`
-read-only at `/app/data/ui_templates` and set `UI_TEMPLATES_DIR` to it. Both
-stay inert until the directory actually holds a bundle: with no `manifest.json`
+read-only at `/app/data/ui_templates` and default `UI_TEMPLATES_DIR` to it
+(written as `${UI_TEMPLATES_DIR:-/app/data/ui_templates}`, so a value set in
+`.env` still wins — it must be a container path there). Both stay inert until
+the directory actually holds a bundle: with no `manifest.json`
 in it the server logs a warning naming the directory and serves its built-in
 branding, so the default deployment starts normally. Drop a bundle in and
 restart, and the server replaces the welcome page, the login-page text and user

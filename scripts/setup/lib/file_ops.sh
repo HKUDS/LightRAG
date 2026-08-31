@@ -408,11 +408,17 @@ generate_env_file() {
 # All environment keys the wizard may inject into the lightrag service via
 # COMPOSE_ENV_OVERRIDES.  Used to remove stale entries before re-injection so
 # keys no longer needed are not left behind in the compose file.
+#
+# UI_TEMPLATES_DIR is deliberately NOT here even though the wizard can write
+# it: it is seeded once when nothing else declares it, never managed. Listing
+# it would strip an operator's hand-edited value on every regeneration, and a
+# compose entry hard-overrides the same key in the mounted .env, so the strip
+# would silently defeat their configuration. See generate_docker_compose.
 _WIZARD_COMPOSE_LIGHTRAG_KEYS=(
   "EMBEDDING_BINDING_HOST" "RERANK_BINDING_HOST" "LLM_BINDING_HOST"
   "REDIS_URI" "MONGO_URI" "NEO4J_URI" "MILVUS_URI" "QDRANT_URL" "MEMGRAPH_URI" "OPENSEARCH_HOSTS"
   "POSTGRES_HOST" "POSTGRES_PORT" "PORT" "HOST" "SSL_CERTFILE" "SSL_KEYFILE"
-  "WORKING_DIR" "INPUT_DIR" "PROMPT_DIR" "UI_TEMPLATES_DIR"
+  "WORKING_DIR" "INPUT_DIR" "PROMPT_DIR"
 )
 
 _managed_service_root_name() {
@@ -1229,16 +1235,7 @@ generate_docker_compose() {
   _FILE_OPS_CLEANUP_TMP+=("$service_blocks_file")
   local template_file
   local lightrag_mounts=()
-  # Written unconditionally, like the mount above: the server treats a
-  # configured directory with no manifest.json as "no bundle yet" (warns,
-  # keeps the built-in branding), so a generated deployment boots unchanged
-  # and activating the feature is dropping a bundle into ./data/ui_templates.
-  # This makes UI_TEMPLATES_DIR a wizard-managed key — a hand-edited value is
-  # replaced on the next regeneration; point the mount's HOST side elsewhere
-  # instead. See docs/UserDefinedUI.md §7.3.
-  local lightrag_env_entries=(
-    "UI_TEMPLATES_DIR=${COMPOSE_LIGHTRAG_UI_TEMPLATES_DIR:-/app/data/ui_templates}"
-  )
+  local lightrag_env_entries=()
   local key
   local root_service
 
@@ -1296,6 +1293,26 @@ generate_docker_compose() {
   # built-in branding. See docs/UserDefinedUI.md.
   if ! _lightrag_volumes_have_container_target "$tmp_file" "/app/data/ui_templates"; then
     lightrag_mounts+=("./data/ui_templates:/app/data/ui_templates:ro")
+  fi
+
+  # Seed UI_TEMPLATES_DIR with the container path the mount above provides, so
+  # a generated deployment activates a bundle by dropping it into
+  # ./data/ui_templates — the server treats a configured directory with no
+  # manifest.json as "no bundle yet" (warns, keeps the built-in branding), so
+  # the seed changes nothing until then.
+  #
+  # Two ways this stays the operator's call rather than the wizard's. It is
+  # seeded ONLY when the compose file does not already declare the key, so a
+  # hand-edited value (or an explicit empty one, meaning "off") survives every
+  # regeneration — which is also why the key is absent from
+  # _WIZARD_COMPOSE_LIGHTRAG_KEYS. And the seeded value is an interpolation,
+  # not a literal: a compose `environment:` entry outranks the same key in the
+  # mounted .env, so writing the path literally would silently defeat a value
+  # set there. See docs/UserDefinedUI.md 7.3.
+  if ! _lightrag_environment_has_key "$tmp_file" "UI_TEMPLATES_DIR"; then
+    lightrag_env_entries+=(
+      "UI_TEMPLATES_DIR=${_COMPOSE_RAW_VALUE_PREFIX}\"\${UI_TEMPLATES_DIR:-${COMPOSE_LIGHTRAG_UI_TEMPLATES_DIR:-/app/data/ui_templates}}\""
+    )
   fi
 
   append_lightrag_ssl_mount lightrag_mounts "${COMPOSE_ENV_OVERRIDES[SSL_CERTFILE]:-}" || return 1
@@ -1759,6 +1776,69 @@ inject_service_image_override() {
   fi
 
   mv "$tmp_file" "$compose_file"
+}
+
+# Return success when the lightrag service's environment block already
+# declares the given key, in either mapping (`KEY: value`, `KEY:`) or list
+# (`- KEY=value`, `- KEY`) style. PRESENCE is the question, never the value: an
+# explicitly empty entry is an operator saying "off", and appending a second
+# entry for a key that is already there makes the compose file invalid.
+_lightrag_environment_has_key() {
+  local compose_file="$1"
+  local wanted_key="$2"
+  local line key list_entry
+  local in_lightrag="no"
+  local in_environment="no"
+
+  if [[ ! -f "$compose_file" || -z "$wanted_key" ]]; then
+    return 1
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "  lightrag:" ]]; then
+      in_lightrag="yes"
+      in_environment="no"
+      continue
+    fi
+
+    if [[ "$in_lightrag" != "yes" ]]; then
+      continue
+    fi
+
+    # Column 0 ends the services section; service indentation starts the next
+    # service. Both end lightrag.
+    if [[ "$line" =~ ^[^[:space:]] || "$line" =~ ^[[:space:]]{2}[^[:space:]] ]]; then
+      in_lightrag="no"
+      in_environment="no"
+      continue
+    fi
+
+    if [[ "$line" == "    environment:" ]]; then
+      in_environment="yes"
+      continue
+    fi
+
+    if [[ "$in_environment" != "yes" ]]; then
+      continue
+    fi
+
+    if [[ "$line" =~ ^[[:space:]]{6}([A-Z0-9_]+): ]]; then
+      if [[ "${BASH_REMATCH[1]}" == "$wanted_key" ]]; then
+        return 0
+      fi
+    elif [[ "$line" =~ ^[[:space:]]{6}-[[:space:]]*(.+)$ ]]; then
+      list_entry="$(_strip_wrapping_quotes \
+        "$(_strip_yaml_inline_comment "${BASH_REMATCH[1]}")")"
+      key="${list_entry%%=*}"
+      if [[ "$key" == "$wanted_key" ]]; then
+        return 0
+      fi
+    elif [[ -n "$line" && ! "$line" =~ ^[[:space:]]{6} ]]; then
+      in_environment="no"
+    fi
+  done < "$compose_file"
+
+  return 1
 }
 
 # Return success when the lightrag service already has a volume mount whose

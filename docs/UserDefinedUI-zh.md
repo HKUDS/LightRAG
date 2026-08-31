@@ -68,7 +68,7 @@ INFO: UI customization bundle active: bundle_revision=1f0c… locales=['en', 'zh
     volumes:
       - ./data/ui_templates:/app/data/ui_templates:ro
     environment:
-      UI_TEMPLATES_DIR: "/app/data/ui_templates"
+      UI_TEMPLATES_DIR: "${UI_TEMPLATES_DIR:-/app/data/ui_templates}"
 ```
 
 因此写入模板包就是全部步骤，不需要再改 compose 文件：
@@ -320,7 +320,7 @@ services:
     volumes:
       - ./data/ui_templates:/app/data/ui_templates:ro
     environment:
-      UI_TEMPLATES_DIR: "/app/data/ui_templates"
+      UI_TEMPLATES_DIR: "${UI_TEMPLATES_DIR:-/app/data/ui_templates}"
 ```
 
 **在你写入模板包之前，两者都是惰性的。** 已配置但不含 `manifest.json` 的目录被视为「尚未填充的挂载点」，而不是「损坏的模板包」：服务器记录一条写明该目录的警告，继续提供内置品牌内容。因此默认部署可以正常启动，而启用该功能的全部步骤就是把模板包放进 `./data/ui_templates` 再重启——永远不需要改 compose。
@@ -334,7 +334,12 @@ services:
 - `:ro` 是刻意的——服务器只读取模板包，从不写入。
 - **Podman**：`docker-compose.podman.yml` 里挂载和 `UI_TEMPLATES_DIR` 都仍是注释掉的。Podman 对「宿主机源不存在」的绑定挂载比 Docker 更严格，无条件挂载会把该功能变成所有人的启动前置条件。在那里请先 `mkdir -p ./data/ui_templates`，再同时取消注释两者。
 
-在 `.env` 里设置 `UI_TEMPLATES_DIR` 同样有效（该文件会被挂载进容器），但更适合放在 compose 的 `environment:` 块中：这个值是*容器内*路径，把容器路径挡在 `.env` 之外，才能让同一份 `.env` 在源码运行时依然可用。另外请注意：compose 的 `environment:` 条目优先级高于 `.env` 中的同名 key。
+**这一条是默认值，不是强制覆盖。** compose 的 `environment:` 条目优先级高于 `.env` 中的同名 key，因此它被写成插值形式：你在 `.env` 里设置了 `UI_TEMPLATES_DIR`，容器拿到的就是你的值；没设置才落回上面的容器路径。有两点需要知道：
+
+- `.env` 里的值必须是**容器内**路径，因为 `.env` 会被挂载进容器并在容器内被读取。源码风格的 `./lightrag_webui/ui_templates` 在容器里会相对 `/app` 解析，指向一个不存在的目录——而「已配置但目录不存在」是启动硬错误，不是那个惰性状态。
+- compose 在解析阶段从项目的 `.env`（以及 shell 环境）解析 `${UI_TEMPLATES_DIR}`，所以 `docker compose config` 能直接告诉你容器最终会看到哪个路径。
+
+把容器路径挡在 `.env` 之外，仍然是让同一份 `.env` 在源码运行时依然可用的前提，因此仅供 Docker 使用的值仍以放在 compose 块中为宜。
 
 ### 7.3 向导生成的 compose 文件
 
@@ -345,9 +350,15 @@ make env-server        # 或任意其他 make env-* 目标
 grep ui_templates docker-compose.final.yml
 ```
 
-向导同时会把 `UI_TEMPLATES_DIR: "/app/data/ui_templates"` 写入 `lightrag` 服务的 `environment:` 块，因此向导生成的部署与仓库自带的 compose 文件行为完全一致：在 `./data/ui_templates` 出现模板包之前保持惰性。
+向导同时会把 `UI_TEMPLATES_DIR: "${UI_TEMPLATES_DIR:-/app/data/ui_templates}"` 作为**种子值**写入 `lightrag` 服务的 `environment:` 块，因此向导生成的部署与仓库自带的 compose 文件行为完全一致：在 `./data/ui_templates` 出现模板包之前保持惰性。
 
-也就是说 `UI_TEMPLATES_DIR` 属于**向导管理的 key**：你在 `docker-compose.final.yml` 中手工修改的值，会在下次运行任意 `make env-*` 目标时被覆盖回去。若要从其它位置提供模板包，请改挂载的*宿主机*一侧（`./my-branding:/app/data/ui_templates:ro`），保持容器内路径不变——用户新增的绑定挂载和其它用户新增的环境变量在重新生成时仍会被保留。
+**只播种、不接管——向导绝不改动你填写的值。** 与 `WORKING_DIR` / `INPUT_DIR` / `PROMPT_DIR` 那种「每次运行都重写、以免 `.env` 里的值把存储改道」的键不同，`UI_TEMPLATES_DIR` 只在 compose 文件尚未声明该键时才写入：
+
+- 你在 `docker-compose.final.yml` 中手工修改的值会在每次重新生成后原样保留——包括 `UI_TEMPLATES_DIR: ""`（部署用它关闭该功能）以及 list 风格下的 `- UI_TEMPLATES_DIR`。
+- 你在 `.env` 中设置的值同样有效，因为种子值是插值而非写死的路径。
+- 若要从其它宿主机目录提供模板包，完全不需要改环境变量：改挂载的*宿主机*一侧即可（`./my-branding:/app/data/ui_templates:ro`）。
+
+用户新增的绑定挂载和其它用户新增的环境变量，与之前一样在重新生成时被保留。
 
 ### 7.4 Kubernetes
 
