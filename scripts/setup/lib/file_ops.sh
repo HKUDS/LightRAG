@@ -1806,6 +1806,16 @@ _lightrag_environment_has_key() {
   fi
 
   while IFS= read -r line || [[ -n "$line" ]]; do
+    # A comment line is never a service boundary, at any column -- except the
+    # wizard's own managed-services marker, which stands in for the top-level
+    # sections that replace it. Ending the
+    # scan on one reports a declared key as absent, and the caller then writes
+    # a second entry for a key that is already there.
+    if [[ "$line" =~ ^[[:space:]]*# && \
+          "$line" != "$_WIZARD_MANAGED_SERVICES_MARKER" ]]; then
+      continue
+    fi
+
     if [[ "$line" == "  lightrag:" ]]; then
       in_lightrag="yes"
       in_environment="no"
@@ -1991,6 +2001,17 @@ _strip_lightrag_wizard_bind_mounts() {
   : > "$tmp_file"
 
   while IFS= read -r line || [[ -n "$line" ]]; do
+    # A comment line is never a boundary, at any column -- except the wizard's
+    # own managed-services marker, which stands in for the top-level sections
+    # that replace it. Ending the scan on
+    # one left the wizard's own bind mount in place, and the injector then
+    # appended a second copy -- one more on every regeneration.
+    if [[ "$line" =~ ^[[:space:]]*# && \
+          "$line" != "$_WIZARD_MANAGED_SERVICES_MARKER" ]]; then
+      printf '%s\n' "$line" >> "$tmp_file"
+      continue
+    fi
+
     if [[ "$in_lightrag" == "yes" ]]; then
       if [[ "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "  lightrag:" ]]; then
         in_lightrag="no"
@@ -2053,6 +2074,17 @@ _strip_lightrag_wizard_ports() {
   : > "$tmp_file"
 
   while IFS= read -r line || [[ -n "$line" ]]; do
+    # A comment line is never a boundary, at any column -- except the wizard's
+    # own managed-services marker, which stands in for the top-level sections
+    # that replace it. Ending the scan on
+    # one left the wizard's own port mapping in place, and the injector then
+    # appended a second copy -- one more on every regeneration.
+    if [[ "$line" =~ ^[[:space:]]*# && \
+          "$line" != "$_WIZARD_MANAGED_SERVICES_MARKER" ]]; then
+      printf '%s\n' "$line" >> "$tmp_file"
+      continue
+    fi
+
     if [[ "$in_lightrag" == "yes" && "$in_ports" == "yes" ]]; then
       if [[ "$line" =~ ^[[:space:]]{6}-[[:space:]](.+)$ ]]; then
         port_spec="${BASH_REMATCH[1]}"
@@ -2097,6 +2129,17 @@ inject_lightrag_bind_mounts() {
   : > "$tmp_file"
 
   while IFS= read -r line || [[ -n "$line" ]]; do
+    # A comment line is never a boundary, at any column -- except the wizard's
+    # own managed-services marker, which stands in for the top-level sections
+    # that replace it. Ending the lightrag
+    # service on one opened a second `volumes:` key above the real block, and
+    # docker compose rejects the duplicate mapping key.
+    if [[ "$line" =~ ^[[:space:]]*# && \
+          "$line" != "$_WIZARD_MANAGED_SERVICES_MARKER" ]]; then
+      printf '%s\n' "$line" >> "$tmp_file"
+      continue
+    fi
+
     if [[ "$in_lightrag" == "yes" && "$in_volumes" == "yes" ]]; then
       if [[ "$line" =~ ^[[:space:]]{4}[^[:space:]-] || "$line" =~ ^[[:space:]]{2}[^[:space:]] || "$line" =~ ^[^[:space:]] ]]; then
         if [[ "$inserted" == "no" ]]; then
@@ -2159,6 +2202,17 @@ inject_lightrag_port_mapping() {
   : > "$tmp_file"
 
   while IFS= read -r line || [[ -n "$line" ]]; do
+    # A comment line is never a boundary, at any column -- except the wizard's
+    # own managed-services marker, which stands in for the top-level sections
+    # that replace it. Ending the lightrag
+    # service on one opened a second `ports:` key above the real block, and
+    # docker compose rejects the duplicate mapping key.
+    if [[ "$line" =~ ^[[:space:]]*# && \
+          "$line" != "$_WIZARD_MANAGED_SERVICES_MARKER" ]]; then
+      printf '%s\n' "$line" >> "$tmp_file"
+      continue
+    fi
+
     if [[ "$in_lightrag" == "yes" && "$in_ports" == "yes" ]]; then
       # Any column-0 line ends the services section, so it ends the ports
       # block too. Matching `volumes:`/`networks:` by name missed every other
