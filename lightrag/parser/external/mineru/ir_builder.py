@@ -27,8 +27,10 @@ Conversion rules (informed by spec §3-§六):
   is reserved for explicit 2D-array / non-HTML compatibility inputs. A real
   HTML ``<thead>`` populates ``table_header`` (per spec §5); otherwise the
   adapter does not guess a header row.
-- ``image`` / ``picture`` / ``drawing`` → IRDrawing + ``{{IMG:k}}`` placeholder.
-  Asset bytes are referenced via ``img_path`` relative to the raw dir.
+- ``image`` / ``picture`` / ``drawing`` / ``chart`` → IRDrawing + ``{{IMG:k}}``
+  placeholder. Asset bytes are referenced via ``img_path`` relative to the raw
+  dir. ``chart`` is a chart rendered as an image by MinerU, so it is treated as
+  a drawing.
 - ``equation`` → IREquation. ``is_block`` is decided by whether
   ``text_format=="block"`` (MinerU explicit flag) OR ``text_level==0`` with
   no inline neighbours; otherwise inline. The latex string is preserved
@@ -368,7 +370,7 @@ class MinerUIRBuilder:
                 _record_position(item)
                 continue
 
-            if item_type in {"image", "picture", "drawing"}:
+            if item_type in {"image", "picture", "drawing", "chart"}:
                 drawing, asset = self._build_ir_drawing(item, raw_dir, seen_assets)
                 placeholder = _next_key("im")
                 drawing.placeholder_key = placeholder

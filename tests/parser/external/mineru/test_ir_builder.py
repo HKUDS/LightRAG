@@ -179,6 +179,44 @@ def test_adapter_table_and_drawing_and_equation(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
+def test_adapter_chart_treated_as_drawing(tmp_path: Path) -> None:
+    """MinerU emits ``type="chart"`` items — a chart rendered as an image.
+
+    The adapter must treat them as drawings so the chart survives into the
+    sidecar (``blocks.jsonl`` / ``drawings.json``) instead of being silently
+    dropped by the plain-text fallback, which has no text field to read.
+    """
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {"type": "text", "text": "Results", "text_level": 1},
+            {
+                "type": "chart",
+                "img_path": "images/chart_001.png",
+                "image_caption": ["Fig 1"],
+            },
+        ],
+    )
+    (raw / "images").mkdir()
+    (raw / "images" / "chart_001.png").write_bytes(b"\x89PNGchart")
+
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="c.pdf")
+
+    assert len(ir.blocks) == 1
+    block = ir.blocks[0]
+    assert block.heading == "Results"
+    assert len(block.drawings) == 1
+    drawing = block.drawings[0]
+    assert drawing.fmt == "png"
+    assert drawing.caption == "Fig 1"
+    # The chart placeholder is rendered into the block content so the drawing
+    # survives into blocks.jsonl / drawings.json.
+    assert f"{{{{IMG:{drawing.placeholder_key}}}}}" in block.content_template
+    # The chart's image bytes are declared as an asset.
+    assert any(a.ref == "images/chart_001.png" for a in ir.assets)
+
+
+@pytest.mark.offline
 def test_adapter_page_idx_aggregated_and_deduped_when_no_bbox(
     tmp_path: Path,
 ) -> None:
