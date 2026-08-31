@@ -561,6 +561,14 @@ _is_wizard_managed_volume_name() {
 
 # Remove wizard-managed keys from the lightrag service's environment block,
 # leaving any user-added keys intact.
+# A compose environment mapping key at service-property indentation, with
+# YAML's optional quoting: `KEY:`, `"KEY":` and `'KEY':` all name the SAME key.
+# Every parser below must agree on that, because a file that ends up declaring
+# one key twice is not loadable at all -- compose fails with
+# `mapping key "KEY" already defined`. Capture 1 keeps the quotes; run it
+# through _strip_wrapping_quotes before comparing.
+_COMPOSE_ENV_MAPPING_KEY_RE='^[[:space:]]{6}("[A-Z0-9_]+"|'"'"'[A-Z0-9_]+'"'"'|[A-Z0-9_]+):'
+
 _strip_lightrag_wizard_environment_keys() {
   local compose_file="$1"
   local tmp_file="${compose_file}.strip-wizard-keys"
@@ -587,8 +595,8 @@ _strip_lightrag_wizard_environment_keys() {
     fi
 
     if [[ "$in_lightrag" == "yes" && "$in_environment" == "yes" ]]; then
-      if [[ "$line" =~ ^[[:space:]]{6}([A-Z0-9_]+): ]]; then
-        key="${BASH_REMATCH[1]}"
+      if [[ "$line" =~ $_COMPOSE_ENV_MAPPING_KEY_RE ]]; then
+        key="$(_strip_wrapping_quotes "${BASH_REMATCH[1]}")"
         for wk in "${_WIZARD_COMPOSE_LIGHTRAG_KEYS[@]}"; do
           if [[ "$key" == "$wk" ]]; then
             continue 2  # skip this wizard-managed key
@@ -943,8 +951,8 @@ read_service_environment_value() {
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$in_service" == "yes" && "$in_environment" == "yes" ]]; then
-      if [[ "$line" =~ ^[[:space:]]{6}([A-Z0-9_]+):[[:space:]]*(.+)$ ]]; then
-        entry_key="${BASH_REMATCH[1]}"
+      if [[ "$line" =~ ${_COMPOSE_ENV_MAPPING_KEY_RE}[[:space:]]*(.+)$ ]]; then
+        entry_key="$(_strip_wrapping_quotes "${BASH_REMATCH[1]}")"
         if [[ "$entry_key" == "$wanted_key" ]]; then
           printf '%s' "$(_strip_wrapping_quotes "${BASH_REMATCH[2]}")"
           return 0
@@ -1676,7 +1684,7 @@ inject_service_environment_overrides() {
     if [[ "$in_service" == "yes" && "$in_environment" == "yes" ]]; then
       if [[ "$line" =~ ^[[:space:]]{6}-[[:space:]] ]]; then
         environment_style="list"
-      elif [[ "$line" =~ ^[[:space:]]{6}[A-Z0-9_]+: ]]; then
+      elif [[ "$line" =~ $_COMPOSE_ENV_MAPPING_KEY_RE ]]; then
         environment_style="mapping"
       fi
 
@@ -1783,9 +1791,8 @@ inject_service_image_override() {
 # declares the given key, in either mapping (`KEY: value`, `KEY:`) or list
 # (`- KEY=value`, `- KEY`) style, quoted or not. PRESENCE is the question,
 # never the value: an explicitly empty entry is an operator saying "off", and
-# a second entry for a key that is already there makes the file invalid --
-# compose refuses it outright (`mapping key ... already defined`), which is
-# why a quoted `"KEY":` has to resolve to the same key as a bare one.
+# a second entry for a key that is already there makes the file unloadable
+# (see _COMPOSE_ENV_MAPPING_KEY_RE).
 _lightrag_environment_has_key() {
   local compose_file="$1"
   local wanted_key="$2"
@@ -1825,7 +1832,7 @@ _lightrag_environment_has_key() {
       continue
     fi
 
-    if [[ "$line" =~ ^[[:space:]]{6}(\"[A-Z0-9_]+\"|\'[A-Z0-9_]+\'|[A-Z0-9_]+): ]]; then
+    if [[ "$line" =~ $_COMPOSE_ENV_MAPPING_KEY_RE ]]; then
       key="$(_strip_wrapping_quotes "${BASH_REMATCH[1]}")"
       if [[ "$key" == "$wanted_key" ]]; then
         return 0

@@ -2313,6 +2313,87 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
 
 
 @pytest.mark.parametrize("quote", ['"', "'"])
+def test_generate_docker_compose_rewrites_a_quoted_wizard_managed_key(
+    tmp_path: Path, quote: str
+) -> None:
+    """The strip pass must recognize a quoted managed key as the same key.
+
+    Missing it left the operator's entry in place and appended the wizard's
+    own, so the regenerated file declared the key twice and compose refused to
+    load it at all.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            f'      {quote}PORT{quote}: "1234"',
+            f'      {quote}WORKING_DIR{quote}: "/custom/rag"',
+        ],
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+prepare_compose_env_overrides
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+    environment = yaml.safe_load(result)["services"]["lightrag"]["environment"]
+    # The wizard owns these two, so its values replace the stale ones -- and
+    # each key appears exactly once, which is what YAML requires.
+    assert environment["PORT"] == "9621"
+    assert environment["WORKING_DIR"] == "/app/data/rag_storage"
+
+    # yaml.safe_load silently keeps the last of two duplicate keys, so count
+    # the declarations in the text -- that is what compose refuses to load.
+    def declarations(key: str) -> int:
+        return sum(
+            line.strip().split(":")[0].strip("\"'") == key
+            for line in result.splitlines()
+            if line.startswith("      ")
+        )
+
+    assert declarations("PORT") == 1
+    assert declarations("WORKING_DIR") == 1
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_read_service_environment_value_reads_a_quoted_key(
+    tmp_path: Path, quote: str
+) -> None:
+    """A quoted key must still be readable back.
+
+    The wizard reads SSL_CERTFILE / SSL_KEYFILE out of the existing compose to
+    keep a staged certificate across regenerations when its source file is
+    gone; not matching the quoted form turned that into a hard
+    "Invalid SSL_CERTFILE" error instead.
+    """
+    compose_file = tmp_path / "docker-compose.final.yml"
+    write_text_lines(
+        compose_file,
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            f'      {quote}SSL_CERTFILE{quote}: "/app/data/certs/mine.pem"',
+        ],
+    )
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+
+read_service_environment_value "{compose_file}" "lightrag" "SSL_CERTFILE"
+""")
+    assert "/app/data/certs/mine.pem" in output
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
 def test_generate_docker_compose_preserves_a_quoted_ui_templates_dir(
     tmp_path: Path, quote: str
 ) -> None:
