@@ -159,6 +159,18 @@ class _RoleLLMMixin:
         """Read-only mapping of role name → effective LLM kwargs (None means inherit base)."""
         return {name: state.kwargs for name, state in self._role_llm_states.items()}
 
+    @property
+    def role_supports_token_tracker(self) -> Mapping[str, bool]:
+        """Read-only mapping of role name → whether its bound raw_func accepts
+        ``token_tracker``. Computed once per (re)build in
+        :meth:`_wrap_llm_role_func`; a role with no wrapped function yet
+        (not in ``_role_llm_states`` with metadata set) reads as ``False``.
+        """
+        return {
+            name: bool(state.metadata.get("supports_token_tracker"))
+            for name, state in self._role_llm_states.items()
+        }
+
     def _get_effective_role_llm_kwargs(self, role: str) -> dict[str, Any]:
         state = self._role_llm_states[self._normalize_llm_role(role)]
         if state.kwargs is not None:
@@ -186,6 +198,27 @@ class _RoleLLMMixin:
         model_kwargs: dict[str, Any],
     ) -> Callable[..., object]:
         spec = ROLES_BY_NAME[role_name]
+        # Recorded once per (re)build, not read from a live inspection on
+        # every call: whether raw_func accepts a ``token_tracker`` kwarg at
+        # all. Only openai/gemini/ollama declare it today; every other
+        # binding (anthropic, bedrock, hf, ...) forwards unrecognized kwargs
+        # verbatim into its SDK client call, so passing token_tracker= to one
+        # of those would raise a wire-level TypeError, not a harmless no-op.
+        # Callers must check this before adding the kwarg -- see
+        # ``role_supports_token_tracker`` and its use in operate.py.
+        try:
+            supports_token_tracker = (
+                "token_tracker" in inspect.signature(raw_func).parameters
+            )
+        except (TypeError, ValueError):
+            # A callable inspect.signature cannot introspect (some C-extension
+            # or exotic wrapper) is treated as not supporting it -- the safe
+            # default, matching every other binding that simply lacks the
+            # parameter.
+            supports_token_tracker = False
+        self.set_role_llm_metadata(
+            role_name, supports_token_tracker=supports_token_tracker
+        )
         return priority_limit_async_func_call(
             max_async,
             llm_timeout=timeout,

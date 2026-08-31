@@ -244,6 +244,17 @@ class ReferenceItem(BaseModel):
     )
 
 
+class TokenUsage(BaseModel):
+    prompt_tokens: int = Field(
+        description="Tokens consumed by the prompt(s) sent to the LLM"
+    )
+    completion_tokens: int = Field(
+        description="Tokens consumed by the LLM's generated output"
+    )
+    total_tokens: int = Field(description="prompt_tokens + completion_tokens")
+    call_count: int = Field(description="Number of LLM calls this figure aggregates")
+
+
 class QueryResponse(BaseModel):
     response: str = Field(
         description="The generated response",
@@ -264,6 +275,17 @@ class QueryResponse(BaseModel):
             "no-context reply, or the only_need_context / only_need_prompt debug "
             "output. Clients that label machine-written text cannot recover this "
             "from the response text alone."
+        ),
+    )
+    token_usage: Optional[TokenUsage] = Field(
+        default=None,
+        description=(
+            "LLM token usage for this query (keyword extraction plus the "
+            "answer-generation call, when the mode does both). Omitted "
+            "-- not zero -- when the answer was served entirely from cache, "
+            "when only_need_context/only_need_prompt short-circuited before "
+            "any LLM call, or when the configured LLM binding does not "
+            "report usage (currently: openai, gemini, ollama)."
         ),
     )
 
@@ -534,6 +556,9 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             QueryResponse: JSON response containing:
                 - **response**: The generated answer to your query
                 - **references**: Source citations (if include_references=True)
+                - **token_usage**: LLM tokens spent on this query (omitted, not
+                  zero, on a cache hit, an only_need_context/only_need_prompt
+                  request, or a binding that doesn't report usage)
 
         Raises:
             HTTPException:
@@ -555,6 +580,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             llm_response = result.get("llm_response", {})
             data = result.get("data", {})
             references = data.get("references", [])
+            token_usage = result.get("metadata", {}).get("token_usage")
 
             # Get the non-streaming response content
             response_content = llm_response.get("content", "")
@@ -596,6 +622,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     references=references,
                     response_time=response_time,
                     llm_generated=llm_generated,
+                    token_usage=token_usage,
                 )
             else:
                 return QueryResponse(
@@ -603,6 +630,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     references=None,
                     response_time=response_time,
                     llm_generated=llm_generated,
+                    token_usage=token_usage,
                 )
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}", exc_info=True)

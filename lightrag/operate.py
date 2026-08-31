@@ -59,6 +59,7 @@ from lightrag.utils import (
     _cooperative_yield,
     wait_tasks_with_drain,
     performance_timing_log,
+    TokenTracker,
 )
 from lightrag.base import (
     BaseGraphStorage,
@@ -4538,6 +4539,41 @@ def _answer_cache_kv(
     return hashing_kv
 
 
+def _role_supports_token_tracker(global_config: dict[str, Any], role: str) -> bool:
+    """Whether ``role``'s bound LLM function accepts a ``token_tracker`` kwarg.
+
+    Only openai/gemini/ollama declare it today (see
+    ``lightrag/llm_roles.py::_wrap_llm_role_func``, which computes this once
+    per role rebuild from the raw provider function's real signature); every
+    other binding forwards unrecognized kwargs verbatim into its SDK client
+    call, so passing ``token_tracker=`` there raises a wire-level
+    ``TypeError`` rather than being silently ignored. Callers must check this
+    before adding the kwarg to a query-pipeline LLM call, and simply omit it
+    (not pass ``token_tracker=None``) when it comes back ``False`` -- the
+    unsupported bindings key on the kwarg's presence, not its value.
+    """
+    return bool(global_config.get("role_supports_token_tracker", {}).get(role, False))
+
+
+def _attach_token_usage(raw_data: dict[str, Any], token_tracker: TokenTracker) -> None:
+    """Record ``token_tracker``'s accumulated usage into ``raw_data['metadata']``.
+
+    A no-op while ``token_tracker`` has recorded no calls -- absent is not
+    zero, the same convention ``TokenTracker`` itself follows elsewhere
+    (see ``lightrag/llm/ollama.py``): a query path that never called the LLM
+    (an ``only_need_context``/``only_need_prompt`` short-circuit, or an
+    answer served entirely from cache) reports no ``token_usage`` at all,
+    rather than a misleading all-zero one. Mutates ``raw_data`` in place so
+    callers can invoke this at more than one return point on the same
+    ``raw_data`` object (e.g. once after keyword extraction, again after the
+    synthesis call) and each call layers in whatever was spent since the
+    tracker was created.
+    """
+    if token_tracker.call_count == 0:
+        return
+    raw_data.setdefault("metadata", {})["token_usage"] = token_tracker.get_usage()
+
+
 async def kg_query(
     query: str,
     knowledge_graph_inst: BaseGraphStorage,
@@ -4589,11 +4625,12 @@ async def kg_query(
         global_config["role_llm_funcs"]["query"], _priority=DEFAULT_QUERY_PRIORITY
     )
     llm_cache_identity = get_llm_cache_identity(global_config, "query")
+    token_tracker = TokenTracker()
 
     if progress_callback:
         await progress_callback(QueryProgress.EXTRACTING_KEYWORDS)
     hl_keywords, ll_keywords = await get_keywords_from_query(
-        query, query_param, global_config, hashing_kv
+        query, query_param, global_config, hashing_kv, token_tracker=token_tracker
     )
 
     logger.debug(f"High-level keywords: {hl_keywords}")
@@ -4609,7 +4646,15 @@ async def kg_query(
             logger.warning(f"Forced low_level_keywords to origin query: {query}")
             ll_keywords = [query]
         else:
-            return QueryResult(content=PROMPTS["fail_response"], llm_generated=False)
+            # Keyword extraction already ran and may have incurred real cost;
+            # record it before bailing out so it isn't silently dropped.
+            fail_raw_data: dict[str, Any] = {}
+            _attach_token_usage(fail_raw_data, token_tracker)
+            return QueryResult(
+                content=PROMPTS["fail_response"],
+                llm_generated=False,
+                raw_data=fail_raw_data,
+            )
 
     ll_keywords_str = ", ".join(ll_keywords) if ll_keywords else ""
     hl_keywords_str = ", ".join(hl_keywords) if hl_keywords else ""
@@ -4631,6 +4676,11 @@ async def kg_query(
     if context_result is None:
         logger.info("[kg_query] No query context could be built; returning no-result.")
         return None
+
+    # Keyword extraction is the only LLM call made so far on this path; record
+    # it now so a caller that stops here (only_need_context/only_need_prompt,
+    # just below) still sees what it actually cost.
+    _attach_token_usage(context_result.raw_data, token_tracker)
 
     # Return different content based on query parameters
     if query_param.only_need_context and not query_param.only_need_prompt:
@@ -4713,13 +4763,15 @@ async def kg_query(
     else:
         if progress_callback:
             await progress_callback(QueryProgress.GENERATING_RESPONSE)
-        response = await use_model_func(
-            user_query,
+        llm_call_kwargs: dict[str, Any] = dict(
             system_prompt=sys_prompt,
             history_messages=query_param.conversation_history,
             enable_cot=True,
             stream=query_param.stream,
         )
+        if _role_supports_token_tracker(global_config, "query"):
+            llm_call_kwargs["token_tracker"] = token_tracker
+        response = await use_model_func(user_query, **llm_call_kwargs)
 
         if (
             answer_cache_kv
@@ -4755,6 +4807,12 @@ async def kg_query(
                 ),
             )
 
+    # A cache hit skips the block above entirely -- token_tracker only gains
+    # the synthesis call's usage when one actually happened, so a cached
+    # answer still reports just the keyword-extraction cost attached earlier
+    # (or nothing, when keywords were also served from cache/pre-supplied).
+    _attach_token_usage(context_result.raw_data, token_tracker)
+
     # Return unified result based on actual response type
     if isinstance(response, str):
         # Non-streaming response (string)
@@ -4784,6 +4842,7 @@ async def get_keywords_from_query(
     query_param: QueryParam,
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
+    token_tracker: TokenTracker | None = None,
 ) -> tuple[list[str], list[str]]:
     """
     Retrieves high-level and low-level keywords for RAG operations.
@@ -4796,6 +4855,9 @@ async def get_keywords_from_query(
         query_param: Query parameters that may contain pre-defined keywords
         global_config: Global configuration dictionary
         hashing_kv: Optional key-value storage for caching results
+        token_tracker: Optional tracker credited with the extraction call's
+            usage; untouched when keywords are pre-supplied or cached, since
+            no LLM call happens on either of those paths.
 
     Returns:
         A tuple containing (high_level_keywords, low_level_keywords)
@@ -4806,7 +4868,7 @@ async def get_keywords_from_query(
 
     # Extract keywords directly from the current query text.
     hl_keywords, ll_keywords = await extract_keywords_only(
-        query, query_param, global_config, hashing_kv
+        query, query_param, global_config, hashing_kv, token_tracker=token_tracker
     )
     return hl_keywords, ll_keywords
 
@@ -4921,6 +4983,7 @@ async def extract_keywords_only(
     param: QueryParam,
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
+    token_tracker: TokenTracker | None = None,
 ) -> tuple[list[str], list[str]]:
     """
     Extract high-level and low-level keywords from the given 'text' using the LLM.
@@ -4982,7 +5045,12 @@ async def extract_keywords_only(
         global_config["role_llm_funcs"]["keyword"], _priority=DEFAULT_QUERY_PRIORITY
     )
 
-    result = await use_model_func(kw_prompt, response_format={"type": "json_object"})
+    keyword_call_kwargs: dict[str, Any] = dict(response_format={"type": "json_object"})
+    if token_tracker is not None and _role_supports_token_tracker(
+        global_config, "keyword"
+    ):
+        keyword_call_kwargs["token_tracker"] = token_tracker
+    result = await use_model_func(kw_prompt, **keyword_call_kwargs)
 
     # 5. Parse out JSON from the LLM response with tolerant provider normalization
     _, hl_keywords, ll_keywords = _parse_keywords_payload(result)
@@ -6562,6 +6630,7 @@ async def naive_query(
         global_config["role_llm_funcs"]["query"], _priority=DEFAULT_QUERY_PRIORITY
     )
     llm_cache_identity = get_llm_cache_identity(global_config, "query")
+    token_tracker = TokenTracker()
 
     tokenizer: Tokenizer = global_config["tokenizer"]
     if not tokenizer:
@@ -6721,13 +6790,15 @@ async def naive_query(
         )
         response = cached_response
     else:
-        response = await use_model_func(
-            user_query,
+        llm_call_kwargs: dict[str, Any] = dict(
             system_prompt=sys_prompt,
             history_messages=query_param.conversation_history,
             enable_cot=True,
             stream=query_param.stream,
         )
+        if _role_supports_token_tracker(global_config, "query"):
+            llm_call_kwargs["token_tracker"] = token_tracker
+        response = await use_model_func(user_query, **llm_call_kwargs)
 
         if (
             answer_cache_kv
@@ -6760,6 +6831,11 @@ async def naive_query(
                     queryparam=queryparam_dict,
                 ),
             )
+
+    # A cache hit skips the block above entirely, so this is a no-op then --
+    # naive mode has no keyword-extraction call, so a cache hit here means
+    # no token_usage at all, not just an unchanged one.
+    _attach_token_usage(raw_data, token_tracker)
 
     # Return unified result based on actual response type
     if isinstance(response, str):
