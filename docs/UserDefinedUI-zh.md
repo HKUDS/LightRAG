@@ -16,6 +16,7 @@ LightRAG 支持用**你自己的**欢迎页、登录页文案、用户协议、�
 | **查询空白页** | `/workspace` 查询页，对话为空时（点击 *Clear* 后会再次出现） | `query_empty`（必填） |
 | **登录页文案** | 用户名/密码表单上方，**两个入口都生效**（`/webui/#/login` 与 `/workspace/#/login`） | `login`（可选） |
 | **用户协议 + 同意勾选框** | 登录页上的勾选框，其链接以弹窗打开协议文档；未勾选时前端登录按钮保持禁用——这是前端提示，不是服务端强制（见 [§6](#6-登录同意门禁)） | `agreements`（可选，与 `login` 成对生效） |
+| **同意勾选框的链接文字** | 勾选框中被链接的那几个字——「同意……」 | `consent_documents`（可选；缺省时回退到前端通用的「隐私政策协议」） |
 | **品牌 Logo** | 欢迎页、查询空白页与登录页 | `brand.logo`、locale 级 `logo`、`logo_alt` |
 | **版权声明** | 欢迎页与登录页的最下方——在卡片**外部**，贴着页面底边 | `brand.copyright`、locale 级 `copyright`（可选） |
 
@@ -129,6 +130,7 @@ ui_templates/
       "query_empty": "locales/zh/query_empty.md",
       "login": "locales/zh/login.md",
       "agreements": "locales/zh/agreements.md",
+      "consent_documents": "《用户隐私协议》和《模型服务协议》",
       "logo_alt": "示例公司"
     },
     "en": {
@@ -136,6 +138,7 @@ ui_templates/
       "query_empty": "locales/en/query_empty.md",
       "login": "locales/en/login.md",
       "agreements": "locales/en/agreements.md",
+      "consent_documents": "Privacy Policy and Model Service Agreement",
       "logo_alt": "Example Corp"
     }
   }
@@ -168,9 +171,10 @@ ui_templates/
 | `logo` | 否 | string \| `null` | 覆盖本 locale 的 `brand.logo`（`null` = 本 locale 不显示 Logo）。key **不存在**时继承 `brand.logo`。 |
 | `login` | 否 | string \| `null` | 登录页文案的路径。 |
 | `agreements` | 否 | string \| `null` | 单份用户协议文档的路径。 |
+| `consent_documents` | 否 | string \| `null` | **是文本，不是路径**：同意勾选框如何称呼它所链接的这份文档，用该 locale 的语言书写。声明了却为空会导致启动失败；缺省或为 `null` 时使用前端自带的翻译。 |
 | `copyright` | 否 | string \| `null` | 覆盖本 locale 的 `brand.copyright`（`null` = 本 locale 不显示版权行）。key **不存在**时继承 `brand.copyright`。 |
 
-`login` 与 `agreements` 同时声明才会开启登录同意门禁——见 [§6](#6-登录同意门禁)。
+`login` 与 `agreements` 同时声明才会开启登录同意门禁——见 [§6](#6-登录同意门禁)。`consent_documents` 只负责给这个门禁**命名**，本身不会开启门禁。
 
 ### 4.3 locale key 的写法
 
@@ -298,7 +302,7 @@ WARNING: UI customization: the WebUI ships no interface translation for ['nl'] �
 当某个 locale **同时**声明了 `login` 和 `agreements` 时，该 locale 的登录页会显示：
 
 - 表单上方你的 `login` Markdown 文案；
-- 一个勾选框，中文界面下文案为「同意《用户隐私协议》和《模型服务协议》」，其中唯一的链接会以弹窗打开你的 `agreements` 文档。
+- 一个勾选框，中文界面下文案为「同意……」，其中唯一的链接——名称来自 `consent_documents`，未声明时来自前端自身的翻译——会以弹窗打开你的 `agreements` 文档。
 
 未勾选时**登录**按钮保持禁用，在表单中按回车同样会被拒绝。
 
@@ -308,9 +312,11 @@ WARNING: UI customization: the WebUI ships no interface translation for ['nl'] �
 
 ### 6.1 一份文档，而不是两份
 
-勾选框只承载**一个**链接。请把隐私协议和模型服务协议写进同一个 `agreements.md`，用标题分隔：
+勾选框只承载**一个**链接，因此访问者需要同意的全部内容都写进同一个 `agreements.md`，用标题分隔：
 
 ```markdown
+# 用户隐私协议与模型服务协议
+
 ## 用户隐私协议
 
 …
@@ -320,13 +326,42 @@ WARNING: UI customization: the WebUI ships no interface translation for ['nl'] �
 …
 ```
 
-勾选框的文案本身不可定制——它来自前端自身的翻译，因此在每种界面语言下都已经是自然的表达。请让你文档中的标题与该文案保持一致。
+> **合并的文档必须自己署名。** 前端的兜底链接文字是通用的「隐私政策协议」。只要你的文件除了隐私政策还包含别的内容——模型服务协议、服务条款、可接受使用政策等——这个兜底就低估了访问者正在勾选的范围，请用 `consent_documents` 填上它真实的名称。
+>
+> 这也包括该字段出现之前写好的 bundle：它们照常加载，但勾选框现在显示的是「隐私政策协议」。**如果你的 `agreements.md` 合并了多份文档，请在升级时补上 `consent_documents`。**
+
+#### 给链接命名
+
+`consent_documents` 就是勾选框中被做成链接的那段文字——填写你的部署对这份文档的真实称呼即可：
+
+```jsonc
+"consent_documents": "《示例公司服务条款》"
+```
+
+链接外围的那句话（「同意……」）仍然来自前端自身的翻译，因此在每种界面语言下都是自然的表达；可定制的只是文档的名称。不写这个字段时，链接的名称也由该翻译提供——即通用的「隐私政策协议」（中文为 `《隐私政策协议》`）：它只适合"确实就是一份隐私政策"的文件，其它情况都会低估实际范围（见上面的提示）。
+
+#### 弹窗会显示什么
+
+弹窗会**原样**渲染 `agreements.md`，不会在其上方再打印一行标题。因此请给这个文件写上它自己的标题：该标题就是屏幕上这份文档的标题。
+
+```markdown
+# 用户隐私协议与模型服务协议
+
+## 用户隐私协议
+
+…
+```
+
+代码不会去读这份文档——弹窗只负责*渲染*它。读屏软件朗读的弹窗名称，取自勾选框自己的链接文字（`consent_documents`，未声明时为前端的兜底值），那也正是访问者刚刚勾选的东西。**这个名称与文件标题是否一致、与文件实际内容是否相符，由你自己维护。**
+
+标题、段落、列表、表格、引用块、代码块、分隔线和链接都会以标准的文档排版渲染。Markdown 中的原始 HTML 会被丢弃——与其它所有 bundle 模板一致，见 [§10](#10-内容撰写规则)。
 
 ### 6.2 需要知道的规则
 
 - **要么都写，要么都不写。** 只写 `login` 会得到一个有品牌文案但没有门禁的登录页；只写 `agreements` 则是一份没有任何入口链接的文档。两者都不会开启门禁——半份配置就按半份配置处理，不会被当作已获得同意。
 - **按 locale 生效。** 解析到的 locale 若两个字段都没声明，访问者就看不到勾选框。请为每个需要门禁的 locale 都声明这一对字段，或者用 `fallbacks` 把未覆盖的 locale 导向已声明的 locale。
-- **声明了但内容为空的文件会导致启动失败。** 门禁绝不能指向一份空白文档。
+- **声明了但内容为空的文件会导致启动失败。** 门禁绝不能指向一份空白文档。`consent_documents` 为空白字符串同样会失败。
+- **链接文字可选，文档不可选。** 单独写 `consent_documents` 永远不会开启门禁；某个 locale 只声明了 `login` + `agreements` 而没写它，勾选框照常工作，只是名称来自前端翻译。
 - **勾选状态不会被记住。** 它只存活于登录页本身，并且绑定到屏幕上那份文档的确切文本，因此每次访问都需要重新勾选。中途切换界面语言会替换文档并清除勾选，除非新 locale 的文本逐字节相同。
 - **仅作用于 WebUI，不覆盖 API。** 同上：`POST /login` 没有同意相关字段，因此该门禁只约束前端登录表单，此外别无约束。
 - **仅覆盖账号密码登录。** 未配置认证（`AUTH_ACCOUNTS` 未设置）的部署会以 guest 身份直接放行，不受门禁约束。这是刻意设计而非缺口：没有认证就没有可被约束的用户身份，而免认证本就是开发/演示形态。**若必须要求接受协议，请配置 `AUTH_ACCOUNTS`**（并配置 `TOKEN_SECRET`）。
@@ -498,6 +533,7 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
   "query_empty": { "format": "markdown", "content": "…" },
   "login": { "format": "markdown", "content": "…" },
   "agreements": { "format": "markdown", "content": "…" },
+  "consent_documents": "《用户隐私协议》和《模型服务协议》",
   "consent_required": true
 }
 ```
@@ -507,6 +543,7 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
 - `"customized": false` → 当前没有激活任何模板包（`UI_TEMPLATES_DIR` 未设置，或指向的目录中没有 `manifest.json`），前端显示的是 LightRAG 内置品牌内容。
 - `"fallback_used": true` → 请求的 locale 未被声明，`locale` 字段告诉你最终落到了哪里。
 - `"consent_required"` → 该 locale 下是否会出现同意勾选框。
+- `"consent_documents": null` → 该 locale 未声明链接文字，前端将用自身的翻译来命名这个链接。
 - `logo_url: null` → 该 locale 解析结果是*不显示* Logo（某处显式写了 `null`），而不是回退到 LightRAG 的 Logo。
 - `brand.copyright: null` → 该 locale 不显示版权行。在 `"customized": false` 的响应里这个 key 根本不存在，含义相同：没有可渲染的内容。
 
@@ -539,6 +576,7 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
 | `logo '…': content is not PNG, JPEG, WebP or SVG` | 文件字节不匹配任何受支持格式——例如后缀是 `.svg` 实际却是 HTML，或 SVG 缺少根元素/根元素带命名空间前缀。 |
 | `locales.xx.login: template file is empty` | `login` / `agreements` 是「声明与否」的开关，声明了却为空会被拒绝。`welcome` / `query_empty` 允许为空。 |
 | `locales.xx.logo_alt must be a non-empty string` | 为每个 locale 提供真实的替代文本。 |
+| `locales.xx.consent_documents must be a non-empty string or null` | 它是文本而不是路径——空白的标签会让勾选框什么都没指名。删除该 key 即可回退到前端翻译。 |
 | `brand.copyright must be a string or null` / `locales.xx.copyright must be a string or null` | 版权声明是写在 manifest 里的纯文本——字符串，或用 `null` 表示「不显示」。不是路径，也不能是数字或数组。 |
 
 以下现象**不会**导致启动失败：
@@ -548,6 +586,8 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
 | 服务器正常启动，但页面仍是 LightRAG 品牌内容 | `UI_TEMPLATES_DIR` 未设置——检查启动日志和 `/ui/customization`。Docker 下请注意 compose 的 `environment:` 会覆盖 `.env`。 |
 | 启动日志出现 `holds no manifest.json`，品牌内容没有变化 | 配置的目录存在，但里面没有模板包。要么你还没写，要么服务器读到的目录不是你填充的那个——警告中写明了它实际读取的路径。`manifest.json` 必须直接位于模板包根目录，而不是下一层（常见原因是复制了父目录）。进容器确认：`docker compose exec lightrag ls /app/data/ui_templates`。 |
 | 修改后不生效 | 没有热加载。请重启服务器（所有 worker）。 |
+| 勾选框显示「隐私政策协议」，但文档内容不止于此 | 这是该 locale 未声明 `consent_documents` 时的前端兜底。请自己给文档命名（见 [§6.1](#61-一份文档而不是两份)）——该字段出现之前写好的 bundle 在升级后会遇到这种情况。 |
+| 协议弹窗没有标题 | `agreements.md` 开头没有标题行。弹窗是原样渲染该文件的——请给它加上一行 `# 标题`（见 [§6.1](#61-一份文档而不是两份)）。 |
 | 看不到同意勾选框 | 解析到的 locale 只声明了 `login` / `agreements` 之一；或未配置认证（`AUTH_ACCOUNTS` 未设置）；或访问者解析到的 locale 与你预期的不同——检查接口返回中的 `locale` 与 `consent_required`。 |
 | 内容是你的语言，按钮却不是 | 该 locale 不在前端界面语言集合内——见 [§5.3](#53-界面语言与-bundle-语言) 及启动警告。 |
 | Logo 不显示 | 该 locale（或 `brand`）解析结果为 `null`；或浏览器加载资源 URL 失败——直接请求 `logo_url` 查看状态码。 |
@@ -560,7 +600,7 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
 - **Markdown 并支持 GFM**（表格、删除线、任务列表）。链接和图片正常可用，链接会在新标签页打开。
 - **原始 HTML 会被丢弃。** 这是格式边界而非不信任：定制内容这一层根本不开放 HTML 通道。请用 Markdown 表达排版。
 - **方向不由你设置。** 不要写 `dir` 属性或 CSS——见 [§5.2](#52-文字方向rtl)。
-- **保持简短。** 欢迎页文案在手机上位于首屏；查询空白页只是 Logo 下方居中的一段话。
+- **保持简短。** 欢迎页文案在手机上位于首屏；查询空白页只是 Logo 下方居中的一段话。用户协议文档是例外——它在自己的弹窗里以可滚动的文档形式渲染，由它自身的标题层级来组织结构（见 [§6.1](#61-一份文档而不是两份)）。
 
 ---
 

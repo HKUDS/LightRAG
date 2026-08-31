@@ -42,12 +42,21 @@ Copy this directory, replace the texts and the logo, then restart the server
   a blank value here does NOT fail startup: it only turns the line off.
 - `login` and `agreements` are OPTIONAL per locale, and together they switch
   on the **login consent gate**: when a locale declares both, the login page
-  shows the `login` text plus a checkbox ("I agree to the Privacy Policy and
-  Model Service Agreement"), and sign-in stays disabled until it is ticked.
+  shows the `login` text plus a checkbox ("I agree to …"), and sign-in stays
+  disabled until it is ticked.
   The checkbox carries ONE link, which opens `agreements` in a dialog — so
   write the privacy policy and the model service agreement into that single
   file (headings are the way to separate them) rather than expecting the
   reader to find two documents.
+  - `consent_documents` is what the checkbox CALLS that link — inline text,
+    not a path, per locale. It is optional: leave it out and the WebUI names
+    the link with its own generic "Privacy Policy Agreement". Set it whenever
+    the file covers more than a privacy policy, so the checkbox does not
+    understate what the visitor is agreeing to. It never switches the gate on
+    by itself.
+  - The dialog renders `agreements` AS WRITTEN and prints no title above it,
+    so start the file with its own heading — that heading is the document's
+    title on screen.
   - Declaring only one of the two leaves the gate OFF: a branded login page
     with nothing to agree to, or an agreement document no page links to, is
     a half-finished configuration and is treated as such.

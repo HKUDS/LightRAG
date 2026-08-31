@@ -1993,6 +1993,228 @@ generate_docker_compose "$REPO_ROOT/docker-compose.generated.yml\"
     assert '      - "${HOST:-0.0.0.0}:${PORT:-9621}:9621"' in generated_compose
 
 
+def test_generate_docker_compose_keeps_the_port_mapping_inside_lightrag_before_a_top_level_section(
+    tmp_path: Path,
+) -> None:
+    """A user-defined top-level section must not swallow the port mapping.
+
+    The port injector closed the lightrag service only on a two-space service
+    header, so with no ``ports:`` block and a top-level ``networks:`` next it
+    took ``  backbone:`` -- that section's first child -- for the next service
+    and wrote ``ports:`` inside ``networks:``. The result did not even parse as
+    YAML, and the mapping was gone from lightrag.
+    """
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    volumes:",
+            "      - ./.env:/app/.env",
+            "",
+            "networks:",
+            "  backbone:",
+            "    driver: bridge",
+        ],
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+prepare_compose_runtime_overrides
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
+    parsed = yaml.safe_load(result)
+    assert parsed["services"]["lightrag"]["ports"] == [
+        "${HOST:-0.0.0.0}:${PORT:-9621}:9621"
+    ]
+    assert parsed["networks"] == {"backbone": {"driver": "bridge"}}
+
+
+def test_inject_lightrag_port_mapping_closes_an_existing_ports_block_at_any_top_level_key(
+    tmp_path: Path,
+) -> None:
+    """The in-block terminator listed ``volumes``/``networks`` by name.
+
+    Every other top-level key (``configs:``, ``secrets:``, ``x-*:``) left the
+    block open, so the entry was appended inside that section. Exercised on the
+    injector directly: through ``generate_docker_compose`` the ``deploy:`` block
+    it writes right after ``ports:`` happens to close the block first, which is
+    why the whole-file path only shows the sibling defect.
+    """
+    compose_file = tmp_path / "docker-compose.yml"
+    write_text_lines(
+        compose_file,
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    ports:",
+            '      - "8000:8000"',
+            "",
+            "configs:",
+            "  myconf:",
+            "    file: ./conf.txt",
+        ],
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+
+inject_lightrag_port_mapping "{compose_file}" "9621:9621"
+""")
+    parsed = yaml.safe_load(compose_file.read_text(encoding="utf-8"))
+    assert parsed["services"]["lightrag"]["ports"] == ["8000:8000", "9621:9621"]
+    assert parsed["configs"] == {"myconf": {"file": "./conf.txt"}}
+
+
+@pytest.mark.parametrize("indent", ["", "  "], ids=["column-zero", "service-indent"])
+def test_inject_lightrag_port_mapping_does_not_end_the_service_on_a_comment(
+    tmp_path: Path, indent: str
+) -> None:
+    """A comment is not a boundary, so it must not open a second ``ports:``.
+
+    Closing the service on a comment line made the injector write its own
+    ``ports:`` key above the operator's block instead of appending to it, and
+    docker compose refuses the result: ``mapping key "ports" already defined``.
+    """
+    compose_file = tmp_path / "docker-compose.yml"
+    write_text_lines(
+        compose_file,
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            f"{indent}# operator comment",
+            "    ports:",
+            '      - "8000:8000"',
+        ],
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+
+inject_lightrag_port_mapping "{compose_file}" "9621:9621"
+""")
+    result = compose_file.read_text(encoding="utf-8")
+    assert result.count("    ports:") == 1
+    assert yaml.safe_load(result)["services"]["lightrag"]["ports"] == [
+        "8000:8000",
+        "9621:9621",
+    ]
+
+
+@pytest.mark.parametrize("indent", ["", "  "], ids=["column-zero", "service-indent"])
+def test_inject_lightrag_bind_mounts_does_not_end_the_service_on_a_comment(
+    tmp_path: Path, indent: str
+) -> None:
+    """The sibling injector shares the boundary, so it shares the defect.
+
+    A comment between the lightrag keys and the operator's ``volumes:`` block
+    made the injector open a second ``volumes:`` key above it.
+    """
+    compose_file = tmp_path / "docker-compose.yml"
+    write_text_lines(
+        compose_file,
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            f"{indent}# operator comment",
+            "    volumes:",
+            "      - ./data:/app/data",
+        ],
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+
+inject_lightrag_bind_mounts "{compose_file}" "./certs:/app/certs:ro"
+""")
+    result = compose_file.read_text(encoding="utf-8")
+    assert result.count("    volumes:") == 1
+    assert yaml.safe_load(result)["services"]["lightrag"]["volumes"] == [
+        "./data:/app/data",
+        "./certs:/app/certs:ro",
+    ]
+
+
+def test_strip_and_inject_ports_stay_idempotent_across_a_comment_in_the_block(
+    tmp_path: Path,
+) -> None:
+    """The strip pass must still find the wizard mapping below a comment.
+
+    Ending the scan on the comment left the wizard's own mapping in place, the
+    injector then appended a second copy -- and the list grew by one entry on
+    every regeneration.
+    """
+    compose_file = tmp_path / "docker-compose.yml"
+    mapping = "${HOST:-0.0.0.0}:${PORT:-9621}:9621"
+    write_text_lines(
+        compose_file,
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    ports:",
+            '      - "80:80"',
+            "# operator comment inside the ports block",
+            f'      - "{mapping}"',
+        ],
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+
+_strip_lightrag_wizard_ports "{compose_file}"
+inject_lightrag_port_mapping "{compose_file}" '{mapping}'
+""")
+    result = compose_file.read_text(encoding="utf-8")
+    assert yaml.safe_load(result)["services"]["lightrag"]["ports"] == [
+        "80:80",
+        mapping,
+    ]
+
+
+@pytest.mark.parametrize("indent", ["", "  "], ids=["column-zero", "service-indent"])
+def test_lightrag_environment_has_key_looks_past_a_comment(
+    tmp_path: Path, indent: str
+) -> None:
+    """Presence must survive a comment inside the environment block.
+
+    The probe ended its scan on the comment and reported the declared key as
+    absent; the seed would then append a second entry for a key that is already
+    there, and compose rejects that outright (see the probe's own docstring).
+    """
+    compose_file = tmp_path / "docker-compose.yml"
+    write_text_lines(
+        compose_file,
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "    environment:",
+            f"{indent}# operator comment",
+            '      UI_TEMPLATES_DIR: "/custom/ui_templates"',
+        ],
+    )
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+
+if _lightrag_environment_has_key "{compose_file}" "UI_TEMPLATES_DIR"; then
+  echo "declared"
+else
+  echo "absent"
+fi
+""")
+    assert output.strip() == "declared"
+
+
 def test_generate_docker_compose_injects_env_overrides_into_lightrag_not_after_managed_services(
     tmp_path: Path,
 ) -> None:
