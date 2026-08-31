@@ -27,8 +27,10 @@ Conversion rules (informed by spec §3-§六):
   is reserved for explicit 2D-array / non-HTML compatibility inputs. A real
   HTML ``<thead>`` populates ``table_header`` (per spec §5); otherwise the
   adapter does not guess a header row.
-- ``image`` / ``picture`` / ``drawing`` → IRDrawing + ``{{IMG:k}}`` placeholder.
-  Asset bytes are referenced via ``img_path`` relative to the raw dir.
+- ``image`` / ``picture`` / ``drawing`` / ``chart`` → IRDrawing + ``{{IMG:k}}``
+  placeholder. Asset bytes are referenced via ``img_path`` relative to the raw
+  dir. ``chart`` items (MinerU >= 3.x) carry their text in ``chart_caption`` /
+  ``chart_footnote`` instead of ``image_caption`` / ``image_footnote``.
 - ``equation`` → IREquation. ``is_block`` is decided by whether
   ``text_format=="block"`` (MinerU explicit flag) OR ``text_level==0`` with
   no inline neighbours; otherwise inline. The latex string is preserved
@@ -368,7 +370,7 @@ class MinerUIRBuilder:
                 _record_position(item)
                 continue
 
-            if item_type in {"image", "picture", "drawing"}:
+            if item_type in {"image", "picture", "drawing", "chart"}:
                 drawing, asset = self._build_ir_drawing(item, raw_dir, seen_assets)
                 placeholder = _next_key("im")
                 drawing.placeholder_key = placeholder
@@ -521,7 +523,11 @@ class MinerUIRBuilder:
     ) -> tuple[IRDrawing, AssetSpec | None]:
         img_path = str(item.get("img_path") or item.get("path") or "")
         src_val = str(item.get("src") or "")
-        captions = item.get("image_caption") or item.get("captions")
+        captions = (
+            item.get("image_caption")
+            or item.get("chart_caption")
+            or item.get("captions")
+        )
         caption = str(item.get("caption") or "")
         if not caption and isinstance(captions, list) and captions:
             caption = str(captions[0])
@@ -563,7 +569,11 @@ class MinerUIRBuilder:
             asset_ref=ref,
             fmt=fmt,
             caption=caption,
-            footnotes=_as_str_list(item.get("image_footnote") or item.get("footnotes")),
+            footnotes=_as_str_list(
+                item.get("image_footnote")
+                or item.get("chart_footnote")
+                or item.get("footnotes")
+            ),
             src=src_val,
         )
         return drawing, asset
