@@ -38,6 +38,7 @@ from typing import (
 from lightrag.prompt import (
     PROMPTS,
     get_default_entity_extraction_prompt_profile,
+    load_user_prompt_prefix_source,
     resolve_entity_extraction_prompt_profile,
     validate_entity_extraction_prompt_profile_for_mode,
 )
@@ -461,6 +462,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         default_factory=lambda: get_env_value("ENABLE_CONTENT_HEADINGS", True, bool)
     )
     """Append each chunk's parent heading path as a `content_headings` field in the chunk JSON sent to the LLM."""
+
+    user_prompt_prefix: str = field(default_factory=load_user_prompt_prefix_source)
+    """Global instructions prepended to every request's `QueryParam.user_prompt`.
+
+    Server-side output policy, sourced from `USER_PROMPT_PREFIX` or
+    `USER_PROMPT_PREFIX_FILE`. Concatenated verbatim with no separator inserted:
+    end it with your own newlines so it does not run into the caller's text. A
+    request opts out with `QueryParam.disable_user_prompt_prefix`, but can never
+    read or replace it.
+    """
 
     # Entity extraction
     # ---
@@ -4104,6 +4115,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             ll_keywords=param.ll_keywords,
             conversation_history=param.conversation_history,
             user_prompt=param.user_prompt,
+            disable_user_prompt_prefix=param.disable_user_prompt_prefix,
             enable_rerank=param.enable_rerank,
         )
 

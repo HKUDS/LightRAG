@@ -150,6 +150,19 @@ class QueryParam:
     """User-provided prompt for the query.
     Additional instructions for LLM. If provided, this will be injected into the prompt template.
     Its purpose is to let the user customize the way LLM generates the response.
+
+    The server may prepend a global prefix (``USER_PROMPT_PREFIX`` /
+    ``LightRAG.user_prompt_prefix``) to this value; set
+    ``disable_user_prompt_prefix`` to opt out. Note that ``bypass`` mode ignores
+    this field entirely, and a caller-supplied ``system_prompt`` without a
+    ``{user_prompt}`` placeholder silently drops it.
+    """
+
+    disable_user_prompt_prefix: bool = False
+    """Do not prepend the server-side global prompt prefix to ``user_prompt``.
+
+    The prefix is operator configuration; a request can only opt out of it, it
+    can never read or replace it. Default ``False``, i.e. the prefix applies.
     """
 
     enable_rerank: bool = os.getenv("RERANK_BY_DEFAULT", "true").lower() == "true"

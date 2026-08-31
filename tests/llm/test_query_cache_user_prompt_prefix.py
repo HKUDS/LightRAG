@@ -1,0 +1,420 @@
+"""The server-side ``user_prompt_prefix`` must partition the answer cache.
+
+``USER_PROMPT_PREFIX`` lets an operator prepend global instructions to every
+request's ``QueryParam.user_prompt``. It changes the generated text, so it has
+to reach the answer-cache key: otherwise an operator who edits the prefix keeps
+being served answers written under the old one.
+
+The key component was changed in place -- ``query_param.user_prompt or ""``
+became the COMPOSED text -- rather than appended as a new component. That is
+what keeps ``_ANSWER_CACHE_POLICY_VERSION`` at v2: with no prefix configured
+the composed text is byte-identical to the old value, so every entry written
+before this feature existed still hits. These tests pin both halves.
+
+``disable_user_prompt_prefix`` is deliberately NOT a key component of its own:
+it acts only through the composed text, so a disabled request with a prefix
+configured must share an entry with a request that never had one.
+"""
+
+import pytest
+
+from lightrag.base import QueryContextResult, QueryParam
+from lightrag.operate import kg_query, naive_query
+from lightrag.utils import (
+    Tokenizer,
+    compute_args_hash,
+    get_llm_cache_identity,
+    serialize_llm_cache_identity,
+)
+
+
+class _FakeTokenizerImpl:
+    def encode(self, content: str) -> list[int]:
+        return [ord(ch) for ch in content]
+
+    def decode(self, tokens: list[int]) -> str:
+        return "".join(chr(token) for token in tokens)
+
+
+def _FakeTokenizer() -> Tokenizer:
+    return Tokenizer("fake", _FakeTokenizerImpl())
+
+
+class _FakeKVStorage:
+    def __init__(self):
+        self.global_config = {"enable_llm_cache": True}
+        self._store = {}
+
+    async def get_by_id(self, key):
+        return self._store.get(key)
+
+    async def upsert(self, entries):
+        self._store.update(entries)
+
+
+class _FakeChunksVDB:
+    cosine_better_than_threshold = 0.0
+
+    async def query(self, *_args, **_kwargs):
+        return [
+            {
+                "id": "chunk-1",
+                "content": "User prompt prefix cache partitioning test chunk.",
+                "file_path": "test.md",
+            }
+        ]
+
+
+class _RecordingModel:
+    """Counts calls and records the system prompt each call received."""
+
+    def __init__(self):
+        self.calls = 0
+        self.system_prompts = []
+
+    async def __call__(self, *_args, **kwargs):
+        self.calls += 1
+        self.system_prompts.append(kwargs.get("system_prompt"))
+        return f"answer-{self.calls}"
+
+
+QUERY = "who is Tesla?"
+PREFIX_A = "Always answer in Chinese.\n\n"
+PREFIX_B = "Always answer in French.\n\n"
+USER_PROMPT = "Reply in one sentence."
+
+
+def _query_global_config(llm_func, prefix=None) -> dict:
+    cfg = {
+        "tokenizer": _FakeTokenizer(),
+        "role_llm_funcs": {"query": llm_func},
+        "addon_params": {"language": "en"},
+        "min_rerank_score": 0.0,
+        "max_total_tokens": 4096,
+    }
+    if prefix is not None:
+        cfg["user_prompt_prefix"] = prefix
+    return cfg
+
+
+def _answer_cache_keys(cache: _FakeKVStorage) -> list[str]:
+    return [key for key in cache._store if ":query:" in key]
+
+
+def _preprefix_answer_cache_key(
+    param: QueryParam,
+    cfg: dict,
+    *,
+    keywords: tuple[str, str] | None = None,
+) -> str:
+    """Frozen snapshot of the answer-cache key as composed BEFORE this feature.
+
+    Deliberately duplicates the historical argument list rather than reusing
+    production code: the point is to prove an entry written by the old code is
+    still served when no prefix is configured. Do NOT refresh this when new key
+    fields are added -- if a later change makes this miss, that change costs
+    every deployment its warm answer cache and must be a deliberate decision.
+    """
+    args = [
+        "query-answer-cache-v2",
+        param.mode,
+        QUERY,
+        param.response_type,
+        param.top_k,
+        param.chunk_top_k,
+        param.max_entity_tokens,
+        param.max_relation_tokens,
+        param.max_total_tokens,
+    ]
+    if keywords is not None:
+        args.extend(keywords)
+    args.extend(
+        [
+            param.user_prompt or "",
+            param.enable_rerank,
+            cfg.get("enable_content_headings", False),
+            "\n<llm_identity>\n",
+            serialize_llm_cache_identity(get_llm_cache_identity(cfg, "query")),
+        ]
+    )
+    return f"{param.mode}:query:{compute_args_hash(*args)}"
+
+
+@pytest.fixture
+def stub_query_context(monkeypatch):
+    """Skip retrieval: kg_query only forwards its storage args into this call."""
+
+    async def _fake_build_query_context(*_args, **_kwargs):
+        return QueryContextResult(context="KG CONTEXT", raw_data={})
+
+    monkeypatch.setattr(
+        "lightrag.operate._build_query_context", _fake_build_query_context
+    )
+
+
+def _naive_param(**overrides) -> QueryParam:
+    return QueryParam(mode="naive", enable_rerank=False, **overrides)
+
+
+def _kg_param(**overrides) -> QueryParam:
+    return QueryParam(
+        mode="local", enable_rerank=False, ll_keywords=["Tesla"], **overrides
+    )
+
+
+async def _run_naive(param, cfg, cache):
+    return await naive_query(QUERY, _FakeChunksVDB(), param, cfg, hashing_kv=cache)
+
+
+async def _run_kg(param, cfg, cache):
+    return await kg_query(QUERY, None, None, None, None, param, cfg, hashing_kv=cache)
+
+
+# ---------------------------------------------------------------------------
+# The prefix reaches the model.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)])
+async def test_prefix_is_prepended_into_the_system_prompt(
+    runner, param, stub_query_context
+):
+    cache = _FakeKVStorage()
+    model = _RecordingModel()
+    cfg = _query_global_config(model, prefix=PREFIX_A)
+
+    await runner(param(user_prompt=USER_PROMPT), cfg, cache)
+
+    sys_prompt = model.system_prompts[0]
+    assert PREFIX_A.strip() in sys_prompt
+    assert f"{PREFIX_A}{USER_PROMPT}" in sys_prompt
+    # The "no instructions" placeholder must be gone once anything is composed.
+    assert "n/a" not in sys_prompt
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)])
+async def test_prefix_alone_reaches_the_model_without_a_user_prompt(
+    runner, param, stub_query_context
+):
+    """The common deployment: operator sets a policy, callers send nothing."""
+    cache = _FakeKVStorage()
+    model = _RecordingModel()
+    cfg = _query_global_config(model, prefix=PREFIX_A)
+
+    await runner(param(), cfg, cache)
+
+    assert PREFIX_A.strip() in model.system_prompts[0]
+    assert "n/a" not in model.system_prompts[0]
+
+
+# ---------------------------------------------------------------------------
+# Cache partitioning.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)])
+async def test_changing_the_prefix_does_not_serve_the_old_answer(
+    runner, param, stub_query_context
+):
+    """The whole reason the prefix has to be in the key."""
+    cache = _FakeKVStorage()
+    model = _RecordingModel()
+
+    first = await runner(
+        param(user_prompt=USER_PROMPT), _query_global_config(model, PREFIX_A), cache
+    )
+    assert first.content == "answer-1"
+
+    second = await runner(
+        param(user_prompt=USER_PROMPT), _query_global_config(model, PREFIX_B), cache
+    )
+    assert second.content == "answer-2"
+    assert model.calls == 2
+    assert len(_answer_cache_keys(cache)) == 2
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)])
+async def test_same_prefix_still_hits_the_cache(runner, param, stub_query_context):
+    """Partitioning must not degenerate into never caching."""
+    cache = _FakeKVStorage()
+    model = _RecordingModel()
+    cfg = _query_global_config(model, prefix=PREFIX_A)
+
+    first = await runner(param(user_prompt=USER_PROMPT), cfg, cache)
+    second = await runner(param(user_prompt=USER_PROMPT), cfg, cache)
+
+    assert first.content == second.content == "answer-1"
+    assert model.calls == 1
+    assert len(_answer_cache_keys(cache)) == 1
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)])
+async def test_prefix_and_user_prompt_do_not_collide_across_the_boundary(
+    runner, param, stub_query_context
+):
+    """Byte concatenation must not make two different splits share a key.
+
+    ``"ab" + "c"`` and ``"a" + "bc"`` compose the same text but are different
+    configurations; they legitimately produce the SAME prompt, so they SHOULD
+    share an entry. This pins that the composed text -- not the raw fields --
+    is what the key reflects.
+    """
+    cache = _FakeKVStorage()
+    model = _RecordingModel()
+
+    first = await runner(
+        param(user_prompt="c"), _query_global_config(model, "ab"), cache
+    )
+    second = await runner(
+        param(user_prompt="bc"), _query_global_config(model, "a"), cache
+    )
+
+    assert first.content == second.content == "answer-1"
+    assert model.calls == 1
+
+
+# ---------------------------------------------------------------------------
+# The opt-out switch is not itself a key component.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)])
+async def test_disabled_prefix_shares_the_entry_with_no_prefix_configured(
+    runner, param, stub_query_context
+):
+    cache = _FakeKVStorage()
+    model = _RecordingModel()
+
+    first = await runner(
+        param(user_prompt=USER_PROMPT), _query_global_config(model), cache
+    )
+    assert first.content == "answer-1"
+
+    second = await runner(
+        param(user_prompt=USER_PROMPT, disable_user_prompt_prefix=True),
+        _query_global_config(model, PREFIX_A),
+        cache,
+    )
+    assert second.content == "answer-1"
+    assert model.calls == 1
+    assert len(_answer_cache_keys(cache)) == 1
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)])
+async def test_disabled_prefix_keeps_the_prefix_out_of_the_prompt(
+    runner, param, stub_query_context
+):
+    cache = _FakeKVStorage()
+    model = _RecordingModel()
+    cfg = _query_global_config(model, prefix=PREFIX_A)
+
+    await runner(
+        param(user_prompt=USER_PROMPT, disable_user_prompt_prefix=True), cfg, cache
+    )
+
+    sys_prompt = model.system_prompts[0]
+    assert PREFIX_A.strip() not in sys_prompt
+    assert USER_PROMPT in sys_prompt
+
+
+# ---------------------------------------------------------------------------
+# The invariant: an unconfigured prefix invalidates nothing.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_naive_entry_written_before_the_prefix_feature_still_hits():
+    cache = _FakeKVStorage()
+    model = _RecordingModel()
+    cfg = _query_global_config(model)
+    param = _naive_param(user_prompt=USER_PROMPT)
+
+    cache._store[_preprefix_answer_cache_key(param, cfg)] = {
+        "return": "PRE-PREFIX-ANSWER",
+        "create_time": 1,
+    }
+
+    result = await _run_naive(param, cfg, cache)
+    assert result.content == "PRE-PREFIX-ANSWER"
+    assert model.calls == 0
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_kg_entry_written_before_the_prefix_feature_still_hits(
+    stub_query_context,
+):
+    cache = _FakeKVStorage()
+    model = _RecordingModel()
+    cfg = _query_global_config(model)
+    param = _kg_param(user_prompt=USER_PROMPT)
+
+    cache._store[
+        _preprefix_answer_cache_key(param, cfg, keywords=("", "Tesla"))
+    ] = {"return": "PRE-PREFIX-ANSWER", "create_time": 1}
+
+    result = await _run_kg(param, cfg, cache)
+    assert result.content == "PRE-PREFIX-ANSWER"
+    assert model.calls == 0
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)])
+async def test_configured_prefix_does_not_serve_a_pre_prefix_entry(
+    runner, param, stub_query_context
+):
+    """The other side of the invariant: once a prefix exists, old entries miss."""
+    cache = _FakeKVStorage()
+    model = _RecordingModel()
+    cfg = _query_global_config(model, prefix=PREFIX_A)
+    p = param(user_prompt=USER_PROMPT)
+
+    keywords = ("", "Tesla") if p.mode == "local" else None
+    cache._store[_preprefix_answer_cache_key(p, cfg, keywords=keywords)] = {
+        "return": "PRE-PREFIX-ANSWER",
+        "create_time": 1,
+    }
+
+    result = await runner(p, cfg, cache)
+    assert result.content == "answer-1"
+    assert model.calls == 1
+
+
+# ---------------------------------------------------------------------------
+# Transparency: the prefix must not leak into cache metadata.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)])
+async def test_cache_metadata_records_the_raw_request_user_prompt(
+    runner, param, stub_query_context
+):
+    """``queryparam`` mirrors the REQUEST; the operator prefix is not part of it."""
+    cache = _FakeKVStorage()
+    model = _RecordingModel()
+    cfg = _query_global_config(model, prefix=PREFIX_A)
+
+    await runner(param(user_prompt=USER_PROMPT), cfg, cache)
+
+    entry = cache._store[_answer_cache_keys(cache)[0]]
+    queryparam = entry["queryparam"]
+    assert queryparam["user_prompt"] == USER_PROMPT
+    assert PREFIX_A not in str(queryparam)
