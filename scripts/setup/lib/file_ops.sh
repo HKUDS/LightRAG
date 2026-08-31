@@ -2160,14 +2160,21 @@ inject_lightrag_port_mapping() {
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$in_lightrag" == "yes" && "$in_ports" == "yes" ]]; then
-      if [[ "$line" =~ ^[[:space:]]{4}[^[:space:]-] || "$line" =~ ^[[:space:]]{2}[^[:space:]] || "$line" =~ ^(volumes|networks): ]]; then
+      # Any column-0 line ends the services section, so it ends the ports
+      # block too. Matching `volumes:`/`networks:` by name missed every other
+      # top-level key (`configs:`, `secrets:`, `x-*:`), and the scan then took
+      # that section's first two-space child for the next service and wrote
+      # the mapping inside it. Mirrors inject_lightrag_bind_mounts.
+      if [[ "$line" =~ ^[[:space:]]{4}[^[:space:]-] || "$line" =~ ^[[:space:]]{2}[^[:space:]] || "$line" =~ ^[^[:space:]] ]]; then
         if [[ "$inserted" == "no" ]]; then
           printf '      - "%s"\n' "$port_mapping" >> "$tmp_file"
           inserted="yes"
         fi
         in_ports="no"
       fi
-    elif [[ "$in_lightrag" == "yes" && "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "  lightrag:" ]]; then
+    elif [[ "$in_lightrag" == "yes" && \
+            ( "$line" =~ ^[[:space:]]{2}[^[:space:]] || "$line" =~ ^[^[:space:]] ) && \
+            "$line" != "  lightrag:" ]]; then
       if [[ "$inserted" == "no" ]]; then
         printf '    ports:\n' >> "$tmp_file"
         printf '      - "%s"\n' "$port_mapping" >> "$tmp_file"
