@@ -3731,6 +3731,13 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         until the next one. That is as far as this can go without a write
         fence, and it costs ranking quality alone -- never a wrong edge, only
         an entity ranked from a degree short of its real one.
+
+        A revalidation probe that itself fails (a transport error, a rejected
+        search) is not treated as a clean bill of health -- that would trade
+        away the guarantee above on exactly the index the probe exists to
+        watch. It falls through to the backfill path instead, which either
+        confirms and re-stamps a clean index or degrades to the legacy
+        ranking, same as any other failure here.
         """
         if self._edge_endpoints_ready:
             return
@@ -3748,28 +3755,37 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 try:
                     dirty = await self._edges_missing_endpoints_exist()
                 except OpenSearchException as e:
-                    # Revalidation is a guard on top of a promise the flag
-                    # already made. Failing it must fall back to that promise,
-                    # not below it: the alternative downgrades a healthy index
-                    # to the approximate ranking for the life of the process,
-                    # which would make this check the likeliest cause of the
-                    # degradation it exists to prevent.
+                    # "Cannot verify" is not "verified clean". Trusting the
+                    # flag here risks exactly the silent-wrong-ranking window
+                    # the revalidation exists to close, and on precisely the
+                    # index most likely to actually be dirty (one old enough
+                    # to have lived through a rolling deploy). Falling
+                    # through to the backfill path below costs one recount:
+                    # if the failure was transient and the index is clean,
+                    # that recount is zero-hit and the flag is re-stamped
+                    # immediately; if the index is genuinely dirty, the same
+                    # recount finds it and backfills within this startup
+                    # instead of waiting for the next one; if the store is
+                    # still unreachable, the recount fails the same way and
+                    # the outer handler below degrades to the legacy ranking
+                    # -- the same safe default every other failure in this
+                    # method already falls back to.
                     logger.warning(
                         f"[{self.workspace}] Could not revalidate "
                         f"{_EDGE_ENDPOINTS_FIELD} coverage on "
-                        f"{self._edges_index}: {e}; trusting the readiness flag"
+                        f"{self._edges_index}: {e}; re-running the backfill "
+                        f"check rather than trusting the flag"
                     )
-                    self._edge_endpoints_ready = True
-                    return
-                if not dirty:
-                    self._edge_endpoints_ready = True
-                    return
-                logger.warning(
-                    f"[{self.workspace}] Edge docs without {_EDGE_ENDPOINTS_FIELD} "
-                    f"found in {self._edges_index} after the readiness flag was "
-                    f"set; an old-version writer during a rolling deploy is the "
-                    f"usual cause. Re-running the backfill"
-                )
+                else:
+                    if not dirty:
+                        self._edge_endpoints_ready = True
+                        return
+                    logger.warning(
+                        f"[{self.workspace}] Edge docs without {_EDGE_ENDPOINTS_FIELD} "
+                        f"found in {self._edges_index} after the readiness flag was "
+                        f"set; an old-version writer during a rolling deploy is the "
+                        f"usual cause. Re-running the backfill"
+                    )
 
             if _EDGE_ENDPOINTS_FIELD not in index_mapping.get("properties", {}):
                 # Explicit keyword mapping: the index is `dynamic: true`, and a

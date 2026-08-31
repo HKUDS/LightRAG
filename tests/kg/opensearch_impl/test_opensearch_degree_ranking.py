@@ -512,11 +512,14 @@ async def test_flagged_index_that_cannot_be_repaired_keeps_the_legacy_ranking():
 
 
 @pytest.mark.asyncio
-async def test_probe_failure_falls_back_to_the_flag_rather_than_below_it():
-    """Revalidation guards a promise the flag already made. A search rejection
-    or a transport error must not downgrade a healthy migrated index to the
-    approximate ranking for the life of the process, which would make the
-    guard the likeliest cause of the degradation it prevents."""
+async def test_probe_failure_never_trusts_the_flag_unverified():
+    """ "Cannot verify" must not be treated as "verified clean". A search
+    rejection or transport error on the revalidation probe must not mark a
+    flagged index ready outright -- that would silently accept whatever a
+    rolling-deploy writer left behind on precisely the index the probe
+    exists to catch. It must fall through to the backfill path and, if that
+    path also cannot reach the store, degrade to the legacy ranking like
+    every other failure in this method."""
     from opensearchpy.exceptions import OpenSearchException
 
     storage = _migration_storage(flagged=True)
@@ -524,8 +527,61 @@ async def test_probe_failure_falls_back_to_the_flag_rather_than_below_it():
 
     await storage._ensure_edge_endpoints_ready()
 
+    assert storage._edge_endpoints_ready is False
+    storage.client.update_by_query.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_probe_failure_self_heals_when_the_index_is_actually_clean():
+    """A transient probe failure on a genuinely clean index must not cost
+    more than one extra recount: falling through to the backfill path finds
+    zero missing docs and re-stamps the flag within the same startup,
+    rather than waiting for the next one."""
+    from opensearchpy.exceptions import OpenSearchException
+
+    storage = _migration_storage(flagged=True)
+    calls = {"n": 0}
+
+    async def count(*, index=None, body=None, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            assert kwargs.get("terminate_after") == 1  # this is the probe
+            raise OpenSearchException("transient")
+        return {"count": 0}  # the backfill recount: genuinely clean
+
+    storage.client.count = AsyncMock(side_effect=count)
+
+    await storage._ensure_edge_endpoints_ready()
+
     assert storage._edge_endpoints_ready is True
     storage.client.update_by_query.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_probe_failure_finds_and_repairs_a_dirty_index_same_startup():
+    """A transient probe failure on an index a rolling deploy actually
+    dirtied must not wait for the next startup: falling through to the
+    backfill path finds the missing docs and repairs them immediately."""
+    from opensearchpy.exceptions import OpenSearchException
+
+    storage = _migration_storage(flagged=True)
+    calls = {"n": 0}
+
+    async def count(*, index=None, body=None, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            assert kwargs.get("terminate_after") == 1  # this is the probe
+            raise OpenSearchException("transient")
+        # First recount (post-fallthrough) finds the backlog the probe
+        # couldn't confirm; the post-backfill recount confirms it is gone.
+        return {"count": 1} if calls["n"] == 2 else {"count": 0}
+
+    storage.client.count = AsyncMock(side_effect=count)
+
+    await storage._ensure_edge_endpoints_ready()
+
+    storage.client.update_by_query.assert_awaited_once()
+    assert storage._edge_endpoints_ready is True
 
 
 @pytest.mark.asyncio
