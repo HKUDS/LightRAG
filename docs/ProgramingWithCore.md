@@ -285,9 +285,12 @@ class QueryParam:
 
     user_prompt: str | None = None
     """User-provided prompt for the query.
-    Addition instructions for LLM. If provided, this will be inject into the prompt template.
-    It's purpose is the let user customize the way LLM generate the response.
+    Additional instructions for LLM. If provided, this will be injected into the prompt template.
+    Its purpose is to let the user customize the way LLM generates the response.
     """
+
+    disable_user_prompt_prefix: bool = False
+    """If True, the server-side global prompt prefix is NOT prepended to `user_prompt`."""
 
     enable_rerank: bool = True
     """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.
@@ -624,6 +627,47 @@ response_default = rag.query(
 )
 print(response_default)
 ```
+
+### A Global User Prompt Prefix
+
+`user_prompt` is supplied per request, so it cannot express an output policy
+that should hold for every caller. `LightRAG.user_prompt_prefix` is that policy:
+a server-side string prepended to each request's `user_prompt`.
+
+```python
+rag = LightRAG(..., user_prompt_prefix="Answer in the language of the question.\n\n")
+```
+
+For the API server it comes from the environment instead — `USER_PROMPT_PREFIX`
+for a short value, or `USER_PROMPT_PREFIX_FILE` (a `.md`/`.txt` file name under
+`PROMPT_DIR/user_prompt`) when the text is long, multi-paragraph, or contains
+`${...}`, which python-dotenv would otherwise interpolate away.
+
+The two strings are concatenated **verbatim, with no separator inserted** — end
+the prefix with your own `\n\n` so it does not run into the caller's text. The
+prefix comes first because a model weights later instructions more heavily on
+conflict, so the per-request prompt wins.
+
+A request opts out with `disable_user_prompt_prefix`, which is what lets a
+front-end take full control of the final instruction text:
+
+```python
+QueryParam(user_prompt="...", disable_user_prompt_prefix=True)
+```
+
+The prefix is configuration, not request data: a request can decline it but can
+never read or replace it. Three limits are worth knowing:
+
+- **`bypass` mode ignores it**, as it ignores `user_prompt` — that path has no
+  `{user_prompt}` slot and its `system_prompt` argument belongs to the caller.
+- **`only_need_prompt=True` returns the composed prompt**, so any client that
+  can set that debug flag can read the prefix verbatim.
+- **A custom `system_prompt` without a `{user_prompt}` placeholder drops it**,
+  the same way it already drops `user_prompt`.
+
+The prefix participates in the answer cache key, so editing it invalidates
+answers generated under the old one. With no prefix configured the key is
+unchanged, so existing cache entries keep hitting.
 
 
 ## Storage Backends

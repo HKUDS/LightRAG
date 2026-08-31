@@ -418,3 +418,65 @@ async def test_cache_metadata_records_the_raw_request_user_prompt(
     queryparam = entry["queryparam"]
     assert queryparam["user_prompt"] == USER_PROMPT
     assert PREFIX_A not in str(queryparam)
+
+
+# ---------------------------------------------------------------------------
+# The prefix is counted against the context token budget.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_prefix_shrinks_the_available_chunk_token_budget(monkeypatch):
+    """A configured prefix must be counted, or a long one overfills the context.
+
+    ``_build_context_str`` estimates the system-prompt overhead to size
+    ``available_chunk_tokens``. Before this feature the estimate used the raw
+    request ``user_prompt``, so a server-side prefix would have consumed
+    context the estimate knew nothing about. The three cases below pin that the
+    budget moves by exactly the prefix length, and not at all when unset or
+    opted out.
+    """
+    import lightrag.operate as operate
+
+    limits = []
+    original = operate.process_chunks_unified
+
+    async def _spy(**kwargs):
+        limits.append(kwargs["chunk_token_limit"])
+        return await original(**kwargs)
+
+    monkeypatch.setattr(operate, "process_chunks_unified", _spy)
+
+    entities = [{"entity": "Scrooge", "description": "A miser."}]
+    relations = [{"src": "Scrooge", "tgt": "Marley", "description": "Partners."}]
+    chunks = [
+        {"chunk_id": f"c{i}", "content": f"Chunk {i}.", "file_path": "a.md"}
+        for i in range(5)
+    ]
+    # The fake tokenizer is 1 char == 1 token, so the delta is exact.
+    prefix = "P" * 3000
+
+    async def _budget_for(prefix_value, disable):
+        cfg = {
+            "tokenizer": _FakeTokenizer(),
+            "max_total_tokens": 30000,
+            "user_prompt_prefix": prefix_value,
+        }
+        param = QueryParam(
+            mode="hybrid",
+            enable_rerank=False,
+            user_prompt=USER_PROMPT,
+            disable_user_prompt_prefix=disable,
+        )
+        await operate._build_context_str(
+            entities, relations, chunks, QUERY, param, cfg
+        )
+        return limits[-1]
+
+    baseline = await _budget_for("", False)
+    with_prefix = await _budget_for(prefix, False)
+    disabled = await _budget_for(prefix, True)
+
+    assert with_prefix == baseline - len(prefix)
+    assert disabled == baseline
