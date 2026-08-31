@@ -35,7 +35,7 @@
     "authDisabled": "Xác thực bị tắt. Đang sử dụng chế độ không cần đăng nhập.",
     "guestMode": "Không cần đăng nhập",
     "consentLabel": "Tôi đồng ý với {{documents}}",
-    "consentDocuments": "Chính sách quyền riêng tư và Thỏa thuận dịch vụ mô hình",
+    "consentDocuments": "Chính sách quyền riêng tư",
     "errorConsentRequired": "Vui lòng đọc và đồng ý với các thỏa thuận trước khi đăng nhập"
   },
   "common": {

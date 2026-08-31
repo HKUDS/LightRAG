@@ -302,7 +302,7 @@ The checkbox carries exactly **one** link. Write both the privacy policy and the
 "consent_documents": "Example Corp Terms of Service"
 ```
 
-The sentence around it (*"I agree to …"*) still comes from the WebUI's own translations, so it reads naturally in each interface language; only the document's name is yours. Leave the field out and that translation supplies the name too (`同意《用户隐私协议》和《模型服务协议》` in Chinese, and so on) — which is the right default only if your document really is a privacy policy plus a model service agreement.
+The sentence around it (*"I agree to …"*) still comes from the WebUI's own translations, so it reads naturally in each interface language; only the document's name is yours. Leave the field out and that translation supplies the name too — the generic *"Privacy Policy Agreement"* (`《隐私政策协议》` in Chinese, and so on). That default is right for a document that is just a privacy policy; **set the field whenever yours covers more than that** — a model service agreement, terms of service, an acceptable-use policy — because a checkbox that names only the privacy policy is not a fair description of what the visitor is agreeing to.
 
 #### What the dialog shows
 

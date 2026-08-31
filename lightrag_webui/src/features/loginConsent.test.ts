@@ -131,7 +131,7 @@ describe('isAgreedTo', () => {
 })
 
 describe('resolveConsentDocuments', () => {
-  const translated = 'Privacy Policy and Model Service Agreement'
+  const translated = 'Privacy Policy Agreement'
 
   test('the bundle wording wins over the WebUI translation', () => {
     // The deployment names its document; the translation cannot know it.

@@ -91,10 +91,11 @@ export function isLoginBlockedByConsent(state: LoginConsentState): boolean {
  *
  * The BUNDLE owns this text (`locales.<locale>.consent_documents` in the
  * manifest), because only the deployment knows what its own document is
- * called — the WebUI's translation can only guess, and its guess is wrong
- * for every deployment that does not ship exactly a privacy policy plus a
- * model service agreement. The translated string stays as the fallback for a
- * bundle that declares no name, so an existing bundle keeps its label.
+ * called — the WebUI's translation can only name the generic case (a privacy
+ * policy agreement), and a deployment whose document also covers, say, a
+ * model service agreement is misnamed by it. The translated string stays as
+ * the fallback for a bundle that declares no name, so an existing bundle
+ * keeps its label.
  *
  * A blank bundle value falls back too: the loader rejects one, but a label
  * that renders as an empty link would leave the checkbox demanding agreement
