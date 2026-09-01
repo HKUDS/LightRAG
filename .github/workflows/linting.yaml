@@ -12,7 +12,7 @@ permissions:
 
 jobs:
     lint-and-format:
-        name: Linting and Formatting
+        name: pre-commit
         if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
         runs-on: ubuntu-latest
 
