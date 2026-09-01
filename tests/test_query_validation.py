@@ -40,6 +40,11 @@ pytestmark = pytest.mark.offline
         ("々々", 4),
         ("〳〵", 4),
         ("二〇", 4),
+        # Korean jamo, not just precomposed syllables: medial and final jamo are
+        # what an IME emits mid-composition.
+        ("ᅡᅥ", 4),
+        ("ᆨᆩ", 4),
+        ("ힰힱ", 4),
     ],
 )
 def test_rag_query_weight_counts_east_asian_characters_as_two(query, expected):
@@ -174,6 +179,50 @@ def test_the_coarse_table_over_counts_and_that_is_the_deal(query, what):
     """
     assert rag_query_weight(query) == 4, what
     assert validate_rag_query(query) == query
+
+
+# The Unicode blocks the ranges are built from, at their true boundaries.
+_SOURCE_BLOCKS = {
+    "Hangul Jamo": (0x1100, 0x11FF),
+    "CJK Radicals Supplement": (0x2E80, 0x2EFF),
+    "Kangxi Radicals": (0x2F00, 0x2FDF),
+    "CJK Symbols and Punctuation": (0x3000, 0x303F),
+    "Hiragana": (0x3040, 0x309F),
+    "Katakana": (0x30A0, 0x30FF),
+    "Bopomofo": (0x3100, 0x312F),
+    "Hangul Compatibility Jamo": (0x3130, 0x318F),
+    "Bopomofo Extended": (0x31A0, 0x31BF),
+    "Katakana Phonetic Extensions": (0x31F0, 0x31FF),
+    "CJK Compatibility": (0x3300, 0x33FF),
+    "CJK Extension A": (0x3400, 0x4DBF),
+    "CJK Unified Ideographs": (0x4E00, 0x9FFF),
+    "Hangul Jamo Extended-A": (0xA960, 0xA97F),
+    "Hangul Syllables": (0xAC00, 0xD7AF),
+    "Hangul Jamo Extended-B": (0xD7B0, 0xD7FF),
+    "CJK Compatibility Ideographs": (0xF900, 0xFAFF),
+    "CJK Compatibility Forms": (0xFE30, 0xFE4F),
+    "Halfwidth and Fullwidth Forms": (0xFF00, 0xFFEE),
+    "Ideographic Symbols and Punctuation": (0x16FE0, 0x16FFF),
+    "Kana Extended-B": (0x1AFF0, 0x1AFFF),
+    "Kana Supplement": (0x1B000, 0x1B0FF),
+    "Nushu": (0x1B170, 0x1B2FF),
+}
+
+
+@pytest.mark.parametrize("name, bounds", sorted(_SOURCE_BLOCKS.items()))
+def test_no_range_stops_part_way_through_a_block(name, bounds):
+    """Coarse means WHOLE blocks — a boundary drawn inside one is a bug.
+
+    Ending a range early is how Korean medial and final jamo came to weigh 1:
+    U+115F was carried over from an older per-character table, where it marked
+    the choseong filler, and it cut Hangul Jamo in half. Both ends of every
+    source block must be covered, so a stale interior boundary cannot survive.
+    """
+    start, end = bounds
+    for edge in (start, end):
+        assert any(low <= edge <= high for low, high in _WIDE_CODEPOINT_RANGES), (
+            f"{name}: U+{edge:04X} not covered"
+        )
 
 
 def test_the_weighted_ranges_are_sorted_and_disjoint():

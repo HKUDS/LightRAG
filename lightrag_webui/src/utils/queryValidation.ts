@@ -4,32 +4,30 @@ export const MIN_RAG_QUERY_WEIGHT = 3
 
 // East Asian characters count as two English-equivalent ones.
 //
-// DELIBERATELY COARSE — block and plane granularity, not per assigned
-// character. U+20000-U+3FFFD is the whole of planes 2 and 3, which Unicode
-// allocates to CJK ideographs, so every extension from B through J and every
-// future one is covered without an edit. The precision given up is worth
-// nothing here: an unassigned or punctuation code point inside these ranges
-// weighs 2 instead of 1, and the cost of that is one retrieval that finds
-// nothing.
+// WHOLE UNICODE BLOCKS, deliberately — never per assigned character, and never
+// a boundary inside a block. U+20000-U+3FFFD is the whole of planes 2 and 3,
+// which Unicode allocates to CJK ideographs, so every extension from B through
+// J and every future one is covered without an edit. The precision given up is
+// worth nothing here: punctuation and unassigned code points inside these
+// ranges weigh 2, and the cost of that is one retrieval that finds nothing.
+//
+// Ending a range early is a real bug and has happened — a stale U+115F cut
+// Hangul Jamo in half, so Korean medial and final jamo weighed 1.
 //
 // Keep in sync with lightrag/query_validation.py.
 export const WIDE_CODEPOINT_RANGES: ReadonlyArray<readonly [number, number]> = [
-  [0x1100, 0x115f], // Hangul Jamo
-  [0x2e80, 0x303e], // CJK Radicals, Kangxi, CJK Symbols and Punctuation
-  [0x3041, 0x33ff], // Kana, Bopomofo, Hangul Compat Jamo, Kanbun, Enclosed CJK
+  [0x1100, 0x11ff], // Hangul Jamo
+  [0x2e80, 0x33ff], // CJK Radicals, Kangxi, Symbols, Kana, Bopomofo, Hangul
   [0x3400, 0x4dbf], // CJK Unified Ideographs Extension A
   [0x4e00, 0x9fff], // CJK Unified Ideographs
   [0xa000, 0xa4cf], // Yi Syllables and Radicals
   [0xa960, 0xa97f], // Hangul Jamo Extended-A
-  [0xac00, 0xd7a3], // Hangul Syllables
+  [0xac00, 0xd7ff], // Hangul Syllables and Hangul Jamo Extended-B
   [0xf900, 0xfaff], // CJK Compatibility Ideographs
   [0xfe30, 0xfe4f], // CJK Compatibility Forms
-  [0xff00, 0xff60], // Fullwidth Forms
-  [0xff66, 0xff9d], // Halfwidth Katakana — East Asian NARROW, but the
-  [0xffa1, 0xffdc], // Halfwidth Hangul — same letters as the wide forms
-  [0xffe0, 0xffe6], // Fullwidth signs
-  [0x16fe0, 0x16fe4], // Ideographic Symbols and Punctuation
-  [0x17000, 0x18aff], // Tangut
+  [0xff00, 0xffee], // Halfwidth and Fullwidth Forms
+  [0x16fe0, 0x16fff], // Ideographic Symbols and Punctuation
+  [0x17000, 0x18aff], // Tangut and Tangut Components
   [0x1aff0, 0x1b2ff], // Kana Extended-B/Supplement/Extended-A, Small Kana, Nushu
   [0x20000, 0x3fffd] // Planes 2 and 3 — every CJK extension, present and future
 ]

@@ -8,41 +8,40 @@ MIN_RAG_QUERY_WEIGHT = 3
 # East Asian characters count as two English-equivalent ones: a two-character
 # CJK word carries about as much retrieval signal as a three-letter English one.
 #
-# These are the East Asian Wide/Fullwidth blocks — DELIBERATELY COARSE, at block
-# and plane granularity rather than per assigned character. That choice is the
-# point, not a shortcut:
+# WHOLE UNICODE BLOCKS, deliberately — never per assigned character, and never a
+# boundary drawn inside a block. That choice is the point, not a shortcut:
 #
 #   * It cannot rot. U+20000-U+3FFFD is the whole of planes 2 and 3, which
 #     Unicode allocates to CJK ideographs, so every extension from B through J
-#     and every future one is already covered. A table enumerated per assigned
-#     character needs an edit — in two languages — on every Unicode release, and
-#     silently under-counts real characters until someone makes it.
-#   * The precision it gives up is worth nothing here. An unassigned or
-#     punctuation code point inside these ranges weighs 2 instead of 1, so a
-#     query of two such characters clears a minimum it should not. The cost of
-#     that is one retrieval that finds nothing. Nobody types "・・" meaning to
-#     ask something, and a three-character query is a coarse heuristic for
-#     "did the user actually ask anything", not a correctness boundary.
+#     and every future one is covered. A table enumerated per assigned character
+#     needs an edit — in two languages — on every Unicode release, and silently
+#     under-counts real characters until someone makes it.
+#   * The precision it gives up is worth nothing here. Punctuation, fillers and
+#     unassigned code points inside these ranges weigh 2, so two of them clear a
+#     minimum they should not. The cost of that is one retrieval that finds
+#     nothing. Nobody types "・・" meaning to ask something, and a
+#     three-character floor is a coarse heuristic for "did the user actually ask
+#     anything", not a correctness boundary.
+#
+# Ranges therefore end on BLOCK boundaries. Ending one early is a real bug and
+# has happened: carrying U+115F over from an older per-character table cut
+# Hangul Jamo in half, so Korean medial and final jamo weighed 1.
 #
 # Keep these ranges in sync with ``lightrag_webui/src/utils/queryValidation.ts``;
 # ``test_the_frontend_range_table_matches_this_one`` enforces it.
 _WIDE_CODEPOINT_RANGES = (
-    (0x1100, 0x115F),  # Hangul Jamo
-    (0x2E80, 0x303E),  # CJK Radicals, Kangxi, CJK Symbols and Punctuation
-    (0x3041, 0x33FF),  # Kana, Bopomofo, Hangul Compat Jamo, Kanbun, Enclosed CJK
+    (0x1100, 0x11FF),  # Hangul Jamo
+    (0x2E80, 0x33FF),  # CJK Radicals, Kangxi, Symbols, Kana, Bopomofo, Hangul
     (0x3400, 0x4DBF),  # CJK Unified Ideographs Extension A
     (0x4E00, 0x9FFF),  # CJK Unified Ideographs
     (0xA000, 0xA4CF),  # Yi Syllables and Radicals
     (0xA960, 0xA97F),  # Hangul Jamo Extended-A
-    (0xAC00, 0xD7A3),  # Hangul Syllables
+    (0xAC00, 0xD7FF),  # Hangul Syllables and Hangul Jamo Extended-B
     (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
     (0xFE30, 0xFE4F),  # CJK Compatibility Forms
-    (0xFF00, 0xFF60),  # Fullwidth Forms
-    (0xFF66, 0xFF9D),  # Halfwidth Katakana — East Asian NARROW, but the
-    (0xFFA1, 0xFFDC),  # Halfwidth Hangul — same letters as the wide forms
-    (0xFFE0, 0xFFE6),  # Fullwidth signs
-    (0x16FE0, 0x16FE4),  # Ideographic Symbols and Punctuation
-    (0x17000, 0x18AFF),  # Tangut
+    (0xFF00, 0xFFEE),  # Halfwidth and Fullwidth Forms
+    (0x16FE0, 0x16FFF),  # Ideographic Symbols and Punctuation
+    (0x17000, 0x18AFF),  # Tangut and Tangut Components
     (0x1AFF0, 0x1B2FF),  # Kana Extended-B/Supplement/Extended-A, Small Kana, Nushu
     (0x20000, 0x3FFFD),  # Planes 2 and 3 — every CJK extension, present and future
 )

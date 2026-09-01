@@ -17,6 +17,14 @@ describe('RAG query validation', () => {
     expect(ragQueryWeight('  abc  ')).toBe(3)
   })
 
+  test('weighs Korean jamo, not just precomposed syllables', () => {
+    // A range that stopped at U+115F cut Hangul Jamo in half, so the medial and
+    // final jamo an IME emits mid-composition weighed 1.
+    expect(ragQueryWeight('ᅡᅥ')).toBe(4) // medial jamo
+    expect(ragQueryWeight('ᆨᆩ')).toBe(4) // final jamo
+    expect(ragQueryWeight('ힰힱ')).toBe(4) // Hangul Jamo Extended-B
+  })
+
   test('weighs kana, Hangul and Bopomofo like Han', () => {
     // Doubling Han alone rejected ordinary two-character Japanese, Korean and
     // zhuyin queries while accepting their Han equivalents.
