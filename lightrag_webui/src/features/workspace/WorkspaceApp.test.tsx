@@ -246,4 +246,3 @@ describe('workspace header deployment description', () => {
     ).toHaveLength(0)
   })
 })
-
