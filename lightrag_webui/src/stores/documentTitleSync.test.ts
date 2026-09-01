@@ -40,21 +40,25 @@ const g = globalThis as unknown as {
 /**
  * Run `body` as if the page had been served with `WEBUI_TITLE=injected`.
  *
- * `window` is installed only for the duration of the call: the store's own
- * dependency graph is imported under a DOM-less global here, and a lingering
- * fake window could change how any of it behaves in later test files.
+ * `window` is installed only for the duration of the call, then the previous
+ * value is PUT BACK rather than deleted. Since the DOM preload
+ * (`src/test/happydom.ts`) installs a real `window` for the whole process,
+ * deleting it here would strip the DOM from every test file Bun runs after
+ * this one — a failure that would surface in an unrelated component test.
  */
 const withInjectedTitle = (injected: string, body: () => void): void => {
+  const previous = g.window
   g.window = { __LIGHTRAG_CONFIG__: { webuiTitle: injected } }
   try {
     body()
   } finally {
-    delete g.window
+    g.window = previous
   }
 }
 
 let stateModule: StateModule
 let realApiModule: Record<string, unknown>
+let realDocument: typeof g.document
 
 beforeAll(async () => {
   Object.defineProperty(globalThis, 'localStorage', {
@@ -73,14 +77,16 @@ beforeAll(async () => {
   }))
 
   // `document` is read at call time, so installing it here works whether or
-  // not another test file imported the store first.
+  // not another test file imported the store first. The real (preloaded) one
+  // is kept so `afterAll` can restore it for later files.
+  realDocument = g.document
   g.document = { title: 'LightRAG' }
   stateModule = await import('./state')
 })
 
 afterAll(() => {
   mock.module('@/api/lightrag', () => realApiModule)
-  delete g.document
+  g.document = realDocument
 })
 
 const b64url = (value: string) =>
