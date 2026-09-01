@@ -82,7 +82,18 @@ describe('admin retrieval layout', () => {
     // card's content padding. The card is rendered here directly: mounting
     // DocumentManager would pull in the whole document pipeline for a number.
     const { container: cardContainer } = renderWithProviders(<CardContent />)
-    const contentPaddingPx = spacingPx(cardContainer.firstElementChild!, 'p')
+    const cardContent = cardContainer.firstElementChild!
+    const contentPaddingPx = spacingPx(cardContent, 'p')
+
+    // `p-6 pt-0`, the other half of what the deleted test named here. Only the
+    // BOTTOM padding feeds the arithmetic below, so dropping `pt-0` puts 24px
+    // back above the panel's content while every number in this file stays
+    // correct — measured: the file still passed at 1 pass with it removed.
+    // Zero is the claim, so it is asserted as a value, and the same competing
+    // -utility guard the other two edges get applies to this one.
+    const cardClasses = (cardContent.getAttribute('class') ?? '').split(/\s+/)
+    expect(cardClasses.filter(setsPadding(/^(?:p|py|pt)-/))).toEqual(['p-6', 'pt-0'])
+    expect(spacingPx(cardContent, 'pt')).toBe(0)
     cleanup()
 
     // DocumentManager itself stays a source read for the same reason — but of
