@@ -1,6 +1,6 @@
 /// <reference types="bun" />
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
-import { readFileSync } from 'fs'
+import { readdirSync, readFileSync } from 'fs'
 import { join } from 'path'
 import type { ComponentType } from 'react'
 import { act, cleanup } from '@testing-library/react'
@@ -9,10 +9,11 @@ import { renderWithProviders } from '@/test/render'
 import type { MessageWithError } from '@/types/retrieval'
 
 /**
- * Mermaid became a DYNAMIC import so it stays out of the workspace entry's
- * first-load closure. That introduced a failure mode a static import could
- * not have: the renderer itself can fail to arrive (a deploy invalidates the
- * hashed chunk mid-session, an offline tab, a flaky network).
+ * Mermaid is loaded on demand (`mermaidLoader.ts`) so it stays out of the
+ * workspace entry's first-load closure. That introduces a failure mode a
+ * static import could not have: the renderer itself can fail to arrive (a
+ * deploy invalidates the hashed chunk mid-session, an offline tab, a flaky
+ * network).
  *
  * The load-failure branch must therefore write something VISIBLE into the
  * container, exactly like the two render-failure branches beside it — a bare
@@ -21,33 +22,42 @@ import type { MessageWithError } from '@/types/retrieval'
  * settles, and the plain-text fallback in the render body only runs while
  * `renderAsDiagram` is false.
  *
- * ORDERING NOTE: the load-failure mock must be registered before anything in
- * the process has successfully imported `mermaid`, because Bun caches the
- * failed module record — which is why it is installed in `beforeAll` and its
- * tests run first, with the working stubs swapped in afterwards. If another
- * file ever imports mermaid first, that `mock.module` throws here rather than
- * passing quietly.
+ * The LOADER is stubbed here, never the `mermaid` package. Bun's module-mock
+ * registry is process-wide and a module mock cannot be undone, so mocking
+ * `mermaid` itself would hand every later file this file's stub, and a
+ * rejecting mock of it only registers while nothing in the process has loaded
+ * mermaid yet — which this file cannot guarantee about the files before it.
+ * Stubbing the one-function loader is order-independent and restored exactly
+ * in `afterAll`.
  */
 
 const DIAGRAM = 'graph TD;\n  A-->B;'
 const LOAD_ERROR = 'Loading chunk mermaid-a1b2c3 failed'
 
 let ChatMessage: ComponentType<{ message: MessageWithError }>
+let realLoaderModule: Record<string, unknown>
 let consoleErrors: unknown[][]
 let originalConsoleError: typeof console.error
 
+/** Point the loader at `outcome` for the next render. */
+const stubLoader = (outcome: () => Promise<unknown>): void => {
+  mock.module('./mermaidLoader', () => ({ ...realLoaderModule, loadMermaid: outcome }))
+}
+
+const rejectingLoader = () => () => Promise.reject(new Error(LOAD_ERROR))
+
+const workingLoader = (mermaid: Record<string, unknown>) => () => Promise.resolve(mermaid)
+
 beforeAll(async () => {
-  // A rejected dynamic import: the renderer chunk never arrives.
-  mock.module('mermaid', () => {
-    throw new Error(LOAD_ERROR)
-  })
+  realLoaderModule = { ...(await import('./mermaidLoader')) }
+  stubLoader(rejectingLoader())
+
+  // Dynamic and AFTER the stub, so ChatMessage binds the stubbed loader.
   ChatMessage = (await import('./ChatMessage')).ChatMessage
 })
 
 afterAll(() => {
-  mock.module('mermaid', () => ({
-    default: { initialize: () => {}, render: async () => ({ svg: '' }) }
-  }))
+  mock.module('./mermaidLoader', () => realLoaderModule)
 })
 
 beforeEach(() => {
@@ -91,10 +101,11 @@ const renderDiagram = (): void => {
 }
 
 describe('mermaid renderer fails to load', () => {
-  // One render, one dynamic import: Bun keeps a failed module record, so a
-  // second import of the rejecting mock does not fail the same way. Everything
-  // this branch owes the user is therefore asserted from a single mount.
-  test('the container starts empty and ends up carrying the failure', async () => {
+  beforeEach(() => {
+    stubLoader(rejectingLoader())
+  })
+
+  test('nothing is put in the container before the effect runs', async () => {
     renderDiagram()
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 50))
@@ -106,7 +117,10 @@ describe('mermaid renderer fails to load', () => {
     // thing that can ever put content here is the effect. (This is still inside
     // the effect's own 300 ms debounce, so nothing has run yet.)
     expect(container().innerHTML).toBe('')
+  })
 
+  test('the failure is written into the container, with the diagram source', async () => {
+    renderDiagram()
     await settleDiagram()
 
     const text = container().textContent ?? ''
@@ -116,11 +130,14 @@ describe('mermaid renderer fails to load', () => {
     // content: the plain-text branch is unreachable while renderAsDiagram holds.
     expect(text).toContain('Content:')
     expect(text).toContain('A-->B;')
-    // And it is the ONLY thing in the container — written after a clear, so a
-    // half-rendered diagram cannot survive underneath it.
+    // And it is the ONLY thing in the container.
     expect(container().children).toHaveLength(1)
+  })
 
-    // Logged for the operator as well as shown to the user.
+  test('the failure is logged for the operator too', async () => {
+    renderDiagram()
+    await settleDiagram()
+
     expect(
       consoleErrors.some((args) => String(args[0]).includes('Failed to load mermaid'))
     ).toBe(true)
@@ -129,12 +146,12 @@ describe('mermaid renderer fails to load', () => {
 
 describe('mermaid renderer loads but the diagram does not', () => {
   test('a rejected render surfaces the reason and the source', async () => {
-    mock.module('mermaid', () => ({
-      default: {
+    stubLoader(
+      workingLoader({
         initialize: () => {},
         render: () => Promise.reject(new Error('Parse error on line 2'))
-      }
-    }))
+      })
+    )
 
     renderDiagram()
     await settleDiagram()
@@ -146,14 +163,14 @@ describe('mermaid renderer loads but the diagram does not', () => {
   })
 
   test('a throwing setup surfaces the reason', async () => {
-    mock.module('mermaid', () => ({
-      default: {
+    stubLoader(
+      workingLoader({
         initialize: () => {
           throw new Error('unsupported theme')
         },
         render: async () => ({ svg: '' })
-      }
-    }))
+      })
+    )
 
     renderDiagram()
     await settleDiagram()
@@ -164,12 +181,12 @@ describe('mermaid renderer loads but the diagram does not', () => {
   })
 
   test('a successful render replaces the container with the diagram', async () => {
-    mock.module('mermaid', () => ({
-      default: {
+    stubLoader(
+      workingLoader({
         initialize: () => {},
         render: async () => ({ svg: '<svg data-testid="diagram"><title>A to B</title></svg>' })
-      }
-    }))
+      })
+    )
 
     renderDiagram()
     await settleDiagram()
@@ -183,6 +200,28 @@ describe('mermaid renderer loads but the diagram does not', () => {
 
 describe('mermaid failure branches (source-level)', () => {
   const SOURCE = readFileSync(join(import.meta.dir, 'ChatMessage.tsx'), 'utf8')
+
+  test('mermaidLoader is the only module that names the mermaid package', () => {
+    // A forbidden import, which is a genuinely source-level property. Two
+    // things rest on it: a static `import ... from 'mermaid'` anywhere in the
+    // graph would put the renderer in the workspace entry's first-load chunk,
+    // and a second dynamic import would be a load path the stub above cannot
+    // reach — so a failure there would be untested again.
+    const sourceFiles = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const path = join(dir, entry.name)
+        if (entry.isDirectory()) return sourceFiles(path)
+        if (!entry.isFile()) return []
+        return /\.tsx?$/.test(path) && !/\.test\.tsx?$/.test(path) ? [path] : []
+      })
+
+    const srcDir = join(import.meta.dir, '..', '..')
+    const importers = sourceFiles(srcDir)
+      .filter((file) => /from\s+'mermaid'|import\(\s*'mermaid'\s*\)/.test(readFileSync(file, 'utf8')))
+      .map((file) => file.slice(srcDir.length + 1))
+
+    expect(importers).toEqual(['components/retrieval/mermaidLoader.ts'])
+  })
 
   test('every failure branch re-checks the container identity before writing', () => {
     // An await elapsed, so the ref may now point at a different node — and a
