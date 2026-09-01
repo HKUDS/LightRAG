@@ -4540,16 +4540,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             owning_loop=self._owning_loop,
         )
 
-    async def get_docs_by_status(
-        self, status: DocStatus
-    ) -> dict[str, DocProcessingStatus]:
-        """Get documents by status
-
-        Returns:
-            Dict with document id is keys and document status is values
-        """
-        return await self.doc_status.get_docs_by_status(status)
-
     async def aget_docs_by_ids(
         self, ids: str | list[str]
     ) -> dict[str, DocProcessingStatus]:

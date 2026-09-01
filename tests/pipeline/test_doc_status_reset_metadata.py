@@ -282,7 +282,9 @@ async def test_interrupted_reset_clears_attempt_metadata_in_storage_and_memory(
             }
         )
 
-        to_process_docs = await rag.doc_status.get_docs_by_status(DocStatus.PROCESSING)
+        to_process_docs = await rag.doc_status.get_docs_by_statuses(
+            [DocStatus.PROCESSING]
+        )
         pipeline_status = {"latest_message": "", "history_messages": []}
         await rag._validate_and_fix_document_consistency(
             to_process_docs=to_process_docs,
@@ -359,7 +361,7 @@ async def test_stale_pending_normalized_clean_pending_untouched(tmp_path):
             }
         )
 
-        to_process_docs = await rag.doc_status.get_docs_by_status(DocStatus.PENDING)
+        to_process_docs = await rag.doc_status.get_docs_by_statuses([DocStatus.PENDING])
         pipeline_status = {"latest_message": "", "history_messages": []}
         await rag._validate_and_fix_document_consistency(
             to_process_docs=to_process_docs,
@@ -437,7 +439,7 @@ async def test_pending_custom_metadata_semantic_lock(tmp_path):
             }
         )
 
-        to_process_docs = await rag.doc_status.get_docs_by_status(DocStatus.PENDING)
+        to_process_docs = await rag.doc_status.get_docs_by_statuses([DocStatus.PENDING])
         pipeline_status = {"latest_message": "", "history_messages": []}
         await rag._validate_and_fix_document_consistency(
             to_process_docs=to_process_docs,
@@ -467,7 +469,7 @@ async def test_reset_and_normalize_with_string_status(tmp_path):
     ``str`` base) cannot silently stop string-status docs from being cleaned.
 
     Builds the ``to_process_docs`` objects directly with string statuses to
-    exercise the string path (``get_docs_by_status`` would return enum-valued
+    exercise the string path (``get_docs_by_statuses`` would return enum-valued
     members from the in-memory store).
     """
     rag = await _build_rag(tmp_path, "reset_string_status")

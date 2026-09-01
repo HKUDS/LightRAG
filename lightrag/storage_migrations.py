@@ -54,8 +54,16 @@ class _StorageMigrationMixin:
                 # Check if full_entities and full_relations are empty
                 # Get all processed documents to check their entity/relation data
                 try:
-                    processed_docs = await self.doc_status.get_docs_by_status(
-                        DocStatus.PROCESSED
+                    # strict=True: this mapping is the ONLY input that decides
+                    # which documents get recovery anchors written. A row that
+                    # cannot be parsed must abort the migration, not be skipped
+                    # — a partial mapping writes anchors for its siblings, after
+                    # which the "anchors already exist" check above short-
+                    # circuits every later startup, so the omitted document
+                    # never gets anchors and every purge of it fails closed
+                    # (409) for good. See the purge recovery contract.
+                    processed_docs = await self.doc_status.get_docs_by_statuses(
+                        [DocStatus.PROCESSED], strict=True
                     )
 
                     if not processed_docs:

@@ -139,9 +139,11 @@ async def test_doc_status_storage():
             counts.get("processed") == 10, f"processed count: {counts.get('processed')}"
         )
 
-        # get_docs_by_status (uses PIT + search_after)
-        processed = await s.get_docs_by_status(DocStatus.PROCESSED)
-        check(len(processed) == 10, f"get_docs_by_status(processed): {len(processed)}")
+        # get_docs_by_statuses (uses PIT + search_after)
+        processed = await s.get_docs_by_statuses([DocStatus.PROCESSED])
+        check(
+            len(processed) == 10, f"get_docs_by_statuses(processed): {len(processed)}"
+        )
 
         # get_docs_by_track_id (uses PIT + search_after)
         await s.upsert(

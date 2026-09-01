@@ -1868,7 +1868,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             )
             await _cooperative_yield(i)
         try:
-            # DocStatus needs refresh="wait_for" because get_docs_by_status
+            # DocStatus needs refresh="wait_for" because get_docs_by_statuses
             # (search-based) is called immediately after enqueue upserts.
             _, failed = await _run_chunked_async_bulk(
                 self.client,
@@ -1989,12 +1989,6 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             if strict:
                 raise
         return result
-
-    async def get_docs_by_status(
-        self, status: DocStatus
-    ) -> dict[str, DocProcessingStatus]:
-        """Get all documents matching a specific processing status."""
-        return await self.get_docs_by_statuses([status])
 
     async def get_docs_by_statuses(
         self, statuses: list[DocStatus], strict: bool = False
@@ -3089,7 +3083,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             ids = list(ids)
         try:
             # DocStatus needs refresh="wait_for" because downstream readers
-            # (get_docs_by_status, get_docs_paginated, etc.) are search-based
+            # (get_docs_by_statuses, get_docs_paginated, etc.) are search-based
             # and callers like _validate_and_fix_document_consistency() may
             # query immediately after deletion without index_done_callback().
             actions = [
