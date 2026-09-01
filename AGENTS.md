@@ -292,6 +292,22 @@ Rules for new tests:
   `expect(el.getAttribute('href')).toBe('./')`). Measured on a two-element
   page, one failing `toBe(element)` took 5.15 s against 548 ms for the boolean
   form, and the gap grows with the size of the rendered DOM.
+- **Converting a source-text test: enumerate what the old one PROHIBITS,
+  not just what it asserts.** A `readFileSync` test buys its negatives almost
+  for free — one `expect(source).not.toContain('BuiltInLogo')` forbids a whole
+  class of regressions — and those are exactly the assertions that get dropped
+  when the file is rewritten to render, because the positive path ("the bundle
+  logo is there") passes without them. Before touching the file, list every
+  negative and every uniqueness or ordering claim it makes; for each one write
+  down the rendered equivalent, then mutation-check THAT specific regression,
+  not only the happy path. Real losses caught in review on this branch: a
+  built-in logo rendering BESIDE the bundle one (fixed by asserting the count
+  of logo images, not the presence of one), a second visible dialog title, a
+  silent fall back from `variant="document"` typography to the compact tier,
+  and a footer moving above the card or losing its `flex-1` spacer while still
+  being in the document. Note how each of those survives a naive presence
+  assertion — which is the point. Where the old negative genuinely has no
+  rendered counterpart, say so in the PR rather than letting it disappear.
 - **Prove the test can fail.** Before calling it done, break the behavior it
   pins (flip the `aria-label`, drop the guard), confirm it goes red, then
   restore. A test written against already-passing code is worth nothing until
