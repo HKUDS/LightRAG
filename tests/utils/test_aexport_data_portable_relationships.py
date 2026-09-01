@@ -61,8 +61,8 @@ class _FakeGraphStorage:
 class _VdbWithoutClientStorage:
     """Stands in for Milvus/Qdrant/Postgres/Redis/MongoDB/OpenSearch."""
 
-    async def get_by_id(self, _id: str) -> None:  # pragma: no cover - unused here
-        raise AssertionError("include_vector_data=False must not query the VDB")
+    async def get_by_id(self, _id: str) -> None:
+        return None
 
 
 class _VdbWithAsyncClientStorage(_VdbWithoutClientStorage):
@@ -105,7 +105,34 @@ class _VdbWithSyncClientStorage(_VdbWithoutClientStorage):
         return {"data": [{"__id__": "rel-2", "weight": 2.0}]}
 
 
-async def _run_export(tmp_path: Path, relationships_vdb: Any) -> str:
+class _VdbWithVectorBearingRows(_VdbWithoutClientStorage):
+    """Faiss shape, faithfully: the embedding lives IN the metadata row.
+
+    `FaissVectorDBStorage` writes `__vector__` into `_id_to_meta` at flush and
+    reconstructs it from the index on load, and `client_storage` hands those
+    rows back unfiltered. NanoVectorDB keeps vectors in a separate `matrix`,
+    so only this shape can leak them into the raw dump.
+    """
+
+    @property
+    def client_storage(self) -> dict[str, Any]:
+        return {
+            "data": [
+                {
+                    "__id__": "rel-3",
+                    "src_id": "ALICE",
+                    "__vector__": [0.125, 0.25, 0.375],
+                }
+            ]
+        }
+
+
+async def _run_export(
+    tmp_path: Path,
+    relationships_vdb: Any,
+    *,
+    include_vector_data: bool = False,
+) -> str:
     output_path = tmp_path / "export.csv"
     await aexport_data(
         _FakeGraphStorage(),
@@ -113,6 +140,7 @@ async def _run_export(tmp_path: Path, relationships_vdb: Any) -> str:
         relationships_vdb,
         str(output_path),
         file_format="csv",
+        include_vector_data=include_vector_data,
     )
     return output_path.read_text(encoding="utf-8")
 
@@ -216,3 +244,35 @@ async def test_async_client_storage_snapshot_does_not_warn(
         for record in caplog.records
         if "does not check for a newer on-disk commit" in record.message
     ], caplog.text
+
+
+@pytest.mark.asyncio
+async def test_raw_dump_omits_embeddings_when_vector_data_is_not_requested(
+    tmp_path: Path,
+) -> None:
+    """`include_vector_data=False` must mean no embeddings anywhere in the file.
+
+    The entity and relation sections honour the flag by construction -- they
+    only add a `vector_data` column when asked. The raw dump does not: it
+    stringifies whatever the backend hands back, and Faiss hands back rows
+    with `__vector__` in them. Left alone, the default export would emit
+    embeddings and grow by orders of magnitude.
+    """
+    content = await _run_export(tmp_path, _VdbWithVectorBearingRows())
+
+    assert "rel-3" in content  # the record itself is still exported
+    assert "__vector__" not in content
+    assert "0.375" not in content
+
+
+@pytest.mark.asyncio
+async def test_raw_dump_keeps_embeddings_when_vector_data_is_requested(
+    tmp_path: Path,
+) -> None:
+    """The flag adds vector data; it must not strip what the caller asked for."""
+    content = await _run_export(
+        tmp_path, _VdbWithVectorBearingRows(), include_vector_data=True
+    )
+
+    assert "__vector__" in content
+    assert "0.375" in content

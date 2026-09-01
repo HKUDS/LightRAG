@@ -4547,6 +4547,19 @@ async def aexport_data(
                 "records committed by another process."
             )
         for rel in client_storage["data"]:
+            # Faiss materializes the embedding INTO its metadata rows -- at
+            # flush time, and again by reconstruction when loading a
+            # persisted index -- so a raw `str(rel)` would carry the full
+            # vector even for the default vector-free export, inflating the
+            # file by orders of magnitude and emitting embeddings the caller
+            # asked to leave out. Faiss's own read paths filter the key for
+            # exactly this reason. NanoVectorDB is unaffected either way: it
+            # keeps vectors in a separate `matrix`, not in these rows.
+            #
+            # Build a new dict rather than popping: these rows are live
+            # references into the backend's own metadata store.
+            if not include_vector_data:
+                rel = {k: v for k, v in rel.items() if k != "__vector__"}
             relationships_data.append(
                 {
                     "relationship_id": rel["__id__"],
