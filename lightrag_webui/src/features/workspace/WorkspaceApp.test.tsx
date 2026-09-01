@@ -7,6 +7,9 @@ import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from '@/test/render'
 import { resetCustomization, seedCustomization } from '@/test/customization'
 import { useAuthStore } from '@/stores/state'
+import { useSettingsStore } from '@/stores/settings'
+import { useWebuiRetrievalHistoryStore } from '@/stores/webuiRetrievalHistory'
+import { useWorkspaceRetrievalHistoryStore } from '@/stores/workspaceRetrievalHistory'
 import { resetVersionCheckCache } from '@/lib/versionCheckCache'
 import {
   captureProcessState,
@@ -40,8 +43,21 @@ let authStatusFetches = 0
  * `LIGHTRAG-*` keys land in localStorage, `LIGHTRAG-API-TOKEN` among them.
  * `cleanup()` unmounts the tree and touches none of it.
  */
-const sharedStores = [useAuthStore]
+const sharedStores = [
+  useAuthStore,
+  useSettingsStore,
+  // Reconciling an identity CLEARS both retrieval histories — the whole point
+  // of `activateLoginIdentityFromToken` — so a shell mount empties whatever a
+  // previous file left in these singletons. Restoring localStorage alone puts
+  // the persisted envelopes back and leaves the hydrated stores empty, which
+  // is the harder half to notice.
+  useWebuiRetrievalHistoryStore,
+  useWorkspaceRetrievalHistoryStore
+]
 let processSnapshot: ProcessStateSnapshot
+/** As in `queryEntryAlignment`: mount-time reconciliation is async, so a write
+ * can land after the test that triggered it was restored. */
+let fileSnapshot: ProcessStateSnapshot
 
 beforeAll(async () => {
   realApiModule = { ...(await import('@/api/lightrag')) }
@@ -76,6 +92,7 @@ beforeAll(async () => {
 
 afterAll(() => {
   mock.module('@/api/lightrag', () => realApiModule)
+  restoreProcessState(sharedStores, fileSnapshot)
 })
 
 const seedDeployment = (title: string | null, description: string | null): void => {
@@ -120,6 +137,7 @@ beforeEach(() => {
   resetVersionCheckCache()
   authStatusFetches = 0
   // First, before anything below mutates a store.
+  fileSnapshot ??= captureProcessState(sharedStores)
   processSnapshot = captureProcessState(sharedStores)
   act(() => {
     useAuthStore.setState({ isGuestMode: false, username: null })
