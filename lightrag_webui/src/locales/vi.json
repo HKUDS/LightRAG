@@ -13,6 +13,7 @@
     "apiDocs": "Tài liệu API",
     "projectRepository": "Kho dự án",
     "appSettings": "Cài đặt",
+    "deploymentInfo": "Thông tin triển khai",
     "logout": "Đăng xuất",
     "frontendNeedsRebuild": "Giao diện cần được xây dựng lại",
     "themeToggle": {
@@ -32,7 +33,10 @@
     "errorEmptyFields": "Vui lòng nhập tên người dùng và mật khẩu",
     "errorInvalidCredentials": "Đăng nhập thất bại, vui lòng kiểm tra tên người dùng và mật khẩu",
     "authDisabled": "Xác thực bị tắt. Đang sử dụng chế độ không cần đăng nhập.",
-    "guestMode": "Không cần đăng nhập"
+    "guestMode": "Không cần đăng nhập",
+    "consentLabel": "Tôi đồng ý với {{documents}}",
+    "consentDocuments": "Chính sách quyền riêng tư",
+    "errorConsentRequired": "Vui lòng đọc và đồng ý với các thỏa thuận trước khi đăng nhập"
   },
   "common": {
     "cancel": "Hủy",
@@ -407,6 +411,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "Nội dung do AI tạo — vui lòng kiểm chứng.",
       "copyTooltip": "Sao chép vào bộ nhớ tạm",
       "copyError": "Sao chép văn bản vào bộ nhớ tạm thất bại",
       "copyEmpty": "Không có nội dung để sao chép",
@@ -439,7 +444,10 @@
       "placeholder": "Nhập truy vấn của bạn (Hỗ trợ tiền tố: /<Chế Độ Truy Vấn>)",
       "error": "Lỗi: Không thể nhận phản hồi",
       "queryModeError": "Chỉ hỗ trợ các chế độ truy vấn sau: {{modes}}",
-      "queryModePrefixInvalid": "Tiền tố chế độ truy vấn không hợp lệ. Dùng: /<mode> [khoảng trắng] truy vấn của bạn"
+      "queryModePrefixInvalid": "Tiền tố chế độ truy vấn không hợp lệ. Dùng: /<mode> [khoảng trắng] truy vấn của bạn",
+      "queryEmpty": "Vui lòng nhập câu hỏi trước khi gửi.",
+      "queryTooShort": "Truy vấn quá ngắn. Hãy nhập ít nhất 3 ký tự tiếng Anh hoặc tổ hợp tương đương; mỗi ký tự Trung, Nhật hoặc Hàn được tính là 2.",
+      "dismissError": "Đóng thông báo lỗi"
     },
     "querySettings": {
       "parametersTitle": "Tham Số",
@@ -484,8 +492,10 @@
       "streamResponse": "Phản Hồi Theo Luồng",
       "streamResponseTooltip": "Nếu True, bật đầu ra theo luồng cho phản hồi thời gian thực",
       "userPrompt": "Lời Nhắc Đầu Ra Bổ Sung",
-      "userPromptTooltip": "Cung cấp yêu cầu phản hồi bổ sung cho LLM (không liên quan đến nội dung truy vấn, chỉ để xử lý đầu ra).",
+      "userPromptTooltip": "Cung cấp yêu cầu phản hồi bổ sung cho LLM (không liên quan đến nội dung truy vấn, chỉ dùng để xử lý đầu ra). Máy chủ có thể nối một lời nhắc toàn cục vào phía trước. Để trống để chỉ gửi lời nhắc toàn cục của máy chủ.",
       "userPromptPlaceholder": "Nhập lời nhắc tùy chỉnh (tùy chọn)",
+      "disableUserPromptPrefix": "Bỏ qua lời nhắc toàn cục",
+      "disableUserPromptPrefixTooltip": "Không nối lời nhắc đầu ra toàn cục của máy chủ vào trước lời nhắc đầu ra bổ sung ở trên. Bật tùy chọn này để kiểm soát hoàn toàn chỉ dẫn cuối cùng từ đây.",
       "enableRerank": "Bật Xếp Hạng Lại",
       "enableRerankTooltip": "Bật xếp hạng lại cho các đoạn văn bản đã truy xuất. Nếu True nhưng không có mô hình rerank nào được cấu hình, một cảnh báo sẽ được đưa ra. Mặc định là True."
     }

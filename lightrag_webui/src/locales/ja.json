@@ -13,6 +13,7 @@
     "apiDocs": "APIドキュメント",
     "projectRepository": "プロジェクトリポジトリ",
     "appSettings": "設定",
+    "deploymentInfo": "デプロイ情報",
     "logout": "ログアウト",
     "frontendNeedsRebuild": "フロントエンドの再ビルドが必要です",
     "themeToggle": {
@@ -32,7 +33,10 @@
     "errorEmptyFields": "ユーザー名とパスワードを入力してください",
     "errorInvalidCredentials": "ログインに失敗しました。ユーザー名とパスワードを確認してください",
     "authDisabled": "認証が無効になっています。ログインフリーモードを使用しています。",
-    "guestMode": "ログインフリー"
+    "guestMode": "ログインフリー",
+    "consentLabel": "{{documents}}に同意します",
+    "consentDocuments": "「プライバシーポリシー」",
+    "errorConsentRequired": "ログインする前に規約をお読みのうえ同意してください"
   },
   "common": {
     "cancel": "キャンセル",
@@ -407,6 +411,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "AI により生成された内容です。内容をご確認ください。",
       "copyTooltip": "クリップボードにコピー",
       "copyError": "クリップボードへのテキストコピーに失敗しました",
       "copyEmpty": "コピーするコンテンツがありません",
@@ -439,7 +444,10 @@
       "placeholder": "クエリを入力（プレフィックス対応: /<クエリモード>）",
       "error": "エラー: 応答の取得に失敗しました",
       "queryModeError": "次のクエリモードのみサポートされています: {{modes}}",
-      "queryModePrefixInvalid": "無効なクエリモードプレフィックス。使用: /<mode> [スペース] クエリ"
+      "queryModePrefixInvalid": "無効なクエリモードプレフィックス。使用: /<mode> [スペース] クエリ",
+      "queryEmpty": "送信する前に質問を入力してください。",
+      "queryTooShort": "クエリが短すぎます。英字3文字以上または同等の組み合わせを入力してください。日本語・中国語・韓国語の1文字は英字2文字として数えます。",
+      "dismissError": "エラーメッセージを閉じる"
     },
     "querySettings": {
       "parametersTitle": "パラメータ",
@@ -484,8 +492,10 @@
       "streamResponse": "ストリーム応答",
       "streamResponseTooltip": "Trueの場合、リアルタイム応答のストリーミング出力を有効にします",
       "userPrompt": "追加出力プロンプト",
-      "userPromptTooltip": "LLMに追加の応答要件を提供します（クエリコンテンツとは無関係で、出力処理のみに使用）。",
+      "userPromptTooltip": "LLM に追加の応答要件を指定します（クエリ内容とは無関係で、出力処理のみに使用）。サーバーがこの前にグローバルプロンプトを連結する場合があります。 空のままにすると、サーバーのグローバルプロンプトのみが送信されます。",
       "userPromptPlaceholder": "カスタムプロンプトを入力（オプション）",
+      "disableUserPromptPrefix": "グローバルプロンプトを無視",
+      "disableUserPromptPrefixTooltip": "サーバーのグローバル出力プロンプトを上記の追加出力プロンプトの前に連結しません。有効にすると、最終的な指示をここで完全に制御できます。",
       "enableRerank": "リランクを有効化",
       "enableRerankTooltip": "取得されたテキストチャンクのリランクを有効にします。Trueに設定してもリランクモデルが設定されていない場合、警告が発行されます。デフォルトはTrueです。"
     }

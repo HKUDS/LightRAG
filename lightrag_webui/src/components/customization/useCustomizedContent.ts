@@ -1,13 +1,19 @@
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSettingsStore } from '@/stores/settings'
-import { needsCustomizationLoad, useCustomizationStore } from '@/stores/customization'
+import {
+  isConsentVerdictPending,
+  needsCustomizationLoad,
+  useCustomizationStore
+} from '@/stores/customization'
 import { resolveUiLanguage } from '@/lib/browserLanguage'
 import defaultLogoUrl from '@/assets/logo.svg'
+import { resolveBrandTitle } from '@/components/customization/brandTitle'
 
 /**
- * Resolves the branding content the workspace entry shows (welcome page and
- * query empty state), following the atomicity rule of the workspace-entry
+ * Resolves the branding content the WebUI shows (welcome page, query empty
+ * state, and the login page's blurb plus consent gate), following the
+ * atomicity rule of the workspace-entry
  * PRD §8.3: a locale's representation comes ENTIRELY from the active bundle,
  * or ENTIRELY from the frontend defaults (no bundle → `customized: false`,
  * or a hard first-load failure) — never a field-by-field mix.
@@ -27,10 +33,61 @@ export interface CustomizedContent {
   welcomeMarkdown: string
   queryEmptyMarkdown: string
   brandTitle: string
-  brandDescription: string | null
+  /** Login-page blurb; empty when the bundle declares none (or no bundle). */
+  loginMarkdown: string
+  /**
+   * The bundle's copyright line, or '' when there is none to show.
+   *
+   * Unlike every other field here, this one has NO frontend default: an
+   * uncustomized deployment renders no copyright line at all, so the
+   * default-content branch below returns '' rather than a translated string.
+   * The line is the deployment's own legal assertion — LightRAG neither
+   * invents one for a customer nor prints its own on a customer's page.
+   */
+  copyright: string
+  /** The single user-agreement document, or null when none is declared. */
+  agreementsMarkdown: string | null
+  /**
+   * How the consent checkbox names its link, as declared by the bundle
+   * (`locales.<locale>.consent_documents`), or null when it declares none.
+   *
+   * Left as null rather than resolved to the WebUI's translated default
+   * HERE: the fallback belongs to the page that renders the label, so this
+   * hook keeps reporting exactly what the bundle said — the same rule the
+   * other bundle fields follow.
+   */
+  consentDocuments: string | null
+  /**
+   * Whether the login page must gate submission behind the consent checkbox.
+   * Comes STRAIGHT from the server's `consent_required` — this hook never
+   * re-derives it from the two markdown fields, so one authority decides
+   * whether a login-blocking control exists. Only meaningful once
+   * `consentPending` is false.
+   */
+  consentRequired: boolean
+  /**
+   * Whether the verdict for the locale currently TARGETED is still unknown.
+   *
+   * Deliberately not `loading`: on a language switch the store keeps the
+   * previous snapshot on screen (status stays 'ready') so the welcome page
+   * does not flash a spinner — but that snapshot is the OLD locale's, and
+   * its `consent_required` does not carry. Switching from an ungated locale
+   * to a gated one would otherwise leave the form submittable for the
+   * duration of the request. Consent is the one field that must distrust a
+   * stale-but-displayed snapshot; branding text merely looks briefly out of
+   * date, which is the intended trade.
+   *
+   * Bounded, so it can never wedge a deployment shut: it clears once the
+   * store stops retrying (`MAX_CUSTOMIZATION_ATTEMPTS`), after which the
+   * last known verdict stands — fail-open for the same reason the
+   * default-content branch below is.
+   */
+  consentPending: boolean
 }
 
-export function useCustomizedContent(): CustomizedContent {
+export function useCustomizedContent(
+  authStatusTitle?: string | null
+): CustomizedContent {
   const { t } = useTranslation()
   const language = useSettingsStore.use.language()
   const languageUserSelected = useSettingsStore.use.languageUserSelected()
@@ -64,6 +121,13 @@ export function useCustomizedContent(): CustomizedContent {
     }
   }, [locale, targetLocale, loadedLocale, failedAttempts])
 
+  const consentPending = isConsentVerdictPending(
+    status,
+    locale,
+    loadedLocale,
+    failedAttempts
+  )
+
   if (status === 'loading') {
     return {
       loading: true,
@@ -73,7 +137,12 @@ export function useCustomizedContent(): CustomizedContent {
       welcomeMarkdown: '',
       queryEmptyMarkdown: '',
       brandTitle: '',
-      brandDescription: null
+      loginMarkdown: '',
+      agreementsMarkdown: null,
+      consentDocuments: null,
+      copyright: '',
+      consentRequired: false,
+      consentPending: true
     }
   }
 
@@ -87,8 +156,16 @@ export function useCustomizedContent(): CustomizedContent {
       logoAlt: snapshot.brand.logo_alt ?? '',
       welcomeMarkdown: snapshot.welcome?.content ?? '',
       queryEmptyMarkdown: snapshot.query_empty?.content ?? '',
-      brandTitle: snapshot.brand.title || 'LightRAG',
-      brandDescription: snapshot.brand.description ?? null
+      brandTitle: resolveBrandTitle(snapshot.brand.title, authStatusTitle),
+      loginMarkdown: snapshot.login?.content ?? '',
+      agreementsMarkdown: snapshot.agreements?.content ?? null,
+      consentDocuments: snapshot.consent_documents ?? null,
+      // Trimmed here so a bundle whose copyright is whitespace renders
+      // nothing, exactly as an omitted one does — the server normalizes the
+      // same way, and the page's own guard is then a single emptiness test.
+      copyright: snapshot.brand.copyright?.trim() ?? '',
+      consentRequired: snapshot.consent_required === true,
+      consentPending
     }
   }
 
@@ -101,7 +178,17 @@ export function useCustomizedContent(): CustomizedContent {
     logoAlt: 'LightRAG',
     welcomeMarkdown: t('workspace.welcome.defaultMarkdown'),
     queryEmptyMarkdown: t('workspace.queryEmpty.defaultMarkdown'),
-    brandTitle: snapshot?.brand?.title || 'LightRAG',
-    brandDescription: snapshot?.brand?.description ?? null
+    brandTitle: resolveBrandTitle(snapshot?.brand?.title, authStatusTitle),
+    // No bundle, or a hard failure: no deployment-specific agreement text
+    // exists to consent TO, so the gate stays off. Fail-open is the only
+    // correct end state here — a login page nobody can get past because the
+    // branding endpoint is unreachable would lock out the deployment.
+    loginMarkdown: '',
+    agreementsMarkdown: null,
+    consentDocuments: null,
+    // No bundle, or a hard failure: nothing asserts a copyright, so no line.
+    copyright: '',
+    consentRequired: false,
+    consentPending
   }
 }

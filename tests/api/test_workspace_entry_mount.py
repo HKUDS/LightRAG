@@ -219,8 +219,10 @@ class TestDualMount:
         import re
 
         def config_script(text):
+            # Trailing `.*?</script>` rather than `;</script>`: the snippet
+            # carries the document.title assignment after the config object.
             match = re.search(
-                r"<script>window\.__LIGHTRAG_CONFIG__ = .*?;</script>", text
+                r"<script>window\.__LIGHTRAG_CONFIG__ = .*?</script>", text
             )
             return match.group(0) if match else None
 

@@ -31,6 +31,7 @@ from typing import (
     Callable,
     TYPE_CHECKING,
     List,
+    NamedTuple,
     Optional,
     Iterable,
     Sequence,
@@ -377,6 +378,47 @@ def get_env_value(
         )
         return default
     return converted
+
+
+class EffectiveUserPrompt(NamedTuple):
+    """The instruction text a query actually sends, and how it renders."""
+
+    text: str
+    """Composed instructions, ``""`` when there are none. Cache-key material."""
+
+    slot: str
+    """Value for the ``{user_prompt}`` placeholder; ``"n/a"`` when there are none."""
+
+
+def resolve_user_prompt(
+    user_prompt: str | None,
+    prefix: str | None,
+    disable_prefix: bool = False,
+) -> EffectiveUserPrompt:
+    """Compose the server-side prompt prefix with a request's ``user_prompt``.
+
+    ``prefix`` is operator configuration (``USER_PROMPT_PREFIX`` or
+    ``USER_PROMPT_PREFIX_FILE``); ``user_prompt`` is what the caller sent.
+
+    Neither side is normalized: no stripping, no separator inserted. The
+    operator owns the formatting and ends the prefix with its own ``\n\n``
+    when it should not run into the caller's text — stripping here would eat
+    exactly that. Not stripping ``user_prompt`` matters too: it keeps
+    ``text`` byte-identical to the pre-prefix ``user_prompt or ""`` whenever no
+    prefix is configured, so existing answer-cache entries keep hitting (see
+    :func:`compute_args_hash` call sites in ``operate.py``).
+
+    **An empty ``user_prompt`` does not disable the prefix.** When the caller
+    sends nothing, the prefix alone becomes the instructions sent to the LLM --
+    it is indistinguishable downstream from a caller having sent exactly that
+    text, which is also why the prompt templates need no second placeholder.
+    Only ``disable_prefix`` suppresses it. ``"n/a"`` is reached solely when
+    BOTH sides are empty.
+    """
+
+    resolved_prefix = "" if disable_prefix else (prefix or "")
+    text = resolved_prefix + (user_prompt or "")
+    return EffectiveUserPrompt(text=text, slot=f"\n\n{text}" if text else "n/a")
 
 
 # Use TYPE_CHECKING to avoid circular imports

@@ -247,7 +247,8 @@ lightrag-server --port 9621
 - `LIGHTRAG_DEFAULT_UI` / `--default-ui`（默认 `webui`，可选 `workspace`）只控制一件事：根路径 `/` 跳转到哪个入口。两个入口始终都会挂载；非法值会导致启动失败。
 - `/workspace` 的查询参数**只继承、不可编辑**：每次查询使用同一浏览器中 `/webui` 保存的 `querySettings`（未保存时使用前端默认值）。这是按浏览器的本地配置，不是服务端全局策略。**因此后台保存的查询 `mode` 同时决定查询入口的行为**——包括 `bypass`（跳过检索、携带最近 3 轮对话直接询问 LLM）。唯二例外是调试开关 `only_need_context` / `only_need_prompt`：`/workspace` 始终以 `false` 提交，管理员调试后忘记关闭也不会让查询用户拿到原始上下文而非答案。
 - 两个入口的查询历史相互独立：管理员的调试对话不会出现在查询入口（也不会作为其 `bypass` 上下文发送），反之亦然。
-- `UI_TEMPLATES_DIR` 指向可选的只读多语言 UI Bundle，可在不重建前端的情况下替换欢迎页文案、查询空白态文案和品牌 Logo——参见 `docs/ui_templates_example/`。未设置即使用前端内置品牌内容（这是常态）；显式设置但 Bundle 非法会导致启动失败。修改内容需重启；文案以 `no-store` 提供、Logo 通过内容哈希的 immutable URL 提供，无需手动清缓存。 Bundle 的语言集合与 WebUI 自身的界面语言（`en`、`zh`、`zh-TW`、`fr`、`ar`、`ru`、`ja`、`de`、`uk`、`ko`、`vi`）相互独立：Bundle 可声明任意合法 BCP 47 locale，但界面语言之外的 locale，其内容虽能正确渲染，周围的按钮与设置仍停留在访问者解析出的 UI 语言上；启动时会记录一条警告列出这些 locale。
+- `UI_TEMPLATES_DIR` 指向可选的只读多语言 UI Bundle，可在不重建前端的情况下替换欢迎页文案、查询空白态文案和品牌 Logo，并可为登录页添加定制文案、协议同意勾选框与版权声明——完整说明参见 [UserDefinedUI-zh.md](./UserDefinedUI-zh.md)，可直接复制的示例包见 `docs/ui_templates_example/`。未设置即使用前端内置品牌内容；指向的目录中还没有 `manifest.json` 时同样如此（即仓库自带 compose 文件的「挂载点尚未填充」状态，启动时记录一条写明该目录的警告）。一旦目录中存在 `manifest.json`，Bundle 非法就会导致启动失败。修改内容需重启；文案以 `no-store` 提供、Logo 通过内容哈希的 immutable URL 提供，无需手动清缓存。 若某个 locale 同时声明了 `login`（登录页定制文案）与 `agreements`（把《用户隐私协议》和《模型服务协议》合并在一起的单份文档），则该 locale 启用登录页协议同意勾选框：登录页显示「同意《用户隐私协议》和《模型服务协议》」，其中的唯一链接弹窗展示该文档，未勾选则不允许登录。仅声明其中一项时该功能不启用；声明了但内容为空的文件会导致启动失败。该门禁仅覆盖账号密码登录：未配置 `AUTH_ACCOUNTS` 的免登录部署会以 guest 身份直接放行，不受门禁约束——没有认证就没有可被约束的用户身份，若必须要求接受协议，请配置 `AUTH_ACCOUNTS`。 Bundle 的语言集合与 WebUI 自身的界面语言（`en`、`zh`、`zh-TW`、`fr`、`ar`、`ru`、`ja`、`de`、`uk`、`ko`、`vi`）相互独立：Bundle 可声明任意合法 BCP 47 locale，但界面语言之外的 locale，其内容虽能正确渲染，周围的按钮与设置仍停留在访问者解析出的 UI 语言上；启动时会记录一条警告列出这些 locale。
+- `ENABLE_AI_CONTENT_NOTICE=true` 会在**两个查询界面**（`/workspace` 与 `/webui` 的检索面板）中，在每条回答底部的响应时间行末尾追加 AI 生成内容提示（不独占一行），文案随界面语言变化（中文为“由AI生成、请注意鉴别”）。默认关闭。该提示只是界面元素：不会写入 `/query` 响应、不会进入复制的消息文本，也不会存入聊天历史。开关通过 `/auth-status`、`/login` 与 `/health` 的 `ai_content_notice_enabled` 字段下发，两个入口在启动时读取。只有确实由 LLM 生成的文本才会被标注：`/query` 与 `/query/stream` 逐条响应返回 `llm_generated`，无检索上下文时的固定回复以及 `only_need_context` / `only_need_prompt` 调试输出均为 false。
 - `/health` 分别报告 `webui_available` 与 `workspace_available`；旧构建产物缺少 `workspace.html` 时 `/webui` 完整可用，`/workspace` 返回固定 JSON 提示（绝不重定向到 API 文档）。
 
 对查询用户隐藏后台界面是 UX 分流，**不是**安全边界：所有接口的授权仍由服务端强制执行。
@@ -514,6 +515,8 @@ server {
 
      把 `MAX_REQUEST_BODY_BYTES` 设为任意正值时，该值将统一作用于除上传外的所有路由（含摄取路由）——即使该值恰好等于 1 MiB 默认值也是如此，这正是分档出现之前该配置项的行为。设为 `0` 则关闭全部上限（含派生的上传上限），启动时会给出告警。
    - **输入字段上限**作用于 `/query*`、`/api/chat`、`/api/generate` 的模型侧字段：单个 query/prompt 64 KiB、单条消息 32 KiB、每请求模型侧文本合计 128 KiB、最多 128 条消息，以及 `top_k` / `chunk_top_k`（1000）与 `max_*_tokens`（1,000,000）的上界。这些上限刻意不做成配置项——一个用来阻止未认证调用者决定服务端 CPU 开销的限制，如果可以被配错，就等于没有。`/query*` 超限返回 **422**（FastAPI 原生校验响应），`/api/*` 返回 **413**。
+   - **查询不得为空**：去除首尾空白后为空的查询在所有路径上都会被拒绝，包括 `bypass`、Open WebUI 元数据任务和 `/api/generate`。豁免下面的最小长度并不等于可以不带提示词。
+   - **RAG 查询最小长度**：去除首尾空白后，检索模式要求查询的英文等效长度至少为 3。每个中日韩字符按 2 计算，其他 Unicode 字符按 1 计算。该规则适用于核心查询 API、`/query*` 和 `/api/chat` 的 RAG 分支；`bypass`、直接转发给 LLM 的 Open WebUI 元数据任务以及 `/api/generate` 仅豁免最小长度这一条。`/query` 与 `/query/stream` 返回 **422**，`/query/data` 返回 **400**，`/api/*` 返回 **400**。
    - `MAX_TEXTS_PER_REQUEST` 限制单个 `/documents/texts` 请求可携带的文本数量，在任何逐条存储查询之前就返回 **413**。它限制的是单个请求的扇出，因此与下面的容量上限不同，**不是**"稍后重试"类条件：超限的批次无论等多久都不会被接受，必须拆分。
    - `MAX_PENDING_DOCUMENTS` 限制可同时处于活跃状态（`PENDING`/`PARSING`/`ANALYZING`/`PROCESSING`）或被在飞请求预留的文档数。超容量时返回 **429**,带 `Retry-After` 头,detail 里给出当前数量、本次请求数量与容量——且**在 body 传输之前**就拒绝。`/documents/scan` 与人工重试按设计突破该上限;它们产生的文档会让普通上传排队等待。
 
@@ -617,6 +620,8 @@ Open WebUI 使用 LLM 来执行会话标题和会话关键词生成任务。因�
 如果您从 LightRAG 的 Ollama 接口发送消息（查询），默认查询模式是 `hybrid`。您可以通过发送带有查询前缀的消息来选择查询模式。
 
 查询字符串中的查询前缀可以决定使用哪种 LightRAG 查询模式来生成响应。支持的前缀包括：
+
+去除模式前缀后，RAG 查询的英文等效长度必须至少为 3；每个中日韩字符按 2 计算。直接调用 LLM 的 `/bypass` 请求不受此最小长度限制，但任何请求都不得携带空查询——若模式前缀吞掉了整条消息（如 `/local[hint]`），将返回 **400**。
 
 ```
 /local
