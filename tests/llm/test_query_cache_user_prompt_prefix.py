@@ -575,3 +575,89 @@ async def test_budget_charges_the_prefix_only_when_the_template_renders_it(
     # And the custom template is budgeted at its own size, not the default's --
     # the pre-existing defect this forwarding also repairs.
     assert custom_baseline != default_baseline
+
+
+# ---------------------------------------------------------------------------
+# Debug switches preview the REAL request.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_only_need_context_budgets_exactly_like_a_real_query(monkeypatch):
+    """The chunk budget must not depend on whether an answer will be generated.
+
+    ``only_need_context`` returns before the system prompt is rendered, so it is
+    tempting to read the prefix charge as waste and skip it. That would be
+    wrong: these switches exist to PREVIEW what a real query sends. A
+    retrieval-only call that skipped the charge would report more chunks than
+    the live path delivers, and an operator sizing their context against that
+    number would be silently truncated at answer time -- the debug switch
+    becomes the source of the bug it is meant to expose.
+    """
+    import lightrag.operate as operate
+
+    limits = []
+    original = operate.process_chunks_unified
+
+    async def _spy(**kwargs):
+        limits.append(kwargs["chunk_token_limit"])
+        return await original(**kwargs)
+
+    monkeypatch.setattr(operate, "process_chunks_unified", _spy)
+
+    entities = [{"entity": "Scrooge", "description": "A miser."}]
+    relations = [{"src": "Scrooge", "tgt": "Marley", "description": "Partners."}]
+    chunks = [
+        {"chunk_id": f"c{i}", "content": f"Chunk {i}.", "file_path": "a.md"}
+        for i in range(5)
+    ]
+
+    async def _budget(only_need_context):
+        cfg = {
+            "tokenizer": _FakeTokenizer(),
+            "max_total_tokens": 30000,
+            "user_prompt_prefix": "P" * 3000,
+        }
+        param = QueryParam(
+            mode="hybrid",
+            enable_rerank=False,
+            user_prompt=USER_PROMPT,
+            only_need_context=only_need_context,
+        )
+        await operate._build_context_str(entities, relations, chunks, QUERY, param, cfg)
+        return limits[-1]
+
+    assert await _budget(True) == await _budget(False)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)]
+)
+@pytest.mark.parametrize("user_prompt", ["Reply in one sentence.", ""])
+async def test_only_need_prompt_returns_the_composed_prefix(
+    runner, param, user_prompt, stub_query_context
+):
+    """The debug prompt must show what the model would actually receive.
+
+    Covers the empty-``user_prompt`` case on this exit too: the prefix alone
+    becomes the instructions, exactly as it does on the path that reaches the
+    model. Previously only the LLM-bound ``system_prompt`` was asserted, not
+    what this switch hands back to the caller.
+    """
+    cache = _FakeKVStorage()
+    model = _RecordingModel()
+    cfg = _query_global_config(model, prefix=PREFIX_A)
+
+    result = await runner(
+        param(user_prompt=user_prompt, only_need_prompt=True), cfg, cache
+    )
+
+    assert PREFIX_A.strip() in result.content
+    assert "n/a" not in result.content
+    if user_prompt:
+        assert user_prompt in result.content
+    # A debug preview must not have consulted the model.
+    assert model.calls == 0

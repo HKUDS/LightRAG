@@ -615,6 +615,8 @@ same underlying BPE engine.
 
 When using LightRAG for content queries, avoid combining the search process with unrelated output processing, as this significantly impacts query effectiveness. The `user_prompt` parameter in `QueryParam` does not participate in the RAG retrieval phase — it guides the LLM on how to process the retrieved results after the query is completed.
 
+"Does not participate in retrieval" means it does not influence *what* is found or *how* it is ranked: it is not used for keyword extraction, vector search, or reranking. It does still consume part of the token budget, because it genuinely occupies space in the final prompt alongside the retrieved context.
+
 ```python
 query_param = QueryParam(
     mode="hybrid",
@@ -682,6 +684,12 @@ never read or replace it. Three limits are worth knowing:
   simply sends no user instructions at all.
 - **`only_need_prompt=True` returns the composed prompt**, so any client that
   can set that debug flag can read the prefix verbatim.
+- **`only_need_context` and `only_need_prompt` are charged for the prefix**, even
+  though `only_need_context` returns before any prompt is sent. These switches
+  preview the real request: if retrieval-only calls skipped the charge they
+  would report more chunks than a live query retrieves, and context sized
+  against that number would be truncated at answer time. `/query/data`
+  (`aquery_data`) is retrieval-only and follows the same rule.
 - **A custom `system_prompt` without a `{user_prompt}` placeholder drops it**,
   the same way it already drops `user_prompt`. The token budget accounts for
   this: the prefix is charged against the context allowance only when the

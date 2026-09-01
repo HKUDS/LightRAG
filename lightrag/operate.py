@@ -5729,6 +5729,12 @@ async def _build_context_str(
     kg_context_tokens = await acount_tokens(tokenizer, pre_kg_context)
 
     # Calculate preliminary system prompt tokens
+    # Charged even on the only_need_context path, which returns before this
+    # prompt is ever rendered. That is deliberate, not waste: only_need_context
+    # and only_need_prompt are debug switches whose job is to PREVIEW the real
+    # request. Skipping the charge here would make them report more chunks than
+    # a real query retrieves, so an operator would size their context against a
+    # number the live path never delivers.
     pre_sys_prompt = sys_prompt_template.format(
         context_data="",  # Empty for overhead calculation
         response_type=response_type,
@@ -6644,7 +6650,10 @@ async def naive_query(
         system_prompt if system_prompt else PROMPTS["naive_rag_response"]
     )
 
-    # Create a preliminary system prompt with empty content_data to calculate overhead
+    # Create a preliminary system prompt with empty content_data to calculate overhead.
+    # As in _build_context_str, the user prompt is charged even when
+    # only_need_context will return before this prompt is sent: those switches
+    # preview the real request, so their chunk count must match it.
     pre_sys_prompt = sys_prompt_template.format(
         response_type=response_type,
         user_prompt=effective_user_prompt.slot,
