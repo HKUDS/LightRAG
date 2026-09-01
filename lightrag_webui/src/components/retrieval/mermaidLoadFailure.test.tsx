@@ -215,6 +215,59 @@ describe('mermaid failure branches (source-level)', () => {
         return /\.tsx?$/.test(path) && !/\.test\.tsx?$/.test(path) ? [path] : []
       })
 
+    /**
+     * Comments removed before scanning, string literals respected so a URL's
+     * `//` is not mistaken for one. Comments can sit ANYWHERE inside an import
+     * — `import(/* webpackChunkName: "mermaid" *\/ 'mermaid')` is the common
+     * bundler idiom — and allowing for them position by position inside the
+     * pattern would be another form list. Normalising the input instead
+     * removes the whole class.
+     */
+    const withoutComments = (source: string): string => {
+      let out = ''
+      let quote: string | null = null
+
+      for (let i = 0; i < source.length; i++) {
+        const char = source[i]
+
+        if (quote) {
+          out += char
+          if (char === '\\') {
+            out += source[i + 1] ?? ''
+            i += 1
+          } else if (char === quote) {
+            quote = null
+          }
+          continue
+        }
+
+        if (char === '\'' || char === '"' || char === '`') {
+          quote = char
+          out += char
+          continue
+        }
+
+        if (char === '/' && source[i + 1] === '/') {
+          const end = source.indexOf('\n', i)
+          i = end < 0 ? source.length : end - 1
+          continue
+        }
+
+        if (char === '/' && source[i + 1] === '*') {
+          const end = source.indexOf('*/', i + 2)
+          i = end < 0 ? source.length : end + 1
+          // Keep a separator so `import/*x*/(` does not become `import(`
+          // glued to whatever preceded it.
+          out += ' '
+          continue
+        }
+
+        out += char
+      }
+
+      return out
+    }
+
     // Matched by SPECIFIER, not by import form. The form-by-form version of
     // this guard is how `harnessIsolation.test.ts` first went wrong: it looked
     // for `from '…'` and let a bare side-effect `import '…'` — just as capable
@@ -231,7 +284,7 @@ describe('mermaid failure branches (source-level)', () => {
 
     const srcDir = join(import.meta.dir, '..', '..')
     const importers = sourceFiles(srcDir)
-      .filter((file) => importSpecifiers(readFileSync(file, 'utf8')).some(namesMermaid))
+      .filter((file) => importSpecifiers(withoutComments(readFileSync(file, 'utf8'))).some(namesMermaid))
       .map((file) => file.slice(srcDir.length + 1))
 
     expect(importers).toEqual(['components/retrieval/mermaidLoader.ts'])
