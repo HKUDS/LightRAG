@@ -92,12 +92,17 @@ const renderLogin = async () => {
 describe('login page branding', () => {
   test('shows the bundle logo with the bundle alt text', async () => {
     seedCustomization({ logo_url: BUNDLE_LOGO, logo_alt: 'Acme Corp' })
-    await renderLogin()
+    const { container } = await renderLogin()
 
-    // The deployment's own logo, not LightRAG's built-in asset and not a
-    // lightning glyph — a customer's login page carries their brand.
     const logo = await screen.findByRole('img', { name: 'Acme Corp' })
     expect(logo).toHaveAttribute('src', BUNDLE_LOGO)
+
+    // And it is the ONLY logo. Finding the bundle image says nothing about
+    // what sits beside it: LightRAG's built-in asset or the lightning glyph
+    // rendered alongside would put product branding on a customer's login
+    // page, which is exactly what customization exists to replace.
+    expect(screen.getAllByRole('img')).toHaveLength(1)
+    expect(container.querySelectorAll('.lucide-zap')).toHaveLength(0)
   })
 
   test('shows the resolved deployment title as the page heading', async () => {

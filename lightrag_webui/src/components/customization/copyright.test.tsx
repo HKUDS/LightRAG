@@ -114,6 +114,29 @@ describe.each(['login', 'welcome'] as const)('%s page copyright', (page) => {
     expect(card!.contains(footer)).toBe(false)
   })
 
+  test('keeps it at the FOOT of the page, after the card', async () => {
+    seedCustomization({ title: 'Acme KB', copyright: COPYRIGHT })
+    const { container } = await renderPage(page)
+
+    const footer = await screen.findByText(COPYRIGHT)
+    const card = container.querySelector('[class*="max-w-[480px]"], [class*="max-w-[520px]"]')
+    expect(card === null).toBe(false)
+
+    // Two things put it at the bottom edge, and being outside the card is
+    // only one of them. Order: the footer follows the card in the document,
+    // so it renders below and not above it.
+    const follows =
+      (card!.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+    expect(follows).toBe(true)
+
+    // Height: the card's wrapper takes the leftover space, so the footer is
+    // pushed to the foot instead of sitting directly under a centred card in
+    // the middle of a tall viewport.
+    const wrapper = card!.closest('.flex-1')
+    expect(wrapper === null).toBe(false)
+    expect(wrapper!.contains(footer)).toBe(false)
+  })
+
   test('shows no copyright at all for an uncustomized deployment', async () => {
     // LightRAG ships no default text here: the line is the deployment's own
     // legal assertion, so a customer's page never carries LightRAG's and an
