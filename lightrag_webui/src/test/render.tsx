@@ -16,6 +16,12 @@ import { createInstance, type i18n as I18n } from 'i18next'
 import { initReactI18next } from 'react-i18next'
 
 import en from '@/locales/en.json'
+import { assertDomAvailable } from '@/test/domGlobals'
+
+// At import time, so a component test that calls `userEvent.setup()` before
+// it renders anything still gets this message rather than an obscure failure
+// from inside Testing Library.
+assertDomAvailable()
 
 const createTestI18n = (): I18n => {
   const instance = createInstance()

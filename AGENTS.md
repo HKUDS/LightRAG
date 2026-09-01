@@ -190,9 +190,19 @@ lightrag-gunicorn                                         # Multi-worker (gunico
 ```
 
 ### WebUI
+
+Every command below is run **from `lightrag_webui/`**, not the repository root.
+`bun test` in particular resolves `bunfig.toml` — and the preload paths inside
+it — relative to the working directory, so running it from the root silently
+loads no DOM (see *React component tests*).
+
 ```bash
 cd lightrag_webui
-bun install --frozen-lockfile      # Install dependencies
+bun install --frozen-lockfile      # REQUIRED after any change to package.json /
+                                   # bun.lock, including a branch switch across
+                                   # one: `git checkout` does not update
+                                   # node_modules, and a stale tree surfaces as
+                                   # a wall of TS2307 "Cannot find module".
 bun run dev                        # Dev server (Node + Vite)
 bun run dev:bun                    # Dev server (Bun native)
 bun run build                      # Production build
@@ -215,7 +225,7 @@ bunx tsc --noEmit                  # Typecheck (`bun run build` does NOT typeche
 - Derive the subset from the mirror layout below: `lightrag/api/config.py` → `tests/api/config/`, `lightrag/kg/redis_impl.py` → `tests/kg/redis_impl/`, `lightrag/chunker/` → `tests/chunker/`. When a change spans several modules, run each of their directories rather than widening to `tests/`.
 - Run the full suite locally only at a milestone, or when the change is genuinely cross-cutting (`lightrag/base.py`, `lightrag/utils.py`, `lightrag/kg/shared_storage.py`, or anything every backend inherits).
 - Backend tests use pytest; frontend unit tests use Bun's built-in runner — see *WebUI* above and *React component tests* below.
-- **A WebUI change runs the WHOLE frontend check set**, from `lightrag_webui/`: `bun test`, `bunx tsc --noEmit`, and `bun run lint`. The subsetting rule above is a backend rule and does not apply — all three together take well under a minute (test ~2 s, typecheck ~14 s, lint ~21 s), so there is nothing to save by running less. Report the pass count. `bun run build` transpiles WITHOUT checking types, so skipping `tsc --noEmit` means nothing checks them.
+- **A WebUI change runs the WHOLE frontend check set**, from `lightrag_webui/`: `bun install --frozen-lockfile` (see *WebUI* above — skip it after a branch switch and every later step fails on missing modules), then `bun test`, `bunx tsc --noEmit`, and `bun run lint`. The subsetting rule above is a backend rule and does not apply — all three together take well under a minute (test ~2 s, typecheck ~14 s, lint ~21 s), so there is nothing to save by running less. Report the pass count. `bun run build` transpiles WITHOUT checking types, so skipping `tsc --noEmit` means nothing checks them.
 
 #### React component tests
 
@@ -228,6 +238,14 @@ file containing JSX must be named `.test.tsx`.
 happy-dom globally) and then `src/test/setup.ts` (jest-dom matchers plus
 Testing Library's `cleanup` in `afterEach`). Order is load-bearing — Testing
 Library binds to whatever `document` exists when it is first evaluated.
+
+That preload is found relative to the WORKING DIRECTORY, so `bun test` must be
+run from `lightrag_webui/`. From the repository root no preload loads at all
+and the failure is silent in the worst way: pure logic tests still pass and
+only the component tests break. `src/test/render.tsx` calls
+`assertDomAvailable()` at import time to turn that into a message naming the
+cause and the fix; `bun test --config <path>` does NOT work around it, because
+the preload paths inside the file are still resolved against the CWD.
 
 Rules for new tests:
 

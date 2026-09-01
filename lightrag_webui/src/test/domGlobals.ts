@@ -54,3 +54,33 @@ export const withoutDomGlobals = <T>(
     restoreDomGlobals()
   }
 }
+
+/**
+ * Fail fast, and legibly, when `bun test` ran without the DOM preload.
+ *
+ * Bun resolves `bunfig.toml` — and the preload paths inside it — relative to
+ * the CURRENT WORKING DIRECTORY. Running `bun test lightrag_webui/src/...`
+ * from the repository root therefore loads no preload at all, silently: pure
+ * logic tests still pass, and only the component tests fail, deep inside
+ * Testing Library, with
+ *
+ *     TypeError: undefined is not an object (evaluating 'document[isPrepared]')
+ *
+ * which names neither the cause nor the fix. `bun test --config <path>` does
+ * not help either, because the preload paths inside the file are still
+ * resolved against the CWD.
+ *
+ * Called at import time by `src/test/render.tsx`, so any test that renders a
+ * component reports this instead — before `userEvent.setup()` or `render()`
+ * gets the chance to fail obscurely.
+ */
+export const assertDomAvailable = (): void => {
+  if (typeof document !== 'undefined') return
+
+  throw new Error(
+    'No DOM: bun test started without the bunfig.toml preload. Run it from ' +
+      'the lightrag_webui/ directory (`cd lightrag_webui && bun test ...`) — ' +
+      'bun resolves bunfig.toml and its preload paths relative to the ' +
+      'working directory, so running from the repository root loads no DOM.'
+  )
+}
