@@ -17,8 +17,8 @@ export const BYPASS_DEFAULT_HISTORY_TURNS = 3
  * clamping, no field filtering and no history special-casing per entry.
  * All page differences live in the inputs:
  * - the settings snapshot is BUILT by the page composition layer (the
- *   workspace clamps its two debug-only switches to false there;
- *   the admin page applies its `/mode` prefix override there);
+ *   workspace clamps its two debug-only switches to false there; both pages
+ *   apply their shared `/mode` prefix result there);
  * - the history is each page's OWN store content, passed explicitly.
  *
  * `history_turns` is a client-side knob (how many turns to expand into

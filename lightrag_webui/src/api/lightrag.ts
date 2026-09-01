@@ -218,8 +218,19 @@ export type QueryRequest = {
   conversation_history?: Message[]
   /** Number of complete conversation turns (user-assistant pairs) to consider in the response context. */
   history_turns?: number
-  /** User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template. */
+  /**
+   * Additional instructions for the LLM, injected into the "Additional
+   * Instructions" section of the answer prompt. Does not affect retrieval.
+   * The server may prepend a global prefix; see disable_user_prompt_prefix.
+   */
   user_prompt?: string
+  /**
+   * If true, the server-side global prompt prefix is not prepended to
+   * user_prompt, leaving this client in full control of the final instruction
+   * text. The prefix itself is server configuration and cannot be read or
+   * replaced from here. Default: false.
+   */
+  disable_user_prompt_prefix?: boolean
   /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
   enable_rerank?: boolean
   /** If True, emits retrieval progress events and a final response-time metadata line (streaming only). Default: false. */
