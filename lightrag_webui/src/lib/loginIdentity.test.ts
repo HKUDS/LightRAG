@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
-import { readFileSync } from 'fs'
+import { readdirSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { WORKSPACE_RETRIEVAL_HISTORY_KEY } from '@/lib/storageKeys'
 
@@ -33,6 +33,16 @@ const stub = {
     data.clear()
   }
 }
+
+/** Every non-test source file under `src/`, for the tree-wide prohibition below. */
+const sourceFiles = (dir: string): string[] =>
+  readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name)
+    if (entry.isDirectory()) return sourceFiles(path)
+    if (!entry.isFile()) return []
+    if (!/\.(ts|tsx)$/.test(path) || /\.test\.tsx?$/.test(path)) return []
+    return [path]
+  })
 
 let previousDescriptor: PropertyDescriptor | undefined
 
@@ -431,24 +441,35 @@ describe('activateLoginIdentityFromToken (the login form\'s only entry point)', 
   })
 
   test('no activation path decides the identity from anything but its token', () => {
-    // Structural pin: `applyLoginIdentity` takes a bare name, so any caller
-    // COULD pass a typed username again and every behavioral test above
-    // would still pass. The four activation sites must go through the
-    // token-derived entry point instead.
-    for (const file of [
+    // Structural pin, and deliberately not a rendered one: `applyLoginIdentity`
+    // takes a bare name, so any caller COULD pass a typed username again and
+    // every behavioral test above would still pass whenever the typed name and
+    // the token's `sub` happen to agree — which is most of the time, and never
+    // in the cases the cleanup exists for.
+    const ACTIVATION_SITES = [
       'features/LoginPage.tsx',
       'features/workspace/WorkspaceWelcome.tsx',
       'features/workspace/authBootstrap.ts',
       'App.tsx'
-    ]) {
+    ]
+
+    for (const file of ACTIVATION_SITES) {
       const source = readFileSync(join(import.meta.dir, '..', file), 'utf8')
-      expect({ file, calls: source.includes('applyLoginIdentity(') }).toEqual({
-        file,
-        calls: false
-      })
       expect({ file, activates: source.includes('activateLoginIdentityFromToken(') }).toEqual(
         { file, activates: true }
       )
     }
+
+    // The prohibition is scanned across the WHOLE tree rather than over the
+    // four known sites: a fifth activation path added tomorrow is the case
+    // this test exists for, and a fixed list cannot see it. `loginIdentity.ts`
+    // is the one legitimate caller — it is where the token-derived entry point
+    // delegates.
+    const callers = sourceFiles(join(import.meta.dir, '..'))
+      .filter((file) => !file.endsWith('/lib/loginIdentity.ts'))
+      .filter((file) => /\bapplyLoginIdentity\(/.test(readFileSync(file, 'utf8')))
+      .map((file) => file.slice(join(import.meta.dir, '..').length + 1))
+
+    expect(callers).toEqual([])
   })
 })
