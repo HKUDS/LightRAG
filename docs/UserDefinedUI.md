@@ -59,7 +59,7 @@ lightrag-server
 The startup log tells you which state you are in:
 
 ```
-INFO: UI customization bundle active: bundle_revision=1f0c… locales=['en', 'zh', 'zh-TW']
+INFO: UI customization: bundle 1f0c… ['en', 'zh', 'zh-TW']
 ```
 
 ### 2.2 With Docker Compose
@@ -502,7 +502,7 @@ No cache purge is needed: the content response is sent `Cache-Control: no-store`
 ```
 INFO:    UI customization: no bundle configured (UI_TEMPLATES_DIR unset)
 WARNING: UI customization: UI_TEMPLATES_DIR=/app/data/ui_templates holds no manifest.json — serving the built-in LightRAG branding. …
-INFO:    UI customization bundle active: bundle_revision=<sha256> locales=['en', 'zh']
+INFO:    UI customization: bundle <sha256> ['en', 'zh']
 ```
 
 The middle line is the Docker default state: the variable is set by the shipped compose files, and the mounted directory is still empty. It is a warning rather than an info line because the same state is what a mount pointing at the wrong host directory produces — it names the directory the server actually read so you can tell the two apart.
