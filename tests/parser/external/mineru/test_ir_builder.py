@@ -801,7 +801,7 @@ def test_adapter_drawing_asset_source_only_when_file_exists(
 @pytest.mark.offline
 def test_adapter_chart_item_becomes_drawing(tmp_path: Path) -> None:
     """MinerU emits ``chart`` items (diagrams, plots, oscillograms) with
-    ``img_path`` + ``chart_caption`` / ``chart_footnote`` and an empty
+    ``img_path`` + ``chart_caption`` / ``chart_footnote`` and an often empty
     ``content``. They must become drawings like ``image`` items — otherwise
     the text fallback silently drops picture, caption and footnote.
     """
@@ -848,6 +848,49 @@ def test_adapter_chart_item_becomes_drawing(tmp_path: Path) -> None:
     by_ref = {a.ref: a for a in ir.assets}
     assert by_ref["images/chart_001.jpg"].source is not None
     assert by_ref["images/chart_002.jpg"].source is None
+
+
+@pytest.mark.offline
+def test_adapter_drawing_body_content_kept_next_to_placeholder(
+    tmp_path: Path,
+) -> None:
+    """MinerU fills ``content`` on ``chart`` / ``image`` items whenever the
+    model recognised the picture's data (e.g. a chart's data table). That
+    text must stay in the block body next to the ``{{IMG:k}}`` placeholder —
+    it is the only retrievable form of it when no VLM analysis runs.
+    """
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {"type": "text", "text": "Results", "text_level": 1},
+            {
+                "type": "chart",
+                "img_path": "images/c1.jpg",
+                "content": "| year | value |\n|---|---|\n| 2024 | 42 |",
+                "chart_caption": ["Abb. 3-58"],
+                "chart_footnote": ["src: X"],
+            },
+            {
+                "type": "image",
+                "img_path": "images/i1.jpg",
+                "content": "OCR'd label text",
+            },
+        ],
+    )
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="c.pdf")
+
+    block = ir.blocks[0]
+    chart, image = block.drawings
+    assert block.content_template == (
+        "# Results\n"
+        f"{{{{IMG:{chart.placeholder_key}}}}}\n"
+        "| year | value |\n|---|---|\n| 2024 | 42 |\n"
+        f"{{{{IMG:{image.placeholder_key}}}}}\n"
+        "OCR'd label text"
+    )
+    # Caption / footnote still travel on the drawing, not in the body text.
+    assert chart.caption == "Abb. 3-58"
+    assert chart.footnotes == ["src: X"]
 
 
 @pytest.mark.offline
