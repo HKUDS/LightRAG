@@ -208,8 +208,17 @@ describe('query entry settings snapshot', () => {
     await send('workspace', 'question')
     const workspace = requests[0]
 
-    const differing = (Object.keys(admin) as (keyof QueryRequest)[])
-      .filter((key) => JSON.stringify(admin[key]) !== JSON.stringify(workspace[key]))
+    // The UNION of both key sets, not the admin's alone: a field the workspace
+    // emits and the admin omits makes its request a strict superset, which the
+    // contract below forbids just as much as a differing value — and iterating
+    // one side's keys can never see it.
+    const keys = new Set([...Object.keys(admin), ...Object.keys(workspace)])
+    const differing = [...keys]
+      .filter(
+        (key) =>
+          JSON.stringify(admin[key as keyof QueryRequest]) !==
+          JSON.stringify(workspace[key as keyof QueryRequest])
+      )
       .sort()
 
     // Exactly the clamped pair — not a subset, not a superset. Clamping one
