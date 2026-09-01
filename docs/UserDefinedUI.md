@@ -17,7 +17,7 @@ A ready-to-copy bundle lives in [`docs/ui_templates_example/`](./ui_templates_ex
 | **Login page text** | Above the username/password form, on **both** entries (`/webui/#/login` and `/workspace/#/login`) | `login` (optional) |
 | **User agreement + consent checkbox** | A checkbox on the login page, whose link opens the document in a dialog; the WebUI's Login button stays disabled until it is ticked — a WebUI prompt, not server-side enforcement ([§6](#6-the-login-consent-gate)) | `agreements` (optional, pairs with `login`) |
 | **Consent checkbox link text** | The words the checkbox links — *"I agree to …"* | `consent_documents` (optional; falls back to the WebUI's generic *"Privacy Policy Agreement"*) |
-| **Brand logo** | Welcome page, query empty state and login page | `brand.logo`, per-locale `logo`, `logo_alt` |
+| **Brand logo** (PNG / JPEG / WebP / SVG — see [§4.4](#44-limits-and-formats)) | Welcome page, query empty state and login page | `brand.logo`, per-locale `logo`, `logo_alt` |
 | **Copyright line** | Foot of the welcome and login pages — **outside** the card, at the bottom edge of the page | `brand.copyright`, per-locale `copyright` (optional) |
 
 What you **cannot** set from the bundle:
@@ -39,7 +39,7 @@ What you **cannot** set from the bundle:
 # The conventional location for a source checkout; it is git-ignored.
 cp -r docs/ui_templates_example lightrag_webui/ui_templates
 
-# Edit the texts and drop in your own logo
+# Edit the texts and drop in your own logo (PNG / JPEG / WebP / SVG all work, see §4.4)
 $EDITOR lightrag_webui/ui_templates/locales/en/welcome.md
 cp /path/to/your-logo.svg lightrag_webui/ui_templates/assets/logo.svg
 ```
@@ -64,8 +64,7 @@ INFO: UI customization bundle active: bundle_revision=1f0c… locales=['en', 'zh
 
 ### 2.2 With Docker Compose
 
-The bundled compose files already mount the bundle directory read-only **and**
-point `UI_TEMPLATES_DIR` at it:
+The bundled compose files already mount the bundle directory read-only **and** point `UI_TEMPLATES_DIR` at it:
 
 ```yaml
     volumes:
@@ -82,9 +81,7 @@ cp -r docs/ui_templates_example/* ./data/ui_templates/
 docker compose up -d --force-recreate lightrag
 ```
 
-Until you do, the directory holds no `manifest.json`, the server serves its
-built-in branding and says so once at startup. Nothing about the default
-deployment changes.
+Until you do, the directory holds no `manifest.json`, the server serves its built-in branding and says so once at startup. Nothing about the default deployment changes.
 
 See [§7 Deployment](#7-deployment) for the full picture, including the wizard-generated `docker-compose.final.yml` and Kubernetes.
 
@@ -157,7 +154,7 @@ The directory names above are a convention, not a rule: every file is located th
 | `schema_version` | yes | number | Must be `1`. |
 | `default_locale` | yes | string | Must be one of the declared `locales` keys. Used when a visitor's locale matches nothing. |
 | `brand` | yes | object | Two keys: `logo` (required) and `copyright` (optional). |
-| `brand.logo` | yes | string \| `null` | Path to the default logo, or an explicit `null` for "this deployment shows no logo". **Omitting the key fails startup** — a missing logo must never silently fall back to the LightRAG logo underneath your texts. |
+| `brand.logo` | yes | string \| `null` | Path to the default logo, or an explicit `null` for "this deployment shows no logo". **Omitting the key fails startup** — a missing logo must never silently fall back to the LightRAG logo underneath your texts. PNG, JPEG, WebP and SVG are all accepted — **detected from the file's bytes, not its extension**, see [§4.4](#44-limits-and-formats). |
 | `brand.copyright` | no | string \| `null` | The copyright line for every locale, as **plain text written in the manifest** (not a Markdown file). Omitted, `null`, empty or whitespace-only all mean the same thing: **no line is shown**. There is no LightRAG default to inherit — see [§4.5](#45-the-copyright-line). |
 | `locales` | yes | object | Non-empty map of locale → entry. |
 | `fallbacks` | no | object \| `null` | Maps *uncovered* locales onto declared ones. See [§5.1](#51-locale-resolution). |

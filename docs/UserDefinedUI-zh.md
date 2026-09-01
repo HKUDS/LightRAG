@@ -17,7 +17,7 @@ LightRAG 支持用**你自己的**欢迎页、登录页文案、用户协议、�
 | **登录页文案** | 用户名/密码表单上方，**两个入口都生效**（`/webui/#/login` 与 `/workspace/#/login`） | `login`（可选） |
 | **用户协议 + 同意勾选框** | 登录页上的勾选框，其链接以弹窗打开协议文档；未勾选时前端登录按钮保持禁用——这是前端提示，不是服务端强制（见 [§6](#6-登录同意门禁)） | `agreements`（可选，与 `login` 成对生效） |
 | **同意勾选框的链接文字** | 勾选框中被链接的那几个字——「同意……」 | `consent_documents`（可选；缺省时回退到前端通用的「隐私政策协议」） |
-| **品牌 Logo** | 欢迎页、查询空白页与登录页 | `brand.logo`、locale 级 `logo`、`logo_alt` |
+| **品牌 Logo**（PNG / JPEG / WebP / SVG，见 [§4.4](#44-限制与格式)） | 欢迎页、查询空白页与登录页 | `brand.logo`、locale 级 `logo`、`logo_alt` |
 | **版权声明** | 欢迎页与登录页的最下方——在卡片**外部**，贴着页面底边 | `brand.copyright`、locale 级 `copyright`（可选） |
 
 Bundle **不能**设置的内容：
@@ -39,7 +39,7 @@ Bundle **不能**设置的内容：
 # 源码检出时的约定位置，已加入 .gitignore
 cp -r docs/ui_templates_example lightrag_webui/ui_templates
 
-# 修改文案，换上自己的 Logo
+# 修改文案，换上自己的 Logo（PNG / JPEG / WebP / SVG 均可，见 §4.4）
 $EDITOR lightrag_webui/ui_templates/locales/zh/welcome.md
 cp /path/to/your-logo.svg lightrag_webui/ui_templates/assets/logo.svg
 ```
@@ -154,7 +154,7 @@ ui_templates/
 | `schema_version` | 是 | number | 必须为 `1`。 |
 | `default_locale` | 是 | string | 必须是 `locales` 中已声明的某个 key。访问者的 locale 无法匹配时使用。 |
 | `brand` | 是 | object | 两个 key：`logo`（必填）与 `copyright`（可选）。 |
-| `brand.logo` | 是 | string \| `null` | 默认 Logo 的路径；显式写 `null` 表示「本部署不显示 Logo」。**缺省该 key 会导致启动失败**——绝不允许在你的文案下方悄悄回退到 LightRAG 的 Logo。 |
+| `brand.logo` | 是 | string \| `null` | 默认 Logo 的路径；显式写 `null` 表示「本部署不显示 Logo」。**缺省该 key 会导致启动失败**——绝不允许在你的文案下方悄悄回退到 LightRAG 的 Logo。支持 PNG、JPEG、WebP、SVG——**依据文件字节判断，而不是扩展名**，见 [§4.4](#44-限制与格式)。 |
 | `brand.copyright` | 否 | string \| `null` | 所有 locale 共用的版权声明，是**直接写在 manifest 里的纯文本**（不是 Markdown 文件路径）。缺省、`null`、空串或纯空白含义相同：**不显示版权行**。没有可继承的 LightRAG 默认文案——见 [§4.5](#45-版权声明)。 |
 | `locales` | 是 | object | 非空的 locale → 条目映射。 |
 | `fallbacks` | 否 | object \| `null` | 把*未覆盖*的 locale 映射到已声明的 locale。见 [§5.1](#51-locale-解析)。 |
