@@ -1,0 +1,131 @@
+/// <reference types="bun" />
+import { afterEach, describe, expect, test } from 'bun:test'
+import { readFileSync } from 'fs'
+import { join } from 'path'
+import { act, cleanup } from '@testing-library/react'
+
+import { renderWithProviders } from '@/test/render'
+import RetrievalView from './RetrievalView'
+import StatusIndicator from '@/components/status/StatusIndicator'
+import { CardContent } from '@/components/ui/Card'
+
+/**
+ * The admin retrieval page's bottom clearance is a NUMBER agreed with two
+ * other components: it matches the document panel's own bottom gap (so the
+ * two tabs line up when you switch between them) and it has to stay above the
+ * floating status indicator. Four independent `toContain` assertions could all
+ * pass while the numbers disagreed, so the classes are read off the rendered
+ * elements and the agreement is checked as arithmetic.
+ *
+ * happy-dom computes no layout, so this can only ever be about the spacing
+ * classes that land on the elements — never about measured geometry.
+ */
+
+/** Tailwind's default spacing scale: one unit is 0.25rem. */
+const SPACING_PX = 4
+
+/** What the deleted test pinned by name: `right-4 bottom-4`. */
+const STATUS_INSET_PX = 4 * SPACING_PX
+
+/** The single `<prefix>-N` class on an element, as pixels. */
+const spacingPx = (element: Element, prefix: string): number => {
+  const classes = (element.getAttribute('class') ?? '').split(/\s+/).filter(Boolean)
+  const matches = classes.filter((token) => new RegExp(`^${prefix}-\\d+$`).test(token))
+  expect({ prefix, matches }).toEqual({ prefix, matches: [matches[0]] })
+  return Number(matches[0].slice(prefix.length + 1)) * SPACING_PX
+}
+
+afterEach(() => {
+  cleanup()
+})
+
+describe('admin retrieval layout', () => {
+  test('the page bottom gap matches the document panel and clears the status indicator', async () => {
+    const { container } = renderWithProviders(<RetrievalView />)
+    await act(async () => {})
+    const page = container.firstElementChild!
+
+    // Nothing else may set a bottom padding. Both halves matter: a VARIANT
+    // PREFIX (`md:pb-12`) and an ARBITRARY VALUE (`md:pb-[3rem]`) each change
+    // the desktop clearance while leaving the unprefixed numeric class — and
+    // therefore the arithmetic below — looking correct. So the prefix is
+    // stripped at the last `:` (which also covers `[&_p]:` forms) and the
+    // utility is matched by NAME, with no assumption about the value's shape.
+    // The deleted test's `not.toContain('pb-12')` is what used to catch this.
+    // Also the IMPORTANT marker, which this codebase does use on padding
+    // (`!p-0` in App.tsx). Tailwind v4 accepts it on either side, and either
+    // way `!pb-12` beside `pb-8` wins the cascade while leaving the plain
+    // class — and the arithmetic — looking untouched.
+    const setsPadding =
+      (edges: RegExp) =>
+        (token: string): boolean => {
+          const utility = token.slice(token.lastIndexOf(':') + 1).replace(/^!|!$/g, '')
+          return edges.test(utility)
+        }
+
+    const pageClasses = (page.getAttribute('class') ?? '').split(/\s+/)
+    expect(pageClasses.filter(setsPadding(/^(?:p|py|pb)-/))).toEqual(['pb-8'])
+    const pageBottomPx = spacingPx(page, 'pb')
+
+    // The other half of what the deleted test named: it pinned `px-2 pb-8`
+    // together, and the arithmetic below is entirely about the BOTTOM, so
+    // dropping the gutter leaves every assertion in this file green. Measured:
+    // deleting `px-2` outright still passed. On a narrow screen that gutter is
+    // the only thing between the panel and the viewport edge, so it is pinned
+    // by VALUE here for the same reason the status insets are, and guarded
+    // against a competing horizontal padding the same way as the bottom one.
+    expect(pageClasses.filter(setsPadding(/^(?:p|px|pl|pr)-/))).toEqual(['px-2'])
+    expect(spacingPx(page, 'px')).toBe(2 * SPACING_PX)
+    cleanup()
+
+    // The document panel's clearance is its card's own bottom margin plus the
+    // card's content padding. The card is rendered here directly: mounting
+    // DocumentManager would pull in the whole document pipeline for a number.
+    const { container: cardContainer } = renderWithProviders(<CardContent />)
+    const cardContent = cardContainer.firstElementChild!
+    const contentPaddingPx = spacingPx(cardContent, 'p')
+
+    // `p-6 pt-0`, the other half of what the deleted test named here. Only the
+    // BOTTOM padding feeds the arithmetic below, so dropping `pt-0` puts 24px
+    // back above the panel's content while every number in this file stays
+    // correct — measured: the file still passed at 1 pass with it removed.
+    // Zero is the claim, so it is asserted as a value, and the same competing
+    // -utility guard the other two edges get applies to this one.
+    const cardClasses = (cardContent.getAttribute('class') ?? '').split(/\s+/)
+    expect(cardClasses.filter(setsPadding(/^(?:p|py|pt)-/))).toEqual(['p-6', 'pt-0'])
+    expect(spacingPx(cardContent, 'pt')).toBe(0)
+    cleanup()
+
+    // DocumentManager itself stays a source read for the same reason — but of
+    // the NUMBER, so a change to it fails the arithmetic rather than a string.
+    const documentManager = readFileSync(join(import.meta.dir, 'DocumentManager.tsx'), 'utf8')
+    const listCard = documentManager.match(/<Card className="[^"]*\bmin-h-0 mb-(\d+)\b[^"]*">/)
+    expect(listCard === null).toBe(false)
+    const listCardMarginPx = Number(listCard![1]) * SPACING_PX
+
+    const { container: statusContainer } = renderWithProviders(<StatusIndicator />)
+    const statusInsetPx = spacingPx(statusContainer.firstElementChild!, 'bottom')
+    // The horizontal inset too: the deleted test pinned `right-4 bottom-4` as a
+    // pair, and reading only the bottom would let the indicator move to the
+    // other corner — or off the corner entirely — without a failure.
+    const statusRightPx = spacingPx(statusContainer.firstElementChild!, 'right')
+    // Unmounted straight away: its health-change animation timers would
+    // otherwise fire outside act() once this test returns.
+    cleanup()
+
+    // Switching between the two tabs must not shift the content up or down.
+    expect(pageBottomPx).toBe(contentPaddingPx + listCardMarginPx)
+
+    // And the answer must not run underneath the floating indicator, which
+    // sits in the bottom-RIGHT corner at a matching inset.
+    expect(pageBottomPx).toBeGreaterThan(statusInsetPx)
+
+    // The VALUE, not just the relationship: `right-5 bottom-5` keeps the two
+    // insets equal and still sits under the page clearance, so a purely
+    // relational check lets the indicator drift. The deleted test named `4`.
+    expect({ bottom: statusInsetPx, right: statusRightPx }).toEqual({
+      bottom: STATUS_INSET_PX,
+      right: STATUS_INSET_PX
+    })
+  })
+})

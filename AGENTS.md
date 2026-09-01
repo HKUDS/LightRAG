@@ -261,11 +261,17 @@ Rules for new tests:
   Pages behind `useCustomizedContent` render NOTHING until the first
   customization response settles, so an unseeded render finds an empty page:
   use `seedCustomization()` from `src/test/customization.ts`. Where a page
-  really does call the API on mount, stub the module and mind the IMPORT
-  ORDER — `mock.module` only reaches importers that have not been evaluated
-  yet, so the component must be imported dynamically AFTER the mock (a static
-  top-level import binds the real module first and the request goes out for
-  real). Restore the module in `afterAll`.
+  really does call the API on mount, stub the module and import the component
+  dynamically AFTER the mock, then restore the module in `afterAll`. What
+  `mock.module` does and does not reach, measured on Bun 1.3.11: it DOES
+  update a live import binding, including inside a module evaluated earlier —
+  a consumer that does `import { queryTextStream } from '@/api/lightrag'` and
+  calls it picks the stub up, and so does one reading the function off a
+  namespace import. What it cannot reach is a value COPIED out at evaluation
+  time (`const send = queryTextStream` at module scope), or work a module
+  ALREADY DID when it was first imported. Importing after the mock is
+  unconditionally safe and costs nothing, so do that rather than auditing
+  which access pattern every module in the chain happens to use.
 - **Render through `renderWithProviders`** (`src/test/render.tsx`), not
   Testing Library's bare `render`. It supplies a fixed English i18n instance
   built from `locales/en.json` and deliberately does not import `@/i18n`, whose
@@ -292,6 +298,35 @@ Rules for new tests:
   `expect(el.getAttribute('href')).toBe('./')`). Measured on a two-element
   page, one failing `toBe(element)` took 5.15 s against 548 ms for the boolean
   form, and the gap grows with the size of the rendered DOM.
+- **Converting a source-text test: enumerate what the old one PROHIBITS,
+  not just what it asserts.** A `readFileSync` test buys its negatives almost
+  for free — one `expect(source).not.toContain('BuiltInLogo')` forbids a whole
+  class of regressions — and those are exactly the assertions that get dropped
+  when the file is rewritten to render, because the positive path ("the bundle
+  logo is there") passes without them. Before touching the file, list every
+  negative and every uniqueness or ordering claim it makes; for each one write
+  down the rendered equivalent, then mutation-check THAT specific regression,
+  not only the happy path. Real losses caught in review on this branch: a
+  built-in logo rendering BESIDE the bundle one (fixed by asserting the count
+  of logo images, not the presence of one), a second visible dialog title, a
+  silent fall back from `variant="document"` typography to the compact tier,
+  and a footer moving above the card or losing its `flex-1` spacer while still
+  being in the document. Note how each of those survives a naive presence
+  assertion — which is the point.
+
+  **A matched string makes one claim per element, not one claim.** The
+  enumeration above is per ASSERTION, and that is not fine-grained enough:
+  `toContain('p-6 pt-0')` forbids two independent regressions, and a
+  conversion naturally carries over whichever half the new assertions happen
+  to consume — the arithmetic still balances afterwards, so nothing looks
+  missing. Three separate review findings on this branch were the same
+  omission (`px-2 pb-8`, `p-6 pt-0`, `right-4 bottom-4`), so split every
+  matched literal into its individual claims BEFORE looking for rendered
+  equivalents, and when the conversion is done, go back to the deleted test
+  and check off its assertions one by one against the new file.
+
+  Where the old negative genuinely has no rendered counterpart, say so in the
+  PR rather than letting it disappear.
 - **Prove the test can fail.** Before calling it done, break the behavior it
   pins (flip the `aria-label`, drop the guard), confirm it goes red, then
   restore. A test written against already-passing code is worth nothing until

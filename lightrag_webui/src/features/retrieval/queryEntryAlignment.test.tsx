@@ -1,0 +1,333 @@
+/// <reference types="bun" />
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { readFileSync } from 'fs'
+import { join } from 'path'
+import type { ComponentType } from 'react'
+import { act, cleanup, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+
+import { renderWithProviders } from '@/test/render'
+import { resetCustomization, seedCustomization } from '@/test/customization'
+import {
+  captureProcessState,
+  restoreProcessState,
+  type ProcessStateSnapshot
+} from '@/test/processState'
+import { useSettingsStore } from '@/stores/settings'
+import { defaultQuerySettings, useQuerySettingsStore } from '@/stores/querySettings'
+import { useWebuiRetrievalHistoryStore } from '@/stores/webuiRetrievalHistory'
+import { useWorkspaceRetrievalHistoryStore } from '@/stores/workspaceRetrievalHistory'
+import type { QuerySettings } from '@/stores/querySettings'
+import type { QueryRequest } from '@/api/lightrag'
+import type { QueryInputError } from './queryInput'
+
+/**
+ * The two query entries (`/webui`'s RetrievalView and the workspace's
+ * WorkspaceQueryView) must send the SAME request for the same input. This file
+ * pins that by driving both of them through their real composer and reading the
+ * request that reaches the API layer — `bypassEntryEquivalence.test.ts` replays
+ * the three preparation steps in isolation, which cannot see an entry that
+ * stopped taking them.
+ *
+ * The routing assertions at the bottom stay source-level on purpose: an entry
+ * that reimplements prefix parsing IDENTICALLY is invisible to a behavioural
+ * test, and reimplementing it is exactly how the two entries drifted apart
+ * before.
+ */
+
+const requests: QueryRequest[] = []
+let realApiModule: Record<string, unknown>
+let entries: { webui: ComponentType; workspace: ComponentType }
+
+beforeAll(async () => {
+  realApiModule = { ...(await import('@/api/lightrag')) }
+  mock.module('@/api/lightrag', () => ({
+    ...realApiModule,
+    queryTextStream: mock(async (params: QueryRequest) => {
+      requests.push(params)
+    }),
+    queryText: mock(async (params: QueryRequest) => {
+      requests.push(params)
+      return { response: '' }
+    })
+  }))
+
+  // Dynamic, and AFTER the mock. Both entries can ALREADY be in the module
+  // cache when this runs (`RetrievalView.test.tsx` imports one statically,
+  // `WorkspaceApp.test.tsx` pulls in the other), and that is fine:
+  // `useQuerySession` calls `queryTextStream` through a live import binding,
+  // which `mock.module` updates even in a module evaluated earlier — verified
+  // by running the three files in both adverse orders. It would not reach a
+  // value copied into a module-scope const, which is why the import stays
+  // dynamic. Either way the failure would be loud, not silent: an unstubbed
+  // send leaves `requests` empty and every assertion below fails.
+  entries = {
+    webui: (await import('@/features/RetrievalView')).default,
+    workspace: (await import('@/features/workspace/WorkspaceQueryView')).default
+  }
+})
+
+afterAll(() => {
+  mock.module('@/api/lightrag', () => realApiModule)
+  restoreProcessState(sharedStores, fileSnapshot)
+})
+
+const setQuerySettings = (overrides: Partial<QuerySettings> = {}): void => {
+  act(() => {
+    useQuerySettingsStore.setState({
+      querySettings: { ...defaultQuerySettings, ...overrides }
+    })
+  })
+}
+
+/**
+ * Every singleton these entries write to. The settings store is on the list
+ * because the admin entry records a used `user_prompt` into its PERSISTED
+ * prompt history, which is not obvious from this file at all.
+ */
+const sharedStores = [
+  useSettingsStore,
+  useQuerySettingsStore,
+  useWebuiRetrievalHistoryStore,
+  useWorkspaceRetrievalHistoryStore
+]
+
+let processSnapshot: ProcessStateSnapshot
+/**
+ * A FILE-level snapshot as well as the per-test one. The entries start their
+ * request with `void session.submitQuery(...)`, so the bookkeeping that
+ * follows — the admin entry recording a used `user_prompt` into the PERSISTED
+ * settings history — can land after the test that triggered it has already
+ * been restored. Measured: without this, `be terse` was still in the store for
+ * the last five tests and escaped the file. The per-test restore keeps the
+ * tests independent; this one guarantees nothing reaches the next FILE.
+ */
+let fileSnapshot: ProcessStateSnapshot
+
+beforeEach(() => {
+  // Captured FIRST, before anything below mutates a store — and only captured
+  // here; the matching restore belongs in the teardown.
+  fileSnapshot ??= captureProcessState(sharedStores)
+  processSnapshot = captureProcessState(sharedStores)
+  requests.length = 0
+  // The workspace empty state sits behind `useCustomizedContent`, which renders
+  // a placeholder — and fires a real request — until a snapshot has settled.
+  seedCustomization()
+  // An explicit baseline rather than whatever preceded this file.
+  setQuerySettings()
+})
+
+afterEach(() => {
+  // First, so the restore below lands on an UNMOUNTED tree: the preload's own
+  // `cleanup()` runs after this hook, too late to stop a teardown re-render
+  // from starting a request that lands during the next test.
+  cleanup()
+  resetCustomization()
+  // Every singleton this test touched, back to what it found. The admin entry
+  // records a used `user_prompt` into the PERSISTED settings history, so
+  // resetting only the query settings and the transcripts would leave that
+  // behind for the next test in this file.
+  act(() => {
+    restoreProcessState(sharedStores, processSnapshot)
+  })
+})
+
+const entryNames = ['webui', 'workspace'] as const
+type EntryName = (typeof entryNames)[number]
+
+const renderEntry = async (entry: EntryName): Promise<void> => {
+  const Entry = entries[entry]
+  renderWithProviders(<Entry />)
+  await act(async () => {})
+}
+
+/** The composer's input, scoped to the send form so the /webui sidebar's own
+ * textareas can never be picked up instead. */
+const composerInput = (): HTMLElement =>
+  within(screen.getByRole('search')).getByRole('textbox')
+
+const send = async (entry: EntryName, input: string): Promise<void> => {
+  const user = userEvent.setup()
+  await renderEntry(entry)
+  await user.type(composerInput(), input)
+  await user.keyboard('{Enter}')
+  // A macrotask, not just the microtask queue: the entry starts the request
+  // with `void session.submitQuery(...)`, so the bookkeeping that follows it —
+  // including the admin entry recording a used `user_prompt` into the PERSISTED
+  // settings history — lands after the render settles. Without this the write
+  // arrives during teardown, or the test after it.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+}
+
+describe('query entry input handling', () => {
+  // A plain loop rather than `test.each`: Bun's table typings widen every
+  // parameter to `unknown`, and the entry name is a key into `entries`.
+  for (const entry of entryNames) {
+    /**
+     * Every `QueryInputError` variant, driven from the composer. The deleted
+     * test guaranteed this differently — it asserted the entry INTERPOLATES
+     * `prepared.error` into the translation key, so a new variant is rendered
+     * without either entry being touched. An entry that hard-coded one key
+     * would still show the right sentence for that one case, so covering a
+     * single variant does not replace that guarantee; covering all of them
+     * does, and it checks the sentences a user actually reads.
+     *
+     * Keyed by `QueryInputError` on purpose: a fifth variant added to that
+     * union stops COMPILING here until a case is written for it. A plain list
+     * would simply stay green, which is the half of the old guarantee — cover
+     * variants nobody has written yet — that a table cannot otherwise keep.
+     */
+    const rejections: Record<QueryInputError, { label: string; input: string; sentence: string }> = {
+      queryModePrefixInvalid: {
+        label: 'a prefix with no query',
+        input: '/nope',
+        sentence: 'Invalid query mode prefix'
+      },
+      queryModeError: {
+        label: 'an unsupported mode',
+        input: '/nope hello',
+        sentence: 'Only supports the following query modes'
+      },
+      queryEmpty: {
+        label: 'a prefix that swallows the query',
+        input: '/local    ',
+        sentence: 'Please enter a question before sending'
+      },
+      queryTooShort: {
+        label: 'a query below the RAG minimum',
+        input: '/local ab',
+        sentence: 'Your query is too short'
+      }
+    }
+
+    for (const { label, input, sentence } of Object.values(rejections)) {
+      test(`${entry} rejects ${label} with its own reason`, async () => {
+        await send(entry, input)
+
+        // The translated sentence, not the error KEY: an entry that interpolated
+        // the key into the wrong namespace would still "show an error".
+        expect(screen.getByRole('alert').textContent).toContain(sentence)
+
+        // And it stops there. A rejected input that still reached the server
+        // would run the query under the stored mode, ignoring what was typed.
+        expect(requests).toHaveLength(0)
+      })
+    }
+
+    test(`${entry} sends the stripped query under the prefixed mode`, async () => {
+      setQuerySettings({ mode: 'mix' })
+
+      await send(entry, '/local hello there')
+
+      expect(requests).toHaveLength(1)
+      expect(requests[0].mode).toBe('local')
+      expect(requests[0].query).toBe('hello there')
+
+      // The transcript keeps what the user actually typed, prefix and all.
+      expect(screen.queryAllByText('/local hello there')).toHaveLength(1)
+      expect(screen.queryAllByText('hello there')).toHaveLength(0)
+    })
+
+    test(`${entry} falls back to the stored mode with no prefix`, async () => {
+      setQuerySettings({ mode: 'naive' })
+
+      await send(entry, 'plain question')
+
+      expect(requests).toHaveLength(1)
+      expect(requests[0].mode).toBe('naive')
+      expect(requests[0].query).toBe('plain question')
+    })
+  }
+})
+
+describe('query entry settings snapshot', () => {
+  test('the workspace entry clamps the debug-only switches and inherits the rest', async () => {
+    // Both entries read the SAME stored settings; only the workspace overrides
+    // anything. Values here are deliberately non-default so an entry that
+    // rebuilt the snapshot from defaults would show up as a difference.
+    setQuerySettings({
+      mode: 'global',
+      only_need_context: true,
+      only_need_prompt: true,
+      top_k: 7,
+      chunk_top_k: 3,
+      user_prompt: 'be terse',
+      enable_rerank: false,
+      history_turns: 0
+    })
+
+    await send('webui', 'question')
+    const admin = requests[0]
+    cleanup()
+
+    requests.length = 0
+    await send('workspace', 'question')
+    const workspace = requests[0]
+
+    // The UNION of both key sets, not the admin's alone: a field the workspace
+    // emits and the admin omits makes its request a strict superset, which the
+    // contract below forbids just as much as a differing value — and iterating
+    // one side's keys can never see it.
+    const keys = new Set([...Object.keys(admin), ...Object.keys(workspace)])
+    const differing = [...keys]
+      .filter(
+        (key) =>
+          JSON.stringify(admin[key as keyof QueryRequest]) !==
+          JSON.stringify(workspace[key as keyof QueryRequest])
+      )
+      .sort()
+
+    // Exactly the clamped pair — not a subset, not a superset. Clamping one
+    // more key would narrow an agreed contract, and inheriting one fewer would
+    // leave the workspace chat with context instead of an answer.
+    expect(differing).toEqual(['only_need_context', 'only_need_prompt'])
+    expect(workspace.only_need_context).toBe(false)
+    expect(workspace.only_need_prompt).toBe(false)
+    expect(admin.only_need_context).toBe(true)
+    expect(admin.only_need_prompt).toBe(true)
+  })
+})
+
+/**
+ * Source-level on purpose. An entry that reimplemented prefix parsing with the
+ * same behaviour would pass every test above; what these guard is that neither
+ * entry LEAVES the shared pipeline, which is how they drifted apart before.
+ * Keep them about routing, not about formatting.
+ */
+const ENTRY_SOURCES = [
+  ['webui', readFileSync(join(import.meta.dir, '..', 'RetrievalView.tsx'), 'utf8')],
+  [
+    'workspace',
+    readFileSync(join(import.meta.dir, '..', 'workspace', 'WorkspaceQueryView.tsx'), 'utf8')
+  ]
+] as const
+
+describe('query entry routing', () => {
+  test('workspace derives its snapshot through the shared policy', () => {
+    const workspace = ENTRY_SOURCES.find(([entry]) => entry === 'workspace')![1]
+
+    expect(workspace).toMatch(
+      /import\s*\{[^}]*\bworkspaceQuerySettingsSnapshot\b[^}]*\}\s*from/
+    )
+    expect(workspace).toMatch(/workspaceQuerySettingsSnapshot\(/)
+
+    // Any override belongs in WORKSPACE_CLAMPED_SETTINGS, where a test pins
+    // the size of the exemption list.
+    expect(workspace).not.toMatch(/only_need_context:\s*false/)
+    expect(workspace).not.toMatch(/only_need_prompt:\s*false/)
+    expect(workspace).not.toMatch(/disable_user_prompt_prefix:/)
+  })
+
+  test.each(ENTRY_SOURCES)('%s delegates prefix parsing to the shared helper', (_entry, source) => {
+    expect(source).toMatch(/import\s*\{[^}]*\bprepareQueryInput\b[^}]*\}\s*from/)
+    expect(source).toMatch(/prepareQueryInput\(\s*input\s*,/)
+  })
+
+  test.each(ENTRY_SOURCES)('%s does not reimplement prefix parsing', (_entry, source) => {
+    // A local `/mode ` regex is how the two entries drifted apart before.
+    expect(source).not.toMatch(/\/\^\\\/|match\(\s*\/\^/)
+    expect(source).not.toContain('allowedModes')
+  })
+})
