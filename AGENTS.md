@@ -312,8 +312,21 @@ Rules for new tests:
   silent fall back from `variant="document"` typography to the compact tier,
   and a footer moving above the card or losing its `flex-1` spacer while still
   being in the document. Note how each of those survives a naive presence
-  assertion — which is the point. Where the old negative genuinely has no
-  rendered counterpart, say so in the PR rather than letting it disappear.
+  assertion — which is the point.
+
+  **A matched string makes one claim per element, not one claim.** The
+  enumeration above is per ASSERTION, and that is not fine-grained enough:
+  `toContain('p-6 pt-0')` forbids two independent regressions, and a
+  conversion naturally carries over whichever half the new assertions happen
+  to consume — the arithmetic still balances afterwards, so nothing looks
+  missing. Three separate review findings on this branch were the same
+  omission (`px-2 pb-8`, `p-6 pt-0`, `right-4 bottom-4`), so split every
+  matched literal into its individual claims BEFORE looking for rendered
+  equivalents, and when the conversion is done, go back to the deleted test
+  and check off its assertions one by one against the new file.
+
+  Where the old negative genuinely has no rendered counterpart, say so in the
+  PR rather than letting it disappear.
 - **Prove the test can fail.** Before calling it done, break the behavior it
   pins (flip the `aria-label`, drop the guard), confirm it goes red, then
   restore. A test written against already-passing code is worth nothing until
