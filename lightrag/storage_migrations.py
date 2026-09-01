@@ -54,8 +54,8 @@ class _StorageMigrationMixin:
                 # Check if full_entities and full_relations are empty
                 # Get all processed documents to check their entity/relation data
                 try:
-                    processed_docs = await self.doc_status.get_docs_by_status(
-                        DocStatus.PROCESSED
+                    processed_docs = await self.doc_status.get_docs_by_statuses(
+                        [DocStatus.PROCESSED]
                     )
 
                     if not processed_docs:

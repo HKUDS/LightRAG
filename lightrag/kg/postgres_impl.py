@@ -6474,61 +6474,6 @@ class PGDocStatusStorage(DocStatusStorage):
             counts[doc["status"]] = doc["count"]
         return counts
 
-    async def get_docs_by_status(
-        self, status: DocStatus
-    ) -> dict[str, DocProcessingStatus]:
-        """all documents with a specific status"""
-        sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and status=$2"
-        params = {"workspace": self.workspace, "status": status.value}
-        result = await self.db.query(sql, list(params.values()), True)
-
-        docs_by_status = {}
-        for element in result:
-            # Parse chunks_list JSON string back to list
-            chunks_list = element.get("chunks_list", [])
-            if isinstance(chunks_list, str):
-                try:
-                    chunks_list = json.loads(chunks_list)
-                except json.JSONDecodeError:
-                    chunks_list = []
-
-            # Parse metadata JSON string back to dict
-            metadata = element.get("metadata", {})
-            if isinstance(metadata, str):
-                try:
-                    metadata = json.loads(metadata)
-                except json.JSONDecodeError:
-                    metadata = {}
-            # Ensure metadata is a dict
-            if not isinstance(metadata, dict):
-                metadata = {}
-
-            # Safe handling for file_path
-            file_path = element.get("file_path")
-            if file_path is None:
-                file_path = "no-file-path"
-
-            # Convert datetime objects to ISO format strings with timezone info
-            created_at = self._format_datetime_with_timezone(element["created_at"])
-            updated_at = self._format_datetime_with_timezone(element["updated_at"])
-
-            docs_by_status[element["id"]] = DocProcessingStatus(
-                content_summary=element["content_summary"],
-                content_length=element["content_length"],
-                status=element["status"],
-                created_at=created_at,
-                updated_at=updated_at,
-                chunks_count=element["chunks_count"],
-                file_path=file_path,
-                chunks_list=chunks_list,
-                metadata=metadata,
-                error_msg=element.get("error_msg"),
-                track_id=element.get("track_id"),
-                content_hash=element.get("content_hash"),
-            )
-
-        return docs_by_status
-
     def _pg_doc_processing_status_from_row(
         self, element: dict[str, Any]
     ) -> DocProcessingStatus:
@@ -6578,7 +6523,7 @@ class PGDocStatusStorage(DocStatusStorage):
     ) -> dict[str, DocProcessingStatus]:
         """Fetch documents matching any of the given statuses in a single query.
 
-        Replaces multiple sequential/parallel get_docs_by_status() calls when the
+        Replaces multiple sequential/parallel per-status reads when the
         caller needs documents across several statuses (e.g. PROCESSING + FAILED + PENDING).
         Uses a single ANY($2) query instead of N separate round-trips.  Query
         errors always propagate; ``strict=True`` additionally raises on any row

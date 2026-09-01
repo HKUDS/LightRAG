@@ -1043,12 +1043,6 @@ class RedisDocStatusStorage(DocStatusStorage):
 
         return counts
 
-    async def get_docs_by_status(
-        self, status: DocStatus
-    ) -> dict[str, DocProcessingStatus]:
-        """Get all documents with a specific status"""
-        return await self.get_docs_by_statuses([status])
-
     @staticmethod
     def _redis_doc_processing_status_from_data(
         data: dict[str, Any],
@@ -1081,8 +1075,8 @@ class RedisDocStatusStorage(DocStatusStorage):
         Redis has no server-side multi-value filter, so documents must be fetched
         and filtered in Python.  This override performs a single SCAN + pipeline
         GET over the keyspace, filtering against a set of status values.  The
-        previous pattern of N separate get_docs_by_status() calls would do N full
-        SCANs (one per status), so this reduces keyspace traversal from N passes to one.
+        alternative of N separate per-status reads would do N full SCANs (one per
+        status), so this reduces keyspace traversal from N passes to one.
         Transport errors always propagate (SCAN interruption re-raises below);
         ``strict=True`` additionally raises on any record that cannot be parsed
         (complete-or-raise scheduling contract, see base class).

@@ -87,7 +87,7 @@ class JsonDocStatusStorage(DocStatusStorage):
         * Pre-upsert preparation (``chunks_list`` default) runs
           *outside* the lock because it only mutates the caller-
           supplied dict, not the shared store.
-        * Read methods are richer (``get_docs_by_status`` /
+        * Read methods are richer (``get_docs_by_statuses`` /
           ``get_docs_by_track_id`` / ``get_docs_paginated`` /
           ``get_doc_by_file_path`` / etc.), but they all follow the
           same "acquire ``_storage_lock``, scan ``self._data``, copy
@@ -195,12 +195,6 @@ class JsonDocStatusStorage(DocStatusStorage):
                 counts[doc["status"]] += 1
         return counts
 
-    async def get_docs_by_status(
-        self, status: DocStatus
-    ) -> dict[str, DocProcessingStatus]:
-        """Get all documents with a specific status"""
-        return await self.get_docs_by_statuses([status])
-
     async def get_docs_by_statuses(
         self, statuses: list[DocStatus], strict: bool = False
     ) -> dict[str, DocProcessingStatus]:
@@ -208,8 +202,8 @@ class JsonDocStatusStorage(DocStatusStorage):
 
         Acquires the storage lock once and scans the in-memory dict once,
         filtering against a set of status values.  More efficient than N separate
-        get_docs_by_status() calls, which would acquire the lock N times and scan
-        the data N times.  ``strict=True`` raises on any record that cannot be
+        per-status reads, which would acquire the lock N times and scan the data
+        N times.  ``strict=True`` raises on any record that cannot be
         converted (complete-or-raise scheduling contract, see base class).
         """
         if not statuses:
