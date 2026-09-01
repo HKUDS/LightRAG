@@ -23,3 +23,21 @@ GlobalRegistrator.register({
   width: 1280,
   height: 800
 })
+
+/**
+ * happy-dom builds its document without a doctype and does not implement
+ * `compatMode` at all, so a library that feature-detects standards mode sees
+ * `undefined` and concludes the page is in quirks mode. `index.html` and
+ * `workspace.html` both declare `<!doctype html>`, so the real app never is.
+ *
+ * KaTeX is the consumer that makes this load-bearing rather than cosmetic: on
+ * `document.compatMode !== 'CSS1Compat'` it warns once at module evaluation
+ * AND replaces `katex.render` with a function that throws — so any test
+ * reaching a rendered formula would fail for a reason the browser does not
+ * have.
+ */
+document.insertBefore(document.implementation.createDocumentType('html', '', ''), document.firstChild)
+Object.defineProperty(document, 'compatMode', {
+  value: 'CSS1Compat',
+  configurable: true
+})

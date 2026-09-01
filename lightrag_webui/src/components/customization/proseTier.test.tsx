@@ -2,7 +2,7 @@ import { afterEach, beforeAll, describe, expect, test } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import type { ComponentType } from 'react'
-import { cleanup, screen } from '@testing-library/react'
+import { act, cleanup, screen } from '@testing-library/react'
 
 import { renderWithProviders } from '@/test/render'
 import CustomizedMarkdown from './CustomizedMarkdown'
@@ -79,17 +79,28 @@ describe('prose colors inside a colored chat bubble', () => {
 
   beforeAll(async () => {
     ChatMessage = (await import('../retrieval/ChatMessage')).ChatMessage
+    // The component loads KaTeX through a dynamic import on mount and stores
+    // the plugin in state. A cold import currently still settles inside the
+    // `act` flush below, but that is a property of how fast this module
+    // resolves rather than a guarantee: warming the cache here makes the
+    // component's import a cache hit, so the flush cannot start missing it
+    // when the module graph grows or the run order changes.
+    await import('rehype-katex')
   })
 
-  const bubbleOf = (role: 'user' | 'assistant', text: string): Element | null => {
-    renderWithProviders(
-      <ChatMessage message={{ id: 'm1', role, content: text } as MessageWithError} />
-    )
+  const bubbleOf = async (role: 'user' | 'assistant', text: string): Promise<Element | null> => {
+    // Rendering inside `act` so the KaTeX state update lands under it rather
+    // than after the test has returned (the React act(...) warning).
+    await act(async () => {
+      renderWithProviders(
+        <ChatMessage message={{ id: 'm1', role, content: text } as MessageWithError} />
+      )
+    })
     return screen.getByText(text).closest('.prose')
   }
 
-  test('the user bubble carries the correction on the element that sets the color', () => {
-    const bubble = classesOf(bubbleOf('user', 'my question'))
+  test('the user bubble carries the correction on the element that sets the color', async () => {
+    const bubble = classesOf(await bubbleOf('user', 'my question'))
 
     // The pairing IS the fix: the correction has to land on the same element
     // as the role color it corrects, which is the part a source substring
@@ -98,8 +109,8 @@ describe('prose colors inside a colored chat bubble', () => {
     expect(bubble).toContain('prose-inherit-color')
   })
 
-  test('the assistant bubble keeps the normal prose palette', () => {
-    const bubble = classesOf(bubbleOf('assistant', 'my answer'))
+  test('the assistant bubble keeps the normal prose palette', async () => {
+    const bubble = classesOf(await bubbleOf('assistant', 'my answer'))
 
     // It renders on the page background the palette was chosen against, so
     // applying the correction here would flatten every heading, link and code
