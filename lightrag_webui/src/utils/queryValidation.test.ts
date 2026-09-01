@@ -61,6 +61,15 @@ describe('RAG query validation', () => {
     }
   })
 
+  test('leaves scripts that are wide but not CJK out', () => {
+    // The contract is Chinese, Japanese and Korean — not "East Asian wide".
+    // Tangut, Khitan and Yi are wide and Han-adjacent, and write other
+    // languages.
+    for (const codePoint of [0x17000, 0x18800, 0x18b00, 0x18d00, 0xa000]) {
+      expect(ragQueryWeight(String.fromCodePoint(codePoint).repeat(2))).toBe(2)
+    }
+  })
+
   test('requires weight three for retrieval modes', () => {
     expect(isRagQueryTooShort('ab', 'mix')).toBe(true)
     expect(isRagQueryTooShort('中', 'naive')).toBe(true)

@@ -23,6 +23,15 @@ MIN_RAG_QUERY_WEIGHT = 3
 #     three-character floor is a coarse heuristic for "did the user actually ask
 #     anything", not a correctness boundary.
 #
+# The blocks are the ones that write CHINESE, JAPANESE and KOREAN, which is what
+# the minimum's contract says here, in both API guides and in all eleven locale
+# strings. Scripts that are East Asian and wide but write other languages —
+# Tangut, Khitan, Yi — are out. They were briefly in, from reading "East Asian
+# wide" off a width table instead of the contract, and the only thing that came
+# of it was a report that Tangut was covered inconsistently. Widening to every
+# wide block would have answered that report by growing the table and invited
+# the next one; matching the contract answers it by shrinking.
+#
 # Ranges therefore end on BLOCK boundaries. Ending one early is a real bug and
 # has happened: carrying U+115F over from an older per-character table cut
 # Hangul Jamo in half, so Korean medial and final jamo weighed 1.
@@ -34,14 +43,12 @@ _WIDE_CODEPOINT_RANGES = (
     (0x2E80, 0x33FF),  # CJK Radicals, Kangxi, Symbols, Kana, Bopomofo, Hangul
     (0x3400, 0x4DBF),  # CJK Unified Ideographs Extension A
     (0x4E00, 0x9FFF),  # CJK Unified Ideographs
-    (0xA000, 0xA4CF),  # Yi Syllables and Radicals
     (0xA960, 0xA97F),  # Hangul Jamo Extended-A
     (0xAC00, 0xD7FF),  # Hangul Syllables and Hangul Jamo Extended-B
     (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
     (0xFE30, 0xFE4F),  # CJK Compatibility Forms
     (0xFF00, 0xFFEE),  # Halfwidth and Fullwidth Forms
     (0x16FE0, 0x16FFF),  # Ideographic Symbols and Punctuation
-    (0x17000, 0x18AFF),  # Tangut and Tangut Components
     (0x1AFF0, 0x1B2FF),  # Kana Extended-B/Supplement/Extended-A, Small Kana, Nushu
     (0x20000, 0x3FFFD),  # Planes 2 and 3 — every CJK extension, present and future
 )

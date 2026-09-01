@@ -225,6 +225,29 @@ def test_no_range_stops_part_way_through_a_block(name, bounds):
         )
 
 
+@pytest.mark.parametrize(
+    "codepoint, script",
+    [
+        (0x17000, "Tangut"),
+        (0x18800, "Tangut Components"),
+        (0x18B00, "Khitan Small Script"),
+        (0x18D00, "Tangut Supplement"),
+        (0xA000, "Yi"),
+    ],
+)
+def test_scripts_that_are_wide_but_not_cjk_are_out(codepoint, script):
+    """The contract is Chinese, Japanese and Korean — not "East Asian wide".
+
+    Tangut, Khitan and Yi are wide and Han-adjacent, and Tangut and Yi were
+    briefly weighted here, from reading a width table instead of the contract
+    the docs and all eleven locale strings state. The only thing that came of it
+    was a report that Tangut was covered inconsistently — half its blocks in,
+    the Supplement out. Answering that by adding every wide block grows the
+    table and invites the next report; matching the contract ends the class.
+    """
+    assert rag_query_weight(chr(codepoint) * 2) == 2, script
+
+
 def test_the_weighted_ranges_are_sorted_and_disjoint():
     for earlier, later in zip(_WIDE_CODEPOINT_RANGES, _WIDE_CODEPOINT_RANGES[1:]):
         assert earlier[0] <= earlier[1]

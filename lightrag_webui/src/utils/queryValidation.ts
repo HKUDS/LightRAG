@@ -11,6 +11,10 @@ export const MIN_RAG_QUERY_WEIGHT = 3
 // worth nothing here: punctuation and unassigned code points inside these
 // ranges weigh 2, and the cost of that is one retrieval that finds nothing.
 //
+// The blocks are the ones that write Chinese, Japanese and Korean — what the
+// contract says. Tangut, Khitan and Yi are East Asian and wide but write other
+// languages, and are deliberately out.
+//
 // Ending a range early is a real bug and has happened — a stale U+115F cut
 // Hangul Jamo in half, so Korean medial and final jamo weighed 1.
 //
@@ -20,14 +24,12 @@ export const WIDE_CODEPOINT_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0x2e80, 0x33ff], // CJK Radicals, Kangxi, Symbols, Kana, Bopomofo, Hangul
   [0x3400, 0x4dbf], // CJK Unified Ideographs Extension A
   [0x4e00, 0x9fff], // CJK Unified Ideographs
-  [0xa000, 0xa4cf], // Yi Syllables and Radicals
   [0xa960, 0xa97f], // Hangul Jamo Extended-A
   [0xac00, 0xd7ff], // Hangul Syllables and Hangul Jamo Extended-B
   [0xf900, 0xfaff], // CJK Compatibility Ideographs
   [0xfe30, 0xfe4f], // CJK Compatibility Forms
   [0xff00, 0xffee], // Halfwidth and Fullwidth Forms
   [0x16fe0, 0x16fff], // Ideographic Symbols and Punctuation
-  [0x17000, 0x18aff], // Tangut and Tangut Components
   [0x1aff0, 0x1b2ff], // Kana Extended-B/Supplement/Extended-A, Small Kana, Nushu
   [0x20000, 0x3fffd] // Planes 2 and 3 — every CJK extension, present and future
 ]
