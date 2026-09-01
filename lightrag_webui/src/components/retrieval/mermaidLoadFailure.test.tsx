@@ -223,11 +223,42 @@ describe('mermaid failure branches (source-level)', () => {
     expect(importers).toEqual(['components/retrieval/mermaidLoader.ts'])
   })
 
-  test('every failure branch re-checks the container identity before writing', () => {
+  /**
+   * Whether `marker` sits INSIDE a block guarded by the container-identity
+   * check, established by brace matching rather than by counting occurrences:
+   * `ChatMessage` has four such guards and only three of them are on failure
+   * branches, so any count that a dropped failure guard could still satisfy is
+   * not an assertion about that branch at all.
+   */
+  const isGuarded = (marker: string): boolean => {
+    const at = SOURCE.indexOf(marker)
+    expect({ marker, found: at > -1 }).toEqual({ marker, found: true })
+
+    const guardAt = SOURCE.lastIndexOf('if (mermaidRef.current === container', at)
+    if (guardAt < 0) return false
+
+    const open = SOURCE.indexOf('{', SOURCE.indexOf(')', guardAt))
+    let depth = 0
+    for (let i = open; i < SOURCE.length; i++) {
+      if (SOURCE[i] === '{') depth += 1
+      else if (SOURCE[i] === '}') {
+        depth -= 1
+        // The guard's block closes here; the write is guarded only if it is
+        // before that.
+        if (depth === 0) return at < i
+      }
+    }
+    return false
+  }
+
+  test.each([
+    ['the renderer failed to load', '`Mermaid renderer failed to load: ${errorMessage}'],
+    ['mermaid.render() rejected', '`Mermaid diagram error: ${errorMessage}'],
+    ['synchronous setup threw', '`Mermaid diagram setup error: ${errorMessage}']
+  ])('the write for "%s" is inside the container-identity guard', (_case, marker) => {
     // An await elapsed, so the ref may now point at a different node — and a
-    // render into a detached container is invisible either way, which is
-    // exactly why no rendered assertion can see this one.
-    const guards = SOURCE.match(/mermaidRef\.current === container/g) ?? []
-    expect(guards.length).toBeGreaterThanOrEqual(3)
+    // write into a detached container is invisible either way, which is why no
+    // rendered assertion can see this one.
+    expect({ marker, guarded: isGuarded(marker) }).toEqual({ marker, guarded: true })
   })
 })
