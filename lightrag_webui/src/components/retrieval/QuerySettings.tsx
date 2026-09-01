@@ -113,6 +113,35 @@ export default function QuerySettings() {
                   className="h-9"
                 />
               </div>
+              {/* Sits with the field whose meaning it changes, not with the
+                  debug switches further down. */}
+              <div className="flex items-center gap-2">
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label
+                        htmlFor="disable_user_prompt_prefix"
+                        className="flex-1 ml-1 cursor-help"
+                      >
+                        {t('retrievePanel.querySettings.disableUserPromptPrefix')}
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">
+                      <p>
+                        {t('retrievePanel.querySettings.disableUserPromptPrefixTooltip')}
+                      </p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                <Checkbox
+                  className="mr-10 cursor-pointer"
+                  id="disable_user_prompt_prefix"
+                  checked={querySettings.disable_user_prompt_prefix ?? false}
+                  onCheckedChange={(checked) =>
+                    handleChange('disable_user_prompt_prefix', checked)
+                  }
+                />
+              </div>
             </>
 
             {/* Query Mode */}

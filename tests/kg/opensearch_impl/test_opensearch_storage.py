@@ -1549,7 +1549,7 @@ class TestDocStatusStorage:
             assert counts["processed"] == 5
 
     @pytest.mark.asyncio
-    async def test_get_docs_by_status(self, global_config, embed_func, mock_client):
+    async def test_get_docs_by_statuses(self, global_config, embed_func, mock_client):
         mock_client.search = AsyncMock(
             return_value={
                 "hits": {
@@ -1575,7 +1575,7 @@ class TestDocStatusStorage:
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
-            result = await s.get_docs_by_status(DocStatus.PROCESSED)
+            result = await s.get_docs_by_statuses([DocStatus.PROCESSED])
             assert "d1" in result
             assert isinstance(result["d1"], DocProcessingStatus)
 
@@ -2057,7 +2057,7 @@ class TestDocStatusStorage:
             assert await s.get_all_status_counts() == {}
             assert await s.get_docs_paginated(page=1, page_size=10) == ([], 0)
             assert await s.get_doc_by_file_path("/a.txt") is None
-            assert await s.get_docs_by_status(DocStatus.PROCESSED) == {}
+            assert await s.get_docs_by_statuses([DocStatus.PROCESSED]) == {}
 
             mock_client.count.assert_not_awaited()
             mock_client.search.assert_not_awaited()

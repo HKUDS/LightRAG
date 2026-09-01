@@ -32,6 +32,7 @@ from lightrag.utils import (
     atruncate_list_by_token_size,
     run_in_tokenizer_executor,
     compute_args_hash,
+    resolve_user_prompt,
     handle_cache,
     save_to_cache,
     CacheData,
@@ -4628,7 +4629,7 @@ async def kg_query(
         Returns None when no relevant context could be constructed for the query.
     """
     if not query:
-        return QueryResult(content=PROMPTS["fail_response"])
+        return QueryResult(content=PROMPTS["fail_response"], llm_generated=False)
 
     # Apply higher priority (5) to query relation LLM function
     use_model_func = partial(
@@ -4655,7 +4656,7 @@ async def kg_query(
             logger.warning(f"Forced low_level_keywords to origin query: {query}")
             ll_keywords = [query]
         else:
-            return QueryResult(content=PROMPTS["fail_response"])
+            return QueryResult(content=PROMPTS["fail_response"], llm_generated=False)
 
     ll_keywords_str = ", ".join(ll_keywords) if ll_keywords else ""
     hl_keywords_str = ", ".join(hl_keywords) if hl_keywords else ""
@@ -4672,6 +4673,9 @@ async def kg_query(
         query_param,
         chunks_vdb,
         progress_callback=progress_callback,
+        # The token budget must be computed against the template this function
+        # will actually render below, not the default one.
+        system_prompt=system_prompt,
     )
 
     if context_result is None:
@@ -4681,10 +4685,16 @@ async def kg_query(
     # Return different content based on query parameters
     if query_param.only_need_context and not query_param.only_need_prompt:
         return QueryResult(
-            content=context_result.context, raw_data=context_result.raw_data
+            content=context_result.context,
+            raw_data=context_result.raw_data,
+            llm_generated=False,
         )
 
-    user_prompt = f"\n\n{query_param.user_prompt}" if query_param.user_prompt else "n/a"
+    effective_user_prompt = resolve_user_prompt(
+        query_param.user_prompt,
+        global_config.get("user_prompt_prefix", ""),
+        query_param.disable_user_prompt_prefix,
+    )
     response_type = (
         query_param.response_type
         if query_param.response_type
@@ -4695,7 +4705,7 @@ async def kg_query(
     sys_prompt_temp = system_prompt if system_prompt else PROMPTS["rag_response"]
     sys_prompt = sys_prompt_temp.format(
         response_type=response_type,
-        user_prompt=user_prompt,
+        user_prompt=effective_user_prompt.slot,
         context_data=context_result.context,
     )
 
@@ -4703,7 +4713,11 @@ async def kg_query(
 
     if query_param.only_need_prompt:
         prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
-        return QueryResult(content=prompt_content, raw_data=context_result.raw_data)
+        return QueryResult(
+            content=prompt_content,
+            raw_data=context_result.raw_data,
+            llm_generated=False,
+        )
 
     # Call LLM
     tokenizer: Tokenizer = global_config["tokenizer"]
@@ -4733,7 +4747,15 @@ async def kg_query(
         query_param.max_total_tokens,
         hl_keywords_str,
         ll_keywords_str,
-        query_param.user_prompt or "",
+        # The COMPOSED instructions, so changing the server-side prefix
+        # invalidates entries generated under the old one. With no prefix
+        # configured this is byte-identical to the previous
+        # `query_param.user_prompt or ""`, so existing entries keep hitting --
+        # which is why _ANSWER_CACHE_POLICY_VERSION does not need a bump.
+        # `disable_user_prompt_prefix` is deliberately NOT a separate key
+        # component: it only ever acts through this value, and adding it would
+        # split the cache between two requests that build identical prompts.
+        effective_user_prompt.text,
         query_param.enable_rerank,
         global_config.get("enable_content_headings", False),
         "\n<llm_identity>\n",
@@ -5046,6 +5068,9 @@ async def extract_keywords_only(
                 "max_entity_tokens": param.max_entity_tokens,
                 "max_relation_tokens": param.max_relation_tokens,
                 "max_total_tokens": param.max_total_tokens,
+                # Metadata only. Keyword extraction has no {user_prompt} slot,
+                # so neither this nor the server-side prefix influences it, and
+                # neither belongs in the keyword cache key above.
                 "user_prompt": param.user_prompt or "",
                 "enable_rerank": param.enable_rerank,
             }
@@ -5676,6 +5701,7 @@ async def _build_context_str(
     entity_id_to_original: dict = None,
     relation_id_to_original: dict = None,
     progress_callback: ProgressCallback | None = None,
+    system_prompt: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
     Build the final LLM context string with token processing.
@@ -5703,13 +5729,29 @@ async def _build_context_str(
         global_config.get("max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS),
     )
 
-    # Get the system prompt template from PROMPTS or global_config
-    sys_prompt_template = global_config.get(
-        "system_prompt_template", PROMPTS["rag_response"]
+    # Budget against the template that will ACTUALLY be rendered. `kg_query`
+    # picks its template after this function returns, so without the forwarded
+    # `system_prompt` the estimate silently used the default one -- charging a
+    # caller's custom template at the wrong size, and charging the prefix even
+    # when that template has no {user_prompt} placeholder to render it into.
+    # `system_prompt_template` is kept as a lower-priority fallback: nothing in
+    # this repo writes it, but a downstream user may set it on their own config.
+    sys_prompt_template = (
+        system_prompt
+        or global_config.get("system_prompt_template")
+        or PROMPTS["rag_response"]
     )
 
     kg_context_template = PROMPTS["kg_query_context"]
-    user_prompt = query_param.user_prompt if query_param.user_prompt else ""
+    # `.text`, not `.slot`: this only sizes the token budget, and `.text`'s empty
+    # fallback matches what this line used before the prefix existed, so an
+    # unconfigured prefix changes no estimate. A configured one IS counted here,
+    # which is the point -- otherwise a long prefix would overfill the context.
+    effective_user_prompt = resolve_user_prompt(
+        query_param.user_prompt,
+        global_config.get("user_prompt_prefix", ""),
+        query_param.disable_user_prompt_prefix,
+    )
     response_type = (
         query_param.response_type
         if query_param.response_type
@@ -5733,10 +5775,16 @@ async def _build_context_str(
     kg_context_tokens = await acount_tokens(tokenizer, pre_kg_context)
 
     # Calculate preliminary system prompt tokens
+    # Charged even on the only_need_context path, which returns before this
+    # prompt is ever rendered. That is deliberate, not waste: only_need_context
+    # and only_need_prompt are debug switches whose job is to PREVIEW the real
+    # request. Skipping the charge here would make them report more chunks than
+    # a real query retrieves, so an operator would size their context against a
+    # number the live path never delivers.
     pre_sys_prompt = sys_prompt_template.format(
         context_data="",  # Empty for overhead calculation
         response_type=response_type,
-        user_prompt=user_prompt,
+        user_prompt=effective_user_prompt.text,
     )
     sys_prompt_tokens = await acount_tokens(tokenizer, pre_sys_prompt)
 
@@ -5855,6 +5903,7 @@ async def _build_query_context(
     query_param: QueryParam,
     chunks_vdb: BaseVectorStorage = None,
     progress_callback: ProgressCallback | None = None,
+    system_prompt: str | None = None,
 ) -> QueryContextResult | None:
     """
     Main query context building function using the new 4-stage architecture:
@@ -5929,6 +5978,7 @@ async def _build_query_context(
         entity_id_to_original=truncation_result["entity_id_to_original"],
         relation_id_to_original=truncation_result["relation_id_to_original"],
         progress_callback=progress_callback,
+        system_prompt=system_prompt,
     )
 
     # Convert keywords strings to lists and add complete metadata to raw_data
@@ -6595,7 +6645,7 @@ async def naive_query(
     """
 
     if not query:
-        return QueryResult(content=PROMPTS["fail_response"])
+        return QueryResult(content=PROMPTS["fail_response"], llm_generated=False)
 
     # Apply higher priority (5) to query relation LLM function
     use_model_func = partial(
@@ -6606,7 +6656,7 @@ async def naive_query(
     tokenizer: Tokenizer = global_config["tokenizer"]
     if not tokenizer:
         logger.error("Tokenizer not found in global configuration.")
-        return QueryResult(content=PROMPTS["fail_response"])
+        return QueryResult(content=PROMPTS["fail_response"], llm_generated=False)
 
     if progress_callback:
         await progress_callback(QueryProgress.RETRIEVING_CHUNKS)
@@ -6630,7 +6680,11 @@ async def naive_query(
     )
 
     # Calculate system prompt template tokens (excluding content_data)
-    user_prompt = f"\n\n{query_param.user_prompt}" if query_param.user_prompt else "n/a"
+    effective_user_prompt = resolve_user_prompt(
+        query_param.user_prompt,
+        global_config.get("user_prompt_prefix", ""),
+        query_param.disable_user_prompt_prefix,
+    )
     response_type = (
         query_param.response_type
         if query_param.response_type
@@ -6642,10 +6696,13 @@ async def naive_query(
         system_prompt if system_prompt else PROMPTS["naive_rag_response"]
     )
 
-    # Create a preliminary system prompt with empty content_data to calculate overhead
+    # Create a preliminary system prompt with empty content_data to calculate overhead.
+    # As in _build_context_str, the user prompt is charged even when
+    # only_need_context will return before this prompt is sent: those switches
+    # preview the real request, so their chunk count must match it.
     pre_sys_prompt = sys_prompt_template.format(
         response_type=response_type,
-        user_prompt=user_prompt,
+        user_prompt=effective_user_prompt.slot,
         content_data="",  # Empty for overhead calculation
     )
 
@@ -6715,11 +6772,13 @@ async def naive_query(
     )
 
     if query_param.only_need_context and not query_param.only_need_prompt:
-        return QueryResult(content=context_content, raw_data=raw_data)
+        return QueryResult(
+            content=context_content, raw_data=raw_data, llm_generated=False
+        )
 
     sys_prompt = sys_prompt_template.format(
         response_type=query_param.response_type,
-        user_prompt=user_prompt,
+        user_prompt=effective_user_prompt.slot,
         content_data=context_content,
     )
 
@@ -6727,7 +6786,9 @@ async def naive_query(
 
     if query_param.only_need_prompt:
         prompt_content = "\n\n".join([sys_prompt, "---User Query---", user_query])
-        return QueryResult(content=prompt_content, raw_data=raw_data)
+        return QueryResult(
+            content=prompt_content, raw_data=raw_data, llm_generated=False
+        )
 
     # Handle cache
     answer_cache_kv = _answer_cache_kv(query_param, hashing_kv)
@@ -6741,7 +6802,15 @@ async def naive_query(
         query_param.max_entity_tokens,
         query_param.max_relation_tokens,
         query_param.max_total_tokens,
-        query_param.user_prompt or "",
+        # The COMPOSED instructions, so changing the server-side prefix
+        # invalidates entries generated under the old one. With no prefix
+        # configured this is byte-identical to the previous
+        # `query_param.user_prompt or ""`, so existing entries keep hitting --
+        # which is why _ANSWER_CACHE_POLICY_VERSION does not need a bump.
+        # `disable_user_prompt_prefix` is deliberately NOT a separate key
+        # component: it only ever acts through this value, and adding it would
+        # split the cache between two requests that build identical prompts.
+        effective_user_prompt.text,
         query_param.enable_rerank,
         global_config.get("enable_content_headings", False),
         "\n<llm_identity>\n",

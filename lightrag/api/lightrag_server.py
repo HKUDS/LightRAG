@@ -3,6 +3,7 @@ LightRAG FastAPI Server
 """
 
 from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, Response
 from fastapi.openapi.docs import (
@@ -73,8 +74,8 @@ from lightrag.api.routers.ollama_api import OllamaAPI
 from lightrag.api.routers.ui_customization_routes import create_ui_customization_routes
 from lightrag.api.ui_customization import (
     WEBUI_CHROME_LOCALES,
-    load_ui_customization_snapshot,
     locales_without_chrome_translation,
+    resolve_ui_customization_snapshot,
 )
 
 from lightrag.utils import logger, set_verbose_debug
@@ -1389,6 +1390,47 @@ def _create_llm_model_kwargs(binding: str, args, llm_timeout: int) -> dict:
     return {}
 
 
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Render a request-validation refusal in the shape each endpoint promises.
+
+    Module-level rather than a closure inside ``create_app`` so the real
+    handler can be exercised without standing up the whole application.
+    """
+    # Check if this is a request to /query/data endpoint
+    if request.url.path.endswith("/query/data"):
+        # Extract error details
+        error_details = []
+        for error in exc.errors():
+            field_path = " -> ".join(str(loc) for loc in error["loc"])
+            error_details.append(f"{field_path}: {error['msg']}")
+
+        error_message = "; ".join(error_details)
+
+        # Return in the expected format for /query/data
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "failure",
+                "message": f"Validation error: {error_message}",
+                "data": {},
+                "metadata": {},
+            },
+        )
+
+    # For other endpoints, return the default FastAPI validation error.
+    # `jsonable_encoder` is not optional here: a rejection raised as a
+    # ValueError inside a validator (the RAG query minimum, the non-empty
+    # check, the keyword and history checks, the aggregate text budget)
+    # carries the exception object itself in `ctx.error`, which json.dumps
+    # cannot serialize — without the encoder this handler raises and the
+    # client gets a 500 in place of the 422 the refusal actually is.
+    return JSONResponse(
+        status_code=422, content={"detail": jsonable_encoder(exc.errors())}
+    )
+
+
 def create_app(args):
     # Check frontend build first and get status. The two entries are checked
     # independently: an old build directory may carry only index.html, which
@@ -1406,11 +1448,16 @@ def create_app(args):
     # workspace.html never suppresses bundle validation. bundle_revision is
     # logged HERE only — it appears in no /health tier.
     ui_templates_dir = (getattr(args, "ui_templates_dir", "") or "").strip()
+    ui_customization_snapshot = None
     if ui_templates_dir:
         # Raises UICustomizationError → server startup fails (fail-fast; a
         # silent fallback would show LightRAG content while the operator
-        # believes the customer branding is live).
-        ui_customization_snapshot = load_ui_customization_snapshot(ui_templates_dir)
+        # believes the customer branding is live). Returns None for the one
+        # sanctioned exception: a configured directory that holds no
+        # manifest.json yet, i.e. the unpopulated mount every default Docker
+        # deployment starts with (see resolve_ui_customization_snapshot).
+        ui_customization_snapshot = resolve_ui_customization_snapshot(ui_templates_dir)
+    if ui_customization_snapshot is not None:
         logger.info(
             "UI customization bundle active: bundle_revision=%s locales=%s",
             ui_customization_snapshot.bundle_revision,
@@ -1434,8 +1481,18 @@ def create_app(args):
                 len(untranslated),
                 sorted(WEBUI_CHROME_LOCALES),
             )
+    elif ui_templates_dir:
+        # Not an error, but not silent either: the only way to tell "I have
+        # not written my bundle yet" from "my mount did not land where I
+        # thought" is the path this names.
+        logger.warning(
+            "UI customization: UI_TEMPLATES_DIR=%s holds no manifest.json — "
+            "serving the built-in LightRAG branding. Put a bundle there and "
+            "restart to activate it; if you expected one, check that the "
+            "directory is the one you populated.",
+            ui_templates_dir,
+        )
     else:
-        ui_customization_snapshot = None
         logger.info("UI customization: no bundle configured (UI_TEMPLATES_DIR unset)")
 
     # Create unified API version display with warning symbol if frontend is outdated
@@ -1597,6 +1654,14 @@ def create_app(args):
     # diverge from the real route table.
     api_docs_enabled = bool(getattr(args, "enable_api_docs", True))
 
+    # Whether the two query UIs label every answer as AI-generated
+    # (ENABLE_AI_CONTENT_NOTICE). Deployment-level display configuration, so
+    # it rides the same responses as webui_title/webui_description: both
+    # entries read it once at boot from /auth-status (or /login), and the
+    # admin shell keeps it fresh from its /health poll. getattr keeps
+    # create_app working for callers that build args programmatically.
+    ai_content_notice_enabled = bool(getattr(args, "enable_ai_content_notice", False))
+
     base_description = (
         "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
     )
@@ -1631,34 +1696,9 @@ def create_app(args):
 
     app = FastAPI(**app_kwargs)
 
-    # Add custom validation error handler for /query/data endpoint
-    @app.exception_handler(RequestValidationError)
-    async def validation_exception_handler(
-        request: Request, exc: RequestValidationError
-    ):
-        # Check if this is a request to /query/data endpoint
-        if request.url.path.endswith("/query/data"):
-            # Extract error details
-            error_details = []
-            for error in exc.errors():
-                field_path = " -> ".join(str(loc) for loc in error["loc"])
-                error_details.append(f"{field_path}: {error['msg']}")
-
-            error_message = "; ".join(error_details)
-
-            # Return in the expected format for /query/data
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "status": "failure",
-                    "message": f"Validation error: {error_message}",
-                    "data": {},
-                    "metadata": {},
-                },
-            )
-        else:
-            # For other endpoints, return the default FastAPI validation error
-            return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    # Custom validation error handler, shaped per endpoint (see the
+    # module-level function for why it is not a closure).
+    app.add_exception_handler(RequestValidationError, validation_exception_handler)
 
     # Last-resort handler for any exception that escapes a route without being
     # converted to an HTTPException. It guarantees raw exception text never
@@ -2645,6 +2685,7 @@ def create_app(args):
                 "api_version": api_version_display,
                 "webui_title": webui_title,
                 "webui_description": webui_description,
+                "ai_content_notice_enabled": ai_content_notice_enabled,
             }
 
         return {
@@ -2654,6 +2695,7 @@ def create_app(args):
             "api_version": api_version_display,
             "webui_title": webui_title,
             "webui_description": webui_description,
+            "ai_content_notice_enabled": ai_content_notice_enabled,
         }
 
     # Brute-force protection for /login (CWE-307): throttle failed attempts per
@@ -2682,6 +2724,7 @@ def create_app(args):
                 "api_version": api_version_display,
                 "webui_title": webui_title,
                 "webui_description": webui_description,
+                "ai_content_notice_enabled": ai_content_notice_enabled,
             }
         username = form_data.username
         # Rate-limit key is client IP + username. X-Forwarded-For is NOT trusted
@@ -2740,6 +2783,7 @@ def create_app(args):
             "api_version": api_version_display,
             "webui_title": webui_title,
             "webui_description": webui_description,
+            "ai_content_notice_enabled": ai_content_notice_enabled,
         }
 
     @app.get(
@@ -2875,6 +2919,7 @@ def create_app(args):
                 "api_docs_available": api_docs_enabled,
                 "webui_title": webui_title,
                 "webui_description": webui_description,
+                "ai_content_notice_enabled": ai_content_notice_enabled,
                 "pipeline_busy": pipeline_busy,
                 "pipeline_active": pipeline_active,
             }
@@ -2986,14 +3031,25 @@ def create_app(args):
     # `</` → `<\/` escaping prevents an embedded "</script>" sequence from
     # breaking out of the inline script (defense-in-depth — values come from
     # admin config, not user input).
+    #
+    # `webuiTitle` (WEBUI_TITLE) rides along and is applied to `document.title`
+    # in the same snippet: the tag sits in <head> right after the static
+    # <title>, so the tab carries the deployment's own name from the FIRST
+    # paint. Waiting for the SPA to read it from /health would show "LightRAG"
+    # until the bundle boots, and browsers cache that first title for history
+    # entries and bookmarks. `or None` normalizes an unset/empty variable to a
+    # single falsy value, which the client reads as "no custom title".
     _runtime_config_payload = json.dumps(
         {
             "apiPrefix": api_prefix,
             "webuiPrefix": f"{api_prefix}{webui_path}/",
+            "webuiTitle": webui_title or None,
         }
     ).replace("</", "<\\/")
     runtime_config_script = (
-        f"<script>window.__LIGHTRAG_CONFIG__ = {_runtime_config_payload};</script>"
+        f"<script>window.__LIGHTRAG_CONFIG__ = {_runtime_config_payload};"
+        "if(window.__LIGHTRAG_CONFIG__.webuiTitle)"
+        "{document.title=window.__LIGHTRAG_CONFIG__.webuiTitle;}</script>"
     )
 
     # Custom StaticFiles class for smart caching + runtime config injection

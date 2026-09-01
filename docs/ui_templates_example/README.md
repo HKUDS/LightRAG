@@ -1,8 +1,12 @@
 # Example UI customization bundle
 
-A ready-to-copy example for `UI_TEMPLATES_DIR` (the workspace entry's
-customizable welcome page and query empty state). This directory is
+A ready-to-copy example for `UI_TEMPLATES_DIR` (the customizable welcome
+page, query empty state, login page and copyright line). This directory is
 **documentation only** — the server never loads or bundles it.
+
+For the complete guide — deployment from source / Docker / Kubernetes, the
+full `manifest.json` reference, verification and every startup error — see
+[UserDefinedUI.md](../UserDefinedUI.md) ([中文](../UserDefinedUI-zh.md)).
 
 ## Usage
 
@@ -28,6 +32,45 @@ Copy this directory, replace the texts and the logo, then restart the server
   Omitting it fails startup (a missing logo must never silently fall back to
   the LightRAG logo under customer texts).
 - A locale entry may override the logo with its own `logo` path (or `null`).
+- `brand.copyright` is OPTIONAL plain text (written in the manifest, not a
+  Markdown file) shown at the foot of the welcome and login pages, OUTSIDE
+  the card. A locale entry may override it with its own `copyright` (or
+  `null` for "no line here"). Omitted, `null`, empty or whitespace-only all
+  mean the same thing: no copyright line at all — LightRAG ships no default
+  text, so an uncustomized deployment shows none and LightRAG's own notice
+  never appears on customer pages. Unlike a blank `login`/`agreements` file,
+  a blank value here does NOT fail startup: it only turns the line off.
+- `login` and `agreements` are OPTIONAL per locale, and together they switch
+  on the **login consent gate**: when a locale declares both, the login page
+  shows the `login` text plus a checkbox ("I agree to …"), and sign-in stays
+  disabled until it is ticked.
+  The checkbox carries ONE link, which opens `agreements` in a dialog — so
+  write the privacy policy and the model service agreement into that single
+  file (headings are the way to separate them) rather than expecting the
+  reader to find two documents.
+  - `consent_documents` is what the checkbox CALLS that link — inline text,
+    not a path, per locale. It is optional: leave it out and the WebUI names
+    the link with its own generic "Privacy Policy Agreement". Set it whenever
+    the file covers more than a privacy policy, so the checkbox does not
+    understate what the visitor is agreeing to. It never switches the gate on
+    by itself.
+  - The dialog renders `agreements` AS WRITTEN and prints no title above it,
+    so start the file with its own heading — that heading is the document's
+    title on screen.
+  - Declaring only one of the two leaves the gate OFF: a branded login page
+    with nothing to agree to, or an agreement document no page links to, is
+    a half-finished configuration and is treated as such.
+  - Both are per LOCALE. A visitor resolving to a locale that declares
+    neither sees no checkbox, so declare them for every locale the gate must
+    cover (or route uncovered locales there through `fallbacks`).
+  - A declared file that is empty fails startup — the gate must never point
+    at a blank document.
+  - The gate covers **credentialed sign-in only**. A deployment with
+    authentication disabled (`AUTH_ACCOUNTS` unset) admits visitors as
+    guests without it, and that is deliberate rather than a gap: with no
+    authentication there is no identified user to hold to an agreement, and
+    auth-disabled is a development and demo posture, not a production one.
+    Configure `AUTH_ACCOUNTS` if the agreement has to be accepted.
 - `fallbacks` maps uncovered locales to an ordered list of DECLARED locales;
   resolution is single-level (uncovered locale → first declared target →
   `default_locale`). Content is never mixed field-by-field with the

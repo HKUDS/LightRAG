@@ -190,9 +190,19 @@ lightrag-gunicorn                                         # Multi-worker (gunico
 ```
 
 ### WebUI
+
+Every command below is run **from `lightrag_webui/`**, not the repository root.
+`bun test` in particular resolves `bunfig.toml` — and the preload paths inside
+it — relative to the working directory, so running it from the root silently
+loads no DOM (see *React component tests*).
+
 ```bash
 cd lightrag_webui
-bun install --frozen-lockfile      # Install dependencies
+bun install --frozen-lockfile      # REQUIRED after any change to package.json /
+                                   # bun.lock, including a branch switch across
+                                   # one: `git checkout` does not update
+                                   # node_modules, and a stale tree surfaces as
+                                   # a wall of TS2307 "Cannot find module".
 bun run dev                        # Dev server (Node + Vite)
 bun run dev:bun                    # Dev server (Bun native)
 bun run build                      # Production build
@@ -204,6 +214,7 @@ bun test                           # All tests
 bun test --watch                   # Watch mode
 bun test --coverage                # With coverage report
 bun test src/api/lightrag.test.ts  # Single test file
+bunx tsc --noEmit                  # Typecheck (`bun run build` does NOT typecheck)
 ```
 
 ### Testing
@@ -213,7 +224,97 @@ bun test src/api/lightrag.test.ts  # Single test file
 - **Run only the test directories that mirror the modules you changed**, and report which subset you ran plus its pass count. The suite is ~7000 tests and a full run takes over 6 minutes, which is too slow for the edit loop. Every PR's CI runs the full suite — proving nothing else broke is its job, not yours.
 - Derive the subset from the mirror layout below: `lightrag/api/config.py` → `tests/api/config/`, `lightrag/kg/redis_impl.py` → `tests/kg/redis_impl/`, `lightrag/chunker/` → `tests/chunker/`. When a change spans several modules, run each of their directories rather than widening to `tests/`.
 - Run the full suite locally only at a milestone, or when the change is genuinely cross-cutting (`lightrag/base.py`, `lightrag/utils.py`, `lightrag/kg/shared_storage.py`, or anything every backend inherits).
-- Backend tests use pytest; frontend unit tests use Bun's built-in runner — see *WebUI* above.
+- Backend tests use pytest; frontend unit tests use Bun's built-in runner — see *WebUI* above and *React component tests* below.
+- **A WebUI change runs the WHOLE frontend check set**, from `lightrag_webui/`: `bun install --frozen-lockfile` (see *WebUI* above — skip it after a branch switch and every later step fails on missing modules), then `bun test`, `bunx tsc --noEmit`, and `bun run lint`. The subsetting rule above is a backend rule and does not apply — all three together take well under a minute (test ~2 s, typecheck ~14 s, lint ~21 s), so there is nothing to save by running less. Report the pass count. `bun run build` transpiles WITHOUT checking types, so skipping `tsc --noEmit` means nothing checks them.
+
+#### React component tests
+
+WebUI tests are **colocated** next to the module they cover
+(`src/features/SiteHeader.test.ts`), not mirrored into a separate tree — the
+`tests/` mirror layout above is a backend rule and does not apply here. A test
+file containing JSX must be named `.test.tsx`.
+
+`bun test` has a DOM: `bunfig.toml` preloads `src/test/happydom.ts` (registers
+happy-dom globally) and then `src/test/setup.ts` (jest-dom matchers plus
+Testing Library's `cleanup` in `afterEach`). Order is load-bearing — Testing
+Library binds to whatever `document` exists when it is first evaluated.
+
+That preload is found relative to the WORKING DIRECTORY, so `bun test` must be
+run from `lightrag_webui/`. From the repository root no preload loads at all
+and the failure is silent in the worst way: pure logic tests still pass and
+only the component tests break. `src/test/render.tsx` calls
+`assertDomAvailable()` at import time to turn that into a message naming the
+cause and the fix; `bun test --config <path>` does NOT work around it, because
+the preload paths inside the file are still resolved against the CWD.
+
+Rules for new tests:
+
+- **Test rendered behavior by rendering it.** Assert what the user gets —
+  roles, accessible names, visibility, what a click does. Do NOT write new
+  tests that `readFileSync` a `.tsx` and match substrings: that style cannot
+  see whether Radix's `asChild` actually wired the trigger up, and it breaks on
+  equivalent rewrites. Several older tests still do this; converting one while
+  working nearby is welcome. String and AST assertions stay correct for what
+  genuinely IS a source-level property — an i18n key present in every locale, a
+  forbidden import — just not for what the component renders.
+- **Seed the stores a page reads, rather than stubbing its requests.**
+  Pages behind `useCustomizedContent` render NOTHING until the first
+  customization response settles, so an unseeded render finds an empty page:
+  use `seedCustomization()` from `src/test/customization.ts`. Where a page
+  really does call the API on mount, stub the module and mind the IMPORT
+  ORDER — `mock.module` only reaches importers that have not been evaluated
+  yet, so the component must be imported dynamically AFTER the mock (a static
+  top-level import binds the real module first and the request goes out for
+  real). Restore the module in `afterAll`.
+- **Render through `renderWithProviders`** (`src/test/render.tsx`), not
+  Testing Library's bare `render`. It supplies a fixed English i18n instance
+  built from `locales/en.json` and deliberately does not import `@/i18n`, whose
+  bootstrap resolves a language from `localStorage` and runs the settings
+  migration — ambient state that asserted strings must not depend on.
+- **A file-local `afterEach` runs BEFORE the preload's `cleanup()`.** So a
+  store reset written there lands on a STILL-MOUNTED component: its effects
+  re-run, and a page behind `useCustomizedContent` starts a real
+  `/ui/customization` request during teardown that can land during the NEXT
+  test and overwrite its seeded snapshot. Call `cleanup()` yourself at the top
+  of the hook, before resetting anything; it is idempotent, so the preload's
+  own call afterwards is harmless.
+- **Never assert `toBeNull()` / `not.toBeInTheDocument()` on a DOM element.**
+  Use a count instead — `expect(screen.queryAllByRole(...)).toHaveLength(0)`.
+  When such an assertion fails, Bun serialises the entire happy-dom element
+  it received, which is large enough that the run appears to HANG rather than
+  report a failure. The count form fails instantly and legibly
+  (`Expected length: 0, Received length: 1`). The same applies to any
+  assertion whose failure message would carry a DOM node — **including an
+  identity check like `expect(document.activeElement).toBe(link)`**: compare a
+  boolean or a string you extracted instead
+  (`expect(document.activeElement === link).toBe(true)`,
+  `expect(card.contains(footer)).toBe(false)`,
+  `expect(el.getAttribute('href')).toBe('./')`). Measured on a two-element
+  page, one failing `toBe(element)` took 5.15 s against 548 ms for the boolean
+  form, and the gap grows with the size of the rendered DOM.
+- **Prove the test can fail.** Before calling it done, break the behavior it
+  pins (flip the `aria-label`, drop the guard), confirm it goes red, then
+  restore. A test written against already-passing code is worth nothing until
+  it has been seen to fail: `harnessIsolation.test.ts` originally matched only
+  `from '…'` and silently let a bare side-effect `import '…'` through, which
+  only the mutation check surfaced.
+- **The DOM is process-wide.** Bun evaluates every test file in one process, so
+  `delete globalThis.window` in one file removes it for every file that runs
+  later — and the failure surfaces somewhere else entirely. To exercise a
+  DOM-less code path use `withoutDomGlobals(body, keys?)` from
+  `src/test/domGlobals.ts`; to undo a stubbed global use `restoreDomGlobals()`
+  in an `afterEach`. Never leave a bare `delete` of the `window` or `document`
+  GLOBAL behind — `harnessIsolation.test.ts` fails on one anywhere but the
+  helper. (Deleting a property OF window, such as `__LIGHTRAG_CONFIG__`, is
+  fine and is not what the guard matches.)
+- **Never import the test harness from production code.** Vite bundles from the
+  import graph rooted at `index.html` / `workspace.html`, and the harness is
+  reached only through the runner's preload — one import from `src/` would ship
+  happy-dom to the browser. `src/test/harnessIsolation.test.ts` pins this for
+  every import form (bare, dynamic, `require`), and `vite.config.ts`'s
+  first-load byte budget backs it up. Dependency-section placement is not what
+  decides this: `@faker-js/faker` is a runtime `dependencies` entry and ships
+  because `hooks/useRandomGraph.tsx` imports it.
 
 ```bash
 # Preferred for fresh shells and automation; resolves PYTHON, venv, uv, .venv, venv, python, python3

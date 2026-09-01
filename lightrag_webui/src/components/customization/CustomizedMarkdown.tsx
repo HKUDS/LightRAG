@@ -15,17 +15,44 @@ import { cn } from '@/lib/utils'
  * component too, so bundle-vs-default deployments show identical rendering
  * behavior and the default path keeps the same protections.
  */
+
+/**
+ * How much vertical rhythm the block keeps.
+ *
+ * - `compact` (default): tightened paragraph/heading margins, for the short
+ *   blurbs that sit INSIDE another layout — a welcome card, the login-page
+ *   text, an empty state — where the prose scale would dwarf its container.
+ * - `document`: the typography scale exactly as configured, for content that
+ *   IS the page — the user-agreement dialog. A legal document has to read
+ *   like the Markdown file it came from: its own heading hierarchy, list,
+ *   table and quote spacing intact, not squeezed into a caption's rhythm.
+ */
+export type CustomizedMarkdownVariant = 'compact' | 'document'
+
+const VARIANT_CLASSES: Record<CustomizedMarkdownVariant, string> = {
+  compact: 'prose-p:my-2 prose-headings:my-3',
+  document: ''
+}
+
 export default function CustomizedMarkdown({
   content,
-  className
+  className,
+  dir,
+  variant = 'compact'
 }: {
   content: string
   className?: string
+  /** Writing direction for this block, from the server's resolved locale
+   * (never from bundle-provided markup). Omit to inherit the page's. */
+  dir?: 'ltr' | 'rtl'
+  variant?: CustomizedMarkdownVariant
 }) {
   return (
     <div
+      dir={dir}
       className={cn(
-        'prose dark:prose-invert max-w-none break-words prose-p:my-2 prose-headings:my-3',
+        'prose dark:prose-invert max-w-none break-words',
+        VARIANT_CLASSES[variant],
         className
       )}
     >
