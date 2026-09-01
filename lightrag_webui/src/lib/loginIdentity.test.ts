@@ -465,9 +465,22 @@ describe('activateLoginIdentityFromToken (the login form\'s only entry point)', 
     // this test exists for, and a fixed list cannot see it. `loginIdentity.ts`
     // is the one legitimate caller — it is where the token-derived entry point
     // delegates.
+    // Matched on the IMPORT, not on the call: `import { applyLoginIdentity as
+    // apply }` followed by `apply(name)` is the same defect, and a
+    // call-shaped regex would not see it. (Same trap as the mermaid and
+    // harness-isolation guards — a form-by-form pattern only forbids the
+    // forms it happens to have thought of.)
+    const importsIt = (source: string): boolean =>
+      [...source.matchAll(/import\s*\{([^}]*)\}\s*from\s*['"][^'"]*loginIdentity['"]/g)].some(
+        (match) => /\bapplyLoginIdentity\b/.test(match[1])
+      )
+
     const callers = sourceFiles(join(import.meta.dir, '..'))
       .filter((file) => !file.endsWith('/lib/loginIdentity.ts'))
-      .filter((file) => /\bapplyLoginIdentity\(/.test(readFileSync(file, 'utf8')))
+      .filter((file) => {
+        const source = readFileSync(file, 'utf8')
+        return importsIt(source) || /\bapplyLoginIdentity\(/.test(source)
+      })
       .map((file) => file.slice(join(import.meta.dir, '..').length + 1))
 
     expect(callers).toEqual([])

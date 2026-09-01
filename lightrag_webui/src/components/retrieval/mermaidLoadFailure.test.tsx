@@ -215,9 +215,23 @@ describe('mermaid failure branches (source-level)', () => {
         return /\.tsx?$/.test(path) && !/\.test\.tsx?$/.test(path) ? [path] : []
       })
 
+    // Matched by SPECIFIER, not by import form. The form-by-form version of
+    // this guard is how `harnessIsolation.test.ts` first went wrong: it looked
+    // for `from '…'` and let a bare side-effect `import '…'` — just as capable
+    // of pulling the package into the first-load chunk — straight through.
+    const importSpecifiers = (source: string): string[] =>
+      [
+        ...source.matchAll(
+          /(?:\bfrom\s*|\bimport\s*|\bimport\s*\(\s*|\brequire\s*\(\s*)['"]([^'"]+)['"]/g
+        )
+      ].map((match) => match[1])
+
+    const namesMermaid = (specifier: string): boolean =>
+      specifier === 'mermaid' || specifier.startsWith('mermaid/')
+
     const srcDir = join(import.meta.dir, '..', '..')
     const importers = sourceFiles(srcDir)
-      .filter((file) => /from\s+'mermaid'|import\(\s*'mermaid'\s*\)/.test(readFileSync(file, 'utf8')))
+      .filter((file) => importSpecifiers(readFileSync(file, 'utf8')).some(namesMermaid))
       .map((file) => file.slice(srcDir.length + 1))
 
     expect(importers).toEqual(['components/retrieval/mermaidLoader.ts'])

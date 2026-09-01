@@ -98,6 +98,54 @@ const sourceFiles = (dir: string): string[] =>
     return entry.isFile() && path.endsWith('.tsx') && !path.endsWith('.test.tsx') ? [path] : []
   })
 
+/**
+ * The text of the JSX tag opened at `start`, up to the `>` that closes it.
+ * Braces and strings are skipped, so an attribute whose value is an EXPRESSION
+ * — `className={cn('max-w-[42rem]', extra)}`, which is valid, lint-clean and
+ * loses the clamp through tailwind-merge — is part of the returned text rather
+ * than ending the scan early.
+ */
+const openingTag = (source: string, start: number): string => {
+  let depth = 0
+  let quote: string | null = null
+
+  for (let i = start; i < source.length; i++) {
+    const char = source[i]
+    if (quote) {
+      if (char === quote) quote = null
+      continue
+    }
+    if (char === '\'' || char === '"' || char === '`') quote = char
+    else if (char === '{') depth += 1
+    else if (char === '}') depth -= 1
+    else if (char === '>' && depth === 0) return source.slice(start, i + 1)
+  }
+
+  throw new Error(`unterminated JSX tag at ${start}`)
+}
+
+/** The attribute value starting at `at`, whether `"quoted"` or `{braced}`. */
+const attributeValue = (source: string, at: number): string => {
+  const opener = source[at]
+
+  if (opener === '\'' || opener === '"') {
+    const close = source.indexOf(opener, at + 1)
+    return close < 0 ? '' : source.slice(at + 1, close)
+  }
+
+  if (opener !== '{') return ''
+
+  let depth = 0
+  for (let i = at; i < source.length; i++) {
+    if (source[i] === '{') depth += 1
+    else if (source[i] === '}') {
+      depth -= 1
+      if (depth === 0) return source.slice(at + 1, i)
+    }
+  }
+  return ''
+}
+
 const srcDir = join(import.meta.dir, '..', '..')
 
 /**
@@ -111,13 +159,17 @@ const customTooltipWidths = (): { file: string; width: string }[] => {
 
   for (const file of sourceFiles(srcDir)) {
     const source = readFileSync(file, 'utf8')
-    const classNameSites = [
-      ...source.matchAll(/<TooltipContent\b[^>]*?className\s*=\s*"([^"]*)"/g),
-      ...source.matchAll(/tooltipClassName\s*=\s*"([^"]*)"/g)
-    ]
+    const sites: string[] = []
 
-    for (const site of classNameSites) {
-      for (const width of site[1].match(/max-w-\[[^\]]*\]/g) ?? []) {
+    for (const match of source.matchAll(/<TooltipContent\b/g)) {
+      sites.push(openingTag(source, match.index))
+    }
+    for (const match of source.matchAll(/\btooltipClassName\s*=\s*/g)) {
+      sites.push(attributeValue(source, match.index + match[0].length))
+    }
+
+    for (const site of sites) {
+      for (const width of site.match(/max-w-\[[^\]]*\]/g) ?? []) {
         found.push({ file: file.slice(srcDir.length + 1), width })
       }
     }

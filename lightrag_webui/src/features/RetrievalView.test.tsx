@@ -42,10 +42,13 @@ describe('admin retrieval layout', () => {
     await act(async () => {})
     const page = container.firstElementChild!
 
-    // No `p-` or `py-` beside it: either would override the bottom padding and
-    // the agreement below would be measuring a class that does not apply.
+    // Nothing else may set a bottom padding, VARIANT PREFIXES INCLUDED. An
+    // `md:pb-12` beside `pb-8` changes the desktop clearance while leaving the
+    // unprefixed class — and the arithmetic below — looking correct; the
+    // deleted test's `not.toContain('pb-12')` is what used to catch that.
+    const bottomPadding = /^(?:[\w-]+:)*(?:p|py|pb)-\d+$/
     const pageClasses = (page.getAttribute('class') ?? '').split(/\s+/)
-    expect(pageClasses.filter((token) => /^(p|py|pb)-/.test(token))).toEqual(['pb-8'])
+    expect(pageClasses.filter((token) => bottomPadding.test(token))).toEqual(['pb-8'])
     const pageBottomPx = spacingPx(page, 'pb')
     cleanup()
 
