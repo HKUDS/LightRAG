@@ -137,7 +137,7 @@ api = [
     # wheel nor an sdist, breaking `uv sync --frozen` on Python 3.14. 3.8.13 is
     # the last release with full wheel + sdist coverage. Revisit when adopting
     # spacy 4.x (still in dev as of this pin).
-    "spacy>=3.8,<3.8.14",
+    "spacy>=3.8,<3.8.17",
 ]
 
 # Offline deployment dependencies (layered design for flexibility)
