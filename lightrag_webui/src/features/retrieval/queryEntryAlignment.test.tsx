@@ -8,6 +8,12 @@ import userEvent from '@testing-library/user-event'
 
 import { renderWithProviders } from '@/test/render'
 import { resetCustomization, seedCustomization } from '@/test/customization'
+import {
+  captureProcessState,
+  restoreProcessState,
+  type ProcessStateSnapshot
+} from '@/test/processState'
+import { useSettingsStore } from '@/stores/settings'
 import { defaultQuerySettings, useQuerySettingsStore } from '@/stores/querySettings'
 import { useWebuiRetrievalHistoryStore } from '@/stores/webuiRetrievalHistory'
 import { useWorkspaceRetrievalHistoryStore } from '@/stores/workspaceRetrievalHistory'
@@ -62,6 +68,7 @@ beforeAll(async () => {
 
 afterAll(() => {
   mock.module('@/api/lightrag', () => realApiModule)
+  restoreProcessState(sharedStores, fileSnapshot)
 })
 
 const setQuerySettings = (overrides: Partial<QuerySettings> = {}): void => {
@@ -72,15 +79,40 @@ const setQuerySettings = (overrides: Partial<QuerySettings> = {}): void => {
   })
 }
 
+/**
+ * Every singleton these entries write to. The settings store is on the list
+ * because the admin entry records a used `user_prompt` into its PERSISTED
+ * prompt history, which is not obvious from this file at all.
+ */
+const sharedStores = [
+  useSettingsStore,
+  useQuerySettingsStore,
+  useWebuiRetrievalHistoryStore,
+  useWorkspaceRetrievalHistoryStore
+]
+
+let processSnapshot: ProcessStateSnapshot
+/**
+ * A FILE-level snapshot as well as the per-test one. The entries start their
+ * request with `void session.submitQuery(...)`, so the bookkeeping that
+ * follows — the admin entry recording a used `user_prompt` into the PERSISTED
+ * settings history — can land after the test that triggered it has already
+ * been restored. Measured: without this, `be terse` was still in the store for
+ * the last five tests and escaped the file. The per-test restore keeps the
+ * tests independent; this one guarantees nothing reaches the next FILE.
+ */
+let fileSnapshot: ProcessStateSnapshot
+
 beforeEach(() => {
+  // First, before anything below mutates a store.
+  fileSnapshot ??= captureProcessState(sharedStores)
+  processSnapshot = captureProcessState(sharedStores)
   requests.length = 0
   // The workspace empty state sits behind `useCustomizedContent`, which renders
   // a placeholder — and fires a real request — until a snapshot has settled.
   seedCustomization()
-  setQuerySettings()
   act(() => {
-    useWebuiRetrievalHistoryStore.getState().clearHistory()
-    useWorkspaceRetrievalHistoryStore.getState().clearHistory()
+    restoreProcessState(sharedStores, processSnapshot)
   })
 })
 
@@ -121,7 +153,14 @@ const send = async (entry: EntryName, input: string): Promise<void> => {
   await renderEntry(entry)
   await user.type(composerInput(), input)
   await user.keyboard('{Enter}')
-  await act(async () => {})
+  // A macrotask, not just the microtask queue: the entry starts the request
+  // with `void session.submitQuery(...)`, so the bookkeeping that follows it —
+  // including the admin entry recording a used `user_prompt` into the PERSISTED
+  // settings history — lands after the render settles. Without this the write
+  // arrives during teardown, or the test after it.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
 }
 
 describe('query entry input handling', () => {

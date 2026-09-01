@@ -8,6 +8,11 @@ import { renderWithProviders } from '@/test/render'
 import { resetCustomization, seedCustomization } from '@/test/customization'
 import { useAuthStore } from '@/stores/state'
 import { resetVersionCheckCache } from '@/lib/versionCheckCache'
+import {
+  captureProcessState,
+  restoreProcessState,
+  type ProcessStateSnapshot
+} from '@/test/processState'
 
 /**
  * The workspace shell's brand link doubles as the deployment-description
@@ -26,34 +31,17 @@ const DESCRIPTION = 'Production cluster — read only'
 let realApiModule: Record<string, unknown>
 let WorkspaceApp: ComponentType
 let authStatusFetches = 0
-let authSnapshot: ReturnType<typeof useAuthStore.getState>
-let storageSnapshot: Record<string, string>
-
-const readStorage = (): Record<string, string> =>
-  Object.fromEntries(
-    Object.keys(localStorage).map((key) => [key, localStorage.getItem(key) ?? ''])
-  )
-
 /**
- * Put back everything a mounted shell writes OUTSIDE React.
+ * Everything a mounted shell writes OUTSIDE React.
  *
  * `activateSessionFromAuthStatus` runs for real here — that is the point of
  * the test — so every render logs a session in: the auth store ends up
  * authenticated with this file's fake title and version, and seven
  * `LIGHTRAG-*` keys land in localStorage, `LIGHTRAG-API-TOKEN` among them.
- * `cleanup()` unmounts the tree and touches none of it, so without this the
- * next test FILE inherits a signed-in guest carrying `test-token`.
+ * `cleanup()` unmounts the tree and touches none of it.
  */
-const restoreProcessState = (): void => {
-  useAuthStore.setState(authSnapshot, true)
-
-  for (const key of Object.keys(localStorage)) {
-    if (!(key in storageSnapshot)) localStorage.removeItem(key)
-  }
-  for (const [key, value] of Object.entries(storageSnapshot)) {
-    if (localStorage.getItem(key) !== value) localStorage.setItem(key, value)
-  }
-}
+const sharedStores = [useAuthStore]
+let processSnapshot: ProcessStateSnapshot
 
 beforeAll(async () => {
   realApiModule = { ...(await import('@/api/lightrag')) }
@@ -131,8 +119,8 @@ beforeEach(() => {
   // what this seam stands in for.
   resetVersionCheckCache()
   authStatusFetches = 0
-  authSnapshot = { ...useAuthStore.getState() }
-  storageSnapshot = readStorage()
+  // First, before anything below mutates a store.
+  processSnapshot = captureProcessState(sharedStores)
   act(() => {
     useAuthStore.setState({ isGuestMode: false, username: null })
   })
@@ -145,7 +133,9 @@ afterEach(() => {
   // observe that one — no later file mounts a shell today — so it is
   // deliberately defensive rather than pinned.
   resetVersionCheckCache()
-  restoreProcessState()
+  act(() => {
+    restoreProcessState(sharedStores, processSnapshot)
+  })
 })
 
 describe('workspace header brand link', () => {
