@@ -83,7 +83,7 @@ describe('admin header deployment identity', () => {
 
     setDeployment('Acme KB', null)
     renderHeader()
-    expect(screen.queryByRole('button', { name: 'Deployment information' })).toBeNull()
+    expect(screen.queryAllByRole('button', { name: 'Deployment information' })).toHaveLength(0)
   })
 
   test('links back to this entry, never to a sibling entry root', () => {

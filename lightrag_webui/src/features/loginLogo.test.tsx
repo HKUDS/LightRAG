@@ -1,8 +1,9 @@
-import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from 'bun:test'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 
 import { renderWithProviders } from '@/test/render'
+import { useAuthStore } from '@/stores/state'
 import { resetCustomization, seedCustomization } from '@/test/customization'
 
 const BUNDLE_LOGO = 'https://cdn.example.test/acme-logo.png'
@@ -33,6 +34,15 @@ afterAll(() => {
   mock.module('@/api/lightrag', () => realApiModule)
 })
 
+beforeEach(() => {
+  // These are pre-login pages; an earlier test file that activates a session
+  // would otherwise leave them rendering nothing. The precondition belongs
+  // to the test, not to whatever ran before it.
+  act(() => {
+    useAuthStore.setState({ isAuthenticated: false, isGuestMode: false })
+  })
+})
+
 afterEach(() => {
   act(() => {
     resetCustomization()
@@ -54,6 +64,10 @@ const renderLogin = async () => {
   )
   await waitFor(() => {
     if (!view.container.innerHTML) throw new Error('login page has not settled')
+  }, {
+    // A real (refused) /auth-status attempt can outlast the 1s default
+    // when the whole suite runs in one process.
+    timeout: 5000
   })
   return view
 }
@@ -89,7 +103,7 @@ describe('login page branding', () => {
     fireEvent.error(logo)
 
     await waitFor(() => {
-      expect(screen.queryByRole('img', { name: 'Acme Corp' })).toBeNull()
+      expect(screen.queryAllByRole('img', { name: 'Acme Corp' })).toHaveLength(0)
     })
   })
 
@@ -99,7 +113,7 @@ describe('login page branding', () => {
 
     fireEvent.error(await screen.findByRole('img', { name: 'Acme Corp' }))
     await waitFor(() => {
-      expect(screen.queryByRole('img', { name: 'Acme Corp' })).toBeNull()
+      expect(screen.queryAllByRole('img', { name: 'Acme Corp' })).toHaveLength(0)
     })
 
     // The failure is latched against the URL that failed, not against

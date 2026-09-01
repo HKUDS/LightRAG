@@ -257,11 +257,29 @@ Rules for new tests:
   working nearby is welcome. String and AST assertions stay correct for what
   genuinely IS a source-level property — an i18n key present in every locale, a
   forbidden import — just not for what the component renders.
+- **Seed the stores a page reads, rather than stubbing its requests.**
+  Pages behind `useCustomizedContent` render NOTHING until the first
+  customization response settles, so an unseeded render finds an empty page:
+  use `seedCustomization()` from `src/test/customization.ts`. Where a page
+  really does call the API on mount, stub the module and mind the IMPORT
+  ORDER — `mock.module` only reaches importers that have not been evaluated
+  yet, so the component must be imported dynamically AFTER the mock (a static
+  top-level import binds the real module first and the request goes out for
+  real). Restore the module in `afterAll`.
 - **Render through `renderWithProviders`** (`src/test/render.tsx`), not
   Testing Library's bare `render`. It supplies a fixed English i18n instance
   built from `locales/en.json` and deliberately does not import `@/i18n`, whose
   bootstrap resolves a language from `localStorage` and runs the settings
   migration — ambient state that asserted strings must not depend on.
+- **Never assert `toBeNull()` / `not.toBeInTheDocument()` on a DOM element.**
+  Use a count instead — `expect(screen.queryAllByRole(...)).toHaveLength(0)`.
+  When such an assertion fails, Bun serialises the entire happy-dom element
+  it received, which is large enough that the run appears to HANG rather than
+  report a failure. The count form fails instantly and legibly
+  (`Expected length: 0, Received length: 1`). The same applies to any
+  assertion whose failure message would carry a DOM node: compare a boolean
+  or a string you extracted (`expect(card.contains(footer)).toBe(false)`,
+  `expect(el.getAttribute('href')).toBe('./')`).
 - **Prove the test can fail.** Before calling it done, break the behavior it
   pins (flip the `aria-label`, drop the guard), confirm it goes red, then
   restore. A test written against already-passing code is worth nothing until
