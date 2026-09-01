@@ -1,20 +1,47 @@
+/// <reference types="bun" />
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 
-const adminSource = readFileSync(join(import.meta.dir, '..', 'RetrievalView.tsx'), 'utf8')
-const workspaceSource = readFileSync(
-  join(import.meta.dir, '..', 'workspace', 'WorkspaceQueryView.tsx'),
-  'utf8'
-)
+/**
+ * `bypassEntryEquivalence.test.ts` proves the shared pipeline produces the same
+ * request from both entries. What a behavioural test cannot see is an entry
+ * QUITTING that pipeline — reimplementing prefix parsing locally, or dropping a
+ * field on the way into it. That is what these source-level assertions guard,
+ * so keep them about routing, not about formatting.
+ */
+
+const ENTRIES = [
+  ['webui', readFileSync(join(import.meta.dir, '..', 'RetrievalView.tsx'), 'utf8')],
+  [
+    'workspace',
+    readFileSync(join(import.meta.dir, '..', 'workspace', 'WorkspaceQueryView.tsx'), 'utf8')
+  ]
+] as const
 
 describe('query entry input alignment', () => {
-  test.each([
-    ['webui', adminSource],
-    ['workspace', workspaceSource]
-  ])('%s uses shared prefix parsing and preserves the displayed input', (_entry, source) => {
-    expect(source).toContain('prepareQueryInput(input, getQuerySettingsSnapshot().mode)')
-    expect(source).toContain('modeOverride: prepared.modeOverride')
-    expect(source).toContain('displayedInput: input')
+  test.each(ENTRIES)('%s delegates prefix parsing to the shared helper', (_entry, source) => {
+    expect(source).toMatch(/import\s*\{[^}]*\bprepareQueryInput\b[^}]*\}\s*from/)
+    expect(source).toMatch(/prepareQueryInput\(\s*input\s*,/)
+  })
+
+  test.each(ENTRIES)('%s does not reimplement prefix parsing', (_entry, source) => {
+    // A local `/mode ` regex is how the two entries drifted apart before.
+    expect(source).not.toMatch(/\/\^\\\/|match\(\s*\/\^/)
+    expect(source).not.toContain('allowedModes')
+  })
+
+  test.each(ENTRIES)('%s forwards the parsed mode and the raw input', (_entry, source) => {
+    // The request carries the prefix-stripped query; the transcript shows what
+    // the user actually typed, prefix and all.
+    expect(source).toMatch(/modeOverride:\s*prepared\.modeOverride/)
+    expect(source).toMatch(/displayedInput:\s*input/)
+    expect(source).toMatch(/submitQuery\(\s*prepared\.query/)
+  })
+
+  test.each(ENTRIES)('%s surfaces every rejection reason it can get', (_entry, source) => {
+    // Interpolating the error key means a new `QueryInputError` member is
+    // rendered by both entries without either being touched.
+    expect(source).toMatch(/retrievePanel\.retrieval\.\$\{prepared\.error\}/)
   })
 })

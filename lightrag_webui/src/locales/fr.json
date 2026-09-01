@@ -445,7 +445,8 @@
       "error": "Erreur : Échec de l'obtention de la réponse",
       "queryModeError": "Seuls les modes de requête suivants sont pris en charge : {{modes}}",
       "queryModePrefixInvalid": "Préfixe de mode de requête invalide. Utilisez : /<mode> [espace] votre requête",
-      "queryTooShort": "Votre requête est trop courte. Saisissez au moins 3 caractères anglais ou une combinaison équivalente ; chaque caractère chinois compte pour 2.",
+      "queryEmpty": "Veuillez saisir une question avant d'envoyer.",
+      "queryTooShort": "Votre requête est trop courte. Saisissez au moins 3 caractères anglais ou une combinaison équivalente ; chaque caractère chinois, japonais ou coréen compte double.",
       "dismissError": "Fermer le message d’erreur"
     },
     "querySettings": {

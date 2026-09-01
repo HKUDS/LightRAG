@@ -445,7 +445,8 @@
       "error": "Error: Failed to get response",
       "queryModeError": "Only supports the following query modes: {{modes}}",
       "queryModePrefixInvalid": "Invalid query mode prefix. Use: /<mode> [space] your query",
-      "queryTooShort": "Your query is too short. Enter at least 3 English characters or an equivalent combination; each Chinese character counts as 2.",
+      "queryEmpty": "Please enter a question before sending.",
+      "queryTooShort": "Your query is too short. Enter at least 3 English characters or an equivalent combination; each Chinese, Japanese or Korean character counts as 2.",
       "dismissError": "Dismiss error"
     },
     "querySettings": {
