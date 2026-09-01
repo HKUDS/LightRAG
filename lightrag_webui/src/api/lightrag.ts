@@ -311,10 +311,6 @@ export type DocStatusResponse = {
   file_path: string
 }
 
-export type DocsStatusesResponse = {
-  statuses: Partial<Record<DocStatus, DocStatusResponse[]>>
-}
-
 export type TrackStatusResponse = {
   track_id: string
   documents: DocStatusResponse[]
@@ -343,10 +339,6 @@ export type PaginationInfo = {
 export type PaginatedDocsResponse = {
   documents: DocStatusResponse[]
   pagination: PaginationInfo
-  status_counts: Record<string, number>
-}
-
-export type StatusCountsResponse = {
   status_counts: Record<string, number>
 }
 
@@ -658,11 +650,6 @@ export const checkHealth = async (): Promise<
  */
 export const verifyCredentials = async (): Promise<void> => {
   await axiosInstance.get('/auth/verify')
-}
-
-export const getDocuments = async (): Promise<DocsStatusesResponse> => {
-  const response = await axiosInstance.get('/documents')
-  return response.data
 }
 
 export const getSupportedFileTypes = async (signal?: AbortSignal): Promise<SupportedFileTypes> => {
@@ -1413,13 +1400,4 @@ export const getDocumentsPaginatedWithTimeout = (
         reject(error)
       })
   })
-}
-
-/**
- * Get counts of documents by status
- * @returns Promise with status counts response
- */
-export const getDocumentStatusCounts = async (): Promise<StatusCountsResponse> => {
-  const response = await axiosInstance.get('/documents/status_counts')
-  return response.data
 }

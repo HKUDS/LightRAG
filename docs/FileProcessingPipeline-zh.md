@@ -1093,7 +1093,8 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 | `MAX_PARALLEL_PARSE_MINERU` | `1` | N2: MinerU 解析并发 worker 数 | MinerU 占用 GPU/CPU 显著，因此默认只启用一个 worker。本地部署且显存充足时可设 2-3；走 MinerU 官方云端服务时可适当提高（受云端配额限制） |
 | `MAX_PARALLEL_PARSE_DOCLING` | `1` | N3: Docling 解析并发 worker 数 | Docling 同样资源敏感，因此默认只启用一个 worker。本地部署且 CPU/GPU 充足时可设 2-3 |
 | `MAX_PARALLEL_ANALYZE` | `5` | N4: 多模态分析（VLM 图片 / 表格描述）并发 worker 数 | 直接消耗 VLM 配额。建议 ≤ VLM 服务并发上限 |
-| `MAX_PARALLEL_INSERT` | `3` | N5: 实体 / 关系抽取 + 入库阶段并发文档数 | 推荐 `MAX_ASYNC_LLM / 3`，区间 2~10。该阶段每个文档会触发多次 LLM 调用，过高会撞 LLM 限流。同时该值还作为 `asyncio.Semaphore` 用于二次约束（worker 数和信号量值一致） |
+| `MAX_ASYNC_LLM` | `4` | 基础 LLM 并发与 N5 的单文档 task 基数 | 对单个文档，文本块实体/关系抽取最多并发运行 `MAX_ASYNC_LLM` 个 task；每个实体合并或关系合并阶段最多运行 `2 × MAX_ASYNC_LLM` 个 task。设置 `EXTRACT_MAX_ASYNC_LLM` 后，它会独立限制实际 Extract 角色 LLM 请求，不改变这些 task 上限 |
+| `MAX_PARALLEL_INSERT` | `3` | N5: 实体 / 关系抽取 + 入库阶段并发文档数 | 推荐 `MAX_ASYNC_LLM / 3`，区间 2~10。它控制文档数量，不控制单个文档内的 chunk 或合并 task 上限。同时该值还作为 `asyncio.Semaphore` 用于二次约束（worker 数和信号量值一致） |
 | `QUEUE_SIZE_PARSE` | `20` | parse（native/MinerU/Docling）输入队列长度 | 一般无需调整。队列内仅为轻量 doc_id（大文档体在进入 analyze 前已剥离），仅限制 pipeline 一次预派发给 parse worker 的待处理文档数，调整影响很小 |
 | `QUEUE_SIZE_ANALYZE` | `100` | analyze 队列（parse → analyze 阶段）的有界容量 | 一般无需调整。极少量大批量任务（成千上万）可适当提高，避免 enqueue 端反压；内存紧张时可调低 |
 | `QUEUE_SIZE_INSERT` | `4` | analyze → process 阶段间的队列容量 | process 是流水线中最慢、最耗内存的阶段，队列特意做小，给上游提供反压防止内存堆积 |
@@ -1103,16 +1104,17 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 1. **解析阶段按引擎隔离**，所以混用 native/mineru/docling 时不必担心一种引擎慢拖累另一种。
 2. **mineru / docling 默认 1**：两者资源占用高，因此默认避免多个解析任务并发（以及由此带来的 OOM、显存竞争和失败重试）；如果你部署了多 GPU 或专门的解析服务器，可手动调高。
 3. **`MAX_PARALLEL_INSERT` 兼任 worker 池大小和信号量上限**：流水线创建 `Semaphore(max_parallel_insert)`，每个 process worker 在抽取入库前还要拿一次信号量。所以哪怕你把 worker 数手动改大，实际并发上限仍由这个值决定——直接调它就够了。
-4. **queue size 与背压**：`QUEUE_SIZE_INSERT=4` 这个偏小的默认值是有意为之——process 阶段慢且占内存，让 analyze 阶段在队列写满时阻塞、再反压到 parse 阶段，避免一次性把成千上万份解析结果堆在内存里。
-5. **改后生效方式**：所有参数通过 `.env`（或环境变量）传入，仅在 `LightRAG` 实例构造时读取一次；改完需要重启服务。
-6. **分块不随并发增长**：分块在一个专用的单 worker 线程池里执行，目的是不阻塞事件循环，并发度不随 `MAX_PARALLEL_INSERT` 提高，调大并发不会让分块更快。自定义 `chunking_func` 仍在事件循环上执行（它的契约允许触碰运行中的事件循环），CPU 密集的实现应自行 `asyncio.to_thread`。
+4. **task 上限与请求上限不同**：`MAX_ASYNC_LLM` 设置 N5 单文档 chunk 抽取的 task 上限，以及其两倍的合并 task 上限。实际抽取和合并摘要请求使用 Extract 角色的上限：设置了 `EXTRACT_MAX_ASYNC_LLM` 时使用它，否则使用 `MAX_ASYNC_LLM`。缓存、图的 keyed lock 和角色上限都会让观测到的实际请求并发低于 task 并发。
+5. **queue size 与背压**：`QUEUE_SIZE_INSERT=4` 这个偏小的默认值是有意为之——process 阶段慢且占内存，让 analyze 阶段在队列写满时阻塞、再反压到 parse 阶段，避免一次性把成千上万份解析结果堆在内存里。
+6. **改后生效方式**：所有参数通过 `.env`（或环境变量）传入，仅在 `LightRAG` 实例构造时读取一次；改完需要重启服务。
+7. **分块不随并发增长**：分块在一个专用的单 worker 线程池里执行，目的是不阻塞事件循环，并发度不随 `MAX_PARALLEL_INSERT` 提高，调大并发不会让分块更快。自定义 `chunking_func` 仍在事件循环上执行（它的契约允许触碰运行中的事件循环），CPU 密集的实现应自行 `asyncio.to_thread`。
 
 **典型调优场景：**
 
 - 大量 PDF + 本地 MinerU 单 GPU：`MAX_PARALLEL_PARSE_MINERU=1`、`MAX_PARALLEL_ANALYZE=5`、`MAX_PARALLEL_INSERT=3`（默认即可；确认显存充足后再提高 MINERU）。
 - 大量 PDF + MinerU 云端服务：`MAX_PARALLEL_PARSE_MINERU=3~5`（视云端配额），其它保持默认。
 - 纯 docx / txt（仅走 native）：`MAX_PARALLEL_PARSE_NATIVE=10`、`MAX_PARALLEL_INSERT` 按 `MAX_ASYNC_LLM/3` 推算。
-- LLM 限流明显：先降 `MAX_PARALLEL_INSERT`（process 阶段每文档多次 LLM 调用），再降 `MAX_PARALLEL_ANALYZE`（VLM 是独立配额）。
+- Extract 角色 LLM 限流明显：先降 `EXTRACT_MAX_ASYNC_LLM`（未设置覆盖时降 `MAX_ASYNC_LLM`）以限制 provider 请求；如需减少在途文档数或内存，再同时降低 `MAX_PARALLEL_INSERT`。`MAX_PARALLEL_ANALYZE` 控制独立的 VLM 阶段。
 
 ### 8.7 准入与请求限制
 
@@ -1300,7 +1302,7 @@ per-file 个性化的典型场景：管理 UI 单独配置某个文件的 separa
 | 路由 | `LIGHTRAG_PARSER` | §2.3、§2.4、§2.5 |
 | 分块 | `CHUNK_SIZE`、`CHUNK_OVERLAP_SIZE`、`CHUNK_{F,R,V,P}_*` | §5.2 |
 | 多模态 | `VLM_PROCESS_ENABLE`、`VLM_MAX_IMAGE_BYTES`、`VLM_MIN_IMAGE_PIXEL`、`MAX_EXTRACT_INPUT_TOKENS`、`SURROUNDING_*_MAX_TOKENS`、`MM_EXTRACT_CONTENT_MIN_TOKENS` | §4 |
-| VLM / 角色模型 | `VLM_LLM_*`、`VLM_MAX_ASYNC_LLM` | [RoleSpecificLLMConfiguration-zh.md](RoleSpecificLLMConfiguration-zh.md) |
+| LLM / VLM 角色模型 | `MAX_ASYNC_LLM`、`EXTRACT_LLM_*`、`EXTRACT_MAX_ASYNC_LLM`、`VLM_LLM_*`、`VLM_MAX_ASYNC_LLM` | [RoleSpecificLLMConfiguration-zh.md](RoleSpecificLLMConfiguration-zh.md) |
 | legacy 引擎 | `PDF_DECRYPT_PASSWORD` | §3.2 |
 | native 引擎 | `NATIVE_MD_IMAGE_*` | §3.3 |
 | native docx smart_heading | `DOCX_SMART_HEADING`、`DOCX_SMART_*` 调优项 | §3.3 与 `env.example` 的 smart_heading 注释块 |

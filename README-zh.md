@@ -334,8 +334,9 @@ VLM_LLM_MODEL=<your_vlm_model_name>
 
 对于大规模的文档处理，需要提高文档处理的并发能力。几个涉及文件并发处理性能的关键环境变量包括：
 
-- **MAX_ASYNC_LLM/EXTRACT_ASYNC_LLM**：控制 LLM 模型的最大并发数。
-- **MAX_PARALLEL_INSERT**：控制并行处理文件的最大数量。单个文件内的文本、表格、公式、图片之间的处理也会并发进行。`MAX_PARALLEL_INSERT` 应该为 `MAX_ASYNC_LLM` 的 1/3 左右为宜。
+- **MAX_ASYNC_LLM**：设置 LLM 角色的基础并发数（`MAX_ASYNC` 仍作为兼容旧名保留）。文件处理时，它还限制单个文档内各文本块的实体/关系抽取 task 数；每个实体合并或关系合并阶段最多可运行其两倍数量的 task。
+- **EXTRACT_MAX_ASYNC_LLM**：可选地覆盖 Extract 角色的实际 LLM 请求并发数，适用于抽取和合并时的摘要请求。未设置时继承 `MAX_ASYNC_LLM`；它不会改变前述流水线 task 上限。
+- **MAX_PARALLEL_INSERT**：控制可并行处理的文件数量，而非单个文档内的 chunk 或图合并 task 上限。建议约为 `MAX_ASYNC_LLM` 的 1/3。
 - **MAX_PARALLEL_PARSE_MINERU**：控制 MinerU 文件解析的并发处理文件数。
 - **MAX_PARALLEL_PARSE_DOCLING**：控制 Docling 文件解析的并发处理文件数。
 - **EMBEDDING_FUNC_MAX_ASYNC**：控制嵌入模型的最大并发数。

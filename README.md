@@ -334,8 +334,9 @@ Since the cloud-based MinerU service has limitations on usage, file size, and pa
 
 For large-scale document processing, you need to improve concurrency. Key environment variables related to concurrent file processing include:
 
-- **MAX_ASYNC_LLM/EXTRACT_ASYNC_LLM**: Controls the maximum concurrency for LLM models.
-- **MAX_PARALLEL_INSERT**: Controls the maximum number of files processed in parallel. Processing of text, tables, formulas, and images within a single file will also occur concurrently. `MAX_PARALLEL_INSERT` should ideally be set to about 1/3 of `MAX_ASYNC_LLM`.
+- **MAX_ASYNC_LLM**: Sets the base concurrency for LLM roles (`MAX_ASYNC` remains a deprecated alias). During file processing, it also caps entity/relation extraction tasks for the chunks of one document; each entity-merge or relation-merge phase can run up to twice this many tasks.
+- **EXTRACT_MAX_ASYNC_LLM**: Optionally overrides the Extract-role limit for actual extraction and merge-summary LLM requests. When unset, it inherits `MAX_ASYNC_LLM`; it does not change the pipeline task limits above.
+- **MAX_PARALLEL_INSERT**: Controls the maximum number of files processed in parallel, rather than the per-document chunk or graph-merge task limits. It should ideally be set to about 1/3 of `MAX_ASYNC_LLM`.
 - **MAX_PARALLEL_PARSE_MINERU**: Controls the number of parallel files processed for MinerU parsing.
 - **MAX_PARALLEL_PARSE_DOCLING**: Controls the number of parallel files processed for Docling parsing.
 - **EMBEDDING_FUNC_MAX_ASYNC**: Controls the maximum concurrency for embedding models.

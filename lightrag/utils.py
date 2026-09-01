@@ -503,7 +503,6 @@ class LightragPathFilter(logging.Filter):
         super().__init__()
         # Define paths to be filtered
         self.filtered_paths = [
-            "/documents",
             "/documents/paginated",
             "/health",
             "/webui/",
@@ -4500,13 +4499,76 @@ async def aexport_data(
                 relations_data.append(relation_row)
 
     # --- Relationships (from VectorDB) ---
-    all_relationships = await relationships_vdb.client_storage
-    for rel in all_relationships["data"]:
-        relationships_data.append(
-            {
-                "relationship_id": rel["__id__"],
-                "data": str(rel),  # Convert to string for compatibility
-            }
+    # ``client_storage`` is a debug/snapshot escape hatch, not part of the
+    # BaseVectorStorage contract: only NanoVectorDBStorage (async property)
+    # and FaissVectorDBStorage (sync property) implement it. Every other
+    # backend (Milvus, Qdrant, Postgres, Redis, MongoDB, OpenSearch) has no
+    # such attribute at all. This section is a supplementary raw-record
+    # dump; the entity/relation data above already carries the authoritative
+    # graph content, so skip it rather than fail the whole export on a
+    # backend that doesn't support it.
+    #
+    # Check the class, not the instance, for attribute presence:
+    # ``hasattr(relationships_vdb, ...)`` would call the getter to answer
+    # the question, and for NanoVectorDB's *async* property that getter
+    # returns a coroutine that ``hasattr`` immediately discards --
+    # "coroutine was never awaited" plus doing the (wasted) work twice.
+    # Attribute access on the class itself returns the property descriptor
+    # without invoking it.
+    if hasattr(type(relationships_vdb), "client_storage"):
+        # The two implementations disagree on sync vs. async (NanoVectorDB's
+        # is async, Faiss's is a plain sync property), so the value itself
+        # decides whether to await -- a fixed isinstance/backend-name check
+        # would silently break the moment either changes.
+        client_storage = relationships_vdb.client_storage
+        if inspect.isawaitable(client_storage):
+            # Freshness-aware shape (NanoVectorDBStorage): awaiting the
+            # property funnels through the backend's reload-if-stale path,
+            # so the snapshot picks up whatever another process committed.
+            client_storage = await client_storage
+        else:
+            # Synchronous shape (FaissVectorDBStorage), which is documented
+            # as deliberately NOT going through `_get_index`: in a reader
+            # process it can hand back a snapshot older than the latest
+            # committed one until some other call triggers a reload. That
+            # is fine in the single-process case a local file-backed store
+            # usually runs in, and this section is a supplementary raw dump
+            # -- the authoritative entity/relation content above comes from
+            # the graph storage -- so the export proceeds. But it must not
+            # pass silently: exports get used for backups, and a section
+            # that quietly omits recent records is worse than one whose
+            # limits are stated.
+            logger.warning(
+                f"{type(relationships_vdb).__name__}.client_storage is a "
+                "synchronous snapshot that does not check for a newer "
+                "on-disk commit; in a multi-process deployment the raw "
+                "VectorDB relationships section of this export may lag "
+                "records committed by another process."
+            )
+        for rel in client_storage["data"]:
+            # Faiss materializes the embedding INTO its metadata rows -- at
+            # flush time, and again by reconstruction when loading a
+            # persisted index -- so a raw `str(rel)` would carry the full
+            # vector even for the default vector-free export, inflating the
+            # file by orders of magnitude and emitting embeddings the caller
+            # asked to leave out. Faiss's own read paths filter the key for
+            # exactly this reason. NanoVectorDB is unaffected either way: it
+            # keeps vectors in a separate `matrix`, not in these rows.
+            #
+            # Build a new dict rather than popping: these rows are live
+            # references into the backend's own metadata store.
+            if not include_vector_data:
+                rel = {k: v for k, v in rel.items() if k != "__vector__"}
+            relationships_data.append(
+                {
+                    "relationship_id": rel["__id__"],
+                    "data": str(rel),  # Convert to string for compatibility
+                }
+            )
+    else:
+        logger.debug(
+            f"{type(relationships_vdb).__name__} does not expose client_storage; "
+            "skipping the raw VectorDB relationships dump in the export."
         )
 
     # Export based on format

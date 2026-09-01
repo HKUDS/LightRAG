@@ -190,9 +190,19 @@ lightrag-gunicorn                                         # Multi-worker (gunico
 ```
 
 ### WebUI
+
+Every command below is run **from `lightrag_webui/`**, not the repository root.
+`bun test` in particular resolves `bunfig.toml` — and the preload paths inside
+it — relative to the working directory, so running it from the root silently
+loads no DOM (see *React component tests*).
+
 ```bash
 cd lightrag_webui
-bun install --frozen-lockfile      # Install dependencies
+bun install --frozen-lockfile      # REQUIRED after any change to package.json /
+                                   # bun.lock, including a branch switch across
+                                   # one: `git checkout` does not update
+                                   # node_modules, and a stale tree surfaces as
+                                   # a wall of TS2307 "Cannot find module".
 bun run dev                        # Dev server (Node + Vite)
 bun run dev:bun                    # Dev server (Bun native)
 bun run build                      # Production build
@@ -215,7 +225,7 @@ bunx tsc --noEmit                  # Typecheck (`bun run build` does NOT typeche
 - Derive the subset from the mirror layout below: `lightrag/api/config.py` → `tests/api/config/`, `lightrag/kg/redis_impl.py` → `tests/kg/redis_impl/`, `lightrag/chunker/` → `tests/chunker/`. When a change spans several modules, run each of their directories rather than widening to `tests/`.
 - Run the full suite locally only at a milestone, or when the change is genuinely cross-cutting (`lightrag/base.py`, `lightrag/utils.py`, `lightrag/kg/shared_storage.py`, or anything every backend inherits).
 - Backend tests use pytest; frontend unit tests use Bun's built-in runner — see *WebUI* above and *React component tests* below.
-- **A WebUI change runs the WHOLE frontend check set**, from `lightrag_webui/`: `bun test`, `bunx tsc --noEmit`, and `bun run lint`. The subsetting rule above is a backend rule and does not apply — all three together take well under a minute (test ~2 s, typecheck ~14 s, lint ~21 s), so there is nothing to save by running less. Report the pass count. `bun run build` transpiles WITHOUT checking types, so skipping `tsc --noEmit` means nothing checks them.
+- **A WebUI change runs the WHOLE frontend check set**, from `lightrag_webui/`: `bun install --frozen-lockfile` (see *WebUI* above — skip it after a branch switch and every later step fails on missing modules), then `bun test`, `bunx tsc --noEmit`, and `bun run lint`. The subsetting rule above is a backend rule and does not apply — all three together take well under a minute (test ~2 s, typecheck ~14 s, lint ~21 s), so there is nothing to save by running less. Report the pass count. `bun run build` transpiles WITHOUT checking types, so skipping `tsc --noEmit` means nothing checks them.
 
 #### React component tests
 
@@ -229,6 +239,14 @@ happy-dom globally) and then `src/test/setup.ts` (jest-dom matchers plus
 Testing Library's `cleanup` in `afterEach`). Order is load-bearing — Testing
 Library binds to whatever `document` exists when it is first evaluated.
 
+That preload is found relative to the WORKING DIRECTORY, so `bun test` must be
+run from `lightrag_webui/`. From the repository root no preload loads at all
+and the failure is silent in the worst way: pure logic tests still pass and
+only the component tests break. `src/test/render.tsx` calls
+`assertDomAvailable()` at import time to turn that into a message naming the
+cause and the fix; `bun test --config <path>` does NOT work around it, because
+the preload paths inside the file are still resolved against the CWD.
+
 Rules for new tests:
 
 - **Test rendered behavior by rendering it.** Assert what the user gets —
@@ -239,11 +257,41 @@ Rules for new tests:
   working nearby is welcome. String and AST assertions stay correct for what
   genuinely IS a source-level property — an i18n key present in every locale, a
   forbidden import — just not for what the component renders.
+- **Seed the stores a page reads, rather than stubbing its requests.**
+  Pages behind `useCustomizedContent` render NOTHING until the first
+  customization response settles, so an unseeded render finds an empty page:
+  use `seedCustomization()` from `src/test/customization.ts`. Where a page
+  really does call the API on mount, stub the module and mind the IMPORT
+  ORDER — `mock.module` only reaches importers that have not been evaluated
+  yet, so the component must be imported dynamically AFTER the mock (a static
+  top-level import binds the real module first and the request goes out for
+  real). Restore the module in `afterAll`.
 - **Render through `renderWithProviders`** (`src/test/render.tsx`), not
   Testing Library's bare `render`. It supplies a fixed English i18n instance
   built from `locales/en.json` and deliberately does not import `@/i18n`, whose
   bootstrap resolves a language from `localStorage` and runs the settings
   migration — ambient state that asserted strings must not depend on.
+- **A file-local `afterEach` runs BEFORE the preload's `cleanup()`.** So a
+  store reset written there lands on a STILL-MOUNTED component: its effects
+  re-run, and a page behind `useCustomizedContent` starts a real
+  `/ui/customization` request during teardown that can land during the NEXT
+  test and overwrite its seeded snapshot. Call `cleanup()` yourself at the top
+  of the hook, before resetting anything; it is idempotent, so the preload's
+  own call afterwards is harmless.
+- **Never assert `toBeNull()` / `not.toBeInTheDocument()` on a DOM element.**
+  Use a count instead — `expect(screen.queryAllByRole(...)).toHaveLength(0)`.
+  When such an assertion fails, Bun serialises the entire happy-dom element
+  it received, which is large enough that the run appears to HANG rather than
+  report a failure. The count form fails instantly and legibly
+  (`Expected length: 0, Received length: 1`). The same applies to any
+  assertion whose failure message would carry a DOM node — **including an
+  identity check like `expect(document.activeElement).toBe(link)`**: compare a
+  boolean or a string you extracted instead
+  (`expect(document.activeElement === link).toBe(true)`,
+  `expect(card.contains(footer)).toBe(false)`,
+  `expect(el.getAttribute('href')).toBe('./')`). Measured on a two-element
+  page, one failing `toBe(element)` took 5.15 s against 548 ms for the boolean
+  form, and the gap grows with the size of the rendered DOM.
 - **Prove the test can fail.** Before calling it done, break the behavior it
   pins (flip the `aria-label`, drop the guard), confirm it goes red, then
   restore. A test written against already-passing code is worth nothing until

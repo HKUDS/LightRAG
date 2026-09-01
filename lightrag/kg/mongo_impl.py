@@ -765,12 +765,6 @@ class MongoDocStatusStorage(DocStatusStorage):
             counts[doc["_id"]] = doc["count"]
         return counts
 
-    async def get_docs_by_status(
-        self, status: DocStatus
-    ) -> dict[str, DocProcessingStatus]:
-        """Get all documents with a specific status"""
-        return await self.get_docs_by_statuses([status])
-
     async def get_docs_by_statuses(
         self, statuses: list[DocStatus], strict: bool = False
     ) -> dict[str, DocProcessingStatus]:

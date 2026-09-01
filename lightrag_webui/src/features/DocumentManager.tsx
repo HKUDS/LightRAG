@@ -31,7 +31,6 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import {
   scanNewDocuments,
   getDocumentsPaginatedWithTimeout,
-  DocsStatusesResponse,
   DocStatus,
   DocStatusResponse,
   DocumentsRequest,
@@ -46,12 +45,10 @@ import { copyToClipboard } from '@/utils/clipboard'
 import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info, CopyIcon } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 import {
-  getStatusBucket,
   getStatusRequestFilters,
-  matchesStatusFilter,
-  type StatusBucket,
   type StatusFilter
 } from '@/features/documentStatusFilters'
+import { computeStatusCountsFingerprint } from '@/features/documentStatusCounts'
 import { hasDocumentWarning } from '@/features/documentRecoveryWarnings'
 import {
   admitCircuitBreakerRequest,
@@ -71,8 +68,6 @@ type StatusDisplayConfig = {
   className: string
 }
 
-const STATUS_BUCKETS: StatusBucket[] = ['completed', 'parse', 'analyze', 'process', 'failed']
-
 // Utility functions defined outside component for better performance and to avoid dependency issues
 const getCountValue = (counts: Record<string, number>, ...keys: string[]): number => {
   for (const key of keys) {
@@ -91,20 +86,6 @@ const hasActiveDocumentsStatus = (counts: Record<string, number>): boolean =>
   getAggregateCount(counts, 'PROCESSING', 'processing', 'PARSING', 'parsing', 'ANALYZING', 'analyzing') > 0 ||
   getCountValue(counts, 'PENDING', 'pending') > 0 ||
   getCountValue(counts, 'PREPROCESSED', 'preprocessed') > 0
-
-const buildLegacyDocs = (documents: DocStatusResponse[]): DocsStatusesResponse => {
-  const statuses = STATUS_BUCKETS.reduce<Record<StatusBucket, DocStatusResponse[]>>((acc, status) => {
-    acc[status] = []
-    return acc
-  }, {} as Record<StatusBucket, DocStatusResponse[]>)
-
-  documents.forEach((doc) => {
-    const bucket = getStatusBucket(doc.status)
-    if (bucket) statuses[bucket].push(doc)
-  })
-
-  return { statuses }
-}
 
 const getDisplayFileName = (doc: DocStatusResponse, maxLength: number = 20): string => {
   // Check if file_path exists and is a non-empty string
@@ -420,9 +401,6 @@ export default function DocumentManager() {
   const health = useBackendState.use.health()
   const pipelineActive = useBackendState.use.pipelineActive()
 
-  // Legacy state for backward compatibility
-  const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
-
   const currentTab = useSettingsStore.use.currentTab()
   const showFileName = useSettingsStore.use.showFileName()
   const setShowFileName = useSettingsStore.use.setShowFileName()
@@ -541,36 +519,6 @@ export default function DocumentManager() {
     });
   };
 
-  // Sort documents based on current sort field and direction
-  const sortDocuments = useCallback((documents: DocStatusResponse[]) => {
-    return [...documents].sort((a, b) => {
-      let valueA, valueB;
-
-      // Special handling for ID field based on showFileName setting
-      if (sortField === 'id' && showFileName) {
-        valueA = getDisplayFileName(a);
-        valueB = getDisplayFileName(b);
-      } else if (sortField === 'id') {
-        valueA = a.id;
-        valueB = b.id;
-      } else {
-        // Date fields
-        valueA = new Date(a[sortField]).getTime();
-        valueB = new Date(b[sortField]).getTime();
-      }
-
-      // Apply sort direction
-      const sortMultiplier = sortDirection === 'asc' ? 1 : -1;
-
-      // Compare values
-      if (typeof valueA === 'string' && typeof valueB === 'string') {
-        return sortMultiplier * valueA.localeCompare(valueB);
-      } else {
-        return sortMultiplier * (valueA > valueB ? 1 : valueA < valueB ? -1 : 0);
-      }
-    });
-  }, [sortField, sortDirection, showFileName]);
-
   // Define a new type that includes status information
   type DocStatusWithStatus = DocStatusResponse & { status: DocStatus };
 
@@ -615,48 +563,21 @@ export default function DocumentManager() {
     }
   }, [])
 
-  const filteredAndSortedDocs = useMemo(() => {
-    // Use currentPageDocs directly if available (from paginated API)
-    // This preserves the backend's sort order and prevents status grouping
-    if (currentPageDocs && currentPageDocs.length > 0) {
-      return currentPageDocs.map(doc => ({
+  // The current page is rendered exactly as received: status filtering, sorting
+  // and pagination are all resolved by the backend query, so re-doing any of
+  // them here could only disagree with the pagination the user sees.
+  const filteredAndSortedDocs = useMemo(
+    () =>
+      currentPageDocs.map(doc => ({
         ...doc,
         status: doc.status as DocStatus
-      })) as DocStatusWithStatus[];
-    }
-
-    // Fallback to legacy docs structure for backward compatibility
-    if (!docs) return null;
-
-    // Create a flat array of documents with status information
-    const allDocuments: DocStatusWithStatus[] = [];
-
-    Object.entries(docs.statuses).forEach(([status, documents]) => {
-      const fallbackStatus = status as DocStatus
-
-      for (const doc of documents ?? []) {
-        const documentStatus = doc.status ?? fallbackStatus
-
-        if (matchesStatusFilter(documentStatus, statusFilter)) {
-          allDocuments.push({
-            ...doc,
-            status: documentStatus
-          })
-        }
-      }
-    })
-
-    // Sort all documents together if sort field and direction are specified
-    if (sortField && sortDirection) {
-      return sortDocuments(allDocuments);
-    }
-
-    return allDocuments;
-  }, [currentPageDocs, docs, sortField, sortDirection, statusFilter, sortDocuments]);
+      })) as DocStatusWithStatus[],
+    [currentPageDocs]
+  );
 
   // Calculate current page selection state (after filteredAndSortedDocs is defined)
   const currentPageDocIds = useMemo(() => {
-    return filteredAndSortedDocs?.map(doc => doc.id) || []
+    return filteredAndSortedDocs.map(doc => doc.id)
   }, [filteredAndSortedDocs])
 
   const selectedCurrentPageCount = useMemo(() => {
@@ -700,31 +621,21 @@ export default function DocumentManager() {
     }
   }, [hasCurrentPageSelection, isCurrentPageFullySelected, currentPageDocIds.length, handleSelectCurrentPage, handleDeselectAll, t])
 
-  // Calculate document counts for each status
-  const documentCounts = useMemo(() => {
-    if (!docs) return { all: 0 } as Record<string, number>;
+  // Filter-tab counts. `statusCounts` is the backend's whole-corpus tally, so
+  // these are corpus-wide numbers and not a count of the page on screen.
+  // `getCountValue` already yields 0 for a status the backend did not report,
+  // so no `|| 0` tail is needed — and a `||` tail would be wrong, since a
+  // genuine count of 0 is falsy.
+  const completedCount = getCountValue(statusCounts, 'PROCESSED', 'processed');
+  const parseCount = getCountValue(statusCounts, 'PARSING', 'parsing');
+  const analyzeCount = getCountValue(statusCounts, 'ANALYZING', 'analyzing');
+  const processCount = getCountValue(statusCounts, 'PROCESSING', 'processing');
+  const failedCount = getCountValue(statusCounts, 'FAILED', 'failed');
 
-    const counts: Record<string, number> = { all: 0 };
-
-    Object.entries(docs.statuses).forEach(([status, documents]) => {
-      counts[status] = documents.length;
-      counts.all += documents.length;
-    });
-
-    return counts;
-  }, [docs]);
-
-  const completedCount = getCountValue(statusCounts, 'PROCESSED', 'processed') || documentCounts.completed || 0;
-  const parseCount = getCountValue(statusCounts, 'PARSING', 'parsing') || documentCounts.parse || 0;
-  const analyzeCount = getCountValue(statusCounts, 'ANALYZING', 'analyzing') || documentCounts.analyze || 0;
-  const processCount = getCountValue(statusCounts, 'PROCESSING', 'processing') || documentCounts.process || 0;
-  const failedCount = getCountValue(statusCounts, 'FAILED', 'failed') || documentCounts.failed || 0;
-
-  // Store previous status counts
-  // Fingerprint of per-bucket counts. Kept key-agnostic on purpose: `docs.statuses`
-  // may be keyed by raw DocStatus (backend) or by filter bucket (buildLegacyDocs),
-  // so we compare a stable digest of all buckets rather than fixed keys.
-  const prevStatusFingerprint = useRef('')
+  // Previous status-count digest. `null` means "no snapshot observed yet",
+  // which is distinct from a digest that happens to be empty — see the effect
+  // that consumes it for why the distinction matters on the mount pass.
+  const prevStatusFingerprint = useRef<string | null>(null)
 
   // Add pulse style to document
   useEffect(() => {
@@ -773,8 +684,6 @@ export default function DocumentManager() {
     setPagination({ ...response.pagination, page });
     setCurrentPageDocs(response.documents);
     setStatusCounts(response.status_counts);
-
-    setDocs(response.pagination.total_count > 0 ? buildLegacyDocs(response.documents) : null);
   }, []);
 
   const markDocumentsLoaded = useCallback(() => {
@@ -892,22 +801,6 @@ export default function DocumentManager() {
           setPagination({ ...response.pagination, page: 1 });
           setCurrentPageDocs(response.documents);
           setStatusCounts(response.status_counts);
-
-          const legacyDocs: DocsStatusesResponse = {
-            statuses: {
-              processed: response.documents.filter(doc => doc.status === 'processed'),
-              preprocessed: response.documents.filter(doc => doc.status === 'preprocessed'),
-              processing: response.documents.filter(doc => doc.status === 'processing'),
-              pending: response.documents.filter(doc => doc.status === 'pending'),
-              failed: response.documents.filter(doc => doc.status === 'failed')
-            }
-          };
-
-          if (response.pagination.total_count > 0) {
-            setDocs(legacyDocs);
-          } else {
-            setDocs(null);
-          }
           markDocumentsLoaded()
         }
       } else {
@@ -1345,28 +1238,32 @@ export default function DocumentManager() {
     }
   }, [health, t, currentTab, statusCounts, pipelineActive, pageRestoreGeneration, startPollingInterval, clearPollingInterval])
 
-  // Monitor docs changes to check status counts and trigger health check if needed
+  // Trigger a health check when the corpus-wide status counts change.
+  //
+  // Driven by `statusCounts` rather than the page's own documents: it is the
+  // backend's tally over all seven statuses, so it also sees `pending` and
+  // `preprocessed` moving — the two statuses that have no filter bucket and
+  // were therefore invisible to the per-page structure this replaced.
   useEffect(() => {
-    if (!docs) return;
+    const fingerprint = computeStatusCountsFingerprint(statusCounts)
 
-    // Build a key-agnostic digest of every status bucket's count. Sorting keeps
-    // it stable regardless of object iteration order or whether buckets are keyed
-    // by raw DocStatus or by filter bucket.
-    const fingerprint = Object.entries(docs.statuses)
-      .map(([key, list]) => `${key}:${list?.length || 0}`)
-      .sort()
-      .join('|')
+    // Always store the snapshot, so a transition suppressed below (probe
+    // running) still leaves the next comparison anchored to what was observed.
+    const previous = prevStatusFingerprint.current
+    prevStatusFingerprint.current = fingerprint
 
-    // Trigger health check if any bucket count changed and component is still
-    // mounted. Skip when the activity probe is running — the probe already drives
+    // A change BETWEEN two observations is the signal. On the mount pass
+    // `statusCounts` is still its `{ all: 0 }` seed, which is not an
+    // observation of anything, so the first fire stays where it was before:
+    // after the first response.
+    if (previous === null || fingerprint === previous) return
+
+    // Skip while the activity probe is running — the probe already drives
     // /health on its own schedule, and double-firing would burn cache and skew rate.
-    if (fingerprint !== prevStatusFingerprint.current && isMountedRef.current && !probeActiveRef.current) {
+    if (isMountedRef.current && !probeActiveRef.current) {
       useBackendState.getState().check()
     }
-
-    // Always update the snapshot so the first post-probe transition still fires.
-    prevStatusFingerprint.current = fingerprint
-  }, [docs]);
+  }, [statusCounts]);
 
   // Handle page change - only update state
   const handlePageChange = useCallback((newPage: number) => {
@@ -1591,7 +1488,7 @@ export default function DocumentManager() {
                       statusFilter === 'all' && 'bg-gray-100 dark:bg-gray-900 font-medium border border-gray-400 dark:border-gray-500 shadow-sm'
                     )}
                   >
-                    {t('documentPanel.documentManager.filters.all')} ({statusCounts.all || documentCounts.all})
+                    {t('documentPanel.documentManager.filters.all')} ({statusCounts.all ?? 0})
                   </Button>
                   <Button
                     size="sm"
@@ -1714,7 +1611,7 @@ export default function DocumentManager() {
                 />
               </div>
             )}
-            {hasLoadedDocuments && !docs && (
+            {hasLoadedDocuments && pagination.total_count === 0 && (
               <div className="absolute inset-0 min-h-0 p-0">
                 <EmptyCard
                   title={t('documentPanel.documentManager.emptyTitle')}
@@ -1722,7 +1619,7 @@ export default function DocumentManager() {
                 />
               </div>
             )}
-            {hasLoadedDocuments && docs && (
+            {hasLoadedDocuments && pagination.total_count > 0 && (
               <div className="absolute inset-0 flex min-h-0 flex-col p-0">
                 <div className="absolute inset-[-1px] flex flex-col p-0 border rounded-md border-gray-200 dark:border-gray-700 overflow-hidden">
                   <TooltipProvider>
@@ -1781,7 +1678,7 @@ export default function DocumentManager() {
                         </TableRow>
                       </TableHeader>
                       <TableBody className="text-sm overflow-auto">
-                        {filteredAndSortedDocs && filteredAndSortedDocs.map((doc) => (
+                        {filteredAndSortedDocs.map((doc) => (
                           <TableRow key={doc.id}>
                             <TableCell className="truncate font-mono overflow-visible max-w-[250px]">
                               {showFileName ? (

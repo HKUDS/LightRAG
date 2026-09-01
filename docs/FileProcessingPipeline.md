@@ -1093,7 +1093,8 @@ Parse queues are **created dynamically from the registry's `ParserSpec.queue_gro
 | `MAX_PARALLEL_PARSE_MINERU` | `1` | N2: concurrent workers for MinerU parsing | MinerU is GPU/CPU heavy, so the default uses a single worker. Raise to 2-3 for a local deployment with enough VRAM, or higher against MinerU's official cloud service (subject to its quota) |
 | `MAX_PARALLEL_PARSE_DOCLING` | `1` | N3: concurrent workers for Docling parsing | Docling is equally resource-sensitive, so the default uses a single worker. Raise to 2-3 for a local deployment with enough CPU/GPU |
 | `MAX_PARALLEL_ANALYZE` | `5` | N4: concurrent workers for multimodal analysis (VLM image / table descriptions) | Consumes VLM quota directly. Keep ≤ the VLM service's concurrency limit |
-| `MAX_PARALLEL_INSERT` | `3` | N5: concurrent documents in the entity/relation extraction + ingestion stage | `MAX_ASYNC_LLM / 3` is a good rule of thumb, in the 2~10 range. Each document triggers many LLM calls here, so too high hits LLM rate limits. The same value also backs an `asyncio.Semaphore` as a second constraint (worker count equals the semaphore value) |
+| `MAX_ASYNC_LLM` | `4` | Base LLM concurrency and N5's per-document task basis | For one document, chunk entity/relation extraction runs at most `MAX_ASYNC_LLM` tasks concurrently; each entity-merge or relation-merge phase runs at most `2 × MAX_ASYNC_LLM` tasks. `EXTRACT_MAX_ASYNC_LLM`, when set, independently limits actual Extract-role LLM requests and does not change these task limits |
+| `MAX_PARALLEL_INSERT` | `3` | N5: concurrent documents in the entity/relation extraction + ingestion stage | `MAX_ASYNC_LLM / 3` is a good rule of thumb, in the 2~10 range. It controls the number of documents, not the per-document chunk or merge task limits. The same value also backs an `asyncio.Semaphore` as a second constraint (worker count equals the semaphore value) |
 | `QUEUE_SIZE_PARSE` | `20` | Input queue length for parse (native/MinerU/Docling) | Rarely needs tuning. The queue holds only lightweight doc_ids (large document bodies are stripped before analyze), and it just bounds how many documents the pipeline pre-dispatches to parse workers |
 | `QUEUE_SIZE_ANALYZE` | `100` | Bounded capacity of the analyze queue (parse → analyze) | Rarely needs tuning. Raise it slightly for very large batches (tens of thousands) to avoid back-pressure at the enqueue side; lower it when memory is tight |
 | `QUEUE_SIZE_INSERT` | `4` | Queue capacity between the analyze and process stages | process is the slowest and most memory-hungry stage, so this queue is deliberately small, giving upstream back-pressure |
@@ -1103,16 +1104,17 @@ Parse queues are **created dynamically from the registry's `ParserSpec.queue_gro
 1. **The parse stage is isolated per engine**, so mixing native/mineru/docling never lets one slow engine drag another down.
 2. **mineru / docling default to 1**: both are resource-heavy, so the default avoids concurrent parser jobs (and the resulting OOM / VRAM contention / failure retries). Raise it by hand if you have multiple GPUs or a dedicated parsing server.
 3. **`MAX_PARALLEL_INSERT` is both pool size and semaphore ceiling**: the pipeline creates `Semaphore(max_parallel_insert)` and every process worker takes it before extracting and ingesting. So even if you raise the worker count by hand, this value still caps real concurrency — just tune it directly.
-4. **Queue size and back-pressure**: the small `QUEUE_SIZE_INSERT=4` default is deliberate — process is slow and memory-hungry, so a full queue blocks the analyze stage and back-pressures parse, instead of piling tens of thousands of parse results into memory at once.
-5. **How changes take effect**: every parameter comes from `.env` (or the environment) and is read once when the `LightRAG` instance is constructed; restart the service after changing one.
-6. **Chunking does not scale with concurrency**: chunking runs in a dedicated single-worker thread pool so it does not block the event loop, and its concurrency does not grow with `MAX_PARALLEL_INSERT` — raising that will not make chunking faster. A custom `chunking_func` still runs on the event loop (its contract allows touching the running loop), so CPU-heavy implementations should call `asyncio.to_thread` themselves.
+4. **Task limits and request limits are distinct**: `MAX_ASYNC_LLM` sets N5's per-document chunk-extraction task limit and its `2 ×` merge-task limit. Actual extraction and merge-summary requests use the Extract role's limit, `EXTRACT_MAX_ASYNC_LLM` when set or `MAX_ASYNC_LLM` otherwise. Caches, keyed graph locks, and a role limit can make observed request concurrency lower than task concurrency.
+5. **Queue size and back-pressure**: the small `QUEUE_SIZE_INSERT=4` default is deliberate — process is slow and memory-hungry, so a full queue blocks the analyze stage and back-pressures parse, instead of piling tens of thousands of parse results into memory at once.
+6. **How changes take effect**: every parameter comes from `.env` (or the environment) and is read once when the `LightRAG` instance is constructed; restart the service after changing one.
+7. **Chunking does not scale with concurrency**: chunking runs in a dedicated single-worker thread pool so it does not block the event loop, and its concurrency does not grow with `MAX_PARALLEL_INSERT` — raising that will not make chunking faster. A custom `chunking_func` still runs on the event loop (its contract allows touching the running loop), so CPU-heavy implementations should call `asyncio.to_thread` themselves.
 
 **Typical tuning scenarios:**
 
 - Many PDFs + local MinerU on a single GPU: `MAX_PARALLEL_PARSE_MINERU=1`, `MAX_PARALLEL_ANALYZE=5`, `MAX_PARALLEL_INSERT=3` (the defaults; raise MINERU only after verifying available VRAM).
 - Many PDFs + MinerU's cloud service: `MAX_PARALLEL_PARSE_MINERU=3~5` (per your cloud quota), everything else default.
 - Pure docx / txt (native only): `MAX_PARALLEL_PARSE_NATIVE=10`, with `MAX_PARALLEL_INSERT` derived from `MAX_ASYNC_LLM/3`.
-- Visible LLM rate limiting: lower `MAX_PARALLEL_INSERT` first (the process stage makes many LLM calls per document), then `MAX_PARALLEL_ANALYZE` (VLM has its own quota).
+- Visible Extract-role LLM rate limiting: lower `EXTRACT_MAX_ASYNC_LLM` (or `MAX_ASYNC_LLM` when no override is set) to cap provider requests; lower `MAX_PARALLEL_INSERT` as well if fewer in-flight documents or lower memory use is needed. `MAX_PARALLEL_ANALYZE` controls the separate VLM stage.
 
 ### 8.7 Admission and Request Limits
 
@@ -1300,7 +1302,7 @@ Where to find each family of file-processing variables. This is an index, not a 
 | Routing | `LIGHTRAG_PARSER` | §2.3, §2.4, §2.5 |
 | Chunking | `CHUNK_SIZE`, `CHUNK_OVERLAP_SIZE`, `CHUNK_{F,R,V,P}_*` | §5.2 |
 | Multimodal | `VLM_PROCESS_ENABLE`, `VLM_MAX_IMAGE_BYTES`, `VLM_MIN_IMAGE_PIXEL`, `MAX_EXTRACT_INPUT_TOKENS`, `SURROUNDING_*_MAX_TOKENS`, `MM_EXTRACT_CONTENT_MIN_TOKENS` | §4 |
-| VLM / role models | `VLM_LLM_*`, `VLM_MAX_ASYNC_LLM` | [RoleSpecificLLMConfiguration.md](RoleSpecificLLMConfiguration.md) |
+| LLM / VLM role models | `MAX_ASYNC_LLM`, `EXTRACT_LLM_*`, `EXTRACT_MAX_ASYNC_LLM`, `VLM_LLM_*`, `VLM_MAX_ASYNC_LLM` | [RoleSpecificLLMConfiguration.md](RoleSpecificLLMConfiguration.md) |
 | legacy engine | `PDF_DECRYPT_PASSWORD` | §3.2 |
 | native engine | `NATIVE_MD_IMAGE_*` | §3.3 |
 | native docx smart_heading | `DOCX_SMART_HEADING`, `DOCX_SMART_*` tuning | §3.3 and the smart_heading block of `env.example` |
