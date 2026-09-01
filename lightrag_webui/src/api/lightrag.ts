@@ -12,6 +12,7 @@ import { errorMessage } from '@/lib/utils'
 import { decodeBase64Url } from '@/lib/base64url'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
+import { applyAiContentNoticeFlag } from '@/stores/aiContentNotice'
 import { navigationService } from '@/services/navigation'
 import { AuthenticationRequiredError, isAuthenticationRequiredError } from '@/api/errors'
 
@@ -163,6 +164,8 @@ export type LightragStatus = {
   }
   webui_title?: string
   webui_description?: string
+  /** Whether answers are labelled as AI-generated in the query UIs. */
+  ai_content_notice_enabled?: boolean
 }
 
 /**
@@ -215,8 +218,19 @@ export type QueryRequest = {
   conversation_history?: Message[]
   /** Number of complete conversation turns (user-assistant pairs) to consider in the response context. */
   history_turns?: number
-  /** User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template. */
+  /**
+   * Additional instructions for the LLM, injected into the "Additional
+   * Instructions" section of the answer prompt. Does not affect retrieval.
+   * The server may prepend a global prefix; see disable_user_prompt_prefix.
+   */
   user_prompt?: string
+  /**
+   * If true, the server-side global prompt prefix is not prepended to
+   * user_prompt, leaving this client in full control of the final instruction
+   * text. The prefix itself is server configuration and cannot be read or
+   * replaced from here. Default: false.
+   */
+  disable_user_prompt_prefix?: boolean
   /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
   enable_rerank?: boolean
   /** If True, emits retrieval progress events and a final response-time metadata line (streaming only). Default: false. */
@@ -226,6 +240,13 @@ export type QueryRequest = {
 export type QueryResponse = {
   response: string
   response_time?: number
+  /**
+   * Whether the answering LLM actually wrote this response. False for text a
+   * query path produced without calling it — the canned no-context reply and
+   * the only_need_context / only_need_prompt debug output. Absent on servers
+   * older than the field.
+   */
+  llm_generated?: boolean
 }
 
 export type EntityUpdateResponse = {
@@ -339,6 +360,8 @@ export type AuthStatusResponse = {
   api_version?: string
   webui_title?: string
   webui_description?: string
+  /** Whether answers are labelled as AI-generated in the query UIs. */
+  ai_content_notice_enabled?: boolean
 }
 
 export type PipelineStatusResponse = {
@@ -363,6 +386,8 @@ export type LoginResponse = {
   api_version?: string
   webui_title?: string
   webui_description?: string
+  /** Whether answers are labelled as AI-generated in the query UIs. */
+  ai_content_notice_enabled?: boolean
 }
 
 export const InvalidApiKeyError = 'Invalid API Key'
@@ -397,6 +422,8 @@ const silentRefreshGuestToken = async (): Promise<string> => {
         // This request must skip the interceptor to avoid adding expired token
         headers: { 'X-Skip-Interceptor': 'true' }
       });
+
+      applyAiContentNoticeFlag(response.data?.ai_content_notice_enabled);
 
       if (response.data.access_token && !response.data.auth_configured) {
         const newToken = response.data.access_token;
@@ -683,11 +710,33 @@ async function _readNdjsonStream(
   onChunk: (chunk: string) => void,
   onError: ((error: string) => void) | undefined,
   onResponseTime?: (seconds: number) => void,
-  onProgress?: (event: string) => void
+  onProgress?: (event: string) => void,
+  onLlmGenerated?: (llmGenerated: boolean) => void
 ): Promise<void> {
   if (!response.body) {
     throw new Error('Response body is null');
   }
+
+  // One dispatcher for both readers below (the loop and the trailing buffer).
+  // `llm_generated` is checked FIRST and separately: the server carries it on
+  // the SAME line as a complete (non-streamed) response, and the caller must
+  // know what the content is before the content arrives.
+  const dispatch = (parsed: any): void => {
+    if (typeof parsed.llm_generated === 'boolean') {
+      onLlmGenerated?.(parsed.llm_generated);
+    }
+    if (parsed.response) {
+      onChunk(parsed.response);
+    } else if (parsed.error) {
+      onError?.(parsed.error);
+    } else if (parsed.response_time !== undefined && onResponseTime) {
+      onResponseTime(parsed.response_time);
+    } else if (parsed.progress && onProgress) {
+      onProgress(parsed.progress);
+    }
+    // references-only lines are silently consumed —
+    // the caller only cares about response chunks and errors.
+  };
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -709,18 +758,7 @@ async function _readNdjsonStream(
         if (!trimmed) continue;
 
         try {
-          const parsed = JSON.parse(trimmed);
-          if (parsed.response) {
-            onChunk(parsed.response);
-          } else if (parsed.error) {
-            onError?.(parsed.error);
-          } else if (parsed.response_time !== undefined && onResponseTime) {
-            onResponseTime(parsed.response_time);
-          } else if (parsed.progress && onProgress) {
-            onProgress(parsed.progress);
-          }
-          // references-only lines are silently consumed —
-          // the caller only cares about response chunks and errors.
+          dispatch(JSON.parse(trimmed));
         } catch {
           // Truncated or malformed JSON — log and skip the line so one
           // bad line does not kill the whole stream.
@@ -740,16 +778,7 @@ async function _readNdjsonStream(
   // Process any remaining data in the buffer after the stream ends
   if (buffer.trim()) {
     try {
-      const parsed = JSON.parse(buffer);
-      if (parsed.response) {
-        onChunk(parsed.response);
-      } else if (parsed.error) {
-        onError?.(parsed.error);
-      } else if (parsed.response_time !== undefined && onResponseTime) {
-        onResponseTime(parsed.response_time);
-      } else if (parsed.progress && onProgress) {
-        onProgress(parsed.progress);
-      }
+      dispatch(JSON.parse(buffer));
     } catch {
       console.warn('Failed to parse final NDJSON buffer:', buffer.substring(0, 120));
       onError?.(
@@ -866,7 +895,11 @@ export const queryTextStream = async (
   onError?: (error: string) => void,
   signal?: AbortSignal,
   onResponseTime?: (seconds: number) => void,
-  onProgress?: (event: string) => void
+  onProgress?: (event: string) => void,
+  // Reports the server's verdict on whether the answering LLM wrote the
+  // content of a complete (non-streamed) response line. Streamed chunks carry
+  // no flag — they always come from the LLM.
+  onLlmGenerated?: (llmGenerated: boolean) => void
 ) => {
   const headers = _buildStreamHeaders();
 
@@ -945,7 +978,14 @@ export const queryTextStream = async (
     }
 
     // --- Read the NDJSON stream (happy path or refreshed retry) ------------
-    await _readNdjsonStream(activeResponse, onChunk, onError, onResponseTime, onProgress);
+    await _readNdjsonStream(
+      activeResponse,
+      onChunk,
+      onError,
+      onResponseTime,
+      onProgress,
+      onLlmGenerated
+    );
   } catch (error) {
     // Auth termination is NOT an answer failure: navigation to the entry's
     // unauthenticated route already happened above. Rethrow the typed error
@@ -1054,6 +1094,12 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
       };
     }
 
+    // Deployment display configuration the caller never looks at: adopted here,
+    // once, before the validation below picks one of its several return shapes
+    // (this is the request BOTH entries make at boot, so it is the one place
+    // that covers the admin shell, the login page and the workspace entry).
+    applyAiContentNoticeFlag(response.data?.ai_content_notice_enabled);
+
     // Strict validation of the response data
     if (response.data &&
         typeof response.data === 'object' &&
@@ -1115,6 +1161,8 @@ export const loginToServer = async (username: string, password: string): Promise
   const response = await axiosInstance.post('/login', formData, {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
   });
+
+  applyAiContentNoticeFlag(response.data?.ai_content_notice_enabled);
 
   return response.data;
 }

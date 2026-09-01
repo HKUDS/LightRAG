@@ -13,6 +13,7 @@
     "apiDocs": "API-Dokumentation",
     "projectRepository": "Projekt-Repository",
     "appSettings": "Einstellungen",
+    "deploymentInfo": "Bereitstellungsinformationen",
     "logout": "Abmelden",
     "frontendNeedsRebuild": "Frontend muss neu erstellt werden",
     "themeToggle": {
@@ -32,7 +33,10 @@
     "errorEmptyFields": "Bitte geben Sie Ihren Benutzernamen und Ihr Passwort ein",
     "errorInvalidCredentials": "Anmeldung fehlgeschlagen, bitte überprüfen Sie Benutzername und Passwort",
     "authDisabled": "Authentifizierung ist deaktiviert. Verwenden des anmeldefreien Modus.",
-    "guestMode": "Anmeldefrei"
+    "guestMode": "Anmeldefrei",
+    "consentLabel": "Ich stimme der {{documents}} zu",
+    "consentDocuments": "Datenschutzvereinbarung",
+    "errorConsentRequired": "Bitte lesen und akzeptieren Sie die Vereinbarungen vor der Anmeldung"
   },
   "common": {
     "cancel": "Abbrechen",
@@ -407,6 +411,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "KI-generierter Inhalt – bitte prüfen.",
       "copyTooltip": "In Zwischenablage kopieren",
       "copyError": "Text konnte nicht in die Zwischenablage kopiert werden",
       "copyEmpty": "Kein Inhalt zum Kopieren",
@@ -439,7 +444,10 @@
       "placeholder": "Geben Sie Ihre Abfrage ein (Präfix unterstützt: /<Abfragemodus>)",
       "error": "Fehler: Antwort konnte nicht abgerufen werden",
       "queryModeError": "Nur die folgenden Abfragemodi werden unterstützt: {{modes}}",
-      "queryModePrefixInvalid": "Ungültiges Abfragemodus-Präfix. Verwenden Sie: /<mode> [Leerzeichen] Ihre Abfrage"
+      "queryModePrefixInvalid": "Ungültiges Abfragemodus-Präfix. Verwenden Sie: /<mode> [Leerzeichen] Ihre Abfrage",
+      "queryEmpty": "Bitte geben Sie eine Frage ein, bevor Sie senden.",
+      "queryTooShort": "Ihre Abfrage ist zu kurz. Geben Sie mindestens 3 englische Zeichen oder eine gleichwertige Kombination ein; jedes chinesische, japanische oder koreanische Zeichen zählt doppelt.",
+      "dismissError": "Fehlermeldung schließen"
     },
     "querySettings": {
       "parametersTitle": "Parameter",
@@ -484,8 +492,10 @@
       "streamResponse": "Stream-Antwort",
       "streamResponseTooltip": "Wenn True, aktiviert Streaming-Ausgabe für Echtzeit-Antworten",
       "userPrompt": "Zusätzlicher Ausgabe-Prompt",
-      "userPromptTooltip": "Geben Sie zusätzliche Antwortanforderungen an das LLM an (unabhängig vom Abfrageinhalt, nur für die Ausgabeverarbeitung).",
+      "userPromptTooltip": "Zusätzliche Antwortanforderungen an das LLM (unabhängig vom Abfrageinhalt, nur zur Ausgabeverarbeitung). Der Server stellt diesem möglicherweise einen globalen Prompt voran. Leer lassen, um nur den globalen Prompt des Servers zu senden.",
       "userPromptPlaceholder": "Benutzerdefinierten Prompt eingeben (optional)",
+      "disableUserPromptPrefix": "Globalen Prompt ignorieren",
+      "disableUserPromptPrefixTooltip": "Den globalen Ausgabe-Prompt des Servers nicht vor den obigen zusätzlichen Ausgabe-Prompt setzen. Aktivieren, um die endgültigen Anweisungen vollständig hier zu steuern.",
       "enableRerank": "Rerank aktivieren",
       "enableRerankTooltip": "Reranking für abgerufene Text-Chunks aktivieren. Wenn True, aber kein Rerank-Modell konfiguriert ist, wird eine Warnung ausgegeben. Standard ist True."
     }

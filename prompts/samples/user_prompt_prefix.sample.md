@@ -1,0 +1,1 @@
+Please use Mermaid format for diagrams; the delimiter for LaTeX is $$. For inline citations, use the footnote marker syntax `[^1]`, where the `^` preceding the identifier indicates a footnote reference. When multiple citations are required at a single location, each ID should be enclosed in separate footnote markers (e.g., `[^1][^2][^3]`)

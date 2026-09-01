@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ZapIcon, LogOutIcon } from 'lucide-react'
 import Button from '@/components/ui/Button'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
+import TouchDescriptionPopover from '@/components/ui/TouchDescriptionPopover'
 import AppSettings from '@/components/AppSettings'
 import ApiKeyAlert, { type ApiKeyAlertCloseReason } from '@/components/ApiKeyAlert'
 import ErrorBoundary from '@/components/ErrorBoundary'
@@ -128,15 +130,22 @@ export default function WorkspaceApp() {
           {/* Document-relative brand link: resolves to THIS entry's own root
               under any proxy prefix — never to /webui, and never to the admin
               index.html that the dev server answers `/` with. */}
-          <a href={entryHomeHref(window.location.pathname)} className="flex shrink-0 items-center gap-2">
-            <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
-            <span className="font-bold">{webuiTitle || 'LightRAG'}</span>
-          </a>
-          {webuiDescription && (
-            <span className="text-muted-foreground hidden truncate text-xs md:inline">
-              {webuiDescription}
-            </span>
-          )}
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <a href={entryHomeHref(window.location.pathname)} className="flex shrink-0 items-center gap-2">
+                  <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
+                  <span className="font-bold">{webuiTitle || 'LightRAG'}</span>
+                </a>
+              </TooltipTrigger>
+              {webuiDescription && (
+                <TooltipContent side="bottom">
+                  {webuiDescription}
+                </TooltipContent>
+              )}
+            </Tooltip>
+          </TooltipProvider>
+          <TouchDescriptionPopover description={webuiDescription} />
           {isGuestMode && (
             <span className="rounded-md bg-amber-100 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-900 dark:text-amber-200">
               {t('login.guestMode', 'Guest Mode')}

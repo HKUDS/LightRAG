@@ -16,6 +16,14 @@ export interface UICustomizationBrand {
   description?: string | null
   logo_url?: string | null
   logo_alt?: string
+  /**
+   * The deployment's own copyright line, shown at the foot of the pre-login
+   * pages. `null` when the bundle declares none, and ABSENT on a
+   * `customized: false` response — both mean "render no line". LightRAG ships
+   * no default text here: an uncustomized deployment shows no copyright at
+   * all, and a customer's page never carries LightRAG's.
+   */
+  copyright?: string | null
 }
 
 export interface UICustomizationContent {
@@ -32,6 +40,26 @@ export interface UICustomization {
   brand: UICustomizationBrand
   welcome?: UICustomizationContent
   query_empty?: UICustomizationContent
+  /** Optional login-page blurb; `null` when the locale declares none. */
+  login?: UICustomizationContent | null
+  /** ONE document covering the privacy policy AND the model service
+   * agreement — the consent checkbox carries a single link. */
+  agreements?: UICustomizationContent | null
+  /**
+   * How the consent checkbox NAMES the agreement document in its link
+   * (`locales.<locale>.consent_documents` in the bundle manifest). Absent or
+   * `null` means the bundle declares no name: the WebUI then uses its own
+   * translated default, so this never affects whether the gate exists.
+   */
+  consent_documents?: string | null
+  /**
+   * Whether the login page must gate submission behind the consent checkbox.
+   * Decided by the SERVER (see `UILocaleContent.consent_required`) and obeyed
+   * here — never recomputed from `login`/`agreements`, which travel in this
+   * response only so the page can render them. Absent on a `customized:
+   * false` response, where the whole default representation applies anyway.
+   */
+  consent_required?: boolean
 }
 
 /**
