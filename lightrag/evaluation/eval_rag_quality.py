@@ -282,7 +282,7 @@ class RAGEvaluator:
         if not self.test_dataset_path.exists():
             raise FileNotFoundError(f"Test dataset not found: {self.test_dataset_path}")
 
-        with open(self.test_dataset_path) as f:
+        with open(self.test_dataset_path, encoding="utf-8") as f:
             data = json.load(f)
 
         return data.get("test_cases", [])
