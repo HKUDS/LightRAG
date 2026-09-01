@@ -127,12 +127,40 @@ const customTooltipWidths = (): { file: string; width: string }[] => {
 }
 
 describe('tooltip width call sites', () => {
-  test('every custom tooltip width is viewport-aware', () => {
+  /**
+   * The widths the deleted test named, per file. Kept as an exact expectation
+   * rather than a count: a site that DROPS its width is the regression that
+   * matters most — the tooltip silently falls back to the near-viewport-wide
+   * default — and it is invisible to any "at least N, none of them bad" check,
+   * because the three DocumentManager widths alone satisfy that.
+   */
+  const REQUIRED_WIDTHS: Record<string, string[]> = {
+    'features/DocumentManager.tsx': [
+      'max-w-[min(42rem,calc(100vw-2rem))]',
+      'max-w-[min(42rem,calc(100vw-2rem))]',
+      'max-w-[min(42rem,calc(100vw-2rem))]'
+    ],
+    'components/graph/PropertiesView.tsx': ['max-w-[min(24rem,calc(100vw-2rem))]'],
+    'components/graph/PropertyRowComponents.tsx': ['max-w-[min(20rem,calc(100vw-2rem))]']
+  }
+
+  test('each known call site still declares its own width', () => {
+    const widths = customTooltipWidths()
+
+    for (const [file, expected] of Object.entries(REQUIRED_WIDTHS)) {
+      const found = widths.filter((site) => site.file === file).map((site) => site.width)
+      expect({ file, found }).toEqual({ file, found: expected })
+    }
+  })
+
+  test('every custom tooltip width is viewport-aware, including new ones', () => {
+    // The half the old test could not do: this reaches call sites nobody has
+    // written yet, so a new one is covered the moment it is added.
     const widths = customTooltipWidths()
 
     // Guards the scan itself: a regex that stopped matching would otherwise
     // make this test pass by finding nothing.
-    expect(widths.length).toBeGreaterThanOrEqual(3)
+    expect(widths.length).toBeGreaterThanOrEqual(5)
 
     const desktopOnly = widths.filter(({ width }) => !width.includes('100vw'))
     expect(desktopOnly).toEqual([])

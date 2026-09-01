@@ -7,6 +7,7 @@ import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from '@/test/render'
 import { resetCustomization, seedCustomization } from '@/test/customization'
 import { useAuthStore } from '@/stores/state'
+import { resetVersionCheckCache } from '@/lib/versionCheckCache'
 
 /**
  * The workspace shell's brand link doubles as the deployment-description
@@ -24,6 +25,7 @@ const DESCRIPTION = 'Production cluster — read only'
 
 let realApiModule: Record<string, unknown>
 let WorkspaceApp: ComponentType
+let authStatusFetches = 0
 
 beforeAll(async () => {
   realApiModule = { ...(await import('@/api/lightrag')) }
@@ -33,6 +35,7 @@ beforeAll(async () => {
   mock.module('@/api/lightrag', () => ({
     ...realApiModule,
     getAuthStatus: mock(async () => ({
+      ...((authStatusFetches += 1), {}),
       auth_configured: false,
       access_token: 'test-token',
       token_type: 'bearer',
@@ -74,6 +77,15 @@ const renderShell = async (
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 50))
   })
+  // Asserted on EVERY mount, not once: `versionCheckCache` is module-level, so
+  // the shell that reconciles first would otherwise leave the flag set and
+  // every later mount — here or in a later file — would take the early-return
+  // path and skip reconciliation while still passing. Measured without the
+  // reset in `beforeEach`: 1 fetch across the whole file instead of one per
+  // test. Placing the check here is what makes that visible, since the first
+  // test alone looks correct either way.
+  expect(authStatusFetches).toBe(1)
+
   // After the mount probes settle, so the auth store's own writes cannot
   // overwrite what this test is asserting on.
   seedDeployment(title, description)
@@ -84,6 +96,13 @@ const brandLink = (): HTMLAnchorElement =>
   within(screen.getByRole('banner')).getByRole('link', { name: /.+/ }) as HTMLAnchorElement
 
 beforeEach(() => {
+  // Module-level and therefore process-wide: the shell sets it once its
+  // `/auth-status` request settles, and every later mount — in this file or a
+  // later one — would then take the early-return path and skip the auth
+  // reconciliation entirely. A real page load starts a fresh module, which is
+  // what this seam stands in for.
+  resetVersionCheckCache()
+  authStatusFetches = 0
   act(() => {
     useAuthStore.setState({ isGuestMode: false, username: null })
   })
@@ -92,6 +111,10 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   resetCustomization()
+  // Again on the way out, for the next test FILE. Nothing in this file can
+  // observe that one — no later file mounts a shell today — so it is
+  // deliberately defensive rather than pinned.
+  resetVersionCheckCache()
 })
 
 describe('workspace header brand link', () => {
