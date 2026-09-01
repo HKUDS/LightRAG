@@ -169,7 +169,12 @@ const customTooltipWidths = (): { file: string; width: string }[] => {
     }
 
     for (const site of sites) {
-      for (const width of site.match(/max-w-\[[^\]]*\]/g) ?? []) {
+      // Both syntaxes: the bracket form FIRST so an arbitrary value is taken
+      // whole, then the standard scale. `max-w-lg`, `max-w-96` and
+      // `max-w-none` drop the clamp through tailwind-merge exactly as
+      // `max-w-[42rem]` does, and a scan that only knows brackets would call
+      // such a call site covered while it is not.
+      for (const width of site.match(/max-w-\[[^\]]*\]|max-w-[\w./-]+/g) ?? []) {
         found.push({ file: file.slice(srcDir.length + 1), width })
       }
     }

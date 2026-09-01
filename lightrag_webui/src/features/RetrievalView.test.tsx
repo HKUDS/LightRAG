@@ -42,13 +42,18 @@ describe('admin retrieval layout', () => {
     await act(async () => {})
     const page = container.firstElementChild!
 
-    // Nothing else may set a bottom padding, VARIANT PREFIXES INCLUDED. An
-    // `md:pb-12` beside `pb-8` changes the desktop clearance while leaving the
-    // unprefixed class — and the arithmetic below — looking correct; the
-    // deleted test's `not.toContain('pb-12')` is what used to catch that.
-    const bottomPadding = /^(?:[\w-]+:)*(?:p|py|pb)-\d+$/
+    // Nothing else may set a bottom padding. Both halves matter: a VARIANT
+    // PREFIX (`md:pb-12`) and an ARBITRARY VALUE (`md:pb-[3rem]`) each change
+    // the desktop clearance while leaving the unprefixed numeric class — and
+    // therefore the arithmetic below — looking correct. So the prefix is
+    // stripped at the last `:` (which also covers `[&_p]:` forms) and the
+    // utility is matched by NAME, with no assumption about the value's shape.
+    // The deleted test's `not.toContain('pb-12')` is what used to catch this.
+    const setsBottomPadding = (token: string): boolean =>
+      /^(?:p|py|pb)-/.test(token.slice(token.lastIndexOf(':') + 1))
+
     const pageClasses = (page.getAttribute('class') ?? '').split(/\s+/)
-    expect(pageClasses.filter((token) => bottomPadding.test(token))).toEqual(['pb-8'])
+    expect(pageClasses.filter(setsBottomPadding)).toEqual(['pb-8'])
     const pageBottomPx = spacingPx(page, 'pb')
     cleanup()
 

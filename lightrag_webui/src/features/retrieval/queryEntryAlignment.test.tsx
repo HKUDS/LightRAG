@@ -128,19 +128,35 @@ describe('query entry input handling', () => {
   // A plain loop rather than `test.each`: Bun's table typings widen every
   // parameter to `unknown`, and the entry name is a key into `entries`.
   for (const entry of entryNames) {
-    test(`${entry} rejects an unknown mode prefix with a readable reason`, async () => {
-      await send(entry, '/nope hello')
+    /**
+     * Every `QueryInputError` variant, driven from the composer. The deleted
+     * test guaranteed this differently — it asserted the entry INTERPOLATES
+     * `prepared.error` into the translation key, so a new variant is rendered
+     * without either entry being touched. An entry that hard-coded one key
+     * would still show the right sentence for that one case, so covering a
+     * single variant does not replace that guarantee; covering all of them
+     * does, and it checks the sentences a user actually reads.
+     */
+    const rejections: [label: string, input: string, sentence: string][] = [
+      ['a prefix with no query', '/nope', 'Invalid query mode prefix'],
+      ['an unsupported mode', '/nope hello', 'Only supports the following query modes'],
+      ['a prefix that swallows the query', '/local    ', 'Please enter a question before sending'],
+      ['a query below the RAG minimum', '/local ab', 'Your query is too short']
+    ]
 
-      // The translated sentence, not the error KEY: an entry that interpolated
-      // the key into the wrong namespace would still "show an error".
-      const alert = screen.getByRole('alert')
-      expect(alert.textContent).toContain('Only supports the following query modes')
-      expect(alert.textContent).toContain('bypass')
+    for (const [label, input, sentence] of rejections) {
+      test(`${entry} rejects ${label} with its own reason`, async () => {
+        await send(entry, input)
 
-      // And it stops there. A rejected input that still reached the server would
-      // run the query under the stored mode, silently ignoring what was typed.
-      expect(requests).toHaveLength(0)
-    })
+        // The translated sentence, not the error KEY: an entry that interpolated
+        // the key into the wrong namespace would still "show an error".
+        expect(screen.getByRole('alert').textContent).toContain(sentence)
+
+        // And it stops there. A rejected input that still reached the server
+        // would run the query under the stored mode, ignoring what was typed.
+        expect(requests).toHaveLength(0)
+      })
+    }
 
     test(`${entry} sends the stripped query under the prefixed mode`, async () => {
       setQuerySettings({ mode: 'mix' })
