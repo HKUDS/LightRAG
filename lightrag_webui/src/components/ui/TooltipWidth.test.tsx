@@ -1,10 +1,11 @@
 import { describe, expect, test } from 'bun:test'
-import { readFileSync, readdirSync } from 'fs'
+import { readFileSync } from 'fs'
 import { join } from 'path'
 import { act, cleanup, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { renderWithProviders } from '@/test/render'
+import { relativePath, sourceFiles } from '@/test/sourceScan'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './Tooltip'
 import Text from './Text'
 
@@ -91,13 +92,6 @@ describe('tooltip viewport width constraints', () => {
   })
 })
 
-const sourceFiles = (dir: string): string[] =>
-  readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(dir, entry.name)
-    if (entry.isDirectory()) return sourceFiles(path)
-    return entry.isFile() && path.endsWith('.tsx') && !path.endsWith('.test.tsx') ? [path] : []
-  })
-
 /**
  * The text of the JSX tag opened at `start`, up to the `>` that closes it.
  * Braces and strings are skipped, so an attribute whose value is an EXPRESSION
@@ -182,7 +176,12 @@ const srcDir = join(import.meta.dir, '..', '..')
 const customTooltipWidths = (): { file: string; width: string }[] => {
   const found: { file: string; width: string }[] = []
 
-  for (const file of sourceFiles(srcDir)) {
+  // `/`-separated on every platform (`@/test/sourceScan`), so the file keys in
+  // the expectation below hold on Windows too.
+  for (const file of sourceFiles(
+    srcDir,
+    (path) => path.endsWith('.tsx') && !path.endsWith('.test.tsx')
+  )) {
     const source = readFileSync(file, 'utf8')
     const sites: string[] = []
 
@@ -202,7 +201,7 @@ const customTooltipWidths = (): { file: string; width: string }[] => {
       const text = site + resolvedConstants(source, site)
 
       for (const width of text.match(/max-w-\[[^\]]*\]|max-w-[\w./-]+/g) ?? []) {
-        found.push({ file: file.slice(srcDir.length + 1), width })
+        found.push({ file: relativePath(srcDir, file), width })
       }
     }
   }

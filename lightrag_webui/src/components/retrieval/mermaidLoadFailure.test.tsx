@@ -1,11 +1,12 @@
 /// <reference types="bun" />
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
-import { readdirSync, readFileSync } from 'fs'
+import { readFileSync } from 'fs'
 import { join } from 'path'
 import type { ComponentType } from 'react'
 import { act, cleanup } from '@testing-library/react'
 
 import { renderWithProviders } from '@/test/render'
+import { relativePath, sourceFiles } from '@/test/sourceScan'
 import type { MessageWithError } from '@/types/retrieval'
 
 /**
@@ -240,14 +241,6 @@ describe('mermaid failure branches (source-level)', () => {
     // graph would put the renderer in the workspace entry's first-load chunk,
     // and a second dynamic import would be a load path the stub above cannot
     // reach — so a failure there would be untested again.
-    const sourceFiles = (dir: string): string[] =>
-      readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-        const path = join(dir, entry.name)
-        if (entry.isDirectory()) return sourceFiles(path)
-        if (!entry.isFile()) return []
-        return /\.tsx?$/.test(path) && !/\.test\.tsx?$/.test(path) ? [path] : []
-      })
-
     /**
      * Comments removed before scanning, string literals respected so a URL's
      * `//` is not mistaken for one. Comments can sit ANYWHERE inside an import
@@ -315,10 +308,16 @@ describe('mermaid failure branches (source-level)', () => {
     const namesMermaid = (specifier: string): boolean =>
       specifier === 'mermaid' || specifier.startsWith('mermaid/')
 
+    // Paths come back `/`-separated on every platform (`@/test/sourceScan`),
+    // so the expectation below stays a literal instead of quietly failing on
+    // Windows, where `path.join` would report `components\\retrieval\\...`.
     const srcDir = join(import.meta.dir, '..', '..')
-    const importers = sourceFiles(srcDir)
+    const importers = sourceFiles(
+      srcDir,
+      (path) => /\.tsx?$/.test(path) && !/\.test\.tsx?$/.test(path)
+    )
       .filter((file) => importSpecifiers(withoutComments(readFileSync(file, 'utf8'))).some(namesMermaid))
-      .map((file) => file.slice(srcDir.length + 1))
+      .map((file) => relativePath(srcDir, file))
 
     expect(importers).toEqual(['components/retrieval/mermaidLoader.ts'])
   })

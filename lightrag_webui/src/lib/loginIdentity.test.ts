@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
-import { readdirSync, readFileSync } from 'fs'
+import { readFileSync } from 'fs'
 import { join } from 'path'
+import { relativePath, sourceFiles } from '@/test/sourceScan'
 import { WORKSPACE_RETRIEVAL_HISTORY_KEY } from '@/lib/storageKeys'
 
 /**
@@ -35,15 +36,6 @@ const stub = {
 }
 
 /** Every non-test source file under `src/`, for the tree-wide prohibition below. */
-const sourceFiles = (dir: string): string[] =>
-  readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(dir, entry.name)
-    if (entry.isDirectory()) return sourceFiles(path)
-    if (!entry.isFile()) return []
-    if (!/\.(ts|tsx)$/.test(path) || /\.test\.tsx?$/.test(path)) return []
-    return [path]
-  })
-
 let previousDescriptor: PropertyDescriptor | undefined
 
 let applyLoginIdentity: typeof import('./loginIdentity').applyLoginIdentity
@@ -480,13 +472,21 @@ describe('activateLoginIdentityFromToken (the login form\'s only entry point)', 
     const takesNamespace = (source: string): boolean =>
       /import\s*\*\s*as\s+\w+\s*from\s*['"`][^'"`]*loginIdentity['"`]/.test(source)
 
-    const callers = sourceFiles(join(import.meta.dir, '..'))
+    // `sourceFiles` builds its paths with `/` on every platform (see
+    // `@/test/sourceScan`); the exclusion below is a forward-slash suffix and
+    // would never fire against `join`'s native separators on Windows, which
+    // would report this module as a violation of its own prohibition.
+    const srcDir = join(import.meta.dir, '..')
+    const callers = sourceFiles(
+      srcDir,
+      (path) => /\.tsx?$/.test(path) && !/\.test\.tsx?$/.test(path)
+    )
       .filter((file) => !file.endsWith('/lib/loginIdentity.ts'))
       .filter((file) => {
         const source = readFileSync(file, 'utf8')
         return namesIt(source) || takesNamespace(source)
       })
-      .map((file) => file.slice(join(import.meta.dir, '..').length + 1))
+      .map((file) => relativePath(srcDir, file))
 
     expect(callers).toEqual([])
   })
