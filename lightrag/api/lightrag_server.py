@@ -3,6 +3,7 @@ LightRAG FastAPI Server
 """
 
 from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, Response
 from fastapi.openapi.docs import (
@@ -1389,6 +1390,47 @@ def _create_llm_model_kwargs(binding: str, args, llm_timeout: int) -> dict:
     return {}
 
 
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Render a request-validation refusal in the shape each endpoint promises.
+
+    Module-level rather than a closure inside ``create_app`` so the real
+    handler can be exercised without standing up the whole application.
+    """
+    # Check if this is a request to /query/data endpoint
+    if request.url.path.endswith("/query/data"):
+        # Extract error details
+        error_details = []
+        for error in exc.errors():
+            field_path = " -> ".join(str(loc) for loc in error["loc"])
+            error_details.append(f"{field_path}: {error['msg']}")
+
+        error_message = "; ".join(error_details)
+
+        # Return in the expected format for /query/data
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "failure",
+                "message": f"Validation error: {error_message}",
+                "data": {},
+                "metadata": {},
+            },
+        )
+
+    # For other endpoints, return the default FastAPI validation error.
+    # `jsonable_encoder` is not optional here: a rejection raised as a
+    # ValueError inside a validator (the RAG query minimum, the non-empty
+    # check, the keyword and history checks, the aggregate text budget)
+    # carries the exception object itself in `ctx.error`, which json.dumps
+    # cannot serialize — without the encoder this handler raises and the
+    # client gets a 500 in place of the 422 the refusal actually is.
+    return JSONResponse(
+        status_code=422, content={"detail": jsonable_encoder(exc.errors())}
+    )
+
+
 def create_app(args):
     # Check frontend build first and get status. The two entries are checked
     # independently: an old build directory may carry only index.html, which
@@ -1654,34 +1696,9 @@ def create_app(args):
 
     app = FastAPI(**app_kwargs)
 
-    # Add custom validation error handler for /query/data endpoint
-    @app.exception_handler(RequestValidationError)
-    async def validation_exception_handler(
-        request: Request, exc: RequestValidationError
-    ):
-        # Check if this is a request to /query/data endpoint
-        if request.url.path.endswith("/query/data"):
-            # Extract error details
-            error_details = []
-            for error in exc.errors():
-                field_path = " -> ".join(str(loc) for loc in error["loc"])
-                error_details.append(f"{field_path}: {error['msg']}")
-
-            error_message = "; ".join(error_details)
-
-            # Return in the expected format for /query/data
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "status": "failure",
-                    "message": f"Validation error: {error_message}",
-                    "data": {},
-                    "metadata": {},
-                },
-            )
-        else:
-            # For other endpoints, return the default FastAPI validation error
-            return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    # Custom validation error handler, shaped per endpoint (see the
+    # module-level function for why it is not a closure).
+    app.add_exception_handler(RequestValidationError, validation_exception_handler)
 
     # Last-resort handler for any exception that escapes a route without being
     # converted to an HTTPException. It guarantees raw exception text never

@@ -19,6 +19,7 @@ const baseSettings = (mode: (typeof ALL_MODES)[number]): QuerySettings => ({
   stream: true,
   history_turns: 0,
   user_prompt: 'be concise',
+  disable_user_prompt_prefix: false,
   enable_rerank: true
 })
 
@@ -97,5 +98,29 @@ describe('serializer source purity', () => {
     // passes — so pin it at the source level.
     const source = readFileSync(join(import.meta.dir, 'serializeQueryRequest.ts'), 'utf8')
     expect(source.includes('only_need')).toBe(false)
+  })
+})
+
+describe('disable_user_prompt_prefix', () => {
+  test.each([true, false])('forwards the switch verbatim (%s)', (value) => {
+    const body = serializeQueryRequest(
+      { ...baseSettings('hybrid'), disable_user_prompt_prefix: value },
+      'what is RAG',
+      historyFixture
+    )
+    expect(body.disable_user_prompt_prefix).toBe(value)
+  })
+
+  test('an unset switch is omitted from the body entirely', () => {
+    // The upgrade path: settings persisted before this field existed hydrate
+    // with it undefined. JSON.stringify drops undefined, the server field is
+    // Optional[bool]=None, exclude_none drops it, and QueryParam supplies
+    // False — so the prefix applies, which is the right default for an
+    // existing install.
+    const settings = { ...baseSettings('hybrid') }
+    delete (settings as Partial<QuerySettings>).disable_user_prompt_prefix
+
+    const body = serializeQueryRequest(settings, 'what is RAG', historyFixture)
+    expect('disable_user_prompt_prefix' in JSON.parse(JSON.stringify(body))).toBe(false)
   })
 })

@@ -386,6 +386,7 @@ LightRAG 的默认存储全部都是基于文件进行持久化的内存数据�
 - **MAX_ENTITY_TOKENS / MAX_RELATION_TOKENS / MAX_TOTAL_TOKENS**：控制召回内容送给LLM上下文的Token长度。召回内容包含`实体`、`关系`和`文本块`三部分，实体和关系的长度可以单独控制长度，文本块的长度由总长度减去实体和关系的长度来控制。
 - **ENABLE_CONTENT_HEADINGS**：控制是否把文本块所在的章节标题送给LLM；默认开启，可以为LLM提供更加丰富的上下文信息，提高回答质量。
 - **ENABLE_LLM_CACHE**：是否允许缓存查询结果。默认开启，相同的查询问题、查询模式、LLM模型参数将返回相同的结果。
+- **USER_PROMPT_PREFIX / USER_PROMPT_PREFIX_FILE**：拼接在每个请求的 `user_prompt` 前面的全局指令（对应回答提示词中的"Additional Instructions"部分），为运维方提供一个统一定制LLM输出的入口。拼接是逐字节的、不会自动插入分隔符，请自行在内容结尾加上 `\n\n`。如果请求的 `user_prompt` 为空，该前缀将单独成为送给 LLM 的指令；只有 API 字段 `disable_user_prompt_prefix` 能禁用它，且请求无法读取或替换它。较长或多段落的内容请使用 `USER_PROMPT_PREFIX_FILE`（`PROMPT_DIR/user_prompt` 目录下的 `.md`/`.txt` 文件名），因为 `.env` 中的值必须写在一行内。
 
 ## 使用LightRAG SDK
 

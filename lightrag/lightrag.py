@@ -38,6 +38,7 @@ from typing import (
 from lightrag.prompt import (
     PROMPTS,
     get_default_entity_extraction_prompt_profile,
+    load_user_prompt_prefix_source,
     resolve_entity_extraction_prompt_profile,
     validate_entity_extraction_prompt_profile_for_mode,
 )
@@ -134,7 +135,7 @@ from lightrag.base import (
     QueryResult,
 )
 from lightrag.namespace import NameSpace
-from lightrag.query_validation import validate_rag_query
+from lightrag.query_validation import validate_query_not_empty, validate_rag_query
 from lightrag.chunker import chunking_by_token_size
 from lightrag.operate import (
     KGRebuildReport,
@@ -972,6 +973,24 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     """Configuration for Ollama server information."""
 
     _storages_status: StoragesStatus = field(default=StoragesStatus.NOT_CREATED)
+
+    # Declared last on purpose. LightRAG is a plain dataclass, so SDK callers
+    # may construct it positionally; inserting a field earlier would silently
+    # rebind every positional argument after it -- an int meant for
+    # `entity_extract_max_gleaning` would land on this string field and the
+    # remaining values would configure the wrong options. New fields belong at
+    # the end. Same rule as `QueryParam.disable_user_prompt_prefix`.
+    user_prompt_prefix: str = field(default_factory=load_user_prompt_prefix_source)
+    """Global instructions prepended to every request's `QueryParam.user_prompt`.
+
+    Server-side output policy, sourced from `USER_PROMPT_PREFIX` or
+    `USER_PROMPT_PREFIX_FILE`. Concatenated verbatim with no separator inserted:
+    end it with your own newlines so it does not run into the caller's text.
+
+    If a request's `user_prompt` is empty, this prefix alone becomes the
+    instructions sent to the LLM. A request opts out with
+    `QueryParam.disable_user_prompt_prefix`, but can never read or replace it.
+    """
 
     def _mark_addon_params_dirty(self) -> None:
         self._addon_params_dirty = True
@@ -4087,7 +4106,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             actual data is nested under the 'data' field, with 'status' and 'message'
             fields at the top level.
         """
-        query = query.strip()
+        # `bypass` skips retrieval, so the RAG minimum does not apply to it —
+        # but no mode may forward an empty prompt to the LLM.
+        query = validate_query_not_empty(query)
         if param.mode != "bypass":
             query = validate_rag_query(query)
 
@@ -4109,6 +4130,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             ll_keywords=param.ll_keywords,
             conversation_history=param.conversation_history,
             user_prompt=param.user_prompt,
+            disable_user_prompt_prefix=param.disable_user_prompt_prefix,
             enable_rerank=param.enable_rerank,
         )
 
@@ -4207,7 +4229,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             dict[str, Any]: Complete response with structured data and LLM response.
         """
-        query = query.strip()
+        # `bypass` skips retrieval, so the RAG minimum does not apply to it —
+        # but no mode may forward an empty prompt to the LLM.
+        query = validate_query_not_empty(query)
         if param.mode != "bypass":
             query = validate_rag_query(query)
 

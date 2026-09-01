@@ -9,6 +9,7 @@ import type { QuerySettings } from '@/stores/querySettings'
 import { isApiKeyFailure, runCredentialProbe } from './credentialProbe'
 import { useTranslation } from 'react-i18next'
 import { prepareQueryInput, SUPPORTED_QUERY_MODES } from '@/features/retrieval/queryInput'
+import { workspaceQuerySettingsSnapshot } from './querySettingsSnapshot'
 
 /**
  * The workspace (query-user) page. Composes the SAME shared query session,
@@ -16,10 +17,9 @@ import { prepareQueryInput, SUPPORTED_QUERY_MODES } from '@/features/retrieval/q
  * page-level differences (and only these):
  * - no QuerySettings sidebar; `/mode` prefix parsing matches `/webui`;
  * - the settings snapshot inherits the browser-shared `querySettings` saved
- *   by /webui, read-only, EXCEPT `only_need_context`/`only_need_prompt`
- *   which are clamped to false HERE, at the composition layer (they are
- *   debug outlets that make the server not answer; the shared serializer
- *   knows nothing about this clamping);
+ *   by /webui, read-only, except the keys clamped by
+ *   `workspaceQuerySettingsSnapshot` (the shared serializer knows nothing
+ *   about that clamping);
  * - its history is the workspace entry's own store;
  * - the message area is always active (no admin tab lifecycle);
  * - a query rejected on API-key grounds re-probes credentials, which reopens
@@ -29,14 +29,11 @@ import { prepareQueryInput, SUPPORTED_QUERY_MODES } from '@/features/retrieval/q
 export default function WorkspaceQueryView() {
   const { t } = useTranslation()
 
-  const getQuerySettingsSnapshot = useCallback((): QuerySettings => {
-    const settings = useQuerySettingsStore.getState().querySettings
-    return {
-      ...settings,
-      only_need_context: false,
-      only_need_prompt: false
-    }
-  }, [])
+  const getQuerySettingsSnapshot = useCallback(
+    (): QuerySettings =>
+      workspaceQuerySettingsSnapshot(useQuerySettingsStore.getState().querySettings),
+    []
+  )
 
   const handleQueryError = useCallback((message: string) => {
     // Entry-specific: the shared session layer stays message-agnostic.

@@ -445,7 +445,8 @@
       "error": "Error: Failed to get response",
       "queryModeError": "Only supports the following query modes: {{modes}}",
       "queryModePrefixInvalid": "Invalid query mode prefix. Use: /<mode> [space] your query",
-      "queryTooShort": "Your query is too short. Enter at least 3 English characters or an equivalent combination; each Chinese character counts as 2.",
+      "queryEmpty": "Please enter a question before sending.",
+      "queryTooShort": "Your query is too short. Enter at least 3 English characters or an equivalent combination; each Chinese, Japanese or Korean character counts as 2.",
       "dismissError": "Dismiss error"
     },
     "querySettings": {
@@ -491,8 +492,10 @@
       "streamResponse": "Stream Response",
       "streamResponseTooltip": "If True, enables streaming output for real-time responses",
       "userPrompt": "Additional Output Prompt",
-      "userPromptTooltip": "Provide additional response requirements to the LLM (unrelated to query content, only for output processing).",
+      "userPromptTooltip": "Provide additional response requirements to the LLM (unrelated to query content, only for output processing). The server may prepend a global prompt to this. Leave it empty to send only the server's global prompt.",
       "userPromptPlaceholder": "Enter custom prompt (optional)",
+      "disableUserPromptPrefix": "Ignore Global Prompt",
+      "disableUserPromptPrefixTooltip": "Do not prepend the server's global output prompt to the additional output prompt above. Enable this to control the final instructions entirely from here.",
       "enableRerank": "Enable Rerank",
       "enableRerankTooltip": "Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True."
     }

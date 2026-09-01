@@ -22,7 +22,7 @@ from lightrag.constants import (
     MAX_RESPONSE_TYPE_CHARS,
     MAX_ROLE_CHARS,
 )
-from lightrag.query_validation import validate_rag_query
+from lightrag.query_validation import validate_query_not_empty, validate_rag_query
 from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -31,8 +31,9 @@ class QueryRequest(BaseModel):
     query: str = Field(
         max_length=MAX_QUERY_CHARS,
         description=(
-            "The query text. RAG modes require an English-equivalent length of "
-            "at least 3; each Chinese character counts as 2."
+            "The query text. Must not be empty. RAG modes additionally require "
+            "an English-equivalent length of at least 3; each Chinese, "
+            "Japanese or Korean character counts as 2."
         ),
     )
 
@@ -113,7 +114,26 @@ class QueryRequest(BaseModel):
     user_prompt: Optional[str] = Field(
         default=None,
         max_length=MAX_QUERY_CHARS,
-        description="User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template.",
+        description=(
+            "Additional instructions for the LLM, injected into the "
+            "'Additional Instructions' section of the answer prompt. It does not "
+            "affect retrieval. The server may prepend a global prefix to this "
+            "value; if this field is empty the prefix alone becomes the "
+            "instructions sent to the LLM. Set disable_user_prompt_prefix to "
+            "opt out of the prefix."
+        ),
+    )
+
+    disable_user_prompt_prefix: Optional[bool] = Field(
+        default=None,
+        description=(
+            "If True, the server-side global prompt prefix is not prepended to "
+            "user_prompt, leaving the client in full control of the final "
+            "instruction text. This is the only way to suppress the prefix -- "
+            "sending an empty user_prompt does not, it makes the prefix the "
+            "whole instruction. The prefix itself is server configuration and "
+            "cannot be read or replaced by a request. Default is False."
+        ),
     )
 
     enable_rerank: Optional[bool] = Field(
@@ -149,7 +169,10 @@ class QueryRequest(BaseModel):
     @field_validator("query", mode="after")
     @classmethod
     def query_strip_after(cls, query: str) -> str:
-        return query.strip()
+        # Mode-independent: `bypass` is exempt from the RAG minimum below, not
+        # from having to carry a prompt at all. `min_length` on the field would
+        # run before the strip and let "   " through.
+        return validate_query_not_empty(query)
 
     @field_validator("hl_keywords", "ll_keywords", mode="after")
     @classmethod
@@ -197,6 +220,18 @@ class QueryRequest(BaseModel):
         return conversation_history
 
     @model_validator(mode="after")
+    def enforce_rag_query_minimum(self) -> "QueryRequest":
+        """Hold RAG queries to a length that can actually retrieve something.
+
+        `bypass` goes straight to the LLM without touching the index, so the
+        retrieval-shaped minimum does not apply to it; the non-empty check on
+        the field does.
+        """
+        if self.mode != "bypass":
+            validate_rag_query(self.query)
+        return self
+
+    @model_validator(mode="after")
     def bound_aggregate_text(self) -> "QueryRequest":
         """Bound all model-facing request input in one request.
 
@@ -205,9 +240,10 @@ class QueryRequest(BaseModel):
         history dict is forwarded verbatim, so count its serialized form rather
         than only the ``content`` key.
         """
-        if self.mode != "bypass":
-            self.query = validate_rag_query(self.query)
-
+        # The server-side user_prompt_prefix is deliberately NOT counted: it is
+        # operator configuration, not client-supplied text, and folding it in
+        # would make previously-legal requests start failing the moment an
+        # operator edits USER_PROMPT_PREFIX.
         total = count_conversation_input_chars(
             self.query,
             self.user_prompt,
@@ -436,16 +472,29 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     }
                 },
             },
-            400: {
-                "description": "Bad Request - Invalid input parameters",
+            422: {
+                "description": "Unprocessable Entity - Request validation failed",
                 "content": {
                     "application/json": {
                         "schema": {
                             "type": "object",
-                            "properties": {"detail": {"type": "string"}},
+                            "properties": {
+                                "detail": {"type": "array", "items": {"type": "object"}}
+                            },
                         },
                         "example": {
-                            "detail": "RAG query must have an English-equivalent length of at least 3; each Chinese character counts as 2"
+                            "detail": [
+                                {
+                                    "type": "value_error",
+                                    "loc": ["body"],
+                                    "msg": (
+                                        "Value error, RAG query is too short. Enter at "
+                                        "least 3 English characters or an equivalent "
+                                        "combination where each Chinese, Japanese or "
+                                        "Korean character counts as 2."
+                                    ),
+                                }
+                            ]
                         },
                     }
                 },
@@ -524,7 +573,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
         Args:
             request (QueryRequest): The request object containing query parameters:
-                - **query**: The question or prompt to process. RAG modes require an English-equivalent length of at least 3; each Chinese character counts as 2. Bypass mode is exempt.
+                - **query**: The question or prompt to process. Must not be empty. RAG modes additionally require an English-equivalent length of at least 3; each Chinese, Japanese or Korean character counts as 2. Bypass mode is exempt from the minimum, not from being non-empty.
                 - **mode**: Query strategy - "mix" recommended for best results
                 - **include_references**: Whether to include source citations
                 - **response_type**: Format preference (e.g., "Multiple Paragraphs")
@@ -539,7 +588,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
         Raises:
             HTTPException:
-                - 400: Invalid input parameters (e.g., query too short)
+                - 422: Request validation failed (e.g., query empty or too short)
                 - 500: Internal processing error (e.g., LLM service unavailable)
         """
         try:
@@ -742,16 +791,29 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     }
                 },
             },
-            400: {
-                "description": "Bad Request - Invalid input parameters",
+            422: {
+                "description": "Unprocessable Entity - Request validation failed",
                 "content": {
                     "application/json": {
                         "schema": {
                             "type": "object",
-                            "properties": {"detail": {"type": "string"}},
+                            "properties": {
+                                "detail": {"type": "array", "items": {"type": "object"}}
+                            },
                         },
                         "example": {
-                            "detail": "RAG query must have an English-equivalent length of at least 3; each Chinese character counts as 2"
+                            "detail": [
+                                {
+                                    "type": "value_error",
+                                    "loc": ["body"],
+                                    "msg": (
+                                        "Value error, RAG query is too short. Enter at "
+                                        "least 3 English characters or an equivalent "
+                                        "combination where each Chinese, Japanese or "
+                                        "Korean character counts as 2."
+                                    ),
+                                }
+                            ]
                         },
                     }
                 },
@@ -893,7 +955,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
         Args:
             request (QueryRequest): The request object containing query parameters:
-                - **query**: The question or prompt to process. RAG modes require an English-equivalent length of at least 3; each Chinese character counts as 2. Bypass mode is exempt.
+                - **query**: The question or prompt to process. Must not be empty. RAG modes additionally require an English-equivalent length of at least 3; each Chinese, Japanese or Korean character counts as 2. Bypass mode is exempt from the minimum, not from being non-empty.
                 - **mode**: Query strategy - "mix" recommended for best results
                 - **stream**: Enable streaming (True) or complete response (False)
                 - **include_references**: Whether to include source citations
@@ -916,7 +978,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
         Raises:
             HTTPException:
-                - 400: Invalid input parameters (e.g., query too short, invalid mode)
+                - 422: Request validation failed (e.g., query empty or too short, invalid mode)
                 - 500: Internal processing error (e.g., LLM service unavailable)
 
         Note:
@@ -1316,15 +1378,28 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 },
             },
             400: {
-                "description": "Bad Request - Invalid input parameters",
+                "description": "Bad Request - Request validation failed",
                 "content": {
                     "application/json": {
                         "schema": {
                             "type": "object",
-                            "properties": {"detail": {"type": "string"}},
+                            "properties": {
+                                "status": {"type": "string"},
+                                "message": {"type": "string"},
+                                "data": {"type": "object"},
+                                "metadata": {"type": "object"},
+                            },
                         },
                         "example": {
-                            "detail": "RAG query must have an English-equivalent length of at least 3; each Chinese character counts as 2"
+                            "status": "failure",
+                            "message": (
+                                "Validation error: body: Value error, RAG query is "
+                                "too short. Enter at least 3 English characters or "
+                                "an equivalent combination where each Chinese, "
+                                "Japanese or Korean character counts as 2."
+                            ),
+                            "data": {},
+                            "metadata": {},
                         },
                     }
                 },
@@ -1424,7 +1499,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
         Args:
             request (QueryRequest): The request object containing query parameters:
-                - **query**: The search query to analyze. RAG modes require an English-equivalent length of at least 3; each Chinese character counts as 2. Bypass mode is exempt.
+                - **query**: The search query to analyze. Must not be empty. RAG modes additionally require an English-equivalent length of at least 3; each Chinese, Japanese or Korean character counts as 2. Bypass mode is exempt from the minimum, not from being non-empty.
                 - **mode**: Retrieval strategy affecting data types returned
                 - **top_k**: Number of top entities/relationships to retrieve
                 - **chunk_top_k**: Number of text chunks to retrieve
@@ -1441,7 +1516,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
         Raises:
             HTTPException:
-                - 400: Invalid input parameters (e.g., query too short, invalid mode)
+                - 400: Request validation failed (e.g., query empty or too short, invalid mode)
                 - 500: Internal processing error (e.g., knowledge graph unavailable)
 
         Note:

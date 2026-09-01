@@ -445,7 +445,8 @@
       "error": "错误：获取响应失败",
       "queryModeError": "仅支持以下查询模式：{{modes}}",
       "queryModePrefixInvalid": "无效的查询模式前缀。请使用：/<模式> [空格] 查询内容",
-      "queryTooShort": "查询内容太短。请至少输入 3 个英文字符或等效组合；每个中文字符按 2 个英文字符计算。",
+      "queryEmpty": "发送前请先输入问题。",
+      "queryTooShort": "查询内容太短。请至少输入 3 个英文字符或等效组合；每个中日韩字符按 2 个英文字符计算。",
       "dismissError": "关闭错误提示"
     },
     "querySettings": {
@@ -491,8 +492,10 @@
       "streamResponse": "流式响应",
       "streamResponseTooltip": "如果为True，启用实时流式输出响应",
       "userPrompt": "附加输出提示词",
-      "userPromptTooltip": "向LLM提供额外的响应要求（与查询内容无关，仅用于处理输出）。",
+      "userPromptTooltip": "向LLM提供额外的响应要求（与查询内容无关，仅用于处理输出）。服务端可能会在其前面拼接全局提示词。留空则只发送服务端的全局提示词。",
       "userPromptPlaceholder": "输入自定义提示词（可选）",
+      "disableUserPromptPrefix": "忽略全局提示词",
+      "disableUserPromptPrefixTooltip": "不要将服务端的全局输出提示词拼接到上面的附加输出提示词前面。开启后由此处完全控制最终指令。",
       "enableRerank": "启用重排",
       "enableRerankTooltip": "为检索到的文本块启用重排。如果为True但未配置重排模型，将发出警告。默认为True。"
     }
