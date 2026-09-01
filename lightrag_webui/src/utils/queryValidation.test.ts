@@ -49,6 +49,16 @@ describe('RAG query validation', () => {
     }
   })
 
+  test('weighs the supplementary Chinese iteration marks', () => {
+    // U+16FE1 belongs with Nushu and U+16FE3 with Old Chinese, both already
+    // weighted as scripts; U+16FE2 between them is punctuation and U+16FE0 is
+    // the Tangut mark, which writes another language.
+    expect(ragQueryWeight('\u{16fe1}\u{16fe1}')).toBe(4)
+    expect(ragQueryWeight('\u{16fe3}\u{16fe3}')).toBe(4)
+    expect(ragQueryWeight('\u{16fe2}\u{16fe2}')).toBe(2)
+    expect(ragQueryWeight('\u{16fe0}\u{16fe0}')).toBe(2)
+  })
+
   test('leaves the halfwidth sound marks at one', () => {
     // Lm, so the letters rule alone would double them — but halfwidth ｶﾞ is the
     // single syllable fullwidth writes as ガ, and doubling the mark would make

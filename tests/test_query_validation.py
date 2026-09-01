@@ -50,6 +50,10 @@ pytestmark = pytest.mark.offline
         ("〆〆", 4),  # U+3006 ideographic closing mark
         ("〻〼", 4),  # U+303B vertical ideographic iteration, U+303C masu mark
         ("〡〢", 4),  # Hangzhou numerals, Nl like 〇
+        ("\U00016fe1\U00016fe1", 4),  # NUSHU ITERATION MARK
+        ("\U00016fe3\U00016fe3", 4),  # OLD CHINESE ITERATION MARK
+        ("\U00016fe2\U00016fe2", 2),  # OLD CHINESE HOOK MARK is Po
+        ("\U00016fe0\U00016fe0", 2),  # TANGUT ITERATION MARK writes another language
         ("・・", 2),  # U+30FB KATAKANA MIDDLE DOT (Po)
         ("゛゜", 2),  # U+309B/U+309C voiced sound marks (Sk)
         ("゠゠", 2),  # U+30A0 KATAKANA-HIRAGANA DOUBLE HYPHEN (Pd)
@@ -332,63 +336,57 @@ def test_the_numeral_ranges_are_exactly_the_block_nl_set():
     assert declared == block_nl
 
 
-# Every Unicode block that carries letters of a script used to write Chinese,
-# Japanese or Korean. The tables were originally assembled block by block from
-# memory, which is how letters sitting in a block named for its punctuation —
-# 々, 〆, the vertical kana repeat marks — went missing, and how Bopomofo went
-# missing entirely. Auditing against this list is what closes that class.
-_CJK_LETTER_BLOCKS = (
-    (0x1100, 0x11FF),  # Hangul Jamo
-    (0x3000, 0x303F),  # CJK Symbols and Punctuation
-    (0x3040, 0x309F),  # Hiragana
-    (0x30A0, 0x30FF),  # Katakana
-    (0x3100, 0x312F),  # Bopomofo
-    (0x3130, 0x318F),  # Hangul Compatibility Jamo
-    (0x3190, 0x319F),  # Kanbun
-    (0x31A0, 0x31BF),  # Bopomofo Extended
-    (0x31C0, 0x31EF),  # CJK Strokes
-    (0x31F0, 0x31FF),  # Katakana Phonetic Extensions
-    (0x3200, 0x33FF),  # Enclosed CJK Letters and Months, CJK Compatibility
-    (0x3400, 0x4DBF),  # CJK Extension A
-    (0x4E00, 0x9FFF),  # CJK Unified Ideographs
-    (0xA960, 0xA97F),  # Hangul Jamo Extended-A
-    (0xAC00, 0xD7AF),  # Hangul Syllables
-    (0xD7B0, 0xD7FF),  # Hangul Jamo Extended-B
-    (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
-    (0xFE30, 0xFE4F),  # CJK Compatibility Forms
-    (0xFF61, 0xFFDC),  # Halfwidth Forms — the CJK part, not fullwidth Latin
-    (0x1AFF0, 0x1AFFF),  # Kana Extended-B
-    (0x1B000, 0x1B16F),  # Kana Supplement / Extended-A / Small Kana Extension
-    (0x1B170, 0x1B2FF),  # Nushu
-    (0x2F800, 0x2FA1F),  # CJK Compatibility Ideographs Supplement
+# Names of the scripts used to write Chinese, Japanese and Korean, matched as
+# SUBSTRINGS of the Unicode character name. This replaces a hand-listed set of
+# Unicode blocks, which was the third audit in a row whose own coverage was the
+# defect: a name-prefix match missed "VERTICAL KANA REPEAT MARK", the block list
+# that replaced it omitted Bopomofo, and the corrected block list still omitted
+# Ideographic Symbols and Punctuation. A keyword scan over the WHOLE code space
+# has no coverage to under-specify — the contract is the keyword list itself.
+#
+# Tangut and Khitan are absent on purpose: they are written with Han-derived
+# characters but are not Chinese, Japanese or Korean, which is what the
+# minimum's contract speaks about.
+_CJK_SCRIPT_KEYWORDS = (
+    "CJK",
+    "HIRAGANA",
+    "KATAKANA",
+    "KANA",
+    "HANGUL",
+    "IDEOGRAPH",
+    "BOPOMOFO",
+    "NUSHU",
+    "CHINESE",
+    "KANBUN",
 )
 
-# Letters in those blocks that are deliberately NOT weighted.
+# Every letter the scan reaches that is deliberately NOT weighted. Small and
+# fully reasoned by construction — if it ever needs a new entry, that is a
+# decision someone is making on purpose.
 _DELIBERATELY_UNWEIGHTED = {
     # Fillers render as nothing at all; two of them are not a query.
-    0x115F,
-    0x1160,
-    0x3164,
-    0xFFA0,
-    # The halfwidth sound marks are the other half of the preceding letter —
-    # ｶ + ﾞ is the single syllable fullwidth writes as ガ. Weighting the mark
-    # would make that syllable cost 4 halfwidth against 2 fullwidth, inverting
-    # the equivalence that put halfwidth kana in the table at all.
-    0xFF9E,
-    0xFF9F,
+    0x115F: "HANGUL CHOSEONG FILLER",
+    0x1160: "HANGUL JUNGSEONG FILLER",
+    0x3164: "HANGUL FILLER",
+    0xFFA0: "HALFWIDTH HANGUL FILLER",
+    # The other half of the preceding letter — ｶ + ﾞ is the single syllable
+    # fullwidth writes as ガ. Weighting the mark would cost 4 halfwidth against
+    # 2 fullwidth, inverting the equivalence that put halfwidth kana in the
+    # table at all.
+    0xFF9E: "HALFWIDTH KATAKANA VOICED SOUND MARK",
+    0xFF9F: "HALFWIDTH KATAKANA SEMI-VOICED SOUND MARK",
+    # Not CJK: the keywords appear inside an unrelated word.
+    0x16D2: "RUNIC LETTER BERKANAN BEORC BJARKAN B",
+    0x10094: "LINEAR B MONOGRAM B128 KANAKO",
 }
 
 
 def test_no_cjk_letter_lives_outside_the_two_tables():
     """Closes the class the vertical kana repeat marks belonged to.
 
-    Reporting them one at a time — 〳〵 this round, 々 or ㄅㄆ the next — never
-    ends. Every assigned letter of every CJK-writing script is either weighted
-    or on the short, reasoned exclusion list above.
-
-    Scripts are matched by BLOCK, not by character name: "VERTICAL KANA REPEAT
-    MARK" does not start with "KANA", and "BOPOMOFO LETTER B" contains none of
-    the obvious keywords, so a name-based audit passed while both were missing.
+    Reporting them one at a time — 〳〵, then ㄅㄆ, then the Nushu iteration
+    mark — never ends. Every assigned letter of every CJK-writing script in the
+    whole code space is either weighted or listed above with a reason.
     """
     import unicodedata
 
@@ -399,28 +397,34 @@ def test_no_cjk_letter_lives_outside_the_two_tables():
     }
 
     missing = []
-    for block_start, block_end in _CJK_LETTER_BLOCKS:
-        for codepoint in range(block_start, block_end + 1):
-            if codepoint in weighted or codepoint in _DELIBERATELY_UNWEIGHTED:
-                continue
-            character = chr(codepoint)
-            name = unicodedata.name(character, None)
-            if name and unicodedata.category(character).startswith("L"):
-                missing.append((codepoint, name))
+    for codepoint in range(0x110000):
+        if 0xD800 <= codepoint <= 0xDFFF:  # surrogates are not characters
+            continue
+        if codepoint in weighted or codepoint in _DELIBERATELY_UNWEIGHTED:
+            continue
+        character = chr(codepoint)
+        name = unicodedata.name(character, None)
+        if not name or not unicodedata.category(character).startswith("L"):
+            continue
+        if any(keyword in name for keyword in _CJK_SCRIPT_KEYWORDS):
+            missing.append((codepoint, name))
 
     assert missing == [], "\n".join(f"U+{cp:04X} {name}" for cp, name in missing)
 
 
 def test_the_exclusion_list_is_not_a_dumping_ground():
-    """Each deliberate exclusion must be a real letter in a real CJK block."""
+    """Each exclusion must still be the letter its comment claims it is.
+
+    A stale entry would silently hide a real gap the moment Unicode reuses or
+    renames nothing — the point is that the list stays readable and each line
+    keeps earning its place.
+    """
     import unicodedata
 
-    in_blocks = {
-        cp for start, end in _CJK_LETTER_BLOCKS for cp in range(start, end + 1)
-    }
-    for codepoint in sorted(_DELIBERATELY_UNWEIGHTED):
-        assert codepoint in in_blocks, f"U+{codepoint:04X}"
-        assert unicodedata.category(chr(codepoint)).startswith("L")
+    for codepoint, expected_name in _DELIBERATELY_UNWEIGHTED.items():
+        character = chr(codepoint)
+        assert unicodedata.name(character, None) == expected_name, f"U+{codepoint:04X}"
+        assert unicodedata.category(character).startswith("L")
 
 
 @pytest.mark.parametrize("codepoint", [0xFF9E, 0xFF9F])

@@ -47,6 +47,8 @@ export const WIDE_CODEPOINT_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0xffca, 0xffcf], // Halfwidth Hangul
   [0xffd2, 0xffd7], // Halfwidth Hangul
   [0xffda, 0xffdc], // Halfwidth Hangul
+  [0x16fe1, 0x16fe1], // NUSHU ITERATION MARK — U+16FE2 between them is Po
+  [0x16fe3, 0x16fe3], // OLD CHINESE ITERATION MARK
   [0x1aff0, 0x1aff3], // Kana Extended-B
   [0x1aff5, 0x1affb], // Kana Extended-B
   [0x1affd, 0x1affe], // Kana Extended-B

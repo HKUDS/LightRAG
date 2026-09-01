@@ -60,6 +60,8 @@ _WIDE_CODEPOINT_RANGES = (
     (0xFFCA, 0xFFCF),  # Halfwidth Hangul
     (0xFFD2, 0xFFD7),  # Halfwidth Hangul
     (0xFFDA, 0xFFDC),  # Halfwidth Hangul
+    (0x16FE1, 0x16FE1),  # NUSHU ITERATION MARK — U+16FE2 between them is Po
+    (0x16FE3, 0x16FE3),  # OLD CHINESE ITERATION MARK
     (0x1AFF0, 0x1AFF3),  # Kana Extended-B
     (0x1AFF5, 0x1AFFB),  # Kana Extended-B
     (0x1AFFD, 0x1AFFE),  # Kana Extended-B
