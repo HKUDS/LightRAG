@@ -117,6 +117,56 @@ def test_txt_suffix_is_accepted(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Startup visibility: which of the two env vars actually took effect.
+# ---------------------------------------------------------------------------
+
+
+def test_inline_source_is_logged(monkeypatch, caplog):
+    """Two env vars can supply this value, so the log must name the winner."""
+    monkeypatch.setenv("USER_PROMPT_PREFIX", "Answer in Chinese.")
+
+    with caplog.at_level("INFO", logger="lightrag"):
+        load_user_prompt_prefix_source()
+
+    assert "USER_PROMPT_PREFIX (18 chars)" in caplog.text
+    assert "USER_PROMPT_PREFIX_FILE" not in caplog.text
+
+
+def test_file_source_logs_the_resolved_path(monkeypatch, tmp_path, caplog):
+    """The resolved path is what an operator checks; the bare name is not."""
+    prefix_dir = _prefix_dir(monkeypatch, tmp_path)
+    (prefix_dir / "house.md").write_text("House rules.\n", encoding="utf-8")
+    monkeypatch.setenv("USER_PROMPT_PREFIX_FILE", "house.md")
+
+    with caplog.at_level("INFO", logger="lightrag"):
+        load_user_prompt_prefix_source()
+
+    assert "USER_PROMPT_PREFIX_FILE" in caplog.text
+    assert str(prefix_dir / "house.md") in caplog.text
+    assert "13 chars" in caplog.text
+
+
+def test_an_empty_file_still_logs_its_source(monkeypatch, tmp_path, caplog):
+    """An operator asking why the prefix is missing needs to see "0 chars"."""
+    prefix_dir = _prefix_dir(monkeypatch, tmp_path)
+    (prefix_dir / "house.md").write_text("", encoding="utf-8")
+    monkeypatch.setenv("USER_PROMPT_PREFIX_FILE", "house.md")
+
+    with caplog.at_level("INFO", logger="lightrag"):
+        assert load_user_prompt_prefix_source() == ""
+
+    assert "0 chars" in caplog.text
+
+
+def test_nothing_configured_logs_nothing(monkeypatch, caplog):
+    """No prefix means no line: a log entry here would only mislead."""
+    with caplog.at_level("INFO", logger="lightrag"):
+        assert load_user_prompt_prefix_source() == ""
+
+    assert "User prompt prefix" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
 # Failure modes: log and degrade, never raise.
 # ---------------------------------------------------------------------------
 

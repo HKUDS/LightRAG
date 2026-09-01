@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test'
 import { QUERY_SETTINGS_STORAGE_KEY, WEBUI_RETRIEVAL_HISTORY_KEY } from '@/lib/storageKeys'
 import type { navigationService as NavigationServiceType } from '@/services/navigation'
+import { restoreDomGlobals } from '@/test/domGlobals'
 
 /**
  * Workspace entry bootstrap: configures the navigation singleton for THIS
@@ -83,7 +84,7 @@ beforeAll(async () => {
 afterAll(() => {
   configureSpy?.mockRestore()
   navigationService.resetForTests()
-  delete (globalThis as Record<string, unknown>).window
+  restoreDomGlobals()
 })
 
 const recordedConfig = () => {
