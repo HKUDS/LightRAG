@@ -204,6 +204,7 @@ bun test                           # All tests
 bun test --watch                   # Watch mode
 bun test --coverage                # With coverage report
 bun test src/api/lightrag.test.ts  # Single test file
+bunx tsc --noEmit                  # Typecheck (`bun run build` does NOT typecheck)
 ```
 
 ### Testing
@@ -214,6 +215,38 @@ bun test src/api/lightrag.test.ts  # Single test file
 - Derive the subset from the mirror layout below: `lightrag/api/config.py` → `tests/api/config/`, `lightrag/kg/redis_impl.py` → `tests/kg/redis_impl/`, `lightrag/chunker/` → `tests/chunker/`. When a change spans several modules, run each of their directories rather than widening to `tests/`.
 - Run the full suite locally only at a milestone, or when the change is genuinely cross-cutting (`lightrag/base.py`, `lightrag/utils.py`, `lightrag/kg/shared_storage.py`, or anything every backend inherits).
 - Backend tests use pytest; frontend unit tests use Bun's built-in runner — see *WebUI* above.
+
+#### React component tests
+
+The WebUI has a DOM in `bun test`: `bunfig.toml` preloads `src/test/happydom.ts`
+(registers happy-dom globally) and then `src/test/setup.ts` (jest-dom matchers
+plus Testing Library's `cleanup` in `afterEach`). Order is load-bearing —
+Testing Library binds to whatever `document` exists when it is first evaluated.
+
+- Render through `renderWithProviders` (`src/test/render.tsx`), which supplies a
+  fixed English i18n instance built from `locales/en.json`. It deliberately does
+  NOT import `@/i18n`: that bootstrap resolves a language from `localStorage`
+  and runs the settings migration, which would make asserted strings depend on
+  ambient state.
+- Assert what the user gets — roles, accessible names, visibility — not what the
+  source text looks like. A number of older tests `readFileSync` the `.tsx` and
+  assert on substrings; that style cannot see whether Radix's `asChild` actually
+  wired the trigger up, and breaks on equivalent rewrites. Prefer a real render
+  for anything about rendered behavior, and keep string/AST assertions for what
+  genuinely is a source-level property.
+- **The DOM is process-wide.** Bun evaluates every test file in one process, so
+  `delete globalThis.window` in one file removes it for every file that runs
+  later — and the failure surfaces somewhere else entirely. To exercise a
+  DOM-less code path use `withoutDomGlobals(body, keys?)` from
+  `src/test/domGlobals.ts`, or `restoreDomGlobals()` in an `afterEach`.
+
+The harness never reaches the browser: Vite bundles from the import graph rooted
+at `index.html` / `workspace.html`, and the harness is reached only through the
+runner's preload. `src/test/harnessIsolation.test.ts` pins this (no production
+module may import `@/test/`, `@testing-library/*` or `@happy-dom/*`, in any
+import form), and `vite.config.ts`'s first-load byte budget backs it up.
+Dependency-section placement is not what decides this — `@faker-js/faker` is a
+runtime `dependencies` entry because `hooks/useRandomGraph.tsx` imports it.
 
 ```bash
 # Preferred for fresh shells and automation; resolves PYTHON, venv, uv, .venv, venv, python, python3
