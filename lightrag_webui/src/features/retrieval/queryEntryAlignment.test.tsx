@@ -104,33 +104,30 @@ let processSnapshot: ProcessStateSnapshot
 let fileSnapshot: ProcessStateSnapshot
 
 beforeEach(() => {
-  // First, before anything below mutates a store.
+  // Captured FIRST, before anything below mutates a store — and only captured
+  // here; the matching restore belongs in the teardown.
   fileSnapshot ??= captureProcessState(sharedStores)
   processSnapshot = captureProcessState(sharedStores)
   requests.length = 0
   // The workspace empty state sits behind `useCustomizedContent`, which renders
   // a placeholder — and fires a real request — until a snapshot has settled.
   seedCustomization()
-  act(() => {
-    restoreProcessState(sharedStores, processSnapshot)
-  })
+  // An explicit baseline rather than whatever preceded this file.
+  setQuerySettings()
 })
 
 afterEach(() => {
-  // First, so the store resets below land on an UNMOUNTED tree: the preload's
-  // own `cleanup()` runs after this hook, too late to stop a teardown re-render
+  // First, so the restore below lands on an UNMOUNTED tree: the preload's own
+  // `cleanup()` runs after this hook, too late to stop a teardown re-render
   // from starting a request that lands during the next test.
   cleanup()
   resetCustomization()
-  // These stores are singletons shared with every other file. The `beforeEach`
-  // above happens to leave them clean today, but only because this file's last
-  // tests are source-level ones that still run it; moving or removing those
-  // would hand the next file a `global`-mode snapshot and a populated
-  // transcript. Restoring here does not depend on that accident.
-  setQuerySettings()
+  // Every singleton this test touched, back to what it found. The admin entry
+  // records a used `user_prompt` into the PERSISTED settings history, so
+  // resetting only the query settings and the transcripts would leave that
+  // behind for the next test in this file.
   act(() => {
-    useWebuiRetrievalHistoryStore.getState().clearHistory()
-    useWorkspaceRetrievalHistoryStore.getState().clearHistory()
+    restoreProcessState(sharedStores, processSnapshot)
   })
 })
 
