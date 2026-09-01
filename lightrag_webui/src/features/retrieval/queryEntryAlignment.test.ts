@@ -19,6 +19,28 @@ const ENTRIES = [
   ]
 ] as const
 
+describe('query settings entry alignment', () => {
+  const workspace = ENTRIES.find(([entry]) => entry === 'workspace')![1]
+
+  test('workspace derives its snapshot through the shared policy', () => {
+    // The contract is that this entry USES /webui's configuration. Inlining
+    // the spread again is how it would drift: the policy's own tests would
+    // keep passing while this entry quietly stopped obeying them.
+    expect(workspace).toMatch(
+      /import\s*\{[^}]*\bworkspaceQuerySettingsSnapshot\b[^}]*\}\s*from/
+    )
+    expect(workspace).toMatch(/workspaceQuerySettingsSnapshot\(/)
+  })
+
+  test('workspace does not re-clamp settings locally', () => {
+    // Any override belongs in WORKSPACE_CLAMPED_SETTINGS, where a test pins
+    // the size of the exemption list.
+    expect(workspace).not.toMatch(/only_need_context:\s*false/)
+    expect(workspace).not.toMatch(/only_need_prompt:\s*false/)
+    expect(workspace).not.toMatch(/disable_user_prompt_prefix:/)
+  })
+})
+
 describe('query entry input alignment', () => {
   test.each(ENTRIES)('%s delegates prefix parsing to the shared helper', (_entry, source) => {
     expect(source).toMatch(/import\s*\{[^}]*\bprepareQueryInput\b[^}]*\}\s*from/)
