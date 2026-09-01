@@ -311,10 +311,6 @@ export type DocStatusResponse = {
   file_path: string
 }
 
-export type DocsStatusesResponse = {
-  statuses: Partial<Record<DocStatus, DocStatusResponse[]>>
-}
-
 export type TrackStatusResponse = {
   track_id: string
   documents: DocStatusResponse[]
