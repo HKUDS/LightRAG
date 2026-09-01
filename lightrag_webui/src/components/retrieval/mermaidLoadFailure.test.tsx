@@ -308,9 +308,11 @@ describe('mermaid failure branches (source-level)', () => {
     const namesMermaid = (specifier: string): boolean =>
       specifier === 'mermaid' || specifier.startsWith('mermaid/')
 
-    // Paths come back `/`-separated on every platform (`@/test/sourceScan`),
-    // so the expectation below stays a literal instead of quietly failing on
-    // Windows, where `path.join` would report `components\\retrieval\\...`.
+    // `relativePath` returns the `/`-separated TAIL on every platform
+    // (`@/test/sourceScan`), so the expectation below stays a literal instead
+    // of quietly failing on Windows, where `path.join` would report
+    // `components\\retrieval\\...`. Only the tail is guaranteed; the absolute
+    // root keeps whatever separators `join` gave it, and nothing here reads it.
     const srcDir = join(import.meta.dir, '..', '..')
     const importers = sourceFiles(
       srcDir,

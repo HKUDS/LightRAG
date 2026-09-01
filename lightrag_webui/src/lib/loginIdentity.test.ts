@@ -472,10 +472,11 @@ describe('activateLoginIdentityFromToken (the login form\'s only entry point)', 
     const takesNamespace = (source: string): boolean =>
       /import\s*\*\s*as\s+\w+\s*from\s*['"`][^'"`]*loginIdentity['"`]/.test(source)
 
-    // `sourceFiles` builds its paths with `/` on every platform (see
-    // `@/test/sourceScan`); the exclusion below is a forward-slash suffix and
-    // would never fire against `join`'s native separators on Windows, which
-    // would report this module as a violation of its own prohibition.
+    // Every segment `sourceFiles` appends below the root is `/`-separated on
+    // every platform (see `@/test/sourceScan`); the exclusion below is a
+    // forward-slash suffix strictly below that root, so it fires on Windows
+    // too. Against `join`'s native separators it would not, and this module
+    // would be reported as a violation of its own prohibition.
     const srcDir = join(import.meta.dir, '..')
     const callers = sourceFiles(
       srcDir,
