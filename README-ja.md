@@ -334,8 +334,9 @@ VLM_LLM_MODEL=<your_vlm_model_name>
 
 大規模なドキュメント処理では、並行性を高める必要があります。ファイルの並行処理に関連する主要な環境変数は以下のとおりです:
 
-- **MAX_ASYNC_LLM/EXTRACT_ASYNC_LLM**: LLM モデルの最大並行数を制御します。
-- **MAX_PARALLEL_INSERT**: 並行処理されるファイルの最大数を制御します。1つのファイル内のテキスト・表・数式・画像の処理も並行して行われます。`MAX_PARALLEL_INSERT` は理想的には `MAX_ASYNC_LLM` の約1/3に設定すべきです。
+- **MAX_ASYNC_LLM**: LLM ロールの基本並行数を設定します（`MAX_ASYNC` は非推奨の互換エイリアスとして引き続き使用できます）。ファイル処理では、1 文書内の各チャンクに対するエンティティ/関係抽出 task 数もこれで上限が決まり、各エンティティ結合または関係結合フェーズはその 2 倍まで task を実行できます。
+- **EXTRACT_MAX_ASYNC_LLM**: 抽出および結合時の要約に対する、Extract ロールの実際の LLM リクエスト上限を任意で上書きします。未設定時は `MAX_ASYNC_LLM` を継承し、上記のパイプライン task 上限は変更しません。
+- **MAX_PARALLEL_INSERT**: 並行処理するファイル数を制御し、1 文書内の chunk やグラフ結合 task の上限は制御しません。`MAX_ASYNC_LLM` の約 1/3 を目安に設定してください。
 - **MAX_PARALLEL_PARSE_MINERU**: MinerU 解析で並行処理されるファイル数を制御します。
 - **MAX_PARALLEL_PARSE_DOCLING**: Docling 解析で並行処理されるファイル数を制御します。
 - **EMBEDDING_FUNC_MAX_ASYNC**: 埋め込みモデルの最大並行数を制御します。

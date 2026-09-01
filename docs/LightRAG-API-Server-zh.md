@@ -568,7 +568,8 @@ LightRAG 服务器可以在 `Gunicorn + Uvicorn` 预加载模式下运行。Guni
 WORKERS=2
 ### 一批中并行处理的文件数
 MAX_PARALLEL_INSERT=3
-# LLM 的最大并发请求数(MAX_ASYNC 作为兼容旧名仍可用)
+### 基础 LLM 并发与单文档 chunk 抽取 task 上限
+### （MAX_ASYNC 作为兼容旧名仍可用）
 MAX_ASYNC_LLM=4
 ```
 
@@ -977,7 +978,7 @@ python -m lightrag.tools.migrate_graph_storage --apply
 | `--working-dir` | `./rag_storage` | RAG 存储工作目录 |
 | `--input-dir` | `./inputs` | 上传/输入文档目录 |
 | `--timeout` | `150` | Gunicorn worker timeout 以及 fallback 请求超时 |
-| `--max-async` | `4` | 最大并发 LLM 操作数 |
+| `--max-async` | `4` | 基础 LLM 最大并发；也是单文档 chunk 抽取的 task 上限（每个实体/关系合并阶段使用其两倍的 task 上限） |
 | `--log-level` | `INFO` | 日志级别（`DEBUG`、`INFO`、`WARNING`、`ERROR`、`CRITICAL`） |
 | `--verbose` | `False` | 详细调试输出，配合 debug 日志生效 |
 | `--key` | `None` | 用于认证的 API key |
@@ -1253,7 +1254,7 @@ notes.[-R].md
 
 ### 流水线并发
 
-`MAX_PARALLEL_INSERT` 控制并行处理的文件数量。`MAX_ASYNC_LLM`(兼容旧名:`MAX_ASYNC`)控制并发 LLM 调用，包括抽取、合并、查询关键词生成和最终回答生成。解析压力较大的部署可以使用可选的分阶段流水线变量，例如 `MAX_PARALLEL_PARSE_NATIVE`、`MAX_PARALLEL_PARSE_MINERU`、`MAX_PARALLEL_PARSE_DOCLING` 和 `MAX_PARALLEL_ANALYZE`。
+`MAX_PARALLEL_INSERT` 控制并行处理的文件数量，不控制单个文档内的 chunk 或图合并 task 上限。`MAX_ASYNC_LLM`（兼容旧名：`MAX_ASYNC`）是基础 LLM 并发；对每个文档，它将 chunk 的实体/关系抽取 task 限制为 `MAX_ASYNC_LLM` 个，并将每个实体合并或关系合并阶段限制为 `2 × MAX_ASYNC_LLM` 个 task。实际 Extract 角色 LLM 请求在设置了 `EXTRACT_MAX_ASYNC_LLM` 时使用该值，否则使用 `MAX_ASYNC_LLM`；该角色覆盖不会改变流水线 task 上限。解析压力较大的部署可以使用可选的分阶段流水线变量，例如 `MAX_PARALLEL_PARSE_NATIVE`、`MAX_PARALLEL_PARSE_MINERU`、`MAX_PARALLEL_PARSE_DOCLING` 和 `MAX_PARALLEL_ANALYZE`。完整拓扑见[文件处理流水线规格](./FileProcessingPipeline-zh.md#86-流水线并发参数)。
 
 当处理循环 busy 时，上传和文本插入仍可被接受；运行中的循环会被通知并拾取新 pending 文档。`/documents/clear`、单文档删除等破坏性任务，以及 `/documents/scan` 的分类阶段仍会拒绝并发入队，以保护存储一致性。失败文件可通过 WebUI 重新处理，也可以触发 `/documents/scan`。
 
