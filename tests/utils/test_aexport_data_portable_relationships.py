@@ -19,6 +19,7 @@ touches that attribute.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,18 @@ import pytest
 from lightrag.utils import aexport_data
 
 pytestmark = pytest.mark.offline
+
+
+@pytest.fixture
+def _propagate_lightrag_logs():
+    """The ``lightrag`` logger sets propagate=False; caplog needs it on."""
+    lg = logging.getLogger("lightrag")
+    old = lg.propagate
+    lg.propagate = True
+    try:
+        yield
+    finally:
+        lg.propagate = old
 
 
 class _FakeGraphStorage:
@@ -163,3 +176,43 @@ async def test_export_includes_relationships_dump_for_sync_client_storage(
     assert "# RELATIONS" in content
     assert "# RELATIONSHIPS" in content
     assert "rel-2" in content
+
+
+@pytest.mark.asyncio
+async def test_sync_client_storage_snapshot_warns_that_it_may_be_stale(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    _propagate_lightrag_logs: None,
+) -> None:
+    """The sync shape is not reload-checking, so its staleness is announced.
+
+    `FaissVectorDBStorage.client_storage` deliberately does not funnel through
+    `_get_index`, so a reader process can snapshot data older than the latest
+    committed one. The dump is still worth having -- it is correct in the
+    single-process case, and it is supplementary to the graph-sourced content
+    -- but an export used as a backup must not omit recent records silently.
+    """
+    with caplog.at_level("WARNING", logger="lightrag"):
+        await _run_export(tmp_path, _VdbWithSyncClientStorage())
+
+    assert any(
+        "does not check for a newer on-disk commit" in record.message
+        for record in caplog.records
+    ), caplog.text
+
+
+@pytest.mark.asyncio
+async def test_async_client_storage_snapshot_does_not_warn(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    _propagate_lightrag_logs: None,
+) -> None:
+    """The async shape awaits a reload-if-stale path, so it has nothing to warn about."""
+    with caplog.at_level("WARNING", logger="lightrag"):
+        await _run_export(tmp_path, _VdbWithAsyncClientStorage())
+
+    assert not [
+        record
+        for record in caplog.records
+        if "does not check for a newer on-disk commit" in record.message
+    ], caplog.text

@@ -4523,7 +4523,29 @@ async def aexport_data(
         # would silently break the moment either changes.
         client_storage = relationships_vdb.client_storage
         if inspect.isawaitable(client_storage):
+            # Freshness-aware shape (NanoVectorDBStorage): awaiting the
+            # property funnels through the backend's reload-if-stale path,
+            # so the snapshot picks up whatever another process committed.
             client_storage = await client_storage
+        else:
+            # Synchronous shape (FaissVectorDBStorage), which is documented
+            # as deliberately NOT going through `_get_index`: in a reader
+            # process it can hand back a snapshot older than the latest
+            # committed one until some other call triggers a reload. That
+            # is fine in the single-process case a local file-backed store
+            # usually runs in, and this section is a supplementary raw dump
+            # -- the authoritative entity/relation content above comes from
+            # the graph storage -- so the export proceeds. But it must not
+            # pass silently: exports get used for backups, and a section
+            # that quietly omits recent records is worse than one whose
+            # limits are stated.
+            logger.warning(
+                f"{type(relationships_vdb).__name__}.client_storage is a "
+                "synchronous snapshot that does not check for a newer "
+                "on-disk commit; in a multi-process deployment the raw "
+                "VectorDB relationships section of this export may lag "
+                "records committed by another process."
+            )
         for rel in client_storage["data"]:
             relationships_data.append(
                 {
