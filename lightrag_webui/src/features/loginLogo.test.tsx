@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
-import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 
 import { renderWithProviders } from '@/test/render'
@@ -21,11 +21,21 @@ const BUNDLE_LOGO = 'https://cdn.example.test/acme-logo.png'
 let realApiModule: Record<string, unknown>
 let LoginPage: typeof import('./LoginPage').default
 
+/**
+ * What `/auth-status` reports for the next render. Read INSIDE the mock so a
+ * single file-level stub can serve tests that need different responses; the
+ * `webui_title` here is a live value from the server, which the page must
+ * prefer over anything cached when the bundle names no title of its own.
+ */
+let authStatus: { auth_configured: boolean; webui_title?: string } = {
+  auth_configured: true
+}
+
 beforeAll(async () => {
   realApiModule = { ...(await import('@/api/lightrag')) }
   mock.module('@/api/lightrag', () => ({
     ...realApiModule,
-    getAuthStatus: mock(async () => ({ auth_configured: true }))
+    getAuthStatus: mock(async () => authStatus)
   }))
   LoginPage = (await import('./LoginPage')).default
 })
@@ -35,6 +45,7 @@ afterAll(() => {
 })
 
 beforeEach(() => {
+  authStatus = { auth_configured: true }
   // These are pre-login pages; an earlier test file that activates a session
   // would otherwise leave them rendering nothing. The precondition belongs
   // to the test, not to whatever ran before it.
@@ -44,9 +55,15 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  act(() => {
-    resetCustomization()
-  })
+  // Unmount FIRST. A file-local `afterEach` runs BEFORE the preload's
+  // Testing Library `cleanup()`, so resetting the store here would update a
+  // still-mounted `useCustomizedContent`, whose effect immediately calls
+  // `load(locale)` and starts a real /ui/customization request during
+  // teardown — one that can land during the NEXT test and overwrite its
+  // seeded snapshot. `cleanup` is idempotent, so the preload's own call is
+  // still fine.
+  cleanup()
+  resetCustomization()
 })
 
 /**
@@ -90,6 +107,32 @@ describe('login page branding', () => {
     expect(
       await screen.findByRole('heading', { name: 'Acme Knowledge Base' })
     ).toBeInTheDocument()
+  })
+
+  test('falls back to the title /auth-status just reported when the bundle names none', async () => {
+    // The bundle is the preferred source, but an uncustomized deployment can
+    // still set WEBUI_TITLE. That value arrives with the auth-status response
+    // this page load made, so it is the FRESHEST title available and has to
+    // reach the heading — the whole reason the page threads the auth-status
+    // title back into `useCustomizedContent`.
+    authStatus = { auth_configured: true, webui_title: 'Ops Knowledge Base' }
+    seedCustomization({}, { customized: false })
+    await renderLogin()
+
+    expect(
+      await screen.findByRole('heading', { name: 'Ops Knowledge Base' })
+    ).toBeInTheDocument()
+  })
+
+  test('the bundle title still wins over the auth-status one', async () => {
+    authStatus = { auth_configured: true, webui_title: 'Ops Knowledge Base' }
+    seedCustomization({ title: 'Acme Knowledge Base' })
+    await renderLogin()
+
+    expect(
+      await screen.findByRole('heading', { name: 'Acme Knowledge Base' })
+    ).toBeInTheDocument()
+    expect(screen.queryAllByRole('heading', { name: 'Ops Knowledge Base' })).toHaveLength(0)
   })
 
   test('drops a logo that fails to load rather than showing a broken image', async () => {

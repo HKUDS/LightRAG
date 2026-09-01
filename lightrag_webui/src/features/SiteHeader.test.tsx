@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { act, screen, within } from '@testing-library/react'
+import { cleanup, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { renderWithProviders } from '@/test/render'
@@ -24,13 +24,14 @@ const setDeployment = (webuiTitle: string | null, webuiDescription: string | nul
 }
 
 afterEach(() => {
-  // The store is a module singleton shared by every test file in the run, so
-  // it is reset here rather than left dirty. Wrapped in `act` because this
-  // hook can run while a component is still mounted, and an unwrapped
-  // zustand update would then warn.
-  act(() => {
-    setDeployment(null, null)
-  })
+  // Unmount FIRST: a file-local `afterEach` runs BEFORE the preload's
+  // Testing Library `cleanup()`, so resetting a store here would otherwise
+  // update a still-mounted component. `cleanup` is idempotent, so the
+  // preload's own call is still fine.
+  cleanup()
+  // The store is a module singleton shared by every test file in the run,
+  // so it is reset rather than left dirty.
+  setDeployment(null, null)
 })
 
 describe('admin header deployment identity', () => {

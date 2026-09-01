@@ -271,6 +271,13 @@ Rules for new tests:
   built from `locales/en.json` and deliberately does not import `@/i18n`, whose
   bootstrap resolves a language from `localStorage` and runs the settings
   migration — ambient state that asserted strings must not depend on.
+- **A file-local `afterEach` runs BEFORE the preload's `cleanup()`.** So a
+  store reset written there lands on a STILL-MOUNTED component: its effects
+  re-run, and a page behind `useCustomizedContent` starts a real
+  `/ui/customization` request during teardown that can land during the NEXT
+  test and overwrite its seeded snapshot. Call `cleanup()` yourself at the top
+  of the hook, before resetting anything; it is idempotent, so the preload's
+  own call afterwards is harmless.
 - **Never assert `toBeNull()` / `not.toBeInTheDocument()` on a DOM element.**
   Use a count instead — `expect(screen.queryAllByRole(...)).toHaveLength(0)`.
   When such an assertion fails, Bun serialises the entire happy-dom element

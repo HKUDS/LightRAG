@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 
@@ -43,9 +43,15 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  act(() => {
-    resetCustomization()
-  })
+  // Unmount FIRST. A file-local `afterEach` runs BEFORE the preload's
+  // Testing Library `cleanup()`, so resetting the store here would update a
+  // still-mounted `useCustomizedContent`, whose effect immediately calls
+  // `load(locale)` and starts a real /ui/customization request during
+  // teardown — one that can land during the NEXT test and overwrite its
+  // seeded snapshot. `cleanup` is idempotent, so the preload's own call is
+  // still fine.
+  cleanup()
+  resetCustomization()
 })
 
 const seedConsentBundle = (consentDocuments: string | null = LINK_TEXT): void => {
