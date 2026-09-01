@@ -2,88 +2,41 @@ import type { QueryMode } from '@/api/lightrag'
 
 export const MIN_RAG_QUERY_WEIGHT = 3
 
-// East Asian scripts count as two English-equivalent characters. Han ideographs,
-// Japanese kana and Korean Hangul are all included — doubling Han alone rejected
-// ordinary two-character Japanese and Korean words ('ねこ', '오늘') while
-// accepting their Han equivalents. The halfwidth forms are the same letters in a
-// legacy encoding — 'ﾈｺ' is the word 'ネコ' — so they weigh the same; the rule is
-// about how much a character says, not how wide it renders.
+// East Asian characters count as two English-equivalent ones.
 //
-// ASSIGNED LETTERS ONLY (Unicode category L*, minus the three fillers), which is
-// why blocks appear split: doubling whole blocks let '・・', '゛゜', two HANGUL
-// FILLERs and unassigned code points such as U+1AFFF clear the minimum.
+// DELIBERATELY COARSE — block and plane granularity, not per assigned
+// character. U+20000-U+3FFFD is the whole of planes 2 and 3, which Unicode
+// allocates to CJK ideographs, so every extension from B through J and every
+// future one is covered without an edit. The precision given up is worth
+// nothing here: an unassigned or punctuation code point inside these ranges
+// weighs 2 instead of 1, and the cost of that is one retrieval that finds
+// nothing.
 //
-// GENERATED, not hand-edited — from CPython's unicodedata plus an explicit
-// post-UCD-14 allowlist, and verified there. This runtime's \p{L} is NOT the
-// oracle: Bun 1.3.11 calls U+2B73A-U+2B73F, U+2CEA2-U+2CEAD and U+323B0
-// assigned letters, which is how unassigned tails got into this table.
 // Keep in sync with lightrag/query_validation.py.
 export const WIDE_CODEPOINT_RANGES: ReadonlyArray<readonly [number, number]> = [
-  [0x1100, 0x115e], // Hangul Jamo
-  [0x1161, 0x11ff], // Hangul Jamo
-  [0x3005, 0x3006], // Ideographic iteration mark 々 and closing mark 〆
-  [0x3031, 0x3035], // Vertical kana repeat marks 〱〲〳〴〵
-  [0x303b, 0x303c], // Vertical ideographic iteration mark 〻, masu mark 〼
-  [0x3041, 0x3096], // Hiragana
-  [0x309d, 0x309f], // Hiragana
-  [0x30a1, 0x30fa], // Katakana
-  [0x30fc, 0x30ff], // Katakana
-  [0x3105, 0x312f], // Bopomofo (zhuyin) — the phonetic notation used in Taiwan
-  [0x3131, 0x3163], // Hangul Compatibility Jamo
-  [0x3165, 0x318e], // Hangul Compatibility Jamo
-  [0x31a0, 0x31bf], // Bopomofo Extended
-  [0x31f0, 0x31ff], // Katakana Phonetic Extensions
-  [0x3400, 0x4dbf], // CJK Ext A
+  [0x1100, 0x115f], // Hangul Jamo
+  [0x2e80, 0x303e], // CJK Radicals, Kangxi, CJK Symbols and Punctuation
+  [0x3041, 0x33ff], // Kana, Bopomofo, Hangul Compat Jamo, Kanbun, Enclosed CJK
+  [0x3400, 0x4dbf], // CJK Unified Ideographs Extension A
   [0x4e00, 0x9fff], // CJK Unified Ideographs
-  [0xa960, 0xa97c], // Hangul Jamo Extended-A
+  [0xa000, 0xa4cf], // Yi Syllables and Radicals
+  [0xa960, 0xa97f], // Hangul Jamo Extended-A
   [0xac00, 0xd7a3], // Hangul Syllables
-  [0xd7b0, 0xd7c6], // Hangul Jamo Extended-B
-  [0xd7cb, 0xd7fb], // Hangul Jamo Extended-B
-  [0xf900, 0xfa6d], // CJK Compatibility Ideographs
-  [0xfa70, 0xfad9], // CJK Compatibility Ideographs
-  [0xff66, 0xff9d], // Halfwidth Katakana
-  [0xffa1, 0xffbe], // Halfwidth Hangul
-  [0xffc2, 0xffc7], // Halfwidth Hangul
-  [0xffca, 0xffcf], // Halfwidth Hangul
-  [0xffd2, 0xffd7], // Halfwidth Hangul
-  [0xffda, 0xffdc], // Halfwidth Hangul
-  [0x16fe1, 0x16fe1], // NUSHU ITERATION MARK — U+16FE2 between them is Po
-  [0x16fe3, 0x16fe3], // OLD CHINESE ITERATION MARK
-  [0x1aff0, 0x1aff3], // Kana Extended-B
-  [0x1aff5, 0x1affb], // Kana Extended-B
-  [0x1affd, 0x1affe], // Kana Extended-B
-  [0x1b000, 0x1b122], // Kana Supplement / Extended-A / Small Kana Ext
-  [0x1b132, 0x1b132], // Kana Supplement / Extended-A / Small Kana Ext
-  [0x1b150, 0x1b152], // Kana Supplement / Extended-A / Small Kana Ext
-  [0x1b155, 0x1b155], // Kana Supplement / Extended-A / Small Kana Ext
-  [0x1b164, 0x1b167], // Kana Supplement / Extended-A / Small Kana Ext
-  [0x1b170, 0x1b2fb], // Nushu — a script for writing Chinese
-  [0x20000, 0x2a6df], // CJK Ext B
-  [0x2a700, 0x2b739], // CJK Ext C
-  [0x2b740, 0x2b81d], // CJK Ext D
-  [0x2b820, 0x2cea1], // CJK Ext E
-  [0x2ceb0, 0x2ebe0], // CJK Ext F
-  [0x2ebf0, 0x2ee5d], // CJK Ext I
-  [0x2f800, 0x2fa1d], // CJK Compatibility Ideographs Supplement
-  [0x30000, 0x3134a], // CJK Ext G
-  [0x31350, 0x323af] // CJK Ext H
-]
-
-// CJK numerals written as characters rather than digits — general category Nl,
-// not L*, so they are a second table rather than entries in the one above.
-// 〇 is how a Chinese year is written (二〇二五年); the Suzhou/Hangzhou numerals
-// are the same idea. Mirrors _WIDE_NUMERAL_RANGES in lightrag/query_validation.py.
-export const WIDE_NUMERAL_RANGES: ReadonlyArray<readonly [number, number]> = [
-  [0x3007, 0x3007], // IDEOGRAPHIC NUMBER ZERO 〇
-  [0x3021, 0x3029], // HANGZHOU NUMERAL ONE..NINE
-  [0x3038, 0x303a] // HANGZHOU NUMERAL TEN, TWENTY, THIRTY
+  [0xf900, 0xfaff], // CJK Compatibility Ideographs
+  [0xfe30, 0xfe4f], // CJK Compatibility Forms
+  [0xff00, 0xff60], // Fullwidth Forms
+  [0xff66, 0xff9d], // Halfwidth Katakana — East Asian NARROW, but the
+  [0xffa1, 0xffdc], // Halfwidth Hangul — same letters as the wide forms
+  [0xffe0, 0xffe6], // Fullwidth signs
+  [0x16fe0, 0x16fe4], // Ideographic Symbols and Punctuation
+  [0x17000, 0x18aff], // Tangut
+  [0x1aff0, 0x1b2ff], // Kana Extended-B/Supplement/Extended-A, Small Kana, Nushu
+  [0x20000, 0x3fffd] // Planes 2 and 3 — every CJK extension, present and future
 ]
 
 function isWideCharacter(character: string): boolean {
   const codePoint = character.codePointAt(0) ?? 0
-  const inRange = ([start, end]: readonly [number, number]) =>
-    codePoint >= start && codePoint <= end
-  return WIDE_CODEPOINT_RANGES.some(inRange) || WIDE_NUMERAL_RANGES.some(inRange)
+  return WIDE_CODEPOINT_RANGES.some(([start, end]) => codePoint >= start && codePoint <= end)
 }
 
 /**

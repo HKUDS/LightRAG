@@ -5,101 +5,53 @@ from __future__ import annotations
 
 MIN_RAG_QUERY_WEIGHT = 3
 
-# East Asian scripts count as two English-equivalent characters: a two-character
+# East Asian characters count as two English-equivalent ones: a two-character
 # CJK word carries about as much retrieval signal as a three-letter English one.
-# Han ideographs, Japanese kana and Korean Hangul are all included — restricting
-# the doubling to Han alone rejected ordinary two-character Japanese and Korean
-# words ("ねこ", "오늘") while accepting their Han equivalents. The halfwidth
-# forms are the same letters in a legacy encoding — "ﾈｺ" is the word "ネコ" — so
-# they weigh the same; the rule is about how much a character says, not how wide
-# it renders.
 #
-# The table holds ASSIGNED LETTERS ONLY, which is why blocks appear split.
-# Doubling whole blocks let input that says nothing clear the minimum: "・・"
-# (U+30FB, Po) and "゛゜" (U+309B/C, Sk) weighed 4, as did two HANGUL FILLERs
-# (U+3164, which render as nothing) and two unassigned code points such as
-# U+1AFFF. The line is Unicode general category L*, minus the three fillers,
-# minus everything unassigned.
+# These are the East Asian Wide/Fullwidth blocks — DELIBERATELY COARSE, at block
+# and plane granularity rather than per assigned character. That choice is the
+# point, not a shortcut:
 #
-# GENERATED, not hand-edited. The source is CPython's ``unicodedata`` plus the
-# explicit post-UCD-14.0.0 allowlist in ``tests/test_query_validation.py``. A
-# JavaScript runtime's ``\\p{L}`` is NOT a usable oracle here and was tried:
-# Bun 1.3.11 reports U+2B73A-U+2B73F, U+2CEA2-U+2CEAD and even U+323B0 — past
-# the end of Extension H — as assigned letters, so a table generated from it
-# carried unassigned tails. A code point assigned after the allowlist was last
-# refreshed simply weighs 1 until someone adds it — a conservative miss, never
-# a false accept.
+#   * It cannot rot. U+20000-U+3FFFD is the whole of planes 2 and 3, which
+#     Unicode allocates to CJK ideographs, so every extension from B through J
+#     and every future one is already covered. A table enumerated per assigned
+#     character needs an edit — in two languages — on every Unicode release, and
+#     silently under-counts real characters until someone makes it.
+#   * The precision it gives up is worth nothing here. An unassigned or
+#     punctuation code point inside these ranges weighs 2 instead of 1, so a
+#     query of two such characters clears a minimum it should not. The cost of
+#     that is one retrieval that finds nothing. Nobody types "・・" meaning to
+#     ask something, and a three-character query is a coarse heuristic for
+#     "did the user actually ask anything", not a correctness boundary.
 #
-# Keep these ranges in sync with ``lightrag_webui/src/utils/queryValidation.ts``.
+# Keep these ranges in sync with ``lightrag_webui/src/utils/queryValidation.ts``;
+# ``test_the_frontend_range_table_matches_this_one`` enforces it.
 _WIDE_CODEPOINT_RANGES = (
-    (0x1100, 0x115E),  # Hangul Jamo
-    (0x1161, 0x11FF),  # Hangul Jamo
-    (0x3005, 0x3006),  # Ideographic iteration mark 々 and closing mark 〆
-    (0x3031, 0x3035),  # Vertical kana repeat marks 〱〲〳〴〵
-    (0x303B, 0x303C),  # Vertical ideographic iteration mark 〻, masu mark 〼
-    (0x3041, 0x3096),  # Hiragana
-    (0x309D, 0x309F),  # Hiragana
-    (0x30A1, 0x30FA),  # Katakana
-    (0x30FC, 0x30FF),  # Katakana
-    (0x3105, 0x312F),  # Bopomofo (zhuyin) — the phonetic notation used in Taiwan
-    (0x3131, 0x3163),  # Hangul Compatibility Jamo
-    (0x3165, 0x318E),  # Hangul Compatibility Jamo
-    (0x31A0, 0x31BF),  # Bopomofo Extended
-    (0x31F0, 0x31FF),  # Katakana Phonetic Extensions
-    (0x3400, 0x4DBF),  # CJK Ext A
+    (0x1100, 0x115F),  # Hangul Jamo
+    (0x2E80, 0x303E),  # CJK Radicals, Kangxi, CJK Symbols and Punctuation
+    (0x3041, 0x33FF),  # Kana, Bopomofo, Hangul Compat Jamo, Kanbun, Enclosed CJK
+    (0x3400, 0x4DBF),  # CJK Unified Ideographs Extension A
     (0x4E00, 0x9FFF),  # CJK Unified Ideographs
-    (0xA960, 0xA97C),  # Hangul Jamo Extended-A
+    (0xA000, 0xA4CF),  # Yi Syllables and Radicals
+    (0xA960, 0xA97F),  # Hangul Jamo Extended-A
     (0xAC00, 0xD7A3),  # Hangul Syllables
-    (0xD7B0, 0xD7C6),  # Hangul Jamo Extended-B
-    (0xD7CB, 0xD7FB),  # Hangul Jamo Extended-B
-    (0xF900, 0xFA6D),  # CJK Compatibility Ideographs
-    (0xFA70, 0xFAD9),  # CJK Compatibility Ideographs
-    (0xFF66, 0xFF9D),  # Halfwidth Katakana
-    (0xFFA1, 0xFFBE),  # Halfwidth Hangul
-    (0xFFC2, 0xFFC7),  # Halfwidth Hangul
-    (0xFFCA, 0xFFCF),  # Halfwidth Hangul
-    (0xFFD2, 0xFFD7),  # Halfwidth Hangul
-    (0xFFDA, 0xFFDC),  # Halfwidth Hangul
-    (0x16FE1, 0x16FE1),  # NUSHU ITERATION MARK — U+16FE2 between them is Po
-    (0x16FE3, 0x16FE3),  # OLD CHINESE ITERATION MARK
-    (0x1AFF0, 0x1AFF3),  # Kana Extended-B
-    (0x1AFF5, 0x1AFFB),  # Kana Extended-B
-    (0x1AFFD, 0x1AFFE),  # Kana Extended-B
-    (0x1B000, 0x1B122),  # Kana Supplement / Extended-A / Small Kana Ext
-    (0x1B132, 0x1B132),  # Kana Supplement / Extended-A / Small Kana Ext
-    (0x1B150, 0x1B152),  # Kana Supplement / Extended-A / Small Kana Ext
-    (0x1B155, 0x1B155),  # Kana Supplement / Extended-A / Small Kana Ext
-    (0x1B164, 0x1B167),  # Kana Supplement / Extended-A / Small Kana Ext
-    (0x1B170, 0x1B2FB),  # Nushu — a script for writing Chinese
-    (0x20000, 0x2A6DF),  # CJK Ext B
-    (0x2A700, 0x2B739),  # CJK Ext C
-    (0x2B740, 0x2B81D),  # CJK Ext D
-    (0x2B820, 0x2CEA1),  # CJK Ext E
-    (0x2CEB0, 0x2EBE0),  # CJK Ext F
-    (0x2EBF0, 0x2EE5D),  # CJK Ext I
-    (0x2F800, 0x2FA1D),  # CJK Compatibility Ideographs Supplement
-    (0x30000, 0x3134A),  # CJK Ext G
-    (0x31350, 0x323AF),  # CJK Ext H
+    (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
+    (0xFE30, 0xFE4F),  # CJK Compatibility Forms
+    (0xFF00, 0xFF60),  # Fullwidth Forms
+    (0xFF66, 0xFF9D),  # Halfwidth Katakana — East Asian NARROW, but the
+    (0xFFA1, 0xFFDC),  # Halfwidth Hangul — same letters as the wide forms
+    (0xFFE0, 0xFFE6),  # Fullwidth signs
+    (0x16FE0, 0x16FE4),  # Ideographic Symbols and Punctuation
+    (0x17000, 0x18AFF),  # Tangut
+    (0x1AFF0, 0x1B2FF),  # Kana Extended-B/Supplement/Extended-A, Small Kana, Nushu
+    (0x20000, 0x3FFFD),  # Planes 2 and 3 — every CJK extension, present and future
 )
+
 
 _TOO_SHORT_MESSAGE = (
     "RAG query is too short. Enter at least 3 English characters or an "
     "equivalent combination where each Chinese, Japanese or Korean character "
     "counts as 2."
-)
-
-
-# CJK numerals written as characters rather than digits. These are general
-# category Nl, not L*, so they cannot live in the table above without weakening
-# its invariant — but 〇 is how a Chinese year is written (二〇二五年) and the
-# Suzhou/Hangzhou numerals are the same idea, so they weigh the same as the
-# ideographs they stand among. This is the complete Nl set of the CJK Symbols
-# and Punctuation block; ``test_the_numeral_ranges_are_exactly_the_block_nl_set``
-# pins that, so the two tables together leave no third category to forget.
-_WIDE_NUMERAL_RANGES = (
-    (0x3007, 0x3007),  # IDEOGRAPHIC NUMBER ZERO 〇
-    (0x3021, 0x3029),  # HANGZHOU NUMERAL ONE..NINE
-    (0x3038, 0x303A),  # HANGZHOU NUMERAL TEN, TWENTY, THIRTY
 )
 
 
@@ -122,18 +74,15 @@ class RAGQueryTooShortError(QueryValidationError):
 
 def _is_wide_character(character: str) -> bool:
     codepoint = ord(character)
-    return any(
-        start <= codepoint <= end
-        for start, end in _WIDE_CODEPOINT_RANGES + _WIDE_NUMERAL_RANGES
-    )
+    return any(start <= codepoint <= end for start, end in _WIDE_CODEPOINT_RANGES)
 
 
 def rag_query_weight(query: str) -> int:
     """Return English-equivalent query length after trimming outer whitespace.
 
-    Each CJK character counts as two; every other Unicode code point counts as
-    one. Internal whitespace remains part of the query, matching the previous
-    character-length contract.
+    Each East Asian character counts as two; every other Unicode code point
+    counts as one. Internal whitespace remains part of the query, matching the
+    previous character-length contract.
 
     Prefer :func:`meets_min_rag_query_weight` when only the comparison against
     :data:`MIN_RAG_QUERY_WEIGHT` matters: this function walks the whole string,
