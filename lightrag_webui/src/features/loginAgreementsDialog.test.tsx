@@ -131,6 +131,23 @@ describe('login agreements dialog', () => {
     expect(visibleHeadings.map((heading) => heading.textContent)).toEqual([DOCUMENT_HEADING])
   })
 
+  test('renders the document at the document typography scale, not the compact one', async () => {
+    seedConsentBundle()
+    await renderLogin()
+
+    const dialog = await openAgreements()
+    const prose = dialog.querySelector('.prose')
+    expect(prose === null).toBe(false)
+
+    // `compact` is the DEFAULT variant, and it tightens paragraph and heading
+    // margins for short blurbs sitting inside another layout. A legal
+    // document is the page content here and has to read like the Markdown
+    // file it came from, so the wrapper must carry neither of those.
+    const classes = prose!.className
+    expect(classes.includes('prose-p:my-2')).toBe(false)
+    expect(classes.includes('prose-headings:my-3')).toBe(false)
+  })
+
   test('falls back to the translated wording when the bundle names no documents', async () => {
     seedConsentBundle(null)
     await renderLogin()

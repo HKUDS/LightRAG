@@ -284,9 +284,14 @@ Rules for new tests:
   it received, which is large enough that the run appears to HANG rather than
   report a failure. The count form fails instantly and legibly
   (`Expected length: 0, Received length: 1`). The same applies to any
-  assertion whose failure message would carry a DOM node: compare a boolean
-  or a string you extracted (`expect(card.contains(footer)).toBe(false)`,
-  `expect(el.getAttribute('href')).toBe('./')`).
+  assertion whose failure message would carry a DOM node — **including an
+  identity check like `expect(document.activeElement).toBe(link)`**: compare a
+  boolean or a string you extracted instead
+  (`expect(document.activeElement === link).toBe(true)`,
+  `expect(card.contains(footer)).toBe(false)`,
+  `expect(el.getAttribute('href')).toBe('./')`). Measured on a two-element
+  page, one failing `toBe(element)` took 5.15 s against 548 ms for the boolean
+  form, and the gap grows with the size of the rendered DOM.
 - **Prove the test can fail.** Before calling it done, break the behavior it
   pins (flip the `aria-label`, drop the guard), confirm it goes red, then
   restore. A test written against already-passing code is worth nothing until

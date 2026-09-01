@@ -47,7 +47,9 @@ describe('admin header deployment identity', () => {
     await user.tab()
 
     const link = screen.getByRole('link', { name: /LightRAG/ })
-    expect(document.activeElement).toBe(link)
+    // Compared as a boolean: a failing `toBe(element)` asks Bun to serialise
+    // the DOM node, which costs ~10x the runtime and buries the reason.
+    expect(document.activeElement === link).toBe(true)
     expect(await screen.findByText(DESCRIPTION)).toBeVisible()
     expect(link).toHaveAttribute('aria-describedby')
   })
