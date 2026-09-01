@@ -222,9 +222,9 @@ describe('mermaid failure branches (source-level)', () => {
     const importSpecifiers = (source: string): string[] =>
       [
         ...source.matchAll(
-          /(?:\bfrom\s*|\bimport\s*|\bimport\s*\(\s*|\brequire\s*\(\s*)['"]([^'"]+)['"]/g
+          /(?:\bfrom\s*|\bimport\s*|\bimport\s*\(\s*|\brequire\s*\(\s*)(['"`])([^'"`]+)\1/g
         )
-      ].map((match) => match[1])
+      ].map((match) => match[2])
 
     const namesMermaid = (specifier: string): boolean =>
       specifier === 'mermaid' || specifier.startsWith('mermaid/')

@@ -470,10 +470,19 @@ describe('activateLoginIdentityFromToken (the login form\'s only entry point)', 
     // call-shaped regex would not see it. (Same trap as the mermaid and
     // harness-isolation guards — a form-by-form pattern only forbids the
     // forms it happens to have thought of.)
-    const importsIt = (source: string): boolean =>
-      [...source.matchAll(/import\s*\{([^}]*)\}\s*from\s*['"][^'"]*loginIdentity['"]/g)].some(
-        (match) => /\bapplyLoginIdentity\b/.test(match[1])
-      )
+    const importsIt = (source: string): boolean => {
+      const staticNamed = [
+        ...source.matchAll(/import\s*\{([^}]*)\}\s*from\s*['"`][^'"`]*loginIdentity['"`]/g)
+      ].some((match) => /\bapplyLoginIdentity\b/.test(match[1]))
+
+      // A dynamic import of this module is flagged whatever it destructures:
+      // `const { applyLoginIdentity: apply } = await import('@/lib/loginIdentity')`
+      // rebuilds the same defect under a name no call-shaped pattern can see,
+      // and there is no legitimate reason for another module to reach for it.
+      const dynamic = /\bimport\s*\(\s*['"`][^'"`]*loginIdentity['"`]\s*\)/.test(source)
+
+      return staticNamed || dynamic
+    }
 
     const callers = sourceFiles(join(import.meta.dir, '..'))
       .filter((file) => !file.endsWith('/lib/loginIdentity.ts'))

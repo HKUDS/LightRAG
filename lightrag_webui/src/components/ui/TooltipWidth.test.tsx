@@ -124,6 +124,31 @@ const openingTag = (source: string, start: number): string => {
   throw new Error(`unterminated JSX tag at ${start}`)
 }
 
+/**
+ * The module-scope string constants a JSX attribute refers to by NAME, so
+ * `const TOOLTIP_WIDTH = 'max-w-lg'` used as `className={TOOLTIP_WIDTH}` is
+ * audited like an inline literal.
+ *
+ * Deliberately bounded: same file, `const X = '…'` only. A width imported from
+ * another module or built at runtime is still out of reach, and no text scan
+ * closes that without becoming a type checker — which is why the RENDERED half
+ * of this file, not this one, is what proves the clamp actually applies.
+ */
+const resolvedConstants = (source: string, site: string): string => {
+  const constants = new Map<string, string>()
+  for (const match of source.matchAll(
+    /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?=\s*(['"`])([^'"`\n]*)\2/g
+  )) {
+    constants.set(match[1], match[3])
+  }
+
+  const referenced = [...site.matchAll(/[A-Za-z_$][\w$]*/g)]
+    .map((match) => constants.get(match[0]))
+    .filter((value): value is string => value !== undefined)
+
+  return referenced.length > 0 ? ` ${referenced.join(' ')}` : ''
+}
+
 /** The attribute value starting at `at`, whether `"quoted"` or `{braced}`. */
 const attributeValue = (source: string, at: number): string => {
   const opener = source[at]
@@ -174,7 +199,9 @@ const customTooltipWidths = (): { file: string; width: string }[] => {
       // `max-w-none` drop the clamp through tailwind-merge exactly as
       // `max-w-[42rem]` does, and a scan that only knows brackets would call
       // such a call site covered while it is not.
-      for (const width of site.match(/max-w-\[[^\]]*\]|max-w-[\w./-]+/g) ?? []) {
+      const text = site + resolvedConstants(source, site)
+
+      for (const width of text.match(/max-w-\[[^\]]*\]|max-w-[\w./-]+/g) ?? []) {
         found.push({ file: file.slice(srcDir.length + 1), width })
       }
     }
