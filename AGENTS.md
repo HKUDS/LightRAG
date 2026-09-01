@@ -261,11 +261,17 @@ Rules for new tests:
   Pages behind `useCustomizedContent` render NOTHING until the first
   customization response settles, so an unseeded render finds an empty page:
   use `seedCustomization()` from `src/test/customization.ts`. Where a page
-  really does call the API on mount, stub the module and mind the IMPORT
-  ORDER — `mock.module` only reaches importers that have not been evaluated
-  yet, so the component must be imported dynamically AFTER the mock (a static
-  top-level import binds the real module first and the request goes out for
-  real). Restore the module in `afterAll`.
+  really does call the API on mount, stub the module and import the component
+  dynamically AFTER the mock, then restore the module in `afterAll`. What
+  `mock.module` does and does not reach, measured on Bun 1.3.11: it DOES
+  update a live import binding, including inside a module evaluated earlier —
+  a consumer that does `import { queryTextStream } from '@/api/lightrag'` and
+  calls it picks the stub up, and so does one reading the function off a
+  namespace import. What it cannot reach is a value COPIED out at evaluation
+  time (`const send = queryTextStream` at module scope), or work a module
+  ALREADY DID when it was first imported. Importing after the mock is
+  unconditionally safe and costs nothing, so do that rather than auditing
+  which access pattern every module in the chain happens to use.
 - **Render through `renderWithProviders`** (`src/test/render.tsx`), not
   Testing Library's bare `render`. It supplies a fixed English i18n instance
   built from `locales/en.json` and deliberately does not import `@/i18n`, whose

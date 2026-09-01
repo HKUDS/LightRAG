@@ -45,8 +45,15 @@ beforeAll(async () => {
     })
   }))
 
-  // Dynamic, and AFTER the mock: `useQuerySession` binds `queryTextStream` at
-  // import time, so a static import here would send the query for real.
+  // Dynamic, and AFTER the mock. Both entries can ALREADY be in the module
+  // cache when this runs (`RetrievalView.test.tsx` imports one statically,
+  // `WorkspaceApp.test.tsx` pulls in the other), and that is fine:
+  // `useQuerySession` calls `queryTextStream` through a live import binding,
+  // which `mock.module` updates even in a module evaluated earlier — verified
+  // by running the three files in both adverse orders. It would not reach a
+  // value copied into a module-scope const, which is why the import stays
+  // dynamic. Either way the failure would be loud, not silent: an unstubbed
+  // send leaves `requests` empty and every assertion below fails.
   entries = {
     webui: (await import('@/features/RetrievalView')).default,
     workspace: (await import('@/features/workspace/WorkspaceQueryView')).default
