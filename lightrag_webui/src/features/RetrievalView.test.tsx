@@ -56,14 +56,26 @@ describe('admin retrieval layout', () => {
     // (`!p-0` in App.tsx). Tailwind v4 accepts it on either side, and either
     // way `!pb-12` beside `pb-8` wins the cascade while leaving the plain
     // class — and the arithmetic — looking untouched.
-    const setsBottomPadding = (token: string): boolean => {
-      const utility = token.slice(token.lastIndexOf(':') + 1).replace(/^!|!$/g, '')
-      return /^(?:p|py|pb)-/.test(utility)
-    }
+    const setsPadding =
+      (edges: RegExp) =>
+        (token: string): boolean => {
+          const utility = token.slice(token.lastIndexOf(':') + 1).replace(/^!|!$/g, '')
+          return edges.test(utility)
+        }
 
     const pageClasses = (page.getAttribute('class') ?? '').split(/\s+/)
-    expect(pageClasses.filter(setsBottomPadding)).toEqual(['pb-8'])
+    expect(pageClasses.filter(setsPadding(/^(?:p|py|pb)-/))).toEqual(['pb-8'])
     const pageBottomPx = spacingPx(page, 'pb')
+
+    // The other half of what the deleted test named: it pinned `px-2 pb-8`
+    // together, and the arithmetic below is entirely about the BOTTOM, so
+    // dropping the gutter leaves every assertion in this file green. Measured:
+    // deleting `px-2` outright still passed. On a narrow screen that gutter is
+    // the only thing between the panel and the viewport edge, so it is pinned
+    // by VALUE here for the same reason the status insets are, and guarded
+    // against a competing horizontal padding the same way as the bottom one.
+    expect(pageClasses.filter(setsPadding(/^(?:p|px|pl|pr)-/))).toEqual(['px-2'])
+    expect(spacingPx(page, 'px')).toBe(2 * SPACING_PX)
     cleanup()
 
     // The document panel's clearance is its card's own bottom margin plus the
