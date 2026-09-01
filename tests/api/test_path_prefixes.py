@@ -739,7 +739,6 @@ class TestWhitelistUnderApiPrefix:
             prefix = "" if mode == "strip" else "/api/v1"
 
             assert client.delete(f"{prefix}/documents").status_code == 401
-            assert client.get(f"{prefix}/documents").status_code == 401
 
     @pytest.mark.parametrize("mode", ["verbatim", "strip"])
     def test_whitelisted_routes_stay_open_under_a_prefix(

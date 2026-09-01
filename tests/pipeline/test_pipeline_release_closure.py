@@ -2097,7 +2097,7 @@ def test_enqueue_dedupes_by_filename_and_content_hash(tmp_path):
             third_id = compute_mdhash_id("third.txt", prefix="doc-")
             assert await rag.full_docs.get_by_id(third_id) is None
 
-            failed_docs = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
+            failed_docs = await rag.doc_status.get_docs_by_statuses([DocStatus.FAILED])
             kinds = {
                 getattr(doc, "metadata", {}).get("duplicate_kind")
                 for doc in failed_docs.values()
@@ -2137,7 +2137,7 @@ def test_enqueue_dedupes_parser_hinted_filename_variants(tmp_path):
             )
             assert (await rag.full_docs.get_by_id(first_id))["content"] == "alpha body"
 
-            failed_docs = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
+            failed_docs = await rag.doc_status.get_docs_by_statuses([DocStatus.FAILED])
             # The duplicate record stores the canonical basename — hint is
             # not preserved anywhere in the new schema.
             assert any(
@@ -2201,7 +2201,7 @@ def test_enqueue_without_file_paths_uses_content_ids(tmp_path):
                 assert full_doc.get("content_hash")
                 assert status.get("content_hash") == full_doc.get("content_hash")
 
-            failed_docs = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
+            failed_docs = await rag.doc_status.get_docs_by_statuses([DocStatus.FAILED])
             duplicate_failures = [
                 doc
                 for doc in failed_docs.values()
@@ -2364,7 +2364,7 @@ def test_enqueue_rejects_removed_or_unknown_docs_format(tmp_path):
                     lightrag_document_paths="__parsed__/doc.blocks.jsonl",
                 )
             # Nothing was enqueued by the rejected calls.
-            failed = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
+            failed = await rag.doc_status.get_docs_by_statuses([DocStatus.FAILED])
             assert failed == {}
         finally:
             await rag.finalize_storages()
@@ -2497,9 +2497,9 @@ def test_state_machine_upsert_preserves_content_hash(tmp_path):
 
             # Simulate the production state-machine upsert pattern: read
             # status_doc, then write a new payload that includes content_hash.
-            status_doc = (await rag.doc_status.get_docs_by_status(DocStatus.PENDING))[
-                doc_id
-            ]
+            status_doc = (
+                await rag.doc_status.get_docs_by_statuses([DocStatus.PENDING])
+            )[doc_id]
             for next_status in (
                 DocStatus.PARSING,
                 DocStatus.ANALYZING,
