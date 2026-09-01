@@ -118,15 +118,41 @@ const openingTag = (source: string, start: number): string => {
   throw new Error(`unterminated JSX tag at ${start}`)
 }
 
+/** The text inside the `{ … }` opening at `at`, quotes and nesting respected. */
+const bracedBlock = (source: string, at: number): string => {
+  let depth = 0
+  let quote: string | null = null
+
+  for (let i = at; i < source.length; i++) {
+    const char = source[i]
+    if (quote) {
+      if (char === '\\') i += 1
+      else if (char === quote) quote = null
+      continue
+    }
+    if (char === '\'' || char === '"' || char === '`') quote = char
+    else if (char === '{') depth += 1
+    else if (char === '}') {
+      depth -= 1
+      if (depth === 0) return source.slice(at + 1, i)
+    }
+  }
+  return ''
+}
+
 /**
- * The module-scope string constants a JSX attribute refers to by NAME, so
+ * The module-scope constants a JSX attribute refers to by NAME, so
  * `const TOOLTIP_WIDTH = 'max-w-lg'` used as `className={TOOLTIP_WIDTH}` is
- * audited like an inline literal.
+ * audited like an inline literal — and so is the props-object form
+ * `const props = { className: 'max-w-lg' }` used as `<TooltipContent {...props}>`,
+ * which an ordinary refactor produces and which the scalar-only version of this
+ * helper could not see at all.
  *
- * Deliberately bounded: same file, `const X = '…'` only. A width imported from
- * another module or built at runtime is still out of reach, and no text scan
- * closes that without becoming a type checker — which is why the RENDERED half
- * of this file, not this one, is what proves the clamp actually applies.
+ * Deliberately bounded: same file, and a value that is written down as a string
+ * literal. A width imported from another module or built at runtime is still out
+ * of reach, and no text scan closes that without becoming a type checker — which
+ * is why the RENDERED half of this file, not this one, is what proves the clamp
+ * actually applies.
  */
 const resolvedConstants = (source: string, site: string): string => {
   const constants = new Map<string, string>()
@@ -134,6 +160,19 @@ const resolvedConstants = (source: string, site: string): string => {
     /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?=\s*(['"`])([^'"`\n]*)\2/g
   )) {
     constants.set(match[1], match[3])
+  }
+
+  // Object literals, so a spread carries its strings to the call site. Every
+  // string inside is folded in rather than only a `className` key: the audit
+  // only ever looks for `max-w-` in the result, and guessing which key a width
+  // will be written under is the same fixed-list mistake this scan keeps
+  // being caught by.
+  for (const match of source.matchAll(
+    /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?=\s*\{/g
+  )) {
+    const body = bracedBlock(source, match.index + match[0].length - 1)
+    const strings = [...body.matchAll(/(['"`])([^'"`\n]*)\1/g)].map((literal) => literal[2])
+    if (strings.length > 0) constants.set(match[1], strings.join(' '))
   }
 
   const referenced = [...site.matchAll(/[A-Za-z_$][\w$]*/g)]
@@ -176,8 +215,11 @@ const srcDir = join(import.meta.dir, '..', '..')
 const customTooltipWidths = (): { file: string; width: string }[] => {
   const found: { file: string; width: string }[] = []
 
-  // `/`-separated on every platform (`@/test/sourceScan`), so the file keys in
-  // the expectation below hold on Windows too.
+  // The TAIL `sourceFiles` builds is `/`-separated on every platform
+  // (`@/test/sourceScan`), and the file keys below come from `relativePath`,
+  // so they hold on Windows too. The absolute root is the caller's own
+  // `join` output and still carries native separators there — nothing here
+  // compares against it.
   for (const file of sourceFiles(
     srcDir,
     (path) => path.endsWith('.tsx') && !path.endsWith('.test.tsx')
