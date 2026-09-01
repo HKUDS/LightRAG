@@ -79,6 +79,10 @@ describe('admin retrieval layout', () => {
 
     const { container: statusContainer } = renderWithProviders(<StatusIndicator />)
     const statusInsetPx = spacingPx(statusContainer.firstElementChild!, 'bottom')
+    // The horizontal inset too: the deleted test pinned `right-4 bottom-4` as a
+    // pair, and reading only the bottom would let the indicator move to the
+    // other corner — or off the corner entirely — without a failure.
+    const statusRightPx = spacingPx(statusContainer.firstElementChild!, 'right')
     // Unmounted straight away: its health-change animation timers would
     // otherwise fire outside act() once this test returns.
     cleanup()
@@ -86,7 +90,9 @@ describe('admin retrieval layout', () => {
     // Switching between the two tabs must not shift the content up or down.
     expect(pageBottomPx).toBe(contentPaddingPx + listCardMarginPx)
 
-    // And the answer must not run underneath the floating indicator.
+    // And the answer must not run underneath the floating indicator, which
+    // sits in the bottom-RIGHT corner at a matching inset.
     expect(pageBottomPx).toBeGreaterThan(statusInsetPx)
+    expect(statusRightPx).toBe(statusInsetPx)
   })
 })

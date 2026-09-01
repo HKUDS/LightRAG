@@ -465,30 +465,26 @@ describe('activateLoginIdentityFromToken (the login form\'s only entry point)', 
     // this test exists for, and a fixed list cannot see it. `loginIdentity.ts`
     // is the one legitimate caller — it is where the token-derived entry point
     // delegates.
-    // Matched on the IMPORT, not on the call: `import { applyLoginIdentity as
-    // apply }` followed by `apply(name)` is the same defect, and a
-    // call-shaped regex would not see it. (Same trap as the mermaid and
-    // harness-isolation guards — a form-by-form pattern only forbids the
-    // forms it happens to have thought of.)
-    const importsIt = (source: string): boolean => {
-      const staticNamed = [
-        ...source.matchAll(/import\s*\{([^}]*)\}\s*from\s*['"`][^'"`]*loginIdentity['"`]/g)
-      ].some((match) => /\bapplyLoginIdentity\b/.test(match[1]))
+    // Matched on the IDENTIFIER, anywhere in the file, rather than on any
+    // particular import or call shape. Every previous version of this guard
+    // enumerated forms and was then evaded by the next one: a bare call, an
+    // aliased static import, a destructured dynamic import, a namespace
+    // member call. Naming the symbol is the one thing every use has in common
+    // — `identity.applyLoginIdentity(n)`, `const apply =
+    // identity.applyLoginIdentity`, `m['applyLoginIdentity']` all contain it —
+    // so this is closeable where a form list is not.
+    const namesIt = (source: string): boolean => /\bapplyLoginIdentity\b/.test(source)
 
-      // A dynamic import of this module is flagged whatever it destructures:
-      // `const { applyLoginIdentity: apply } = await import('@/lib/loginIdentity')`
-      // rebuilds the same defect under a name no call-shaped pattern can see,
-      // and there is no legitimate reason for another module to reach for it.
-      const dynamic = /\bimport\s*\(\s*['"`][^'"`]*loginIdentity['"`]\s*\)/.test(source)
-
-      return staticNamed || dynamic
-    }
+    // Second net, for a namespace import that reached the symbol by a computed
+    // key. No module outside this one has a reason to take the namespace.
+    const takesNamespace = (source: string): boolean =>
+      /import\s*\*\s*as\s+\w+\s*from\s*['"`][^'"`]*loginIdentity['"`]/.test(source)
 
     const callers = sourceFiles(join(import.meta.dir, '..'))
       .filter((file) => !file.endsWith('/lib/loginIdentity.ts'))
       .filter((file) => {
         const source = readFileSync(file, 'utf8')
-        return importsIt(source) || /\bapplyLoginIdentity\(/.test(source)
+        return namesIt(source) || takesNamespace(source)
       })
       .map((file) => file.slice(join(import.meta.dir, '..').length + 1))
 
