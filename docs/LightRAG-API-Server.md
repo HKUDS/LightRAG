@@ -568,7 +568,8 @@ Though LightRAG Server uses one worker to process the document indexing pipeline
 WORKERS=2
 ### Number of parallel files to process in one batch
 MAX_PARALLEL_INSERT=3
-### Max concurrent requests to the LLM (MAX_ASYNC is still accepted as a deprecated alias)
+### Base LLM concurrency and the per-document chunk-extraction task limit
+### (MAX_ASYNC is still accepted as a deprecated alias)
 MAX_ASYNC_LLM=4
 ```
 
@@ -977,7 +978,7 @@ Only the graph moves; vector and KV data are untouched and stay valid, because t
 | `--working-dir` | `./rag_storage` | Working directory for RAG storage |
 | `--input-dir` | `./inputs` | Directory containing uploaded/input documents |
 | `--timeout` | `150` | Gunicorn worker timeout and fallback request timeout |
-| `--max-async` | `4` | Maximum concurrent LLM operations |
+| `--max-async` | `4` | Base maximum LLM concurrency; also the per-document chunk-extraction task limit (each entity/relation merge phase uses twice this task limit) |
 | `--log-level` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
 | `--verbose` | `False` | Verbose debug output, effective with debug logging |
 | `--key` | `None` | API key for authentication |
@@ -1253,7 +1254,7 @@ For the full routing syntax, supported extensions, parser cache behavior, chunke
 
 ### Pipeline Concurrency
 
-`MAX_PARALLEL_INSERT` controls how many files are processed in parallel. `MAX_ASYNC_LLM` (deprecated alias: `MAX_ASYNC`) controls concurrent LLM calls, including extraction, merging, query keyword generation, and final answer generation. Optional staged-pipeline variables such as `MAX_PARALLEL_PARSE_NATIVE`, `MAX_PARALLEL_PARSE_MINERU`, `MAX_PARALLEL_PARSE_DOCLING`, and `MAX_PARALLEL_ANALYZE` can be used for parser-heavy deployments.
+`MAX_PARALLEL_INSERT` controls how many files are processed in parallel; it does not set the per-document chunk or graph-merge task limit. `MAX_ASYNC_LLM` (deprecated alias: `MAX_ASYNC`) is the base LLM concurrency and, for each document, caps chunk entity/relation extraction tasks at `MAX_ASYNC_LLM` and each entity-merge or relation-merge phase at `2 × MAX_ASYNC_LLM` tasks. The Extract role's actual LLM requests use `EXTRACT_MAX_ASYNC_LLM` when configured, otherwise `MAX_ASYNC_LLM`; this role override does not change the pipeline task limits. Optional staged-pipeline variables such as `MAX_PARALLEL_PARSE_NATIVE`, `MAX_PARALLEL_PARSE_MINERU`, `MAX_PARALLEL_PARSE_DOCLING`, and `MAX_PARALLEL_ANALYZE` can be used for parser-heavy deployments. See [File Processing Pipeline Specification](./FileProcessingPipeline.md#86-pipeline-concurrency-parameters) for the complete topology.
 
 Uploads and text inserts can be accepted while the processing loop is busy; the running loop is nudged to pick up the new pending work. Destructive jobs such as document clear/delete and the classification phase of `/documents/scan` still reject concurrent enqueues to protect storage consistency. Failed files can be reprocessed from the WebUI or by triggering `/documents/scan`.
 
