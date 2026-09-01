@@ -675,6 +675,14 @@ def load_user_prompt_prefix_source() -> str:
     inline = os.getenv("USER_PROMPT_PREFIX", "")
     file_name = os.getenv("USER_PROMPT_PREFIX_FILE", "").strip()
     if not file_name:
+        # Startup visibility: operators need the effective source in the log,
+        # since two env vars can supply this value and either may be empty.
+        # Source and length only -- the content is multi-line operator policy.
+        if inline:
+            logger.info(
+                "User prompt prefix loaded from USER_PROMPT_PREFIX (%d chars)",
+                len(inline),
+            )
         return inline
 
     if inline:
@@ -702,7 +710,7 @@ def load_user_prompt_prefix_source() -> str:
         return ""
 
     try:
-        return prefix_path.read_text(encoding="utf-8")
+        prefix = prefix_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         logger.error(
             "Failed to read USER_PROMPT_PREFIX_FILE '%s': %s. No prefix applied.",
@@ -710,6 +718,16 @@ def load_user_prompt_prefix_source() -> str:
             exc,
         )
         return ""
+
+    # Log the resolved path, not the configured name: it is what an operator
+    # checks to confirm which file actually won. An empty file logs too --
+    # "0 chars" is itself the answer to "why is my prefix not applied?".
+    logger.info(
+        "User prompt prefix loaded from USER_PROMPT_PREFIX_FILE '%s' (%d chars)",
+        prefix_path,
+        len(prefix),
+    )
+    return prefix
 
 
 def _normalize_prompt_examples(
