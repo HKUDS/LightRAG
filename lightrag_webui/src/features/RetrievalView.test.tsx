@@ -24,6 +24,9 @@ import { CardContent } from '@/components/ui/Card'
 /** Tailwind's default spacing scale: one unit is 0.25rem. */
 const SPACING_PX = 4
 
+/** What the deleted test pinned by name: `right-4 bottom-4`. */
+const STATUS_INSET_PX = 4 * SPACING_PX
+
 /** The single `<prefix>-N` class on an element, as pixels. */
 const spacingPx = (element: Element, prefix: string): number => {
   const classes = (element.getAttribute('class') ?? '').split(/\s+/).filter(Boolean)
@@ -93,6 +96,13 @@ describe('admin retrieval layout', () => {
     // And the answer must not run underneath the floating indicator, which
     // sits in the bottom-RIGHT corner at a matching inset.
     expect(pageBottomPx).toBeGreaterThan(statusInsetPx)
-    expect(statusRightPx).toBe(statusInsetPx)
+
+    // The VALUE, not just the relationship: `right-5 bottom-5` keeps the two
+    // insets equal and still sits under the page clearance, so a purely
+    // relational check lets the indicator drift. The deleted test named `4`.
+    expect({ bottom: statusInsetPx, right: statusRightPx }).toEqual({
+      bottom: STATUS_INSET_PX,
+      right: STATUS_INSET_PX
+    })
   })
 })

@@ -19,6 +19,7 @@ import { useWebuiRetrievalHistoryStore } from '@/stores/webuiRetrievalHistory'
 import { useWorkspaceRetrievalHistoryStore } from '@/stores/workspaceRetrievalHistory'
 import type { QuerySettings } from '@/stores/querySettings'
 import type { QueryRequest } from '@/api/lightrag'
+import type { QueryInputError } from './queryInput'
 
 /**
  * The two query entries (`/webui`'s RetrievalView and the workspace's
@@ -172,15 +173,36 @@ describe('query entry input handling', () => {
      * would still show the right sentence for that one case, so covering a
      * single variant does not replace that guarantee; covering all of them
      * does, and it checks the sentences a user actually reads.
+     *
+     * Keyed by `QueryInputError` on purpose: a fifth variant added to that
+     * union stops COMPILING here until a case is written for it. A plain list
+     * would simply stay green, which is the half of the old guarantee — cover
+     * variants nobody has written yet — that a table cannot otherwise keep.
      */
-    const rejections: [label: string, input: string, sentence: string][] = [
-      ['a prefix with no query', '/nope', 'Invalid query mode prefix'],
-      ['an unsupported mode', '/nope hello', 'Only supports the following query modes'],
-      ['a prefix that swallows the query', '/local    ', 'Please enter a question before sending'],
-      ['a query below the RAG minimum', '/local ab', 'Your query is too short']
-    ]
+    const rejections: Record<QueryInputError, { label: string; input: string; sentence: string }> = {
+      queryModePrefixInvalid: {
+        label: 'a prefix with no query',
+        input: '/nope',
+        sentence: 'Invalid query mode prefix'
+      },
+      queryModeError: {
+        label: 'an unsupported mode',
+        input: '/nope hello',
+        sentence: 'Only supports the following query modes'
+      },
+      queryEmpty: {
+        label: 'a prefix that swallows the query',
+        input: '/local    ',
+        sentence: 'Please enter a question before sending'
+      },
+      queryTooShort: {
+        label: 'a query below the RAG minimum',
+        input: '/local ab',
+        sentence: 'Your query is too short'
+      }
+    }
 
-    for (const [label, input, sentence] of rejections) {
+    for (const { label, input, sentence } of Object.values(rejections)) {
       test(`${entry} rejects ${label} with its own reason`, async () => {
         await send(entry, input)
 
