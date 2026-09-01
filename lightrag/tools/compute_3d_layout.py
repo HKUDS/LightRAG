@@ -100,6 +100,84 @@ def compute_umap_layout(
     return positions.astype(np.float32)
 
 
+def compute_mds_layout(
+    matrix: np.ndarray,
+    n_components: int = 3,
+    n_landmarks: int = 3000,
+    max_iter: int = 300,
+    random_state: int = 42,
+) -> np.ndarray:
+    """Landmark MDS: metric MDS (SMACOF) on landmarks, then place every point
+    by distance triangulation (Gower's interpolation formula).
+
+    Unlike UMAP/t-SNE, MDS explicitly minimizes stress — the squared error
+    between high-dim distances and 3D distances — so the layout preserves
+    RELATIVE distances at the cost of local cluster crispness.
+
+    Full metric MDS is O(N^2) in memory and time and infeasible for N=190k;
+    landmarks cap the expensive part at n_landmarks^2.
+
+    Args:
+        matrix: (N, dim) float32 array of unit-normalized embeddings.
+        n_components: target dimensionality (3 for the viewer).
+        n_landmarks: number of landmarks for the SMACOF step.
+        max_iter: SMACOF iterations.
+        random_state: landmark selection + MDS seed.
+
+    Returns:
+        positions: (N, n_components) float32 array.
+    """
+    from sklearn.manifold import MDS
+
+    N = len(matrix)
+    n_landmarks = min(n_landmarks, N)
+    rng = np.random.default_rng(random_state)
+    lm_idx = np.sort(rng.choice(N, n_landmarks, replace=False))
+    print(f"Landmark MDS: {n_landmarks} landmarks out of {N} points")
+
+    # Landmark-landmark cosine distance matrix (embeddings are unit-normalized)
+    L = matrix[lm_idx].astype(np.float64)
+    D_lm = 1.0 - np.clip(L @ L.T, -1, 1)
+    np.fill_diagonal(D_lm, 0.0)
+
+    print(f"Running metric MDS (SMACOF, max_iter={max_iter}) on landmarks...")
+    mds = MDS(
+        n_components=n_components,
+        metric=True,
+        dissimilarity="precomputed",
+        n_init=1,
+        max_iter=max_iter,
+        normalized_stress="auto",
+        random_state=random_state,
+    )
+    Y = mds.fit_transform(D_lm)  # (n_landmarks, n_components)
+    print(f"Landmark MDS done, stress={mds.stress_:.1f}")
+
+    # Gower interpolation: place each point from its squared distances to the
+    # landmarks. b = -0.5 * (delta^2 - column means of landmark D^2); the
+    # coordinates are the least-squares placement against the (centered)
+    # landmark configuration.
+    Y = Y - Y.mean(axis=0)
+    D_lm_sq = D_lm ** 2
+    col_means = D_lm_sq.mean(axis=0)  # (n_landmarks,)
+    Y_pinv = np.linalg.pinv(Y)  # (n_components, n_landmarks)
+
+    print("Triangulating all points against landmarks...")
+    positions = np.empty((N, n_components), dtype=np.float32)
+    chunk = 20000
+    for start in range(0, N, chunk):
+        end = min(start + chunk, N)
+        sims = matrix[start:end].astype(np.float64) @ L.T  # (chunk, n_landmarks)
+        d_sq = (1.0 - np.clip(sims, -1, 1)) ** 2
+        b = -0.5 * (d_sq - col_means)
+        positions[start:end] = (b @ Y_pinv.T).astype(np.float32)
+        if (start // chunk) % 5 == 0:
+            print(f"  Placed {end}/{N} points...")
+
+    print(f"MDS output shape: {positions.shape}")
+    return positions
+
+
 def compute_clusters(
     positions: np.ndarray, min_cluster_size: int = 50, n_clusters: int = 50
 ) -> np.ndarray:
@@ -244,6 +322,19 @@ def main():
         help="Number of clusters for the KMeans fallback",
     )
     parser.add_argument(
+        "--method",
+        choices=["umap", "mds"],
+        default="umap",
+        help="Layout method: umap (local structure, pretty clusters) or "
+        "mds (landmark MDS, preserves relative distances)",
+    )
+    parser.add_argument(
+        "--n-landmarks",
+        type=int,
+        default=3000,
+        help="Number of landmarks for --method mds (SMACOF runs on these)",
+    )
+    parser.add_argument(
         "--min-cluster-size",
         type=int,
         default=50,
@@ -270,10 +361,13 @@ def main():
     # Step 1: Load entity vectors
     entity_names, matrix, metadata = load_entity_vectors(vdb_path)
 
-    # Step 2: Compute UMAP layout
-    positions = compute_umap_layout(
-        matrix, n_neighbors=args.n_neighbors, min_dist=args.min_dist
-    )
+    # Step 2: Compute 3D layout
+    if args.method == "mds":
+        positions = compute_mds_layout(matrix, n_landmarks=args.n_landmarks)
+    else:
+        positions = compute_umap_layout(
+            matrix, n_neighbors=args.n_neighbors, min_dist=args.min_dist
+        )
 
     # Step 3: Compute clusters
     clusters = compute_clusters(
