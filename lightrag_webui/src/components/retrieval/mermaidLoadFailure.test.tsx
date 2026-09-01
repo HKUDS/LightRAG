@@ -48,6 +48,19 @@ const rejectingLoader = () => () => Promise.reject(new Error(LOAD_ERROR))
 
 const workingLoader = (mermaid: Record<string, unknown>) => () => Promise.resolve(mermaid)
 
+/**
+ * A loader parked mid-flight, so a test can observe the window between the
+ * effect calling it and the module arriving. `settle` hands over the mermaid
+ * stub the component then uses.
+ */
+const pendingLoader = (): { loader: () => Promise<unknown>; settle: (mermaid: Record<string, unknown>) => void } => {
+  let release: (mermaid: Record<string, unknown>) => void = () => {}
+  const pending = new Promise<unknown>((resolve) => {
+    release = resolve
+  })
+  return { loader: () => pending, settle: release }
+}
+
 beforeAll(async () => {
   realLoaderModule = { ...(await import('./mermaidLoader')) }
   stubLoader(rejectingLoader())
@@ -105,18 +118,38 @@ describe('mermaid renderer fails to load', () => {
     stubLoader(rejectingLoader())
   })
 
-  test('nothing is put in the container before the effect runs', async () => {
-    renderDiagram()
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50))
-    })
-
+  test('the container stays empty until the renderer actually arrives', async () => {
     // The premise of the whole fix, and the reason a bare `return` in the
-    // load-failure branch is a permanent blank gap rather than a glitch: with
-    // `renderAsDiagram` true the render body returns an EMPTY div, so the only
-    // thing that can ever put content here is the effect. (This is still inside
-    // the effect's own 300 ms debounce, so nothing has run yet.)
+    // load-failure branch is a permanent blank gap rather than a glitch:
+    // NOTHING has been put in the container by the time the load can fail.
+    // With `renderAsDiagram` true the render body returns an empty div, and
+    // the effect writes its loading indicator only AFTER `await loadMermaid()`
+    // resolves — so the failure branch has no spinner to replace and an empty
+    // container to leave behind.
+    //
+    // Waiting a fixed 50 ms would assert none of that: 50 ms is inside the
+    // effect's own 300 ms debounce, so it observes a component that has not
+    // started, and moving the loading write to before the await would keep it
+    // green. Park the LOADER instead and wait well past the debounce, so what
+    // is being observed is the effect suspended on the import.
+    const { loader, settle } = pendingLoader()
+    stubLoader(loader)
+
+    renderDiagram()
+    await settleDiagram()
+
     expect(container().innerHTML).toBe('')
+
+    // And the emptiness above is a real window rather than a component that
+    // never ran: releasing the same loader fills the container.
+    await act(async () => {
+      settle({
+        initialize: () => {},
+        render: async () => ({ svg: '<svg data-testid="late"></svg>' })
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(container().innerHTML).toContain('data-testid="late"')
   })
 
   test('the failure is written into the container, with the diagram source', async () => {
