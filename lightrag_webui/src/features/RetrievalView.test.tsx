@@ -49,8 +49,14 @@ describe('admin retrieval layout', () => {
     // stripped at the last `:` (which also covers `[&_p]:` forms) and the
     // utility is matched by NAME, with no assumption about the value's shape.
     // The deleted test's `not.toContain('pb-12')` is what used to catch this.
-    const setsBottomPadding = (token: string): boolean =>
-      /^(?:p|py|pb)-/.test(token.slice(token.lastIndexOf(':') + 1))
+    // Also the IMPORTANT marker, which this codebase does use on padding
+    // (`!p-0` in App.tsx). Tailwind v4 accepts it on either side, and either
+    // way `!pb-12` beside `pb-8` wins the cascade while leaving the plain
+    // class — and the arithmetic — looking untouched.
+    const setsBottomPadding = (token: string): boolean => {
+      const utility = token.slice(token.lastIndexOf(':') + 1).replace(/^!|!$/g, '')
+      return /^(?:p|py|pb)-/.test(utility)
+    }
 
     const pageClasses = (page.getAttribute('class') ?? '').split(/\s+/)
     expect(pageClasses.filter(setsBottomPadding)).toEqual(['pb-8'])
