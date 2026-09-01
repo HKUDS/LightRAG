@@ -4043,20 +4043,27 @@ async def extract_entities(
 
     # The system prompt (and, in JSON mode, the continue prompt) is built
     # solely from context_base, which is fixed for the whole extraction run.
-    # Format them once and precompute the token counts here instead of
-    # re-encoding these strings — the system prompt embeds the multi-
-    # thousand-token examples block — once per chunk in the gleaning guard.
+    # Format them once here instead of re-formatting per chunk, and reuse a
+    # precomputed token count for the same strings in the gleaning guard —
+    # the system prompt embeds the multi-thousand-token examples block. The
+    # encodes stay lazy behind the same condition that gates the gleaning
+    # guard, so runs with gleaning off never pay them.
+    gleaning_precheck = (
+        entity_extract_max_gleaning > 0
+        and extract_tokenizer is not None
+        and max_extract_input_tokens > 0
+    )
     if use_json_extraction:
         entity_extraction_system_prompt = PROMPTS[
             "entity_extraction_json_system_prompt"
         ].format(**context_base)
-        entity_continue_extraction_user_prompt = PROMPTS[
+        json_continue_extraction_user_prompt = PROMPTS[
             "entity_continue_extraction_json_user_prompt"
         ].format(**context_base)
         gleaning_invariant_tokens = (
             len(extract_tokenizer.encode(entity_extraction_system_prompt))
-            + len(extract_tokenizer.encode(entity_continue_extraction_user_prompt))
-            if extract_tokenizer is not None
+            + len(extract_tokenizer.encode(json_continue_extraction_user_prompt))
+            if gleaning_precheck
             else 0
         )
     else:
@@ -4065,7 +4072,7 @@ async def extract_entities(
         ].format(**context_base)
         gleaning_invariant_tokens = (
             len(extract_tokenizer.encode(entity_extraction_system_prompt))
-            if extract_tokenizer is not None
+            if gleaning_precheck
             else 0
         )
 
@@ -4133,7 +4140,14 @@ async def extract_entities(
                 )
 
         if use_json_extraction:
-            # JSON mode: use JSON prompts and pass entity_extraction flag to LLM provider
+            # JSON mode: use JSON prompts and pass entity_extraction flag to LLM provider.
+            # The local must be bound explicitly: the text-mode branch below
+            # assigns this name, which makes it local to the whole closure
+            # (Python scoping is static), so the gleaning LLM call a few
+            # dozen lines down would otherwise read an unbound local here.
+            entity_continue_extraction_user_prompt = (
+                json_continue_extraction_user_prompt
+            )
             entity_extraction_user_prompt = PROMPTS[
                 "entity_extraction_json_user_prompt"
             ].format(
@@ -4144,10 +4158,12 @@ async def extract_entities(
                 }
             )
         else:
-            # Text mode: use traditional delimiter-based prompts. The continue
-            # prompt is built per chunk here because it embeds the chunk
-            # content; the chunk-invariant system prompt is built once in the
-            # enclosing scope.
+            # Text mode: use traditional delimiter-based prompts. The
+            # chunk-invariant system prompt is built once in the enclosing
+            # scope. The continue prompt stays per chunk because a custom
+            # prompt file may reference {input_text}; the default template's
+            # placeholders do not include it, but the call site keeps passing
+            # the kwarg for that override case.
             entity_extraction_user_prompt = PROMPTS[
                 "entity_extraction_user_prompt"
             ].format(

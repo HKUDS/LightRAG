@@ -228,3 +228,30 @@ async def test_gleaning_guard_encodes_system_prompt_once(monkeypatch):
     # be encoded exactly once for the whole run, not once per chunk.
     longest = max(inner.encoded, key=len)
     assert sum(1 for s in inner.encoded if s == longest) == 1
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gleaning_json_mode_binds_continue_prompt(monkeypatch):
+    """JSON mode + gleaning must reach the gleaning LLM call: the closure's
+    text-mode branch assigns entity_continue_extraction_user_prompt, which
+    makes the name local to the whole closure (Python scoping is static), so
+    the JSON branch must bind it explicitly. Regression guard for the
+    UnboundLocalError that otherwise surfaced at the gleaning call."""
+    from lightrag.operate import extract_entities
+
+    monkeypatch.setenv("MAX_EXTRACT_INPUT_TOKENS", "999999")
+
+    global_config = _make_global_config(entity_extract_max_gleaning=1)
+    global_config["entity_extraction_use_json"] = True
+    llm_func = global_config["llm_model_func"]
+    llm_func.return_value = "{}"
+
+    # Must not raise UnboundLocalError.
+    await extract_entities(
+        chunks=_make_chunks(),
+        global_config=global_config,
+    )
+
+    # Both rounds ran: initial extraction + one gleaning pass.
+    assert llm_func.await_count == 2
