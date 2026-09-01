@@ -90,6 +90,16 @@ afterEach(() => {
   // from starting a request that lands during the next test.
   cleanup()
   resetCustomization()
+  // These stores are singletons shared with every other file. The `beforeEach`
+  // above happens to leave them clean today, but only because this file's last
+  // tests are source-level ones that still run it; moving or removing those
+  // would hand the next file a `global`-mode snapshot and a populated
+  // transcript. Restoring here does not depend on that accident.
+  setQuerySettings()
+  act(() => {
+    useWebuiRetrievalHistoryStore.getState().clearHistory()
+    useWorkspaceRetrievalHistoryStore.getState().clearHistory()
+  })
 })
 
 const entryNames = ['webui', 'workspace'] as const
