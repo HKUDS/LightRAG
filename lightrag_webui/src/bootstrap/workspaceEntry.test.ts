@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test'
 import { QUERY_SETTINGS_STORAGE_KEY, WEBUI_RETRIEVAL_HISTORY_KEY } from '@/lib/storageKeys'
 import type { navigationService as NavigationServiceType } from '@/services/navigation'
-import { restoreDomGlobals } from '@/test/domGlobals'
 
 /**
  * Workspace entry bootstrap: configures the navigation singleton for THIS
@@ -10,6 +9,17 @@ import { restoreDomGlobals } from '@/test/domGlobals'
  * effect from the next query without a reload.
  *
  * Isolation rules this file follows (learned the hard way):
+ * - NEVER replace the `window` GLOBAL, not even with a stub carrying just
+ *   the one method the bootstrap calls. The preloaded happy-dom window is
+ *   process-wide, and the import graph reached from `./workspaceEntry` pulls
+ *   in axios, which reads `window.location.href` while its platform module
+ *   is being evaluated. A stub without `location` therefore threw here — but
+ *   only when this file happened to run before whichever other file
+ *   evaluates axios first, which left `@/api/lightrag` half-evaluated in the
+ *   registry and cascaded into TDZ errors across ten unrelated files. The
+ *   bootstrap's listener registration is observed with a call-through spy on
+ *   the REAL window instead, and the captured listeners are removed again in
+ *   afterAll so nothing survives this file.
  * - NO `mock.module` on shared singletons: bun's module mocks live in the
  *   process-wide registry for the rest of the run and would hand every later
  *   test file a gutted navigationService. The bootstrap's configureEntry call
@@ -46,6 +56,7 @@ const storageListeners: StorageListener[] = []
 
 let navigationService: typeof NavigationServiceType
 let configureSpy: ReturnType<typeof spyOn> | undefined
+let addEventListenerSpy: ReturnType<typeof spyOn> | undefined
 let querySettingsModule: typeof import('@/stores/querySettings')
 let workspaceHistoryModule: typeof import('@/stores/workspaceRetrievalHistory')
 
@@ -62,14 +73,10 @@ beforeAll(async () => {
       configurable: true
     })
   }
-  Object.defineProperty(globalThis, 'window', {
-    value: {
-      addEventListener: (type: string, listener: StorageListener) => {
-        if (type === 'storage') storageListeners.push(listener)
-      }
-    },
-    configurable: true
-  })
+  // Call-through spy on the real window: records what the bootstrap
+  // registers AND still registers it, so no window property goes missing
+  // from the modules imported below. See the isolation rules above.
+  addEventListenerSpy = spyOn(window, 'addEventListener')
 
   navigationService = (await import('@/services/navigation')).navigationService
   // Call-through spy: records the bootstrap's configuration AND still applies
@@ -79,12 +86,21 @@ beforeAll(async () => {
   querySettingsModule = await import('@/stores/querySettings')
   workspaceHistoryModule = await import('@/stores/workspaceRetrievalHistory')
   await import('./workspaceEntry')
+
+  for (const [type, listener] of addEventListenerSpy.mock.calls) {
+    if (type === 'storage') storageListeners.push(listener as StorageListener)
+  }
 })
 
 afterAll(() => {
+  // The listeners went onto the process-wide window, so they would answer a
+  // real `storage` event dispatched by any later test file.
+  for (const listener of storageListeners) {
+    window.removeEventListener('storage', listener as never)
+  }
+  addEventListenerSpy?.mockRestore()
   configureSpy?.mockRestore()
   navigationService.resetForTests()
-  restoreDomGlobals()
 })
 
 const recordedConfig = () => {
