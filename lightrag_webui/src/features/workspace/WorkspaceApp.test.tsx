@@ -10,6 +10,7 @@ import { useAuthStore } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
 import { useWebuiRetrievalHistoryStore } from '@/stores/webuiRetrievalHistory'
 import { useWorkspaceRetrievalHistoryStore } from '@/stores/workspaceRetrievalHistory'
+import { useIdentityEpochStore } from '@/lib/loginIdentity'
 import { resetVersionCheckCache } from '@/lib/versionCheckCache'
 import {
   captureProcessState,
@@ -52,7 +53,17 @@ const sharedStores = [
   // the persisted envelopes back and leaves the hydrated stores empty, which
   // is the harder half to notice.
   useWebuiRetrievalHistoryStore,
-  useWorkspaceRetrievalHistoryStore
+  useWorkspaceRetrievalHistoryStore,
+  // The epoch does NOT move under this file today, and the comment above is
+  // why it is captured anyway: the same reconciliation that clears those two
+  // histories is one line away from bumping it. Only `handleIdentityStorageEvent`
+  // does so now — the CROSS-TAB listener, installed by the entry bootstraps this
+  // file never imports — while `applyLoginIdentity`, the same-tab path a shell
+  // mount actually runs, leaves it alone. That split is a fact about today's
+  // implementation, not about the state's kind: the shell reads the epoch as a
+  // remount key, so an advanced one leaking into a later file would remount its
+  // query view against a session key nothing in that file set.
+  useIdentityEpochStore
 ]
 let processSnapshot: ProcessStateSnapshot
 /** As in `queryEntryAlignment`: mount-time reconciliation is async, so a write
@@ -235,3 +246,4 @@ describe('workspace header deployment description', () => {
     ).toHaveLength(0)
   })
 })
+
