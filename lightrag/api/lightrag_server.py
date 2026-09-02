@@ -1459,7 +1459,7 @@ def create_app(args):
         ui_customization_snapshot = resolve_ui_customization_snapshot(ui_templates_dir)
     if ui_customization_snapshot is not None:
         logger.info(
-            "UI customization bundle active: bundle_revision=%s locales=%s",
+            "UI customization: bundle %s %s",
             ui_customization_snapshot.bundle_revision,
             sorted(ui_customization_snapshot.locales),
         )
