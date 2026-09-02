@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 import struct
 import time
 import zlib
@@ -204,6 +205,262 @@ def compute_mds_layout(
         scale = np.float32(target_radius / r99)
         positions *= scale
         print(f"Normalized layout scale: factor={float(scale):.2f}, "
+              f"extent={(positions.max(axis=0) - positions.min(axis=0)).round(2)}")
+    return positions
+
+
+def compute_sfdp_layout(
+    graphml_path: Path,
+    entity_names: list[str],
+    matrix: np.ndarray,
+    target_radius: float = 5.0,
+    random_state: int = 42,
+) -> np.ndarray:
+    """Force-directed 3D layout via graphviz sfdp (multilevel spring model).
+
+    Embedding-based layouts (UMAP/MDS) ignore the graph and resolve to
+    balls/blobs on homogeneous corpora. sfdp uses the graph TOPOLOGY —
+    but on hub-dominated graphs (median degree 1, mega-hubs with 3k+
+    edges, one giant component) it produces a single dense core with long
+    tendrils, NOT separated lobes: ~90% of nodes pack into a tiny core
+    while peripheral chains stretch ~25x further. For the neuron/
+    brain-sector look use compute_hierarchical_layout instead.
+
+    Entities without graph edges are placed next to their nearest
+    connected neighbor in embedding space (plus small jitter), so they
+    drift around the region they semantically belong to.
+
+    Returns:
+        positions: (N, 3) float32 array, centered and scale-normalized.
+    """
+    print(f"Loading graph from {graphml_path}...")
+    G = nx.read_graphml(graphml_path)
+    name_to_idx = {name: i for i, name in enumerate(entity_names)}
+    N = len(entity_names)
+
+    edges = set()
+    for u, v in G.edges():
+        if u in name_to_idx and v in name_to_idx:
+            a, b = name_to_idx[u], name_to_idx[v]
+            if a != b:
+                edges.add((a, b) if a < b else (b, a))
+    edges = sorted(edges)
+    print(f"Graph: {G.number_of_nodes()} nodes, {len(edges)} usable edges")
+
+    # Only connected nodes go into the DOT file; sfdp would place isolates
+    # arbitrarily. Track which nodes appear.
+    connected_mask = np.zeros(N, dtype=bool)
+    for a, b in edges:
+        connected_mask[a] = True
+        connected_mask[b] = True
+    n_connected = int(connected_mask.sum())
+    print(f"Connected nodes: {n_connected}/{N} "
+          f"({N - n_connected} isolates placed post-hoc)")
+
+    print("Running sfdp (multilevel force-directed, dim=3)...")
+    node_pos = _run_sfdp_3d(edges)
+
+    positions = np.zeros((N, 3), dtype=np.float32)
+    placed = np.zeros(N, dtype=bool)
+    for node_id, xyz in node_pos.items():
+        positions[node_id] = xyz
+        placed[node_id] = True
+    print(f"sfdp placed {int(placed.sum())} nodes")
+
+    # Place unplaced/isolated nodes near their nearest connected neighbor
+    # in embedding space. Embeddings are unit-normalized, so nearest by
+    # cosine == argmax of the dot product — use chunked matmul (BLAS).
+    # A cKDTree in 3840-dim degenerates to brute force and never finishes.
+    need = ~placed
+    if need.any():
+        rng = np.random.default_rng(random_state)
+        have = np.where(placed)[0]
+        need_idx = np.where(need)[0]
+        L = matrix[have].astype(np.float64).T  # (dim, n_have)
+        nn = np.empty(len(need_idx), dtype=np.int64)
+        chunk = 10000
+        for start in range(0, len(need_idx), chunk):
+            sel = need_idx[start:start + chunk]
+            sims = matrix[sel].astype(np.float64) @ L  # (chunk, n_have)
+            nn[start:start + chunk] = sims.argmax(axis=1)
+        positions[need] = (
+            positions[have[nn]]
+            + rng.normal(0, 0.05, size=(len(need_idx), 3)).astype(np.float32)
+        )
+        print(f"Placed {len(need_idx)} isolates near embedding neighbors")
+
+    # Normalize scale like the MDS path (see compute_mds_layout).
+    center = positions.mean(axis=0)
+    positions -= center
+    r99 = np.percentile(np.linalg.norm(positions, axis=1), 99)
+    if r99 > 0:
+        scale = np.float32(target_radius / r99)
+        positions *= scale
+        print(f"Normalized layout scale: factor={float(scale):.4f}, "
+              f"extent={(positions.max(axis=0) - positions.min(axis=0)).round(2)}")
+    return positions
+
+
+def _run_sfdp_3d(
+    edges: list[tuple[int, int]],
+) -> dict[int, tuple[float, float, float]]:
+    """Run graphviz sfdp (dimen=3) on an edge list, return {node_id: xyz}.
+
+    Shared by compute_sfdp_layout and compute_hierarchical_layout.
+    graphviz needs BOTH -Gdim (output dims) and -Gdimen (layout dims), and
+    only -Tdot carries true 3D positions (-Tplain's 4th field is node
+    width, not z).
+    """
+    import subprocess
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".gv", prefix="graph3d_sfdp_", delete=False
+    ) as f:
+        dot_path = f.name
+        f.write("graph G {\n")
+        for a, b in edges:
+            f.write(f"{a} -- {b};\n")
+        f.write("}\n")
+    print(f"Wrote DOT input: {dot_path} ({len(edges)} edges)")
+
+    result = subprocess.run(
+        ["sfdp", "-Gdim=3", "-Gdimen=3", "-Goverlap=false", "-Tdot", dot_path],
+        capture_output=True, text=True, check=True,
+    )
+    pos: dict[int, tuple[float, float, float]] = {}
+    # Node records look like:  123\t[height=0.5,\n\t\tpos="x,y,z", ...];
+    # Edge records contain "--" and are excluded by the leading-id match.
+    for m in re.finditer(r'^\s*(\d+)\s*\[(.*?)\];', result.stdout, re.S | re.M):
+        pm = re.search(r'pos="([-\d.eE]+),([-\d.eE]+),([-\d.eE]+)"', m.group(2))
+        if pm:
+            pos[int(m.group(1))] = (
+                float(pm.group(1)), float(pm.group(2)), float(pm.group(3))
+            )
+    return pos
+
+
+def compute_hierarchical_layout(
+    graphml_path: Path,
+    entity_names: list[str],
+    matrix: np.ndarray,
+    clusters: np.ndarray,
+    target_radius: float = 5.0,
+    cluster_tightness: float = 0.35,
+    random_state: int = 42,
+) -> np.ndarray:
+    """Hierarchical presentation-first layout: brain sectors + filaments.
+
+    Pure force-directed layouts collapse on hub-dominated graphs (median
+    degree 1, mega-hubs with 3k+ edges): one dense ball with hair, no
+    sectors. This layout builds the sector structure explicitly:
+
+    1. SKELETON: the embedding-space cluster centroids are laid out by
+       sfdp on the cluster adjacency graph (an edge exists where KG edges
+       connect the two clusters; isolated clusters are anchored to their
+       3 nearest centroid neighbors in embedding space), so related
+       sectors sit together and unrelated ones are pushed apart.
+    2. LOBES: within each cluster, nodes are placed by a local
+       randomized-PCA projection of their own embeddings (top-3
+       components), giving each sector an oriented, elongated lobe shape
+       instead of a uniform ball.
+    3. Lobe radius scales with size^(1/3) relative to centroid spacing,
+       controlled by cluster_tightness (smaller = more separated lobes).
+
+    Requires cluster labels up front (embedding-space clustering); pure
+    graph isolates belong to a cluster like everyone else, so no node is
+    left unplaced.
+
+    Returns:
+        positions: (N, 3) float32 array, centered and scale-normalized.
+    """
+    from sklearn.decomposition import PCA
+
+    N = len(entity_names)
+    labels = clusters.astype(np.int64)
+    K = int(labels.max()) + 1
+    sizes = np.bincount(labels, minlength=K)
+    print(f"Hierarchical layout: {N} nodes in {K} sectors "
+          f"(size {sizes.min()}..{sizes.max()})")
+
+    # --- Skeleton: cluster adjacency from the KG -------------------------
+    print(f"Loading graph from {graphml_path}...")
+    G = nx.read_graphml(graphml_path)
+    name_to_idx = {name: i for i, name in enumerate(entity_names)}
+    adjacency: dict[tuple[int, int], int] = {}
+    for u, v in G.edges():
+        if u in name_to_idx and v in name_to_idx:
+            ca, cb = labels[name_to_idx[u]], labels[name_to_idx[v]]
+            if ca != cb:
+                key = (ca, cb) if ca < cb else (cb, ca)
+                adjacency[key] = adjacency.get(key, 0) + 1
+    print(f"Cluster adjacency: {len(adjacency)} inter-sector edge pairs")
+
+    # Centroid embeddings (unit-normalized) for the kNN fallback anchors
+    centroid_emb = np.zeros((K, matrix.shape[1]), dtype=np.float64)
+    for c in range(K):
+        rows = matrix[labels == c]
+        centroid_emb[c] = rows.mean(axis=0)
+    centroid_emb /= np.linalg.norm(centroid_emb, axis=1, keepdims=True) + 1e-12
+
+    connected = {c for edge in adjacency for c in edge}
+    skeleton_edges = sorted(adjacency)
+    isolated = [c for c in range(K) if c not in connected]
+    if isolated:
+        sims = centroid_emb @ centroid_emb.T
+        np.fill_diagonal(sims, -np.inf)
+        for c in isolated:
+            for nb in np.argpartition(-sims[c], 3)[:3]:
+                skeleton_edges.append((c, int(nb)) if c < nb else (int(nb), c))
+        skeleton_edges = sorted(set(skeleton_edges))
+        print(f"Anchored {len(isolated)} isolated sectors by embedding kNN")
+
+    print("Running sfdp on the sector skeleton...")
+    centroid_pos = _run_sfdp_3d(skeleton_edges)
+    C = np.zeros((K, 3), dtype=np.float64)
+    for c in range(K):
+        C[c] = centroid_pos.get(c, (0.0, 0.0, 0.0))
+    C -= C.mean(axis=0)
+
+    # Normalize skeleton, then size lobes relative to centroid spacing
+    r99 = np.percentile(np.linalg.norm(C, axis=1), 99)
+    if r99 > 0:
+        C *= target_radius / r99
+    if K > 1:
+        d = np.sqrt(((C[:, None, :] - C[None, :, :]) ** 2).sum(axis=-1))
+        np.fill_diagonal(d, np.inf)
+        med_spacing = float(np.median(d.min(axis=1)))
+    else:
+        med_spacing = target_radius
+    radii = cluster_tightness * med_spacing * (
+        sizes / np.median(sizes)) ** (1.0 / 3.0)
+    print(f"Sector spacing: median={med_spacing:.2f}, lobe radii "
+          f"{radii.min():.2f}..{radii.max():.2f}")
+
+    # --- Lobes: local PCA per cluster ------------------------------------
+    rng = np.random.default_rng(random_state)
+    positions = np.zeros((N, 3), dtype=np.float32)
+    for c in range(K):
+        idx = np.where(labels == c)[0]
+        n = len(idx)
+        if n >= 4:
+            local = PCA(n_components=3, svd_solver="randomized",
+                        random_state=random_state).fit_transform(matrix[idx])
+            lr99 = np.percentile(
+                np.linalg.norm(local - local.mean(axis=0), axis=1), 99)
+            if lr99 > 0:
+                local /= lr99
+        else:
+            local = rng.normal(0, 0.3, size=(n, 3))
+        positions[idx] = (C[c] + local * radii[c]).astype(np.float32)
+
+    # Global normalization (center + r99 radius -> target_radius)
+    positions -= positions.mean(axis=0)
+    r99 = np.percentile(np.linalg.norm(positions, axis=1), 99)
+    if r99 > 0:
+        scale = np.float32(target_radius / r99)
+        positions *= scale
+        print(f"Normalized layout scale: factor={float(scale):.4f}, "
               f"extent={(positions.max(axis=0) - positions.min(axis=0)).round(2)}")
     return positions
 
@@ -420,10 +677,21 @@ def main():
     )
     parser.add_argument(
         "--method",
-        choices=["umap", "mds"],
+        choices=["umap", "mds", "sfdp", "hier"],
         default="umap",
-        help="Layout method: umap (local structure, pretty clusters) or "
-        "mds (landmark MDS, preserves relative distances)",
+        help="Layout method: umap (local structure, pretty clusters), "
+        "mds (landmark MDS, preserves relative distances), "
+        "sfdp (force-directed on the graph topology: hairball on "
+        "hub-dominated graphs), or hier (hierarchical: cluster centroids "
+        "via sfdp as sectors, within-cluster PCA lobes — the "
+        "neuron/brain-sector look)",
+    )
+    parser.add_argument(
+        "--cluster-tightness",
+        type=float,
+        default=0.35,
+        help="Lobe radius vs sector spacing for --method hier "
+        "(smaller = tighter, more separated lobes)",
     )
     parser.add_argument(
         "--n-landmarks",
@@ -475,7 +743,22 @@ def main():
     entity_names, matrix, metadata = load_entity_vectors(vdb_path)
 
     # Step 2: Compute 3D layout
-    if args.method == "mds":
+    clusters = None
+    if args.method == "hier":
+        # Hierarchical layout is built ON the embedding-space clusters
+        # (sectors), so clustering must happen first.
+        clusters = compute_embedding_clusters(
+            matrix,
+            min_cluster_size=args.min_cluster_size,
+            n_clusters=args.n_clusters,
+        )
+        positions = compute_hierarchical_layout(
+            graphml_path, entity_names, matrix, clusters,
+            cluster_tightness=args.cluster_tightness,
+        )
+    elif args.method == "sfdp":
+        positions = compute_sfdp_layout(graphml_path, entity_names, matrix)
+    elif args.method == "mds":
         positions = compute_mds_layout(
             matrix, n_landmarks=args.n_landmarks, dist_gamma=args.dist_gamma
         )
@@ -484,19 +767,20 @@ def main():
             matrix, n_neighbors=args.n_neighbors, min_dist=args.min_dist
         )
 
-    # Step 3: Compute clusters
-    if args.cluster_space == "embedding":
-        clusters = compute_embedding_clusters(
-            matrix,
-            min_cluster_size=args.min_cluster_size,
-            n_clusters=args.n_clusters,
-        )
-    else:
-        clusters = compute_clusters(
-            positions,
-            min_cluster_size=args.min_cluster_size,
-            n_clusters=args.n_clusters,
-        )
+    # Step 3: Compute clusters (skipped when the layout consumed them)
+    if clusters is None:
+        if args.cluster_space == "embedding":
+            clusters = compute_embedding_clusters(
+                matrix,
+                min_cluster_size=args.min_cluster_size,
+                n_clusters=args.n_clusters,
+            )
+        else:
+            clusters = compute_clusters(
+                positions,
+                min_cluster_size=args.min_cluster_size,
+                n_clusters=args.n_clusters,
+            )
 
     # Step 4: Load graph structure and remap edges to VDB indices
     print(f"Loading graph from {graphml_path}...")
@@ -517,7 +801,7 @@ def main():
 
     elapsed = time.time() - start_time
     print(f"\nLayout computation completed in {elapsed:.2f} seconds")
-    print(f"Output files:")
+    print("Output files:")
     print(f"  Binary layout: {bin_output}")
     print(f"  Metadata: {meta_output}")
 

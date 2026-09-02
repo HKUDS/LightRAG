@@ -50,18 +50,53 @@ python -m lightrag.tools.compute_3d_layout \
   --working-dir data/rag_storage \
   --method mds \
   --n-landmarks 5000
+
+# Hierarchical sector layout (neuron/brain-lobe look, needs graphviz)
+python -m lightrag.tools.compute_3d_layout \
+  --working-dir data/rag_storage \
+  --method hier \
+  --n-clusters 250 \
+  --cluster-tightness 0.35
 ```
 
 ## Layout Methods
 
-| | UMAP (default) | Landmark MDS (`--method mds`) |
-|---|---|---|
-| Preserves | Local neighborhoods | Global relative distances |
-| Spearman all pairs | ~0.35 | ~0.50 |
-| Spearman far pairs | ~0.10 | ~0.23 |
-| 10-NN overlap | ~0.12 | ~0.06 |
-| Runtime (190k entities) | ~31 min | ~4 min |
-| Visual character | Structured galaxy, crisp clusters | Uniform ball, faithful cluster geography |
+| | UMAP (default) | Landmark MDS (`--method mds`) | sfdp (`--method sfdp`) | Hierarchical (`--method hier`) |
+|---|---|---|---|---|
+| Preserves | Local neighborhoods | Global relative distances | Graph topology | Sector structure |
+| Spearman all pairs | ~0.35 | ~0.50 | ~0.10 | — |
+| Spearman far pairs | ~0.10 | ~0.23 | ~0.04 | — |
+| 10-NN overlap | ~0.12 | ~0.06 | ~0.03 | — |
+| Runtime (190k entities) | ~31 min | ~4 min | ~3 min | ~3 min |
+| Visual character | Structured galaxy, crisp clusters | Uniform ball, faithful cluster geography | Dense core + long tendrils (hairball) | Separated lobes connected by filaments — neuron/brain-sector look |
+
+**sfdp caveat (hub-dominated graphs)**: pure force-directed layout only
+produces separated lobes when the graph is modular. Typical LightRAG KGs
+are NOT modular: median degree 1, mega-hubs with thousands of edges, one
+giant component holding ~76% of nodes. sfdp on such a graph packs ~90% of
+nodes into a tiny core while peripheral chains stretch ~25x further — a
+spiky ball, not brain sectors.
+
+**hier** builds the sector structure explicitly instead of hoping topology
+provides it:
+
+1. **Skeleton**: embedding-space cluster centroids (see
+   `--cluster-space embedding`) are laid out by sfdp on the *cluster
+   adjacency graph* — an edge exists where KG edges connect two clusters,
+   and isolated clusters are anchored to their 3 nearest centroid
+   neighbors in embedding space. Related sectors sit together; unrelated
+   ones are pushed apart.
+2. **Lobes**: within each cluster, nodes are placed by a local
+   randomized-PCA projection of their own embeddings, giving each sector
+   an oriented, elongated lobe shape.
+3. Lobe radius scales with `size^(1/3)` relative to centroid spacing;
+   tune separation with `--cluster-tightness` (default 0.35, smaller =
+   tighter lobes).
+
+Requires graphviz (`apt install graphviz`) for both sfdp-based methods.
+Only `-Tdot` output carries true 3D positions (`pos="x,y,z"`); `-Tplain`'s
+fourth field is node width, not z — and both `-Gdim=3` and `-Gdimen=3`
+are required.
 
 MDS runs metric MDS (SMACOF stress minimization) on `--n-landmarks` randomly
 selected landmarks, then places every point by Gower triangulation against the
