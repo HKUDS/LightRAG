@@ -4,7 +4,9 @@ This document describes the 3D knowledge graph visualization feature for LightRA
 
 ## Overview
 
-The 3D visualization projects the knowledge graph into a 3D space using UMAP dimensionality reduction on entity embeddings, clusters entities using HDBSCAN, and renders them in an interactive Three.js-based viewer with a sci-fi galaxy aesthetic (inspired by RealDeepResearch).
+The 3D visualization projects the knowledge graph into a 3D space using dimensionality reduction on entity embeddings, clusters entities using HDBSCAN, and renders them in an interactive Three.js-based viewer with a sci-fi galaxy aesthetic (inspired by RealDeepResearch).
+
+Two layout methods are available (see *Layout Methods* below): **UMAP** (default; preserves local neighborhoods, pretty clusters) and **landmark MDS** (preserves global relative distances, 8x faster).
 
 ## Architecture
 
@@ -26,7 +28,7 @@ The route is registered in `lightrag_server.py` alongside other graph routes.
 
 This offline script:
 1. Loads entity embeddings from `vdb_entities.json` (3840-dim float16, zlib-compressed)
-2. Runs UMAP to project into 3D space (n_components=3, metric='cosine')
+2. Projects into 3D space (`--method umap` or `--method mds`, metric='cosine')
 3. Clusters entities using HDBSCAN (or KMeans fallback)
 4. Loads graph structure from `graph_chunk_entity_relation.graphml`
 5. Maps graph edges to VDB entity indices
@@ -37,12 +39,41 @@ This offline script:
 # Activate the graph3d venv
 source .venv-graph3d/bin/activate
 
-# Compute layout (takes 30-60 min for 197k entities)
+# UMAP layout (takes 30-60 min for 197k entities)
 python -m lightrag.tools.compute_3d_layout \
   --working-dir data/rag_storage \
   --n-neighbors 30 \
   --min-cluster-size 50
+
+# Landmark MDS layout (~4 min for 190k entities)
+python -m lightrag.tools.compute_3d_layout \
+  --working-dir data/rag_storage \
+  --method mds \
+  --n-landmarks 5000
 ```
+
+## Layout Methods
+
+| | UMAP (default) | Landmark MDS (`--method mds`) |
+|---|---|---|
+| Preserves | Local neighborhoods | Global relative distances |
+| Spearman all pairs | ~0.35 | ~0.50 |
+| Spearman far pairs | ~0.10 | ~0.23 |
+| 10-NN overlap | ~0.12 | ~0.06 |
+| Runtime (190k entities) | ~31 min | ~4 min |
+| Visual character | Structured galaxy, crisp clusters | Uniform ball, faithful cluster geography |
+
+MDS runs metric MDS (SMACOF stress minimization) on `--n-landmarks` randomly
+selected landmarks, then places every point by Gower triangulation against the
+landmark configuration. Since MDS coordinates are arbitrary-scale, the output
+is centered and rescaled so its 99th-percentile radius matches UMAP's typical
+extent (~5 units) — without this, the viewer's fixed point size saturates the
+bloom pass into a white ball.
+
+Choose UMAP for local exploration ("what's near this entity?") and MDS for
+faithful global geography ("how far apart are these research areas really?").
+Neither beats ~0.5 all-pairs Spearman in 3D — that is close to the linear
+ceiling (PCA-3 scores ~0.38) for this corpus.
 
 **Output files** (in `data/rag_storage/`):
 - `graph3d_layout.bin` - Binary layout (~50MB for 197k entities)

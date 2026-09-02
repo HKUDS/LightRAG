@@ -106,6 +106,7 @@ def compute_mds_layout(
     n_landmarks: int = 3000,
     max_iter: int = 300,
     random_state: int = 42,
+    target_radius: float = 5.0,
 ) -> np.ndarray:
     """Landmark MDS: metric MDS (SMACOF) on landmarks, then place every point
     by distance triangulation (Gower's interpolation formula).
@@ -123,6 +124,11 @@ def compute_mds_layout(
         n_landmarks: number of landmarks for the SMACOF step.
         max_iter: SMACOF iterations.
         random_state: landmark selection + MDS seed.
+        target_radius: 99th-percentile radius of the output layout. MDS
+            coordinates are arbitrary-scale (stress is scale-invariant), so
+            the raw output (~0.35 units for cosine inputs) is far too small
+            for the viewer's fixed POINT_SIZE and saturates the bloom pass.
+            Normalize to the same scale UMAP produces (~10 units extent).
 
     Returns:
         positions: (N, n_components) float32 array.
@@ -175,6 +181,17 @@ def compute_mds_layout(
             print(f"  Placed {end}/{N} points...")
 
     print(f"MDS output shape: {positions.shape}")
+
+    # Normalize scale: center and rescale so the 99th-percentile radius
+    # matches target_radius (see docstring).
+    center = positions.mean(axis=0)
+    positions -= center
+    r99 = np.percentile(np.linalg.norm(positions, axis=1), 99)
+    if r99 > 0:
+        scale = np.float32(target_radius / r99)
+        positions *= scale
+        print(f"Normalized layout scale: factor={float(scale):.2f}, "
+              f"extent={(positions.max(axis=0) - positions.min(axis=0)).round(2)}")
     return positions
 
 
