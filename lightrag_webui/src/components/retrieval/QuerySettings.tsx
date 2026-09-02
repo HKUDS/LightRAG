@@ -83,6 +83,11 @@ export default function QuerySettings() {
       <CardHeader className="px-4 pt-4 pb-2">
         <CardTitle>{t('retrievePanel.querySettings.parametersTitle')}</CardTitle>
         <CardDescription className="sr-only">{t('retrievePanel.querySettings.parametersDescription')}</CardDescription>
+        {/* The query entry (/workspace) reads these same settings from this browser's
+            storage, so say whose queries they affect right where they are edited. */}
+        <p className="text-muted-foreground text-[11px] leading-snug">
+          {t('retrievePanel.querySettings.parametersScopeNotice')}
+        </p>
       </CardHeader>
       <CardContent className="m-0 flex grow flex-col p-0 text-xs">
         <div className="relative size-full">

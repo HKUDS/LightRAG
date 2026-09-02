@@ -452,6 +452,7 @@
     "querySettings": {
       "parametersTitle": "Параметри",
       "parametersDescription": "Налаштуйте параметри вашого запиту",
+      "parametersScopeNotice": "Параметри застосовуються до поточного сеансу, зокрема до /workspace у цьому браузері.",
       "queryMode": "Режим запиту",
       "queryModeTooltip": "Виберіть стратегію пошуку:\n• Naive: Традиційний пошук векторів текстових чанків\n• Local: Фокус на пошуку сутностей\n• Global: Фокус на пошуку відношень\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Пропустити пошук, надіслати історію розмови та поточне питання в LLM",
       "queryModeWarning": "Може знизити якість пошуку",
