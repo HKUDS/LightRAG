@@ -49,6 +49,7 @@ _DRAWING_MARKER = '<mddrawing ref="{ref}"/>'
 TABLE_MARKER_RE = re.compile(r'<mdtable ref="([^"]+)"/>')
 EQUATION_MARKER_RE = re.compile(r'<mdequation ref="([^"]+)"/>')
 DRAWING_MARKER_RE = re.compile(r'<mddrawing ref="([^"]+)"/>')
+_HTML_TABLE_CLOSE_RE = re.compile(r"</table>", re.IGNORECASE)
 
 # --- markdown token patterns ----------------------------------------------
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
@@ -521,9 +522,9 @@ def _consume_html_table(lines: list[str], start: int) -> tuple[int, str, str]:
     j = start
     while j < len(lines):
         line = lines[j]
-        closing = line.lower().find("</table>")
-        if closing >= 0:
-            end = closing + len("</table>")
+        closing = _HTML_TABLE_CLOSE_RE.search(line)
+        if closing:
+            end = closing.end()
             buf.append(line[:end])
             return (j - start + 1), "\n".join(buf).strip(), line[end:]
         buf.append(line)

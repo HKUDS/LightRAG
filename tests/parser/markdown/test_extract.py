@@ -162,6 +162,14 @@ def test_html_table_preserves_trailing_text_after_multiline_close():
     assert ex.blocks[0]["content"].endswith(" trailing prose")
 
 
+def test_html_table_preserves_trailing_text_after_unicode_content():
+    ex = _extract("<table><tr><td>İ</td></tr></table>tail")
+
+    (table,) = ex.tables.values()
+    assert table["html"] == "<table><tr><td>İ</td></tr></table>"
+    assert ex.blocks[0]["content"].endswith("tail")
+
+
 def test_block_equation_single_and_multiline():
     md = "$$ E = mc^2 $$\n\ntext\n\n$$\n\\sum x\n$$\n"
     ex = _extract(md)
