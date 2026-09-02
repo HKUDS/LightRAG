@@ -395,7 +395,7 @@ LightRAG 的默认存储全部都是基于文件进行持久化的内存数据�
 
 - **LIGHTRAG_DEFAULT_UI**：根路径 `/` 重定向到哪个入口——`webui`（默认）或 `workspace`。它**只**控制这一个行为：该重定向。无论取值如何，两个入口都保持挂载、各自的 URL 始终可访问；取其它值会导致启动失败。当部署的主要使用者是查询用户而非管理员时，可将其设为 `workspace`。
 - **UI_TEMPLATES_DIR**：指向一个可选的多语言定制包，用你自己的内容替换欢迎页、登录页文案、查询空白页、品牌 Logo 和版权行，无需重新构建 WebUI。参见 [UserDefinedUI-zh.md](./docs/UserDefinedUI-zh.md)。
-- **ENABLE_AI_CONTENT_NOTICE**：在两个查询界面（`/workspace` 与 `/webui` 的检索面板）中为每条回答标注"由AI生成"。默认关闭；它只是界面元素，不会进入 API 响应，也不会写入聊天历史。
+- **ENABLE_AI_CONTENT_NOTICE**：在两个查询界面（`/workspace` 与 `/webui` 的检索面板）中为每条**由 LLM 生成的**回答标注"由AI生成"；不是模型写的文本——无检索结果时的固定回复、管理面板的调试输出——不会被标注。默认关闭；它只是界面元素，不会进入 API 响应，也不会写入聊天历史。
 
 把最终用户引导到 `/workspace` 之前有两点需要了解。其一，那里的查询参数**只继承、不可编辑**：每次查询使用同一浏览器中 `/webui` 保存的设置（未保存时使用前端默认值），这是按浏览器的本地状态，不是服务端全局策略。其二，隐藏后台界面是使用体验上的划分，**不是**安全边界——服务端仍会对每个接口执行鉴权。查询入口的完整行为参见 [LightRAG-API-Server-zh.md](./docs/LightRAG-API-Server-zh.md#workspace-查询入口)。
 
