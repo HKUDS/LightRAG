@@ -46,6 +46,16 @@ describe('QuerySettings scope notice', () => {
     fireEvent.click(element)
   }
 
+  test('the help control is a touch-sized target, not just the icon', () => {
+    renderWithProviders(<QuerySettings />)
+
+    // The icon is 12px; on a touch-only device the button IS the tap path, so
+    // the padding that grows the hit box to 24x24 is load-bearing. Asserted as
+    // a class because happy-dom computes no layout.
+    const help = screen.getByRole('button', { name: strings.parametersScopeHelpLabel })
+    expect(help.className.split(/\s+/)).toContain('p-1.5')
+  })
+
   test('tapping the help control reveals the full explanation', async () => {
     renderWithProviders(<QuerySettings />)
 

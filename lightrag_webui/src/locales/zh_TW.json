@@ -453,7 +453,7 @@
       "parametersTitle": "參數",
       "parametersDescription": "設定查詢參數",
       "parametersScopeNotice": "僅影響本瀏覽器的查詢",
-      "parametersScopeTooltip": "這些參數儲存在目前的瀏覽器中並持續生效，直到你再次修改；在同一瀏覽器上開啟的 /workspace 入口所發出的查詢同樣會使用它們。它們是瀏覽器本機狀態，而非伺服器全域策略：其他瀏覽器與其他裝置不受影響。",
+      "parametersScopeTooltip": "這些參數儲存在目前的瀏覽器中並持續生效，直到你再次修改；在同一瀏覽器上開啟的 /workspace 入口所發出的查詢同樣會使用它們，只有兩個偵錯開關例外——該入口一律以關閉狀態提交。它們是瀏覽器本機狀態，而非伺服器全域策略：其他瀏覽器與其他裝置不受影響。",
       "parametersScopeHelpLabel": "關於參數適用範圍",
       "queryMode": "查詢模式",
       "queryModeTooltip": "選擇檢索策略：\n• Naive：傳統文字塊向量檢索\n• Local：側重實體檢索\n• Global：側重關係檢索\n• Hybrid：Local+Global\n• Mix：Local+Global+Naive\n• Bypass：跳過檢索，把歷史會話與當前問題送LLM",

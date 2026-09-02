@@ -104,8 +104,11 @@ export default function QuerySettings() {
                 <button
                   type="button"
                   aria-label={t('retrievePanel.querySettings.parametersScopeHelpLabel')}
-                  className="shrink-0 cursor-help hover:text-foreground"
-                  // Hover opens it on a pointer device; a tap has to work too.
+                  // Hover opens it on a pointer device; a tap has to work too —
+                  // and a 12px icon is not a tap target, so the padding grows the
+                  // hit box to 24x24 (WCAG 2.2 target size) while the negative
+                  // margins keep it occupying exactly the icon's own space.
+                  className="-my-1.5 -mr-1.5 shrink-0 cursor-help p-1.5 hover:text-foreground"
                   onPointerDownCapture={() => {
                     scopeHelpOpenAtPointerDown.current = scopeHelpOpen
                   }}
