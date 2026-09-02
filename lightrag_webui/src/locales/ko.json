@@ -453,7 +453,7 @@
       "parametersTitle": "매개변수",
       "parametersDescription": "쿼리 매개변수를 구성하세요",
       "parametersScopeNotice": "이 브라우저의 쿼리에 적용",
-      "parametersScopeTooltip": "이 매개변수는 현재 브라우저에 저장되며 변경할 때까지 계속 적용됩니다. 같은 브라우저에서 연 /workspace 입구에서 보낸 쿼리에도 적용됩니다. 다만 두 개의 디버그 스위치는 예외로, 항상 꺼진 상태로 전송됩니다. 브라우저별 로컬 상태이며 서버 전체 정책이 아니므로 다른 브라우저와 다른 기기에는 영향을 주지 않습니다.",
+      "parametersScopeTooltip": "이 매개변수는 현재 브라우저에 저장되며 변경할 때까지 계속 적용됩니다. 같은 브라우저에서 연 /workspace 입구에서 보낸 쿼리에도 적용됩니다. 브라우저별 로컬 상태이며 서버 전체 정책이 아니므로 다른 브라우저와 다른 기기에는 영향을 주지 않습니다.",
       "parametersScopeHelpLabel": "매개변수 적용 범위 정보",
       "queryMode": "쿼리 모드",
       "queryModeTooltip": "검색 전략을 선택하세요:\n• Naive: 전통적인 텍스트 청크 벡터 검색\n• Local: 엔티티 검색에 집중\n• Global: 관계 검색에 집중\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: 검색 건너뛰기, 대화 기록과 현재 질문을 LLM에 전송",

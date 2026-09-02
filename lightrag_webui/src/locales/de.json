@@ -453,7 +453,7 @@
       "parametersTitle": "Parameter",
       "parametersDescription": "Konfigurieren Sie Ihre Abfrageparameter",
       "parametersScopeNotice": "Gilt für Abfragen dieses Browsers",
-      "parametersScopeTooltip": "Diese Parameter werden in diesem Browser gespeichert und bleiben wirksam, bis Sie sie ändern; auch Abfragen aus dem darin geöffneten /workspace-Zugang verwenden sie, ausgenommen die beiden Debug-Schalter, die dort immer deaktiviert gesendet werden. Sie sind ein browserlokaler Zustand und keine serverweite Richtlinie: Andere Browser und andere Geräte sind nicht betroffen.",
+      "parametersScopeTooltip": "Diese Parameter werden in diesem Browser gespeichert und bleiben wirksam, bis Sie sie ändern; auch Abfragen aus dem darin geöffneten /workspace-Zugang verwenden sie. Sie sind ein browserlokaler Zustand und keine serverweite Richtlinie: Andere Browser und andere Geräte sind nicht betroffen.",
       "parametersScopeHelpLabel": "Über den Geltungsbereich der Parameter",
       "queryMode": "Abfragemodus",
       "queryModeTooltip": "Abfragestrategie auswählen:\n• Naive: Traditionelle Text-Chunk-Vektorabfrage\n• Local: Fokus auf Entitätsabfrage\n• Global: Fokus auf Beziehungsabfrage\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Abfrage überspringen, Konversationsverlauf und aktuelle Frage an LLM senden",
