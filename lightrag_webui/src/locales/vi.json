@@ -452,7 +452,9 @@
     "querySettings": {
       "parametersTitle": "Tham Số",
       "parametersDescription": "Cấu hình tham số truy vấn của bạn",
-      "parametersScopeNotice": "Tham số áp dụng cho phiên hiện tại, bao gồm /workspace trên trình duyệt này.",
+      "parametersScopeNotice": "Chỉ áp dụng cho phiên hiện tại",
+      "parametersScopeTooltip": "Các tham số này được lưu trong trình duyệt hiện tại và cũng áp dụng cho phiên truy vấn /workspace mở trong đó. Đây là trạng thái cục bộ theo trình duyệt, không phải chính sách toàn máy chủ: người dùng khác và thiết bị khác không bị ảnh hưởng.",
+      "parametersScopeHelpLabel": "Về phạm vi áp dụng của tham số",
       "queryMode": "Chế Độ Truy Vấn",
       "queryModeTooltip": "Chọn chiến lược truy xuất:\n• Naive: Truy xuất vector đoạn văn bản truyền thống\n• Local: Tập trung vào truy xuất thực thể\n• Global: Tập trung vào truy xuất quan hệ\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Bỏ qua truy xuất, gửi lịch sử hội thoại và câu hỏi hiện tại đến LLM",
       "queryModeWarning": "Có thể làm giảm chất lượng truy xuất",
