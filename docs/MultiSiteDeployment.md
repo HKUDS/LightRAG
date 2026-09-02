@@ -78,6 +78,8 @@ and in-app links.
 
 There are TWO WebUI entries, both mounted server-side from one shared build: the admin UI at `/webui` and the query-user entry at `/workspace` (each serving its own entry HTML from the same static directory; requesting the other entry's HTML file returns 404). `window.__LIGHTRAG_CONFIG__` keeps the published shape `{apiPrefix, webuiPrefix, webuiTitle}`; `webuiPrefix` is computed as `LIGHTRAG_API_PREFIX + "/webui/"` and injected identically for both entries — you do **not** set it yourself, and there is no entry-mode field (the entry identity IS the loaded HTML product). Behind a prefix, browsers see `/site01/webui/` and `/site01/workspace/`. `webuiTitle` carries `WEBUI_TITLE` (null when unset) and is applied to the browser tab title by the same injected snippet, so the tab shows the deployment's own name from the first paint instead of the bundled default.
 
+> **Sites on one host share the browser's client-side settings.** The WebUI keeps its query parameters and chat histories in `localStorage`, which the browser scopes by ORIGIN — and every prefix on one host is the same origin. The keys are not namespaced by prefix yet, so query parameters saved in `/site01/webui` are the ones `/site02/workspace` sends, in that browser. This is client-side state only: each instance's server-side data isolation (`workspace`, storage backends, authentication) is untouched, and another visitor's browser is unaffected. Give the sites separate hostnames if their UI state must not mix.
+
 There are no longer any frontend `VITE_API_PREFIX` / `VITE_WEBUI_PREFIX` variables. Setting them has no effect (they are ignored by the build).
 
 ### Forwarding modes: strip and verbatim both work
