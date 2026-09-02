@@ -453,11 +453,11 @@ def extract_markdown(
 
         # --- HTML <table> block --------------------------------------------
         if starts_with_html_tag(stripped.lower(), "table"):
-            consumed, html = _consume_html_table(lines, i)
+            consumed, html, trailing = _consume_html_table(lines, i)
             if consumed > 0:
                 ref = _next_ref("t")
                 out.tables[ref] = {"kind": "html", "html": html}
-                cur_lines.append(table_marker(ref))
+                cur_lines.append(table_marker(ref) + trailing)
                 has_block_payload = True
                 i += consumed
                 continue
@@ -511,17 +511,24 @@ def _consume_block_equation(lines: list[str], start: int) -> tuple[int, str]:
     return 0, ""
 
 
-def _consume_html_table(lines: list[str], start: int) -> tuple[int, str]:
-    """Collect a ``<table>…</table>`` block (line-spanning). ``(consumed, html)``
-    or ``(0, "")`` when no closing ``</table>`` is found."""
+def _consume_html_table(lines: list[str], start: int) -> tuple[int, str, str]:
+    """Collect a ``<table>…</table>`` block (line-spanning).
+
+    Returns ``(consumed, html, trailing)`` or ``(0, "", "")`` when no closing
+    ``</table>`` is found. Text after the closing tag remains in ``trailing``.
+    """
     buf: list[str] = []
     j = start
     while j < len(lines):
-        buf.append(lines[j])
-        if "</table>" in lines[j].lower():
-            return (j - start + 1), "\n".join(buf).strip()
+        line = lines[j]
+        closing = line.lower().find("</table>")
+        if closing >= 0:
+            end = closing + len("</table>")
+            buf.append(line[:end])
+            return (j - start + 1), "\n".join(buf).strip(), line[end:]
+        buf.append(line)
         j += 1
-    return 0, ""
+    return 0, "", ""
 
 
 def _consume_pipe_table(

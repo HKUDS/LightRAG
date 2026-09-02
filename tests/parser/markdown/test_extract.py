@@ -146,6 +146,22 @@ def test_html_table_captured_verbatim_spanning_lines():
     assert "<thead>" in table["html"] and "</table>" in table["html"]
 
 
+def test_html_table_preserves_same_line_trailing_text():
+    ex = _extract("<table><tr><td>a</td></tr></table> trailing prose")
+
+    (table,) = ex.tables.values()
+    assert table["html"] == "<table><tr><td>a</td></tr></table>"
+    assert ex.blocks[0]["content"].endswith(" trailing prose")
+
+
+def test_html_table_preserves_trailing_text_after_multiline_close():
+    ex = _extract("<table>\n<tr><td>a</td></tr>\n</table> trailing prose")
+
+    (table,) = ex.tables.values()
+    assert table["html"].endswith("</table>")
+    assert ex.blocks[0]["content"].endswith(" trailing prose")
+
+
 def test_block_equation_single_and_multiline():
     md = "$$ E = mc^2 $$\n\ntext\n\n$$\n\\sum x\n$$\n"
     ex = _extract(md)
