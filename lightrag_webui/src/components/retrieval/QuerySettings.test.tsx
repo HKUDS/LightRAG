@@ -24,7 +24,7 @@ describe('QuerySettings scope notice', () => {
     cleanup()
   })
 
-  test('renders the session-scope notice as visible text', () => {
+  test('renders the scope notice as visible text', () => {
     renderWithProviders(<QuerySettings />)
 
     const notice = screen.getByText(strings.parametersScopeNotice)
