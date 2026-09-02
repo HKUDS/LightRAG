@@ -76,6 +76,7 @@
 ---
 
 ## 🎉 新闻
+- [2026.08]🎯[新功能]: 集成 **DocumentDB（Linux Foundation）** 作为一体化存储后端，支持 KV、向量、图和文档状态存储。
 - [2026.07]🎯[新功能]: 添加 Word 文档 **智能章节标题** 识别功能。
 - [2026.05]🎯[新功能]：**将 RagAnything 合并至 LightRAG**🎉。支持通过 **MinerU / Docling** 服务进行多模态内容解析与提取。
 - [2026.05]🎯[新功能]：引入四种可选的文本分块策略：`Fix`（固定）、`Recursive`（递归）、`Vector`（向量）和 `Paragraph`（段落语义）。
@@ -359,7 +360,7 @@ LightRAG 需要使用到 4 种后台存储类型，分别是：
 - **GRAPH_STORAGE**：用于保存知识图谱。
 - **DOC_STATUS_STORAGE**：用于保存文件列表。
 
-LightRAG 的默认存储全部都是基于文件进行持久化的内存数据库。默认存储仅用于开发调试，不适合用于生产环境部署。生产环境如果希望使用同一个后台数据解决 4 种类型的后台存储，可以选择 PostgreSQL、MongoDB 或 OpenSearch。也可以单独为向量存储或图存储选择专业化的数据库，例如使用 Milvus 或 Qdrant 作为向量存储，使用 Neo4j 或 Memgraph 作为图存储。
+LightRAG 的默认存储全部都是基于文件进行持久化的内存数据库。默认存储仅用于开发调试，不适合用于生产环境部署。生产环境如果希望使用同一个后台数据解决 4 种类型的后台存储，可以选择 PostgreSQL、MongoDB、DocumentDB 或 OpenSearch。也可以单独为向量存储或图存储选择专业化的数据库，例如使用 Milvus 或 Qdrant 作为向量存储，使用 Neo4j 或 Memgraph 作为图存储。
 
 ### 文档处理阶段其他重要配置
 

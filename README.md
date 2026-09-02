@@ -76,6 +76,7 @@
 ---
 
 ## 🎉 News
+- [2026.08]🎯[New Feature]: Integrated **DocumentDB (Linux Foundation)** as an all-in-one storage backend, supporting KV, vector, graph, and document status storage.
 - [2026.07]🎯[New Feature]: Add **Smart Heading** recognition feature for word documents.
 - [2026.05]🎯[New Feature]: **Merge RagAnything into LightRAG**🎉. Multimodal content parsing and extraction via **MinerU / Docling** services.
 - [2026.05]🎯[New Feature]: Introducing four selectable text chunking strategies: `Fix`, `Recursive`, `Vector`, and `Paragraph`.
@@ -359,7 +360,7 @@ LightRAG requires four types of backend storage:
 - **GRAPH_STORAGE**: Used to save the knowledge graph.
 - **DOC_STATUS_STORAGE**: Used to store the document list.
 
-By default, LightRAG's storage backends are file-persisted, in-memory databases. These default storages are intended only for development and debugging, and are not suitable for production. In a production environment, if you prefer a single backend to handle all four storage types, you can choose PostgreSQL, MongoDB, or OpenSearch. Alternatively, you can select specialized databases for vector or graph storage, such as using Milvus or Qdrant for vector storage, and Neo4j or Memgraph for graph storage.
+By default, LightRAG's storage backends are file-persisted, in-memory databases. These default storages are intended only for development and debugging, and are not suitable for production. In a production environment, if you prefer a single backend to handle all four storage types, you can choose PostgreSQL, MongoDB, DocumentDB, or OpenSearch. Alternatively, you can select specialized databases for vector or graph storage, such as using Milvus or Qdrant for vector storage, and Neo4j or Memgraph for graph storage.
 
 ### Other Important Configurations for Document Processing
 

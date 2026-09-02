@@ -391,7 +391,7 @@ async def enumerate_kv_keys(kv) -> List[str]:
         rows = await kv.db.query(query, [kv.workspace], multirows=True)
         return [row["id"] for row in (rows or [])]
 
-    if storage_name == "MongoKVStorage":
+    if storage_name in {"MongoKVStorage", "DocumentDBKVStorage"}:
         keys = []
         cursor = kv._data.find({}, {"_id": 1})
         async for doc in cursor:

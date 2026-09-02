@@ -16,6 +16,7 @@ Supported KV Storage Types:
     - RedisKVStorage
     - PGKVStorage
     - MongoKVStorage
+    - DocumentDBKVStorage
     - OpenSearchKVStorage
 """
 
@@ -52,12 +53,14 @@ STORAGE_TYPES = {
     "3": "PGKVStorage",
     "4": "MongoKVStorage",
     "5": "OpenSearchKVStorage",
+    "6": "DocumentDBKVStorage",
 }
 
 # Workspace environment variable mapping
 WORKSPACE_ENV_MAP = {
     "PGKVStorage": "POSTGRES_WORKSPACE",
     "MongoKVStorage": "MONGODB_WORKSPACE",
+    "DocumentDBKVStorage": "DOCUMENTDB_WORKSPACE",
     "RedisKVStorage": "REDIS_WORKSPACE",
     "OpenSearchKVStorage": "OPENSEARCH_WORKSPACE",
 }
@@ -184,6 +187,10 @@ class MigrationTool:
                 return config.has_option("mongodb", "uri") and config.has_option(
                     "mongodb", "database"
                 )
+            elif storage_name == "DocumentDBKVStorage":
+                return config.has_option("documentdb", "uri") and config.has_option(
+                    "documentdb", "database"
+                )
             elif storage_name == "OpenSearchKVStorage":
                 return config.has_option("opensearch", "hosts")
 
@@ -278,6 +285,10 @@ class MigrationTool:
             from lightrag.kg.mongo_impl import MongoKVStorage
 
             return MongoKVStorage
+        elif storage_name == "DocumentDBKVStorage":
+            from lightrag.kg.documentdb_impl import DocumentDBKVStorage
+
+            return DocumentDBKVStorage
         elif storage_name == "OpenSearchKVStorage":
             from lightrag.kg.opensearch_impl import OpenSearchKVStorage
 
@@ -546,7 +557,7 @@ class MigrationTool:
             return await self.get_default_caches_redis(storage)
         elif storage_name == "PGKVStorage":
             return await self.get_default_caches_pg(storage)
-        elif storage_name == "MongoKVStorage":
+        elif storage_name in {"MongoKVStorage", "DocumentDBKVStorage"}:
             return await self.get_default_caches_mongo(storage)
         elif storage_name == "OpenSearchKVStorage":
             return await self.get_default_caches_opensearch(storage)
@@ -690,7 +701,7 @@ class MigrationTool:
             return await self.count_default_caches_redis(storage)
         elif storage_name == "PGKVStorage":
             return await self.count_default_caches_pg(storage)
-        elif storage_name == "MongoKVStorage":
+        elif storage_name in {"MongoKVStorage", "DocumentDBKVStorage"}:
             return await self.count_default_caches_mongo(storage)
         elif storage_name == "OpenSearchKVStorage":
             return await self.count_default_caches_opensearch(storage)
@@ -937,7 +948,7 @@ class MigrationTool:
         elif storage_name == "PGKVStorage":
             async for batch in self.stream_default_caches_pg(storage, batch_size):
                 yield batch
-        elif storage_name == "MongoKVStorage":
+        elif storage_name in {"MongoKVStorage", "DocumentDBKVStorage"}:
             async for batch in self.stream_default_caches_mongo(storage, batch_size):
                 yield batch
         elif storage_name == "OpenSearchKVStorage":
@@ -1109,7 +1120,7 @@ class MigrationTool:
                     else "config.ini or defaults"
                 )
                 print(f"- Configuration Source: {config_source}")
-            elif storage_name == "MongoKVStorage":
+            elif storage_name in {"MongoKVStorage", "DocumentDBKVStorage"}:
                 config_source = (
                     "environment variables"
                     if all(
@@ -1154,6 +1165,10 @@ class MigrationTool:
             elif storage_name == "MongoKVStorage":
                 print("     [mongodb]")
                 print("     uri = mongodb://root:root@localhost:27017/")
+                print("     database = LightRAG")
+            elif storage_name == "DocumentDBKVStorage":
+                print("     [documentdb]")
+                print("     uri = mongodb://localhost:10260/")
                 print("     database = LightRAG")
             elif storage_name == "OpenSearchKVStorage":
                 print("     [opensearch]")
