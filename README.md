@@ -389,6 +389,16 @@ During the document query stage, you may also want to adjust the following envir
 - **ENABLE_LLM_CACHE**: Whether to cache query results. Enabled by default; identical query questions, query modes, and LLM model parameters will return the same result.
 - **USER_PROMPT_PREFIX / USER_PROMPT_PREFIX_FILE**: Global instructions prepended to every request's `user_prompt` (the "Additional Instructions" section of the answer prompt), giving operators one place to customize LLM output. It is concatenated verbatim, so end the value with `\n\n` yourself. If a request's `user_prompt` is empty, the prefix alone becomes the instructions sent to the LLM; only the API field `disable_user_prompt_prefix` suppresses it, and a request can never read or replace it. Use `USER_PROMPT_PREFIX_FILE` (a `.md`/`.txt` file name under `PROMPT_DIR/user_prompt`) for long or multi-paragraph text, since a `.env` value must stay on one line.
 
+### WebUI Entries and the Default Entry
+
+The server mounts two WebUI entries from a single frontend build. **`/webui`** is the admin console: document management, knowledge-graph exploration, and query debugging with the full query-parameter panel. **`/workspace`** is a query-only entry for everyday knowledge-base users: the chat surface and nothing else (no document management, no knowledge graph, no query-parameter sidebar, no API-docs links), designed for mobile use, and showing a welcome page to visitors who are not signed in.
+
+- **LIGHTRAG_DEFAULT_UI**: Which entry the root path `/` redirects to — `webui` (default) or `workspace`. It controls **exactly one** behavior: that redirect. Both entries stay mounted either way and remain reachable at their own URLs; any other value fails startup. Set it to `workspace` when the deployment's primary audience is query users rather than administrators.
+- **UI_TEMPLATES_DIR**: Points at an optional multi-language bundle that replaces the welcome page, login-page text, query empty state, brand logo and copyright line with your own, without rebuilding the WebUI. See [UserDefinedUI.md](./docs/UserDefinedUI.md).
+- **ENABLE_AI_CONTENT_NOTICE**: Labels every answer as AI-generated in both query UIs (`/workspace` and the `/webui` retrieval panel). Off by default; it is a UI element only and never enters the API response or the stored chat history.
+
+Two things to know before pointing end users at `/workspace`. First, query parameters there are **inherited, not editable**: each query uses the settings `/webui` saved in the **same browser** (frontend defaults when none were saved), which is per-browser local state, not a server-wide policy. Second, hiding the admin UI is a UX split, **not** a security boundary — the API still authorizes every endpoint server-side. For the complete behavior of the query entry, see [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md#the-workspace-query-entry).
+
 ## Using LightRAG As SDK
 
 > ⚠️ **For integration into your project, we strongly recommend using the REST API provided by the LightRAG Server.** The LightRAG SDK is primarily intended for embedded applications or academic research and evaluation purposes.
