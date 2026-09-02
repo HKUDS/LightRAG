@@ -30,6 +30,7 @@ from tenacity import (
 from lightrag.utils import (
     safe_unicode_decode,
     logger,
+    TruncatedResponse,
 )
 from lightrag.api import __api_version__
 
@@ -220,7 +221,10 @@ async def anthropic_complete_if_cache(
 
     if not stream:
         try:
-            return response.content[0].text
+            content = response.content[0].text
+            if getattr(response, "stop_reason", None) == "max_tokens":
+                content = TruncatedResponse(content)
+            return content
         finally:
             try:
                 await anthropic_async_client.close()
