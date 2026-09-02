@@ -107,6 +107,7 @@ def compute_mds_layout(
     max_iter: int = 300,
     random_state: int = 42,
     target_radius: float = 5.0,
+    dist_gamma: float = 1.0,
 ) -> np.ndarray:
     """Landmark MDS: metric MDS (SMACOF) on landmarks, then place every point
     by distance triangulation (Gower's interpolation formula).
@@ -129,6 +130,11 @@ def compute_mds_layout(
             the raw output (~0.35 units for cosine inputs) is far too small
             for the viewer's fixed POINT_SIZE and saturates the bloom pass.
             Normalize to the same scale UMAP produces (~10 units extent).
+        dist_gamma: exponent applied to cosine distances before MDS
+            (d ** gamma). gamma < 1 expands small distances relative to
+            large ones, breaking the homogeneous "ball" open visually.
+            Because the transform is monotonic, rank-based fidelity
+            (Spearman correlation) is mathematically unchanged.
 
     Returns:
         positions: (N, n_components) float32 array.
@@ -145,6 +151,10 @@ def compute_mds_layout(
     L = matrix[lm_idx].astype(np.float64)
     D_lm = 1.0 - np.clip(L @ L.T, -1, 1)
     np.fill_diagonal(D_lm, 0.0)
+    if dist_gamma != 1.0:
+        D_lm = np.clip(D_lm, 0, None) ** dist_gamma
+        print(f"Applied distance exponent gamma={dist_gamma} "
+              f"(monotonic: rank fidelity unchanged)")
 
     print(f"Running metric MDS (SMACOF, max_iter={max_iter}) on landmarks...")
     mds = MDS(
@@ -174,7 +184,10 @@ def compute_mds_layout(
     for start in range(0, N, chunk):
         end = min(start + chunk, N)
         sims = matrix[start:end].astype(np.float64) @ L.T  # (chunk, n_landmarks)
-        d_sq = (1.0 - np.clip(sims, -1, 1)) ** 2
+        d = np.clip(1.0 - np.clip(sims, -1, 1), 0, None)
+        if dist_gamma != 1.0:
+            d = d ** dist_gamma
+        d_sq = d ** 2
         b = -0.5 * (d_sq - col_means)
         positions[start:end] = (b @ Y_pinv.T).astype(np.float32)
         if (start // chunk) % 5 == 0:
@@ -193,6 +206,73 @@ def compute_mds_layout(
         print(f"Normalized layout scale: factor={float(scale):.2f}, "
               f"extent={(positions.max(axis=0) - positions.min(axis=0)).round(2)}")
     return positions
+
+
+def compute_embedding_clusters(
+    matrix: np.ndarray,
+    min_cluster_size: int = 400,
+    n_clusters: int = 250,
+    pca_dim: int = 50,
+    random_state: int = 42,
+) -> np.ndarray:
+    """Cluster in the high-dim embedding space (semantically meaningful)
+    instead of on the 3D layout positions.
+
+    KMeans on 3D positions of a distance-faithful (ball-like) layout produces
+    even Voronoi wedges — clusters that are spatial slices, not topics.
+    HDBSCAN on the embeddings finds density-based topic clusters of varying
+    sizes plus a noise set (label -1). Embeddings are unit-normalized, so
+    euclidean distance on them is monotonically equivalent to cosine.
+
+    PCA first: HDBSCAN scales poorly in 3840-dim, and the top ~50 components
+    carry the cluster structure.
+
+    Returns:
+        labels: (N,) int32 array of cluster labels (-1 = noise)
+    """
+    import hdbscan
+    from sklearn.decomposition import PCA
+
+    pca_dim = min(pca_dim, matrix.shape[1], len(matrix))
+    print(f"Reducing to {pca_dim} dims via PCA for clustering...")
+    X = PCA(n_components=pca_dim, random_state=random_state).fit_transform(matrix)
+
+    print(f"Computing HDBSCAN clusters in embedding space: "
+          f"min_cluster_size={min_cluster_size}")
+    clusterer = hdbscan.HDBSCAN(
+        min_cluster_size=min_cluster_size,
+        metric="euclidean",
+        core_dist_n_jobs=-1,
+    )
+    labels = clusterer.fit_predict(X)
+
+    n_found = len(set(labels) - {-1})
+    noise_ratio = float((labels == -1).mean())
+    # Homogeneous corpora have no density valleys: HDBSCAN degenerates to a
+    # handful of mega-clusters plus a huge noise set. That is not usable for
+    # presentation — fall back to fine-grained KMeans in the same embedding
+    # space (RealDeepResearch-style granularity, ~hundreds of clusters).
+    if n_found < 10 or noise_ratio > 0.3:
+        from sklearn.cluster import KMeans
+
+        print(f"HDBSCAN degenerate ({n_found} clusters, {noise_ratio:.0%} "
+              f"noise) — falling back to KMeans(n_clusters={n_clusters}) "
+              f"in embedding space")
+        labels = KMeans(
+            n_clusters=n_clusters, random_state=random_state, n_init=10
+        ).fit_predict(X)
+        n_found = len(set(labels))
+        noise_ratio = 0.0
+
+    n_clusters_out = len(set(labels))
+    n_noise = int((labels == -1).sum())
+    print(f"Found {n_clusters_out} clusters, {n_noise} noise points "
+          f"({n_noise / len(labels):.1%})")
+    # Remap noise (-1) to a dedicated trailing id: the binary layout stores
+    # clusters as uint16, where -1 would wrap to 65535.
+    labels = labels.copy()
+    labels[labels == -1] = labels.max() + 1
+    return labels.astype(np.int32)
 
 
 def compute_clusters(
@@ -352,6 +432,22 @@ def main():
         help="Number of landmarks for --method mds (SMACOF runs on these)",
     )
     parser.add_argument(
+        "--dist-gamma",
+        type=float,
+        default=1.0,
+        help="Distance exponent for --method mds (d ** gamma). gamma < 1 "
+        "expands local structure visually; rank fidelity is unchanged "
+        "because the transform is monotonic.",
+    )
+    parser.add_argument(
+        "--cluster-space",
+        choices=["layout", "embedding"],
+        default="layout",
+        help="Cluster the 3D layout positions (layout) or the original "
+        "embeddings (embedding: PCA + HDBSCAN, varying-size topic clusters "
+        "instead of even spatial wedges).",
+    )
+    parser.add_argument(
         "--min-cluster-size",
         type=int,
         default=50,
@@ -380,18 +476,27 @@ def main():
 
     # Step 2: Compute 3D layout
     if args.method == "mds":
-        positions = compute_mds_layout(matrix, n_landmarks=args.n_landmarks)
+        positions = compute_mds_layout(
+            matrix, n_landmarks=args.n_landmarks, dist_gamma=args.dist_gamma
+        )
     else:
         positions = compute_umap_layout(
             matrix, n_neighbors=args.n_neighbors, min_dist=args.min_dist
         )
 
     # Step 3: Compute clusters
-    clusters = compute_clusters(
-        positions,
-        min_cluster_size=args.min_cluster_size,
-        n_clusters=args.n_clusters,
-    )
+    if args.cluster_space == "embedding":
+        clusters = compute_embedding_clusters(
+            matrix,
+            min_cluster_size=args.min_cluster_size,
+            n_clusters=args.n_clusters,
+        )
+    else:
+        clusters = compute_clusters(
+            positions,
+            min_cluster_size=args.min_cluster_size,
+            n_clusters=args.n_clusters,
+        )
 
     # Step 4: Load graph structure and remap edges to VDB indices
     print(f"Loading graph from {graphml_path}...")

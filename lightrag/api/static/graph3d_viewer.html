@@ -1097,9 +1097,9 @@ const CLUSTER_COLORS = (() => {
     0x047684, 0x5b3c96, 0x547c0e, 0x99550e, 0x942c5f
   ];
   const GOLDEN_ANGLE = 137.508; // maximizes hue separation between neighbors
-  for (let i = colors.length; i < 60; i++) {
+  for (let i = colors.length; i < 256; i++) {
     const hue = (i * GOLDEN_ANGLE) % 360;
-    const lightness = 0.42 + 0.18 * ((i >> 3) % 2); // alternate dark/bright bands
+    const lightness = 0.40 + 0.15 * ((i >> 3) % 3); // cycle dark/mid/bright bands
     colors.push(hslToHex(hue, 0.7, lightness));
   }
   return colors;
