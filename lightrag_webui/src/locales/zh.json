@@ -453,7 +453,7 @@
       "parametersTitle": "参数",
       "parametersDescription": "配置查询参数",
       "parametersScopeNotice": "仅影响本浏览器的查询",
-      "parametersScopeTooltip": "这些参数保存在当前浏览器中并长期生效，直到你再次修改；在同一浏览器上打开的 /workspace 入口发起的查询同样使用它们。它们是浏览器本地状态，不是服务端全局策略：其他用户和其他设备不受影响。",
+      "parametersScopeTooltip": "这些参数保存在当前浏览器中并长期生效，直到你再次修改；在同一浏览器上打开的 /workspace 入口发起的查询同样使用它们。它们是浏览器本地状态，不是服务端全局策略：其他浏览器和设备不受影响。",
       "parametersScopeHelpLabel": "关于参数作用范围",
       "queryMode": "查询模式",
       "queryModeTooltip": "选择检索策略：\n• Naive：传统文本块向量检索\n• Local：侧重实体检索\n• Global：侧重关系检索\n• Hybrid：Local+Global\n• Mix：Local+Global+Naive\n• Bypass：跳过检索,把历史会话与当前问题送LLM",

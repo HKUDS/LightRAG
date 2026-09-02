@@ -453,7 +453,7 @@
       "parametersTitle": "Paramètres",
       "parametersDescription": "Configurez vos paramètres de requête",
       "parametersScopeNotice": "Affecte les requêtes de ce navigateur",
-      "parametersScopeTooltip": "Ces paramètres sont enregistrés dans ce navigateur et restent actifs jusqu'à ce que vous les modifiiez ; les requêtes envoyées depuis l'entrée /workspace ouverte dans celui-ci les utilisent aussi. Il s'agit d'un état local propre au navigateur, et non d'une politique côté serveur : les autres utilisateurs et les autres appareils ne sont pas affectés.",
+      "parametersScopeTooltip": "Ces paramètres sont enregistrés dans ce navigateur et restent actifs jusqu'à ce que vous les modifiiez ; les requêtes envoyées depuis l'entrée /workspace ouverte dans celui-ci les utilisent aussi. Il s'agit d'un état local propre au navigateur, et non d'une politique côté serveur : les autres navigateurs et les autres appareils ne sont pas affectés.",
       "parametersScopeHelpLabel": "À propos de la portée des paramètres",
       "queryMode": "Mode de requête",
       "queryModeTooltip": "Sélectionnez la stratégie de récupération :\n• Naïf : Récupération vectorielle traditionnelle par blocs de texte\n• Local : Axé sur la récupération d'entités\n• Global : Axé sur la récupération de relations\n• Hybride : Local+Global\n• Mixte : Local+Global+Naïf\n• Bypass : Ignorer la récupération, envoyer l'historique de conversation et la question actuelle au LLM",
