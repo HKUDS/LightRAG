@@ -458,7 +458,7 @@ def extract_markdown(
             if consumed > 0:
                 ref = _next_ref("t")
                 out.tables[ref] = {"kind": "html", "html": html}
-                cur_lines.append(table_marker(ref) + trailing)
+                _emit_inline(table_marker(ref) + trailing)
                 has_block_payload = True
                 i += consumed
                 continue
@@ -520,13 +520,32 @@ def _consume_html_table(lines: list[str], start: int) -> tuple[int, str, str]:
     """
     buf: list[str] = []
     j = start
+    in_tag = False
+    quote: str | None = None
     while j < len(lines):
         line = lines[j]
-        closing = _HTML_TABLE_CLOSE_RE.search(line)
-        if closing:
-            end = closing.end()
-            buf.append(line[:end])
-            return (j - start + 1), "\n".join(buf).strip(), line[end:]
+        for index, char in enumerate(line):
+            if quote is not None:
+                if char == quote:
+                    quote = None
+                continue
+            if in_tag:
+                if char in {'"', "'"}:
+                    quote = char
+                elif char == ">":
+                    in_tag = False
+                continue
+            if (
+                char == "<"
+                and index + 1 < len(line)
+                and (line[index + 1].isalpha() or line[index + 1] in "/!?")
+            ):
+                closing = _HTML_TABLE_CLOSE_RE.match(line, index)
+                if closing:
+                    end = closing.end()
+                    buf.append(line[:end])
+                    return (j - start + 1), "\n".join(buf).strip(), line[end:]
+                in_tag = True
         buf.append(line)
         j += 1
     return 0, "", ""

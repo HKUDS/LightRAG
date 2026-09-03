@@ -170,6 +170,26 @@ def test_html_table_preserves_trailing_text_after_unicode_content():
     assert ex.blocks[0]["content"].endswith("tail")
 
 
+def test_html_table_ignores_closing_tag_text_inside_attribute():
+    ex = _extract('<table data-note="</table>"><tr><td>a</td></tr></table> tail')
+
+    (table,) = ex.tables.values()
+    assert table["html"] == ('<table data-note="</table>"><tr><td>a</td></tr></table>')
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
+def test_html_table_processes_inline_image_in_trailing_text():
+    resolver = _StubResolver()
+    ex = extract_markdown(
+        "<table><tr><td>a</td></tr></table> ![plot](plot.png)",
+        image_resolver=resolver,
+    )
+
+    assert len(ex.drawings) == 1
+    assert resolver.calls == ["plot.png"]
+    assert "![plot](plot.png)" not in ex.blocks[0]["content"]
+
+
 def test_block_equation_single_and_multiline():
     md = "$$ E = mc^2 $$\n\ntext\n\n$$\n\\sum x\n$$\n"
     ex = _extract(md)
