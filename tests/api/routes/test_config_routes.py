@@ -7,12 +7,12 @@ sys.argv = ["lightrag"]
 
 try:
     from lightrag.api.config import initialize_config
+
     initialize_config(force=True)
     from lightrag.api.routers.config_routes import update_env_file, create_config_routes
 finally:
     sys.argv = _original_argv
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -50,7 +50,6 @@ def test_langfuse_config_routes(monkeypatch, tmp_path):
     assert data["enabled"] is True
 
     # Test POST
-    env_file = tmp_path / ".env"
     monkeypatch.chdir(tmp_path)
 
     post_res = client.post(

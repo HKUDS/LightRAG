@@ -80,10 +80,11 @@ export default function AppSettings({ className }: AppSettingsProps) {
   }, [])
 
   useEffect(() => {
-    if (opened) {
+    if (!opened) return
+    queueMicrotask(() => {
       fetchLangfuseConfig()
       setLangfuseStatusMsg(null)
-    }
+    })
   }, [opened, fetchLangfuseConfig])
 
   const handleSaveLangfuse = async () => {
