@@ -1276,6 +1276,7 @@ def _render_text_user_prompt(heading_context_block: str) -> str:
         completion_delimiter="<|COMPLETE|>",
         language="English",
         input_text="Alice founded Acme Corp.",
+        document_context_block="",
         heading_context_block=heading_context_block,
     )
 
@@ -1289,6 +1290,7 @@ def _render_json_user_prompt(heading_context_block: str) -> str:
         language="English",
         entity_types_guidance="- Person: humans",
         input_text="Alice founded Acme Corp.",
+        document_context_block="",
         heading_context_block=heading_context_block,
     )
 
@@ -1371,6 +1373,7 @@ def test_text_user_prompt_section_context_hidden_and_byte_identical_when_no_head
         completion_delimiter="<|COMPLETE|>",
         language="English",
         input_text="Alice founded Acme Corp.",
+        document_context_block="",
     )
     assert rendered == baseline
 
@@ -1391,6 +1394,7 @@ def test_json_user_prompt_section_context_hidden_and_byte_identical_when_no_head
         language="English",
         entity_types_guidance="- Person: humans",
         input_text="Alice founded Acme Corp.",
+        document_context_block="",
     )
     assert rendered == baseline
 

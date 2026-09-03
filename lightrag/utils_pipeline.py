@@ -15,6 +15,7 @@ import os
 import re
 import time
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import quote, unquote, urlsplit
@@ -65,6 +66,31 @@ _FILE_EXTRACTION_SUMMARY_ERROR_BUDGET = (
 
 PLACEHOLDER_DOCUMENT_SOURCES = {"", "no-file-path", "unknown_source"}
 SIDECAR_LOCATION_UNKNOWN = "unknown_source"
+
+_DOCUMENT_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def normalize_document_date(document_date: str | None) -> str | None:
+    """Validate and return a strict ISO 8601 calendar date.
+
+    ``document_date`` describes the time of the facts in a document. It is
+    deliberately separate from storage timestamps such as ``created_at``.
+    """
+    if document_date is None:
+        return None
+    if not isinstance(document_date, str) or not _DOCUMENT_DATE_PATTERN.fullmatch(
+        document_date
+    ):
+        raise ValueError(
+            "document_date must be a valid ISO 8601 calendar date in YYYY-MM-DD format"
+        )
+    try:
+        date.fromisoformat(document_date)
+    except ValueError as exc:
+        raise ValueError(
+            "document_date must be a valid ISO 8601 calendar date in YYYY-MM-DD format"
+        ) from exc
+    return document_date
 
 
 def apply_trusted_sentence_split_regex(

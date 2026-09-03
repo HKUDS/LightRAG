@@ -6944,6 +6944,8 @@ def convert_to_user_format(
             "file_path": chunk.get("file_path", "unknown_source"),
             "chunk_id": chunk.get("chunk_id", ""),
         }
+        if chunk.get("document_date"):
+            chunk_data["document_date"] = chunk["document_date"]
         formatted_chunks.append(chunk_data)
 
     logger.debug(
@@ -7044,9 +7046,10 @@ def render_chunks_context_text(chunks_with_reference_ids: list[dict]) -> str:
     ``chunks_with_reference_ids`` must already carry ``reference_id`` — the
     second return value of :func:`generate_reference_list_from_chunks`. This
     is the single place that projects a chunk down to
-    ``{reference_id, content, content_headings?}`` and serializes it, one JSON
-    object per line, so that any token-budget check done against this exact
-    call sequence matches what callers go on to send downstream verbatim.
+    ``{reference_id, content, content_headings?, document_date?}`` and
+    serializes it, one JSON object per line, so that any token-budget check
+    done against this exact call sequence matches what callers go on to send
+    downstream verbatim.
     """
     chunks_context = []
     for chunk in chunks_with_reference_ids:
@@ -7056,6 +7059,8 @@ def render_chunks_context_text(chunks_with_reference_ids: list[dict]) -> str:
         }
         if chunk.get("content_headings"):
             entry["content_headings"] = chunk["content_headings"]
+        if chunk.get("document_date"):
+            entry["document_date"] = chunk["document_date"]
         chunks_context.append(entry)
     return "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
@@ -7069,22 +7074,23 @@ def _truncate_chunks_for_unified_context(
 
     Counting a chunk list's tokens against the chunk dicts themselves (as the
     single-stage version used to) undercounts: what actually reaches the LLM
-    is the ``{reference_id, content, content_headings?}`` projection built by
-    :func:`generate_reference_list_from_chunks` /
+    is the ``{reference_id, content, content_headings?, document_date?}``
+    projection built by :func:`generate_reference_list_from_chunks` /
     :func:`render_chunks_context_text`, and ``reference_id`` itself is
     recomputed from each survivor's ``file_path`` frequency — which changes
     with the exact set of chunks kept, not just by a token or two.
 
-    Stage 1 approximates a safe count K from ``{content, content_headings}``
-    alone (``reference_id`` isn't assigned yet, and can't be until the
-    survivor set is known — a chicken-and-egg the real renderer resolves by
-    running after truncation, not before). Stage 2 re-renders that exact
-    candidate list through the real renderer and independently re-verifies
-    (shrinking K if needed), so the K this function returns is guaranteed safe
-    under the SAME rendering the caller will perform afterward on the same
-    list. Both stages run in this one synchronous call — it must always be
-    submitted as a single ``run_in_tokenizer_executor`` job, never split
-    across two round-trips through the event loop.
+    Stage 1 approximates a safe count K from
+    ``{content, content_headings?, document_date?}`` alone (``reference_id``
+    isn't assigned yet, and can't be until the survivor set is known — a
+    chicken-and-egg the real renderer resolves by running after truncation,
+    not before). Stage 2 re-renders that exact candidate list through the real
+    renderer and independently re-verifies (shrinking K if needed), so the K
+    this function returns is guaranteed safe under the SAME rendering the
+    caller will perform afterward on the same list. Both stages run in this
+    one synchronous call — it must always be submitted as a single
+    ``run_in_tokenizer_executor`` job, never split across two round-trips
+    through the event loop.
     """
     if max_token_size <= 0 or not chunks:
         return []
@@ -7093,6 +7099,8 @@ def _truncate_chunks_for_unified_context(
         payload = {"content": chunk.get("content")}
         if chunk.get("content_headings"):
             payload["content_headings"] = chunk["content_headings"]
+        if chunk.get("document_date"):
+            payload["document_date"] = chunk["document_date"]
         return json.dumps(payload, ensure_ascii=False)
 
     approx = truncate_list_by_token_size(

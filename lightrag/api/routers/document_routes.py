@@ -42,6 +42,7 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
+    Form,
     HTTPException,
     Query,
     Request,
@@ -119,7 +120,11 @@ from lightrag.utils import (
     validate_file_path_security,
 )
 from lightrag.kg.shared_storage import append_pipeline_history
-from lightrag.utils_pipeline import count_active_documents, read_source_file_basename
+from lightrag.utils_pipeline import (
+    count_active_documents,
+    normalize_document_date,
+    read_source_file_basename,
+)
 from lightrag.api.admission import adopt_admission_ticket
 from lightrag.api.utils_api import get_combined_auth_dependency
 from ..config import global_args
@@ -819,6 +824,10 @@ class InsertTextRequest(BaseModel):
     file_source: Optional[str] = Field(
         default=None, min_length=0, description="File Source"
     )
+    document_date: Optional[str] = Field(
+        default=None,
+        description="Fact date represented by the document, in YYYY-MM-DD format",
+    )
     chunking: Optional[TextChunkingConfig] = Field(
         default=None,
         description="Chunking strategy and params; omit for default fixed-token chunking",
@@ -842,6 +851,13 @@ class InsertTextRequest(BaseModel):
         # listable and deletable.
         reject_unsafe_document_source(file_source)
         return normalize_file_path(file_source)
+
+    @field_validator("document_date", mode="after")
+    @classmethod
+    def normalize_document_date_after(
+        cls, document_date: Optional[str]
+    ) -> Optional[str]:
+        return normalize_document_date(document_date)
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -877,6 +893,13 @@ class InsertTextsRequest(BaseModel):
     file_sources: Optional[list[str]] = Field(
         default=None, min_length=0, description="Sources of the texts"
     )
+    document_dates: Optional[list[Optional[str]]] = Field(
+        default=None,
+        description=(
+            "Fact dates represented by the texts, aligned one-to-one with texts "
+            "and formatted as YYYY-MM-DD"
+        ),
+    )
     chunking: Optional[TextChunkingConfig] = Field(
         default=None,
         description="Shared chunking strategy and params for all texts; omit for default fixed-token chunking",
@@ -903,6 +926,27 @@ class InsertTextsRequest(BaseModel):
         for file_source in file_sources:
             reject_unsafe_document_source(file_source)
         return [normalize_file_path(file_source) for file_source in file_sources]
+
+    @field_validator("document_dates", mode="after")
+    @classmethod
+    def normalize_document_dates_after(
+        cls, document_dates: Optional[list[Optional[str]]]
+    ) -> Optional[list[Optional[str]]]:
+        if document_dates is None:
+            return None
+        return [
+            normalize_document_date(document_date) for document_date in document_dates
+        ]
+
+    @model_validator(mode="after")
+    def validate_document_dates_length(self) -> "InsertTextsRequest":
+        if self.document_dates is not None and len(self.document_dates) != len(
+            self.texts
+        ):
+            raise ValueError(
+                "document_dates must have the same number of items as texts"
+            )
+        return self
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -2284,6 +2328,7 @@ async def pipeline_enqueue_file(
     from_scan: bool = False,
     admission_token: str | None = None,
     known_file_size: int | None = None,
+    document_date: str | None = None,
 ) -> tuple[bool, str]:
     """Add a file to the queue for processing
 
@@ -2415,6 +2460,8 @@ async def pipeline_enqueue_file(
                 "process_options": api_process_options,
                 "from_scan": from_scan,
             }
+            if document_date is not None:
+                enqueue_kwargs["document_dates"] = [document_date]
             if admission_token is not None:
                 # Only sent when the caller actually holds a reservation; None
                 # is the enqueue's own default and adding it would be noise.
@@ -2482,6 +2529,7 @@ async def pipeline_index_file(
     file_path: Path,
     track_id: str = None,
     admission_token: str | None = None,
+    document_date: str | None = None,
 ):
     """Index a file with track_id
 
@@ -2494,8 +2542,11 @@ async def pipeline_index_file(
             instead of counting this request twice (LR2 §9.2)
     """
     try:
+        enqueue_kwargs = {"admission_token": admission_token}
+        if document_date is not None:
+            enqueue_kwargs["document_date"] = document_date
         success, _ = await pipeline_enqueue_file(
-            rag, file_path, track_id, admission_token=admission_token
+            rag, file_path, track_id, **enqueue_kwargs
         )
         if success:
             await rag.apipeline_process_enqueue_documents()
@@ -2711,6 +2762,7 @@ async def pipeline_index_texts(
     texts: List[str],
     file_sources: List[str] = None,
     track_id: str = None,
+    document_dates: List[str | None] | None = None,
     chunking: Optional[TextChunkingConfig] = None,
     resolved_chunking: Optional[tuple[str, dict]] = None,
     admission_token: str | None = None,
@@ -2755,6 +2807,8 @@ async def pipeline_index_texts(
         "process_options": process_options,
         "chunk_options": chunk_options,
     }
+    if document_dates is not None:
+        enqueue_kwargs["document_dates"] = document_dates
     if admission_token is not None:
         # See pipeline_enqueue_file: only forwarded when a reservation exists.
         enqueue_kwargs["admission_token"] = admission_token
@@ -5127,6 +5181,7 @@ def create_document_routes(
     async def upload_to_input_dir(
         managed_tasks: set = Depends(get_managed_background_tasks),
         file: UploadFile = File(...),
+        document_date: Annotated[str | None, Form()] = None,
         http_request: Request = None,
     ):
         """
@@ -5210,6 +5265,11 @@ def create_document_routes(
         enqueue_token, admission_adopted = _adopt_or_new_enqueue_token(http_request)
         handed_off = False
         try:
+            try:
+                document_date = normalize_document_date(document_date)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+
             # Reject upload while a scan is in its CLASSIFICATION
             # phase or a destructive job (clear / per-doc delete) is
             # in flight, AND reserve a pending-enqueue slot so a scan
@@ -5410,12 +5470,10 @@ def create_document_routes(
                 # cancellation therefore cannot strand the enqueue slot.
                 started.set()
                 try:
-                    await pipeline_index_file(
-                        rag,
-                        file_path,
-                        track_id,
-                        admission_token=enqueue_token,
-                    )
+                    index_kwargs = {"admission_token": enqueue_token}
+                    if document_date is not None:
+                        index_kwargs["document_date"] = document_date
+                    await pipeline_index_file(rag, file_path, track_id, **index_kwargs)
                 finally:
                     await _release_enqueue_slot(rag, enqueue_token)
 
@@ -5545,14 +5603,19 @@ def create_document_routes(
                 # cancellation therefore cannot strand the enqueue slot.
                 started.set()
                 try:
+                    index_kwargs = {
+                        "file_sources": [normalized_file_source],
+                        "track_id": track_id,
+                        "chunking": request.chunking,
+                        "resolved_chunking": resolved_chunking,
+                        "admission_token": enqueue_token,
+                    }
+                    if request.document_date is not None:
+                        index_kwargs["document_dates"] = [request.document_date]
                     await pipeline_index_texts(
                         rag,
                         [request.text],
-                        file_sources=[normalized_file_source],
-                        track_id=track_id,
-                        chunking=request.chunking,
-                        resolved_chunking=resolved_chunking,
-                        admission_token=enqueue_token,
+                        **index_kwargs,
                     )
                 finally:
                     await _release_enqueue_slot(rag, enqueue_token)
@@ -5709,14 +5772,19 @@ def create_document_routes(
                 # cancellation therefore cannot strand the enqueue slot.
                 started.set()
                 try:
+                    index_kwargs = {
+                        "file_sources": normalized_file_sources,
+                        "track_id": track_id,
+                        "chunking": request.chunking,
+                        "resolved_chunking": resolved_chunking,
+                        "admission_token": enqueue_token,
+                    }
+                    if request.document_dates is not None:
+                        index_kwargs["document_dates"] = request.document_dates
                     await pipeline_index_texts(
                         rag,
                         request.texts,
-                        file_sources=normalized_file_sources,
-                        track_id=track_id,
-                        chunking=request.chunking,
-                        resolved_chunking=resolved_chunking,
-                        admission_token=enqueue_token,
+                        **index_kwargs,
                     )
                 finally:
                     await _release_enqueue_slot(rag, enqueue_token)

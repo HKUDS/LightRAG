@@ -1923,6 +1923,7 @@ class PostgreSQLDB:
             ("process_options", "TEXT NULL"),
             ("chunk_options", "JSONB NULL DEFAULT '{}'::jsonb"),
             ("parse_engine", "TEXT NULL"),
+            ("document_date", "DATE NULL"),
         ]
         try:
             existing = await self.query(
@@ -2477,7 +2478,7 @@ class PostgreSQLDB:
 
         # Migrate LIGHTRAG_DOC_FULL to add pipeline-derived fields used by the
         # JSON storage parity: sidecar_location / parse_format / content_hash /
-        # process_options / chunk_options / parse_engine
+        # process_options / chunk_options / parse_engine / document_date
         try:
             await self._migrate_doc_full_add_pipeline_fields()
         except Exception as e:
@@ -3212,6 +3213,8 @@ class PGKVStorage(BaseKVStorage):
             if not isinstance(chunk_options, dict):
                 chunk_options = {}
             response["chunk_options"] = chunk_options
+            if response.get("document_date") is None:
+                response.pop("document_date", None)
 
         # Special handling for LLM cache to ensure compatibility with _get_cached_extraction_results
         if response and is_namespace(
@@ -3389,6 +3392,8 @@ class PGKVStorage(BaseKVStorage):
                 if not isinstance(chunk_options, dict):
                     chunk_options = {}
                 result["chunk_options"] = chunk_options
+                if result.get("document_date") is None:
+                    result.pop("document_date", None)
 
         # Special handling for LLM cache to ensure compatibility with _get_cached_extraction_results
         if results and is_namespace(
@@ -3556,7 +3561,7 @@ class PGKVStorage(BaseKVStorage):
             for i, (k, v) in enumerate(data.items(), start=1):
                 # Tuple order must match SQL: (id, content, doc_name, workspace,
                 #   sidecar_location, parse_format, content_hash, process_options,
-                #   chunk_options, parse_engine)
+                #   chunk_options, parse_engine, document_date)
                 #
                 # All pipeline-derived fields pass through untouched so the
                 # SQL-level COALESCE guard in upsert_doc_full can distinguish
@@ -3577,6 +3582,7 @@ class PGKVStorage(BaseKVStorage):
                         v.get("process_options"),
                         json.dumps(v.get("chunk_options") or {}),
                         v.get("parse_engine"),
+                        v.get("document_date"),
                     )
                 )
                 await _cooperative_yield(i)
@@ -9486,6 +9492,7 @@ TABLES = {
                     process_options TEXT NULL,
                     chunk_options JSONB NULL DEFAULT '{}'::jsonb,
                     parse_engine TEXT NULL,
+                    document_date DATE NULL,
                     create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_DOC_FULL_PK PRIMARY KEY (workspace, id)
@@ -9645,7 +9652,8 @@ SQL_TEMPLATES = {
                                 content_hash,
                                 process_options,
                                 COALESCE(chunk_options, '{}'::jsonb) as chunk_options,
-                                parse_engine
+                                parse_engine,
+                                document_date::TEXT as document_date
                                 FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id=$2
                             """,
     "get_by_id_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
@@ -9669,7 +9677,8 @@ SQL_TEMPLATES = {
                                  content_hash,
                                  process_options,
                                  COALESCE(chunk_options, '{}'::jsonb) as chunk_options,
-                                 parse_engine
+                                 parse_engine,
+                                 document_date::TEXT as document_date
                                  FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id = ANY($2)
                             """,
     "get_by_ids_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
@@ -9728,7 +9737,7 @@ SQL_TEMPLATES = {
                                 """,
     "filter_keys": "SELECT id FROM {table_name} WHERE workspace=$1 AND id IN ({ids})",
     # Pipeline-derived columns (sidecar_location / parse_format / content_hash /
-    # process_options / chunk_options / parse_engine) are guarded with COALESCE
+    # process_options / chunk_options / parse_engine / document_date) are guarded with COALESCE
     # so a partial upsert (e.g. a caller writing only ``content`` + ``doc_name``)
     # does not silently overwrite metadata recorded by _persist_parsed_full_docs.
     # ``content`` and ``doc_name`` themselves are always overwritten — they are
@@ -9739,8 +9748,8 @@ SQL_TEMPLATES = {
     # "no value, preserve existing".
     "upsert_doc_full": """INSERT INTO LIGHTRAG_DOC_FULL (id, content, doc_name, workspace,
                             sidecar_location, parse_format, content_hash,
-                            process_options, chunk_options, parse_engine)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                            process_options, chunk_options, parse_engine, document_date)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::DATE)
                         ON CONFLICT (workspace,id) DO UPDATE
                            SET content = EXCLUDED.content,
                                doc_name = EXCLUDED.doc_name,
@@ -9769,6 +9778,10 @@ SQL_TEMPLATES = {
                                parse_engine = COALESCE(
                                    NULLIF(EXCLUDED.parse_engine, ''),
                                    LIGHTRAG_DOC_FULL.parse_engine
+                               ),
+                               document_date = COALESCE(
+                                   EXCLUDED.document_date,
+                                   LIGHTRAG_DOC_FULL.document_date
                                ),
                                update_time = CURRENT_TIMESTAMP
                        """,
