@@ -7,6 +7,7 @@ import base64
 import binascii
 import errno
 import math
+import mimetypes
 import os
 import re
 import shutil
@@ -48,6 +49,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
+from fastapi.responses import FileResponse
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -2124,6 +2126,57 @@ def canonicalize_archived_file_variant_basename(
         else path.stem
     )
     return normalize_file_path(f"{stem}{path.suffix}")
+
+
+def find_downloadable_source_file(input_dir: Path, file_path: str) -> Path | None:
+    """Find the on-disk file backing a document's canonical ``file_path``.
+
+    Checks ``input_dir`` first, then its ``__parsed__`` archive: once parsing
+    finishes, ``move_file_to_parsed_dir`` relocates the source there (it is
+    NOT left behind in ``input_dir``), so a successfully -- or even
+    unsuccessfully but already-parsed -- processed document's original is
+    normally found only in ``__parsed__``. This mirrors the two-directory
+    scan and archive-suffix canonicalization
+    :func:`delete_file_variants_by_file_path` already uses to find the same
+    files for deletion; unlike that function this returns a single path, so
+    when a document was re-processed and left multiple numbered variants
+    behind (``report.pdf``, ``report_001.pdf``, ...), the most recently
+    modified one is returned as the current source.
+    """
+    if not file_path or file_path == UNKNOWN_FILE_SOURCE:
+        return None
+    canonical = normalize_file_path(file_path)
+    if canonical == UNKNOWN_FILE_SOURCE:
+        return None
+
+    found = find_existing_file_by_file_path(input_dir, canonical)
+    if found is not None:
+        return found
+
+    parsed_dir = input_dir / PARSED_DIR_NAME
+    try:
+        candidates = list(parsed_dir.iterdir())
+    except FileNotFoundError:
+        return None
+
+    matches: list[Path] = []
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        if (
+            canonicalize_archived_file_variant_basename(
+                candidate.name, strip_archive_suffix=True
+            )
+            != canonical
+        ):
+            continue
+        safe_candidate = validate_file_path_security(candidate.name, parsed_dir)
+        if safe_candidate is not None and safe_candidate.is_file():
+            matches.append(safe_candidate)
+
+    if not matches:
+        return None
+    return max(matches, key=lambda p: p.stat().st_mtime)
 
 
 def _file_path_for_parsed_artifact_dir(dir_name: str) -> str | None:
@@ -6415,6 +6468,80 @@ def create_document_routes(
             raise
         except Exception as e:
             logger.error(f"Error getting track status for {track_id}: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise internal_server_error(e)
+
+    @router.get(
+        "/{doc_id}/file",
+        dependencies=[Depends(combined_auth)],
+        summary="Download the original source file of a document by its ID.",
+    )
+    async def get_document_file(doc_id: str) -> FileResponse:
+        """
+        Download a document's original source file.
+
+        Returns the file exactly as it was uploaded, located on disk via the
+        document's stored ``file_path`` basename -- checking both the input
+        directory and its ``__parsed__`` archive, since a processed
+        document's source normally lives only in the latter (see
+        ``find_downloadable_source_file``). Documents inserted directly as
+        text (``/documents/text``, ``/documents/texts``) carry no source file
+        and always 404 here.
+
+        Args:
+            doc_id (str): The document ID returned by upload/scan/insert.
+
+        Returns:
+            FileResponse: The original file as a binary attachment, with the
+                canonical file_path basename as the download filename.
+
+        Raises:
+            HTTPException: If doc_id is empty (400); if the document does not
+                exist, has no associated source file, or the source file is no
+                longer present on disk (404); or on an unexpected error (500).
+        """
+        doc_id = doc_id.strip()
+        if not doc_id:
+            raise HTTPException(status_code=400, detail="Document ID cannot be empty")
+
+        try:
+            # doc_status is a raw dict here, not a DocProcessingStatus: unlike
+            # LightRAG.aget_docs_by_ids, the storage layer's get_by_id returns
+            # the untyped row (see DocStatusStorage.get_by_id in base.py and
+            # every kg/*_doc_status_impl.py), the same contract
+            # adelete_by_doc_id relies on via ``.get("file_path")``.
+            doc_status_data = await rag.doc_status.get_by_id(doc_id)
+            if doc_status_data is None:
+                raise HTTPException(
+                    status_code=404, detail=f"Document not found: {doc_id}"
+                )
+
+            canonical_file_path = normalize_file_path(doc_status_data.get("file_path"))
+            if canonical_file_path == UNKNOWN_FILE_SOURCE:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Document {doc_id} has no associated source file",
+                )
+
+            found_path = find_downloadable_source_file(
+                doc_manager.input_dir, canonical_file_path
+            )
+            if found_path is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Source file for document {doc_id} is missing from disk",
+                )
+
+            media_type = mimetypes.guess_type(canonical_file_path)[0]
+            return FileResponse(
+                path=found_path,
+                filename=canonical_file_path,
+                media_type=media_type or "application/octet-stream",
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error downloading file for document {doc_id}: {str(e)}")
             logger.error(traceback.format_exc())
             raise internal_server_error(e)
 
