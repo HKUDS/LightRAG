@@ -23,7 +23,10 @@ def test_full_doc_schema_and_reads_use_calendar_date_text():
     assert "document_date DATE NULL" in ddl
 
     for key in ("get_by_id_full_docs", "get_by_ids_full_docs"):
-        assert "document_date::TEXT as document_date" in SQL_TEMPLATES[key]
+        assert (
+            "TO_CHAR(document_date, 'YYYY-MM-DD') as document_date"
+            in SQL_TEMPLATES[key]
+        )
 
 
 @pytest.mark.asyncio

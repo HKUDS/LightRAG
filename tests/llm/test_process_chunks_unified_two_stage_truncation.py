@@ -156,7 +156,14 @@ async def test_content_headings_are_preserved_in_the_final_render():
 
 @pytest.mark.asyncio
 async def test_document_date_is_preserved_and_counted_in_the_final_render():
-    chunks = [
+    undated_chunks = [
+        {
+            "content": "historical facts",
+            "file_path": "organization.txt",
+            "chunk_id": "c1",
+        },
+    ]
+    dated_chunks = [
         {
             "content": "historical facts",
             "document_date": "2018-10-01",
@@ -165,10 +172,24 @@ async def test_document_date_is_preserved_and_counted_in_the_final_render():
         },
     ]
     tokenizer = _tok()
-    result = await _run(chunks, chunk_token_limit=1000, tokenizer=tokenizer)
+
+    _, undated_rendered = generate_reference_list_from_chunks(undated_chunks)
+    undated_text = render_chunks_context_text(undated_rendered)
+    undated_budget = len(tokenizer.encode(undated_text))
+
+    undated_result = await _run(
+        undated_chunks, chunk_token_limit=undated_budget, tokenizer=tokenizer
+    )
+    dated_result = await _run(
+        dated_chunks, chunk_token_limit=undated_budget, tokenizer=tokenizer
+    )
+
+    assert len(undated_result) == 1
+    assert dated_result == []
+
+    result = await _run(dated_chunks, chunk_token_limit=1000, tokenizer=tokenizer)
     _, rendered = generate_reference_list_from_chunks(result)
     text = render_chunks_context_text(rendered)
     parsed = [json.loads(line) for line in text.splitlines()]
 
     assert parsed[0]["document_date"] == "2018-10-01"
-    assert len(tokenizer.encode(text)) <= 1000

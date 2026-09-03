@@ -9653,7 +9653,7 @@ SQL_TEMPLATES = {
                                 process_options,
                                 COALESCE(chunk_options, '{}'::jsonb) as chunk_options,
                                 parse_engine,
-                                document_date::TEXT as document_date
+                                TO_CHAR(document_date, 'YYYY-MM-DD') as document_date
                                 FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id=$2
                             """,
     "get_by_id_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
@@ -9678,7 +9678,7 @@ SQL_TEMPLATES = {
                                  process_options,
                                  COALESCE(chunk_options, '{}'::jsonb) as chunk_options,
                                  parse_engine,
-                                 document_date::TEXT as document_date
+                                 TO_CHAR(document_date, 'YYYY-MM-DD') as document_date
                                  FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id = ANY($2)
                             """,
     "get_by_ids_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
@@ -9749,7 +9749,7 @@ SQL_TEMPLATES = {
     "upsert_doc_full": """INSERT INTO LIGHTRAG_DOC_FULL (id, content, doc_name, workspace,
                             sidecar_location, parse_format, content_hash,
                             process_options, chunk_options, parse_engine, document_date)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::DATE)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::TEXT::DATE)
                         ON CONFLICT (workspace,id) DO UPDATE
                            SET content = EXCLUDED.content,
                                doc_name = EXCLUDED.doc_name,

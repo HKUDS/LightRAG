@@ -2339,6 +2339,8 @@ async def pipeline_enqueue_file(
         admission_token: the caller's pending-enqueue reservation, forwarded to
             the admission guard so it re-weights that token rather than
             registering a second one (LR2 §9.2)
+        document_date: optional fact date for the uploaded document, in
+            YYYY-MM-DD format
         from_scan: True only when invoked by the scan-owned background task,
             which already holds ``pipeline_status["scanning"]``.  Forwarded to
             ``apipeline_enqueue_documents`` so the scan can enqueue the files
@@ -2540,6 +2542,8 @@ async def pipeline_index_file(
         admission_token: the endpoint's pending-enqueue reservation, forwarded
             so the admission guard re-weights THAT token to the deduped count
             instead of counting this request twice (LR2 §9.2)
+        document_date: optional fact date for the uploaded document, in
+            YYYY-MM-DD format
     """
     try:
         enqueue_kwargs = {"admission_token": admission_token}
@@ -2762,10 +2766,10 @@ async def pipeline_index_texts(
     texts: List[str],
     file_sources: List[str] = None,
     track_id: str = None,
-    document_dates: List[str | None] | None = None,
     chunking: Optional[TextChunkingConfig] = None,
     resolved_chunking: Optional[tuple[str, dict]] = None,
     admission_token: str | None = None,
+    document_dates: List[str | None] | None = None,
 ):
     """Index a list of texts with track_id
 
@@ -2783,6 +2787,7 @@ async def pipeline_index_texts(
         admission_token: the endpoint's pending-enqueue reservation, forwarded so
             the admission guard re-weights that token to the deduped count
             (LR2 §9.2)
+        document_dates: optional fact dates aligned one-to-one with ``texts``
     """
     if not texts:
         return
@@ -5181,8 +5186,8 @@ def create_document_routes(
     async def upload_to_input_dir(
         managed_tasks: set = Depends(get_managed_background_tasks),
         file: UploadFile = File(...),
-        document_date: Annotated[str | None, Form()] = None,
         http_request: Request = None,
+        document_date: Annotated[str | None, Form()] = None,
     ):
         """
         Upload a file to the input directory and index it.
@@ -5248,6 +5253,8 @@ def create_document_routes(
                 (see get_managed_background_tasks) — the reservation-holding work
                 runs as a tracked asyncio task, not a Starlette callback
             file (UploadFile): The file to be uploaded. It must have an allowed extension.
+            document_date: optional fact date represented by the document, in
+                YYYY-MM-DD format
 
         Returns:
             InsertResponse: A response object containing the upload status and a message.
@@ -5265,8 +5272,13 @@ def create_document_routes(
         enqueue_token, admission_adopted = _adopt_or_new_enqueue_token(http_request)
         handed_off = False
         try:
+            raw_document_date: Any = document_date
+            if raw_document_date is None and isinstance(http_request, Request):
+                form = await http_request.form()
+                if "document_date" in form:
+                    raw_document_date = form["document_date"]
             try:
-                document_date = normalize_document_date(document_date)
+                document_date = normalize_document_date(raw_document_date)
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
 

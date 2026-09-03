@@ -85,6 +85,8 @@ async def test_naive_answer_prompt_contains_dates_loaded_from_full_docs():
         return "answer"
 
     chunks_vdb = _ChunksVDB()
+    for row in chunks_vdb.rows:
+        row["document_date"] = "1900-01-01"
     full_docs = _FullDocs()
     result = await naive_query(
         "Who leads Acme?",
@@ -112,7 +114,7 @@ async def test_naive_answer_prompt_contains_dates_loaded_from_full_docs():
     assert chunks_by_path["organization-2018.txt"]["document_date"] == "2018-10-01"
     assert chunks_by_path["organization-2024.txt"]["document_date"] == "2024-10-01"
     assert "document_date" not in chunks_by_path["organization.txt"]
-    assert all("document_date" not in row for row in chunks_vdb.rows)
+    assert all(row["document_date"] == "1900-01-01" for row in chunks_vdb.rows)
 
 
 @pytest.mark.asyncio
@@ -124,6 +126,7 @@ async def test_shared_kg_chunk_merge_enriches_every_retrieval_source(monkeypatch
                 "content": "entity context",
                 "file_path": "entity.txt",
                 "full_doc_id": "doc-2018",
+                "document_date": "1900-01-01",
             }
         ]
 
@@ -134,6 +137,7 @@ async def test_shared_kg_chunk_merge_enriches_every_retrieval_source(monkeypatch
                 "content": "relation context",
                 "file_path": "relation.txt",
                 "full_doc_id": "doc-undated",
+                "document_date": "1900-01-01",
             }
         ]
 
@@ -158,6 +162,7 @@ async def test_shared_kg_chunk_merge_enriches_every_retrieval_source(monkeypatch
                 "content": "vector context",
                 "file_path": "vector.txt",
                 "full_doc_id": "doc-2024",
+                "document_date": "1900-01-01",
             }
         ],
         text_chunks_db=text_chunks_db,

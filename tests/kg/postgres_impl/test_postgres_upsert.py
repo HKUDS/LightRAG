@@ -376,6 +376,7 @@ async def test_upsert_full_docs_sql_protects_partial_writes():
 
     # document_date is a DATE rather than a string, so NULL alone means
     # "preserve the existing value" and no NULLIF is needed.
+    assert "$11::text::date" in normalized
     assert "document_date = coalesce(" in normalized
     assert "excluded.document_date" in normalized
     assert "lightrag_doc_full.document_date" in normalized

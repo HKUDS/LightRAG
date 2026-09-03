@@ -672,9 +672,9 @@ class _PipelineMixin:
         parse_engine: str | list[str] | None = None,
         process_options: str | list[str] | None = None,
         chunk_options: dict | list[dict] | None = None,
-        document_dates: list[str | None] | None = None,
         admission_token: str | None = None,
         from_scan: bool = False,
+        document_dates: list[str | None] | None = None,
     ) -> str:
         """
         Pipeline for Processing Documents
@@ -725,10 +725,6 @@ class _PipelineMixin:
                 :func:`lightrag.utils_pipeline.apply_trusted_sentence_split_regex`
                 and GHSA-32jh-39m7-8x84.  See
                 ``docs/FileProcessingPipeline.md`` for the schema.
-            document_dates: optional document-level fact dates, aligned with
-                ``input``. Each value must be a strict ``YYYY-MM-DD`` date.
-                Dates are persisted only on the corresponding ``full_docs``
-                record, never on chunks.
             admission_token: the pending-enqueue reservation the caller already
                 holds (endpoints reserve one before reading the request body).
                 With ``MAX_PENDING_DOCUMENTS > 0`` the admission guard
@@ -747,6 +743,10 @@ class _PipelineMixin:
                 forwarded as a defence-in-depth bypass so an unexpected
                 scan-owned write inside the classification window is
                 allowed through.  External callers must leave this False.
+            document_dates: optional document-level fact dates, aligned with
+                ``input``. Each value must be a strict ``YYYY-MM-DD`` date.
+                Dates are persisted only on the corresponding ``full_docs``
+                record, never on chunks.
 
         Returns:
             str: tracking ID for monitoring processing status

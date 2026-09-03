@@ -3945,8 +3945,8 @@ async def extract_entities(
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
     text_chunks_storage: BaseKVStorage | None = None,
-    full_docs_storage: BaseKVStorage | None = None,
     truncation_tally: TokenLimitTruncationTally | None = None,
+    full_docs_storage: BaseKVStorage | None = None,
 ) -> list:
     """Extract entities and relations from ``chunks``.
 
@@ -3955,6 +3955,9 @@ async def extract_entities(
     immediately and one aggregate at the end); passing this one additionally
     hands the counts to the pipeline, which stamps them into
     ``doc_status.metadata`` so the condition outlives the bounded status ring.
+
+    ``full_docs_storage`` supplies optional document-level fact dates for the
+    extraction prompt without copying them into chunk records.
     """
     # Check for cancellation at the start of entity extraction
     if pipeline_status is not None and pipeline_status_lock is not None:
@@ -4131,6 +4134,7 @@ async def extract_entities(
             if document_date
             else ""
         )
+        extraction_context_block = document_context_block + heading_context_block
 
         # Create cache keys collector for batch processing
         cache_keys_collector = []
@@ -4168,8 +4172,7 @@ async def extract_entities(
                 **{
                     **context_base,
                     "input_text": content,
-                    "document_context_block": document_context_block,
-                    "heading_context_block": heading_context_block,
+                    "heading_context_block": extraction_context_block,
                 }
             )
         else:
@@ -4185,8 +4188,7 @@ async def extract_entities(
                 **{
                     **context_base,
                     "input_text": content,
-                    "document_context_block": document_context_block,
-                    "heading_context_block": heading_context_block,
+                    "heading_context_block": extraction_context_block,
                 }
             )
             entity_continue_extraction_user_prompt = PROMPTS[
@@ -6657,6 +6659,7 @@ async def naive_query(
     system_prompt: str | None = None,
     text_chunks_db: BaseKVStorage | None = None,
     return_raw_data: Literal[True] = True,
+    full_docs_db: BaseKVStorage | None = None,
 ) -> dict[str, Any]: ...
 
 
@@ -6670,6 +6673,7 @@ async def naive_query(
     system_prompt: str | None = None,
     text_chunks_db: BaseKVStorage | None = None,
     return_raw_data: Literal[False] = False,
+    full_docs_db: BaseKVStorage | None = None,
 ) -> str | AsyncIterator[str]: ...
 
 
@@ -6694,6 +6698,7 @@ async def naive_query(
         global_config: Global configuration
         hashing_kv: Cache storage
         system_prompt: System prompt
+        full_docs_db: Full-document storage used to load document dates
 
     Returns:
         QueryResult | None: Unified query result object containing:

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from lightrag.operate import extract_entities
-from lightrag.utils import Tokenizer, TokenizerInterface
+from lightrag.utils import TokenLimitTruncationTally, Tokenizer, TokenizerInterface
 
 pytestmark = pytest.mark.offline
 
@@ -112,3 +112,15 @@ async def test_old_document_without_date_keeps_extraction_prompt_byte_identical(
     assert undated_prompt == legacy_prompt
     assert _DOCUMENT_MARKER not in undated_prompt
     assert _SECTION_MARKER in undated_prompt
+
+
+@pytest.mark.asyncio
+async def test_legacy_positional_truncation_tally_keeps_its_meaning():
+    config, llm = _config(use_json=False)
+    tally = TokenLimitTruncationTally()
+
+    await extract_entities(_chunks(), config, None, None, None, None, tally)
+
+    prompt = llm.await_args_list[0].args[0]
+    assert _DOCUMENT_MARKER not in prompt
+    assert _SECTION_MARKER in prompt

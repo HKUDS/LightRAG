@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import sys
 from types import SimpleNamespace
 
@@ -22,6 +23,7 @@ DocumentManager = _dr.DocumentManager
 InsertTextRequest = _dr.InsertTextRequest
 InsertTextsRequest = _dr.InsertTextsRequest
 create_document_routes = _dr.create_document_routes
+pipeline_index_texts = _dr.pipeline_index_texts
 
 pytestmark = pytest.mark.offline
 
@@ -66,10 +68,10 @@ def _build_client(monkeypatch, tmp_path):
         texts,
         file_sources=None,
         track_id=None,
-        document_dates=None,
         chunking=None,
         resolved_chunking=None,
         admission_token=None,
+        document_dates=None,
     ):
         captured["texts"].append(
             {
@@ -134,6 +136,20 @@ def test_batch_dates_must_align_with_texts():
             file_sources=["one.txt", "two.txt"],
             document_dates=["2018-10-01"],
         )
+
+
+def test_pipeline_index_texts_keeps_legacy_positional_parameter_order():
+    parameters = list(inspect.signature(pipeline_index_texts).parameters)
+    assert parameters[:7] == [
+        "rag",
+        "texts",
+        "file_sources",
+        "track_id",
+        "chunking",
+        "resolved_chunking",
+        "admission_token",
+    ]
+    assert parameters[7] == "document_dates"
 
 
 @pytest.mark.parametrize(
@@ -223,17 +239,33 @@ def test_upload_forwards_valid_form_date(monkeypatch, tmp_path):
     assert captured["uploads"][0]["document_date"] == "2018-10-01"
 
 
-def test_upload_returns_422_before_writing_for_invalid_form_date(monkeypatch, tmp_path):
+@pytest.mark.parametrize("document_date", ["2018-02-30", ""])
+def test_upload_returns_422_before_writing_for_invalid_form_date(
+    monkeypatch, tmp_path, document_date
+):
     client, captured = _build_client(monkeypatch, tmp_path)
 
     response = client.post(
         "/documents/upload",
         headers=_HEADERS,
         files={"file": ("organization.txt", b"historical facts", "text/plain")},
-        data={"document_date": "2018-02-30"},
+        data={"document_date": document_date},
     )
 
     assert response.status_code == 422
     assert "YYYY-MM-DD" in response.json()["detail"]
     assert captured["uploads"] == []
     assert not (tmp_path / "organization.txt").exists()
+
+
+def test_upload_omitted_date_keeps_the_legacy_none_path(monkeypatch, tmp_path):
+    client, captured = _build_client(monkeypatch, tmp_path)
+
+    response = client.post(
+        "/documents/upload",
+        headers=_HEADERS,
+        files={"file": ("organization.txt", b"historical facts", "text/plain")},
+    )
+
+    assert response.status_code == 200
+    assert captured["uploads"][0]["document_date"] is None

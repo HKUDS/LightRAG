@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from uuid import uuid4
 
 import numpy as np
@@ -10,6 +11,7 @@ import pytest
 from lightrag import LightRAG
 from lightrag.constants import FULL_DOCS_FORMAT_PENDING_PARSE
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
+from lightrag.pipeline import _PipelineMixin
 from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
 
 pytestmark = pytest.mark.offline
@@ -65,6 +67,26 @@ async def _build_rag(tmp_path, label: str) -> LightRAG:
     )
     await rag.initialize_storages()
     return rag
+
+
+def test_enqueue_keeps_legacy_positional_parameter_order():
+    parameters = list(
+        inspect.signature(_PipelineMixin.apipeline_enqueue_documents).parameters
+    )
+    assert parameters[:11] == [
+        "self",
+        "input",
+        "ids",
+        "file_paths",
+        "track_id",
+        "docs_format",
+        "parse_engine",
+        "process_options",
+        "chunk_options",
+        "admission_token",
+        "from_scan",
+    ]
+    assert parameters[11] == "document_dates"
 
 
 @pytest.mark.asyncio
