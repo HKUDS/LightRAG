@@ -27,7 +27,7 @@ from lightrag.exceptions import (
 )
 import torch
 import numpy as np
-from lightrag.utils import wrap_embedding_func_with_attrs
+from lightrag.utils import TruncatedResponse, wrap_embedding_func_with_attrs
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -123,9 +123,28 @@ async def hf_model_if_cache(
         num_return_sequences=1,
         early_stopping=True,
     )
-    response_text = hf_tokenizer.decode(
-        output[0][len(inputs["input_ids"][0]) :], skip_special_tokens=True
+    generated_ids = output[0][len(inputs["input_ids"][0]) :]
+    response_text = hf_tokenizer.decode(generated_ids, skip_special_tokens=True)
+
+    eos_token_id = getattr(
+        getattr(hf_model, "generation_config", None), "eos_token_id", None
     )
+    if eos_token_id is None:
+        eos_token_id = getattr(hf_tokenizer, "eos_token_id", None)
+    eos_token_ids = (
+        set(eos_token_id)
+        if isinstance(eos_token_id, (list, tuple, set))
+        else {eos_token_id}
+        if eos_token_id is not None
+        else set()
+    )
+    last_token_id = generated_ids[-1].item() if len(generated_ids) else None
+    if (
+        max_new_tokens is not None
+        and len(generated_ids) >= max_new_tokens
+        and last_token_id not in eos_token_ids
+    ):
+        response_text = TruncatedResponse(response_text)
 
     return response_text
 
