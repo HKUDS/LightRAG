@@ -45,31 +45,29 @@ from typing import Any, Union
 
 from dotenv import load_dotenv
 
-# Try to import Langfuse for LLM observability (optional)
-# Falls back to standard OpenAI client if not available
-# Langfuse requires proper configuration to work correctly
-LANGFUSE_ENABLED = False
+from openai import AsyncOpenAI
+StandardAsyncOpenAI = AsyncOpenAI
+
+# Check if langfuse library is installed
 try:
-    # Check if required Langfuse environment variables are set
-    langfuse_public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
-    langfuse_secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
-
-    # Only enable Langfuse if both keys are configured
-    if langfuse_public_key and langfuse_secret_key:
-        from langfuse.openai import AsyncOpenAI  # type: ignore[import-untyped]
-
-        LANGFUSE_ENABLED = True
-        logger.info("Langfuse observability enabled for OpenAI client")
-    else:
-        from openai import AsyncOpenAI
-
-        logger.debug(
-            "Langfuse environment variables not configured, using standard OpenAI client"
-        )
+    from langfuse.openai import AsyncOpenAI as LangfuseAsyncOpenAI  # type: ignore[import-untyped]
+    LANGFUSE_AVAILABLE = True
 except ImportError:
-    from openai import AsyncOpenAI
+    LangfuseAsyncOpenAI = None
+    LANGFUSE_AVAILABLE = False
 
-    logger.debug("Langfuse not available, using standard OpenAI client")
+
+def is_langfuse_enabled() -> bool:
+    """Check if Langfuse credentials are configured and the library is installed."""
+    return bool(
+        LANGFUSE_AVAILABLE
+        and os.environ.get("LANGFUSE_PUBLIC_KEY")
+        and os.environ.get("LANGFUSE_SECRET_KEY")
+    )
+
+
+# Alias for backward compatibility
+LANGFUSE_ENABLED = is_langfuse_enabled()
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -279,7 +277,11 @@ def create_openai_async_client(
         if timeout is not None:
             merged_configs["timeout"] = timeout
 
-        return AsyncOpenAI(**merged_configs)
+        if is_langfuse_enabled() and LangfuseAsyncOpenAI is not None:
+            logger.debug("Creating AsyncOpenAI client wrapped with Langfuse observability")
+            return LangfuseAsyncOpenAI(**merged_configs)
+
+        return StandardAsyncOpenAI(**merged_configs)
 
 
 # Token-limit-truncated completions (finish_reason == "length") are returned

@@ -93,6 +93,7 @@ from lightrag.utils_pipeline import describe_doc_status_capabilities
 from fastapi.security import OAuth2PasswordRequestForm
 from lightrag.api.auth import auth_handler
 from lightrag.api.login_rate_limit import LoginRateLimiter
+from .routers.config_routes import create_config_routes
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -2540,6 +2541,7 @@ def create_app(args):
     app.include_router(create_document_routes(rag, doc_manager, api_key))
     app.include_router(create_query_routes(rag, api_key, args.top_k))
     app.include_router(create_graph_routes(rag, api_key))
+    app.include_router(create_config_routes(api_key))
     # Public read-only customization surface — registered unconditionally:
     # without a bundle it answers 200 {"customized": false, ...}.
     app.include_router(

@@ -1401,3 +1401,29 @@ export const getDocumentsPaginatedWithTimeout = (
       })
   })
 }
+
+export interface LangfuseConfig {
+  public_key: string | null
+  secret_key_set: boolean
+  host: string | null
+  enabled: boolean
+}
+
+export interface LangfuseConfigUpdate {
+  public_key?: string
+  secret_key?: string
+  host?: string
+}
+
+export const getLangfuseConfig = async (): Promise<LangfuseConfig> => {
+  const response = await axiosInstance.get<LangfuseConfig>('/api/config/langfuse')
+  return response.data
+}
+
+export const updateLangfuseConfig = async (
+  config: LangfuseConfigUpdate
+): Promise<LangfuseConfig> => {
+  const response = await axiosInstance.post<LangfuseConfig>('/api/config/langfuse', config)
+  return response.data
+}
+
