@@ -178,6 +178,14 @@ def test_html_table_ignores_closing_tag_text_inside_attribute():
     assert ex.blocks[0]["content"].endswith(" tail")
 
 
+def test_html_table_ignores_quotes_inside_comments():
+    ex = _extract("<table><!-- don't remove --><tr><td>a</td></tr></table> tail")
+
+    (table,) = ex.tables.values()
+    assert table["html"] == ("<table><!-- don't remove --><tr><td>a</td></tr></table>")
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
 def test_html_table_processes_inline_image_in_trailing_text():
     resolver = _StubResolver()
     ex = extract_markdown(

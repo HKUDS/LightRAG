@@ -521,19 +521,35 @@ def _consume_html_table(lines: list[str], start: int) -> tuple[int, str, str]:
     buf: list[str] = []
     j = start
     in_tag = False
+    in_comment = False
     quote: str | None = None
     while j < len(lines):
         line = lines[j]
-        for index, char in enumerate(line):
+        index = 0
+        while index < len(line):
+            if in_comment:
+                comment_end = line.find("-->", index)
+                if comment_end == -1:
+                    break
+                in_comment = False
+                index = comment_end + 3
+                continue
+            if not in_tag and line.startswith("<!--", index):
+                in_comment = True
+                index += 4
+                continue
+            char = line[index]
             if quote is not None:
                 if char == quote:
                     quote = None
+                index += 1
                 continue
             if in_tag:
                 if char in {'"', "'"}:
                     quote = char
                 elif char == ">":
                     in_tag = False
+                index += 1
                 continue
             if (
                 char == "<"
@@ -546,6 +562,7 @@ def _consume_html_table(lines: list[str], start: int) -> tuple[int, str, str]:
                     buf.append(line[:end])
                     return (j - start + 1), "\n".join(buf).strip(), line[end:]
                 in_tag = True
+            index += 1
         buf.append(line)
         j += 1
     return 0, "", ""
