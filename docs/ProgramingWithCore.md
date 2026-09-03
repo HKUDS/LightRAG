@@ -713,6 +713,13 @@ LightRAG uses 4 types of storage for different purposes:
 | **GRAPH_STORAGE** | Entity-relation graph structure |
 | **DOC_STATUS_STORAGE** | Document indexing status |
 
+The default implementation of each storage type (marked `(default)` below) is an
+in-memory database persisted to local files under `working_dir`: the whole
+dataset resides in the process's memory, so capacity is bounded by available
+RAM. The defaults are suitable **only for small-scale testing, evaluation, and
+debugging, and are not suitable for production** — for production, PostgreSQL is
+the recommended backend and can serve all four storage types on its own.
+
 ### Supported Implementations
 
 **KV_STORAGE**
