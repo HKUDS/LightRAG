@@ -8,15 +8,22 @@ its ``index``/``relevance_score`` to reorder chunks. Two properties are therefor
 load-bearing rather than cosmetic:
 
 * **Malformed results are rejected, never coerced.** A result whose ``index`` or
-  ``relevance_score`` cannot be trusted must be dropped and the chunk left in its
-  original position; silently accepting it would surface as a wrong (or
-  unexpectedly empty) ranking. The ``bool`` cases matter specifically because
-  ``bool`` subclasses ``int`` and ``float(True)`` succeeds — both must be caught
-  explicitly or a ``True`` index/score leaks through.
-* **The reject reason string is stable.** Callers and future maintainers rely on
-  ``"not an object"`` / ``"invalid index"`` / ``"index out of range"`` /
-  ``"invalid relevance score"`` / ``"non-finite relevance score"`` as the single
-  vocabulary for diagnosing a misbehaving provider.
+  ``relevance_score`` cannot be trusted must be reported as an error rather than
+  normalized; silently accepting it would surface as a wrong ranking. Callers
+  drop the rejected result, which means the chunk it pointed at is absent from
+  the reranked output; a wholesale rejection is what makes
+  ``apply_rerank_if_enabled`` fall back to the original chunk list. The ``bool``
+  cases matter specifically because ``bool`` subclasses ``int`` and
+  ``float(True)`` succeeds — both must be caught explicitly or a ``True``
+  index/score leaks through.
+* **The reject reason string stays diagnosable.** Only one of the three call
+  sites consumes the reason (``lightrag/rerank.py`` aggregates it into a bounded
+  ``Counter`` log summary; the other two discard it), so ``"not an object"`` /
+  ``"invalid index"`` / ``"index out of range"`` / ``"invalid relevance score"``
+  / ``"non-finite relevance score"`` are a logging vocabulary for diagnosing a
+  misbehaving provider rather than a contract other code branches on. Pinning
+  them keeps that vocabulary from drifting silently, and keeps each reject branch
+  distinguishable in these tests.
 
 The function had no direct tests; ``tests/llm/test_apply_rerank_result_validation.py``
 exercises it only indirectly through the happy path and a single bool-index case.
@@ -103,6 +110,12 @@ class TestIndexValidation:
             "index out of range",
         )
 
+    def test_every_index_is_out_of_range_when_there_are_no_documents(self):
+        # ``max_index == 0`` leaves ``0 <= index < 0`` unsatisfiable, so a
+        # provider echoing results for an empty document list is fully rejected.
+        result = {"index": 0, "relevance_score": 0.9}
+        assert normalize_rerank_result(result, 0) == (None, "index out of range")
+
 
 class TestScoreValidation:
     @pytest.mark.parametrize(
@@ -125,6 +138,16 @@ class TestScoreValidation:
             "invalid relevance score",
         )
 
+    def test_score_too_large_for_float_is_rejected(self):
+        # ``float(10**400)`` raises ``OverflowError``, not ``ValueError``; without
+        # ``OverflowError`` in the except clause this escapes as an exception
+        # instead of a reject reason.
+        result = {"index": 0, "relevance_score": 10**400}
+        assert normalize_rerank_result(result, 2) == (
+            None,
+            "invalid relevance score",
+        )
+
     def test_bool_score_is_rejected_even_though_bool_is_floatable(self):
         # ``float(True)`` would be ``1.0``, so the bool case must be caught first.
         result = {"index": 0, "relevance_score": True}
@@ -139,6 +162,11 @@ class TestScoreValidation:
             pytest.param(float("nan"), id="nan"),
             pytest.param(float("inf"), id="positive-inf"),
             pytest.param(float("-inf"), id="negative-inf"),
+            # ``float()`` accepts these spellings, so a string score reaches the
+            # finiteness guard rather than the conversion guard.
+            pytest.param("inf", id="string-inf"),
+            pytest.param("-Inf", id="string-negative-inf"),
+            pytest.param("nan", id="string-nan"),
         ],
     )
     def test_non_finite_score_is_rejected(self, score):
