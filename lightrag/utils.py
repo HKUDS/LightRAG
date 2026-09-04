@@ -5174,14 +5174,14 @@ async def use_llm_func_with_cache(
     This function applies text sanitization to prevent UTF-8 encoding errors for all LLM providers.
 
     Args:
-        input_text: Input text to send to LLM
+        user_prompt: Input text to send to LLM
         use_llm_func: LLM function with higher priority
         llm_response_cache: Cache storage instance
         max_tokens: Maximum tokens for generation
         history_messages: History messages list
         cache_type: Type of cache
         chunk_id: Chunk identifier to store in cache
-        text_chunks_storage: Text chunks storage to update llm_cache_list
+        system_prompt: Optional system prompt sent alongside the user prompt
         cache_keys_collector: Optional list to collect cache keys for batch processing
         response_format: Structured output control forwarded to the LLM provider.
             Providers translate this to their native structured-output surface
@@ -5371,13 +5371,13 @@ def get_content_summary(content: str, max_length: int = 250) -> str:
 def sanitize_and_normalize_extracted_text(
     input_text: str, remove_inner_quotes=False
 ) -> str:
-    """Santitize and normalize extracted text
+    """Sanitize and normalize extracted text
     Args:
         input_text: text string to be processed
-        is_name: whether the input text is a entity or relation name
+        remove_inner_quotes: whether to strip enclosing inner quotes
 
     Returns:
-        Santitized and normalized text string
+        Sanitized and normalized text string
     """
     safe_input_text = sanitize_text_for_encoding(input_text)
     if safe_input_text:
@@ -5414,7 +5414,7 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
 
     Args:
         name: Entity name to normalize
-        is_entity: Whether this is an entity name (affects quote handling)
+        remove_inner_quotes: whether to strip inner/enclosing quotes during normalization
 
     Returns:
         Normalized entity name

@@ -542,8 +542,9 @@ async def _summarize_descriptions(
     """Helper function to summarize a list of descriptions using LLM.
 
     Args:
-        entity_or_relation_name: Name of the entity or relation being summarized
-        descriptions: List of description strings to summarize
+        description_type: Type of the descriptions being summarized (entity or relation)
+        description_name: Name of the entity or relation being summarized
+        description_list: List of description strings to summarize
         global_config: Global configuration containing LLM function and settings
         llm_response_cache: Optional cache for LLM responses
         truncation_tally: Optional accumulator for token-limit truncation. A
