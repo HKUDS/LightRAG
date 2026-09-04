@@ -442,3 +442,122 @@ def test_reprocess_persisted_c_after_callback_removal_uses_observable_fallback(
         assert len(warnings) == 1
 
     asyncio.run(_run())
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("process_options", ["F!", "!"])
+def test_chunk_transform_runs_after_builtin_and_legacy_chunkers(
+    tmp_path, process_options
+):
+    captured = {}
+
+    def _transform(chunks, context):
+        captured["chunks"] = chunks
+        captured["context"] = context
+        transformed = [dict(chunk) for chunk in chunks]
+        transformed[0]["content"] = f"transformed:{transformed[0]['content']}"
+        return transformed
+
+    async def _run():
+        rag = _new_rag(tmp_path, chunk_transform_func=_transform)
+        await rag.initialize_storages()
+        try:
+            row = await _ingest(
+                rag,
+                doc_id=f"doc-transform-{process_options or 'legacy'}",
+                process_options=process_options,
+            )
+        finally:
+            await rag.finalize_storages()
+
+        assert DocStatus(row["status"]) is DocStatus.PROCESSED
+        assert captured["chunks"]
+        context = captured["context"]
+        assert context.doc_id.startswith("doc-transform-")
+        assert context.file_path.endswith(".txt")
+        assert context.process_options == process_options
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_chunk_transform_awaits_async_callback(tmp_path):
+    calls = 0
+
+    async def _transform(chunks, context):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0)
+        return tuple(dict(chunk) for chunk in chunks)
+
+    async def _run():
+        rag = _new_rag(tmp_path, chunk_transform_func=_transform)
+        await rag.initialize_storages()
+        try:
+            row = await _ingest(
+                rag,
+                doc_id="doc-transform-async",
+                process_options="F!",
+            )
+        finally:
+            await rag.finalize_storages()
+
+        assert calls == 1
+        assert DocStatus(row["status"]) is DocStatus.PROCESSED
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("invalid_result", [None, {"content": "not-a-list"}, ["bad"]])
+def test_chunk_transform_rejects_invalid_return_value(tmp_path, invalid_result):
+    def _transform(chunks, context):
+        return invalid_result
+
+    async def _run():
+        rag = _new_rag(tmp_path, chunk_transform_func=_transform)
+        await rag.initialize_storages()
+        try:
+            row = await _ingest(
+                rag,
+                doc_id="doc-transform-invalid",
+                process_options="F!",
+            )
+        finally:
+            await rag.finalize_storages()
+
+        assert DocStatus(row["status"]) is DocStatus.FAILED
+        assert "doc-transform-invalid" in row["error_msg"]
+        assert "list or tuple of dicts" in row["error_msg"]
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_chunk_transform_exception_fails_document_with_doc_id(tmp_path):
+    def _transform(chunks, context):
+        raise ValueError("transform exploded")
+
+    async def _run():
+        rag = _new_rag(tmp_path, chunk_transform_func=_transform)
+        await rag.initialize_storages()
+        try:
+            row = await _ingest(
+                rag,
+                doc_id="doc-transform-error",
+                process_options="F!",
+            )
+        finally:
+            await rag.finalize_storages()
+
+        assert DocStatus(row["status"]) is DocStatus.FAILED
+        assert "doc-transform-error" in row["error_msg"]
+        assert "transform exploded" in row["error_msg"]
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_default_chunk_transform_is_noop(tmp_path):
+    rag = _new_rag(tmp_path)
+    assert rag.chunk_transform_func is None

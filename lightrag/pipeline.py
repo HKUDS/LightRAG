@@ -457,6 +457,42 @@ _CUSTOM_CHUNKING_METHOD = "custom_chunking_func"
 _CUSTOM_CHUNKING_FALLBACK_METHOD = "custom_chunking_fallback_fixed_token"
 
 
+@dataclass(frozen=True)
+class ChunkTransformContext:
+    """Immutable document context supplied to ``chunk_transform_func``."""
+
+    doc_id: str
+    file_path: str | None
+    process_options: str
+    sidecar_location: str | None
+
+
+async def _apply_chunk_transform(
+    transform: Any,
+    chunks: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    context: ChunkTransformContext,
+) -> list[dict[str, Any]] | tuple[dict[str, Any], ...]:
+    """Apply and validate the optional post-chunking transform."""
+    if transform is None:
+        return chunks
+    try:
+        result = transform(chunks, context)
+        if inspect.isawaitable(result):
+            result = await result
+    except Exception as exc:
+        raise RuntimeError(
+            f"chunk_transform_func failed for d-id {context.doc_id}: {exc}"
+        ) from exc
+    if not isinstance(result, (list, tuple)) or not all(
+        isinstance(chunk, dict) for chunk in result
+    ):
+        raise TypeError(
+            "chunk_transform_func must return a list or tuple of dicts "
+            f"for d-id {context.doc_id}, got {type(result)}"
+        )
+    return result
+
+
 _CHUNK_LOG_KEY_ALIASES: dict[str, str] = {
     "chunk_overlap_token_size": "overlap",
     "breakpoint_threshold_type": "break",
@@ -5237,6 +5273,17 @@ class _PipelineMixin:
                         f"chunking_func must return a list or tuple of dicts, "
                         f"got {type(chunking_result)}"
                     )
+
+                chunking_result = await _apply_chunk_transform(
+                    self.chunk_transform_func,
+                    chunking_result,
+                    ChunkTransformContext(
+                        doc_id=doc_id,
+                        file_path=file_path,
+                        process_options=(content_data or {}).get("process_options", ""),
+                        sidecar_location=(content_data or {}).get("sidecar_location"),
+                    ),
+                )
 
                 # Reflect the format actually persisted in full_docs.
                 # Previously a structured-parse fallback always tagged

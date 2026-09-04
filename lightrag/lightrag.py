@@ -542,6 +542,25 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     tiktoken_model_name: str = field(default="gpt-4o-mini")
     """Model name used for tokenization when chunking text with tiktoken. Defaults to `gpt-4o-mini`."""
 
+    chunk_transform_func: (
+        Callable[
+            [list[dict[str, Any]], Any],
+            Union[
+                list[dict[str, Any]],
+                tuple[dict[str, Any], ...],
+                Awaitable[Union[list[dict[str, Any]], tuple[dict[str, Any], ...]]],
+            ],
+        ]
+        | None
+    ) = field(default=None)
+    """Optional instance-level transform applied after any base chunker completes.
+
+    The callback receives the chunk dictionaries and an immutable document
+    context. It may be synchronous or asynchronous and must return a list or
+    tuple containing only dictionaries. ``None`` preserves the existing
+    pipeline behavior exactly.
+    """
+
     chunking_func: Callable[
         [
             Tokenizer,
