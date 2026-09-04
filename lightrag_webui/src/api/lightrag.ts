@@ -1426,4 +1426,3 @@ export const updateLangfuseConfig = async (
   const response = await axiosInstance.post<LangfuseConfig>('/api/config/langfuse', config)
   return response.data
 }
-

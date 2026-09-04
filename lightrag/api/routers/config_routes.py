@@ -57,11 +57,17 @@ def create_config_routes(api_key: Optional[str] = None) -> APIRouter:
     router = APIRouter(prefix="/api/config", tags=["config"])
     auth_dep = get_combined_auth_dependency(api_key)
 
-    @router.get("/langfuse", response_model=LangfuseConfigResponse, dependencies=[Depends(auth_dep)])
+    @router.get(
+        "/langfuse",
+        response_model=LangfuseConfigResponse,
+        dependencies=[Depends(auth_dep)],
+    )
     async def get_langfuse_config():
         pk = os.environ.get("LANGFUSE_PUBLIC_KEY") or ""
         sk = os.environ.get("LANGFUSE_SECRET_KEY") or ""
-        host = os.environ.get("LANGFUSE_HOST") or os.environ.get("LANGFUSE_BASEURL") or ""
+        host = (
+            os.environ.get("LANGFUSE_HOST") or os.environ.get("LANGFUSE_BASEURL") or ""
+        )
 
         return LangfuseConfigResponse(
             public_key=pk if pk else None,
@@ -70,7 +76,11 @@ def create_config_routes(api_key: Optional[str] = None) -> APIRouter:
             enabled=bool(pk and sk),
         )
 
-    @router.post("/langfuse", response_model=LangfuseConfigResponse, dependencies=[Depends(auth_dep)])
+    @router.post(
+        "/langfuse",
+        response_model=LangfuseConfigResponse,
+        dependencies=[Depends(auth_dep)],
+    )
     async def update_langfuse_config(request: LangfuseConfigUpdateRequest):
         env_updates: dict[str, Optional[str]] = {}
 

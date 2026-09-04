@@ -46,11 +46,13 @@ from typing import Any, Union
 from dotenv import load_dotenv
 
 from openai import AsyncOpenAI
+
 StandardAsyncOpenAI = AsyncOpenAI
 
 # Check if langfuse library is installed
 try:
     from langfuse.openai import AsyncOpenAI as LangfuseAsyncOpenAI  # type: ignore[import-untyped]
+
     LANGFUSE_AVAILABLE = True
 except ImportError:
     LangfuseAsyncOpenAI = None
@@ -278,7 +280,9 @@ def create_openai_async_client(
             merged_configs["timeout"] = timeout
 
         if is_langfuse_enabled() and LangfuseAsyncOpenAI is not None:
-            logger.debug("Creating AsyncOpenAI client wrapped with Langfuse observability")
+            logger.debug(
+                "Creating AsyncOpenAI client wrapped with Langfuse observability"
+            )
             return LangfuseAsyncOpenAI(**merged_configs)
 
         return StandardAsyncOpenAI(**merged_configs)
