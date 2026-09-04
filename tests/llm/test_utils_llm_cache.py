@@ -83,6 +83,31 @@ async def test_use_llm_func_with_cache_partitions_cache_by_llm_identity():
 
 @pytest.mark.offline
 @pytest.mark.asyncio
+async def test_use_llm_func_with_cache_partitions_cache_by_max_tokens():
+    cache = _FakeKVStorage()
+    llm_func = AsyncMock(side_effect=["short-budget", "large-budget"])
+
+    short_result, _ = await use_llm_func_with_cache(
+        "same prompt",
+        llm_func,
+        llm_response_cache=cache,
+        max_tokens=10,
+    )
+    large_result, _ = await use_llm_func_with_cache(
+        "same prompt",
+        llm_func,
+        llm_response_cache=cache,
+        max_tokens=100,
+    )
+
+    assert short_result == "short-budget"
+    assert large_result == "large-budget"
+    assert llm_func.await_count == 2
+    assert len(cache._store) == 2
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
 async def test_use_llm_func_with_cache_skips_caching_truncated_response():
     """A token-limit-truncated response is returned but never persisted.
 

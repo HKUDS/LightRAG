@@ -5245,6 +5245,8 @@ async def use_llm_func_with_cache(
             _prompt,
             "\n<response_format>\n",
             response_format_key,
+            "\n<max_tokens>\n",
+            _serialize_cache_variant(max_tokens),
             "\n<llm_identity>\n",
             llm_identity_key,
         )
