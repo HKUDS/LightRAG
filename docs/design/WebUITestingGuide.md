@@ -79,7 +79,7 @@ Rules for new tests:
   logo is there") passes without them. Before touching the file, list every
   negative and every uniqueness or ordering claim it makes; for each one write
   down the rendered equivalent, then mutation-check THAT specific regression,
-  not only the happy path. Real losses caught in review on this branch: a
+  not only the happy path. Real losses caught while converting these tests: a
   built-in logo rendering BESIDE the bundle one (fixed by asserting the count
   of logo images, not the presence of one), a second visible dialog title, a
   silent fall back from `variant="document"` typography to the compact tier,
@@ -92,7 +92,7 @@ Rules for new tests:
   `toContain('p-6 pt-0')` forbids two independent regressions, and a
   conversion naturally carries over whichever half the new assertions happen
   to consume — the arithmetic still balances afterwards, so nothing looks
-  missing. Three separate review findings on this branch were the same
+  missing. Three separate review findings in that conversion were the same
   omission (`px-2 pb-8`, `p-6 pt-0`, `right-4 bottom-4`), so split every
   matched literal into its individual claims BEFORE looking for rendered
   equivalents, and when the conversion is done, go back to the deleted test
