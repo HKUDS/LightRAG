@@ -77,7 +77,7 @@ from lightrag.kg.shared_storage import (
 )
 from lightrag import pipeline_metrics
 from lightrag.kg.pipeline_ingress import PipelineIngressMessage
-from lightrag.operate import merge_nodes_and_edges
+from lightrag.operate import merge_nodes_and_edges, auto_merge_document_entities
 from lightrag.parser.base import ParseContext
 from lightrag.parser.exceptions import (
     ParsePipelineCancelled,
@@ -5505,6 +5505,35 @@ class _PipelineMixin:
                                 self._mark_graph_mutation_started, doc_id, status_doc
                             ),
                             truncation_tally=truncation_tally,
+                        )
+
+                        # Best-effort, opt-in (default off): auto-merge this
+                        # document's newly-extracted entities into existing
+                        # near-duplicates already in the graph. Runs after
+                        # merge_nodes_and_edges has already durably merged
+                        # the document itself, so a failure here can never
+                        # jeopardize this document's own recoverability.
+                        # Not offered on the custom-KG patch/create path in
+                        # lightrag.py -- that path has its own journaled
+                        # candidate-recovery contract a first cut should not
+                        # touch.
+                        new_entity_names = {
+                            entity_name
+                            for maybe_nodes, _ in chunk_results
+                            for entity_name in maybe_nodes
+                        }
+                        await auto_merge_document_entities(
+                            entity_names=new_entity_names,
+                            doc_chunk_ids=set(chunks.keys()),
+                            knowledge_graph_inst=self.chunk_entity_relation_graph,
+                            entities_vdb=self.entities_vdb,
+                            relationships_vdb=self.relationships_vdb,
+                            global_config=self._build_global_config(),
+                            entity_chunks_storage=self.entity_chunks,
+                            relation_chunks_storage=self.relation_chunks,
+                            llm_response_cache=self.llm_response_cache,
+                            pipeline_status=ctx.pipeline_status,
+                            pipeline_status_lock=ctx.pipeline_status_lock,
                         )
 
                     # If another in-flight document already triggered an abort

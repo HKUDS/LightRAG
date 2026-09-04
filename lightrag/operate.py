@@ -96,6 +96,8 @@ from lightrag.constants import (
     DEFAULT_MAX_FILE_PATHS,
     DEFAULT_ENTITY_NAME_MAX_LENGTH,
     DEFAULT_ENTITY_NAME_MAX_BYTES,
+    DEFAULT_ENTITY_MERGE_TOP_K,
+    DEFAULT_ENTITY_MERGE_SIMILARITY_THRESHOLD,
 )
 from lightrag.kg.shared_storage import (
     PipelineStatusLogger,
@@ -3936,6 +3938,372 @@ async def merge_nodes_and_edges(
     async with pipeline_status_lock:
         pipeline_status["latest_message"] = log_message
         append_pipeline_history(pipeline_status, log_message)
+
+
+def _parse_entity_merge_verdicts_payload(
+    result: Any,
+) -> list[dict[str, str]]:
+    """Parse the entity-merge-verification LLM response.
+
+    Mirrors ``_parse_keywords_payload``'s tolerant-provider handling (model
+    objects, dicts, and free-text strings that may carry a markdown fence or
+    need json_repair) but returns the verdict list, or ``[]`` on any parse
+    failure -- a malformed response must never be treated as a merge
+    approval.
+    """
+    if result is None:
+        return []
+
+    payload: Any
+    if hasattr(result, "model_dump") and callable(result.model_dump):
+        payload = result.model_dump()
+    elif isinstance(result, dict):
+        payload = result
+    elif isinstance(result, str):
+        cleaned_result = remove_think_tags(result)
+        unfenced_result = strip_markdown_code_fence(cleaned_result)
+        if unfenced_result is not cleaned_result:
+            cleaned_result = unfenced_result
+        try:
+            payload = json.loads(cleaned_result)
+        except json.JSONDecodeError as strict_error:
+            try:
+                payload = json_repair.loads(cleaned_result)
+                logger.warning(
+                    "Entity merge verification response required JSON repair: %s; response: %r",
+                    strict_error,
+                    cleaned_result[:500],
+                )
+            except Exception as repair_error:
+                logger.error(
+                    "Entity merge verification JSON parsing error: %s; repair failed: %s; response: %r",
+                    strict_error,
+                    repair_error,
+                    cleaned_result[:500],
+                )
+                return []
+    else:
+        logger.error(
+            "Unsupported entity merge verification response type: %s", type(result)
+        )
+        return []
+
+    if not isinstance(payload, dict):
+        return []
+    verdicts = payload.get("verdicts")
+    if not isinstance(verdicts, list):
+        return []
+
+    parsed: list[dict[str, str]] = []
+    for entry in verdicts:
+        if not isinstance(entry, dict):
+            continue
+        candidate = entry.get("candidate")
+        decision = entry.get("decision")
+        if isinstance(candidate, str) and isinstance(decision, str):
+            parsed.append(
+                {
+                    "candidate": candidate,
+                    "decision": decision,
+                    "reason": entry.get("reason")
+                    if isinstance(entry.get("reason"), str)
+                    else "",
+                }
+            )
+    return parsed
+
+
+async def _get_entity_merge_candidates(
+    entity_name: str,
+    entity_data: dict[str, Any],
+    entities_vdb: BaseVectorStorage,
+    knowledge_graph_inst: BaseGraphStorage,
+    top_k: int,
+    similarity_threshold: float,
+    excluded_names: set[str],
+) -> list[tuple[str, dict[str, Any]]]:
+    """Find up to ``top_k`` existing entities that might be the same
+    real-world entity as ``entity_name``, restricted to the same
+    ``entity_type``.
+
+    The vector query is the volume-reduction step the maintainer's design
+    note asked for ("limit candidate selection to the top n most similar
+    nodes ... to minimize unnecessary LLM calls"), not the merge-safety
+    gate -- that is the LLM conflict-detection call in
+    ``_verify_entity_merge_candidates``. ``similarity_threshold`` is applied
+    only when the backend's query result carries a recognizable numeric
+    similarity/distance field; not every vector storage backend guarantees
+    one (only a subset expose "distance", and its scale is not part of the
+    ``BaseVectorStorage`` contract), so its absence falls back to trusting
+    ``top_k`` alone and lets the LLM call decide.
+    """
+    # +1 because the entity's own vector is already indexed and will
+    # usually rank first.
+    results = await entities_vdb.query(entity_name, top_k=top_k + 1)
+    candidate_names = [
+        r["entity_name"]
+        for r in results
+        if r.get("entity_name")
+        and r["entity_name"] != entity_name
+        and r["entity_name"] not in excluded_names
+    ]
+    if not candidate_names:
+        return []
+
+    # Apply the numeric threshold only where a comparable field is present;
+    # see the docstring above for why this cannot be a required check.
+    distance_by_name = {
+        r["entity_name"]: r["distance"]
+        for r in results
+        if r.get("entity_name") and isinstance(r.get("distance"), (int, float))
+    }
+    if distance_by_name:
+        candidate_names = [
+            name
+            for name in candidate_names
+            if distance_by_name.get(name, 1.0) >= similarity_threshold
+        ]
+    candidate_names = candidate_names[:top_k]
+    if not candidate_names:
+        return []
+
+    entity_type = entity_data.get("entity_type")
+    nodes_dict = await knowledge_graph_inst.get_nodes_batch(candidate_names)
+    return [
+        (name, nodes_dict[name])
+        for name in candidate_names
+        if nodes_dict.get(name) is not None
+        and nodes_dict[name].get("entity_type") == entity_type
+    ]
+
+
+async def _verify_entity_merge_candidates(
+    entity_name: str,
+    entity_data: dict[str, Any],
+    candidates: list[tuple[str, dict[str, Any]]],
+    global_config: dict[str, Any],
+    llm_response_cache: BaseKVStorage | None,
+) -> list[dict[str, str]]:
+    """Ask the LLM which candidates are the same real-world entity as
+    ``entity_name`` and which are conflicting/different -- the explicit,
+    auditable disambiguation signal the maintainer flagged as missing from
+    the prior reference implementation (issue #1323, PR #2102): every
+    candidate gets a recorded verdict, not a silent drop.
+
+    Reuses the ``extract`` role (no new LLM role for a first cut) and the
+    same LLM-cache machinery as entity/relation summarization.
+    """
+    candidates_block = "\n".join(
+        f"{i}. {name}\n   Description: {data.get('description') or 'No description'}"
+        for i, (name, data) in enumerate(candidates, start=1)
+    )
+    prompt = PROMPTS["entity_merge_verification"].format(
+        subject_name=entity_name,
+        subject_description=entity_data.get("description") or "No description",
+        candidates_block=candidates_block,
+    )
+
+    use_llm_func = partial(
+        global_config["role_llm_funcs"]["extract"], _priority=DEFAULT_SUMMARY_PRIORITY
+    )
+    result, _ = await use_llm_func_with_cache(
+        prompt,
+        use_llm_func,
+        llm_response_cache=llm_response_cache,
+        cache_type="entity_merge",
+        response_format={"type": "json_object"},
+        llm_cache_identity=get_llm_cache_identity(global_config, "extract"),
+    )
+    return _parse_entity_merge_verdicts_payload(result)
+
+
+async def _choose_entity_merge_target(
+    name_a: str,
+    name_b: str,
+    doc_chunk_ids: set[str] | None,
+    entity_chunks_storage: BaseKVStorage | None,
+) -> tuple[str, str]:
+    """Decide which of two confirmed-same entities survives the merge.
+
+    Returns ``(target, source)``. Prefers the entity already attested by a
+    chunk from a document OTHER than the one currently being processed --
+    reusing the existing chunk-tracking store as the "already established"
+    signal rather than inventing new bookkeeping. ``doc_chunk_ids`` is the
+    actual set of this document's own chunk ids (chunk ids are content
+    hashes, not derived from ``doc_id``, so membership must be checked
+    against the real set rather than a string prefix). Falls back to the
+    alphabetically earlier name when neither or both qualify, for a
+    deterministic result independent of extraction order.
+    """
+
+    async def _is_established(name: str) -> bool:
+        if entity_chunks_storage is None or not doc_chunk_ids:
+            return False
+        row = await entity_chunks_storage.get_by_id(name)
+        if not row:
+            return False
+        chunk_ids = row.get("chunk_ids") or []
+        return any(chunk_id not in doc_chunk_ids for chunk_id in chunk_ids)
+
+    a_established, b_established = await asyncio.gather(
+        _is_established(name_a), _is_established(name_b)
+    )
+    if a_established and not b_established:
+        return name_a, name_b
+    if b_established and not a_established:
+        return name_b, name_a
+    target, source = sorted([name_a, name_b])
+    return target, source
+
+
+async def auto_merge_document_entities(
+    entity_names: set[str],
+    doc_chunk_ids: set[str] | None,
+    knowledge_graph_inst: BaseGraphStorage,
+    entities_vdb: BaseVectorStorage,
+    relationships_vdb: BaseVectorStorage,
+    global_config: dict[str, Any],
+    entity_chunks_storage: BaseKVStorage | None = None,
+    relation_chunks_storage: BaseKVStorage | None = None,
+    llm_response_cache: BaseKVStorage | None = None,
+    pipeline_status: dict | None = None,
+    pipeline_status_lock=None,
+) -> dict[str, Any]:
+    """Best-effort auto-merge pass over one document's newly-extracted entities.
+
+    Opt-in (``global_config["enable_entity_auto_merge"]``, default off --
+    see ``LightRAG.enable_entity_auto_merge``). Runs once, after
+    ``merge_nodes_and_edges`` has already durably merged this document's
+    entities/relations into the graph -- it deliberately does not touch
+    that function's write-ahead-anchor/truncation contract at all, since a
+    merge decision here is an optional refinement, not part of what makes
+    this document's own ingestion durable or recoverable.
+
+    For each newly-extracted entity, finds up to ``entity_merge_top_k``
+    same-type candidates already in the graph via the entity vector store,
+    asks the LLM to classify each as the same entity or a different one
+    (see ``_verify_entity_merge_candidates``), and merges confirmed matches
+    with the existing ``amerge_entities`` primitive -- which already owns
+    graph+vector+chunk-tracking consistency and locking, so this function
+    adds no new merge machinery of its own.
+
+    A failure merging any single pair is logged and skipped; it never
+    aborts the document's own processing, since auto-merge is an addition
+    on top of a document that has already been durably ingested.
+
+    Returns ``{"merged": [(source, target), ...], "conflicts": [...]}`` for
+    callers/tests that want to inspect what happened, and for the
+    pipeline-status line below.
+    """
+    if not global_config.get("enable_entity_auto_merge"):
+        return {"merged": [], "conflicts": []}
+    if not entity_names:
+        return {"merged": [], "conflicts": []}
+
+    # Local import: utils_graph.py imports from this module
+    # (_truncate_vdb_content), so importing amerge_entities at module level
+    # here would be a circular import.
+    from lightrag.utils_graph import amerge_entities
+
+    top_k = global_config.get("entity_merge_top_k", DEFAULT_ENTITY_MERGE_TOP_K)
+    similarity_threshold = global_config.get(
+        "entity_merge_similarity_threshold", DEFAULT_ENTITY_MERGE_SIMILARITY_THRESHOLD
+    )
+
+    absorbed: set[str] = set()
+    merged: list[tuple[str, str]] = []
+    conflicts: list[dict[str, str]] = []
+
+    for entity_name in sorted(entity_names):
+        if entity_name in absorbed:
+            continue
+        try:
+            # The whole per-entity body -- not just the merge call below --
+            # is best-effort: a transient failure anywhere in candidate
+            # generation or LLM verification (an LLM timeout, a vector-store
+            # hiccup) must never propagate out of this function. This runs
+            # after merge_nodes_and_edges has already durably committed the
+            # document; letting an exception escape here would reach the
+            # pipeline's merge-stage failure handler and regress an
+            # already-successfully-ingested document to FAILED over an
+            # optional refinement step.
+            entity_data = await knowledge_graph_inst.get_node(entity_name)
+            if entity_data is None:
+                continue
+
+            candidates = await _get_entity_merge_candidates(
+                entity_name,
+                entity_data,
+                entities_vdb,
+                knowledge_graph_inst,
+                top_k,
+                similarity_threshold,
+                absorbed,
+            )
+            if not candidates:
+                continue
+
+            verdicts = await _verify_entity_merge_candidates(
+                entity_name, entity_data, candidates, global_config, llm_response_cache
+            )
+            candidates_by_name = dict(candidates)
+            for verdict in verdicts:
+                candidate_name = verdict["candidate"]
+                if candidate_name not in candidates_by_name:
+                    continue
+                if candidate_name in absorbed or entity_name in absorbed:
+                    continue
+                if verdict["decision"] != "same_entity":
+                    conflicts.append(
+                        {
+                            "subject": entity_name,
+                            "candidate": candidate_name,
+                            "reason": verdict["reason"],
+                        }
+                    )
+                    continue
+
+                target, source = await _choose_entity_merge_target(
+                    entity_name, candidate_name, doc_chunk_ids, entity_chunks_storage
+                )
+                try:
+                    await amerge_entities(
+                        knowledge_graph_inst,
+                        entities_vdb,
+                        relationships_vdb,
+                        source_entities=[source],
+                        target_entity=target,
+                        entity_chunks_storage=entity_chunks_storage,
+                        relation_chunks_storage=relation_chunks_storage,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Entity auto-merge: failed to merge '{source}' into '{target}': {e}"
+                    )
+                    continue
+                absorbed.add(source)
+                merged.append((source, target))
+                if source == entity_name:
+                    # The entity we were iterating on got absorbed into its
+                    # own candidate -- stop considering further candidates
+                    # for it.
+                    break
+        except Exception as e:
+            logger.warning(
+                f"Entity auto-merge: skipping '{entity_name}' after an error "
+                f"during candidate generation/verification: {e}"
+            )
+            continue
+
+    if (merged or conflicts) and pipeline_status is not None:
+        log_message = f"Entity auto-merge: {len(merged)} merged, {len(conflicts)} conflicts detected"
+        logger.info(log_message)
+        if pipeline_status_lock is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                append_pipeline_history(pipeline_status, log_message)
+
+    return {"merged": merged, "conflicts": conflicts}
 
 
 async def extract_entities(

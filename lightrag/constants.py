@@ -728,6 +728,20 @@ DEFAULT_EMBEDDING_TIMEOUT = 30
 DEFAULT_RERANK_MAX_ASYNC = DEFAULT_MAX_ASYNC
 DEFAULT_RERANK_TIMEOUT = 30
 
+# Entity auto-merge defaults (opt-in, see LightRAG.enable_entity_auto_merge).
+# Top-N candidate cap per newly-extracted entity, bounding the number of
+# vector-store neighbours considered before the LLM conflict-detection call
+# — the maintainer's own design note on issue #1323 calls for exactly this,
+# to keep the LLM call count proportional to genuinely similar candidates
+# rather than the whole graph.
+DEFAULT_ENTITY_MERGE_TOP_K = 3
+# Best-effort pre-filter applied only when the vector storage backend
+# surfaces a numeric similarity/distance figure on query results (not
+# guaranteed across every backend -- see auto_merge_document_entities in
+# operate.py). The LLM conflict-detection call is the actual merge-safety
+# gate regardless of whether this pre-filter fires.
+DEFAULT_ENTITY_MERGE_SIMILARITY_THRESHOLD = 0.85
+
 # Cross-worker global concurrency gate (gunicorn multi-worker) defaults.
 # A lease whose heartbeat is older than the TTL marks its owner as suspect;
 # a suspect lease is reclaimed only after the additional grace elapses while

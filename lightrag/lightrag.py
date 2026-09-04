@@ -59,6 +59,8 @@ from lightrag.constants import (
     DEFAULT_RELATED_CHUNK_NUMBER,
     DEFAULT_KG_CHUNK_PICK_METHOD,
     DEFAULT_MIN_RERANK_SCORE,
+    DEFAULT_ENTITY_MERGE_TOP_K,
+    DEFAULT_ENTITY_MERGE_SIMILARITY_THRESHOLD,
     DEFAULT_SUMMARY_MAX_TOKENS,
     DEFAULT_SUMMARY_CONTEXT_SIZE,
     DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
@@ -793,6 +795,37 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
     enable_llm_cache_for_entity_extract: bool = field(default=True)
     """If True, enables caching for entity extraction steps to reduce LLM costs."""
+
+    enable_entity_auto_merge: bool = field(
+        default_factory=lambda: get_env_value("ENABLE_ENTITY_AUTO_MERGE", False, bool)
+    )
+    """Opt-in: after each document is indexed, check its newly-extracted
+    entities against existing same-type entities already in the graph and
+    auto-merge confirmed duplicates via an LLM disambiguation check. See
+    ``operate.py::auto_merge_document_entities``. Default off -- no behavior
+    change for existing deployments. Not applied on the ``ainsert_custom_kg``
+    patch/create path.
+    """
+
+    entity_merge_top_k: int = field(
+        default=get_env_value("ENTITY_MERGE_TOP_K", DEFAULT_ENTITY_MERGE_TOP_K, int)
+    )
+    """Maximum number of existing same-type entities considered as merge
+    candidates per newly-extracted entity, before the LLM disambiguation
+    call. Only used when ``enable_entity_auto_merge`` is True."""
+
+    entity_merge_similarity_threshold: float = field(
+        default=get_env_value(
+            "ENTITY_MERGE_SIMILARITY_THRESHOLD",
+            DEFAULT_ENTITY_MERGE_SIMILARITY_THRESHOLD,
+            float,
+        )
+    )
+    """Best-effort embedding-similarity pre-filter applied to merge
+    candidates when the vector storage backend exposes a comparable
+    similarity/distance figure (not guaranteed on every backend). The LLM
+    disambiguation call is the actual merge-safety gate regardless. Only
+    used when ``enable_entity_auto_merge`` is True."""
 
     vlm_process_enable: bool = field(
         default_factory=lambda: get_env_value("VLM_PROCESS_ENABLE", False, bool)
