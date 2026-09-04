@@ -88,6 +88,7 @@ from lightrag.constants import (
     PROCESS_OPTION_CHUNK_FIXED,
     PROCESS_OPTION_CHUNK_PARAGRAH,
     PROCESS_OPTION_CHUNK_RECURSIVE,
+    PROCESS_OPTION_CHUNK_TREE_SITTER,
     PROCESS_OPTION_CHUNK_VECTOR,
 )
 from lightrag.tools.source_conflict_repair import (
@@ -618,6 +619,7 @@ TextChunkingStrategy = Literal[
     "semantic_vector",
     "paragraph_semantic",
     "custom",
+    "tree_sitter",
 ]
 
 
@@ -686,6 +688,16 @@ class ParagraphSemanticChunkParams(_OverlapChunkParams):
     # Detection-tuning knobs (tail window / heading prefixes) are env-only and
     # read live by the chunker, so they are intentionally not exposed here.
     drop_references: Optional[bool] = None
+
+
+class TreeSitterChunkParams(_OverlapChunkParams):
+    # Raw text inserts (this endpoint) carry no filename, so there is no
+    # extension to infer a language from -- unlike file uploads, where the
+    # pipeline forwards the document's own basename automatically. Omitting
+    # this field is valid: chunking_by_tree_sitter falls back to plain
+    # token-window chunking, the same graceful degradation it uses for any
+    # unrecognized extension.
+    language: Optional[str] = None
 
 
 class SemanticVectorChunkParams(_StrictChunkParams):
@@ -766,6 +778,7 @@ _CHUNKING_PARAMS_MODEL: dict[str, type[_StrictChunkParams]] = {
     # arguments, so its request parameters are exactly the fixed-token fields
     # that populate that signature.
     "custom": FixedTokenChunkParams,
+    "tree_sitter": TreeSitterChunkParams,
 }
 
 
@@ -2566,6 +2579,7 @@ _STRATEGY_TO_PROCESS_OPTION: Dict[str, str] = {
     "semantic_vector": PROCESS_OPTION_CHUNK_VECTOR,
     "paragraph_semantic": PROCESS_OPTION_CHUNK_PARAGRAH,
     "custom": PROCESS_OPTION_CHUNK_CUSTOM,
+    "tree_sitter": PROCESS_OPTION_CHUNK_TREE_SITTER,
 }
 
 

@@ -3,7 +3,7 @@
 Starting from version v1.5.0 (currently on the dev branch), LightRAG's file processing pipeline has received a major upgrade:
 
 * Supports multiple file content extraction engines: legacy, native, mineru, docling
-* Supports multiple text chunking methods: Fix, Recursive, Vector, Paragraph
+* Supports multiple text chunking methods: Fix, Recursive, Vector, Paragraph, Tree-sitter (code)
 * Supports disabling entity-relation extraction for individual files
 
 LightRAG Server introduces an intermediate file-processing format: `LightRAG Document`. This format supports multimodal data such as tables and images, and also includes the document's section/paragraph metadata, which is convenient for content traceability later.
@@ -119,7 +119,7 @@ For backward compatibility, when the configuration is not modified, the upgraded
 
 ### 2.1 File Processing Options
 
-Processing options control, on a per-file basis, the behavior with respect to multimodal analysis, knowledge graph construction, and text chunking. They can be set as per-rule defaults in `LIGHTRAG_PARSER` (see [§2.4](#24-default-rules-lightrag_parser)) or overridden for an individual file via a filename hint (see [§2.5](#25-single-file-override-filename-hints)). All options are optional; defaults are shown in the table below. At most one chunking method (F/R/V/P/C) is specified per file; the other options can be combined arbitrarily.
+Processing options control, on a per-file basis, the behavior with respect to multimodal analysis, knowledge graph construction, and text chunking. They can be set as per-rule defaults in `LIGHTRAG_PARSER` (see [§2.4](#24-default-rules-lightrag_parser)) or overridden for an individual file via a filename hint (see [§2.5](#25-single-file-override-filename-hints)). All options are optional; defaults are shown in the table below. At most one chunking method (F/R/V/P/C/T) is specified per file; the other options can be combined arbitrarily.
 
 | Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -143,7 +143,7 @@ Different characters of processing options take effect at different stages of th
 | :-: | --- | --- |
 | i/t/e | Analyzing (multimodal analysis) | Determines whether VLM summarization analysis is invoked on the images / tables / equations in the sidecar. **The extraction stage is unaffected**: the content extraction engine outputs `drawings.json` / `tables.json` / `equations.json` sidecar files based on what the document actually contains. As a result, simply tweaking the `i`/`t`/`e` options to trigger "re-analysis" can complete VLM later without re-parsing the original file. |
 | ! | Extraction (entity-relation extraction) | Skips entity/relation extraction and graph writing; chunks are still written to the vector store to retain naive / mix retrieval capabilities. |
-| F/R/V/P/C | Chunking (text chunking) | Determines which chunking strategy to use; does not affect the output of the parsing stage. |
+| F/R/V/P/C/T | Chunking (text chunking) | Determines which chunking strategy to use; does not affect the output of the parsing stage. `T` (tree-sitter) splits source code along function/class boundaries; falls back to `F` for an unsupported language, a missing grammar package, or a parse error. |
 
 > Modality availability is signaled solely by "whether the sidecar file exists"; the content extraction engine does not need to declare its capabilities in meta. If a given document contains no images/tables/equations, the corresponding sidecar is not written; even if the user has enabled `i/t/e`, the corresponding modality is silently skipped, but `analyze_multimodal` logs an INFO-level line for that document (`[analyze_multimodal] sidecar e:equations empty: doc—id ...`), making it easy to diagnose "why didn't the VLM run". This is not an error.
 
@@ -239,8 +239,8 @@ Currently supported parameters (canonical name / short alias):
 
 | Parameter | Alias | Strategies | Type | Meaning |
 | --- | --- | --- | --- | --- |
-| `chunk_token_size` | `chunk_ts` | F / R / V / P / C | int (≥ 1) | Per-strategy chunk size |
-| `chunk_overlap_token_size` | `chunk_ol` | F / R / P / C | int (≥ 0) | Overlap between chunks (V has no overlap) |
+| `chunk_token_size` | `chunk_ts` | F / R / V / P / C / T | int (≥ 1) | Per-strategy chunk size |
+| `chunk_overlap_token_size` | `chunk_ol` | F / R / P / C / T | int (≥ 0) | Overlap between chunks (V has no overlap; T uses it only on its fixed-token fallback paths) |
 | `drop_references` | `drop_rf` | P | bool | Drop matching reference blocks before chunking, e.g. `paper.[-P(drop_rf=true)].pdf`. As a boolean it may be written bare: `paper.[-P(drop_rf)].pdf` means `drop_rf=true` |
 
 - `process_options` stays a pure selector string; each parameter is applied to that strategy's `chunk_options` (see §5) while the strategy's other env-derived parameters are kept. Aliases are normalized to their canonical name internally.
@@ -258,8 +258,8 @@ The text APIs expose the same path as `chunking.strategy="custom"`. Its `params`
 - Filename hints have higher priority than `LIGHTRAG_PARSER`. If the engine specified in a hint does not support that extension, the system falls back to the default rules to continue selecting an available engine.
 - If the filename hint provides a non-empty options string, the hint takes precedence; otherwise the default options of the matching item in `LIGHTRAG_PARSER` are used; if neither is provided, all defaults are used.
 - If no rule is available, the file content extraction falls back to `legacy`; if `legacy` also does not support the file extension, an error entry is added to the system and the uploaded file remains in the `INPUT` directory.
-- At most one of F/R/V/P/C may appear; repeating the same option has effect only once but does not raise an error.
-- Case-sensitive: the chunking options F/R/V/P/C must be uppercase; other options i/t/e must be lowercase.
+- At most one of F/R/V/P/C/T may appear; repeating the same option has effect only once but does not raise an error.
+- Case-sensitive: the chunking options F/R/V/P/C/T must be uppercase; other options i/t/e must be lowercase.
 - If illegal characters appear inside the square brackets, the entire hint is invalidated, the engine follows the default rules, and the options fall back to `LIGHTRAG_PARSER` defaults or all defaults; a warning is also logged.
 - `P` is only effective for structured `LightRAG Document` results extracted by `native`; for the `legacy` path or unstructured output, it automatically degrades to `R` and logs a warning.
 - `C` requires an injected custom callback at synchronous request boundaries. `/documents/upload` validates both filename hints and matching `LIGHTRAG_PARSER` rules before writing the file and returns 422 when the callback is absent. Directory scans and reprocessing have no caller to correct a persisted selector, so they accept `C`, warn once per processing attempt, and use the fixed-token fallback.
@@ -582,7 +582,7 @@ Doing step 3 in two halves is what produces the failure in §4.3 step 4. And bec
 
 ### 5.1 Responsibilities of process_options vs chunk_options
 
-`process_options` selects **which** chunking strategy (F/R/V/P/C), while `chunk_options` decides **which parameters** that chunker uses. The two responsibilities are orthogonal: the former is a single-character selector, the latter is a structured dictionary. `C` deliberately maps to the `fixed_token` sub-dictionary because those values populate the legacy callback's six arguments.
+`process_options` selects **which** chunking strategy (F/R/V/P/C/T), while `chunk_options` decides **which parameters** that chunker uses. The two responsibilities are orthogonal: the former is a single-character selector, the latter is a structured dictionary. `C` deliberately maps to the `fixed_token` sub-dictionary because those values populate the legacy callback's six arguments.
 
 ```
 env vars                                                  (read once at startup)
@@ -601,7 +601,7 @@ chunker(tokenizer, content, chunk_token_size, **strategy_kwargs)   (dispatched b
 - **env vars** are loaded into `addon_params["chunker"]` during the `LightRAG.__init__` stage (strategy-specific env is read by `default_chunker_config()`, then `_apply_chunk_size_overlay` fills in legacy env as a fallback).
 - **`addon_params["chunker"]`** is an `ObservableAddonParams` field; for Server deployments, you only need env / restart for the new values to take effect. To change it at runtime within the Python process (without restarting) and to do per-file overrides, see [Chapter 11: Python SDK Invocation](#11-python-sdk-invocation).
 - **`full_docs.chunk_options`** is frozen at `apipeline_enqueue_documents` enqueue time: by default it is assembled by `resolve_chunk_options(self.addon_params, ...)` on the spot; if the caller passes a `chunk_options` argument, it is persisted as-is (SDK usage, see §11.4).
-- **The chunker invocation** takes the corresponding sub-dictionary from `full_docs.chunk_options` and dispatches to F/R/V/P/C by the `process_options.chunking` selector. Custom callback output is not sidecar-backfilled because it may rewrite source text; C's built-in fallback is eligible because it emits exact source spans.
+- **The chunker invocation** takes the corresponding sub-dictionary from `full_docs.chunk_options` and dispatches to F/R/V/P/C/T by the `process_options.chunking` selector. Custom callback output is not sidecar-backfilled because it may rewrite source text; C's built-in fallback is eligible because it emits exact source spans. T is likewise sidecar-backfill eligible: both its structural chunks and its fixed-token fallback paths emit exact source spans.
 
 ### 5.2 Environment Variables
 
@@ -742,7 +742,7 @@ Three layers of semantic guarantee:
 }
 ```
 
-selector → sub-dictionary mapping: F → `fixed_token`, R → `recursive_character`, V → `semantic_vector`, P → `paragraph_semantic`, C → `fixed_token`; without a selector, F is the default. C reads the fixed-token fields as positional values for the legacy callback contract; the built-in strategies otherwise map their sub-dictionaries to their chunker keyword arguments.
+selector → sub-dictionary mapping: F → `fixed_token`, R → `recursive_character`, V → `semantic_vector`, P → `paragraph_semantic`, C → `fixed_token`, T → `tree_sitter`; without a selector, F is the default. C reads the fixed-token fields as positional values for the legacy callback contract; the built-in strategies otherwise map their sub-dictionaries to their chunker keyword arguments. T's sub-dictionary additionally carries an optional `language` override (`python`/`javascript`/`typescript`/`tsx`); when absent, the language is inferred from the document's own file extension.
 
 ### 5.5 Backward Compatibility for Missing Fields
 
@@ -764,8 +764,8 @@ File enqueue and extraction results are written into `full_docs`:
 | `content_hash` | MD5 of the content, used for cross-filename deduplication. For `parse_format=raw`, takes the hash of text after `sanitize_text_for_encoding`; for `parse_format=lightrag`, takes the hash of the `*.blocks.jsonl` file; for `parse_format=pending_parse`, not written, filled in after extraction completes. |
 | `lightrag_document_path` | When `parse_format=lightrag`, saves the path to the structured LightRAG Document; new records prefer to save the path relative to `INPUT_DIR`, e.g., `__parsed__/report.docx.parsed/report.blocks.jsonl`. Note that the subdirectories and the blocks filename in the path both use the canonicalized basename (without hint). |
 | `parse_engine` | The engine that actually completed extraction: `legacy`, `native`, `mineru`, `docling`. For files awaiting extraction, can also temporarily store the target engine. |
-| `process_options` | The original processing options string recorded at enqueue time (without engine name and the separator `-`), e.g., `"iet"`, `"R!"`, `"C"`, `""`. Downstream stages take this field as the authoritative source for deciding whether to enable image / table / equation analysis (`i/t/e`), whether to disable knowledge graph construction (`!`), and the chunking method (`F/R/V/P/C`). An empty string is equivalent to all defaults. |
-| `chunk_options` | The **frozen** snapshot of chunker parameters at enqueue time (slim dictionary: only the strategy sub-dictionary selected by `process_options` is retained, others discarded). Passed in by the SDK-path caller or assembled by `resolve_chunk_options(self.addon_params, process_options=…)` from instance fields (containing env defaults) as a fallback (see §5.1). `process_options` chooses which chunking strategy (F/R/V/P/C); `chunk_options` decides which parameters that chunker uses. C reuses the `fixed_token` sub-dictionary. The downstream `process_single_document` reads the snapshot before chunking; persistence guarantees that old documents behave reproducibly across env changes, resumes, and restarts. Rewritten together with `process_options` when re-parsing. |
+| `process_options` | The original processing options string recorded at enqueue time (without engine name and the separator `-`), e.g., `"iet"`, `"R!"`, `"C"`, `""`. Downstream stages take this field as the authoritative source for deciding whether to enable image / table / equation analysis (`i/t/e`), whether to disable knowledge graph construction (`!`), and the chunking method (`F/R/V/P/C/T`). An empty string is equivalent to all defaults. |
+| `chunk_options` | The **frozen** snapshot of chunker parameters at enqueue time (slim dictionary: only the strategy sub-dictionary selected by `process_options` is retained, others discarded). Passed in by the SDK-path caller or assembled by `resolve_chunk_options(self.addon_params, process_options=…)` from instance fields (containing env defaults) as a fallback (see §5.1). `process_options` chooses which chunking strategy (F/R/V/P/C/T); `chunk_options` decides which parameters that chunker uses. C reuses the `fixed_token` sub-dictionary. The downstream `process_single_document` reads the snapshot before chunking; persistence guarantees that old documents behave reproducibly across env changes, resumes, and restarts. Rewritten together with `process_options` when re-parsing. |
 
 `pending_parse` indicates the file has been enqueued but extraction is not yet complete. After successful extraction, it is rewritten to `raw` or `lightrag`, and `content_hash` is filled in. On extraction failure, `pending_parse` and the empty `content` are kept, making subsequent troubleshooting and retry easier.
 
@@ -1166,10 +1166,10 @@ Go through the full pipeline (registry-dispatched parsing `get_parser(engine).pa
 | Engine comparison | If the engine implied by `process_options` ≠ `full_docs.parse_engine`, **only warn**, do not re-parse. The extracted content is an immutable fact; re-running a different engine would produce inconsistency. To switch engines, delete the whole document and re-upload it. |
 | Old chunks / entities / relations cleanup | Read `status_doc.chunks_list` to collect old chunk id set, call `_purge_doc_chunks_and_kg(doc_id, chunk_ids)`: delete chunk rows from `chunks_vdb` / `text_chunks`; reverse-lookup affected entities / relations by `entity_chunks` / `relation_chunks`, directly remove entries that have lost all sources from the graph and vector store, and call `rebuild_knowledge_from_chunks` to rebuild with the remaining chunks for entries still contributed by other documents; finally delete the index rows of this doc in `full_entities` / `full_relations`. After purge completes, `status_doc.chunks_list = []` / `chunks_count = 0` are reset to avoid the subsequent state-machine upsert writing back old IDs. |
 | `analyze_multimodal` | For enabled modalities, every run recomputes the sidecar item analysis and overwrites the existing `llm_analyze_result`. The LLM analysis cache still applies: a cache hit reuses the previous provider response, so semantic fields usually stay the same and only runtime fields such as `analyze_time` are rewritten. Cache misses, for example after changing the model or prompt, can produce different saved content. |
-| Re-chunk | Pick the strategy by the new `process_options.chunking`, with parameters read from `full_docs.chunk_options` (the enqueue snapshot; not overwritten by resume; env changes do not affect old documents that still chunk by the parameters from the moment of enqueue). The LightRAG Document path uses paragraph_semantic for P, the built-in F/R/V chunkers for their selectors, and the custom callback for C (or its warned fixed-token fallback if the callback is no longer configured). |
+| Re-chunk | Pick the strategy by the new `process_options.chunking`, with parameters read from `full_docs.chunk_options` (the enqueue snapshot; not overwritten by resume; env changes do not affect old documents that still chunk by the parameters from the moment of enqueue). The LightRAG Document path uses paragraph_semantic for P, the built-in F/R/V/T chunkers for their selectors, and the custom callback for C (or its warned fixed-token fallback if the callback is no longer configured). |
 | Entity extraction / KG-skip | Determined by the new `process_options.skip_kg` |
 
-> This rule guarantees: when users change `i/t/e` and re-upload the same-named document (delete the old doc first, then upload the file with the new hint), multimodal analysis is incrementally filled in; when changing `F/R/V/P/C`, chunks and graph are rebuilt; when changing `!`, KG construction is stopped or restored. Engine changes are considered a "major change", uniformly handled by delete + re-upload, not implicitly happening on the resume path.
+> This rule guarantees: when users change `i/t/e` and re-upload the same-named document (delete the old doc first, then upload the file with the new hint), multimodal analysis is incrementally filled in; when changing `F/R/V/P/C/T`, chunks and graph are rebuilt; when changing `!`, KG construction is stopped or restored. Engine changes are considered a "major change", uniformly handled by delete + re-upload, not implicitly happening on the resume path.
 
 ## 10. Troubleshooting
 

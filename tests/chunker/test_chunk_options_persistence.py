@@ -224,6 +224,52 @@ def test_caller_supplied_chunk_options_reach_chunker(tmp_path, monkeypatch):
 
 
 @pytest.mark.offline
+def test_t_strategy_dispatch_forwards_file_path_and_caller_options(
+    tmp_path, monkeypatch
+):
+    """process_options="T" reaches chunking_by_tree_sitter with the
+    document's own file_path (for language inference) plus any
+    caller-supplied chunk_options, exercising the pipeline dispatch branch
+    itself rather than just the chunker function in isolation."""
+    import lightrag.chunker as chunker_pkg
+
+    captured: dict = {}
+
+    def _t_spy(tokenizer, content, chunk_token_size, **kwargs):
+        captured["chunk_token_size"] = chunk_token_size
+        captured["kwargs"] = dict(kwargs)
+        return [
+            {"tokens": 5, "content": "stub", "chunk_order_index": 0},
+        ]
+
+    monkeypatch.setattr(chunker_pkg, "chunking_by_tree_sitter", _t_spy)
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "def foo():\n    pass\n",
+                file_paths="module.[native-T].py",
+                track_id="track-t",
+                process_options="T",
+                chunk_options={
+                    "chunk_token_size": 900,
+                    "tree_sitter": {"language": "python"},
+                },
+            )
+            await rag.apipeline_process_enqueue_documents()
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+    assert captured.get("chunk_token_size") == 900
+    assert captured["kwargs"]["language"] == "python"
+    assert captured["kwargs"]["file_path"] == "module.py"
+
+
+@pytest.mark.offline
 def test_per_file_chunk_options_list(tmp_path, monkeypatch):
     """A ``chunk_options`` list aligned with ``input`` writes
     independent snapshots per doc.
@@ -553,6 +599,44 @@ def test_legacy_env_is_final_fallback(tmp_path, monkeypatch):
     assert (
         row_p["chunk_options"]["paragraph_semantic"]["chunk_overlap_token_size"] == 77
     )
+
+
+@pytest.mark.offline
+def test_tree_sitter_gets_the_same_overlap_backfill_as_fixed_token(tmp_path):
+    """Regression test: ``LightRAG._apply_chunk_size_overlay`` originally
+    backfilled the legacy overlap default into a hardcoded
+    ``("fixed_token", "recursive_character", "paragraph_semantic")`` tuple
+    that omitted ``tree_sitter``. That left T's overlap slot permanently
+    absent from the resolved snapshot, so a small ``chunk_token_size``
+    request for T silently skipped the API's pre-flight
+    ``_validate_effective_chunk_overlap`` 422 (which only fires when the
+    overlap slot is populated) and only failed later, deep in the
+    background chunker, with a raw ``ValueError`` instead of a clean 422 --
+    exactly the gap this test pins closed. Caught via a real
+    ``lightrag-server`` run: T silently returned 200 and enqueued a
+    document that then failed in the background, while the identical F
+    request correctly 422'd at request time.
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)  # no chunk_overlap_token_size kwarg
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "def foo():\n    pass\n",
+                ids=["doc-t-overlay"],
+                file_paths="overlay.py",
+                track_id="track-t-overlay",
+                process_options="T",
+            )
+            row = await rag.full_docs.get_by_id("doc-t-overlay")
+        finally:
+            await rag.finalize_storages()
+        return row
+
+    row = asyncio.run(_run())
+    assert "chunk_overlap_token_size" in row["chunk_options"]["tree_sitter"]
+    assert row["chunk_options"]["tree_sitter"]["chunk_overlap_token_size"] == 100
 
 
 @pytest.mark.offline

@@ -24,6 +24,7 @@ from lightrag.constants import (
     PROCESS_OPTION_CHUNK_VECTOR,
     PROCESS_OPTION_CHUNK_PARAGRAH,
     PROCESS_OPTION_CHUNK_RECURSIVE,
+    PROCESS_OPTION_CHUNK_TREE_SITTER,
     PROCESS_OPTION_EQUATIONS,
     PROCESS_OPTION_IMAGES,
     PROCESS_OPTION_SKIP_KG,
@@ -211,7 +212,7 @@ def validate_process_options(
         errors.append(
             f"{label} specifies multiple chunking modes "
             f"({'/'.join(seen_chunkers)}); pick one of "
-            f"{PROCESS_OPTION_CHUNK_FIXED}/{PROCESS_OPTION_CHUNK_RECURSIVE}/{PROCESS_OPTION_CHUNK_VECTOR}/{PROCESS_OPTION_CHUNK_PARAGRAH}/{PROCESS_OPTION_CHUNK_CUSTOM}"
+            f"{PROCESS_OPTION_CHUNK_FIXED}/{PROCESS_OPTION_CHUNK_RECURSIVE}/{PROCESS_OPTION_CHUNK_VECTOR}/{PROCESS_OPTION_CHUNK_PARAGRAH}/{PROCESS_OPTION_CHUNK_CUSTOM}/{PROCESS_OPTION_CHUNK_TREE_SITTER}"
         )
     return errors
 
@@ -267,6 +268,7 @@ _CHUNK_STRATEGY_KEYS: dict[str, str] = {
     # C deliberately reuses the fixed-token snapshot: those values map
     # one-for-one to the six-argument legacy chunking_func contract.
     PROCESS_OPTION_CHUNK_CUSTOM: "fixed_token",
+    PROCESS_OPTION_CHUNK_TREE_SITTER: "tree_sitter",
 }
 
 
@@ -523,7 +525,8 @@ def default_chunker_config() -> dict[str, Any]:
     *strategy-specific* env vars (``CHUNK_F_SIZE``,
     ``CHUNK_F_OVERLAP_SIZE``, ``CHUNK_R_SIZE``, ``CHUNK_R_OVERLAP_SIZE``,
     ``CHUNK_R_SEPARATORS``, ``CHUNK_V_SIZE``, ``CHUNK_V_*``,
-    ``CHUNK_P_SIZE``, ``CHUNK_P_OVERLAP_SIZE``,
+    ``CHUNK_P_SIZE``, ``CHUNK_P_OVERLAP_SIZE``, ``CHUNK_T_SIZE``,
+    ``CHUNK_T_OVERLAP_SIZE``,
     ``CHUNK_F_SPLIT_BY_CHARACTER``…).  It does **not** read the legacy
     top-level envs ``CHUNK_SIZE`` / ``CHUNK_OVERLAP_SIZE``, and it
     deliberately **omits** ``chunk_overlap_token_size`` from a strategy
@@ -575,6 +578,12 @@ def default_chunker_config() -> dict[str, Any]:
             ),
         },
         "paragraph_semantic": {},
+        # No env-driven default here beyond size/overlap (added below):
+        # ``language`` is normally inferred per-document from the file
+        # extension by ``chunking_by_tree_sitter`` itself. An explicit
+        # override, when needed, is set directly on
+        # ``addon_params['chunker']['tree_sitter']['language']``.
+        "tree_sitter": {},
     }
 
     # Strategy-specific overlap envs only — leave the slot absent when
@@ -589,6 +598,9 @@ def default_chunker_config() -> dict[str, Any]:
     p_overlap = _chunk_env_int("CHUNK_P_OVERLAP_SIZE", None)
     if p_overlap is not None:
         config["paragraph_semantic"]["chunk_overlap_token_size"] = p_overlap
+    t_overlap = _chunk_env_int("CHUNK_T_OVERLAP_SIZE", None)
+    if t_overlap is not None:
+        config["tree_sitter"]["chunk_overlap_token_size"] = t_overlap
 
     # P strategy carries its own ``chunk_token_size`` override so the
     # paragraph-semantic merge target can diverge from the global
@@ -619,6 +631,9 @@ def default_chunker_config() -> dict[str, Any]:
     v_size = _chunk_env_int("CHUNK_V_SIZE", None)
     if v_size is not None:
         config["semantic_vector"]["chunk_token_size"] = v_size
+    t_size = _chunk_env_int("CHUNK_T_SIZE", None)
+    if t_size is not None:
+        config["tree_sitter"]["chunk_token_size"] = t_size
 
     return config
 

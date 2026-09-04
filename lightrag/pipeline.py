@@ -451,6 +451,7 @@ _CHUNKING_METHOD_LABELS: dict[str, str] = {
     "R": "recursive_character",
     "V": "semantic_vector",
     "P": "paragraph_semantic",
+    "T": "tree_sitter",
 }
 
 _CUSTOM_CHUNKING_METHOD = "custom_chunking_func"
@@ -4952,6 +4953,7 @@ class _PipelineMixin:
                         chunking_by_paragraph_semantic,
                         chunking_by_recursive_character,
                         chunking_by_semantic_vector,
+                        chunking_by_tree_sitter,
                     )
                     from lightrag.chunker.recursive_character import (
                         normalize_r_separators,
@@ -5103,6 +5105,32 @@ class _PipelineMixin:
                             **r_opts,
                         )
                         chunk_method = _CHUNKING_METHOD_LABELS["R"]
+                        sidecar_backfill_eligible = True
+                    elif strategy == "T":
+                        # T carries its own optional ``chunk_token_size``
+                        # override (CHUNK_T_SIZE env or
+                        # ``addon_params['chunker']['tree_sitter']``); same
+                        # pop-then-splat pattern as R/V. ``file_path`` is not
+                        # part of the per-document snapshot -- it is this
+                        # document's own canonical basename, always forwarded
+                        # so the chunker can infer the language from its
+                        # extension. An explicit ``language`` override, when
+                        # present in the snapshot, rides through **t_opts.
+                        t_opts = dict(chunk_opts.get("tree_sitter") or {})
+                        t_chunk_size = int(
+                            t_opts.pop("chunk_token_size", resolved_chunk_size)
+                        )
+                        chunk_opts_str = _format_chunking_params(t_chunk_size, t_opts)
+                        logger.info(f"Chunking T: {chunk_opts_str}, doc_id: {doc_id}")
+                        chunking_result = await run_in_chunking_executor(
+                            chunking_by_tree_sitter,
+                            self.tokenizer,
+                            content,
+                            t_chunk_size,
+                            file_path=file_path,
+                            **t_opts,
+                        )
+                        chunk_method = _CHUNKING_METHOD_LABELS["T"]
                         sidecar_backfill_eligible = True
                     elif strategy == "V":
                         # V carries its own optional ``chunk_token_size``
@@ -5342,7 +5370,7 @@ class _PipelineMixin:
                         )
 
                 # Backfill block provenance for chunks produced by a built-in
-                # F/R/V path (including C's fixed-token fallback). P already
+                # F/R/V/T path (including C's fixed-token fallback). P already
                 # carries sidecars; multimodal chunks do too. Runs on the final, post-split
                 # chunk list so each slice maps precisely to the block(s) its
                 # content covers. Raises ChunkBlockMatchError -> doc FAILED when a
