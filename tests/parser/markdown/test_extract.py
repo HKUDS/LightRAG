@@ -228,6 +228,27 @@ def test_html_table_raw_mode_waits_for_opening_tag_to_close():
     assert ex.blocks[0]["content"].endswith(" tail")
 
 
+def test_html_table_raw_mode_closing_tag_split_across_lines():
+    """A raw-text closing tag broken by a line break, e.g. </textarea then a
+    bare > on the next line, is still valid HTML and must still be found --
+    a per-line search would miss it and lose the rest of the document."""
+    ex = _extract("<table><textarea>x</textarea\n>\n</table> tail")
+
+    (table,) = ex.tables.values()
+    assert table["html"].endswith("</table>")
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
+def test_html_table_raw_mode_tag_name_split_across_lines():
+    """Same hazard, but the element name itself is split by the line
+    break rather than the trailing whitespace before ">"."""
+    ex = _extract("<table><textarea>x</texta\nrea></table> tail")
+
+    (table,) = ex.tables.values()
+    assert table["html"].endswith("</table>")
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
 def test_html_table_ignores_tag_like_text_inside_script():
     """RCDATA/raw-text elements (script here) must not have their content
     scanned for tags either -- a literal </table>-shaped string inside

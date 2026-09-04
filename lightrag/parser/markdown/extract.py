@@ -55,10 +55,6 @@ _TAG_NAME_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9-]*")
 # HTML5 tokenizer, their content is not parsed for tags, comments or quotes
 # at all -- only a literal matching closing tag ends them.
 _RAW_MODE_ELEMENTS = frozenset({"script", "style", "textarea", "title"})
-_RAW_MODE_CLOSE_RE = {
-    name: re.compile(r"</" + name + r"\s*>", re.IGNORECASE)
-    for name in _RAW_MODE_ELEMENTS
-}
 
 # --- markdown token patterns ----------------------------------------------
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
@@ -533,6 +529,13 @@ def _consume_html_table(lines: list[str], start: int) -> tuple[int, str, str]:
     in_comment = False
     quote: str | None = None
     raw_element: str | None = None  # inside <script>/<style>/<textarea>/<title>
+    # Matched so far against raw_target ("</" + raw_element), one char at a
+    # time. Kept as loop-level state (not re-derived per line) so a closing
+    # tag split across a line break -- e.g. "</textarea" then a bare ">" on
+    # the next line -- is still found; a per-line search would miss it.
+    raw_target = ""
+    raw_progress = 0
+    raw_awaiting_close = False  # literal matched; now only whitespace or ">"
     # Name of the raw-mode element whose *opening* tag is currently being
     # scanned (in_tag), pending that tag's own unquoted ">" -- e.g. the name
     # is known the moment ``<textarea`` is seen, but a decoy closing sequence
@@ -547,11 +550,30 @@ def _consume_html_table(lines: list[str], start: int) -> tuple[int, str, str]:
             if raw_element is not None:
                 # RCDATA/raw-text content: not parsed for tags, comments or
                 # quotes -- only the literal matching closing tag ends it.
-                close_match = _RAW_MODE_CLOSE_RE[raw_element].search(line, index)
-                if close_match is None:
-                    break
-                raw_element = None
-                index = close_match.end()
+                char = line[index]
+                if raw_awaiting_close:
+                    if char == ">":
+                        raw_element = None
+                        raw_awaiting_close = False
+                        index += 1
+                        continue
+                    if char.isspace():
+                        index += 1
+                        continue
+                    # Not actually a close after all -- reconsider this same
+                    # char as a fresh match attempt below.
+                    raw_awaiting_close = False
+                    raw_progress = 0
+                    continue
+                if char.lower() == raw_target[raw_progress]:
+                    raw_progress += 1
+                    if raw_progress == len(raw_target):
+                        raw_awaiting_close = True
+                        raw_progress = 0
+                    index += 1
+                    continue
+                raw_progress = 1 if char == "<" else 0
+                index += 1
                 continue
             if in_comment:
                 comment_end = line.find("-->", index)
@@ -577,6 +599,8 @@ def _consume_html_table(lines: list[str], start: int) -> tuple[int, str, str]:
                     in_tag = False
                     if pending_raw_name is not None:
                         raw_element = pending_raw_name
+                        raw_target = "</" + raw_element
+                        raw_progress = 0
                         pending_raw_name = None
                 index += 1
                 continue
