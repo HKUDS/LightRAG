@@ -58,6 +58,7 @@ async def anthropic_complete_if_cache(
     enable_cot: bool = False,
     base_url: str | None = None,
     api_key: str | None = None,
+    token_tracker: Any | None = None,
     image_inputs: list[Any] | None = None,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
@@ -222,6 +223,24 @@ async def anthropic_complete_if_cache(
     if not stream:
         try:
             content = response.content[0].text
+            if token_tracker and getattr(response, "usage", None):
+                usage = response.usage
+                prompt_tokens = sum(
+                    getattr(usage, field, 0) or 0
+                    for field in (
+                        "input_tokens",
+                        "cache_creation_input_tokens",
+                        "cache_read_input_tokens",
+                    )
+                )
+                output_tokens = getattr(usage, "output_tokens", 0) or 0
+                token_tracker.add_usage(
+                    {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": output_tokens,
+                        "total_tokens": prompt_tokens + output_tokens,
+                    }
+                )
             if getattr(response, "stop_reason", None) == "max_tokens":
                 content = TruncatedResponse(content)
             return content
@@ -232,8 +251,22 @@ async def anthropic_complete_if_cache(
                 logger.warning(f"Failed to close Anthropic client: {close_error}")
 
     async def stream_response():
+        usage_counts: dict[str, int] = {}
         try:
             async for event in response:
+                usage = getattr(event, "usage", None)
+                if usage is None:
+                    usage = getattr(getattr(event, "message", None), "usage", None)
+                if usage is not None:
+                    for field in (
+                        "input_tokens",
+                        "output_tokens",
+                        "cache_creation_input_tokens",
+                        "cache_read_input_tokens",
+                    ):
+                        value = getattr(usage, field, None)
+                        if value is not None:
+                            usage_counts[field] = value
                 content = (
                     event.delta.text
                     if hasattr(event, "delta")
@@ -246,6 +279,23 @@ async def anthropic_complete_if_cache(
                 if r"\u" in content:
                     content = safe_unicode_decode(content.encode("utf-8"))
                 yield content
+            if token_tracker and usage_counts:
+                prompt_tokens = sum(
+                    usage_counts.get(field, 0)
+                    for field in (
+                        "input_tokens",
+                        "cache_creation_input_tokens",
+                        "cache_read_input_tokens",
+                    )
+                )
+                output_tokens = usage_counts.get("output_tokens", 0)
+                token_tracker.add_usage(
+                    {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": output_tokens,
+                        "total_tokens": prompt_tokens + output_tokens,
+                    }
+                )
         except Exception as e:
             logger.error(f"Error in stream response: {str(e)}")
             raise
