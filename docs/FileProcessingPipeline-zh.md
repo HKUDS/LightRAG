@@ -671,7 +671,7 @@ chunker(tokenizer, content, chunk_token_size, **strategy_kwargs)   (分块时按
 
 - **单请求条目数**上限为 `EMBEDDING_BATCH_NUM`。设为 `0` 或负数等于主动放弃这个上界。
 - **同时在途的请求数**上限为 `EMBEDDING_FUNC_MAX_ASYNC`。这个上界的作用域是**单次分块调用**，不是整个部署——跨实例并发仍由既有的 Embedding 限流器负责。任一批失败后不再发起新批。
-- **单条滑窗的 token 长度**按 `EMBEDDING_TOKEN_LIMIT` **尽力**截断；该值未设置（或为 `0`）时回退到生效的 `CHUNK_V_SIZE`。"尽力"是字面意思：截断用的是 LightRAG 的通用 tokenizer，不保证等于 Embedding 模型的 tokenizer；而 provider 还可能在此之后改写输入（OpenAI 绑定会先拼接 document prefix，再执行自己的截断）。所以 `EMBEDDING_BATCH_NUM × 上限` 只是 LightRAG tokenizer 下的逻辑上界，**不是**对服务端实际收到多少 token 的承诺；provider 自身的原生截断（若有）独立生效。
+- **单条滑窗的 token 长度**按 Embedding 函数声明的 `max_token_size` **尽力**截断。在 API server 路径下，该值优先取 `EMBEDDING_TOKEN_LIMIT`，未设置时则取 binding 自带的默认值——所有内置 binding 都声明了这个值（openai / azure_openai / ollama / jina / bedrock / lollms 为 `8192`，voyageai 为 `32000`，gemini 为 `2048`），因此不设 `EMBEDDING_TOKEN_LIMIT` **并不会**把预算交给 `CHUNK_V_SIZE`。只有当 `EmbeddingFunc` 自身未声明上限（`max_token_size=None` 或 `0`，仅直接调用 SDK 的场景可达）时，才回退到生效的 `CHUNK_V_SIZE`。"尽力"是字面意思：截断用的是 LightRAG 的通用 tokenizer，不保证等于 Embedding 模型的 tokenizer；而 provider 还可能在此之后改写输入（OpenAI 绑定会先拼接 document prefix，再执行自己的截断）。所以 `EMBEDDING_BATCH_NUM × 上限` 只是 LightRAG tokenizer 下的逻辑上界，**不是**对服务端实际收到多少 token 的承诺；provider 自身的原生截断（若有）独立生效。
 
 这里的截断不会丢失 chunk 内容：V 输出的分块是原文 span，超预算的滑窗只会让它参与的那一处边界距离判定降级。每篇文档最多一条聚合警告，报告有多少滑窗被截断。
 
