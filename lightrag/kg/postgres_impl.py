@@ -3795,27 +3795,27 @@ class PGKVStorage(BaseKVStorage):
 
         delete_sql = f"DELETE FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
 
-        # Chunk the id list so each statement's ANY($2) array stays bounded
-        # (a non-positive cap disables chunking). All chunks run in ONE
-        # transaction so a mid-delete failure rolls every chunk back, preserving
+        # Batch the id list so each statement's ANY($2) array stays bounded
+        # (a non-positive cap disables batching). All batches run in ONE
+        # transaction so a mid-delete failure rolls every batch back, preserving
         # the original single-statement all-or-nothing behaviour; _run_with_retry
         # re-runs the whole closure on transient errors (DELETE is idempotent).
-        chunk = (
+        delete_batch_size = (
             self._max_delete_records_per_batch
             if self._max_delete_records_per_batch > 0
             else len(ids)
         )
-        if len(ids) > chunk:
+        if len(ids) > delete_batch_size:
             logger.info(
                 f"[{self.workspace}] {self.namespace} delete: {len(ids)} ids "
-                f"split into chunks (chunk={chunk})"
+                f"split into batches (batch_size={delete_batch_size})"
             )
 
         async def _batch_delete(connection: asyncpg.Connection) -> None:
             async with connection.transaction():
-                for i in range(0, len(ids), chunk):
+                for i in range(0, len(ids), delete_batch_size):
                     await connection.execute(
-                        delete_sql, self.workspace, ids[i : i + chunk]
+                        delete_sql, self.workspace, ids[i : i + delete_batch_size]
                     )
 
         try:
@@ -4781,15 +4781,15 @@ class PGVectorStorage(BaseVectorStorage):
             # (<= 0) and no pending deletes, the fallback would be 0 and the
             # range() step below would raise even though there is nothing to
             # delete. The empty-list loop then simply no-ops.
-            delete_chunk = (
+            delete_batch_size = (
                 self._max_delete_records_per_batch
                 if self._max_delete_records_per_batch > 0
                 else len(pending_delete_ids) or 1
             )
-            if pending_delete_ids and len(pending_delete_ids) > delete_chunk:
+            if pending_delete_ids and len(pending_delete_ids) > delete_batch_size:
                 logger.info(
                     f"{log_prefix} delete {len(pending_delete_ids)} ids split "
-                    f"into chunks (chunk={delete_chunk})"
+                    f"into batches (batch_size={delete_batch_size})"
                 )
             delete_sql = (
                 f"DELETE FROM {self.table_name} WHERE workspace=$1 AND id = ANY($2)"
@@ -4832,8 +4832,8 @@ class PGVectorStorage(BaseVectorStorage):
                         _flush_upsert, timing_label=timing_label
                     )
 
-                for i in range(0, len(pending_delete_ids), delete_chunk):
-                    id_slice = pending_delete_ids[i : i + delete_chunk]
+                for i in range(0, len(pending_delete_ids), delete_batch_size):
+                    id_slice = pending_delete_ids[i : i + delete_batch_size]
 
                     async def _flush_delete(
                         connection: asyncpg.Connection,
@@ -6861,27 +6861,27 @@ class PGDocStatusStorage(DocStatusStorage):
 
         delete_sql = f"DELETE FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
 
-        # Chunk the id list so each statement's ANY($2) array stays bounded
-        # (a non-positive cap disables chunking). All chunks run in ONE
-        # transaction so a mid-delete failure rolls every chunk back, preserving
+        # Batch the id list so each statement's ANY($2) array stays bounded
+        # (a non-positive cap disables batching). All batches run in ONE
+        # transaction so a mid-delete failure rolls every batch back, preserving
         # the original single-statement all-or-nothing behaviour; _run_with_retry
         # re-runs the whole closure on transient errors (DELETE is idempotent).
-        chunk = (
+        delete_batch_size = (
             self._max_delete_records_per_batch
             if self._max_delete_records_per_batch > 0
             else len(ids)
         )
-        if len(ids) > chunk:
+        if len(ids) > delete_batch_size:
             logger.info(
                 f"[{self.workspace}] {self.namespace} delete: {len(ids)} ids "
-                f"split into chunks (chunk={chunk})"
+                f"split into batches (batch_size={delete_batch_size})"
             )
 
         async def _batch_delete(connection: asyncpg.Connection) -> None:
             async with connection.transaction():
-                for i in range(0, len(ids), chunk):
+                for i in range(0, len(ids), delete_batch_size):
                     await connection.execute(
-                        delete_sql, self.workspace, ids[i : i + chunk]
+                        delete_sql, self.workspace, ids[i : i + delete_batch_size]
                     )
 
         try:
