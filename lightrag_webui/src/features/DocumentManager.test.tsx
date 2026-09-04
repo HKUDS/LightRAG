@@ -41,8 +41,9 @@ import { useBackendState } from '@/stores/state'
 
 const DOC_ID = 'doc-to-delete'
 const SURVIVOR_ID = 'doc-that-stays'
+const FAILED_ID = 'doc-that-failed'
 
-/** How long the simulated background deletion runs past its own response. */
+/** Default time the simulated background deletion runs past its own response. */
 const DELETION_COMMIT_MS = 150
 
 const makeDoc = (id: string): DocStatusResponse => ({
@@ -69,7 +70,15 @@ const makeDoc = (id: string): DocStatusResponse => ({
  */
 const backend = {
   docs: [makeDoc(DOC_ID), makeDoc(SURVIVOR_ID)],
+  /** Served for the "failed" filter tab, so a filter change is observable. */
+  failedDocs: [{ ...makeDoc(FAILED_ID), status: 'failed' as DocStatusResponse['status'] }],
+  commitDelayMs: DELETION_COMMIT_MS,
   deletionInFlight: false,
+  /** Keeps /health reporting busy, so the activity probe keeps its burst going. */
+  scanInFlight: false,
+  /** Status filters requested while `recordFilters` is on. */
+  requestedFilters: [] as (string | null)[],
+  recordFilters: false,
   paginatedCalls: 0,
   healthCalls: 0,
   deleteCalls: 0
@@ -77,24 +86,39 @@ const backend = {
 
 const resetBackend = () => {
   backend.docs = [makeDoc(DOC_ID), makeDoc(SURVIVOR_ID)]
+  backend.failedDocs = [
+    { ...makeDoc(FAILED_ID), status: 'failed' as DocStatusResponse['status'] }
+  ]
+  backend.commitDelayMs = DELETION_COMMIT_MS
   backend.deletionInFlight = false
+  backend.requestedFilters = []
+  backend.recordFilters = false
+  backend.scanInFlight = false
   backend.paginatedCalls = 0
   backend.healthCalls = 0
   backend.deleteCalls = 0
 }
 
-const paginate = (): PaginatedDocsResponse => ({
-  documents: backend.docs,
-  pagination: {
-    page: 1,
-    page_size: 10,
-    total_count: backend.docs.length,
-    total_pages: 1,
-    has_next: false,
-    has_prev: false
-  },
-  status_counts: { all: backend.docs.length, processed: backend.docs.length }
-})
+const paginate = (statusFilter: string | null): PaginatedDocsResponse => {
+  const documents = statusFilter === 'failed' ? backend.failedDocs : backend.docs
+
+  return {
+    documents,
+    pagination: {
+      page: 1,
+      page_size: 10,
+      total_count: documents.length,
+      total_pages: 1,
+      has_next: false,
+      has_prev: false
+    },
+    status_counts: {
+      all: backend.docs.length,
+      processed: backend.docs.length,
+      failed: backend.failedDocs.length
+    }
+  }
+}
 
 const respond = (config: any, data: unknown) => ({
   data,
@@ -109,16 +133,24 @@ const backendAdapter = async (config: any) => {
 
   if (url.endsWith('/documents/paginated')) {
     backend.paginatedCalls += 1
-    return respond(config, paginate())
+    const body = JSON.parse(config.data ?? '{}')
+    const statusFilter = body.status_filter ?? null
+    if (backend.recordFilters) backend.requestedFilters.push(statusFilter)
+    return respond(config, paginate(statusFilter))
   }
 
   if (url.endsWith('/health')) {
     backend.healthCalls += 1
     return respond(config, {
       status: 'healthy',
-      pipeline_busy: backend.deletionInFlight,
-      pipeline_active: backend.deletionInFlight
+      pipeline_busy: backend.deletionInFlight || backend.scanInFlight,
+      pipeline_active: backend.deletionInFlight || backend.scanInFlight
     })
+  }
+
+  if (url.endsWith('/documents/scan')) {
+    backend.scanInFlight = true
+    return respond(config, { status: 'scanning_started', message: 'ok' })
   }
 
   if (url.endsWith('/documents/delete_document')) {
@@ -130,7 +162,7 @@ const backendAdapter = async (config: any) => {
     setTimeout(() => {
       backend.docs = backend.docs.filter((doc) => !docIds.includes(doc.id))
       backend.deletionInFlight = false
-    }, DELETION_COMMIT_MS)
+    }, backend.commitDelayMs)
     return respond(config, {
       status: 'deletion_started',
       message: 'started',
@@ -141,12 +173,26 @@ const backendAdapter = async (config: any) => {
   return respond(config, {})
 }
 
+/**
+ * Wait until the list has stopped fetching. The stale-query refresh can be
+ * scheduled behind the throttle gate's 2s trailing timer, so an assertion that
+ * fires as soon as one request lands would finish before it.
+ */
+const waitForPaginatedQuiescence = async (quietMs = 2500, maxRounds = 6) => {
+  for (let round = 0; round < maxRounds; round += 1) {
+    const before = backend.paginatedCalls
+    await new Promise((resolve) => setTimeout(resolve, quietMs))
+    if (backend.paginatedCalls === before) return
+  }
+  throw new Error('document list never stopped fetching')
+}
+
 const rowFor = (docId: string) => {
   const cell = screen.queryAllByText(docId)[0]
   return cell?.closest('tr') ?? null
 }
 
-describe('DocumentManager deletion confirmation', () => {
+describe('DocumentManager post-action refreshes', () => {
   beforeEach(() => {
     resetBackend()
     __setAxiosAdapterForTests(backendAdapter)
@@ -212,5 +258,104 @@ describe('DocumentManager deletion confirmation', () => {
       expect(backend.healthCalls > healthCallsAtDelete).toBe(true)
     },
     20000
+  )
+
+  test(
+    'a refresh landing after a filter change queries the new view, not the old',
+    async () => {
+      // The probe outlives the render that created it, so the callback it holds
+      // must be resolved from CURRENT state. A captured one pairs an OLD query
+      // snapshot (page/filter/sort) with the CURRENT request version — the
+      // combination runRefreshRequest's staleness guard cannot catch, since it
+      // only compares versions — and the response overwrites the view the user
+      // navigated to.
+      //
+      // Asserted on the requests rather than the rendered rows: the clobber is
+      // self-healing within ~2s (the next refresh re-fetches the current view),
+      // so the DOM window is racy while "which query did we ask for" is exact.
+      backend.commitDelayMs = 3000
+      const user = userEvent.setup()
+      renderWithProviders(<DocumentManager />)
+
+      await waitFor(() => {
+        expect(rowFor(DOC_ID) === null).toBe(false)
+      })
+
+      const row = rowFor(DOC_ID)
+      await user.click(within(row as HTMLElement).getByRole('checkbox'))
+      await user.click(screen.getByRole('button', { name: /^Delete$/ }))
+      await user.type(screen.getByPlaceholderText('Type yes to confirm'), 'yes')
+      await user.click(screen.getByRole('button', { name: 'YES' }))
+
+      await waitFor(() => {
+        expect(backend.deleteCalls).toBe(1)
+      })
+
+      // Navigate away while the deletion is still running. Every paginated
+      // request from here on must carry the new filter.
+      backend.recordFilters = true
+      await user.click(screen.getByRole('button', { name: /^Failed/ }))
+      await waitFor(() => {
+        expect(screen.queryAllByText(FAILED_ID).length > 0).toBe(true)
+      })
+
+      // Wait out the deletion, then the probe's confirming refresh.
+      await waitFor(
+        () => {
+          expect(backend.deletionInFlight).toBe(false)
+        },
+        { timeout: 8000 }
+      )
+      const callsAtCommit = backend.paginatedCalls
+      await waitFor(
+        () => {
+          expect(backend.paginatedCalls > callsAtCommit).toBe(true)
+        },
+        { timeout: 8000 }
+      )
+      await waitForPaginatedQuiescence()
+
+      expect(backend.requestedFilters.filter((filter) => filter !== 'failed')).toHaveLength(0)
+      expect(screen.queryAllByText(SURVIVOR_ID)).toHaveLength(0)
+      expect(screen.queryAllByText(FAILED_ID).length > 0).toBe(true)
+    },
+    25000
+  )
+
+  test(
+    'the scan activity probe also refreshes the current view, not the captured one',
+    async () => {
+      // Same defect, wider window: the activity probe's burst runs for up to
+      // 16s off the closure captured when scan was clicked. Pre-existing, and
+      // fixed by the same latest-render ref.
+      const user = userEvent.setup()
+      renderWithProviders(<DocumentManager />)
+
+      await waitFor(() => {
+        expect(rowFor(DOC_ID) === null).toBe(false)
+      })
+
+      await user.click(screen.getByRole('button', { name: /^Scan\/Retry/ }))
+      await waitFor(() => {
+        expect(backend.scanInFlight).toBe(true)
+      })
+
+      backend.recordFilters = true
+      await user.click(screen.getByRole('button', { name: /^Failed/ }))
+      await waitFor(() => {
+        expect(screen.queryAllByText(FAILED_ID).length > 0).toBe(true)
+      })
+
+      // Two more probe refreshes (its 2s and 4s ticks) must query the new view.
+      await waitFor(
+        () => {
+          expect(backend.requestedFilters.length >= 3).toBe(true)
+        },
+        { timeout: 10000 }
+      )
+
+      expect(backend.requestedFilters.filter((filter) => filter !== 'failed')).toHaveLength(0)
+    },
+    25000
   )
 })

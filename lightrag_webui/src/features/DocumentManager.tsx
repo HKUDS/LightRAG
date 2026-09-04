@@ -1027,6 +1027,23 @@ export default function DocumentManager() {
     }, 2000 - gap)
   }, [handleIntelligentRefresh]);
 
+  // Latest-render view of the throttle gate, for callers that outlive the
+  // render they were created in (the two probes below). Calling a captured
+  // `refreshDocumentsThrottled` from a timer that fires seconds later pairs an
+  // OLD query snapshot (page/filter/sort from that render) with the CURRENT
+  // `latestRefreshRequestVersionRef` — a combination the staleness guard in
+  // runRefreshRequest cannot catch, since it only compares versions. The stale
+  // response then overwrites the view the user navigated to. Reading the gate
+  // through this ref keeps the snapshot and the version from the same render.
+  //
+  // The polling interval does not need this: `startPollingInterval` depends on
+  // `refreshDocumentsThrottled`, so a page/filter/sort change already recreates
+  // the interval with the current closure.
+  const refreshDocumentsThrottledRef = useRef(refreshDocumentsThrottled);
+  useEffect(() => {
+    refreshDocumentsThrottledRef.current = refreshDocumentsThrottled
+  }, [refreshDocumentsThrottled]);
+
   // Activity probe: short exponential-backoff burst of /health checks fired
   // after scan/upload triggers. Stops as soon as pipelineActive flips true so
   // we can hand off to the existing 5s active polling cadence. Re-entry
@@ -1070,7 +1087,7 @@ export default function DocumentManager() {
           return
         }
         if (refreshAt.has(delay)) {
-          refreshDocumentsThrottled({ auto: delay !== 0 })
+          refreshDocumentsThrottledRef.current({ auto: delay !== 0 })
         }
         // Exit conditions (in priority order):
         //  - pipelineActive=true AND the document list has caught up: the 5s
@@ -1095,7 +1112,7 @@ export default function DocumentManager() {
       timers.push(id)
     })
     probeTimersRef.current = timers
-  }, [refreshDocumentsThrottled]);
+  }, []);
 
   // Deletion confirmation probe: watch for the pipeline going idle after a
   // `deletion_started`, then refresh once. Deliberately NOT the activity probe
@@ -1131,13 +1148,13 @@ export default function DocumentManager() {
         if (!healthy) return null
         return useBackendState.getState().pipelineBusy
       },
-      refreshDocuments: () => refreshDocumentsThrottled({ auto: false }),
+      refreshDocuments: () => refreshDocumentsThrottledRef.current({ auto: false }),
       isMounted: () => isMountedRef.current,
       onSettled: () => {
         deletionProbeActiveRef.current = false
       }
     });
-  }, [refreshDocumentsThrottled]);
+  }, []);
 
   // New paginated data fetching function
   const fetchPaginatedDocuments = useCallback(async (
