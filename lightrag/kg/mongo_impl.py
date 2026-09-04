@@ -4577,7 +4577,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
         """Drop all documents and recreate the vector index. Destructive.
 
         MUST only be called when ``pipeline_status`` is idle (see the
-        Pipeline concurrency contract in ``AGENTS.md``); the only
+        Pipeline concurrency contract in ``docs/design/PipelineConcurrencyContract.md``); the only
         in-tree caller ``clear_documents`` enforces this.
 
         Caveat — only this instance's buffers are cleared. Other

@@ -67,8 +67,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
     Concurrency invariants (the code in this file is correct *only* while
     all three hold):
         1. **Single writer per workspace.** The document pipeline's
-           ``busy`` / ``destructive_busy`` flags (see ``AGENTS.md``
-           *Pipeline concurrency contract*) guarantee that at most one
+           ``busy`` / ``destructive_busy`` flags (see
+           ``docs/design/PipelineConcurrencyContract.md``) guarantee that at
+           most one
            process performs ``upsert`` / ``delete`` /
            ``index_done_callback`` at any time. Every other process is
            read-only with respect to this storage.

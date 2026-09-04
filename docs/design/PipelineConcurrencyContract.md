@@ -1,0 +1,29 @@
+# Pipeline Concurrency Contract
+
+Read this before changing `lightrag/pipeline.py`, `lightrag/kg/pipeline_ingress.py`, `pipeline_status` fields, or any `/documents/*` endpoint that enqueues, scans, clears or deletes. Summary in [AGENTS.md](../../AGENTS.md#pipeline-concurrency-contract).
+
+The document ingestion pipeline coordinates concurrent writers through `pipeline_status` (a per-workspace shared dict in `lightrag.kg.shared_storage`). These fields are mutated under `get_namespace_lock("pipeline_status", workspace=...)`:
+
+- **`busy`**: any pipeline-busy state. Set by both the processing loop AND destructive jobs (clear / per-doc delete). On its own, `busy=True` does NOT block enqueue — see `destructive_busy` for the exclusive subset.
+- **`destructive_busy`**: the busy job is `/documents/clear` or `/documents/{doc_id}` (delete). These DROP storages and remove input files; a concurrent enqueue accepted in this window would write to storage being torn down and silently lose the document. Reservation and the enqueue last-line guard reject when this is True.
+- **`scanning`**: a `/documents/scan` task is running (whole lifecycle: classification + processing). Used by the `/scan` endpoint to refuse overlapping scans. Does NOT on its own block uploads/inserts.
+- **`scanning_exclusive`**: True only during the scan task's classification phase, when `run_scanning_process` is reading `doc_status` to classify files (PROCESSED → archive, FAILED-without-`full_docs` → retry-as-new, etc.) and possibly deleting stale stubs. Reservation and the enqueue last-line guard reject when this is set. Cleared before the scan transitions to its processing phase, allowing concurrent uploads to land while scan-driven processing finishes.
+- **`pending_enqueues`**: count of `/upload`, `/text`, `/texts` endpoints that have reserved a slot (via `_reserve_enqueue_slot`) but whose bg task has not yet completed. Only the scan endpoint reads this — to refuse starting while uploads are mid-flight.
+
+**Workspace pipeline ingress** (`lightrag/kg/pipeline_ingress.py`, resolved via `get_pipeline_ingress(workspace)`): a three-channel mailbox living beside `pipeline_status` (never inside it — the status dict is serialized into API responses). It is the pipeline's only wake-up channel; `doc_status` stays the source of truth (a dropped notification is recovered by the next run's initial strict scan). Enqueue publishes document messages under `pipeline_status_lock` (one `put_documents` batch RPC); a busy-refused `apipeline_process_enqueue_documents` arms the **auto-rescan** flag inside `acquire_processing_reservation`'s own critical section. At every quiescence point the loop decides, atomically under `pipeline_status_lock`, cancellation first (consumes nothing), then: earliest sticky **manual retry** request (peeked, one per cycle) > **auto-rescan** dirty flag (consumed atomically; the loop is the sole consumer and re-arms it if the follow-up strict query fails) > **document** channel non-empty (peeked via `counts()`; resolved by a bounded drain-then-strict-scan refetch that compacts provably-stale messages) > release `busy` (same critical section).
+
+**FAILED retry semantics**: automatic runs resume only `_AUTO_RESUME_DOC_STATUSES` (PENDING + PROCESSING/PARSING/ANALYZING dead-process orphans). A FAILED document re-enters the pipeline exclusively through a sticky manual retry request published by `/documents/scan` (after its reservation is granted) or `/documents/reprocess_failed` (publish-first; pure storage-driven, no filesystem scan, no custom-chunk rollback). Each request grants at most ONE retry attempt (`_MANUAL_RETRY_DOC_STATUSES`, initial scan only) and is ACKed only after the FAILED→PENDING resets persist — a crash re-executes the request or leaves the docs PENDING for automatic recovery; a doc failing again stays FAILED until the next explicit request. All scheduling-control-plane `doc_status` queries use `get_docs_by_statuses(..., strict=True)` (complete-or-raise), and scheduler `full_docs` reads distinguish confirmed-absent (`None`) from backend errors (raise). Manual-intent endpoints start their work through `start_committed_background_task` (fence recheck + publish in one critical section; a post-commit cancellation never cancels the child).
+
+Mutual-exclusion rules (all checked atomically inside the lock):
+
+| Operation | Refuses if | Writes |
+|---|---|---|
+| `_reserve_enqueue_slot` | `scanning_exclusive` or `destructive_busy` | `pending_enqueues++` |
+| `apipeline_enqueue_documents` (last-line guard) | (`scanning_exclusive` and not `from_scan`) or `destructive_busy` | — |
+| Scan endpoint reservation | `busy or scanning or pending_enqueues > 0` | `scanning = True` |
+| `apipeline_process_enqueue_documents` entry | (already busy → arm ingress auto-rescan, return) | `busy = True` (NOT `destructive_busy`) |
+| `clear_documents` / `delete_document` (synchronous reservation) | `busy or scanning or pending_enqueues > 0` | `busy = True`, `destructive_busy = True` |
+
+The contract permits **concurrent enqueue + processing**: a freshly-uploaded doc lands in `doc_status` while the loop is mid-batch, its document message is routed into the running batch by the in-batch feeder (or resolved at the batch boundary by the quiescence decision), and the doc processes without waiting for a new run.
+
+For the rest — write ordering of `full_docs` vs `doc_status`, the workspace-scoped `enqueue_serialize` lock around dedup-and-upsert, and the `from_scan=True` bypass — see the docstrings on `apipeline_enqueue_documents` and `apipeline_process_enqueue_documents` in `lightrag/pipeline.py`.

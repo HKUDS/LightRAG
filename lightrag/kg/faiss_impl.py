@@ -87,8 +87,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
     Concurrency invariants (the code here is correct *only* while all
     three hold):
         1. **Single writer per workspace.** The document pipeline's
-           ``busy`` / ``destructive_busy`` flags (see ``AGENTS.md``
-           *Pipeline concurrency contract*) guarantee at most one process
+           ``busy`` / ``destructive_busy`` flags (see
+           ``docs/design/PipelineConcurrencyContract.md``) guarantee at most
+           one process
            performs ``upsert`` / ``delete`` / ``index_done_callback`` at
            any time. Every other process is read-only.
         2. **Eventual consistency is sufficient.** Read-only processes
