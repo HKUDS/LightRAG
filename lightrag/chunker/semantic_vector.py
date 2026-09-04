@@ -60,6 +60,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import re
+import threading
 from typing import TYPE_CHECKING, Any
 
 from lightrag.constants import (
@@ -147,6 +148,12 @@ class _AsyncEmbeddingFuncAdapter(Embeddings):
         self._batch_size = batch_size
         self._max_concurrency = max_concurrency
         self._budget_source = budget_source
+        # ``_cancelled`` is sticky and guarded by ``_cancel_lock`` because it
+        # crosses threads: the loop thread sets it, the worker thread reads it.
+        # A plain "cancel whatever is in flight" is not enough — see
+        # ``cancel_inflight``.
+        self._cancel_lock = threading.Lock()
+        self._cancelled = False
         self._inflight: concurrent.futures.Future | None = None
 
     # -- truncation ----------------------------------------------------
@@ -272,19 +279,38 @@ class _AsyncEmbeddingFuncAdapter(Embeddings):
         return results
 
     def cancel_inflight(self) -> None:
-        """Cancel the in-flight bounced call, if any.
+        """Refuse all further work, and cancel the in-flight bounced call.
 
         Called from the event loop when the outer chunking task is
-        cancelled.  The bridging future is never ``set_running``, so
-        ``cancel()`` both wakes the blocked worker thread and — through
-        ``_chain_future``'s cancellation callback — cancels the loop-side
-        task, and with it the worker pool.
+        cancelled.  Cancelling the bridging future wakes the blocked worker
+        thread and — through ``_chain_future``'s cancellation callback —
+        cancels the loop-side task, and with it the worker pool.
+
+        The sticky flag is the other half, and it is not optional.
+        ``asyncio.to_thread`` can still be QUEUED when the cancellation
+        arrives (or running the grouping before it first reaches this
+        adapter), in which case there is no future to cancel yet.  Without
+        the flag that cancellation would simply be dropped, and the worker
+        thread would go on to publish a fresh future and dispatch every
+        batch of an already-cancelled document.
         """
-        future = self._inflight
+        with self._cancel_lock:
+            self._cancelled = True
+            future = self._inflight
         if future is not None:
             future.cancel()
 
     def _run(self, texts: list[str], context: str) -> list[list[float]]:
+        # Fast path out before spending an encode pass on a document whose
+        # task is already gone.  The authoritative check is the one held
+        # together with publication below.
+        with self._cancel_lock:
+            already_cancelled = self._cancelled
+        if already_cancelled:
+            raise concurrent.futures.CancelledError(
+                "semantic_vector: chunking was cancelled before this batch"
+            )
+
         texts = self._truncate(texts)
         batch_size = self._batch_size
         if batch_size and batch_size > 0:
@@ -299,14 +325,22 @@ class _AsyncEmbeddingFuncAdapter(Embeddings):
         # blocking on its result would serialize them.  Every asyncio
         # object lives inside the bounced coroutine — this method runs on a
         # worker thread with no running loop.
-        # Chained so the cancellation handle is published as early as
-        # possible: a cancel arriving before the store would find no
-        # in-flight future and leave this thread blocked until the call
-        # finished on its own (today's behavior, but no reason to widen it).
-        self._inflight = future = asyncio.run_coroutine_threadsafe(
-            self._embed_all(batches, context),
-            self._loop,
-        )
+        #
+        # Checked and published under the same lock so cancellation cannot
+        # slip between the two: either ``cancel_inflight`` gets here first
+        # and this raises without scheduling anything, or it arrives after
+        # and finds the future to cancel.  ``run_coroutine_threadsafe`` only
+        # does a ``call_soon_threadsafe`` here, so holding the lock across it
+        # cannot deadlock against the loop.
+        with self._cancel_lock:
+            if self._cancelled:
+                raise concurrent.futures.CancelledError(
+                    "semantic_vector: chunking was cancelled before this batch"
+                )
+            self._inflight = future = asyncio.run_coroutine_threadsafe(
+                self._embed_all(batches, context),
+                self._loop,
+            )
         try:
             batch_results = future.result()
         finally:
@@ -592,10 +626,11 @@ async def chunking_by_semantic_vector(
         pieces = await asyncio.to_thread(_semantic_groups_with_spans, splitter, content)
     except asyncio.CancelledError:
         # ``to_thread`` returns on cancellation but the worker thread keeps
-        # running — and it is blocked on a bounced embedding call.  Cancel
-        # that bridging future so the thread is woken and the loop-side
-        # worker pool is torn down instead of running to completion with
-        # its results discarded.
+        # running.  This both cancels the bounced call it is blocked on (so
+        # the loop-side worker pool is torn down instead of running to
+        # completion with its results discarded) and makes the refusal
+        # sticky, which is what covers the thread not having reached the
+        # adapter yet — see ``cancel_inflight``.
         adapter.cancel_inflight()
         raise
 

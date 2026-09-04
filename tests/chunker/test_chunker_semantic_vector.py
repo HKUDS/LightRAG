@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import re
+import threading
 
 import numpy as np
 import pytest
@@ -732,3 +733,73 @@ def test_v_token_budget_is_adapter_side_only():
     # A provider that prepends a document prefix sees more, too.
     prefixed = [len("search_document: " + text) for text in rec.all_texts]
     assert max(prefixed) > budget
+
+
+@pytest.mark.offline
+def test_v_cancellation_before_the_bridge_future_exists_blocks_every_batch():
+    """Cancelling before a future is published must still stick.
+
+    Cancelling only "whatever is in flight" leaves a window open: the worker
+    thread can be running the grouping, or the truncation pass, with no
+    future published yet — so the cancellation is dropped, and the thread
+    then publishes a fresh one and dispatches every batch of a document
+    whose task is already gone.
+
+    The gated tokenizer parks the thread inside ``_truncate``, which is
+    reached before publication, making that window deterministic. (The
+    narrower case of a still-QUEUED ``to_thread`` needs no handling of its
+    own: ``ThreadPoolExecutor.cancel`` succeeds while a work item is queued,
+    so the callable never runs.)
+    """
+    body = _multi_sentence_body(12)
+    rec = _RecordingEmbedding()
+
+    class _GatedTokenizerImpl(TokenizerInterface):
+        """1 char == 1 token, but the first encode parks the caller."""
+
+        def __init__(self, entered: threading.Event, hold: threading.Event) -> None:
+            self.entered = entered
+            self.hold = hold
+            self.first = True
+
+        def encode(self, content: str):
+            if self.first:
+                self.first = False
+                self.entered.set()
+                self.hold.wait(10)
+            return [ord(ch) for ch in content]
+
+        def decode(self, tokens):
+            return "".join(chr(t) for t in tokens)
+
+    async def _run():
+        entered = threading.Event()
+        hold = threading.Event()
+        tokenizer = Tokenizer("gated", _GatedTokenizerImpl(entered, hold))
+
+        task = asyncio.create_task(
+            chunking_by_semantic_vector(
+                tokenizer,
+                body,
+                4000,
+                embedding_func=rec.as_func(),
+                embedding_batch_num=4,
+            )
+        )
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        # Inside _truncate: the grouping is running, nothing published yet.
+        assert rec.calls == [], "no batch should have been dispatched yet"
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        hold.set()
+        # Loop stays alive on purpose: this is where the batches would
+        # complete if the thread were still allowed to schedule work.
+        await asyncio.sleep(0.3)
+
+    asyncio.run(_run())
+
+    assert rec.calls == [], "batches were dispatched after the task was cancelled"
