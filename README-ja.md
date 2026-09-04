@@ -34,6 +34,7 @@
       <a href="README-zh.md"><img src="https://img.shields.io/badge/🇨🇳中文版-1a1a2e?style=for-the-badge"></a>
       <a href="README.md"><img src="https://img.shields.io/badge/🇺🇸English-1a1a2e?style=for-the-badge"></a>
       <a href="README-ja.md"><img src="https://img.shields.io/badge/🇯🇵日本語版-1a1a2e?style=for-the-badge"></a>
+      <a href="README-id.md"><img src="https://img.shields.io/badge/🇮🇩Bahasa%20Indonesia-1a1a2e?style=for-the-badge"></a>
     </p>
     <p>
       <a href="https://pepy.tech/projects/lightrag-hku"><img src="https://static.pepy.tech/personalized-badge/lightrag-hku?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads"></a>
@@ -268,7 +269,7 @@ brew install cairo
 - **増分更新と部分削除:** LightRAG は、グラフベースのナレッジベースにおける増分更新と部分削除の難しさを解決し、動的なデータ環境でも情報を最新の状態に保ちます。ドキュメントを削除する際には、インデックス構築時の LLM キャッシュを利用して、影響を受けるエンティティと関係を迅速に再構築できるため、ナレッジベースの更新効率が大幅に向上します。
 - **複数のドキュメント解析エンジン:** LightRAG のドキュメント処理パイプラインは MinerU、Docling、Native に加え、サードパーティ製解析エンジンの拡張にも対応しています。LightRAG 独自の Native エンジンは、Word および Markdown ドキュメント内の画像、表、数式を効率的に解析でき、マルチモーダルコンテンツを多く含むドキュメントの処理に特に適しています。また、Word ドキュメントの章見出しを自動的に検出・修正し、アウトラインが不規則なドキュメントでもコンテンツ抽出の品質を高め、章単位のテキストチャンク化に適した基盤を整えます。
 - **複数のテキストチャンク戦略:** LightRAG は、`固定長チャンク (F)`、`再帰文字チャンク (R)`、`ベクトルセマンティックチャンク (V)`、`段落セマンティックチャンク (P)` の 4 種類の戦略をサポートします。LightRAG 独自の `段落セマンティックチャンク (P)` は、**チャンク境界をドキュメント本来の意味的な境界**（見出し、段落、表）にできる限り合わせます。これにより、見出しと本文の不一致や、長い表を分割した際のヘッダー行の欠落といった問題を軽減します。
-- **複数のストレージバックエンド:** LightRAG のデフォルトの KV、ベクトル、グラフストレージには、ローカルファイルに永続化するインメモリデータベースが使用されており、プロジェクトをすばやく評価するのに適しています。また、大規模データセットを扱う本番環境向けに、主要なストレージバックエンドを幅広くサポートしています。
+- **複数のストレージバックエンド:** LightRAG のデフォルトの KV、ベクトル、グラフストレージには、ローカルファイルに永続化するインメモリデータベースが使用されており、**小規模データでのテストや評価にのみ適しており、本番環境には適していません**。また、大規模データセットを扱う本番環境向けに、主要なストレージバックエンド（PostgreSQL 推奨）を幅広くサポートしています。
 
 ### マルチモーダル機能のアップグレード
 
@@ -359,7 +360,11 @@ LightRAG は4種類のバックエンドストレージを必要とします:
 - **GRAPH_STORAGE**: 知識グラフの保存に使用します。
 - **DOC_STATUS_STORAGE**: ドキュメントリストの保存に使用します。
 
-デフォルトでは、LightRAG のストレージバックエンドはファイル永続化されたインメモリデータベースです。これらのデフォルトストレージは開発・デバッグ用途のみを想定しており、本番環境には適していません。本番環境で、4種類すべてのストレージを単一のバックエンドで扱いたい場合は、PostgreSQL、MongoDB、または OpenSearch を選択できます。あるいは、ベクトルストレージに Milvus や Qdrant、グラフストレージに Neo4j や Memgraph を使用するなど、ベクトルやグラフのストレージに専用データベースを選択することもできます。
+**4種類のデフォルトストレージはすべてインメモリデータベースです**（`JsonKVStorage`、`NanoVectorDBStorage`、`NetworkXStorage`、`JsonDocStatusStorage`）：データ全体がサーバープロセスのメモリ上に常駐し、`WORKING_DIR` 配下のローカルファイルは永続化のためだけに使われるため、容量は利用可能な RAM に制限されます。したがってデフォルトストレージは**小規模データでのテスト・評価・開発デバッグ専用であり、本番環境には適していません**。
+
+本番環境では **PostgreSQL を推奨します** — 単独で4種類すべてのストレージを担えます。MongoDB と OpenSearch も単一バックエンドの選択肢です。あるいは、ベクトルストレージに Milvus や Qdrant、グラフストレージに Neo4j や Memgraph を使用するなど、ベクトルやグラフのストレージに専用データベースを選択することもできます。
+
+ストレージ種別ごとの実装一覧は [Storage Types Supported](./docs/LightRAG-API-Server.md#storage-types-supported) を参照してください。
 
 ### ドキュメント処理に関するその他の重要な設定
 

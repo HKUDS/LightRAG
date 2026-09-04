@@ -903,7 +903,7 @@ LightRAG 使用 4 种类型的存储用于不同目的：
 * GRAPH_STORAGE：实体关系图
 * DOC_STATUS_STORAGE：文档索引状态
 
-每种存储类型都有多种存储实现方式。LightRAG Server 默认的存储实现为内存数据库，数据通过文件持久化保存到 WORKING_DIR 目录，适合快速评估项目，但不建议用于生产环境。各存储类型当前可选的实现如下：
+每种存储类型都有多种存储实现方式。LightRAG Server 默认的存储实现为内存数据库，数据通过文件持久化保存到 WORKING_DIR 目录：全部数据常驻服务进程的内存中，文件仅用于持久化，因此容量受可用内存限制。默认存储**仅适合小数据量的测试、效果评估与开发调试，不建议用于生产环境** —— 生产环境推荐使用 PostgreSQL。各存储类型当前可选的实现如下：
 
 | 存储类型 | 可选实现（首个为默认实现） |
 |---|---|
@@ -912,7 +912,7 @@ LightRAG 使用 4 种类型的存储用于不同目的：
 | GRAPH_STORAGE | `NetworkXStorage`、`Neo4JStorage`、`PGTableGraphStorage`、`PGGraphStorage`、`MongoGraphStorage`、`MemgraphStorage`、`OpenSearchGraphStorage` |
 | DOC_STATUS_STORAGE | `JsonDocStatusStorage`、`RedisDocStatusStorage`、`PGDocStatusStorage`、`MongoDocStatusStorage`、`OpenSearchDocStatusStorage` |
 
-在生产环境中，如果希望用单一后端同时承担全部四种存储，可以选择 PostgreSQL、MongoDB 或 OpenSearch；也可以为不同存储类型分别选择专用数据库，例如用 Milvus 或 Qdrant 承担向量存储，用 Neo4j 或 Memgraph 承担图存储。
+在生产环境中，如果希望用单一后端同时承担全部四种存储，可以选择 PostgreSQL（推荐）、MongoDB 或 OpenSearch；也可以为不同存储类型分别选择专用数据库，例如用 Milvus 或 Qdrant 承担向量存储，用 Neo4j 或 Memgraph 承担图存储。
 
 **PostgreSQL 图存储推荐使用 `PGTableGraphStorage`：** 对于新建的 PostgreSQL 部署，`PGTableGraphStorage` 是推荐的 `GRAPH_STORAGE` 实现，用于替代 `PGGraphStorage`。它不经由 Apache AGE，而是把实体关系图直接存放在普通表中（JSONB 属性配合 B-tree 索引），由此带来两点实际优势：
 

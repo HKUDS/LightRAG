@@ -48,8 +48,9 @@ class NetworkXStorage(BaseGraphStorage):
     Concurrency invariants (the code in this file is correct *only* while
     all three hold):
         1. **Single writer per workspace.** The document pipeline's
-           ``busy`` / ``destructive_busy`` flags (see ``AGENTS.md``
-           *Pipeline concurrency contract*) guarantee at most one process
+           ``busy`` / ``destructive_busy`` flags (see
+           ``docs/design/PipelineConcurrencyContract.md``) guarantee at most
+           one process
            performs ``upsert_*`` / ``delete_*`` / ``remove_*`` /
            ``index_done_callback`` at any time. Every other process is
            read-only.

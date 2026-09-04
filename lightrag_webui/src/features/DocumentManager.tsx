@@ -61,6 +61,10 @@ import {
 } from '@/features/documentRefreshCircuitBreaker'
 import { classifyDocumentRefreshError } from '@/features/documentRefreshErrors'
 import { createRefreshQueue } from '@/features/documentRefreshQueue'
+import {
+  startDeletionProbe,
+  type DeletionProbeHandle
+} from '@/features/documentDeletionProbe'
 import usePageRestoreGeneration from '@/hooks/usePageRestoreGeneration'
 
 type StatusDisplayConfig = {
@@ -460,14 +464,17 @@ export default function DocumentManager() {
   // enforce a minimum 2s wall-clock interval.
   const lastPaginatedAtRef = useRef(0);
   const pendingPaginatedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Intent tag the pending trailing timer will fire with. Held outside the
-  // closure so a user-intent call arriving during the wait can upgrade it.
-  const pendingPaginatedIsAutoRef = useRef(true);
   // Activity probe: exponential-backoff burst of /health calls that stops once
   // pipelineActive flips true. Holds the pending setTimeout ids so re-entry can
   // reset the schedule to t=0.
   const probeTimersRef = useRef<ReturnType<typeof setTimeout>[] | null>(null);
   const probeActiveRef = useRef(false);
+  // Deletion confirmation probe: owns its own timers (see documentDeletionProbe
+  // for why it cannot ride on startPollingInterval). Tracked separately from
+  // the activity probe above so neither one's cleanup can clear the other's
+  // suppression flag.
+  const deletionProbeRef = useRef<DeletionProbeHandle | null>(null);
+  const deletionProbeActiveRef = useRef(false);
 
   // Circuit breaker guarding the automatic /documents/paginated polling.
   // Transitions live in features/documentRefreshCircuitBreaker (unit-tested);
@@ -970,10 +977,11 @@ export default function DocumentManager() {
     });
   }, [buildQuerySnapshot, enqueueRefresh, pagination.page]);
 
-  // Throttle gate: any caller wanting to refresh the document list goes through
-  // here. If the wall-clock gap since the last paginated request is >= 2s, fire
-  // immediately; otherwise schedule a single trailing call at the 2s boundary
-  // and drop any further calls into that pending slot (natural coalescing).
+  // Throttle gate for AUTOMATIC document-list refreshes: if the wall-clock gap
+  // since the last paginated request is >= 2s, fire immediately; otherwise
+  // schedule a single trailing call at the 2s boundary and collapse any further
+  // automatic calls into it. A user-intent call (`auto: false`) is not
+  // throttled at all — see the comment on that branch.
   const refreshDocumentsThrottled = useCallback((options: { auto?: boolean } = {}) => {
     // Defaults to automatic: the timers are the common caller. Callers that
     // follow a user action (upload, scan, delete) pass auto: false so the
@@ -985,19 +993,38 @@ export default function DocumentManager() {
         console.error('Throttled document refresh failed:', err)
       })
     }
-    const gap = Date.now() - lastPaginatedAtRef.current
-    if (gap >= 2000) {
-      fire(auto)
+
+    // User intent never waits. It arrives at most once per user action
+    // (delete confirmation, upload, scan, clear), and the manual refresh
+    // button already bypasses this gate entirely by enqueueing directly — so
+    // the 2s floor only ever delayed the paths that are meant to BE the
+    // escape hatch, the same way the circuit breaker already exempts them.
+    //
+    // It was not a theoretical delay: a deletion observed busy even once
+    // flips `pipelineActive`, whose effect fires an automatic refresh, which
+    // resets this window — so the probe's own health check pushed its
+    // confirming refresh out to the 2s boundary. Measured on the rendered
+    // regression test, a 150ms deletion took 2.06s to leave the table
+    // against 0.08s for one that had already finished when the response
+    // arrived. Any pending trailing timer is cancelled rather than left to
+    // fire: this request supersedes it, on the current query.
+    if (!auto) {
+      if (pendingPaginatedTimerRef.current !== null) {
+        clearTimeout(pendingPaginatedTimerRef.current)
+        pendingPaginatedTimerRef.current = null
+      }
+      fire(false)
       return
     }
+
+    const gap = Date.now() - lastPaginatedAtRef.current
+    if (gap >= 2000) {
+      fire(true)
+      return
+    }
+    // Natural coalescing: everything arriving inside the window collapses
+    // into the single trailing call already scheduled.
     if (pendingPaginatedTimerRef.current !== null) {
-      // A user-intent call arriving while an automatic trailing timer waits
-      // must UPGRADE it, not be dropped — the same defect the refresh queue's
-      // pending slot had, one layer up. The tag decides whether the queue's
-      // admission gate may refuse this request 2s from now, so dropping the
-      // call here would make the queue's priority rule unreachable.
-      // Monotonic: once intent, intent for the rest of this window.
-      if (!auto) pendingPaginatedIsAutoRef.current = false
       return
     }
     // Snapshot the query identity. If page/filter/sort changes while we wait,
@@ -1008,14 +1035,30 @@ export default function DocumentManager() {
     // (its requestVersion would be the newly-bumped value, so the in-flight
     // stale-check inside runRefreshRequest can't catch it).
     const versionAtSchedule = latestRefreshRequestVersionRef.current
-    pendingPaginatedIsAutoRef.current = auto
     pendingPaginatedTimerRef.current = setTimeout(() => {
       pendingPaginatedTimerRef.current = null
       if (!isMountedRef.current) return
       if (versionAtSchedule !== latestRefreshRequestVersionRef.current) return
-      fire(pendingPaginatedIsAutoRef.current)
+      fire(true)
     }, 2000 - gap)
   }, [handleIntelligentRefresh]);
+
+  // Latest-render view of the throttle gate, for callers that outlive the
+  // render they were created in (the two probes below). Calling a captured
+  // `refreshDocumentsThrottled` from a timer that fires seconds later pairs an
+  // OLD query snapshot (page/filter/sort from that render) with the CURRENT
+  // `latestRefreshRequestVersionRef` — a combination the staleness guard in
+  // runRefreshRequest cannot catch, since it only compares versions. The stale
+  // response then overwrites the view the user navigated to. Reading the gate
+  // through this ref keeps the snapshot and the version from the same render.
+  //
+  // The polling interval does not need this: `startPollingInterval` depends on
+  // `refreshDocumentsThrottled`, so a page/filter/sort change already recreates
+  // the interval with the current closure.
+  const refreshDocumentsThrottledRef = useRef(refreshDocumentsThrottled);
+  useEffect(() => {
+    refreshDocumentsThrottledRef.current = refreshDocumentsThrottled
+  }, [refreshDocumentsThrottled]);
 
   // Activity probe: short exponential-backoff burst of /health checks fired
   // after scan/upload triggers. Stops as soon as pipelineActive flips true so
@@ -1060,7 +1103,7 @@ export default function DocumentManager() {
           return
         }
         if (refreshAt.has(delay)) {
-          refreshDocumentsThrottled({ auto: delay !== 0 })
+          refreshDocumentsThrottledRef.current({ auto: delay !== 0 })
         }
         // Exit conditions (in priority order):
         //  - pipelineActive=true AND the document list has caught up: the 5s
@@ -1085,7 +1128,49 @@ export default function DocumentManager() {
       timers.push(id)
     })
     probeTimersRef.current = timers
-  }, [refreshDocumentsThrottled]);
+  }, []);
+
+  // Deletion confirmation probe: watch for the pipeline going idle after a
+  // `deletion_started`, then refresh once. Deliberately NOT the activity probe
+  // above — that one exits on `!active && index > 0` because idle there means
+  // "the action started no work", while after a delete idle means "the work
+  // finished". Opposite readings of the same observation.
+  const startDeletionConfirmationProbe = useCallback(() => {
+    deletionProbeRef.current?.cancel();
+    deletionProbeActiveRef.current = true;
+    deletionProbeRef.current = startDeletionProbe({
+      observePipelineBusy: async () => {
+        // A FRESH request every tick: the store's cached snapshot may predate
+        // the delete, and would then be idle for the wrong reason.
+        const checkedAt = useBackendState.getState().lastCheckTime
+        let healthy: boolean
+        try {
+          healthy = await useBackendState.getState().check()
+        } catch (err) {
+          console.error('Deletion confirmation probe health check failed:', err)
+          return null
+        }
+        // Superseded mid-flight: `check()` discards its own result and writes
+        // nothing (not even lastCheckTime), so `pipelineBusy` still holds
+        // whatever the last COMPLETED check wrote — possibly the idle snapshot
+        // from before the delete. That is not an observation of anything, and
+        // reading it as idle would end the probe on the very state the bug is
+        // made of.
+        if (useBackendState.getState().lastCheckTime === checkedAt) return null
+        // A failed check leaves `pipelineBusy` at whatever the last successful
+        // one wrote — which is `false` for the check that preceded the delete.
+        // Reporting that as idle would announce an outage as a completed
+        // deletion, so an unhealthy response is "unknown", not "finished".
+        if (!healthy) return null
+        return useBackendState.getState().pipelineBusy
+      },
+      refreshDocuments: () => refreshDocumentsThrottledRef.current({ auto: false }),
+      isMounted: () => isMountedRef.current,
+      onSettled: () => {
+        deletionProbeActiveRef.current = false
+      }
+    });
+  }, []);
 
   // New paginated data fetching function
   const fetchPaginatedDocuments = useCallback(async (
@@ -1258,9 +1343,13 @@ export default function DocumentManager() {
     // after the first response.
     if (previous === null || fingerprint === previous) return
 
-    // Skip while the activity probe is running — the probe already drives
-    // /health on its own schedule, and double-firing would burn cache and skew rate.
-    if (isMountedRef.current && !probeActiveRef.current) {
+    // Skip while either probe is running — a probe already drives /health on
+    // its own schedule, and double-firing would burn cache and skew rate.
+    if (
+      isMountedRef.current &&
+      !probeActiveRef.current &&
+      !deletionProbeActiveRef.current
+    ) {
       useBackendState.getState().check()
     }
   }, [statusCounts]);
@@ -1293,16 +1382,14 @@ export default function DocumentManager() {
   const handleDocumentsDeleted = useCallback(async () => {
     setSelectedDocIds([])
 
-    // Reset health check timer with 1 second delay to avoid race condition
-    useBackendState.getState().resetHealthCheckTimerDelayed(1000)
-
-    // A completed delete is user intent: refresh unconditionally rather than
-    // waiting for a poll tick the breaker may refuse.
-    refreshDocumentsThrottled({ auto: false })
-
-    // Schedule a health check 2 seconds after successful clear
-    startPollingInterval(2000)
-  }, [refreshDocumentsThrottled, startPollingInterval])
+    // The probe supersedes what used to be here — a single immediate refresh
+    // (which raced the background deletion and returned the rows it was
+    // supposed to drop), a delayed health check, and startPollingInterval(2000)
+    // whose interval was destroyed by the polling effect before its first tick.
+    // It issues its own health checks and exactly one confirming refresh, timed
+    // off the pipeline going idle instead of a fixed guess.
+    startDeletionConfirmationProbe()
+  }, [startDeletionConfirmationProbe])
 
   // Handle documents cleared callback with proper interval reset
   const handleDocumentsCleared = useCallback(async () => {

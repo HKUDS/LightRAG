@@ -76,6 +76,9 @@ class FakeTensor:
     def __getitem__(self, idx):
         return FakeTensor(self.data[idx], self.device, self._host_has_cuda)
 
+    def item(self):
+        return self.data
+
     def __repr__(self):
         return f"FakeTensor(data={self.data!r}, device={self.device.type!r})"
 
@@ -84,6 +87,8 @@ class FakeModel:
     def __init__(self, device):
         self.device = FakeDevice(device)
         self.received_kwargs = None
+        self.generated_ids = [901, 902]
+        self.generation_config = types.SimpleNamespace(eos_token_id=0)
 
     def generate(self, **kwargs):
         self.received_kwargs = kwargs
@@ -97,7 +102,7 @@ class FakeModel:
                 f"{input_ids.device.type}:0!"
             )
         prompt_ids = input_ids.data[0]
-        generated_ids = prompt_ids + [901, 902]  # arbitrary new-token suffix
+        generated_ids = prompt_ids + self.generated_ids
         return FakeTensor([generated_ids], self.device, input_ids._host_has_cuda)
 
 
@@ -105,6 +110,7 @@ class FakeTokenizer:
     def __init__(self, prompt_ids, host_has_cuda=True):
         self._prompt_ids = list(prompt_ids)
         self._host_has_cuda = host_has_cuda
+        self.eos_token_id = 0
 
     def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True):
         return "<rendered-prompt>"
@@ -250,3 +256,30 @@ async def test_generation_token_limit_precedence(
 
     assert fake_model.received_kwargs["max_new_tokens"] == expected_max_new_tokens
     assert "max_tokens" not in fake_model.received_kwargs
+
+
+@pytest.mark.asyncio
+async def test_token_limited_generation_is_marked_truncated(monkeypatch):
+    hf_module, fake_model, _ = make_hf_module(
+        monkeypatch, model_device="cpu", host_has_cuda=False
+    )
+
+    result = await hf_module.hf_model_if_cache(
+        "fake-model", "hello world", max_new_tokens=2
+    )
+
+    assert isinstance(result, hf_module.TruncatedResponse)
+
+
+@pytest.mark.asyncio
+async def test_eos_completion_at_token_limit_is_not_marked_truncated(monkeypatch):
+    hf_module, fake_model, _ = make_hf_module(
+        monkeypatch, model_device="cpu", host_has_cuda=False
+    )
+    fake_model.generated_ids = [901, 0]
+
+    result = await hf_module.hf_model_if_cache(
+        "fake-model", "hello world", max_new_tokens=2
+    )
+
+    assert type(result) is str

@@ -4758,6 +4758,7 @@ async def kg_query(
         effective_user_prompt.text,
         query_param.enable_rerank,
         global_config.get("enable_content_headings", False),
+        *(("\n<system_prompt>\n", system_prompt) if system_prompt else ()),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
     )
@@ -6813,6 +6814,7 @@ async def naive_query(
         effective_user_prompt.text,
         query_param.enable_rerank,
         global_config.get("enable_content_headings", False),
+        *(("\n<system_prompt>\n", system_prompt) if system_prompt else ()),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
     )

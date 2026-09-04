@@ -196,7 +196,7 @@ def locale_direction(locale: str) -> str:
 # SUPPORTED_UI_LANGUAGES in lightrag_webui/src/lib/browserLanguage.ts; the two
 # lists are kept in sync by tests/api/test_ui_customization.py.
 WEBUI_CHROME_LOCALES = frozenset(
-    {"en", "zh", "fr", "ar", "zh-TW", "ru", "ja", "de", "uk", "ko", "vi"}
+    {"en", "zh", "fr", "ar", "zh-TW", "ru", "ja", "de", "uk", "ko", "vi", "id"}
 )
 
 

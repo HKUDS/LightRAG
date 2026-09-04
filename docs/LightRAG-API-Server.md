@@ -903,7 +903,7 @@ LightRAG uses 4 types of storage for different purposes:
 * GRAPH_STORAGE: entity relation graph
 * DOC_STATUS_STORAGE: document indexing status
 
-Each storage type offers multiple implementations. By default, LightRAG Server uses in-memory databases with data persisted to the WORKING_DIR directory. This is suitable for quickly evaluating the project but is not recommended for production. The implementations currently available for each storage type are listed below:
+Each storage type offers multiple implementations. By default, LightRAG Server uses in-memory databases with data persisted to the WORKING_DIR directory: the whole dataset resides in the server process's memory and the files serve only as persistence, so capacity is bounded by available RAM. The defaults are suitable **only for small-scale testing, evaluation, and debugging, and are not recommended for production** — for production, PostgreSQL is the recommended backend. The implementations currently available for each storage type are listed below:
 
 | Storage Type | Available Implementations (Default First) |
 |---|---|
@@ -912,7 +912,7 @@ Each storage type offers multiple implementations. By default, LightRAG Server u
 | GRAPH_STORAGE | `NetworkXStorage`, `Neo4JStorage`, `PGTableGraphStorage`, `PGGraphStorage`, `MongoGraphStorage`, `MemgraphStorage`, `OpenSearchGraphStorage` |
 | DOC_STATUS_STORAGE | `JsonDocStatusStorage`, `RedisDocStatusStorage`, `PGDocStatusStorage`, `MongoDocStatusStorage`, `OpenSearchDocStatusStorage` |
 
-For production deployments, PostgreSQL, MongoDB, or OpenSearch can provide all four storage types through a single backend. You can also select a specialized database for each storage type, such as Milvus or Qdrant for vector storage and Neo4j or Memgraph for graph storage.
+For production deployments, PostgreSQL (recommended), MongoDB, or OpenSearch can provide all four storage types through a single backend. You can also select a specialized database for each storage type, such as Milvus or Qdrant for vector storage and Neo4j or Memgraph for graph storage.
 
 **PostgreSQL Graph Storage — prefer `PGTableGraphStorage`:** For new PostgreSQL deployments, `PGTableGraphStorage` is the recommended `GRAPH_STORAGE` implementation and supersedes `PGGraphStorage`. It keeps the entity-relation graph in ordinary tables — JSONB properties plus B-tree indexes — instead of going through Apache AGE, which brings two practical advantages:
 
