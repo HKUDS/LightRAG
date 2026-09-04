@@ -129,7 +129,7 @@ LightRAG 的文件处理配置由两部分合成：内容抽取引擎决定原�
 | `!` | 流水线 | 关闭 | 禁止实体/关系抽取，不构建知识图谱（仅保留 chunks 向量索引，naive / mix 检索仍可用） |
 | `F` | 分块 | 默认 | Fix/固定长度分块：遗留方法, 按固定Token长度或按分隔符机械分割（按分隔符分割时文本块不会出现重叠） |
 | `R` | 分块 | - | Recursive/递归字符分块(RecursiveCharacterTextSplitter@LangChain)：接收一个分隔符列表（默认是 `["\n\n","\n","。","！","？","；","，"," ",""]`，按从语义最强到最弱排列）。优先按段落（双换行符）切分；如果切出的块依然超过 Token 限制，逐级降级使用单换行符 → 中文句末标点（`。！？`）→ 中文句中标点（`；，`）→ 空格 → 逐字符切分。**默认 cascade 包含中文标点**，使中文 / 中英混合文档能在语义边界切分。英文 `.?!` 故意排除（字面量匹配会误切 `0.95` / `e.g.`）。 |
-| `V` | 分块 | - | Vector/向量语义分块(SemanticChunker@LangChain)：首先按句子拆分文本（默认句子切分正则同时识别英文 `.?!` 与中文 `。？！`，使中文 / 中英混合文档能正确切句），计算相邻句子的 Embedding，然后根据指定的阈值策略（如百分位 percentile、标准差 standard_deviation 或四分位距 interquartile）寻找语义断层进行切分。`SemanticChunker` 本身没有 chunk size 上限——任何超过 `chunk_token_size` 的语义块在落库前会自动通过 R 二次切分（保留 V 的非重叠语义）。此分块策略不会出现文本块重叠的情况。 |
+| `V` | 分块 | - | Vector/向量语义分块(SemanticChunker@LangChain)：首先按句子拆分文本（默认句子切分正则同时识别英文 `.?!` 与中文 `。？！`，使中文 / 中英混合文档能正确切句），计算相邻句子的 Embedding，然后根据指定的阈值策略（如百分位 percentile、标准差 standard_deviation 或四分位距 interquartile）寻找语义断层进行切分。`SemanticChunker` 本身没有 chunk size 上限——任何超过 `chunk_token_size` 的语义块在落库前会自动通过 R 二次切分（保留 V 的非重叠语义）。此分块策略不会出现文本块重叠的情况。由于它按句子滑窗逐条求 Embedding，这些 Embedding 请求的规模由 `EMBEDDING_BATCH_NUM`（单请求条目数）限制，而不是由 `chunk_token_size` 决定。 |
 | `P` | 分块 | - | Paragraph/段落语义分块（native）；优先按标题分割，严格避免上一标题底部内容与下一个标题内容混合破坏语义。适合对能够准确识别标题且标题结构清晰的文档进行分块。同一标题下的超长正文 fallback 到 R 时允许按 `CHUNK_P_OVERLAP_SIZE` 保留重叠；相邻大表格之间的桥接文字也可按该预算重复进入前后表格块。此分块方法只能运用在保存在 sidecar 目录的 `lightrag` 内容。如果 `lightrag` 内容不存在，将退化为使用 `R` 方法进行文本分块。此分块方法出现文本块重叠的情况远少于 `R策略` 和 `F策略`。 |
 | `C` | 分块 | - | Custom/自定义分块：显式调用已配置的 `LightRAG.chunking_func`，保持原有六参数契约不变，并复用 `fixed_token` 参数快照。已持久化或后台发现的 C 文档若处理时没有自定义回调，流水线会告警一次并走精确定长分块 fallback；新文本/上传请求则直接返回 422。 |
 
@@ -664,6 +664,16 @@ chunker(tokenizer, content, chunk_token_size, **strategy_kwargs)   (分块时按
   ```
 
   喂给 LangChain `SemanticChunker` 的句子切分正则。默认同时识别英文 `.?!`（要求后接空白，因此 `0.95` 不会被切开）和中文 `。？！`（不要求空白，适应中文连写）。env 值是原始正则，无需 JSON 引号。
+
+##### V 的 Embedding 请求
+
+上游 `SemanticChunker` 会把**整篇文档**放进一次调用——每个句子滑窗一条，因此单请求条目数 = 全文句数，总 token 约为 `(2 × CHUNK_V_BUFFER_SIZE + 1) × 全文`。没有任何 provider 绑定会在内部切分这个列表，所以由 V 自己收口：
+
+- **单请求条目数**上限为 `EMBEDDING_BATCH_NUM`。设为 `0` 或负数等于主动放弃这个上界。
+- **同时在途的请求数**上限为 `EMBEDDING_FUNC_MAX_ASYNC`。这个上界的作用域是**单次分块调用**，不是整个部署——跨实例并发仍由既有的 Embedding 限流器负责。任一批失败后不再发起新批。
+- **单条滑窗的 token 长度**按 Embedding 函数声明的 `max_token_size` **尽力**截断。在 API server 路径下，该值优先取 `EMBEDDING_TOKEN_LIMIT`，未设置时则取 binding 自带的默认值——所有内置 binding 都声明了这个值（openai / azure_openai / ollama / jina / bedrock / lollms 为 `8192`，voyageai 为 `32000`，gemini 为 `2048`），因此不设 `EMBEDDING_TOKEN_LIMIT` **并不会**把预算交给 `CHUNK_V_SIZE`。只有当 `EmbeddingFunc` 自身未声明上限（`max_token_size=None` 或 `0`，仅直接调用 SDK 的场景可达）时，才回退到生效的 `CHUNK_V_SIZE`。"尽力"是字面意思：截断用的是 LightRAG 的通用 tokenizer，不保证等于 Embedding 模型的 tokenizer；而 provider 还可能在此之后改写输入（OpenAI 绑定会先拼接 document prefix，再执行自己的截断）。所以 `EMBEDDING_BATCH_NUM × 上限` 只是 LightRAG tokenizer 下的逻辑上界，**不是**对服务端实际收到多少 token 的承诺；provider 自身的原生截断（若有）独立生效。
+
+这里的截断不会丢失 chunk 内容：V 输出的分块是原文 span，超预算的滑窗只会让它参与的那一处边界距离判定降级。每篇文档最多一条聚合警告，报告有多少滑窗被截断。
 
 #### P —— 段落语义
 
