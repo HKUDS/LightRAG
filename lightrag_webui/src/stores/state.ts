@@ -39,7 +39,6 @@ interface BackendState {
   setPipelineBusy: (busy: boolean) => void
   setHealthCheckFunction: (fn: () => void) => void
   resetHealthCheckTimer: () => void
-  resetHealthCheckTimerDelayed: (delayMs: number) => void
   clearHealthCheckTimer: () => void
 }
 
@@ -207,12 +206,6 @@ const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
       const newIntervalId = setInterval(healthCheckFunction, healthCheckIntervalValue)
       set({ healthCheckIntervalId: newIntervalId })
     }
-  },
-
-  resetHealthCheckTimerDelayed: (delayMs: number) => {
-    setTimeout(() => {
-      get().resetHealthCheckTimer()
-    }, delayMs)
   },
 
   clearHealthCheckTimer: () => {

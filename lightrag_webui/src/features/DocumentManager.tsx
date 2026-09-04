@@ -61,6 +61,10 @@ import {
 } from '@/features/documentRefreshCircuitBreaker'
 import { classifyDocumentRefreshError } from '@/features/documentRefreshErrors'
 import { createRefreshQueue } from '@/features/documentRefreshQueue'
+import {
+  startDeletionProbe,
+  type DeletionProbeHandle
+} from '@/features/documentDeletionProbe'
 import usePageRestoreGeneration from '@/hooks/usePageRestoreGeneration'
 
 type StatusDisplayConfig = {
@@ -468,6 +472,12 @@ export default function DocumentManager() {
   // reset the schedule to t=0.
   const probeTimersRef = useRef<ReturnType<typeof setTimeout>[] | null>(null);
   const probeActiveRef = useRef(false);
+  // Deletion confirmation probe: owns its own timers (see documentDeletionProbe
+  // for why it cannot ride on startPollingInterval). Tracked separately from
+  // the activity probe above so neither one's cleanup can clear the other's
+  // suppression flag.
+  const deletionProbeRef = useRef<DeletionProbeHandle | null>(null);
+  const deletionProbeActiveRef = useRef(false);
 
   // Circuit breaker guarding the automatic /documents/paginated polling.
   // Transitions live in features/documentRefreshCircuitBreaker (unit-tested);
@@ -1087,6 +1097,48 @@ export default function DocumentManager() {
     probeTimersRef.current = timers
   }, [refreshDocumentsThrottled]);
 
+  // Deletion confirmation probe: watch for the pipeline going idle after a
+  // `deletion_started`, then refresh once. Deliberately NOT the activity probe
+  // above — that one exits on `!active && index > 0` because idle there means
+  // "the action started no work", while after a delete idle means "the work
+  // finished". Opposite readings of the same observation.
+  const startDeletionConfirmationProbe = useCallback(() => {
+    deletionProbeRef.current?.cancel();
+    deletionProbeActiveRef.current = true;
+    deletionProbeRef.current = startDeletionProbe({
+      observePipelineBusy: async () => {
+        // A FRESH request every tick: the store's cached snapshot may predate
+        // the delete, and would then be idle for the wrong reason.
+        const checkedAt = useBackendState.getState().lastCheckTime
+        let healthy: boolean
+        try {
+          healthy = await useBackendState.getState().check()
+        } catch (err) {
+          console.error('Deletion confirmation probe health check failed:', err)
+          return null
+        }
+        // Superseded mid-flight: `check()` discards its own result and writes
+        // nothing (not even lastCheckTime), so `pipelineBusy` still holds
+        // whatever the last COMPLETED check wrote — possibly the idle snapshot
+        // from before the delete. That is not an observation of anything, and
+        // reading it as idle would end the probe on the very state the bug is
+        // made of.
+        if (useBackendState.getState().lastCheckTime === checkedAt) return null
+        // A failed check leaves `pipelineBusy` at whatever the last successful
+        // one wrote — which is `false` for the check that preceded the delete.
+        // Reporting that as idle would announce an outage as a completed
+        // deletion, so an unhealthy response is "unknown", not "finished".
+        if (!healthy) return null
+        return useBackendState.getState().pipelineBusy
+      },
+      refreshDocuments: () => refreshDocumentsThrottled({ auto: false }),
+      isMounted: () => isMountedRef.current,
+      onSettled: () => {
+        deletionProbeActiveRef.current = false
+      }
+    });
+  }, [refreshDocumentsThrottled]);
+
   // New paginated data fetching function
   const fetchPaginatedDocuments = useCallback(async (
     page: number,
@@ -1258,9 +1310,13 @@ export default function DocumentManager() {
     // after the first response.
     if (previous === null || fingerprint === previous) return
 
-    // Skip while the activity probe is running — the probe already drives
-    // /health on its own schedule, and double-firing would burn cache and skew rate.
-    if (isMountedRef.current && !probeActiveRef.current) {
+    // Skip while either probe is running — a probe already drives /health on
+    // its own schedule, and double-firing would burn cache and skew rate.
+    if (
+      isMountedRef.current &&
+      !probeActiveRef.current &&
+      !deletionProbeActiveRef.current
+    ) {
       useBackendState.getState().check()
     }
   }, [statusCounts]);
@@ -1293,16 +1349,14 @@ export default function DocumentManager() {
   const handleDocumentsDeleted = useCallback(async () => {
     setSelectedDocIds([])
 
-    // Reset health check timer with 1 second delay to avoid race condition
-    useBackendState.getState().resetHealthCheckTimerDelayed(1000)
-
-    // A completed delete is user intent: refresh unconditionally rather than
-    // waiting for a poll tick the breaker may refuse.
-    refreshDocumentsThrottled({ auto: false })
-
-    // Schedule a health check 2 seconds after successful clear
-    startPollingInterval(2000)
-  }, [refreshDocumentsThrottled, startPollingInterval])
+    // The probe supersedes what used to be here — a single immediate refresh
+    // (which raced the background deletion and returned the rows it was
+    // supposed to drop), a delayed health check, and startPollingInterval(2000)
+    // whose interval was destroyed by the polling effect before its first tick.
+    // It issues its own health checks and exactly one confirming refresh, timed
+    // off the pipeline going idle instead of a fixed guess.
+    startDeletionConfirmationProbe()
+  }, [startDeletionConfirmationProbe])
 
   // Handle documents cleared callback with proper interval reset
   const handleDocumentsCleared = useCallback(async () => {
