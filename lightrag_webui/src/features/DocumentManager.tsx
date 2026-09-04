@@ -464,9 +464,6 @@ export default function DocumentManager() {
   // enforce a minimum 2s wall-clock interval.
   const lastPaginatedAtRef = useRef(0);
   const pendingPaginatedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Intent tag the pending trailing timer will fire with. Held outside the
-  // closure so a user-intent call arriving during the wait can upgrade it.
-  const pendingPaginatedIsAutoRef = useRef(true);
   // Activity probe: exponential-backoff burst of /health calls that stops once
   // pipelineActive flips true. Holds the pending setTimeout ids so re-entry can
   // reset the schedule to t=0.
@@ -980,10 +977,11 @@ export default function DocumentManager() {
     });
   }, [buildQuerySnapshot, enqueueRefresh, pagination.page]);
 
-  // Throttle gate: any caller wanting to refresh the document list goes through
-  // here. If the wall-clock gap since the last paginated request is >= 2s, fire
-  // immediately; otherwise schedule a single trailing call at the 2s boundary
-  // and drop any further calls into that pending slot (natural coalescing).
+  // Throttle gate for AUTOMATIC document-list refreshes: if the wall-clock gap
+  // since the last paginated request is >= 2s, fire immediately; otherwise
+  // schedule a single trailing call at the 2s boundary and collapse any further
+  // automatic calls into it. A user-intent call (`auto: false`) is not
+  // throttled at all — see the comment on that branch.
   const refreshDocumentsThrottled = useCallback((options: { auto?: boolean } = {}) => {
     // Defaults to automatic: the timers are the common caller. Callers that
     // follow a user action (upload, scan, delete) pass auto: false so the
@@ -995,19 +993,38 @@ export default function DocumentManager() {
         console.error('Throttled document refresh failed:', err)
       })
     }
-    const gap = Date.now() - lastPaginatedAtRef.current
-    if (gap >= 2000) {
-      fire(auto)
+
+    // User intent never waits. It arrives at most once per user action
+    // (delete confirmation, upload, scan, clear), and the manual refresh
+    // button already bypasses this gate entirely by enqueueing directly — so
+    // the 2s floor only ever delayed the paths that are meant to BE the
+    // escape hatch, the same way the circuit breaker already exempts them.
+    //
+    // It was not a theoretical delay: a deletion observed busy even once
+    // flips `pipelineActive`, whose effect fires an automatic refresh, which
+    // resets this window — so the probe's own health check pushed its
+    // confirming refresh out to the 2s boundary. Measured on the rendered
+    // regression test, a 150ms deletion took 2.06s to leave the table
+    // against 0.08s for one that had already finished when the response
+    // arrived. Any pending trailing timer is cancelled rather than left to
+    // fire: this request supersedes it, on the current query.
+    if (!auto) {
+      if (pendingPaginatedTimerRef.current !== null) {
+        clearTimeout(pendingPaginatedTimerRef.current)
+        pendingPaginatedTimerRef.current = null
+      }
+      fire(false)
       return
     }
+
+    const gap = Date.now() - lastPaginatedAtRef.current
+    if (gap >= 2000) {
+      fire(true)
+      return
+    }
+    // Natural coalescing: everything arriving inside the window collapses
+    // into the single trailing call already scheduled.
     if (pendingPaginatedTimerRef.current !== null) {
-      // A user-intent call arriving while an automatic trailing timer waits
-      // must UPGRADE it, not be dropped — the same defect the refresh queue's
-      // pending slot had, one layer up. The tag decides whether the queue's
-      // admission gate may refuse this request 2s from now, so dropping the
-      // call here would make the queue's priority rule unreachable.
-      // Monotonic: once intent, intent for the rest of this window.
-      if (!auto) pendingPaginatedIsAutoRef.current = false
       return
     }
     // Snapshot the query identity. If page/filter/sort changes while we wait,
@@ -1018,12 +1035,11 @@ export default function DocumentManager() {
     // (its requestVersion would be the newly-bumped value, so the in-flight
     // stale-check inside runRefreshRequest can't catch it).
     const versionAtSchedule = latestRefreshRequestVersionRef.current
-    pendingPaginatedIsAutoRef.current = auto
     pendingPaginatedTimerRef.current = setTimeout(() => {
       pendingPaginatedTimerRef.current = null
       if (!isMountedRef.current) return
       if (versionAtSchedule !== latestRefreshRequestVersionRef.current) return
-      fire(pendingPaginatedIsAutoRef.current)
+      fire(true)
     }, 2000 - gap)
   }, [handleIntelligentRefresh]);
 

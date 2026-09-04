@@ -232,6 +232,7 @@ describe('DocumentManager post-action refreshes', () => {
 
       await user.click(screen.getByRole('button', { name: /^Delete$/ }))
       await user.type(screen.getByPlaceholderText('Type yes to confirm'), 'yes')
+      const confirmedAt = Date.now()
       await user.click(screen.getByRole('button', { name: 'YES' }))
 
       await waitFor(() => {
@@ -248,6 +249,15 @@ describe('DocumentManager post-action refreshes', () => {
         },
         { timeout: 8000 }
       )
+
+      // ...and promptly. The probe's confirming refresh carries user intent, so
+      // it must not queue behind the automatic refresh that the probe's own
+      // health check provokes through the pipelineActive transition effect.
+      // While it did, this deletion took ~2.06s to leave the table (the 2s
+      // throttle boundary); it now takes ~0.6s, one probe tick plus a round
+      // trip. The bound is loose enough for a slow machine and still an order
+      // of magnitude below the boundary it pins.
+      expect(Date.now() - confirmedAt < 1500).toBe(true)
 
       // The probe refreshed the list; it did not blank the table.
       expect(screen.queryAllByText(SURVIVOR_ID).length > 0).toBe(true)
