@@ -406,24 +406,24 @@ class PGTableGraphStorage(BaseGraphStorage):
         _run_with_retry replays the whole closure on transient errors, which is
         safe because DELETE is idempotent.
 
-        ``to_args`` maps a chunk to the positional parameters after
+        ``to_args`` maps a batch to the positional parameters after
         (workspace, namespace) — one array for nodes, two parallel arrays for edge
-        pairs. A non-positive cap disables chunking.
+        pairs. A non-positive cap disables batching.
         """
         _payload_bytes, _records, delete_records = self._batch_limits()
-        chunk_size = delete_records if delete_records > 0 else len(items)
-        if len(items) > chunk_size:
+        batch_size = delete_records if delete_records > 0 else len(items)
+        if len(items) > batch_size:
             logger.info(
                 f"[{self.workspace}] {self.namespace}: {label} delete of "
-                f"{len(items)} items split into chunks (chunk={chunk_size})"
+                f"{len(items)} items split into batches (batch_size={batch_size})"
             )
 
         async def _batch_delete(conn: Any) -> None:
             async with conn.transaction():
-                for start in range(0, len(items), chunk_size):
-                    chunk = items[start : start + chunk_size]
+                for start in range(0, len(items), batch_size):
+                    batch = items[start : start + batch_size]
                     await conn.execute(
-                        sql, self.workspace, self.namespace, *to_args(chunk)
+                        sql, self.workspace, self.namespace, *to_args(batch)
                     )
 
         await self._with_retry(lambda: self._db._run_with_retry(_batch_delete))
