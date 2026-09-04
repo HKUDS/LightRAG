@@ -50,6 +50,15 @@ TABLE_MARKER_RE = re.compile(r'<mdtable ref="([^"]+)"/>')
 EQUATION_MARKER_RE = re.compile(r'<mdequation ref="([^"]+)"/>')
 DRAWING_MARKER_RE = re.compile(r'<mddrawing ref="([^"]+)"/>')
 _HTML_TABLE_CLOSE_RE = re.compile(r"</table>", re.IGNORECASE)
+_TAG_NAME_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9-]*")
+# RCDATA (textarea, title) and raw-text (script, style) elements: per the
+# HTML5 tokenizer, their content is not parsed for tags, comments or quotes
+# at all -- only a literal matching closing tag ends them.
+_RAW_MODE_ELEMENTS = frozenset({"script", "style", "textarea", "title"})
+_RAW_MODE_CLOSE_RE = {
+    name: re.compile(r"</" + name + r"\s*>", re.IGNORECASE)
+    for name in _RAW_MODE_ELEMENTS
+}
 
 # --- markdown token patterns ----------------------------------------------
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
@@ -523,10 +532,27 @@ def _consume_html_table(lines: list[str], start: int) -> tuple[int, str, str]:
     in_tag = False
     in_comment = False
     quote: str | None = None
+    raw_element: str | None = None  # inside <script>/<style>/<textarea>/<title>
+    # Name of the raw-mode element whose *opening* tag is currently being
+    # scanned (in_tag), pending that tag's own unquoted ">" -- e.g. the name
+    # is known the moment ``<textarea`` is seen, but a decoy closing sequence
+    # inside that same tag's quoted attributes (``data-note="</textarea>"``)
+    # must not switch into raw mode early, since it isn't the element's
+    # content yet. Only the ">" that actually closes this opening tag does.
+    pending_raw_name: str | None = None
     while j < len(lines):
         line = lines[j]
         index = 0
         while index < len(line):
+            if raw_element is not None:
+                # RCDATA/raw-text content: not parsed for tags, comments or
+                # quotes -- only the literal matching closing tag ends it.
+                close_match = _RAW_MODE_CLOSE_RE[raw_element].search(line, index)
+                if close_match is None:
+                    break
+                raw_element = None
+                index = close_match.end()
+                continue
             if in_comment:
                 comment_end = line.find("-->", index)
                 if comment_end == -1:
@@ -549,6 +575,9 @@ def _consume_html_table(lines: list[str], start: int) -> tuple[int, str, str]:
                     quote = char
                 elif char == ">":
                     in_tag = False
+                    if pending_raw_name is not None:
+                        raw_element = pending_raw_name
+                        pending_raw_name = None
                 index += 1
                 continue
             if (
@@ -561,6 +590,10 @@ def _consume_html_table(lines: list[str], start: int) -> tuple[int, str, str]:
                     end = closing.end()
                     buf.append(line[:end])
                     return (j - start + 1), "\n".join(buf).strip(), line[end:]
+                if line[index + 1].isalpha():
+                    name_match = _TAG_NAME_RE.match(line, index + 1)
+                    if name_match and name_match.group().lower() in _RAW_MODE_ELEMENTS:
+                        pending_raw_name = name_match.group().lower()
                 in_tag = True
             index += 1
         buf.append(line)

@@ -198,6 +198,78 @@ def test_html_table_processes_inline_image_in_trailing_text():
     assert "![plot](plot.png)" not in ex.blocks[0]["content"]
 
 
+def test_html_table_ignores_unmatched_quote_inside_textarea():
+    """Codex finding: an apostrophe inside RCDATA content (textarea/title)
+    must not be tracked as an attribute quote -- it previously left the
+    parser's quote-tracking state open indefinitely, swallowing the real
+    </table> that followed."""
+    ex = _extract(
+        "<table>\n<tr><td><textarea>x<y's value</textarea></td></tr>\n</table> tail"
+    )
+
+    (table,) = ex.tables.values()
+    assert table["html"].endswith("</table>")
+    assert "<y's value</textarea>" in table["html"]
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
+def test_html_table_raw_mode_waits_for_opening_tag_to_close():
+    """A decoy closing sequence inside the textarea's own opening-tag
+    attributes (still ordinary markup, quote-tracked as normal) must not be
+    mistaken for the real content boundary -- raw mode must not begin until
+    that opening tag's own unquoted ">" is reached."""
+    ex = _extract(
+        '<table><textarea data-note="</textarea>">x<y\'s value</textarea></table> tail'
+    )
+
+    (table,) = ex.tables.values()
+    assert table["html"].endswith("</table>")
+    assert 'data-note="</textarea>">x<y\'s value</textarea>' in table["html"]
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
+def test_html_table_ignores_tag_like_text_inside_script():
+    """RCDATA/raw-text elements (script here) must not have their content
+    scanned for tags either -- a literal </table>-shaped string inside
+    <script> content must not be mistaken for the real closing tag."""
+    ex = _extract(
+        '<table><tr><td><script>if (a < b) { x.close("</table>"); }</script>'
+        "</td></tr></table> tail"
+    )
+
+    (table,) = ex.tables.values()
+    assert table["html"].endswith("</table>")
+    assert 'x.close("</table>")' in table["html"]
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
+def test_html_table_ignores_quote_inside_style():
+    """Same unmatched-quote hazard as textarea, for the other raw-text
+    element (style)."""
+    ex = _extract(
+        '<table><tr><td><style>content: "it\'s";</style></td></tr></table> tail'
+    )
+
+    (table,) = ex.tables.values()
+    assert table["html"].endswith("</table>")
+    assert 'content: "it\'s";' in table["html"]
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
+def test_html_table_ignores_comment_marker_inside_title():
+    """RCDATA content must not be scanned for HTML comments either -- a
+    literal <!-- inside <title> text must stay literal, not open a
+    (never-closing) comment state."""
+    ex = _extract(
+        "<table><tr><td><title>a <!-- not a comment</title></td></tr></table> tail"
+    )
+
+    (table,) = ex.tables.values()
+    assert table["html"].endswith("</table>")
+    assert "<!-- not a comment</title>" in table["html"]
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
 def test_block_equation_single_and_multiline():
     md = "$$ E = mc^2 $$\n\ntext\n\n$$\n\\sum x\n$$\n"
     ex = _extract(md)
