@@ -656,8 +656,9 @@ Contract:
   rejected cannot reappear as the endpoint of an injected edge.
 - **Failures are not swallowed.** A hook that raises, or that returns anything
   other than a two-element sequence of dicts (`TypeError`), fails the chunk and
-  the document ends up FAILED. A validator that is silently skipped is a
-  validator that is not validating.
+  therefore the ingest — the pipeline marks the document FAILED, and
+  `ainsert_custom_chunks` rolls its journal back. A validator that is silently
+  skipped is a validator that is not validating.
 - **A stateful validator keeps its identity.** A bound method or callable object
   that accumulates an audit log sees its own instance, not a per-document copy.
   As with a custom tokenizer, however, `LightRAG` builds its internal config

@@ -219,14 +219,12 @@ async def test_hook_runs_before_multimodal_injection():
     # The hook saw the LLM's entity, never the multimodal one.
     assert seen["chunk-alpha"] == ["ALPHA"]
 
+    # chunk_results is order-aligned with chunks — see test_chunk_results_ordering.
     nodes_by_chunk = {}
     edges_by_chunk = {}
-    for maybe_nodes, maybe_edges in chunk_results:
-        for records in list(maybe_nodes.values()) + list(maybe_edges.values()):
-            key = records[0]["source_id"]
-            break
-        nodes_by_chunk[key] = sorted(maybe_nodes)
-        edges_by_chunk[key] = sorted(maybe_edges)
+    for chunk_key, (maybe_nodes, maybe_edges) in zip(chunks, chunk_results):
+        nodes_by_chunk[chunk_key] = sorted(maybe_nodes)
+        edges_by_chunk[chunk_key] = sorted(maybe_edges)
 
     # The multimodal entity is still injected — the hook does not suppress it.
     assert nodes_by_chunk["chunk-alpha"] == ["table-1"]
