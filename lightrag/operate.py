@@ -2708,7 +2708,7 @@ async def _merge_nodes_then_upsert(
         deduplicated_num = already_fragment + len(nodes_data) - num_fragment
         dd_message = ""
         if deduplicated_num > 0:
-            # Duplicated description detected across multiple trucks for the same entity
+            # Duplicated description detected across multiple chunks for the same entity
             dd_message = f"dd {deduplicated_num}"
 
         if dd_message or truncation_info_log:
@@ -2716,7 +2716,7 @@ async def _merge_nodes_then_upsert(
                 f" ({', '.join(filter(None, [truncation_info_log, dd_message]))})"
             )
 
-        # Add message to pipeline satus when merge happens
+        # Add message to pipeline status when merge happens
         if already_fragment > 0 or llm_was_used:
             logger.info(status_message)
             status_logger.log(status_message)
@@ -3139,7 +3139,7 @@ async def _merge_edges_then_upsert(
         deduplicated_num = already_fragment + len(edges_data) - num_fragment
         dd_message = ""
         if deduplicated_num > 0:
-            # Duplicated description detected across multiple trucks for the same entity
+            # Duplicated description detected across multiple chunks for the same entity
             dd_message = f"dd {deduplicated_num}"
 
         if dd_message or truncation_info_log:
@@ -3147,7 +3147,7 @@ async def _merge_edges_then_upsert(
                 f" ({', '.join(filter(None, [truncation_info_log, dd_message]))})"
             )
 
-        # Add message to pipeline satus when merge happens
+        # Add message to pipeline status when merge happens
         if already_fragment > 0 or llm_was_used:
             logger.info(status_message)
             status_logger.log(status_message)
@@ -6131,7 +6131,7 @@ async def _get_node_data(
     )
 
     logger.info(
-        f"Local query: {len(node_datas)} entites, {len(use_relations)} relations"
+        f"Local query: {len(node_datas)} entities, {len(use_relations)} relations"
     )
 
     # Entities are sorted by cosine similarity
@@ -6407,7 +6407,7 @@ async def _get_edge_data(
     )
 
     logger.info(
-        f"Global query: {len(use_entities)} entites, {len(edge_datas)} relations"
+        f"Global query: {len(use_entities)} entities, {len(edge_datas)} relations"
     )
 
     return edge_datas, use_entities
@@ -6617,7 +6617,7 @@ async def _find_related_text_unit_from_relations(
         )
 
     logger.debug(
-        f"KG related chunks: {len(entity_chunks)} from entitys, {len(selected_chunk_ids)} from relations"
+        f"KG related chunks: {len(entity_chunks)} from entities, {len(selected_chunk_ids)} from relations"
     )
 
     if not selected_chunk_ids:
