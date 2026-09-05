@@ -4345,7 +4345,12 @@ async def extract_entities(
         # chunk_text" grounding check deletes it) and leave the injected
         # (multimodal_entity, rejected_entity) edges dangling, so the merge's
         # endpoint upsert would re-create the very entities the hook rejected.
+        # The same resurrection through the hook's OWN leftover relations is
+        # handled by the incident-edge pruning below.
         if kg_extraction_validator is not None:
+            # Snapshot before the call: the hook is allowed to filter IN PLACE,
+            # so the pre-hook entity set cannot be recovered afterwards.
+            pre_hook_entities = set(maybe_nodes)
             validated = kg_extraction_validator(
                 chunk_key,
                 chunk_dp.get("content", "") or "",
@@ -4369,6 +4374,37 @@ async def extract_entities(
                     f"{type(validated).__name__} for chunk {chunk_key}"
                 )
             maybe_nodes, maybe_edges = validated
+
+            # Drop relations incident to an entity the hook rejected. Without
+            # this, _merge_edges_then_upsert materializes a missing endpoint as
+            # an UNKNOWN-typed node (see its "11. Update both graph and vector
+            # db" block), so the rejected entity would reappear in the graph,
+            # the entity vector store, and its source_id chain — breaking the
+            # hook's whole guarantee through the relation the hook forgot to
+            # remove.
+            #
+            # Scoped to entities the hook REMOVED, deliberately. An edge whose
+            # endpoint was never an extracted entity is normal output, not an
+            # inconsistency: relation processing materializing such endpoints
+            # is designed behaviour (see the candidate-superset docstring on
+            # collect_kg_merge_candidates). Pruning those too would silently
+            # delete legitimate relations for every caller with a hook
+            # installed, including a pass-through one.
+            rejected = pre_hook_entities - maybe_nodes.keys()
+            if rejected:
+                orphaned = [
+                    edge_key
+                    for edge_key in maybe_edges
+                    if edge_key[0] in rejected or edge_key[1] in rejected
+                ]
+                for edge_key in orphaned:
+                    del maybe_edges[edge_key]
+                if orphaned:
+                    logger.info(
+                        f"{chunk_key}: kg_extraction_validator rejected "
+                        f"{len(rejected)} entities; pruned {len(orphaned)} "
+                        f"relations incident to them"
+                    )
 
         # Inject multimodal entity + associations for drawing/table/equation
         # chunks. Placed before update_chunk_cache_list so the per-chunk

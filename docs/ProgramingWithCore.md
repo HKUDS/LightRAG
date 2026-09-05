@@ -637,9 +637,10 @@ def validate(chunk_key, chunk_text, maybe_nodes, maybe_edges):
     ]:
         logger.info("rejected entity %s from %s", name, chunk_key)
         del maybe_nodes[name]
-    for key in [(s, t) for (s, t) in maybe_edges
-                if s not in maybe_nodes or t not in maybe_nodes]:
-        del maybe_edges[key]
+    # No need to clean up relations pointing at the names just deleted — core
+    # prunes those. Do NOT delete every relation whose endpoints are missing
+    # from maybe_nodes: an endpoint that was never extracted as an entity is
+    # normal output, and dropping it here would lose a legitimate relation.
     return maybe_nodes, maybe_edges
 
 rag = LightRAG(..., kg_extraction_validator=validate)
@@ -662,6 +663,14 @@ Contract:
   to the chunk's surviving entities. That injection happens *after* the hook, so
   a grounding rule like the one above cannot delete it, and an entity the hook
   rejected cannot reappear as the endpoint of an injected edge.
+- **Relations incident to a dropped entity are pruned for you.** If you delete
+  an entity and leave a relation pointing at it, core removes that relation
+  before the merge — otherwise `_merge_edges_then_upsert` would materialize the
+  missing endpoint as an `UNKNOWN`-typed node and put the entity you rejected
+  straight back into the graph and the vector store. Only relations touching
+  the names *you removed* are pruned; a relation whose endpoint was never
+  extracted as an entity is left alone, because materializing that endpoint is
+  normal, intended behavior.
 - **Failures are not swallowed.** A hook that raises, or that returns anything
   other than a two-element sequence of dicts (`TypeError`), fails the chunk and
   therefore the ingest — the pipeline marks the document FAILED, and

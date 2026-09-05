@@ -1030,9 +1030,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     caller supplies the graph directly — and is not filtered by the hook.
 
     **What users do inside**: drop junk entities (column headers, single
-    letters), drop relations whose endpoints are missing from the entity
-    set, reject non-grounded names absent from ``chunk_text``, write audit
-    logs of reject reasons.
+    letters), reject non-grounded names absent from ``chunk_text``, write
+    audit logs of reject reasons.
+
+    **Relations incident to a dropped entity are pruned for you.** Deleting an
+    entity and leaving a relation pointing at it would otherwise resurrect it:
+    ``_merge_edges_then_upsert`` materializes a missing endpoint as an
+    ``UNKNOWN``-typed node, back into the graph, the vector store and the
+    ``source_id`` chain. Only relations touching the names the hook *removed*
+    are pruned — a relation whose endpoint was never extracted as an entity is
+    ordinary output, and materializing that endpoint is intended behaviour.
 
     **Failures are not swallowed.** A hook that raises — or that returns
     anything other than a two-element sequence of dicts, which raises
