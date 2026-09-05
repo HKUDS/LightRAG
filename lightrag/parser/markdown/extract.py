@@ -34,6 +34,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from html.parser import HTMLParser
 from typing import Protocol
 
 from lightrag.parser._html_table import starts_with_html_tag
@@ -49,12 +50,6 @@ _DRAWING_MARKER = '<mddrawing ref="{ref}"/>'
 TABLE_MARKER_RE = re.compile(r'<mdtable ref="([^"]+)"/>')
 EQUATION_MARKER_RE = re.compile(r'<mdequation ref="([^"]+)"/>')
 DRAWING_MARKER_RE = re.compile(r'<mddrawing ref="([^"]+)"/>')
-_HTML_TABLE_CLOSE_RE = re.compile(r"</table>", re.IGNORECASE)
-_TAG_NAME_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9-]*")
-# RCDATA (textarea, title) and raw-text (script, style) elements: per the
-# HTML5 tokenizer, their content is not parsed for tags, comments or quotes
-# at all -- only a literal matching closing tag ends them.
-_RAW_MODE_ELEMENTS = frozenset({"script", "style", "textarea", "title"})
 
 # --- markdown token patterns ----------------------------------------------
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
@@ -463,9 +458,20 @@ def extract_markdown(
             if consumed > 0:
                 ref = _next_ref("t")
                 out.tables[ref] = {"kind": "html", "html": html}
-                _emit_inline(table_marker(ref) + trailing)
+                cur_lines.append(table_marker(ref))
                 has_block_payload = True
-                i += consumed
+                if trailing:
+                    # Feed the suffix back through the normal per-line
+                    # dispatch (not just inline-image resolution) so a
+                    # second same-line construct -- most notably another
+                    # <table>...</table>, e.g. "<table>A</table><table>B</table>"
+                    # -- is recognised instead of falling back to raw text.
+                    # `lines` is this function's own local list; overwriting
+                    # an already-consumed index and re-visiting it is safe.
+                    lines[i + consumed - 1] = trailing
+                    i += consumed - 1
+                else:
+                    i += consumed
                 continue
 
         # --- pipe table ----------------------------------------------------
@@ -517,148 +523,75 @@ def _consume_block_equation(lines: list[str], start: int) -> tuple[int, str]:
     return 0, ""
 
 
+class _HTMLTableBoundaryFinder(HTMLParser):
+    """Tracks ``<table>`` nesting depth to find the matching outer close.
+
+    All actual HTML tokenization -- quoted attributes, comments, CDATA,
+    RCDATA/raw-text elements (``script``/``style``/``textarea``/``title``),
+    tag-name rules -- is delegated to the standard library's tokenizer
+    instead of being re-implemented by hand. This class only watches the
+    ``table`` start/end tag events it already reports correctly.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self._depth = 0
+        self.end_pos: tuple[int, int] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self.end_pos is None and tag == "table":
+            self._depth += 1
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # A self-closing "<table/>": open then immediately close, same as a
+        # real browser would for an element that isn't actually void.
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        if self.end_pos is None and tag == "table":
+            self._depth -= 1
+            if self._depth == 0:
+                self.end_pos = self.getpos()
+
+
 def _consume_html_table(lines: list[str], start: int) -> tuple[int, str, str]:
     """Collect a ``<table>…</table>`` block (line-spanning).
 
     Returns ``(consumed, html, trailing)`` or ``(0, "", "")`` when no closing
     ``</table>`` is found. Text after the closing tag remains in ``trailing``.
+
+    ``html`` is always a verbatim slice of the source, located via
+    ``HTMLParser.getpos()`` -- never a re-serialization of parsed tokens, so
+    original casing, whitespace and attribute quoting survive untouched. The
+    parser is fed one line at a time and stops as soon as the boundary is
+    found, so a table that closes early in a large document costs only the
+    lines actually consumed rather than the whole remaining text.
     """
-    buf: list[str] = []
-    j = start
-    in_tag = False
-    in_comment = False
-    in_cdata = False
-    # Incremented/decremented by the scan itself as it re-processes the
-    # opening <table> at `start` along with everything after it -- starts at
-    # 0, not 1, so that very first tag isn't double-counted.
-    table_depth = 0
-    quote: str | None = None
-    raw_element: str | None = None  # inside <script>/<style>/<textarea>/<title>
-    # Matched so far against raw_target ("</" + raw_element), one char at a
-    # time. Kept as loop-level state (not re-derived per line) so a closing
-    # tag split across a line break -- e.g. "</textarea" then a bare ">" on
-    # the next line -- is still found; a per-line search would miss it.
-    raw_target = ""
-    raw_progress = 0
-    raw_awaiting_close = False  # literal matched; now only whitespace or ">"
-    # Name of the raw-mode element whose *opening* tag is currently being
-    # scanned (in_tag), pending that tag's own unquoted ">" -- e.g. the name
-    # is known the moment ``<textarea`` is seen, but a decoy closing sequence
-    # inside that same tag's quoted attributes (``data-note="</textarea>"``)
-    # must not switch into raw mode early, since it isn't the element's
-    # content yet. Only the ">" that actually closes this opening tag does.
-    pending_raw_name: str | None = None
-    while j < len(lines):
-        line = lines[j]
-        index = 0
-        while index < len(line):
-            if raw_element is not None:
-                # RCDATA/raw-text content: not parsed for tags, comments or
-                # quotes -- only the literal matching closing tag ends it.
-                char = line[index]
-                if raw_awaiting_close:
-                    if char == ">":
-                        raw_element = None
-                        raw_awaiting_close = False
-                        index += 1
-                        continue
-                    if char.isspace():
-                        index += 1
-                        continue
-                    # Not actually a close after all -- reconsider this same
-                    # char as a fresh match attempt below.
-                    raw_awaiting_close = False
-                    raw_progress = 0
-                    continue
-                if char.lower() == raw_target[raw_progress]:
-                    raw_progress += 1
-                    if raw_progress == len(raw_target):
-                        raw_awaiting_close = True
-                        raw_progress = 0
-                    index += 1
-                    continue
-                raw_progress = 1 if char == "<" else 0
-                index += 1
-                continue
-            if in_cdata:
-                # Foreign-content CDATA (e.g. inside <svg>): not parsed for
-                # tags at all -- a bare ">" here must not end a fake in_tag
-                # state and let a literal "</table>" inside the payload be
-                # mistaken for the real close.
-                cdata_end = line.find("]]>", index)
-                if cdata_end == -1:
-                    break
-                in_cdata = False
-                index = cdata_end + 3
-                continue
-            if in_comment:
-                comment_end = line.find("-->", index)
-                if comment_end == -1:
-                    break
-                in_comment = False
-                index = comment_end + 3
-                continue
-            if not in_tag and line.startswith("<!--", index):
-                in_comment = True
-                index += 4
-                continue
-            if not in_tag and line.startswith("<![CDATA[", index):
-                in_cdata = True
-                index += 9
-                continue
-            char = line[index]
-            if quote is not None:
-                if char == quote:
-                    quote = None
-                index += 1
-                continue
-            if in_tag:
-                if char in {'"', "'"}:
-                    quote = char
-                elif char == ">":
-                    in_tag = False
-                    if pending_raw_name is not None:
-                        raw_element = pending_raw_name
-                        raw_target = "</" + raw_element
-                        raw_progress = 0
-                        pending_raw_name = None
-                index += 1
-                continue
-            if (
-                char == "<"
-                and index + 1 < len(line)
-                and (line[index + 1].isalpha() or line[index + 1] in "/!?")
-            ):
-                closing = _HTML_TABLE_CLOSE_RE.match(line, index)
-                if closing:
-                    end = closing.end()
-                    table_depth -= 1
-                    if table_depth == 0:
-                        buf.append(line[:end])
-                        return (j - start + 1), "\n".join(buf).strip(), line[end:]
-                    # An inner </table> of a same-line nested table: keep
-                    # scanning for the real (outer) close instead of
-                    # accepting this one -- left verbatim inside the
-                    # captured html, never separately parsed.
-                    index = end
-                    continue
-                if line[index + 1].isalpha():
-                    name_match = _TAG_NAME_RE.match(line, index + 1)
-                    if name_match:
-                        candidate = name_match.group().lower()
-                        if candidate == "table" and starts_with_html_tag(
-                            line[index:].lower(), "table"
-                        ):
-                            table_depth += 1
-                        elif candidate in _RAW_MODE_ELEMENTS and starts_with_html_tag(
-                            line[index:].lower(), candidate
-                        ):
-                            pending_raw_name = candidate
-                in_tag = True
-            index += 1
-        buf.append(line)
-        j += 1
-    return 0, "", ""
+    finder = _HTMLTableBoundaryFinder()
+    for idx in range(start, len(lines)):
+        if idx > start:
+            finder.feed("\n")
+        finder.feed(lines[idx])
+        if finder.end_pos is not None:
+            break
+    if finder.end_pos is None:
+        return 0, "", ""
+
+    line, col = finder.end_pos  # 1-indexed line relative to what was fed
+    target_line = lines[start + line - 1]
+    # getpos() lands at the start of the closing tag ("</table" or a
+    # case-varied/whitespace-padded equivalent); find its terminating ">" in
+    # the original text rather than reconstructing the tag ourselves.
+    gt = target_line.find(">", col)
+    if gt == -1:
+        return 0, "", ""
+    end_col = gt + 1
+
+    html_lines = lines[start : start + line - 1] + [target_line[:end_col]]
+    html = "\n".join(html_lines).strip()
+    trailing = target_line[end_col:]
+    return line, html, trailing
 
 
 def _consume_pipe_table(

@@ -239,14 +239,15 @@ def test_html_table_raw_mode_closing_tag_split_across_lines():
     assert ex.blocks[0]["content"].endswith(" tail")
 
 
-def test_html_table_raw_mode_tag_name_split_across_lines():
-    """Same hazard, but the element name itself is split by the line
-    break rather than the trailing whitespace before ">"."""
+def test_html_table_tag_name_split_across_lines_is_not_recognized():
+    """A line break inside a tag NAME itself (as opposed to the whitespace
+    before ">") is not valid HTML -- a real tokenizer has no "</textarea"
+    substring to match here, so the element never closes and the table is
+    left as plain text, same as any other genuinely unclosed table."""
     ex = _extract("<table><textarea>x</texta\nrea></table> tail")
 
-    (table,) = ex.tables.values()
-    assert table["html"].endswith("</table>")
-    assert ex.blocks[0]["content"].endswith(" tail")
+    assert not ex.tables
+    assert ex.blocks[0]["content"] == "<table><textarea>x</texta\nrea></table> tail"
 
 
 def test_html_table_ignores_closing_tag_text_inside_cdata():
@@ -312,6 +313,35 @@ def test_html_table_ignores_quote_inside_style():
     (table,) = ex.tables.values()
     assert table["html"].endswith("</table>")
     assert 'content: "it\'s";' in table["html"]
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
+def test_html_table_recognizes_second_same_line_table():
+    """Codex finding: a second supported table on the same line as the
+    first's close must not be swallowed as inline prose -- the suffix is fed
+    back through normal block extraction so it gets its own entry too."""
+    ex = _extract("<table>A</table><table>B</table>")
+
+    assert [t["html"] for t in ex.tables.values()] == [
+        "<table>A</table>",
+        "<table>B</table>",
+    ]
+    (ref1, ref2) = ex.tables.keys()
+    assert (
+        ex.blocks[0]["content"] == f'<mdtable ref="{ref1}"/>\n<mdtable ref="{ref2}"/>'
+    )
+
+
+def test_html_table_ignores_non_ascii_tag_open():
+    """Codex finding: a non-ASCII letter after "<" (e.g. "<é") must not
+    be treated as a tag opener -- Python's str.isalpha() is true for it, but
+    real HTML tag names start with an ASCII letter only. Before the fix this
+    entered a fake in_tag state, mistook the following apostrophe for a
+    quote, and swallowed the real closing tag."""
+    ex = _extract("<table><td>x <é's text</td></table> tail")
+
+    (table,) = ex.tables.values()
+    assert table["html"] == "<table><td>x <é's text</td></table>"
     assert ex.blocks[0]["content"].endswith(" tail")
 
 
