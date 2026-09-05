@@ -4563,12 +4563,12 @@ async def extract_entities(
 # Policy version of the query-answer cache (cache_type="query"). Bump it when the
 # meaning of an entry changes in a way the other key fields cannot express, so
 # entries written by older versions become unreachable instead of being served
-# under a key whose semantics have moved. v2 retires every entry written before
-# the _answer_cache_kv bypass below: such an entry may hold history-conditioned
-# text filed under a history-blind key, and entries record no history, so a
-# tainted entry cannot be told apart from a clean one. Only the answer cache is
-# versioned; keyword/extract/summary entries never see conversation_history.
-_ANSWER_CACHE_POLICY_VERSION = "query-answer-cache-v2"
+# under a key whose semantics have moved. v2 retired entries written before the
+# _answer_cache_kv history-aware bypass. v3 retires v2 entries because the
+# default answer prompts gained document-date semantics, while their text is
+# not otherwise part of the cache key. Only the answer cache is versioned;
+# keyword/extract/summary entries never see these answer-prompt policies.
+_ANSWER_CACHE_POLICY_VERSION = "query-answer-cache-v3"
 
 
 def _answer_cache_kv(
@@ -4769,8 +4769,8 @@ async def kg_query(
         # The COMPOSED instructions, so changing the server-side prefix
         # invalidates entries generated under the old one. With no prefix
         # configured this is byte-identical to the previous
-        # `query_param.user_prompt or ""`, so existing entries keep hitting --
-        # which is why _ANSWER_CACHE_POLICY_VERSION does not need a bump.
+        # `query_param.user_prompt or ""`, so the prefix feature does not by
+        # itself require a cache-policy bump.
         # `disable_user_prompt_prefix` is deliberately NOT a separate key
         # component: it only ever acts through this value, and adding it would
         # split the cache between two requests that build identical prompts.
@@ -6873,8 +6873,8 @@ async def naive_query(
         # The COMPOSED instructions, so changing the server-side prefix
         # invalidates entries generated under the old one. With no prefix
         # configured this is byte-identical to the previous
-        # `query_param.user_prompt or ""`, so existing entries keep hitting --
-        # which is why _ANSWER_CACHE_POLICY_VERSION does not need a bump.
+        # `query_param.user_prompt or ""`, so the prefix feature does not by
+        # itself require a cache-policy bump.
         # `disable_user_prompt_prefix` is deliberately NOT a separate key
         # component: it only ever acts through this value, and adding it would
         # split the cache between two requests that build identical prompts.

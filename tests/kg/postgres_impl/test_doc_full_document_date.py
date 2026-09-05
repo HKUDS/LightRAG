@@ -11,6 +11,7 @@ from lightrag.kg.postgres_impl import (
     SQL_TEMPLATES,
     TABLES,
     PGKVStorage,
+    PGVectorStorage,
     PostgreSQLDB,
 )
 from lightrag.namespace import NameSpace
@@ -26,6 +27,35 @@ def test_full_doc_schema_and_reads_preserve_reduced_precision_text():
         normalized = " ".join(SQL_TEMPLATES[key].split())
         assert "parse_engine, document_date FROM LIGHTRAG_DOC_FULL" in normalized
         assert "TO_CHAR(document_date" not in SQL_TEMPLATES[key]
+
+
+@pytest.mark.asyncio
+async def test_chunk_vector_query_projects_full_doc_id_for_date_enrichment():
+    expected_row = {
+        "id": "chunk-2018",
+        "content": "historical organization",
+        "file_path": "organization-2018.txt",
+        "full_doc_id": "doc-2018",
+        "created_at": 1_538_352_000,
+    }
+    storage = PGVectorStorage.__new__(PGVectorStorage)
+    storage.namespace = NameSpace.VECTOR_STORE_CHUNKS
+    storage.workspace = "test"
+    storage.table_name = "LIGHTRAG_VDB_CHUNKS"
+    storage.cosine_better_than_threshold = 0.2
+    storage.db = SimpleNamespace(
+        vector_index_type=None,
+        query=AsyncMock(return_value=[expected_row]),
+    )
+
+    results = await storage.query(
+        "historical organization", 1, query_embedding=[0.1, 0.2]
+    )
+
+    sql = storage.db.query.await_args.args[0]
+    projection = sql.split("FROM", maxsplit=1)[0]
+    assert "full_doc_id" in projection
+    assert results == [expected_row]
 
 
 @pytest.mark.asyncio

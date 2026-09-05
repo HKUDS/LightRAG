@@ -405,8 +405,9 @@ def resolve_user_prompt(
     when it should not run into the caller's text — stripping here would eat
     exactly that. Not stripping ``user_prompt`` matters too: it keeps
     ``text`` byte-identical to the pre-prefix ``user_prompt or ""`` whenever no
-    prefix is configured, so existing answer-cache entries keep hitting (see
-    :func:`compute_args_hash` call sites in ``operate.py``).
+    prefix is configured, so prefix support alone does not alter that
+    answer-cache key component (see :func:`compute_args_hash` call sites in
+    ``operate.py``).
 
     **An empty ``user_prompt`` does not disable the prefix.** When the caller
     sends nothing, the prefix alone becomes the instructions sent to the LLM --

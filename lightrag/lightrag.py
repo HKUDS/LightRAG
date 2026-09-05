@@ -4064,7 +4064,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             "content": str,          # Document chunk content
                             "file_path": str,        # Origin file path
                             "chunk_id": str,         # Unique chunk identifier
-                            "reference_id": str      # Reference identifier for citations
+                            "reference_id": str,     # Reference identifier for citations
+                            "document_date": str     # Optional source-document as-of date
                         }
                     ],
                     "references": [
@@ -4091,6 +4092,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 }
             }
             ```
+
+            ``data["chunks"][*]["document_date"]`` preserves the precision
+            supplied for the source document (``YYYY``, ``YYYY-MM``, or
+            ``YYYY-MM-DD``) and is omitted when no date is available. It is
+            loaded from full-document storage through each chunk's internal
+            ``full_doc_id``; that linkage key is not included in the returned
+            chunk object.
 
             **Query Mode Differences:**
             - **local**: Focuses on entities and their related chunks based on low-level keywords

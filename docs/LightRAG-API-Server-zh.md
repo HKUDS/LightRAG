@@ -912,6 +912,12 @@ LightRAG 使用 4 种类型的存储用于不同目的：
 | GRAPH_STORAGE | `NetworkXStorage`、`Neo4JStorage`、`PGTableGraphStorage`、`PGGraphStorage`、`MongoGraphStorage`、`MemgraphStorage`、`OpenSearchGraphStorage` |
 | DOC_STATUS_STORAGE | `JsonDocStatusStorage`、`RedisDocStatusStorage`、`PGDocStatusStorage`、`MongoDocStatusStorage`、`OpenSearchDocStatusStorage` |
 
+上面四行是在同一套 LightRAG 中配合使用的独立存储职责；每一行内部列出的实现
+才是该职责下彼此替代的后端。KV 存储中的 `text_chunks` 支持按 chunk ID 读取，
+向量存储中的 `chunks_vdb` 负责相似度检索。在向量职责下，
+`NanoVectorDBStorage` 是默认本地实现，`PGVectorStorage` 是对应的 PostgreSQL
+实现；在 KV 职责下，`JsonKVStorage` 与 `PGKVStorage` 同样是可替换实现。
+
 在生产环境中，如果希望用单一后端同时承担全部四种存储，可以选择 PostgreSQL（推荐）、MongoDB 或 OpenSearch；也可以为不同存储类型分别选择专用数据库，例如用 Milvus 或 Qdrant 承担向量存储，用 Neo4j 或 Memgraph 承担图存储。
 
 **PostgreSQL 图存储推荐使用 `PGTableGraphStorage`：** 对于新建的 PostgreSQL 部署，`PGTableGraphStorage` 是推荐的 `GRAPH_STORAGE` 实现，用于替代 `PGGraphStorage`。它不经由 Apache AGE，而是把实体关系图直接存放在普通表中（JSONB 属性配合 B-tree 索引），由此带来两点实际优势：
@@ -1312,6 +1318,26 @@ curl -X POST "http://localhost:9621/documents/upload" \
   -F "file=@organization-2018.pdf" \
   -F "document_date=2018-10-01"
 ```
+
+#### 查询响应
+
+`POST /query/data` 在 `data.chunks` 中返回召回的文本块：
+
+| 字段 | 是否存在 | 含义 |
+| --- | --- | --- |
+| `reference_id` | 始终存在 | 与 `data.references` 中条目对应的引用标识 |
+| `content` | 始终存在 | 召回的文本块内容 |
+| `file_path` | 始终存在 | 来源文档路径 |
+| `chunk_id` | 始终存在 | 召回文本块的标识 |
+| `document_date` | 可选 | 来源文档的事实日期，并保持摄取时提供的 `YYYY`、`YYYY-MM` 或 `YYYY-MM-DD` 精度 |
+
+来源文档没有事实日期时，响应会省略 `document_date`，而不是返回 `null`。
+
+日期只持久化在 `full_docs` 文档记录中，不重复写入持久化 chunk。查询时，
+LightRAG 使用每个 chunk 的内部归属键 `full_doc_id`，批量读取对应的完整文档
+记录，再把日期附加到内存中的查询结果 chunk。因此，任何返回 chunk 的存储
+适配器都必须保留这个归属键。`full_doc_id` 仅供内部关联使用，不属于
+`/query/data` 对外返回的 chunk 对象。
 
 ## 异步文档索引与进度跟踪
 

@@ -149,6 +149,7 @@ async def test_naive_answer_prompt_contains_dates_loaded_from_full_docs():
     assert chunks_by_path["organization-2018.txt"]["document_date"] == "2018-10-01"
     assert chunks_by_path["organization-2024.txt"]["document_date"] == "2024-10-01"
     assert "document_date" not in chunks_by_path["organization.txt"]
+    assert all("full_doc_id" not in chunk for chunk in chunks_by_path.values())
     assert all(row["document_date"] == "1900-01-01" for row in chunks_vdb.rows)
 
 

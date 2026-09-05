@@ -132,28 +132,25 @@ async def test_ainsert_rejects_invalid_document_date(tmp_path, document_date):
 
 
 @pytest.mark.asyncio
-async def test_ainsert_persists_date_only_on_full_doc_and_keeps_chunk_ids_stable(
-    tmp_path,
-):
+async def test_ainsert_persists_date_only_on_full_doc_and_keeps_ids_stable(tmp_path):
     dated = await _build_rag(tmp_path, "dated")
     undated = await _build_rag(tmp_path, "undated")
     try:
         await dated.ainsert(
             "same historical facts",
-            ids="stable-doc",
             file_paths="organization.txt",
             document_date="2018",
         )
         await undated.ainsert(
             "same historical facts",
-            ids="stable-doc",
             file_paths="organization.txt",
         )
 
-        dated_full_doc = await dated.full_docs.get_by_id("stable-doc")
-        undated_full_doc = await undated.full_docs.get_by_id("stable-doc")
-        dated_status = await dated.doc_status.get_by_id("stable-doc")
-        undated_status = await undated.doc_status.get_by_id("stable-doc")
+        expected_doc_id = compute_mdhash_id("organization.txt", prefix="doc-")
+        dated_full_doc = await dated.full_docs.get_by_id(expected_doc_id)
+        undated_full_doc = await undated.full_docs.get_by_id(expected_doc_id)
+        dated_status = await dated.doc_status.get_by_id(expected_doc_id)
+        undated_status = await undated.doc_status.get_by_id(expected_doc_id)
 
         assert dated_full_doc["document_date"] == "2018"
         assert "document_date" not in undated_full_doc

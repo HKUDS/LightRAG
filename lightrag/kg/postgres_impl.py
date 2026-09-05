@@ -9902,6 +9902,7 @@ SQL_TEMPLATES = {
               SELECT id,
                      content,
                      file_path,
+                     full_doc_id,
                      EXTRACT(EPOCH FROM create_time)::BIGINT AS created_at
               FROM {table_name}
               WHERE workspace = $1

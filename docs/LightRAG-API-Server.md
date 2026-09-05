@@ -912,6 +912,14 @@ Each storage type offers multiple implementations. By default, LightRAG Server u
 | GRAPH_STORAGE | `NetworkXStorage`, `Neo4JStorage`, `PGTableGraphStorage`, `PGGraphStorage`, `MongoGraphStorage`, `MemgraphStorage`, `OpenSearchGraphStorage` |
 | DOC_STATUS_STORAGE | `JsonDocStatusStorage`, `RedisDocStatusStorage`, `PGDocStatusStorage`, `MongoDocStatusStorage`, `OpenSearchDocStatusStorage` |
 
+The four rows are separate storage roles used together; the implementations
+listed within each row are alternatives for that one role. `text_chunks` in KV
+storage supports chunk lookup by ID, while `chunks_vdb` in vector storage
+performs similarity search. For the vector role, `NanoVectorDBStorage` is the
+default local implementation and `PGVectorStorage` is its PostgreSQL
+alternative. Likewise, `JsonKVStorage` and `PGKVStorage` are alternatives for
+the KV role.
+
 For production deployments, PostgreSQL (recommended), MongoDB, or OpenSearch can provide all four storage types through a single backend. You can also select a specialized database for each storage type, such as Milvus or Qdrant for vector storage and Neo4j or Memgraph for graph storage.
 
 **PostgreSQL Graph Storage — prefer `PGTableGraphStorage`:** For new PostgreSQL deployments, `PGTableGraphStorage` is the recommended `GRAPH_STORAGE` implementation and supersedes `PGGraphStorage`. It keeps the entity-relation graph in ordinary tables — JSONB properties plus B-tree indexes — instead of going through Apache AGE, which brings two practical advantages:
@@ -1314,6 +1322,28 @@ curl -X POST "http://localhost:9621/documents/upload" \
   -F "file=@organization-2018.pdf" \
   -F "document_date=2018-10-01"
 ```
+
+#### Query response
+
+`POST /query/data` returns retrieved text chunks in `data.chunks`:
+
+| Field | Presence | Meaning |
+| --- | --- | --- |
+| `reference_id` | Always present | Citation identifier matching an item in `data.references` |
+| `content` | Always present | Retrieved chunk text |
+| `file_path` | Always present | Source document path |
+| `chunk_id` | Always present | Identifier of the retrieved chunk |
+| `document_date` | Optional | Source document's fact date, preserving the supplied `YYYY`, `YYYY-MM`, or `YYYY-MM-DD` precision |
+
+For documents without a fact date, `document_date` is omitted rather than
+returned as `null`.
+
+The date is persisted on the `full_docs` record instead of being duplicated in
+persisted chunks. During retrieval, LightRAG uses each chunk's internal
+`full_doc_id` to batch-load the corresponding full-document records and
+attaches their dates only to the in-memory result chunks. Any storage adapter
+returning chunks must therefore preserve this ownership key. `full_doc_id` is
+internal and is not included in the public `/query/data` chunk object.
 
 ## Asynchronous Document Indexing with Progress Tracking
 

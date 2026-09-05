@@ -696,8 +696,9 @@ never read or replace it. Three limits are worth knowing:
   template that will actually be rendered has somewhere to put it.
 
 The prefix participates in the answer cache key, so editing it invalidates
-answers generated under the old one. With no prefix configured the key is
-unchanged, so existing cache entries keep hitting.
+answers generated under the old one. With no prefix configured, the
+user-prompt component remains unchanged; independent answer-prompt policy
+changes can still advance the cache version and retire older entries.
 
 
 ## Storage Backends
@@ -1173,6 +1174,25 @@ await rag.apipeline_enqueue_documents(
 )
 await rag.apipeline_process_enqueue_documents()
 ```
+
+The date is stored once on the document's `full_docs` record, not duplicated
+in persisted chunks. At query time, retrieved chunks are associated with their
+document through the internal `full_doc_id`, and the date is attached to the
+in-memory chunk context used for answer generation. `aquery_data` exposes it as
+an optional `document_date` field on dated result chunks; undated chunks omit
+the field:
+
+```python
+result = await rag.aquery_data(
+    "How did the organization change?",
+    param=QueryParam(mode="naive"),
+)
+print(result["data"]["chunks"][0].get("document_date"))
+```
+
+`document_date` provides temporal context only. It does not change chunk
+content or identifiers and is not used for embedding, retrieval, filtering,
+reranking, or retrieval ordering.
 
 * Insert using Pipeline
 

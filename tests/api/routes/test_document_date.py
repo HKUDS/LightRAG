@@ -23,6 +23,7 @@ DocumentManager = _dr.DocumentManager
 InsertTextRequest = _dr.InsertTextRequest
 InsertTextsRequest = _dr.InsertTextsRequest
 create_document_routes = _dr.create_document_routes
+pipeline_index_file = _dr.pipeline_index_file
 pipeline_index_texts = _dr.pipeline_index_texts
 
 pytestmark = pytest.mark.offline
@@ -42,6 +43,24 @@ class _Rag:
 
     def __init__(self):
         self.doc_status = _DocStatus()
+
+
+class _PipelineRag(_Rag):
+    def __init__(self):
+        super().__init__()
+        self.enqueued: list[tuple[tuple, dict]] = []
+        self.process_calls = 0
+        self.errors: list[tuple[list[dict], str | None]] = []
+
+    async def apipeline_enqueue_documents(self, *args, **kwargs):
+        self.enqueued.append((args, kwargs))
+        return kwargs.get("track_id") or "generated-track"
+
+    async def apipeline_process_enqueue_documents(self):
+        self.process_calls += 1
+
+    async def apipeline_enqueue_error_documents(self, error_files, track_id=None):
+        self.errors.append((error_files, track_id))
 
 
 def _patch_ingress_guards(monkeypatch) -> None:
@@ -175,6 +194,53 @@ def test_pipeline_index_texts_keeps_legacy_positional_parameter_order():
         "admission_token",
     ]
     assert parameters[7] == "document_dates"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_index_texts_forwards_aligned_dates_to_enqueue():
+    rag = _PipelineRag()
+
+    await pipeline_index_texts(
+        rag,
+        ["facts from 2018", "undated facts"],
+        file_sources=["organization-2018.txt", "organization.txt"],
+        track_id="track-texts",
+        document_dates=["2018", None],
+    )
+
+    assert len(rag.enqueued) == 1
+    args, kwargs = rag.enqueued[0]
+    assert args == ()
+    assert kwargs["input"] == ["facts from 2018", "undated facts"]
+    assert kwargs["file_paths"] == ["organization-2018.txt", "organization.txt"]
+    assert kwargs["document_dates"] == ["2018", None]
+    assert rag.process_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_pipeline_index_file_forwards_date_through_deferred_parse(
+    monkeypatch, tmp_path
+):
+    monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
+    file_path = tmp_path / "organization-2018.txt"
+    file_path.write_text("historical facts", encoding="utf-8")
+    rag = _PipelineRag()
+
+    await pipeline_index_file(
+        rag,
+        file_path,
+        track_id="track-upload",
+        document_date="2018-10",
+    )
+
+    assert len(rag.enqueued) == 1
+    args, kwargs = rag.enqueued[0]
+    assert args == ("",)
+    assert kwargs["file_paths"] == str(file_path)
+    assert kwargs["document_dates"] == ["2018-10"]
+    assert kwargs["docs_format"] == "pending_parse"
+    assert rag.process_calls == 1
+    assert rag.errors == []
 
 
 @pytest.mark.parametrize(
