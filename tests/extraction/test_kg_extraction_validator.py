@@ -487,3 +487,82 @@ async def test_validator_receives_the_extraction_visible_text():
         "the stored form keeps the words apart, so grounding against it would "
         "reject a name the model plainly did see"
     )
+
+
+class _FakeKV:
+    """Minimal BaseKVStorage stand-in: enough for the cache-key attach path."""
+
+    def __init__(self, rows: dict | None = None, global_config: dict | None = None):
+        self.data = dict(rows or {})
+        # The cache path reads these gates off the storage itself
+        # (utils.py:4161-4164, :5299).
+        self.global_config = global_config or {}
+
+    async def get_by_id(self, key):
+        return self.data.get(key)
+
+    async def get_by_ids(self, keys):
+        return [self.data.get(k) for k in keys]
+
+    async def upsert(self, rows: dict):
+        for key, value in rows.items():
+            self.data[key] = value
+
+    async def index_done_callback(self):
+        return None
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_cache_keys_are_attached_before_the_validator_can_fail():
+    """A failing validator must not orphan the LLM cache entry.
+
+    ``save_to_cache`` writes each entry durably during extraction, but its key
+    lives only in the in-memory collector until ``update_chunk_cache_list``
+    attaches it to the chunk. Recovery collects operation-scoped cache ids
+    exclusively from a staged chunk's ``llm_cache_list``
+    (``_rollback_one_custom_chunk_patch``), so a key never attached is a cache
+    row nothing can reach again — orphaned even after ``/documents/scan``
+    rolls the operation back and deletes the chunk. The attach therefore has
+    to happen before any step that user code can fail.
+    """
+    from lightrag.operate import extract_entities
+
+    chunks = _make_chunks()
+    text_chunks = _FakeKV({key: dict(value) for key, value in chunks.items()})
+    llm_cache = _FakeKV(
+        global_config={
+            "enable_llm_cache": True,
+            "enable_llm_cache_for_entity_extract": True,
+        }
+    )
+
+    def explode(chunk_key, chunk_text, maybe_nodes, maybe_edges):
+        raise RuntimeError("validator says no")
+
+    config = _make_global_config(
+        AsyncMock(side_effect=_fake_extract), validator=explode
+    )
+    config["enable_llm_cache_for_entity_extract"] = True
+
+    with pytest.raises(RuntimeError, match="validator says no"):
+        await extract_entities(
+            chunks=chunks,
+            global_config=config,
+            llm_response_cache=llm_cache,
+            text_chunks_storage=text_chunks,
+        )
+
+    attached = [
+        key
+        for row in text_chunks.data.values()
+        for key in (row.get("llm_cache_list") or [])
+    ]
+    assert attached, (
+        "the validator failed before the cache keys were attached; the cache "
+        "rows written during extraction are now unreachable by rollback"
+    )
+    # Every attached key must name a cache row that actually exists.
+    assert all(key in llm_cache.data for key in attached), (
+        f"attached keys do not resolve: {attached} vs {sorted(llm_cache.data)}"
+    )

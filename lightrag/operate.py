@@ -4333,6 +4333,30 @@ async def extract_entities(
                     maybe_edges[edge_key] = list(glean_edge_list)
                 await _cooperative_yield(i, every=8)
 
+        # Batch update chunk's llm_cache_list with all collected cache keys.
+        #
+        # Ordered BEFORE the validator on purpose. save_to_cache has already
+        # written each entry durably by now, but its key lives only in the
+        # in-memory cache_keys_collector until this call attaches it to the
+        # chunk. A validator that raises (or returns a malformed pair) exits
+        # the chunk here, and recovery collects operation-scoped cache ids
+        # exclusively from each staged chunk's llm_cache_list
+        # (_rollback_one_custom_chunk_patch) — so a key never attached is a
+        # cache row nothing can ever reach again, orphaned even after
+        # /documents/scan rolls the operation back and deletes the chunk.
+        #
+        # Nothing after this point adds keys: the collector is filled by the
+        # initial extraction and the gleaning call, both above, and the
+        # multimodal injection below builds records from sidecar metadata
+        # without calling the LLM.
+        if cache_keys_collector and text_chunks_storage:
+            await update_chunk_cache_list(
+                chunk_key,
+                text_chunks_storage,
+                cache_keys_collector,
+                "entity_extraction",
+            )
+
         # Optional extraction-quality hook (#3691): the last word on what the
         # LLM extracted from this chunk. Whatever the validator drops never
         # reaches merge_nodes_and_edges, the vector stores, or any source_id
@@ -4387,8 +4411,7 @@ async def extract_entities(
             maybe_nodes, maybe_edges = validated
 
         # Inject multimodal entity + associations for drawing/table/equation
-        # chunks. Placed before update_chunk_cache_list so the per-chunk
-        # cache write still happens after; placed inside the chunk's
+        # chunks. Placed inside the chunk's
         # concurrency slot (rather than the centralized post-pass that used
         # to live in utils_pipeline.augment_chunk_results_with_mm_entities)
         # so each multimodal chunk benefits from the chunk-level concurrency
@@ -4455,15 +4478,6 @@ async def extract_entities(
                             "timestamp": now_ts,
                         }
                     )
-
-        # Batch update chunk's llm_cache_list with all collected cache keys
-        if cache_keys_collector and text_chunks_storage:
-            await update_chunk_cache_list(
-                chunk_key,
-                text_chunks_storage,
-                cache_keys_collector,
-                "entity_extraction",
-            )
 
         processed_chunks += 1
         entities_count = len(maybe_nodes)
