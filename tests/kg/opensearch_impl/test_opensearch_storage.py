@@ -1960,11 +1960,16 @@ class TestDocStatusStorage:
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
-            mock_client.indices.put_mapping.assert_awaited_once()
-            kwargs = mock_client.indices.put_mapping.call_args.kwargs
-            assert kwargs["body"] == {
-                "properties": {"content_hash": {"type": "keyword"}}
-            }
+            # Startup also stamps the workspace marker into ``_meta`` on this
+            # unmarked pre-existing index, so filter for the content_hash call.
+            property_bodies = [
+                call.kwargs["body"]
+                for call in mock_client.indices.put_mapping.await_args_list
+                if "properties" in call.kwargs["body"]
+            ]
+            assert property_bodies == [
+                {"properties": {"content_hash": {"type": "keyword"}}}
+            ]
 
     @pytest.mark.asyncio
     async def test_ensure_content_hash_mapping_skipped_when_present(
@@ -1991,7 +1996,14 @@ class TestDocStatusStorage:
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
-            mock_client.indices.put_mapping.assert_not_awaited()
+            # Only the workspace ``_meta`` marker may be written; no mapping
+            # property is added to an index that already has content_hash.
+            property_calls = [
+                call
+                for call in mock_client.indices.put_mapping.await_args_list
+                if "properties" in call.kwargs["body"]
+            ]
+            assert property_calls == []
 
     @pytest.mark.asyncio
     async def test_prepare_doc_status_data(self, global_config, embed_func):
