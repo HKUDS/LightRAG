@@ -347,9 +347,6 @@ def parse_args() -> argparse.Namespace:
     """
     Parse command line arguments with environment variable fallback
 
-    Args:
-        is_uvicorn_mode: Whether running under uvicorn mode
-
     Returns:
         argparse.Namespace: Parsed arguments
     """
