@@ -417,7 +417,7 @@ def parse_args() -> argparse.Namespace:
         default=get_env_value(
             "SUMMARY_LENGTH_RECOMMENDED", DEFAULT_SUMMARY_LENGTH_RECOMMENDED, int
         ),
-        help=f"LLM Summary Context size (default: from env or {DEFAULT_SUMMARY_LENGTH_RECOMMENDED})",
+        help=f"Recommended length of the LLM summary output (default: from env or {DEFAULT_SUMMARY_LENGTH_RECOMMENDED})",
     )
 
     # Logging configuration

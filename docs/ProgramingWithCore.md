@@ -851,11 +851,24 @@ Example connection configurations for each storage type can be found in the repo
 For production level scenarios you will most likely want to leverage an enterprise solution for KG storage. Running Neo4J in Docker is recommended for seamless local testing. See: https://hub.docker.com/_/neo4j
 
 ```bash
-export NEO4J_URI="neo4j://localhost:7687"
+export NEO4J_URI="bolt://localhost:7687"  # Single instance / Docker: direct connection
 export NEO4J_USERNAME="neo4j"
 export NEO4J_PASSWORD="password"
 export NEO4J_DATABASE="neo4j"  # Required for community edition
 ```
+
+**Choosing the URI scheme.** The scheme prefix of `NEO4J_URI` selects the driver's connection mode:
+
+- `bolt://` / `bolt+s://` — direct connection. The driver talks only to the host and port written in the URI. Use this for a single Neo4j instance, a single Docker container, or any deployment reached through a port mapping or proxy.
+- `neo4j://` / `neo4j+s://` — routing connection. The driver first asks the server for a routing table and then connects to the addresses the server advertises. Use this for Neo4j Aura and clustered deployments, where it provides read/write routing and failover.
+
+**Troubleshooting `Unable to retrieve routing information`.** This error is raised by the Neo4j driver, not by LightRAG, and it only occurs with the `neo4j://` scheme. It means none of the routers returned a routing table. Check, in order:
+
+1. The Neo4j server is actually running and reachable on the configured host and port (a stopped or restarting instance produces exactly this message).
+2. If the instance is a single node or a Docker container, switch `NEO4J_URI` to `bolt://`. A single instance advertises its own address in the routing table; when the server is reached through Docker port mapping or a proxy, that advertised address is often not reachable from the client, so the routing refresh fails even though the initial connection succeeded. The direct scheme skips the routing table entirely.
+3. If you must keep `neo4j://` against a single Docker container, set `server.default_advertised_address` on the Neo4j side to an address the client can reach.
+
+LightRAG retries transient `ServiceUnavailable` errors a few times with backoff, but it cannot recover from a database that stays unreachable; the storage call fails after the retries are exhausted.
 
 ```python
 from lightrag.utils import setup_logger
