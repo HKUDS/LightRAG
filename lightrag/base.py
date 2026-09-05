@@ -932,14 +932,17 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         its graph view at the same cutoff. Every other backend orders its ``*``
         ranking on the label; do not copy the deviation into a new one.
 
-        **Known approximation -- OpenSearchGraphStorage** applies the rule, but
-        only to the candidates its degree aggregations surfaced, and that set is
-        approximate: the two endpoint aggregations are each capped at
-        ``max_nodes``, so an entity whose in- and out-degree both fall outside
-        their respective top-N never reaches the ranking however high its
-        undirected degree is, and terms aggregations are count-approximate
-        across shards. Tracked in issue #3613; it needs a storage-shape change,
-        not an ordering one.
+        **OpenSearchGraphStorage** ranks from a single terms aggregation over
+        an ``endpoints`` field carrying both ids of each edge document, so one
+        bucket per entity holds its true undirected degree and the candidate
+        set is the global top by degree. This replaced a union of two
+        per-field aggregations, each separately capped, which omitted any
+        entity whose in- and out-degree both fell outside their respective
+        top-N however high its total degree was (issue #3613). An index
+        predating the ``endpoints`` backfill keeps the old union until startup
+        completes it, and on a multi-shard index the merged bucket counts stay
+        subject to the usual terms-aggregation error, which that backend logs
+        when the reported bound is non-zero.
 
         This constrains WHICH nodes survive truncation, not the order of
         :class:`KnowledgeGraph.nodes` in the response — implementations
