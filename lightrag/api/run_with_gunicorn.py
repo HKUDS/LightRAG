@@ -122,6 +122,41 @@ def main():
         print("=" * 80 + "\n")
         sys.exit(1)
 
+    # Embedded backends listed in MULTIPROCESS_UNSAFE_STORAGES serialize
+    # writes per-process; concurrent writers from multiple gunicorn workers
+    # can commit duplicate rows. Refuse to start multi-worker with them.
+    if global_args.workers > 1:
+        from lightrag.kg import MULTIPROCESS_UNSAFE_STORAGES
+
+        unsafe_storages = [
+            name
+            for name in (
+                global_args.kv_storage,
+                global_args.doc_status_storage,
+                global_args.graph_storage,
+                global_args.vector_storage,
+            )
+            if name in MULTIPROCESS_UNSAFE_STORAGES
+        ]
+        if unsafe_storages:
+            print("\n" + "=" * 80)
+            print("❌ ERROR: Configured storage does not support multi-worker mode!")
+            print("=" * 80)
+            print(
+                f"\nSingle-process storages: {', '.join(sorted(set(unsafe_storages)))}"
+            )
+            print(f"Workers: {global_args.workers}")
+            print("\nThese are embedded databases; their write serialization is")
+            print("per-process, so concurrent gunicorn workers could commit")
+            print("duplicate rows to the same tables.")
+            print("\nHow to fix:")
+            print("  Option 1 - Use single worker mode:")
+            print("     lightrag-server (or lightrag-gunicorn --workers 1)")
+            print("  Option 2 - Use a server-based backend for multi-worker mode")
+            print("     (PostgreSQL, MongoDB, OpenSearch, ...)")
+            print("=" * 80 + "\n")
+            sys.exit(1)
+
     # Check and install dependencies
     check_and_install_dependencies()
 
