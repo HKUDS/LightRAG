@@ -71,6 +71,51 @@ async def test_non_streaming_usage_is_tracked_without_reaching_sdk():
     assert "token_tracker" not in create.await_args.kwargs
 
 
+async def test_image_inputs_keeps_its_position_ahead_of_token_tracker():
+    """Codex finding: token_tracker must not shift image_inputs out of the
+    position an existing positional caller relies on. Confirms the current
+    parameter order rather than a specific one, so a future reordering that
+    reintroduces the hazard fails this test."""
+    import inspect
+
+    params = list(inspect.signature(anthropic_complete_if_cache.__wrapped__).parameters)
+    assert params.index("image_inputs") < params.index("token_tracker")
+
+
+async def test_usage_recorded_even_when_content_extraction_fails():
+    """Codex finding: response.usage is already populated once the API call
+    returns, so a real, billed call's usage must be recorded even if
+    response.content[0].text later raises (e.g. an empty or non-text content
+    list)."""
+    tracker = TokenTracker()
+    response = SimpleNamespace(
+        content=[],  # empty -- content[0] raises IndexError
+        stop_reason="end_turn",
+        usage=_usage(input_tokens=10, output_tokens=4),
+    )
+    create = AsyncMock(return_value=response)
+    client = SimpleNamespace(
+        messages=SimpleNamespace(create=create),
+        close=AsyncMock(),
+    )
+
+    with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=client):
+        with pytest.raises(IndexError):
+            await anthropic_complete_if_cache.__wrapped__(
+                model="claude-test",
+                prompt="hello",
+                api_key="test-key",
+                token_tracker=tracker,
+            )
+
+    assert tracker.get_usage() == {
+        "prompt_tokens": 10,
+        "completion_tokens": 4,
+        "total_tokens": 14,
+        "call_count": 1,
+    }
+
+
 async def test_streaming_usage_is_tracked_after_full_consumption():
     tracker = TokenTracker()
     stream = _Stream(
@@ -117,4 +162,3 @@ async def test_streaming_usage_is_tracked_after_full_consumption():
     }
     assert "token_tracker" not in create.await_args.kwargs
     stream.close.assert_awaited_once()
-

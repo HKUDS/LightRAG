@@ -58,8 +58,8 @@ async def anthropic_complete_if_cache(
     enable_cot: bool = False,
     base_url: str | None = None,
     api_key: str | None = None,
-    token_tracker: Any | None = None,
     image_inputs: list[Any] | None = None,
+    token_tracker: Any | None = None,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
     """Call Anthropic Messages API with LightRAG-compatible shims.
@@ -222,7 +222,11 @@ async def anthropic_complete_if_cache(
 
     if not stream:
         try:
-            content = response.content[0].text
+            # Record usage before extracting content text: the API call is
+            # already billed and response.usage is already populated at this
+            # point, but content[0].text raises if the first content block
+            # isn't a text block (or content is empty) -- that must not cost
+            # the tracker a real, billed call.
             if token_tracker and getattr(response, "usage", None):
                 usage = response.usage
                 prompt_tokens = sum(
@@ -241,6 +245,7 @@ async def anthropic_complete_if_cache(
                         "total_tokens": prompt_tokens + output_tokens,
                     }
                 )
+            content = response.content[0].text
             if getattr(response, "stop_reason", None) == "max_tokens":
                 content = TruncatedResponse(content)
             return content
