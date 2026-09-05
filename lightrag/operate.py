@@ -3946,6 +3946,7 @@ async def extract_entities(
     llm_response_cache: BaseKVStorage | None = None,
     text_chunks_storage: BaseKVStorage | None = None,
     truncation_tally: TokenLimitTruncationTally | None = None,
+    full_docs_storage: BaseKVStorage | None = None,
 ) -> list:
     """Extract entities and relations from ``chunks``.
 
@@ -3954,6 +3955,9 @@ async def extract_entities(
     immediately and one aggregate at the end); passing this one additionally
     hands the counts to the pipeline, which stamps them into
     ``doc_status.metadata`` so the condition outlives the bounded status ring.
+
+    ``full_docs_storage`` supplies optional document-level fact dates for the
+    extraction prompt without copying them into chunk records.
     """
     # Check for cancellation at the start of entity extraction
     if pipeline_status is not None and pipeline_status_lock is not None:
@@ -3991,6 +3995,10 @@ async def extract_entities(
     ordered_chunks = list(chunks.items())
     if not ordered_chunks:
         return []
+
+    document_dates_by_id = await _load_document_dates(
+        [chunk for _, chunk in ordered_chunks], full_docs_storage
+    )
     # add language and example number params to prompt
     addon_params = global_config.get("addon_params") or {}
     language = global_config.get("_resolved_summary_language")
@@ -4118,6 +4126,15 @@ async def extract_entities(
             if heading_path
             else ""
         )
+        document_date = document_dates_by_id.get(chunk_dp.get("full_doc_id"))
+        document_context_block = (
+            PROMPTS["entity_extraction_document_context"].format(
+                document_date=document_date
+            )
+            if document_date
+            else ""
+        )
+        extraction_context_block = document_context_block + heading_context_block
 
         # Create cache keys collector for batch processing
         cache_keys_collector = []
@@ -4155,7 +4172,7 @@ async def extract_entities(
                 **{
                     **context_base,
                     "input_text": content,
-                    "heading_context_block": heading_context_block,
+                    "heading_context_block": extraction_context_block,
                 }
             )
         else:
@@ -4171,7 +4188,7 @@ async def extract_entities(
                 **{
                     **context_base,
                     "input_text": content,
-                    "heading_context_block": heading_context_block,
+                    "heading_context_block": extraction_context_block,
                 }
             )
             entity_continue_extraction_user_prompt = PROMPTS[
@@ -4597,6 +4614,7 @@ async def kg_query(
     system_prompt: str | None = None,
     chunks_vdb: BaseVectorStorage = None,
     progress_callback: ProgressCallback | None = None,
+    full_docs_db: BaseKVStorage | None = None,
 ) -> QueryResult | None:
     """
     Execute knowledge graph query and return unified QueryResult object.
@@ -4676,6 +4694,7 @@ async def kg_query(
         # The token budget must be computed against the template this function
         # will actually render below, not the default one.
         system_prompt=system_prompt,
+        full_docs_db=full_docs_db,
     )
 
     if context_result is None:
@@ -5136,6 +5155,7 @@ async def _get_vector_context(
                 "content": result["content"],
                 "created_at": result.get("created_at", None),
                 "file_path": result.get("file_path", "unknown_source"),
+                "full_doc_id": result.get("full_doc_id"),
                 "source_type": "vector",  # Mark the source type
                 "chunk_id": result.get("id"),  # Add chunk_id for deduplication
             }
@@ -5583,6 +5603,40 @@ async def _attach_content_headings(
     await run_in_tokenizer_executor(_backfill)
 
 
+async def _attach_document_dates(
+    chunks: list[dict], full_docs_db: BaseKVStorage | None
+) -> None:
+    """Attach full-document dates to in-memory query chunks only."""
+    document_dates_by_id = await _load_document_dates(chunks, full_docs_db)
+    for chunk in chunks:
+        if document_date := document_dates_by_id.get(chunk.get("full_doc_id")):
+            chunk["document_date"] = document_date
+
+
+async def _load_document_dates(
+    chunks: list[dict], full_docs_db: BaseKVStorage | None
+) -> dict[str, str]:
+    """Load dates for the distinct documents referenced by in-memory chunks."""
+    if not full_docs_db or not chunks:
+        return {}
+    full_doc_ids = list(
+        dict.fromkeys(
+            full_doc_id
+            for chunk in chunks
+            if isinstance(full_doc_id := chunk.get("full_doc_id"), str) and full_doc_id
+        )
+    )
+    if not full_doc_ids:
+        return {}
+    full_doc_records = await full_docs_db.get_by_ids(full_doc_ids)
+    return {
+        full_doc_id: document_date
+        for full_doc_id, record in zip(full_doc_ids, full_doc_records)
+        if isinstance(record, dict)
+        and isinstance(document_date := record.get("document_date"), str)
+    }
+
+
 async def _merge_all_chunks(
     filtered_entities: list[dict],
     filtered_relations: list[dict],
@@ -5594,6 +5648,7 @@ async def _merge_all_chunks(
     chunks_vdb: BaseVectorStorage = None,
     chunk_tracking: dict = None,
     query_embedding: list[float] = None,
+    full_docs_db: BaseKVStorage | None = None,
 ) -> list[dict]:
     """
     Merge chunks from different sources: vector_chunks + entity_chunks + relation_chunks.
@@ -5647,6 +5702,7 @@ async def _merge_all_chunks(
                         "content": chunk["content"],
                         "file_path": chunk.get("file_path", "unknown_source"),
                         "chunk_id": chunk_id,
+                        "full_doc_id": chunk.get("full_doc_id"),
                     }
                 )
 
@@ -5661,6 +5717,7 @@ async def _merge_all_chunks(
                         "content": chunk["content"],
                         "file_path": chunk.get("file_path", "unknown_source"),
                         "chunk_id": chunk_id,
+                        "full_doc_id": chunk.get("full_doc_id"),
                     }
                 )
 
@@ -5675,6 +5732,7 @@ async def _merge_all_chunks(
                         "content": chunk["content"],
                         "file_path": chunk.get("file_path", "unknown_source"),
                         "chunk_id": chunk_id,
+                        "full_doc_id": chunk.get("full_doc_id"),
                     }
                 )
 
@@ -5687,6 +5745,7 @@ async def _merge_all_chunks(
         "enable_content_headings", False
     ):
         await _attach_content_headings(merged_chunks, text_chunks_db)
+    await _attach_document_dates(merged_chunks, full_docs_db)
 
     return merged_chunks
 
@@ -5905,6 +5964,7 @@ async def _build_query_context(
     chunks_vdb: BaseVectorStorage = None,
     progress_callback: ProgressCallback | None = None,
     system_prompt: str | None = None,
+    full_docs_db: BaseKVStorage | None = None,
 ) -> QueryContextResult | None:
     """
     Main query context building function using the new 4-stage architecture:
@@ -5957,6 +6017,7 @@ async def _build_query_context(
         chunks_vdb=chunks_vdb,
         chunk_tracking=search_result["chunk_tracking"],
         query_embedding=search_result["query_embedding"],
+        full_docs_db=full_docs_db,
     )
 
     if (
@@ -6598,6 +6659,7 @@ async def naive_query(
     system_prompt: str | None = None,
     text_chunks_db: BaseKVStorage | None = None,
     return_raw_data: Literal[True] = True,
+    full_docs_db: BaseKVStorage | None = None,
 ) -> dict[str, Any]: ...
 
 
@@ -6611,6 +6673,7 @@ async def naive_query(
     system_prompt: str | None = None,
     text_chunks_db: BaseKVStorage | None = None,
     return_raw_data: Literal[False] = False,
+    full_docs_db: BaseKVStorage | None = None,
 ) -> str | AsyncIterator[str]: ...
 
 
@@ -6623,6 +6686,7 @@ async def naive_query(
     system_prompt: str | None = None,
     text_chunks_db: BaseKVStorage | None = None,
     progress_callback: ProgressCallback | None = None,
+    full_docs_db: BaseKVStorage | None = None,
 ) -> QueryResult | None:
     """
     Execute naive query and return unified QueryResult object.
@@ -6634,6 +6698,7 @@ async def naive_query(
         global_config: Global configuration
         hashing_kv: Cache storage
         system_prompt: System prompt
+        full_docs_db: Full-document storage used to load document dates
 
     Returns:
         QueryResult | None: Unified query result object containing:
@@ -6668,6 +6733,8 @@ async def naive_query(
             "[naive_query] No relevant document chunks found; returning no-result."
         )
         return None
+
+    await _attach_document_dates(chunks, full_docs_db)
 
     # Backfill heading path before token truncation so it counts toward the budget
     if global_config.get("enable_content_headings", False):

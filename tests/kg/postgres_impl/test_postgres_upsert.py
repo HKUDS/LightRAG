@@ -258,7 +258,9 @@ async def test_upsert_text_chunks_none_heading_sidecar_defaults_to_empty_dict():
 
 
 @pytest.mark.asyncio
-async def test_upsert_full_docs_tuple_order():
+@pytest.mark.offline
+@pytest.mark.parametrize("document_date", ["2018", "2018-10", "2018-10-01"])
+async def test_upsert_full_docs_tuple_order(document_date):
     storage = make_storage(NameSpace.KV_STORE_FULL_DOCS)
     data = {
         "doc-1": {
@@ -270,6 +272,7 @@ async def test_upsert_full_docs_tuple_order():
             "process_options": "Fi",
             "chunk_options": {"chunk_token_size": 1200, "chunk_overlap": 100},
             "parse_engine": "mineru",
+            "document_date": document_date,
         }
     }
     await storage.upsert(data)
@@ -278,7 +281,8 @@ async def test_upsert_full_docs_tuple_order():
     _, rows = storage._captured[0]
     row = rows[0]
     # SQL: (id, content, doc_name, workspace, sidecar_location, parse_format,
-    #       content_hash, process_options, chunk_options, parse_engine)
+    #       content_hash, process_options, chunk_options, parse_engine,
+    #       document_date)
     assert row[0] == "doc-1"
     assert row[1] == "full text"
     assert row[2] == "/path/doc.[mineru-Fi].pdf"
@@ -289,9 +293,11 @@ async def test_upsert_full_docs_tuple_order():
     assert row[7] == "Fi"
     assert json.loads(row[8]) == {"chunk_token_size": 1200, "chunk_overlap": 100}
     assert row[9] == "mineru"
+    assert row[10] == document_date
 
 
 @pytest.mark.asyncio
+@pytest.mark.offline
 async def test_upsert_full_docs_missing_pipeline_fields_pass_through_as_none():
     """Missing pipeline-derived fields must serialize as None at the Python
     layer so the SQL-level COALESCE guard can distinguish "caller did not
@@ -315,6 +321,7 @@ async def test_upsert_full_docs_missing_pipeline_fields_pass_through_as_none():
     assert row[7] is None  # process_options
     assert json.loads(row[8]) == {}  # chunk_options default
     assert row[9] is None  # parse_engine
+    assert row[10] is None  # document_date
 
 
 @pytest.mark.asyncio
@@ -334,6 +341,7 @@ async def test_upsert_full_docs_none_chunk_options_defaults_to_empty_dict():
 
 
 @pytest.mark.asyncio
+@pytest.mark.offline
 async def test_upsert_full_docs_sql_protects_partial_writes():
     """The ON CONFLICT clause must COALESCE+NULLIF every pipeline-derived
     column so a follow-up upsert that only carries ``content`` + ``doc_name``
@@ -369,6 +377,13 @@ async def test_upsert_full_docs_sql_protects_partial_writes():
     assert "excluded.chunk_options is null" in normalized
     assert "excluded.chunk_options = '{}'::jsonb" in normalized
     assert "lightrag_doc_full.chunk_options" in normalized
+
+    # document_date preserves reduced precision as a string and follows the
+    # same empty-string protection as the other string metadata columns.
+    assert "$11::text::date" not in normalized
+    assert "document_date = coalesce(" in normalized
+    assert "nullif(excluded.document_date, '')" in normalized
+    assert "lightrag_doc_full.document_date" in normalized
 
     # content / doc_name remain straight overwrites — they ARE the payload
     assert "content = excluded.content" in normalized

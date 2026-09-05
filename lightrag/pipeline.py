@@ -138,6 +138,7 @@ from lightrag.utils_pipeline import (
     get_existing_doc_by_content_hash,
     has_known_document_source,
     input_dir_path,
+    normalize_document_date,
     normalize_document_file_path,
     doc_status_metadata_has_attempt_fields,
     doc_status_reset_metadata,
@@ -673,6 +674,7 @@ class _PipelineMixin:
         chunk_options: dict | list[dict] | None = None,
         admission_token: str | None = None,
         from_scan: bool = False,
+        document_dates: list[str | None] | None = None,
     ) -> str:
         """
         Pipeline for Processing Documents
@@ -741,6 +743,10 @@ class _PipelineMixin:
                 forwarded as a defence-in-depth bypass so an unexpected
                 scan-owned write inside the classification window is
                 allowed through.  External callers must leave this False.
+            document_dates: optional document-level fact dates, aligned with
+                ``input``. Each value must use ``YYYY``, ``YYYY-MM``, or
+                ``YYYY-MM-DD`` precision. Dates are persisted only on the
+                corresponding ``full_docs`` record, never on chunks.
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -887,6 +893,15 @@ class _PipelineMixin:
             raise ValueError(
                 "Number of chunk_options dicts must match the number of documents"
             )
+        if document_dates is not None:
+            if len(document_dates) != len(input):
+                raise ValueError(
+                    "Number of document_dates must match the number of documents"
+                )
+            document_dates = [
+                normalize_document_date(document_date)
+                for document_date in document_dates
+            ]
 
         def _parse_engine_at(index: int, doc_format: str) -> str | None:
             if parse_engine is None:
@@ -1042,6 +1057,8 @@ class _PipelineMixin:
                 "file_path": file_path_canonical,
                 "parse_format": doc_format,
             }
+            if document_dates is not None and document_dates[index] is not None:
+                content_data["document_date"] = document_dates[index]
             if content_hash:
                 content_data["content_hash"] = content_hash
             if engine := _parse_engine_at(index, doc_format):
@@ -1450,6 +1467,10 @@ class _PipelineMixin:
                 if contents[doc_id].get("process_options"):
                     full_docs_data[doc_id]["process_options"] = contents[doc_id][
                         "process_options"
+                    ]
+                if contents[doc_id].get("document_date"):
+                    full_docs_data[doc_id]["document_date"] = contents[doc_id][
+                        "document_date"
                     ]
                 # ``chunk_options`` is always populated by ``_add_content``
                 # at enqueue time so it's persisted unconditionally.
