@@ -72,7 +72,7 @@ kubectl --namespace rag port-forward svc/lightrag-dev 9621:9621
 ## Production Deployment (Using External Databases)
 
 ### 1. Install Databases
-> You can skip this step if you've already prepared databases. Detailed information can be found in: [K8S-DB-README.md](databases%2FK8S-DB-README.md).
+> You can skip this step if you've already prepared databases. Detailed information can be found in: [K8S-DB-README.md](databases/K8S-DB-README.md).
 
 We recommend KubeBlocks for database deployment. KubeBlocks is a cloud-native database operator that makes it easy to run any database on Kubernetes at production scale.
 
@@ -81,7 +81,7 @@ First, install KubeBlocks and KubeBlocks-Addons (skip if already installed):
 bash ./databases/01-prepare.sh
 ```
 
-Then install the required databases. By default, this will install PostgreSQL and Neo4J, but you can modify [00-config.sh](databases%2F00-config.sh) to select different databases based on your needs:
+Then install the required databases. By default, this will install PostgreSQL and Neo4J, but you can modify [00-config.sh](databases/00-config.sh) to select different databases based on your needs:
 ```bash
 bash ./databases/02-install-database.sh
 ```
