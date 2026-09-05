@@ -665,12 +665,14 @@ Contract:
 - **Signature** `(chunk_key, chunk_text, maybe_nodes, maybe_edges)`, returning a
   `(maybe_nodes, maybe_edges)` pair of dicts with the same shapes. Filtering in
   place and returning the same objects is fine.
-- **`chunk_text` is the prompt's `---Input Text---` verbatim**, not the stored
-  chunk content: parser-internal markup (`<drawing id/path/src>`, `<table id>`,
-  `<equation id>`, `<cite refid>`) is stripped. Grounding against the stored
-  form would accept an entity named after a hidden identifier or file path the
-  model never saw, and reject one it did see wherever removing a `<cite>`
-  wrapper joins two words.
+- **`chunk_text` is the text the model received** as the prompt's
+  `---Input Text---`, not the stored chunk content: parser-internal markup
+  (`<drawing id/path/src>`, `<table id>`, `<equation id>`, `<cite refid>`) is
+  stripped, and the result goes through `sanitize_text_for_encoding` just as
+  the LLM wrapper does before calling the provider. Grounding against the
+  stored form would accept an entity named after a hidden identifier or file
+  path the model never saw, and reject one it did see wherever removing a
+  `<cite>` wrapper joins two words.
 - **It is the input text, not the whole prompt.** For a chunk with a heading,
   the prompt also carries a `---Section Context---` block with the heading
   path. That is deliberately excluded: the extraction prompt tells the model to

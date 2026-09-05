@@ -566,3 +566,53 @@ async def test_cache_keys_are_attached_before_the_validator_can_fail():
     assert all(key in llm_cache.data for key in attached), (
         f"attached keys do not resolve: {attached} vs {sorted(llm_cache.data)}"
     )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_validator_text_is_sanitized_like_the_provider_input():
+    """``chunk_text`` must match what the provider received, sanitizer included.
+
+    ``use_llm_func_with_cache`` runs the prompt through
+    ``sanitize_text_for_encoding`` before calling the provider — control
+    characters dropped, HTML entities unescaped, surrogates repaired. Handing
+    the hook the unsanitized chunk would leave it comparing against a string
+    the model never saw.
+    """
+    from lightrag.chunk_schema import (
+        strip_internal_multimodal_markup_for_extraction,
+    )
+    from lightrag.operate import extract_entities
+    from lightrag.utils import sanitize_text_for_encoding
+
+    stored = "Alpha content about ALP\x01HA and AT&amp;T."
+    visible = sanitize_text_for_encoding(
+        strip_internal_multimodal_markup_for_extraction(stored)
+    )
+    assert visible != stored, "fixture must actually exercise the sanitizer"
+
+    chunks = _make_chunks()
+    chunks["chunk-alpha"]["content"] = stored
+
+    async def extract(prompt: str, *args, **kwargs) -> str:
+        if _CHUNK_CONTENTS["chunk-bravo"] in prompt:
+            return _extraction_result("BRAVO")
+        return _extraction_result("ALPHA")
+
+    seen: dict[str, str] = {}
+
+    def capture(chunk_key, chunk_text, maybe_nodes, maybe_edges):
+        seen[chunk_key] = chunk_text
+        return maybe_nodes, maybe_edges
+
+    await extract_entities(
+        chunks=chunks,
+        global_config=_make_global_config(
+            AsyncMock(side_effect=extract), validator=capture
+        ),
+    )
+
+    assert seen["chunk-alpha"] == visible
+    # The concrete difference, spelled out.
+    assert "\x01" in stored and "\x01" not in seen["chunk-alpha"]
+    assert "&amp;" in stored and "AT&T" in seen["chunk-alpha"]

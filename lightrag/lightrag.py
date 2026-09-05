@@ -1005,9 +1005,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     pipeline unchanged. Synchronous or async — an awaitable return value is
     awaited.
 
-    ``chunk_text`` is the prompt's ``---Input Text---`` verbatim: the chunk
-    content with parser-internal markup stripped. Not the stored chunk
-    content — that still carries ``<drawing id/path/src>``, ``<table id>``,
+    ``chunk_text`` is the text the model received as the prompt's
+    ``---Input Text---``: the chunk content with parser-internal markup
+    stripped, then passed through
+    :func:`lightrag.utils.sanitize_text_for_encoding`, exactly as the LLM
+    wrapper does before handing the prompt to the provider. Not the stored
+    chunk content — that still carries ``<drawing id/path/src>``, ``<table id>``,
     ``<equation id>`` and ``<cite refid>`` metadata, so grounding against it
     would accept an entity named after a hidden identifier or file path the
     model never received, and, where stripping a ``<cite>`` wrapper joins two

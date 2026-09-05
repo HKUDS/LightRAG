@@ -4345,6 +4345,14 @@ async def extract_entities(
         # cache row nothing can ever reach again, orphaned even after
         # /documents/scan rolls the operation back and deletes the chunk.
         #
+        # Ordering is all this buys, NOT durability: update_chunk_cache_list
+        # swallows every storage exception and only logs a warning, and a
+        # sibling chunk cancelled by the FIRST_EXCEPTION path below never
+        # reaches its own call at all. Both leave the same orphan. Closing
+        # that off needs recovery to find cache rows without the chunk
+        # pointer — they already carry `chunk_id` — which is issue #3833, not
+        # something more ordering here can fix.
+        #
         # Nothing after this point adds keys: the collector is filled by the
         # initial extraction and the gleaning call, both above, and the
         # multimodal injection below builds records from sidecar metadata
@@ -4380,15 +4388,24 @@ async def extract_entities(
         if kg_extraction_validator is not None:
             validated = kg_extraction_validator(
                 chunk_key,
-                # The EXTRACTION-VISIBLE text (line ~4103), not the stored
-                # chunk content. Grounding is a comparison against what the
-                # model actually saw, and the stored form still carries
-                # parser-internal markup: an entity named after a hidden
-                # id/path/src/refid would pass a grounding check the model
-                # could never have produced it from, while stripping a
-                # <cite> wrapper can join two words the stored form keeps
-                # apart, failing the check for a name the model DID see.
-                content,
+                # The EXTRACTION-VISIBLE text, not the stored chunk content.
+                # Grounding compares against what the model actually saw, and
+                # the stored form still carries parser-internal markup: an
+                # entity named after a hidden id/path/src/refid would pass a
+                # grounding check the model could never have produced it
+                # from, while stripping a <cite> wrapper can join two words
+                # the stored form keeps apart, failing the check for a name
+                # the model DID see.
+                #
+                # Sanitized here for the same reason: the provider is handed
+                # sanitize_text_for_encoding(prompt) inside
+                # use_llm_func_with_cache, which drops control characters,
+                # unescapes HTML entities and repairs surrogates. Passing the
+                # unsanitized `content` would leave the hook comparing against
+                # a string the model never received. Idempotent, and it does
+                # not touch the prompt or the cache key — those are built from
+                # the sanitized text already.
+                sanitize_text_for_encoding(content),
                 maybe_nodes,
                 maybe_edges,
             )
