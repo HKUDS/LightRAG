@@ -150,6 +150,17 @@ class QueryParam:
     """User-provided prompt for the query.
     Additional instructions for LLM. If provided, this will be injected into the prompt template.
     Its purpose is to let the user customize the way LLM generates the response.
+
+    The server may prepend a global prefix (``USER_PROMPT_PREFIX`` /
+    ``LightRAG.user_prompt_prefix``) to this value. **If this field is empty,
+    the prefix alone becomes the instructions sent to the LLM** -- an empty
+    ``user_prompt`` does not disable the prefix. Set
+    ``disable_user_prompt_prefix`` (declared at the end of this class) to opt
+    out instead.
+
+    Two paths do not receive the prefix: ``bypass`` mode ignores this field
+    entirely (empty or not), and a caller-supplied ``system_prompt`` without a
+    ``{user_prompt}`` placeholder silently drops it.
     """
 
     enable_rerank: bool = os.getenv("RERANK_BY_DEFAULT", "true").lower() == "true"
@@ -161,6 +172,20 @@ class QueryParam:
     """If True, includes reference list in the response for supported endpoints.
     This parameter controls whether the API response includes a references field
     containing citation information for the retrieved content.
+    """
+
+    # Declared last on purpose. QueryParam is a plain dataclass, so SDK callers
+    # may construct it positionally; inserting a field beside `user_prompt`
+    # would silently rebind every positional argument after it (a positional
+    # `False` meant for `enable_rerank` would land here instead). New fields
+    # belong at the end.
+    disable_user_prompt_prefix: bool = False
+    """Do not prepend the server-side global prompt prefix to ``user_prompt``.
+
+    The prefix is operator configuration: a request can only opt out of it, it
+    can never read or replace it. Default ``False``, i.e. the prefix applies --
+    including when ``user_prompt`` is empty, where the prefix alone becomes the
+    instructions. Set this to True to take full control of the final text.
     """
 
 
@@ -1272,12 +1297,6 @@ class DocStatusStorage(BaseKVStorage, ABC):
         """Get counts of documents in each status"""
 
     @abstractmethod
-    async def get_docs_by_status(
-        self, status: DocStatus
-    ) -> dict[str, DocProcessingStatus]:
-        """Get all documents with a specific status"""
-
-    @abstractmethod
     async def get_docs_by_statuses(
         self, statuses: list[DocStatus], strict: bool = False
     ) -> dict[str, DocProcessingStatus]:
@@ -1783,12 +1802,21 @@ class QueryResult:
         response_iterator: Streaming response iterator for streaming responses
         raw_data: Complete structured data including references and metadata
         is_streaming: Whether this is a streaming result
+        llm_generated: Whether the answering LLM actually wrote this result.
+            False for every result a query path produces WITHOUT calling it:
+            the canned ``PROMPTS["fail_response"]`` returned when no context
+            could be built, and the ``only_need_context`` / ``only_need_prompt``
+            debug outputs (retrieved context and constructed prompt). Consumers
+            that must label machine-written text (the WebUI's AI-content
+            notice) need this distinction, and no consumer can recover it from
+            the text alone.
     """
 
     content: Optional[str] = None
     response_iterator: Optional[AsyncIterator[str]] = None
     raw_data: Optional[Dict[str, Any]] = None
     is_streaming: bool = False
+    llm_generated: bool = True
 
     @property
     def reference_list(self) -> List[Dict[str, str]]:

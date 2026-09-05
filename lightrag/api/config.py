@@ -248,13 +248,14 @@ def _is_set(value: str | None) -> bool:
 
 
 def validate_bedrock_auth_configuration(args: argparse.Namespace) -> None:
-    """Reject Bedrock configuration with no explicit supported auth source."""
-    bearer_token = os.getenv("AWS_BEARER_TOKEN_BEDROCK")
+    """Validate explicitly configured Bedrock credentials.
 
-    def has_valid_auth(prefix: str | None = None) -> bool:
-        if _is_set(bearer_token):
-            return True
+    When no explicit credentials or bearer token is provided, boto3 resolves
+    credentials through its default provider chain, including web identity
+    tokens used by Kubernetes IRSA.
+    """
 
+    def has_no_partial_explicit_credentials(prefix: str | None = None) -> bool:
         if prefix:
             role_access_key = getattr(args, f"{prefix}_aws_access_key_id", None)
             role_secret_key = getattr(args, f"{prefix}_aws_secret_access_key", None)
@@ -263,42 +264,46 @@ def validate_bedrock_auth_configuration(args: argparse.Namespace) -> None:
 
         access_key = getattr(args, "aws_access_key_id", None)
         secret_key = getattr(args, "aws_secret_access_key", None)
-        return _is_set(access_key) and _is_set(secret_key)
+        return not (_is_set(access_key) or _is_set(secret_key)) or (
+            _is_set(access_key) and _is_set(secret_key)
+        )
 
     if getattr(args, "llm_binding", None) == "bedrock":
-        if not has_valid_auth():
+        if not has_no_partial_explicit_credentials():
             raise ValueError(
-                "Bedrock LLM binding requires AWS_ACCESS_KEY_ID and "
-                "AWS_SECRET_ACCESS_KEY, or process-level AWS_BEARER_TOKEN_BEDROCK."
+                "Bedrock LLM binding requires both AWS_ACCESS_KEY_ID and "
+                "AWS_SECRET_ACCESS_KEY when either explicit credential is set."
             )
         if _is_set(getattr(args, "llm_binding_api_key", None)):
             logging.warning(
                 "LLM_BINDING_API_KEY is set but ignored for Bedrock LLM binding. "
-                "Use SigV4 AWS_* variables or process-level AWS_BEARER_TOKEN_BEDROCK instead."
+                "Use AWS credentials, the default AWS credential provider chain, or "
+                "process-level AWS_BEARER_TOKEN_BEDROCK instead."
             )
 
     if getattr(args, "embedding_binding", None) == "bedrock":
-        if not has_valid_auth():
+        if not has_no_partial_explicit_credentials():
             raise ValueError(
-                "Bedrock embedding binding requires AWS_ACCESS_KEY_ID and "
-                "AWS_SECRET_ACCESS_KEY, or process-level AWS_BEARER_TOKEN_BEDROCK."
+                "Bedrock embedding binding requires both AWS_ACCESS_KEY_ID and "
+                "AWS_SECRET_ACCESS_KEY when either explicit credential is set."
             )
         if _is_set(getattr(args, "embedding_binding_api_key", None)):
             logging.warning(
                 "EMBEDDING_BINDING_API_KEY is set but ignored for Bedrock embedding binding. "
-                "Use SigV4 AWS_* variables or process-level AWS_BEARER_TOKEN_BEDROCK instead."
+                "Use AWS credentials, the default AWS credential provider chain, or "
+                "process-level AWS_BEARER_TOKEN_BEDROCK instead."
             )
 
     for spec in ROLES:
         role = spec.name
         if getattr(
             args, f"{role}_llm_binding", None
-        ) == "bedrock" and not has_valid_auth(role):
+        ) == "bedrock" and not has_no_partial_explicit_credentials(role):
             raise ValueError(
-                f"Bedrock role '{role}' requires {spec.env_prefix}_AWS_ACCESS_KEY_ID "
-                f"and {spec.env_prefix}_AWS_SECRET_ACCESS_KEY, global "
-                "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, or process-level "
-                "AWS_BEARER_TOKEN_BEDROCK."
+                f"Bedrock role '{role}' requires both "
+                f"{spec.env_prefix}_AWS_ACCESS_KEY_ID and "
+                f"{spec.env_prefix}_AWS_SECRET_ACCESS_KEY when either explicit "
+                "credential is set."
             )
 
 
@@ -412,7 +417,7 @@ def parse_args() -> argparse.Namespace:
         default=get_env_value(
             "SUMMARY_LENGTH_RECOMMENDED", DEFAULT_SUMMARY_LENGTH_RECOMMENDED, int
         ),
-        help=f"LLM Summary Context size (default: from env or {DEFAULT_SUMMARY_LENGTH_RECOMMENDED})",
+        help=f"Recommended length of the LLM summary output (default: from env or {DEFAULT_SUMMARY_LENGTH_RECOMMENDED})",
     )
 
     # Logging configuration
@@ -483,6 +488,22 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=get_env_value("LIGHTRAG_API_PREFIX", ""),
         help="API path prefix (e.g., /api/v1). Prepended to all API routes. Default: none (root).",
+    )
+
+    # Root-path default UI entry. Scope is pinned to exactly one behavior: the
+    # redirect target of '/'. It does NOT control whether either UI entry is
+    # mounted, and it is an enum on purpose (a free URL would open a redirect
+    # surface and could not participate in the availability degradation logic).
+    parser.add_argument(
+        "--default-ui",
+        type=str,
+        choices=["webui", "workspace"],
+        default=get_env_value("LIGHTRAG_DEFAULT_UI", "webui"),
+        help=(
+            "UI entry the root path '/' redirects to: 'webui' (admin UI, "
+            "default) or 'workspace' (query-user entry). Controls only the "
+            "'/' redirect target."
+        ),
     )
 
     # Server workers configuration
@@ -582,6 +603,17 @@ def parse_args() -> argparse.Namespace:
         GeminiEmbeddingOptions.add_args(parser)
 
     args = parser.parse_args()
+
+    # argparse ``choices`` validates only values explicitly passed on the
+    # command line — an env-provided default bypasses it (same shape as
+    # --rerank-binding). Validate explicitly so a typo like
+    # LIGHTRAG_DEFAULT_UI=workspaces fails at startup instead of silently
+    # falling back to the webui redirect.
+    if args.default_ui not in ("webui", "workspace"):
+        parser.error(
+            "--default-ui / LIGHTRAG_DEFAULT_UI must be 'webui' or "
+            f"'workspace', got {args.default_ui!r}"
+        )
 
     # convert relative path to absolute path
     args.working_dir = os.path.abspath(args.working_dir)
@@ -819,6 +851,24 @@ def parse_args() -> argparse.Namespace:
     # /static/swagger-ui mount). When False all five return 404 (issue #3666,
     # RFC #3671). Any route audit must condition the same set on this flag.
     args.enable_api_docs = get_env_value("ENABLE_API_DOCS", True, bool)
+
+    # AI-generated content notice shown under every answer in the two query
+    # UIs (the admin /webui retrieval panel and the /workspace query entry).
+    # Deployments that must label machine-generated output (a regulatory
+    # requirement in several jurisdictions) turn it on here; the default keeps
+    # the existing chat appearance untouched. The flag is deployment-level
+    # display configuration like WEBUI_TITLE, so it travels to the frontend on
+    # the same responses (/auth-status, /login, /health) and never in the
+    # answer text itself.
+    args.enable_ai_content_notice = get_env_value(
+        "ENABLE_AI_CONTENT_NOTICE", False, bool
+    )
+
+    # Optional external UI customization bundle (workspace-entry PRD §8).
+    # Empty/unset means "no customization" — the normal state, not an error;
+    # a set value must point at a bundle that validates completely or the
+    # server refuses to start (see lightrag/api/ui_customization.py).
+    args.ui_templates_dir = get_env_value("UI_TEMPLATES_DIR", "", str)
 
     # For JWT Auth
     args.auth_accounts = get_env_value("AUTH_ACCOUNTS", "")

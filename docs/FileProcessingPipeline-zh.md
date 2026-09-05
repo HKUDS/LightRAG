@@ -129,7 +129,7 @@ LightRAG 的文件处理配置由两部分合成：内容抽取引擎决定原�
 | `!` | 流水线 | 关闭 | 禁止实体/关系抽取，不构建知识图谱（仅保留 chunks 向量索引，naive / mix 检索仍可用） |
 | `F` | 分块 | 默认 | Fix/固定长度分块：遗留方法, 按固定Token长度或按分隔符机械分割（按分隔符分割时文本块不会出现重叠） |
 | `R` | 分块 | - | Recursive/递归字符分块(RecursiveCharacterTextSplitter@LangChain)：接收一个分隔符列表（默认是 `["\n\n","\n","。","！","？","；","，"," ",""]`，按从语义最强到最弱排列）。优先按段落（双换行符）切分；如果切出的块依然超过 Token 限制，逐级降级使用单换行符 → 中文句末标点（`。！？`）→ 中文句中标点（`；，`）→ 空格 → 逐字符切分。**默认 cascade 包含中文标点**，使中文 / 中英混合文档能在语义边界切分。英文 `.?!` 故意排除（字面量匹配会误切 `0.95` / `e.g.`）。 |
-| `V` | 分块 | - | Vector/向量语义分块(SemanticChunker@LangChain)：首先按句子拆分文本（默认句子切分正则同时识别英文 `.?!` 与中文 `。？！`，使中文 / 中英混合文档能正确切句），计算相邻句子的 Embedding，然后根据指定的阈值策略（如百分位 percentile、标准差 standard_deviation 或四分位距 interquartile）寻找语义断层进行切分。`SemanticChunker` 本身没有 chunk size 上限——任何超过 `chunk_token_size` 的语义块在落库前会自动通过 R 二次切分（保留 V 的非重叠语义）。此分块策略不会出现文本块重叠的情况。 |
+| `V` | 分块 | - | Vector/向量语义分块(SemanticChunker@LangChain)：首先按句子拆分文本（默认句子切分正则同时识别英文 `.?!` 与中文 `。？！`，使中文 / 中英混合文档能正确切句），计算相邻句子的 Embedding，然后根据指定的阈值策略（如百分位 percentile、标准差 standard_deviation 或四分位距 interquartile）寻找语义断层进行切分。`SemanticChunker` 本身没有 chunk size 上限——任何超过 `chunk_token_size` 的语义块在落库前会自动通过 R 二次切分（保留 V 的非重叠语义）。此分块策略不会出现文本块重叠的情况。由于它按句子滑窗逐条求 Embedding，这些 Embedding 请求的规模由 `EMBEDDING_BATCH_NUM`（单请求条目数）限制，而不是由 `chunk_token_size` 决定。 |
 | `P` | 分块 | - | Paragraph/段落语义分块（native）；优先按标题分割，严格避免上一标题底部内容与下一个标题内容混合破坏语义。适合对能够准确识别标题且标题结构清晰的文档进行分块。同一标题下的超长正文 fallback 到 R 时允许按 `CHUNK_P_OVERLAP_SIZE` 保留重叠；相邻大表格之间的桥接文字也可按该预算重复进入前后表格块。此分块方法只能运用在保存在 sidecar 目录的 `lightrag` 内容。如果 `lightrag` 内容不存在，将退化为使用 `R` 方法进行文本分块。此分块方法出现文本块重叠的情况远少于 `R策略` 和 `F策略`。 |
 | `C` | 分块 | - | Custom/自定义分块：显式调用已配置的 `LightRAG.chunking_func`，保持原有六参数契约不变，并复用 `fixed_token` 参数快照。已持久化或后台发现的 C 文档若处理时没有自定义回调，流水线会告警一次并走精确定长分块 fallback；新文本/上传请求则直接返回 422。 |
 
@@ -665,6 +665,16 @@ chunker(tokenizer, content, chunk_token_size, **strategy_kwargs)   (分块时按
 
   喂给 LangChain `SemanticChunker` 的句子切分正则。默认同时识别英文 `.?!`（要求后接空白，因此 `0.95` 不会被切开）和中文 `。？！`（不要求空白，适应中文连写）。env 值是原始正则，无需 JSON 引号。
 
+##### V 的 Embedding 请求
+
+上游 `SemanticChunker` 会把**整篇文档**放进一次调用——每个句子滑窗一条，因此单请求条目数 = 全文句数，总 token 约为 `(2 × CHUNK_V_BUFFER_SIZE + 1) × 全文`。没有任何 provider 绑定会在内部切分这个列表，所以由 V 自己收口：
+
+- **单请求条目数**上限为 `EMBEDDING_BATCH_NUM`。设为 `0` 或负数等于主动放弃这个上界。
+- **同时在途的请求数**上限为 `EMBEDDING_FUNC_MAX_ASYNC`。这个上界的作用域是**单次分块调用**，不是整个部署——跨实例并发仍由既有的 Embedding 限流器负责。任一批失败后不再发起新批。
+- **单条滑窗的 token 长度**按 Embedding 函数声明的 `max_token_size` **尽力**截断。在 API server 路径下，该值优先取 `EMBEDDING_TOKEN_LIMIT`，未设置时则取 binding 自带的默认值——所有内置 binding 都声明了这个值（openai / azure_openai / ollama / jina / bedrock / lollms 为 `8192`，voyageai 为 `32000`，gemini 为 `2048`），因此不设 `EMBEDDING_TOKEN_LIMIT` **并不会**把预算交给 `CHUNK_V_SIZE`。只有当 `EmbeddingFunc` 自身未声明上限（`max_token_size=None` 或 `0`，仅直接调用 SDK 的场景可达）时，才回退到生效的 `CHUNK_V_SIZE`。"尽力"是字面意思：截断用的是 LightRAG 的通用 tokenizer，不保证等于 Embedding 模型的 tokenizer；而 provider 还可能在此之后改写输入（OpenAI 绑定会先拼接 document prefix，再执行自己的截断）。所以 `EMBEDDING_BATCH_NUM × 上限` 只是 LightRAG tokenizer 下的逻辑上界，**不是**对服务端实际收到多少 token 的承诺；provider 自身的原生截断（若有）独立生效。
+
+这里的截断不会丢失 chunk 内容：V 输出的分块是原文 span，超预算的滑窗只会让它参与的那一处边界距离判定降级。每篇文档最多一条聚合警告，报告有多少滑窗被截断。
+
 #### P —— 段落语义
 
 - **`CHUNK_P_SIZE`** —— `2000`（`DEFAULT_CHUNK_P_SIZE`），int。
@@ -1090,10 +1100,11 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 | 环境变量 | 默认值 | 作用 | 调优建议 |
 | --- | --- | --- | --- |
 | `MAX_PARALLEL_PARSE_NATIVE` | `5` | N1: native 解析（docx / pdf / txt 等纯本地处理）并发 worker 数 | 纯 CPU、内存占用低，可按 CPU 核数提高 |
-| `MAX_PARALLEL_PARSE_MINERU` | `2` | N2: MinerU 解析并发 worker 数 | MinerU 占用 GPU/CPU 显著，**默认 2 为适度并发**。资源紧张时可降到 1；本地部署且显存充足时可设 2-3；走 MinerU 官方云端服务时可适当提高（受云端配额限制） |
-| `MAX_PARALLEL_PARSE_DOCLING` | `2` | N3: Docling 解析并发 worker 数 | Docling 同样资源敏感，**默认 2 为适度并发**。资源紧张时可降到 1；本地部署且 CPU/GPU 充足时可设 2-3 |
+| `MAX_PARALLEL_PARSE_MINERU` | `1` | N2: MinerU 解析并发 worker 数 | MinerU 占用 GPU/CPU 显著，因此默认只启用一个 worker。本地部署且显存充足时可设 2-3；走 MinerU 官方云端服务时可适当提高（受云端配额限制） |
+| `MAX_PARALLEL_PARSE_DOCLING` | `1` | N3: Docling 解析并发 worker 数 | Docling 同样资源敏感，因此默认只启用一个 worker。本地部署且 CPU/GPU 充足时可设 2-3 |
 | `MAX_PARALLEL_ANALYZE` | `5` | N4: 多模态分析（VLM 图片 / 表格描述）并发 worker 数 | 直接消耗 VLM 配额。建议 ≤ VLM 服务并发上限 |
-| `MAX_PARALLEL_INSERT` | `3` | N5: 实体 / 关系抽取 + 入库阶段并发文档数 | 推荐 `MAX_ASYNC_LLM / 3`，区间 2~10。该阶段每个文档会触发多次 LLM 调用，过高会撞 LLM 限流。同时该值还作为 `asyncio.Semaphore` 用于二次约束（worker 数和信号量值一致） |
+| `MAX_ASYNC_LLM` | `4` | 基础 LLM 并发与 N5 的单文档 task 基数 | 对单个文档，文本块实体/关系抽取最多并发运行 `MAX_ASYNC_LLM` 个 task；每个实体合并或关系合并阶段最多运行 `2 × MAX_ASYNC_LLM` 个 task。设置 `EXTRACT_MAX_ASYNC_LLM` 后，它会独立限制实际 Extract 角色 LLM 请求，不改变这些 task 上限 |
+| `MAX_PARALLEL_INSERT` | `3` | N5: 实体 / 关系抽取 + 入库阶段并发文档数 | 推荐 `MAX_ASYNC_LLM / 3`，区间 2~10。它控制文档数量，不控制单个文档内的 chunk 或合并 task 上限。同时该值还作为 `asyncio.Semaphore` 用于二次约束（worker 数和信号量值一致） |
 | `QUEUE_SIZE_PARSE` | `20` | parse（native/MinerU/Docling）输入队列长度 | 一般无需调整。队列内仅为轻量 doc_id（大文档体在进入 analyze 前已剥离），仅限制 pipeline 一次预派发给 parse worker 的待处理文档数，调整影响很小 |
 | `QUEUE_SIZE_ANALYZE` | `100` | analyze 队列（parse → analyze 阶段）的有界容量 | 一般无需调整。极少量大批量任务（成千上万）可适当提高，避免 enqueue 端反压；内存紧张时可调低 |
 | `QUEUE_SIZE_INSERT` | `4` | analyze → process 阶段间的队列容量 | process 是流水线中最慢、最耗内存的阶段，队列特意做小，给上游提供反压防止内存堆积 |
@@ -1101,18 +1112,19 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 **几个要点：**
 
 1. **解析阶段按引擎隔离**，所以混用 native/mineru/docling 时不必担心一种引擎慢拖累另一种。
-2. **mineru / docling 默认 2**：两者资源占用高，默认保持适度并发。资源紧张时可降到 1（避免 OOM / 显存竞争 / 失败重试）；如果你部署了多 GPU 或专门的解析服务器，可手动调高。
+2. **mineru / docling 默认 1**：两者资源占用高，因此默认避免多个解析任务并发（以及由此带来的 OOM、显存竞争和失败重试）；如果你部署了多 GPU 或专门的解析服务器，可手动调高。
 3. **`MAX_PARALLEL_INSERT` 兼任 worker 池大小和信号量上限**：流水线创建 `Semaphore(max_parallel_insert)`，每个 process worker 在抽取入库前还要拿一次信号量。所以哪怕你把 worker 数手动改大，实际并发上限仍由这个值决定——直接调它就够了。
-4. **queue size 与背压**：`QUEUE_SIZE_INSERT=4` 这个偏小的默认值是有意为之——process 阶段慢且占内存，让 analyze 阶段在队列写满时阻塞、再反压到 parse 阶段，避免一次性把成千上万份解析结果堆在内存里。
-5. **改后生效方式**：所有参数通过 `.env`（或环境变量）传入，仅在 `LightRAG` 实例构造时读取一次；改完需要重启服务。
-6. **分块不随并发增长**：分块在一个专用的单 worker 线程池里执行，目的是不阻塞事件循环，并发度不随 `MAX_PARALLEL_INSERT` 提高，调大并发不会让分块更快。自定义 `chunking_func` 仍在事件循环上执行（它的契约允许触碰运行中的事件循环），CPU 密集的实现应自行 `asyncio.to_thread`。
+4. **task 上限与请求上限不同**：`MAX_ASYNC_LLM` 设置 N5 单文档 chunk 抽取的 task 上限，以及其两倍的合并 task 上限。实际抽取和合并摘要请求使用 Extract 角色的上限：设置了 `EXTRACT_MAX_ASYNC_LLM` 时使用它，否则使用 `MAX_ASYNC_LLM`。缓存、图的 keyed lock 和角色上限都会让观测到的实际请求并发低于 task 并发。
+5. **queue size 与背压**：`QUEUE_SIZE_INSERT=4` 这个偏小的默认值是有意为之——process 阶段慢且占内存，让 analyze 阶段在队列写满时阻塞、再反压到 parse 阶段，避免一次性把成千上万份解析结果堆在内存里。
+6. **改后生效方式**：所有参数通过 `.env`（或环境变量）传入，仅在 `LightRAG` 实例构造时读取一次；改完需要重启服务。
+7. **分块不随并发增长**：分块在一个专用的单 worker 线程池里执行，目的是不阻塞事件循环，并发度不随 `MAX_PARALLEL_INSERT` 提高，调大并发不会让分块更快。自定义 `chunking_func` 仍在事件循环上执行（它的契约允许触碰运行中的事件循环），CPU 密集的实现应自行 `asyncio.to_thread`。
 
 **典型调优场景：**
 
-- 大量 PDF + 本地 MinerU 单 GPU：`MAX_PARALLEL_PARSE_MINERU=2`、`MAX_PARALLEL_ANALYZE=5`、`MAX_PARALLEL_INSERT=3`（默认即可；显存紧张时把 MINERU 降到 1）。
+- 大量 PDF + 本地 MinerU 单 GPU：`MAX_PARALLEL_PARSE_MINERU=1`、`MAX_PARALLEL_ANALYZE=5`、`MAX_PARALLEL_INSERT=3`（默认即可；确认显存充足后再提高 MINERU）。
 - 大量 PDF + MinerU 云端服务：`MAX_PARALLEL_PARSE_MINERU=3~5`（视云端配额），其它保持默认。
 - 纯 docx / txt（仅走 native）：`MAX_PARALLEL_PARSE_NATIVE=10`、`MAX_PARALLEL_INSERT` 按 `MAX_ASYNC_LLM/3` 推算。
-- LLM 限流明显：先降 `MAX_PARALLEL_INSERT`（process 阶段每文档多次 LLM 调用），再降 `MAX_PARALLEL_ANALYZE`（VLM 是独立配额）。
+- Extract 角色 LLM 限流明显：先降 `EXTRACT_MAX_ASYNC_LLM`（未设置覆盖时降 `MAX_ASYNC_LLM`）以限制 provider 请求；如需减少在途文档数或内存，再同时降低 `MAX_PARALLEL_INSERT`。`MAX_PARALLEL_ANALYZE` 控制独立的 VLM 阶段。
 
 ### 8.7 准入与请求限制
 
@@ -1300,7 +1312,7 @@ per-file 个性化的典型场景：管理 UI 单独配置某个文件的 separa
 | 路由 | `LIGHTRAG_PARSER` | §2.3、§2.4、§2.5 |
 | 分块 | `CHUNK_SIZE`、`CHUNK_OVERLAP_SIZE`、`CHUNK_{F,R,V,P}_*` | §5.2 |
 | 多模态 | `VLM_PROCESS_ENABLE`、`VLM_MAX_IMAGE_BYTES`、`VLM_MIN_IMAGE_PIXEL`、`MAX_EXTRACT_INPUT_TOKENS`、`SURROUNDING_*_MAX_TOKENS`、`MM_EXTRACT_CONTENT_MIN_TOKENS` | §4 |
-| VLM / 角色模型 | `VLM_LLM_*`、`VLM_MAX_ASYNC_LLM` | [RoleSpecificLLMConfiguration-zh.md](RoleSpecificLLMConfiguration-zh.md) |
+| LLM / VLM 角色模型 | `MAX_ASYNC_LLM`、`EXTRACT_LLM_*`、`EXTRACT_MAX_ASYNC_LLM`、`VLM_LLM_*`、`VLM_MAX_ASYNC_LLM` | [RoleSpecificLLMConfiguration-zh.md](RoleSpecificLLMConfiguration-zh.md) |
 | legacy 引擎 | `PDF_DECRYPT_PASSWORD` | §3.2 |
 | native 引擎 | `NATIVE_MD_IMAGE_*` | §3.3 |
 | native docx smart_heading | `DOCX_SMART_HEADING`、`DOCX_SMART_*` 调优项 | §3.3 与 `env.example` 的 smart_heading 注释块 |

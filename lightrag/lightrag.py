@@ -38,6 +38,7 @@ from typing import (
 from lightrag.prompt import (
     PROMPTS,
     get_default_entity_extraction_prompt_profile,
+    load_user_prompt_prefix_source,
     resolve_entity_extraction_prompt_profile,
     validate_entity_extraction_prompt_profile_for_mode,
 )
@@ -134,6 +135,7 @@ from lightrag.base import (
     QueryResult,
 )
 from lightrag.namespace import NameSpace
+from lightrag.query_validation import validate_query_not_empty, validate_rag_query
 from lightrag.chunker import chunking_by_token_size
 from lightrag.operate import (
     KGRebuildReport,
@@ -996,6 +998,24 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     """Configuration for Ollama server information."""
 
     _storages_status: StoragesStatus = field(default=StoragesStatus.NOT_CREATED)
+
+    # Declared last on purpose. LightRAG is a plain dataclass, so SDK callers
+    # may construct it positionally; inserting a field earlier would silently
+    # rebind every positional argument after it -- an int meant for
+    # `entity_extract_max_gleaning` would land on this string field and the
+    # remaining values would configure the wrong options. New fields belong at
+    # the end. Same rule as `QueryParam.disable_user_prompt_prefix`.
+    user_prompt_prefix: str = field(default_factory=load_user_prompt_prefix_source)
+    """Global instructions prepended to every request's `QueryParam.user_prompt`.
+
+    Server-side output policy, sourced from `USER_PROMPT_PREFIX` or
+    `USER_PROMPT_PREFIX_FILE`. Concatenated verbatim with no separator inserted:
+    end it with your own newlines so it does not run into the caller's text.
+
+    If a request's `user_prompt` is empty, this prefix alone becomes the
+    instructions sent to the LLM. A request opts out with
+    `QueryParam.disable_user_prompt_prefix`, but can never read or replace it.
+    """
 
     def _mark_addon_params_dirty(self) -> None:
         self._addon_params_dirty = True
@@ -4111,6 +4131,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             actual data is nested under the 'data' field, with 'status' and 'message'
             fields at the top level.
         """
+        # `bypass` skips retrieval, so the RAG minimum does not apply to it —
+        # but no mode may forward an empty prompt to the LLM.
+        query = validate_query_not_empty(query)
+        if param.mode != "bypass":
+            query = validate_rag_query(query)
+
         global_config = self._build_global_config()
 
         # Create a copy of param to avoid modifying the original
@@ -4129,6 +4155,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             ll_keywords=param.ll_keywords,
             conversation_history=param.conversation_history,
             user_prompt=param.user_prompt,
+            disable_user_prompt_prefix=param.disable_user_prompt_prefix,
             enable_rerank=param.enable_rerank,
         )
 
@@ -4137,7 +4164,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         if data_param.mode in ["local", "global", "hybrid", "mix"]:
             logger.debug(f"[aquery_data] Using kg_query for mode: {data_param.mode}")
             query_result = await kg_query(
-                query.strip(),
+                query,
                 self.chunk_entity_relation_graph,
                 self.entities_vdb,
                 self.relationships_vdb,
@@ -4151,7 +4178,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         elif data_param.mode == "naive":
             logger.debug(f"[aquery_data] Using naive_query for mode: {data_param.mode}")
             query_result = await naive_query(
-                query.strip(),
+                query,
                 self.chunks_vdb,
                 data_param,  # Use data_param with only_need_context=True
                 global_config,
@@ -4227,6 +4254,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             dict[str, Any]: Complete response with structured data and LLM response.
         """
+        # `bypass` skips retrieval, so the RAG minimum does not apply to it —
+        # but no mode may forward an empty prompt to the LLM.
+        query = validate_query_not_empty(query)
+        if param.mode != "bypass":
+            query = validate_rag_query(query)
+
         logger.debug(f"[aquery_llm] Query param: {param}")
 
         global_config = self._build_global_config()
@@ -4236,7 +4269,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
             if param.mode in ["local", "global", "hybrid", "mix"]:
                 query_result = await kg_query(
-                    query.strip(),
+                    query,
                     self.chunk_entity_relation_graph,
                     self.entities_vdb,
                     self.relationships_vdb,
@@ -4250,7 +4283,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
             elif param.mode == "naive":
                 query_result = await naive_query(
-                    query.strip(),
+                    query,
                     self.chunks_vdb,
                     param,
                     global_config,
@@ -4269,7 +4302,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
                 param.stream = True if param.stream is None else param.stream
                 response = await use_llm_func(
-                    query.strip(),
+                    query,
                     system_prompt=system_prompt,
                     history_messages=param.conversation_history,
                     enable_cot=True,
@@ -4288,6 +4321,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             "content": response,
                             "response_iterator": None,
                             "is_streaming": False,
+                            "llm_generated": True,
                         },
                     }
                 else:
@@ -4300,6 +4334,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             "content": None,
                             "response_iterator": response,
                             "is_streaming": True,
+                            "llm_generated": True,
                         },
                     }
             else:
@@ -4321,6 +4356,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         "content": PROMPTS["fail_response"],
                         "response_iterator": None,
                         "is_streaming": False,
+                        # Canned text: no answering LLM was invoked.
+                        "llm_generated": False,
                     },
                 }
 
@@ -4334,6 +4371,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 if query_result.is_streaming
                 else None,
                 "is_streaming": query_result.is_streaming,
+                "llm_generated": query_result.llm_generated,
             }
 
             return raw_data
@@ -4350,6 +4388,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     "content": None,
                     "response_iterator": None,
                     "is_streaming": False,
+                    "llm_generated": False,
                 },
             }
 
@@ -4525,16 +4564,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             async_name="aclear_cache",
             owning_loop=self._owning_loop,
         )
-
-    async def get_docs_by_status(
-        self, status: DocStatus
-    ) -> dict[str, DocProcessingStatus]:
-        """Get documents by status
-
-        Returns:
-            Dict with document id is keys and document status is values
-        """
-        return await self.doc_status.get_docs_by_status(status)
 
     async def aget_docs_by_ids(
         self, ids: str | list[str]

@@ -13,6 +13,7 @@
     "apiDocs": "API 문서",
     "projectRepository": "프로젝트 저장소",
     "appSettings": "설정",
+    "deploymentInfo": "배포 정보",
     "logout": "로그아웃",
     "frontendNeedsRebuild": "프론트엔드 재빌드 필요",
     "themeToggle": {
@@ -32,7 +33,10 @@
     "errorEmptyFields": "사용자 이름과 비밀번호를 입력하세요",
     "errorInvalidCredentials": "로그인 실패, 사용자 이름과 비밀번호를 확인하세요",
     "authDisabled": "인증이 비활성화되었습니다. 게스트 모드를 사용합니다.",
-    "guestMode": "게스트 모드"
+    "guestMode": "게스트 모드",
+    "consentLabel": "{{documents}}에 동의합니다",
+    "consentDocuments": "「개인정보 처리방침」",
+    "errorConsentRequired": "로그인하기 전에 약관을 읽고 동의해 주세요"
   },
   "common": {
     "cancel": "취소",
@@ -126,6 +130,9 @@
       "pipelineStatusTooltip": "문서 처리 파이프라인 상태 보기",
       "uploadedTitle": "업로드된 문서",
       "uploadedDescription": "업로드된 문서 목록 및 상태.",
+      "loading": "문서를 불러오는 중...",
+      "loadErrorTitle": "문서를 불러올 수 없습니다",
+      "retry": "다시 시도",
       "emptyTitle": "문서 없음",
       "emptyDescription": "아직 업로드된 문서가 없습니다.",
       "columns": {
@@ -404,6 +411,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "AI가 생성한 내용입니다. 내용을 확인해 주세요.",
       "copyTooltip": "클립보드에 복사",
       "copyError": "텍스트를 클립보드에 복사 실패",
       "copyEmpty": "복사할 내용이 없습니다",
@@ -436,11 +444,17 @@
       "placeholder": "질문을 입력하세요 (접두사 지원: /<쿼리 모드>)",
       "error": "오류: 응답을 가져오지 못했습니다",
       "queryModeError": "다음 쿼리 모드만 지원합니다: {{modes}}",
-      "queryModePrefixInvalid": "잘못된 쿼리 모드 접두사입니다. 사용법: /<모드> [공백] 질문"
+      "queryModePrefixInvalid": "잘못된 쿼리 모드 접두사입니다. 사용법: /<모드> [공백] 질문",
+      "queryEmpty": "보내기 전에 질문을 입력하세요.",
+      "queryTooShort": "질문이 너무 짧습니다. 영문 3자 이상 또는 이에 해당하는 조합을 입력하세요. 한국어·중국어·일본어는 글자당 영문 2자로 계산됩니다.",
+      "dismissError": "오류 메시지 닫기"
     },
     "querySettings": {
       "parametersTitle": "매개변수",
       "parametersDescription": "쿼리 매개변수를 구성하세요",
+      "parametersScopeNotice": "이 브라우저의 쿼리에 적용",
+      "parametersScopeTooltip": "이 매개변수는 현재 브라우저에 저장되며 변경할 때까지 계속 적용됩니다. 같은 브라우저에서 연 /workspace 입구에서 보낸 쿼리에도 적용됩니다. 브라우저별 로컬 상태이며 서버 전체 정책이 아니므로 다른 브라우저와 다른 기기에는 영향을 주지 않습니다.",
+      "parametersScopeHelpLabel": "매개변수 적용 범위 정보",
       "queryMode": "쿼리 모드",
       "queryModeTooltip": "검색 전략을 선택하세요:\n• Naive: 전통적인 텍스트 청크 벡터 검색\n• Local: 엔티티 검색에 집중\n• Global: 관계 검색에 집중\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: 검색 건너뛰기, 대화 기록과 현재 질문을 LLM에 전송",
       "queryModeWarning": "검색 품질이 저하될 수 있습니다",
@@ -481,8 +495,10 @@
       "streamResponse": "스트림 응답",
       "streamResponseTooltip": "True일 경우, 실시간 응답을 위한 스트리밍 출력을 활성화합니다",
       "userPrompt": "추가 출력 프롬프트",
-      "userPromptTooltip": "LLM에 추가 응답 요구 사항을 제공합니다 (쿼리 내용과 무관, 출력 처리에만 사용).",
+      "userPromptTooltip": "LLM에 추가 응답 요구 사항을 제공합니다(쿼리 내용과 무관하며 출력 처리에만 사용). 서버가 이 앞에 전역 프롬프트를 붙일 수 있습니다. 비워 두면 서버의 전역 프롬프트만 전송됩니다.",
       "userPromptPlaceholder": "사용자 지정 프롬프트 입력 (선택 사항)",
+      "disableUserPromptPrefix": "전역 프롬프트 무시",
+      "disableUserPromptPrefixTooltip": "서버의 전역 출력 프롬프트를 위의 추가 출력 프롬프트 앞에 붙이지 않습니다. 활성화하면 최종 지시문을 여기에서 완전히 제어합니다.",
       "enableRerank": "Rerank 활성화",
       "enableRerankTooltip": "검색된 텍스트 청크에 대해 Rerank를 활성화합니다. True이지만 Rerank 모델이 구성되지 않은 경우 경고가 발생합니다. 기본값은 True입니다."
     }
@@ -501,5 +517,28 @@
     "prevPage": "이전 페이지",
     "nextPage": "다음 페이지",
     "lastPage": "마지막 페이지"
+  },
+  "workspace": {
+    "welcome": {
+      "defaultMarkdown": "환영합니다! 지식 베이스에 대해 질문하고 인용이 포함된 답변을 받아보세요. 로그인하여 시작하세요.",
+      "enterButton": "워크스페이스 입장",
+      "loginButton": "로그인",
+      "enterFailed": "서버에 연결할 수 없습니다. 다시 시도해 주세요."
+    },
+    "queryEmpty": {
+      "defaultMarkdown": "지식 베이스에 대해 무엇이든 질문하여 시작하세요."
+    }
+  },
+  "migration": {
+    "failedTitle": "로컬 설정 준비 실패",
+    "failedBody": "저장된 설정을 새 저장 형식으로 마이그레이션하지 못했습니다. 데이터는 손실되지 않았습니다. 새로고침하여 다시 시도하세요.",
+    "dataLostTitle": "일부 저장된 설정을 복구할 수 없습니다",
+    "dataLostBody": "브라우저 저장 공간이 가득 차서 일부 설정(테마, 언어, API 키)을 보존하지 못했으며 더 이상 복구할 수 없습니다. 계속하면 남아 있는 설정은 유지하고 나머지는 기본값을 사용합니다.",
+    "continueAfterLoss": "계속",
+    "retry": "새로고침",
+    "historyDropped": "업그레이드 중 채팅 기록이 브라우저 저장 공간을 초과하여 삭제되었습니다. 설정은 정상적으로 이전되었습니다."
+  },
+  "retrievalHistory": {
+    "quotaDropped": "브라우저 저장 공간이 가득 찼습니다. 채팅 기록이 더 이상 저장되지 않습니다. 현재 대화는 페이지를 떠나기 전까지 계속 표시됩니다."
   }
 }

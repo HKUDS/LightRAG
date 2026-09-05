@@ -425,6 +425,14 @@ DUPLICATE_DEMOTION_METADATA_KEYS: tuple[str, ...] = (
 # a stale generated summary while real raw-document summaries are preserved —
 # keep every producer on this constant so the match never drifts.
 FILE_EXTRACTION_SUMMARY_PREFIX = "[File Extraction]"
+# Hard ceiling for a doc_status ``content_summary``. PostgreSQL declares the
+# column as ``varchar(255)``; the other backends are unconstrained, so this is
+# the narrowest storage the value must fit. Producers that BUILD a summary from
+# unbounded text (an error message, a document body) must budget against this
+# rather than against ``get_content_summary``'s own default, or a long enough
+# input makes the whole upsert fail on PostgreSQL — including the FAILED
+# transition itself, which then leaves the document stuck in PARSING.
+DOC_STATUS_CONTENT_SUMMARY_MAX_LENGTH = 255
 
 # Suffixes for parser artifact subdirectories under ``<input>/__parsed__/``.
 # Centralising them here keeps the sidecar writer, engine cache modules and
@@ -491,12 +499,11 @@ SUPPORTED_PROCESS_OPTIONS = frozenset(
 DEFAULT_MAX_PARALLEL_ANALYZE = 5  # Multimodal analysis (VLM) concurrency
 
 # Per-engine parsing concurrency defaults.  mineru / docling are
-# resource-intensive (GPU/CPU + memory), so they default to a modest amount of
-# parallelism (2); lower to 1 when resources are tight, or raise via the
-# MAX_PARALLEL_PARSE_* env vars when you have spare capacity.
+# resource-intensive (GPU/CPU + memory), so they default to a single worker;
+# raise via the MAX_PARALLEL_PARSE_* env vars when you have spare capacity.
 DEFAULT_MAX_PARALLEL_PARSE_NATIVE = 5
-DEFAULT_MAX_PARALLEL_PARSE_MINERU = 2
-DEFAULT_MAX_PARALLEL_PARSE_DOCLING = 2
+DEFAULT_MAX_PARALLEL_PARSE_MINERU = 1
+DEFAULT_MAX_PARALLEL_PARSE_DOCLING = 1
 
 # Staged pipeline queue size defaults.
 DEFAULT_QUEUE_SIZE_PARSE = 20
@@ -607,7 +614,8 @@ MAX_RESPONSE_TYPE_CHARS = 256
 MAX_QUERY_TOP_K = 1000
 MAX_QUERY_TOKEN_BUDGET = 1_000_000
 
-# Submission ceilings for the two single-worker CPU pools (tokenizer, chunking).
+# Submission ceilings for the three single-worker pools (tokenizer, chunking,
+# storage IO).
 # A ``ThreadPoolExecutor`` wait queue is unbounded, and freeing the event loop
 # means more requests can be in flight at once, so submissions need their own
 # limit. Deliberately fixed process-wide constants rather than anything derived
@@ -620,6 +628,13 @@ MAX_QUERY_TOKEN_BUDGET = 1_000_000
 # not refusal.
 TOKENIZER_SUBMIT_LIMIT = 8
 CHUNKING_SUBMIT_LIMIT = 8
+# Storage IO is not CPU-bound like the other two, but it needs the same ceiling
+# for a sharper reason: ``_flush_storages`` gathers ``index_done_callback`` over
+# every storage at once (a dozen for a default deployment), and a purge issues
+# several such flushes per document. Each waiter here holds its namespace lock,
+# so the ceiling also bounds how many namespaces can be locked waiting for one
+# worker.
+STORAGE_IO_SUBMIT_LIMIT = 8
 
 # Per-workspace ceiling on manual retry requests that have been published but
 # not yet ACKed (LR2 §10.1). The channel is sticky — a request survives until an

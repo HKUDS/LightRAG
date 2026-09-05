@@ -72,7 +72,7 @@ kubectl --namespace rag port-forward svc/lightrag-dev 9621:9621
 ## 生产环境部署（使用外部数据库）
 
 ### 1. 安装数据库
-> 如果您已经准备好了数据库，可以跳过此步骤。详细信息可以在：[K8S-DB-README.md](databases%2FK8S-DB-README.md)中找到。
+> 如果您已经准备好了数据库，可以跳过此步骤。详细信息可以在：[K8S-DB-README.md](databases/K8S-DB-README.md)中找到。
 
 我们推荐使用KubeBlocks进行数据库部署。KubeBlocks是一个云原生数据库操作符，可以轻松地在Kubernetes上以生产规模运行任何数据库。
 
@@ -81,7 +81,7 @@ kubectl --namespace rag port-forward svc/lightrag-dev 9621:9621
 bash ./databases/01-prepare.sh
 ```
 
-然后安装所需的数据库。默认情况下，这将安装PostgreSQL和Neo4J，但您可以修改[00-config.sh](databases%2F00-config.sh)以根据需要选择不同的数据库：
+然后安装所需的数据库。默认情况下，这将安装PostgreSQL和Neo4J，但您可以修改[00-config.sh](databases/00-config.sh)以根据需要选择不同的数据库：
 ```bash
 bash ./databases/02-install-database.sh
 ```

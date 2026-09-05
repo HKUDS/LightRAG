@@ -34,6 +34,7 @@
       <a href="README-zh.md"><img src="https://img.shields.io/badge/🇨🇳中文版-1a1a2e?style=for-the-badge"></a>
       <a href="README.md"><img src="https://img.shields.io/badge/🇺🇸English-1a1a2e?style=for-the-badge"></a>
       <a href="README-ja.md"><img src="https://img.shields.io/badge/🇯🇵日本語版-1a1a2e?style=for-the-badge"></a>
+      <a href="README-id.md"><img src="https://img.shields.io/badge/🇮🇩Bahasa%20Indonesia-1a1a2e?style=for-the-badge"></a>
     </p>
     <p>
       <a href="https://pepy.tech/projects/lightrag-hku"><img src="https://static.pepy.tech/personalized-badge/lightrag-hku?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads"></a>
@@ -268,7 +269,7 @@ LightRAG is a lightweight knowledge-graph RAG framework and an efficient alterna
 - **Incremental Updates & Selective Deletion:** LightRAG addresses the challenges of incrementally updating and selectively deleting content from graph-based knowledge bases, keeping them current in dynamic data environments. When a document is deleted, the system can use the LLM cache created during indexing to quickly rebuild the affected entities and relationships, substantially improving update efficiency.
 - **Multiple Document Parsing Engines:** LightRAG's document processing pipeline supports MinerU, Docling, and Native and can be extended with third-party parsers. LightRAG's Native engine efficiently parses images, tables, and formulas in Word and Markdown documents, making it especially suitable for documents rich in multimodal content. The Native engine also automatically detects and corrects section headings in Word documents, improving content extraction from documents with inconsistent outlines and laying the foundation for section-aware text chunking.
 - **Multiple Text Chunking Strategies:** LightRAG supports four text chunking strategies: `Fixed-length (F)`, `Recursive character (R)`, `Vector semantic (V)`, and `Paragraph semantic (P)`. The LightRAG-native `Paragraph semantic (P)` strategy **aligns chunk boundaries with the document's native semantic boundaries**—headings, paragraphs, and tables—as closely as possible. This reduces problems such as mismatched headings and content or missing header rows when long tables are split.
-- **Multiple Storage Backends:** LightRAG's default KV, vector, and graph stores use in-memory databases with local file persistence, making them well suited for quickly evaluating the project. LightRAG also supports a wide range of commonly used storage backends for production deployments with large datasets.
+- **Multiple Storage Backends:** LightRAG's default KV, vector, and graph stores are in-memory databases with local file persistence — suitable only for small-scale testing and evaluation, **not for production**. LightRAG also supports a wide range of commonly used storage backends (PostgreSQL recommended) for production deployments with large datasets.
 
 ### Multimodal Capability Upgrades
 
@@ -334,8 +335,9 @@ Since the cloud-based MinerU service has limitations on usage, file size, and pa
 
 For large-scale document processing, you need to improve concurrency. Key environment variables related to concurrent file processing include:
 
-- **MAX_ASYNC_LLM/EXTRACT_ASYNC_LLM**: Controls the maximum concurrency for LLM models.
-- **MAX_PARALLEL_INSERT**: Controls the maximum number of files processed in parallel. Processing of text, tables, formulas, and images within a single file will also occur concurrently. `MAX_PARALLEL_INSERT` should ideally be set to about 1/3 of `MAX_ASYNC_LLM`.
+- **MAX_ASYNC_LLM**: Sets the base concurrency for LLM roles (`MAX_ASYNC` remains a deprecated alias). During file processing, it also caps entity/relation extraction tasks for the chunks of one document; each entity-merge or relation-merge phase can run up to twice this many tasks.
+- **EXTRACT_MAX_ASYNC_LLM**: Optionally overrides the Extract-role limit for actual extraction and merge-summary LLM requests. When unset, it inherits `MAX_ASYNC_LLM`; it does not change the pipeline task limits above.
+- **MAX_PARALLEL_INSERT**: Controls the maximum number of files processed in parallel, rather than the per-document chunk or graph-merge task limits. It should ideally be set to about 1/3 of `MAX_ASYNC_LLM`.
 - **MAX_PARALLEL_PARSE_MINERU**: Controls the number of parallel files processed for MinerU parsing.
 - **MAX_PARALLEL_PARSE_DOCLING**: Controls the number of parallel files processed for Docling parsing.
 - **EMBEDDING_FUNC_MAX_ASYNC**: Controls the maximum concurrency for embedding models.
@@ -358,7 +360,11 @@ LightRAG requires four types of backend storage:
 - **GRAPH_STORAGE**: Used to save the knowledge graph.
 - **DOC_STATUS_STORAGE**: Used to store the document list.
 
-By default, LightRAG's storage backends are file-persisted, in-memory databases. These default storages are intended only for development and debugging, and are not suitable for production. In a production environment, if you prefer a single backend to handle all four storage types, you can choose PostgreSQL, MongoDB, or OpenSearch. Alternatively, you can select specialized databases for vector or graph storage, such as using Milvus or Qdrant for vector storage, and Neo4j or Memgraph for graph storage.
+**All four default storages are in-memory databases** (`JsonKVStorage`, `NanoVectorDBStorage`, `NetworkXStorage`, `JsonDocStatusStorage`): the whole dataset resides in the server process's memory and local files under `WORKING_DIR` serve only as persistence, so capacity is bounded by available RAM. The defaults are therefore intended **only for small-scale testing, evaluation, and debugging, and are not suitable for production**.
+
+For production, **PostgreSQL is the recommended backend** — it can serve all four storage types on its own; MongoDB and OpenSearch are the other single-backend options. Alternatively, you can select specialized databases for vector or graph storage, such as using Milvus or Qdrant for vector storage, and Neo4j or Memgraph for graph storage.
+
+For the complete list of available implementations per storage type, see [Storage Types Supported](./docs/LightRAG-API-Server.md#storage-types-supported).
 
 ### Other Important Configurations for Document Processing
 
@@ -386,6 +392,17 @@ During the document query stage, you may also want to adjust the following envir
 - **MAX_ENTITY_TOKENS / MAX_RELATION_TOKENS / MAX_TOTAL_TOKENS**: Controls the token length of the retrieved content sent to the LLM context. The retrieved content consists of three parts: `entities`, `relations`, and `text chunks`. The lengths of entities and relations can be controlled independently, while the text chunk length is determined by subtracting the entity and relation lengths from the total length.
 - **ENABLE_CONTENT_HEADINGS**: Controls whether the section heading where a text chunk resides is sent to the LLM; enabled by default, providing richer context for the LLM and improving answer quality.
 - **ENABLE_LLM_CACHE**: Whether to cache query results. Enabled by default; identical query questions, query modes, and LLM model parameters will return the same result.
+- **USER_PROMPT_PREFIX / USER_PROMPT_PREFIX_FILE**: Global instructions prepended to every request's `user_prompt` (the "Additional Instructions" section of the answer prompt), giving operators one place to customize LLM output. It is concatenated verbatim, so end the value with `\n\n` yourself. If a request's `user_prompt` is empty, the prefix alone becomes the instructions sent to the LLM; only the API field `disable_user_prompt_prefix` suppresses it, and a request can never read or replace it. Use `USER_PROMPT_PREFIX_FILE` (a `.md`/`.txt` file name under `PROMPT_DIR/user_prompt`) for long or multi-paragraph text, since a `.env` value must stay on one line.
+
+### WebUI Entries and the Default Entry
+
+The server mounts two WebUI entries from a single frontend build. **`/webui`** is the admin console: document management, knowledge-graph exploration, and query debugging with the full query-parameter panel. **`/workspace`** is a query-only entry for everyday knowledge-base users: the chat surface and nothing else (no document management, no knowledge graph, no query-parameter sidebar, no API-docs links), designed for mobile use, and showing a welcome page to visitors who are not signed in.
+
+- **LIGHTRAG_DEFAULT_UI**: Which entry the root path `/` redirects to — `webui` (default) or `workspace`. It controls **exactly one** behavior: that redirect. Both entries stay mounted either way and remain reachable at their own URLs; any other value fails startup. Set it to `workspace` when the deployment's primary audience is query users rather than administrators.
+- **UI_TEMPLATES_DIR**: Points at an optional multi-language bundle that replaces the welcome page, login-page text, query empty state, brand logo and copyright line with your own, without rebuilding the WebUI. See [UserDefinedUI.md](./docs/UserDefinedUI.md).
+- **ENABLE_AI_CONTENT_NOTICE**: Labels every **LLM-generated** answer as AI-generated in both query UIs (`/workspace` and the `/webui` retrieval panel); text the model did not write — the canned no-context reply, the admin panel's debug output — stays unlabelled. Off by default; it is a UI element only and never enters the API response or the stored chat history.
+
+Two things to know before pointing end users at `/workspace`. First, query parameters there are **inherited, not editable**: each query uses the settings `/webui` saved in the **same browser** (frontend defaults when none were saved), which is per-browser local state, not a server-wide policy. Second, hiding the admin UI is a UX split, **not** a security boundary — the API still authorizes every endpoint server-side. For the complete behavior of the query entry, see [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md#the-workspace-query-entry).
 
 ## Using LightRAG As SDK
 
@@ -489,6 +506,7 @@ Entries marked 🇨🇳 also ship a Chinese translation as `*-zh.md` in the same
 | Document | What it covers |
 |---|---|
 | [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md) [🇨🇳](./docs/LightRAG-API-Server-zh.md) | The complete server guide: startup, configuration, authentication, REST endpoints, and WebUI usage |
+| [UserDefinedUI.md](./docs/UserDefinedUI.md) [🇨🇳](./docs/UserDefinedUI-zh.md) | Replacing the welcome page, login-page text, user agreement, query empty state, copyright line and brand logo per language (`UI_TEMPLATES_DIR`) |
 
 **Document Processing**
 

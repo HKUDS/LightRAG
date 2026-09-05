@@ -1,10 +1,20 @@
 import axios, { AxiosError } from 'axios'
-import { backendBaseUrl, popularLabelsDefaultLimit, searchLabelsDefaultLimit } from '@/lib/constants'
+import {
+  backendBaseUrl,
+  documentFetchTimeoutMessage,
+  healthCheckTimeout,
+  pipelineStatusTimeout,
+  popularLabelsDefaultLimit,
+  searchLabelsDefaultLimit
+} from '@/lib/constants'
 import type { SupportedFileTypes } from '@/lib/fileTypes'
 import { errorMessage } from '@/lib/utils'
+import { decodeBase64Url } from '@/lib/base64url'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
+import { applyAiContentNoticeFlag } from '@/stores/aiContentNotice'
 import { navigationService } from '@/services/navigation'
+import { AuthenticationRequiredError, isAuthenticationRequiredError } from '@/api/errors'
 
 // Types
 export type LightragNodeType = {
@@ -154,6 +164,8 @@ export type LightragStatus = {
   }
   webui_title?: string
   webui_description?: string
+  /** Whether answers are labelled as AI-generated in the query UIs. */
+  ai_content_notice_enabled?: boolean
 }
 
 /**
@@ -206,8 +218,19 @@ export type QueryRequest = {
   conversation_history?: Message[]
   /** Number of complete conversation turns (user-assistant pairs) to consider in the response context. */
   history_turns?: number
-  /** User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template. */
+  /**
+   * Additional instructions for the LLM, injected into the "Additional
+   * Instructions" section of the answer prompt. Does not affect retrieval.
+   * The server may prepend a global prefix; see disable_user_prompt_prefix.
+   */
   user_prompt?: string
+  /**
+   * If true, the server-side global prompt prefix is not prepended to
+   * user_prompt, leaving this client in full control of the final instruction
+   * text. The prefix itself is server configuration and cannot be read or
+   * replaced from here. Default: false.
+   */
+  disable_user_prompt_prefix?: boolean
   /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
   enable_rerank?: boolean
   /** If True, emits retrieval progress events and a final response-time metadata line (streaming only). Default: false. */
@@ -217,6 +240,13 @@ export type QueryRequest = {
 export type QueryResponse = {
   response: string
   response_time?: number
+  /**
+   * Whether the answering LLM actually wrote this response. False for text a
+   * query path produced without calling it — the canned no-context reply and
+   * the only_need_context / only_need_prompt debug output. Absent on servers
+   * older than the field.
+   */
+  llm_generated?: boolean
 }
 
 export type EntityUpdateResponse = {
@@ -281,10 +311,6 @@ export type DocStatusResponse = {
   file_path: string
 }
 
-export type DocsStatusesResponse = {
-  statuses: Partial<Record<DocStatus, DocStatusResponse[]>>
-}
-
 export type TrackStatusResponse = {
   track_id: string
   documents: DocStatusResponse[]
@@ -316,10 +342,6 @@ export type PaginatedDocsResponse = {
   status_counts: Record<string, number>
 }
 
-export type StatusCountsResponse = {
-  status_counts: Record<string, number>
-}
-
 export type AuthStatusResponse = {
   auth_configured: boolean
   access_token?: string
@@ -330,6 +352,8 @@ export type AuthStatusResponse = {
   api_version?: string
   webui_title?: string
   webui_description?: string
+  /** Whether answers are labelled as AI-generated in the query UIs. */
+  ai_content_notice_enabled?: boolean
 }
 
 export type PipelineStatusResponse = {
@@ -354,6 +378,8 @@ export type LoginResponse = {
   api_version?: string
   webui_title?: string
   webui_description?: string
+  /** Whether answers are labelled as AI-generated in the query UIs. */
+  ai_content_notice_enabled?: boolean
 }
 
 export const InvalidApiKeyError = 'Invalid API Key'
@@ -388,6 +414,8 @@ const silentRefreshGuestToken = async (): Promise<string> => {
         // This request must skip the interceptor to avoid adding expired token
         headers: { 'X-Skip-Interceptor': 'true' }
       });
+
+      applyAiContentNoticeFlag(response.data?.ai_content_notice_enabled);
 
       if (response.data.access_token && !response.data.auth_configured) {
         const newToken = response.data.access_token;
@@ -437,6 +465,29 @@ axiosInstance.interceptors.request.use((config) => {
 })
 
 // Interceptor：handle token renewal and authentication errors
+/**
+ * An HTTP error surfaced by the response interceptor.
+ *
+ * The status is carried as a property, not only inside the message: callers
+ * branch on it (e.g. the document list treats a 4xx as a permanent client
+ * error that must not trip its circuit breaker), and a plain Error left them
+ * unable to tell a 404 from a network failure.
+ */
+export type HttpRequestError = Error & { status?: number }
+
+export const toHttpRequestError = (
+  status: number,
+  statusText: string,
+  data: unknown,
+  url?: string
+): HttpRequestError => {
+  const error = new Error(
+    `${status} ${statusText}\n${JSON.stringify(data)}\n${url}`
+  ) as HttpRequestError
+  error.status = status
+  return error
+}
+
 axiosInstance.interceptors.response.use(
   (response) => {
     // ========== Check for new token from backend ==========
@@ -449,9 +500,17 @@ axiosInstance.interceptors.response.use(
         console.log('[Auth] Token auto-renewed by backend');
       }
 
-      // Update auth state with renewal tracking
+      // Update auth state with renewal tracking.
+      //
+      // The payload MUST go through decodeBase64Url, like every other reader
+      // of a JWT here (stores/state.ts, lib/loginIdentity.ts). Bare `atob`
+      // rejects the `-`/`_` alphabet, and the catch below swallows that: the
+      // renewed token is already in localStorage by then, so the session
+      // would carry the NEW token while `lastTokenRenewal` and
+      // `tokenExpiresAt` still described the OLD one.
       try {
-        const payload = JSON.parse(atob(newToken.split('.')[1]));
+        const decodedPayload = decodeBase64Url(newToken.split('.')[1] ?? '');
+        const payload = decodedPayload === null ? {} : JSON.parse(decodedPayload);
         const authStore = useAuthStore.getState();
         if (authStore.isAuthenticated) {
           // Track token renewal time and expiration
@@ -486,8 +545,8 @@ axiosInstance.interceptors.response.use(
 
         // 2. Prevent infinite retry
         if (originalRequest && (originalRequest as any)._retry) {
-          navigationService.navigateToLogin();
-          return Promise.reject(new Error('Authentication required'));
+          navigationService.navigateToUnauthenticated();
+          return Promise.reject(new AuthenticationRequiredError());
         }
 
         // 3. Check if in guest mode
@@ -511,19 +570,24 @@ axiosInstance.interceptors.response.use(
           } catch (refreshError) {
             console.error('Failed to refresh guest token:', refreshError);
             // Refresh failed, navigate to login
-            navigationService.navigateToLogin();
-            return Promise.reject(new Error('Failed to refresh authentication'));
+            navigationService.navigateToUnauthenticated();
+            return Promise.reject(
+              new AuthenticationRequiredError('Failed to refresh authentication', {
+                cause: refreshError,
+              })
+            );
           }
         }
 
         // 5. Non-guest mode: navigate to login page
-        navigationService.navigateToLogin();
-        return Promise.reject(new Error('Authentication required'));
+        navigationService.navigateToUnauthenticated();
+        return Promise.reject(new AuthenticationRequiredError());
       }
-      throw new Error(
-        `${error.response.status} ${error.response.statusText}\n${JSON.stringify(
-          error.response.data
-        )}\n${error.config?.url}`
+      throw toHttpRequestError(
+        error.response.status,
+        error.response.statusText,
+        error.response.data,
+        error.config?.url
       )
     }
     throw error
@@ -559,7 +623,13 @@ export const checkHealth = async (): Promise<
   LightragStatus | { status: 'error'; message: string }
 > => {
   try {
-    const response = await axiosInstance.get('/health')
+    // Explicit timeout: the axios instance sets none, so a backend whose
+    // event loop is blocked would leave this request hanging and the health
+    // state would neither succeed nor fail. Kept below healthCheckInterval
+    // so probes cannot pile up.
+    const response = await axiosInstance.get('/health', {
+      timeout: healthCheckTimeout * 1000
+    })
     return response.data
   } catch (error) {
     return {
@@ -569,9 +639,17 @@ export const checkHealth = async (): Promise<
   }
 }
 
-export const getDocuments = async (): Promise<DocsStatusesResponse> => {
-  const response = await axiosInstance.get('/documents')
-  return response.data
+/**
+ * Probe whether the caller's credentials satisfy the API's combined auth.
+ * /health CANNOT serve this purpose: it sits on the default whitelist and
+ * deliberately answers "healthy" to unauthenticated callers, so it never
+ * distinguishes valid, invalid and missing API keys. /auth/verify always
+ * runs the combined dependency — a missing or wrong X-API-Key REJECTS with
+ * the standard 403 detail ("API Key required" / "Invalid API Key"), which
+ * the axios interceptor surfaces in the thrown error's message.
+ */
+export const verifyCredentials = async (): Promise<void> => {
+  await axiosInstance.get('/auth/verify')
 }
 
 export const getSupportedFileTypes = async (signal?: AbortSignal): Promise<SupportedFileTypes> => {
@@ -619,11 +697,33 @@ async function _readNdjsonStream(
   onChunk: (chunk: string) => void,
   onError: ((error: string) => void) | undefined,
   onResponseTime?: (seconds: number) => void,
-  onProgress?: (event: string) => void
+  onProgress?: (event: string) => void,
+  onLlmGenerated?: (llmGenerated: boolean) => void
 ): Promise<void> {
   if (!response.body) {
     throw new Error('Response body is null');
   }
+
+  // One dispatcher for both readers below (the loop and the trailing buffer).
+  // `llm_generated` is checked FIRST and separately: the server carries it on
+  // the SAME line as a complete (non-streamed) response, and the caller must
+  // know what the content is before the content arrives.
+  const dispatch = (parsed: any): void => {
+    if (typeof parsed.llm_generated === 'boolean') {
+      onLlmGenerated?.(parsed.llm_generated);
+    }
+    if (parsed.response) {
+      onChunk(parsed.response);
+    } else if (parsed.error) {
+      onError?.(parsed.error);
+    } else if (parsed.response_time !== undefined && onResponseTime) {
+      onResponseTime(parsed.response_time);
+    } else if (parsed.progress && onProgress) {
+      onProgress(parsed.progress);
+    }
+    // references-only lines are silently consumed —
+    // the caller only cares about response chunks and errors.
+  };
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -645,18 +745,7 @@ async function _readNdjsonStream(
         if (!trimmed) continue;
 
         try {
-          const parsed = JSON.parse(trimmed);
-          if (parsed.response) {
-            onChunk(parsed.response);
-          } else if (parsed.error) {
-            onError?.(parsed.error);
-          } else if (parsed.response_time !== undefined && onResponseTime) {
-            onResponseTime(parsed.response_time);
-          } else if (parsed.progress && onProgress) {
-            onProgress(parsed.progress);
-          }
-          // references-only lines are silently consumed —
-          // the caller only cares about response chunks and errors.
+          dispatch(JSON.parse(trimmed));
         } catch {
           // Truncated or malformed JSON — log and skip the line so one
           // bad line does not kill the whole stream.
@@ -676,16 +765,7 @@ async function _readNdjsonStream(
   // Process any remaining data in the buffer after the stream ends
   if (buffer.trim()) {
     try {
-      const parsed = JSON.parse(buffer);
-      if (parsed.response) {
-        onChunk(parsed.response);
-      } else if (parsed.error) {
-        onError?.(parsed.error);
-      } else if (parsed.response_time !== undefined && onResponseTime) {
-        onResponseTime(parsed.response_time);
-      } else if (parsed.progress && onProgress) {
-        onProgress(parsed.progress);
-      }
+      dispatch(JSON.parse(buffer));
     } catch {
       console.warn('Failed to parse final NDJSON buffer:', buffer.substring(0, 120));
       onError?.(
@@ -729,15 +809,23 @@ function _classifyStreamError(
 
   const message = errorMessage(error);
 
-  if (message === 'Authentication required') {
-    return 'Authentication required';
-  }
-
   const statusCodeMatch = message.match(/^(\d{3})\s/);
   if (statusCodeMatch) {
     const statusCode = parseInt(statusCodeMatch[1], 10);
     switch (statusCode) {
       case 403:
+        // A 403 raised by the API-key check must KEEP that detail: the
+        // workspace entry recognizes these messages to re-probe credentials
+        // and reopen its API-key dialog, which is the only way back in after
+        // a key is rotated (and streaming is the default query mode, so
+        // flattening them here disabled that path entirely). Unrelated 403s
+        // keep the generic wording.
+        if (message.includes(InvalidApiKeyError)) {
+          return `${InvalidApiKeyError} (403 Forbidden)`;
+        }
+        if (message.includes(RequireApiKeError)) {
+          return `${RequireApiKeError} (403 Forbidden)`;
+        }
         return 'You do not have permission to access this resource (403 Forbidden)';
       case 404:
         return 'The requested resource does not exist (404 Not Found)';
@@ -794,7 +882,11 @@ export const queryTextStream = async (
   onError?: (error: string) => void,
   signal?: AbortSignal,
   onResponseTime?: (seconds: number) => void,
-  onProgress?: (event: string) => void
+  onProgress?: (event: string) => void,
+  // Reports the server's verdict on whether the answering LLM wrote the
+  // content of a complete (non-streamed) response line. Streamed chunks carry
+  // no flag — they always come from the LLM.
+  onLlmGenerated?: (llmGenerated: boolean) => void
 ) => {
   const headers = _buildStreamHeaders();
 
@@ -844,8 +936,8 @@ export const queryTextStream = async (
               'Failed to refresh guest token for streaming:',
               refreshError
             );
-            navigationService.navigateToLogin();
-            throw new Error('Failed to refresh authentication', {
+            navigationService.navigateToUnauthenticated();
+            throw new AuthenticationRequiredError('Failed to refresh authentication', {
               cause: refreshError,
             });
           }
@@ -853,8 +945,8 @@ export const queryTextStream = async (
           if (!retryResponse.ok) {
             if (retryResponse.status === 401) {
               // Refreshed token still rejected → genuine auth failure
-              navigationService.navigateToLogin();
-              throw new Error('Authentication required');
+              navigationService.navigateToUnauthenticated();
+              throw new AuthenticationRequiredError();
             }
             // Non-auth HTTP error on retry → classify like the first response
             await _throwStreamHttpError(retryResponse);
@@ -863,8 +955,8 @@ export const queryTextStream = async (
           activeResponse = retryResponse;
         } else {
           // Non-guest 401 → login
-          navigationService.navigateToLogin();
-          throw new Error('Authentication required');
+          navigationService.navigateToUnauthenticated();
+          throw new AuthenticationRequiredError();
         }
       } else {
         // --- Other HTTP errors ---------------------------------------------
@@ -873,8 +965,22 @@ export const queryTextStream = async (
     }
 
     // --- Read the NDJSON stream (happy path or refreshed retry) ------------
-    await _readNdjsonStream(activeResponse, onChunk, onError, onResponseTime, onProgress);
+    await _readNdjsonStream(
+      activeResponse,
+      onChunk,
+      onError,
+      onResponseTime,
+      onProgress,
+      onLlmGenerated
+    );
   } catch (error) {
+    // Auth termination is NOT an answer failure: navigation to the entry's
+    // unauthenticated route already happened above. Rethrow the typed error
+    // so the query session ends quietly instead of rendering it as an
+    // assistant error via onError.
+    if (isAuthenticationRequiredError(error)) {
+      throw error;
+    }
     const classified = _classifyStreamError(error, signal);
     if (classified === null) {
       return; // User abort — silent exit
@@ -975,6 +1081,12 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
       };
     }
 
+    // Deployment display configuration the caller never looks at: adopted here,
+    // once, before the validation below picks one of its several return shapes
+    // (this is the request BOTH entries make at boot, so it is the one place
+    // that covers the admin shell, the login page and the workspace entry).
+    applyAiContentNoticeFlag(response.data?.ai_content_notice_enabled);
+
     // Strict validation of the response data
     if (response.data &&
         typeof response.data === 'object' &&
@@ -1013,7 +1125,9 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
 }
 
 export const getPipelineStatus = async (): Promise<PipelineStatusResponse> => {
-  const response = await axiosInstance.get('/documents/pipeline_status')
+  const response = await axiosInstance.get('/documents/pipeline_status', {
+    timeout: pipelineStatusTimeout * 1000
+  })
   return response.data
 }
 
@@ -1034,6 +1148,8 @@ export const loginToServer = async (username: string, password: string): Promise
   const response = await axiosInstance.post('/login', formData, {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
   });
+
+  applyAiContentNoticeFlag(response.data?.ai_content_notice_enabled);
 
   return response.data;
 }
@@ -1229,6 +1345,14 @@ export const __setPaginatedDocumentsPostForTests = (
 }
 
 /**
+ * Swap the axios adapter so a test can drive a response (or an HTTP failure)
+ * through the real request/response interceptors. Pass undefined to restore.
+ */
+export const __setAxiosAdapterForTests = (adapter: any): void => {
+  axiosInstance.defaults.adapter = adapter
+}
+
+/**
  * Get documents with pagination support
  * @param request The pagination request parameters
  * @returns Promise with paginated documents response
@@ -1246,7 +1370,7 @@ export const getDocumentsPaginated = async (request: DocumentsRequest): Promise<
 export const getDocumentsPaginatedWithTimeout = (
   request: DocumentsRequest,
   timeoutMs: number = 30000,
-  errorMsg: string = 'Document fetch timeout'
+  errorMsg: string = documentFetchTimeoutMessage
 ): Promise<PaginatedDocsResponse> => {
   const { requestEntry, release } = subscribeToPaginatedDocumentsRequest(request)
 
@@ -1276,13 +1400,4 @@ export const getDocumentsPaginatedWithTimeout = (
         reject(error)
       })
   })
-}
-
-/**
- * Get counts of documents by status
- * @returns Promise with status counts response
- */
-export const getDocumentStatusCounts = async (): Promise<StatusCountsResponse> => {
-  const response = await axiosInstance.get('/documents/status_counts')
-  return response.data
 }

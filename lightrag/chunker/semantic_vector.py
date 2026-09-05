@@ -19,21 +19,58 @@ Caveats:
     ``chunk_token_size`` is *advisory* here.  Oversized chunks will be
     hard-split before embedding by
     :func:`lightrag.utils.enforce_chunk_token_limit_before_embedding`.
+    That function only covers the chunks this module *emits*; the
+    sentence-window embeddings V performs while chunking are bounded
+    separately, see below.
   - When ``embedding_func`` is ``None`` we log a warning and fall back to
     :func:`lightrag.chunker.chunking_by_recursive_character` — V's only
     differentiator is embeddings, and R is the closest structural-only
     alternative.
+
+Embedding request bounding:
+    Upstream ``SemanticChunker`` embeds the *whole document* in a single
+    ``embed_documents`` call — one item per sentence window, so the request
+    carries ``N = sentence count`` items and roughly
+    ``(2 * buffer_size + 1) x document`` tokens.  No provider binding in
+    ``lightrag/llm`` slices that list, so a large enough document breaks
+    the service's per-request limits.  :class:`_AsyncEmbeddingFuncAdapter`
+    therefore batches by item count and truncates each window.  What is
+    guaranteed, per ``chunking_by_semantic_vector`` call:
+
+      * every provider request carries at most ``embedding_batch_num``
+        items (``<= 0`` deliberately disables batching and gives up the
+        bound entirely);
+      * at most ``embedding_max_async`` requests from this one adapter are
+        in flight at a time — cross-instance concurrency is the priority
+        wrapper's job, not this pool's;
+      * once one batch's failure is observed, no further batch is started.
+
+    Per-item token counts are **best effort only**: the truncation uses
+    LightRAG's general-purpose tokenizer, which need not match the
+    embedding model's, and providers may rewrite the input afterwards
+    (``openai_embed`` prepends ``document_prefix`` before its own
+    truncation).  ``batch_size * budget`` is a logical bound under the
+    adapter's tokenizer, never a promise about what the service receives.
+    Truncation cannot lose chunk content: the emitted chunks are original
+    source spans, so only the boundary distance computation degrades.
 """
 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import re
+import threading
 from typing import TYPE_CHECKING, Any
 
-from lightrag.constants import DEFAULT_SENTENCE_SPLIT_REGEX
+from lightrag.constants import (
+    DEFAULT_EMBEDDING_BATCH_NUM,
+    DEFAULT_EMBEDDING_FUNC_MAX_ASYNC,
+    DEFAULT_SENTENCE_SPLIT_REGEX,
+)
 from lightrag.utils import (
     EmbeddingFunc,
+    TokenBudgetError,
     Tokenizer,
     logger,
     run_in_chunking_executor,
@@ -66,23 +103,253 @@ class _AsyncEmbeddingFuncAdapter(Embeddings):
     ``embed_query`` calls are then made from a worker thread (via
     :func:`asyncio.to_thread` in the public chunker) and bounce back to
     the captured loop with :func:`asyncio.run_coroutine_threadsafe`.
+
+    Every call truncates each text to ``max_token_size`` and splits the
+    list into ``batch_size``-item provider requests, running at most
+    ``max_concurrency`` of them at a time.  See the module docstring for
+    exactly what that does and does not guarantee.
+
+    .. warning::
+        Never invoke this adapter from inside the chunking executor.  That
+        pool has a single worker (see ``run_in_chunking_executor``), and a
+        blocking ``future.result()`` there would occupy it — while
+        ``chunking_by_semantic_vector``'s own fallback path submits to the
+        same pool.  Today the adapter only runs on the *default* executor
+        via ``asyncio.to_thread``; ``_size_and_resplit`` is the part that
+        runs in the chunking pool, and it never touches the adapter.
+        Moving an embedding bounce into it would deadlock.
+
+        Related, unchanged by the batching: an ``embedding_func`` that
+        wraps a *synchronous* SDK in ``asyncio.to_thread`` competes with
+        V's own blocking thread for default-executor workers (one thread
+        per document either way).
     """
 
     def __init__(
         self,
         embedding_func: EmbeddingFunc,
         loop: asyncio.AbstractEventLoop,
+        *,
+        tokenizer: Tokenizer | None = None,
+        max_token_size: int | None = None,
+        batch_size: int = DEFAULT_EMBEDDING_BATCH_NUM,
+        max_concurrency: int = DEFAULT_EMBEDDING_FUNC_MAX_ASYNC,
+        budget_source: str = "unspecified",
     ) -> None:
+        # Rejected here rather than at the concurrency primitive: zero
+        # workers would leave every batch waiting forever, which surfaces
+        # as a hung document instead of an error.
+        if max_concurrency <= 0:
+            raise ValueError(f"max_concurrency must be positive, got {max_concurrency}")
         self._embedding_func = embedding_func
         self._loop = loop
+        self._tokenizer = tokenizer
+        self._max_token_size = max_token_size
+        self._batch_size = batch_size
+        self._max_concurrency = max_concurrency
+        self._budget_source = budget_source
+        # ``_cancelled`` is sticky and guarded by ``_cancel_lock`` because it
+        # crosses threads: the loop thread sets it, the worker thread reads it.
+        # A plain "cancel whatever is in flight" is not enough — see
+        # ``cancel_inflight``.
+        self._cancel_lock = threading.Lock()
+        self._cancelled = False
+        self._inflight: concurrent.futures.Future | None = None
+
+    # -- truncation ----------------------------------------------------
+
+    def _truncate(self, texts: list[str]) -> list[str]:
+        """Cap each text at ``max_token_size`` tokens, warning once.
+
+        Truncation here can never lose chunk content: the emitted chunks
+        are original source spans, so an over-budget sentence window only
+        degrades the boundary distance it contributes to.
+        """
+        tokenizer = self._tokenizer
+        budget = self._max_token_size
+        if tokenizer is None or not budget or budget <= 0:
+            return texts
+
+        out: list[str] = []
+        truncated = 0
+        longest_original = 0
+        degraded = 0
+        for text in texts:
+            if not text:
+                out.append(text)
+                continue
+            # Encode first instead of calling truncate_by_token_limit
+            # unconditionally: the common case (text fits) costs the same
+            # single encode, and the over-budget case is the only one that
+            # pays twice — while giving us the ORIGINAL token count for the
+            # warning.  ``TokenSpan.token_count`` is the count that
+            # SURVIVED truncation, so reporting it as "longest" would
+            # mislead.  A character-length pre-check is not an option: cl100k
+            # emits more than one token per CJK character, so
+            # ``len(text) <= budget`` does not imply the token count fits.
+            total = len(tokenizer.encode(text))
+            if total <= budget:
+                out.append(text)
+                continue
+            truncated += 1
+            longest_original = max(longest_original, total)
+            try:
+                span = tokenizer.truncate_by_token_limit(text, budget)
+                out.append(text[span.start : span.end])
+            except TokenBudgetError:
+                # Not even the first code point fits.  Degrade to that
+                # single code point rather than failing the document — a
+                # boundary-quality nicety must not turn into a FAILED doc.
+                degraded += 1
+                out.append(text[:1])
+
+        if truncated:
+            message = (
+                f"[semantic_vector] truncated {truncated}/{len(texts)} sentence "
+                f"windows to budget={budget} tokens (source={self._budget_source}, "
+                f"longest_original={longest_original} tokens) before embedding. "
+                "Chunk content and source spans are NOT affected — only the "
+                "semantic boundary distances for those windows degrade."
+            )
+            if degraded:
+                message += (
+                    f" {degraded} window(s) did not fit even one code point and "
+                    "were degraded to their first code point."
+                )
+            logger.warning(message)
+        return out
+
+    # -- batching ------------------------------------------------------
+
+    async def _embed_all(self, batches: list[list[str]], context: str) -> list[Any]:
+        """Run ``batches`` through ``embedding_func``, at most
+        ``max_concurrency`` at a time, results in batch order.
+
+        A bounded worker pool rather than ``asyncio.gather`` over every
+        batch: ``gather`` without ``return_exceptions`` raises the first
+        error to its awaiter but does NOT cancel the remaining awaitables,
+        so one 429 would leave thousands of batches hammering the provider
+        after the document had already failed.  It also materialises one
+        Task per batch up front.  ``asyncio.TaskGroup`` would do, but the
+        project floor is Python 3.10.
+
+        The pool also bounds how many queue slots V occupies in
+        ``priority_limit_async_func_call``: that wrapper enqueues at CALL
+        time, so keeping calls in flight bounded keeps queued tasks
+        bounded.  It is NOT here to limit execution concurrency — the
+        wrapper already caps that at ``embedding_func_max_async``; it is
+        here so V cannot park thousands of coroutines behind the (1000
+        slot, blocking-on-full) queue and add minutes of latency to
+        queries.
+        """
+        results: list[Any] = [None] * len(batches)
+        cursor = iter(range(len(batches)))
+        # Single-threaded event loop: next() on the shared iterator cannot
+        # interleave, so no lock is needed.
+        stopped = asyncio.Event()
+
+        async def _worker() -> None:
+            for i in cursor:
+                # Checked before every batch, and set in the except below
+                # rather than relying on the outer gather's cancellation:
+                # between one worker's failure and that error reaching the
+                # awaiter, the other workers would otherwise have pulled
+                # and dispatched fresh batches, breaking the "no new batch
+                # after a failure" guarantee.  CancelledError is a
+                # BaseException too, so an outer cancel also stops intake.
+                if stopped.is_set():
+                    return
+                try:
+                    results[i] = await self._embedding_func(batches[i], context=context)
+                except BaseException:
+                    stopped.set()
+                    raise
+
+        tasks = [
+            asyncio.create_task(_worker())
+            for _ in range(min(self._max_concurrency, len(batches)))
+        ]
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        return results
+
+    def cancel_inflight(self) -> None:
+        """Refuse all further work, and cancel the in-flight bounced call.
+
+        Called from the event loop when the outer chunking task is
+        cancelled.  Cancelling the bridging future wakes the blocked worker
+        thread and — through ``_chain_future``'s cancellation callback —
+        cancels the loop-side task, and with it the worker pool.
+
+        The sticky flag is the other half, and it is not optional.
+        ``asyncio.to_thread`` can still be QUEUED when the cancellation
+        arrives (or running the grouping before it first reaches this
+        adapter), in which case there is no future to cancel yet.  Without
+        the flag that cancellation would simply be dropped, and the worker
+        thread would go on to publish a fresh future and dispatch every
+        batch of an already-cancelled document.
+        """
+        with self._cancel_lock:
+            self._cancelled = True
+            future = self._inflight
+        if future is not None:
+            future.cancel()
 
     def _run(self, texts: list[str], context: str) -> list[list[float]]:
-        future = asyncio.run_coroutine_threadsafe(
-            self._embedding_func(texts, context=context),
-            self._loop,
-        )
-        result = future.result()
-        return [list(map(float, vec)) for vec in result]
+        # Fast path out before spending an encode pass on a document whose
+        # task is already gone.  The authoritative check is the one held
+        # together with publication below.
+        with self._cancel_lock:
+            already_cancelled = self._cancelled
+        if already_cancelled:
+            raise concurrent.futures.CancelledError(
+                "semantic_vector: chunking was cancelled before this batch"
+            )
+
+        texts = self._truncate(texts)
+        batch_size = self._batch_size
+        if batch_size and batch_size > 0:
+            batches = [
+                texts[i : i + batch_size] for i in range(0, len(texts), batch_size)
+            ]
+        else:
+            # Explicitly opted out of batching: no item or token bound.
+            batches = [texts] if texts else []
+
+        # One bounce per call, not one per batch: bouncing each batch and
+        # blocking on its result would serialize them.  Every asyncio
+        # object lives inside the bounced coroutine — this method runs on a
+        # worker thread with no running loop.
+        #
+        # Checked and published under the same lock so cancellation cannot
+        # slip between the two: either ``cancel_inflight`` gets here first
+        # and this raises without scheduling anything, or it arrives after
+        # and finds the future to cancel.  ``run_coroutine_threadsafe`` only
+        # does a ``call_soon_threadsafe`` here, so holding the lock across it
+        # cannot deadlock against the loop.
+        with self._cancel_lock:
+            if self._cancelled:
+                raise concurrent.futures.CancelledError(
+                    "semantic_vector: chunking was cancelled before this batch"
+                )
+            self._inflight = future = asyncio.run_coroutine_threadsafe(
+                self._embed_all(batches, context),
+                self._loop,
+            )
+        try:
+            batch_results = future.result()
+        finally:
+            self._inflight = None
+
+        rows: list[list[float]] = []
+        for result in batch_results:
+            rows.extend(list(map(float, vec)) for vec in result)
+        return rows
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return self._run(list(texts), context="document")
@@ -206,11 +473,15 @@ async def chunking_by_semantic_vector(
     sentence_split_regex: str = DEFAULT_SENTENCE_SPLIT_REGEX,
     number_of_chunks: int | None = None,
     min_chunk_size: int | None = None,
+    embedding_batch_num: int | None = None,
+    embedding_max_async: int | None = None,
 ) -> list[dict[str, Any]]:
     """Semantic vector chunker — the ``"V"`` chunking strategy.
 
     Args:
-        tokenizer: LightRAG tokenizer (used for output token counts).
+        tokenizer: LightRAG tokenizer (used for output token counts, and
+            for the best-effort truncation of sentence windows before
+            embedding).
         content: Text to split.
         chunk_token_size: Hard upper bound (tokens). SemanticChunker does
             NOT enforce a maximum natively, so any piece that exceeds
@@ -233,6 +504,27 @@ async def chunking_by_semantic_vector(
             pure-Chinese inputs split correctly.
         number_of_chunks: Optional target chunk count (LangChain SemanticChunker).
         min_chunk_size: Optional minimum character size for semantic groups.
+        embedding_batch_num: Items per sentence-embedding provider request.
+            ``None`` uses :data:`DEFAULT_EMBEDDING_BATCH_NUM`; ``<= 0``
+            disables batching, which gives up the request bound entirely
+            (both item count and tokens become unbounded again).
+        embedding_max_async: How many of this call's own sentence-embedding
+            requests may be in flight at once. ``None`` uses
+            :data:`DEFAULT_EMBEDDING_FUNC_MAX_ASYNC`; a non-positive value
+            raises :class:`ValueError` rather than hanging. This bounds one
+            chunker call, not the deployment — cross-instance concurrency
+            stays with the priority wrapper that ``LightRAG`` applies.
+
+    The per-window token budget is ``embedding_func.max_token_size``, or
+    the effective ``chunk_token_size`` when that is ``None`` **or** ``0``.
+    Treating ``0`` as "unset" is a deliberate divergence from
+    :func:`lightrag.llm.openai.openai_embed`, where ``max_token_size=0``
+    documents "disable truncation": V needs a budget of its own, and the
+    server path cannot even produce ``0`` here (``embedding_token_limit or
+    provider_max_token_size`` replaces it with the provider default), so
+    only a direct ``EmbeddingFunc(max_token_size=0)`` SDK caller reaches
+    this branch. See the module docstring for what the resulting bound
+    does and does not guarantee.
 
     Returns:
         Ordered list of ``{"tokens", "content", "chunk_order_index"}``
@@ -274,8 +566,47 @@ async def chunking_by_semantic_vector(
             "strategy; install with `pip install langchain-experimental>=0.3.2`."
         )
 
+    # Hoisted above the adapter: it is both R's re-split target below and
+    # the fallback budget for sentence-window truncation.
+    target_max = max(int(chunk_token_size), 1)
+
+    declared_budget = embedding_func.max_token_size
+    if declared_budget is None or int(declared_budget) == 0:
+        # See the "0 is treated as unset" note in this function's docstring.
+        budget = target_max
+        budget_source = "chunk_token_size fallback"
+    else:
+        budget = int(declared_budget)
+        budget_source = "embedding_func.max_token_size"
+    # ``truncate_by_token_limit`` raises ValueError on a non-positive
+    # budget, and a direct SDK caller can pass a negative chunk_token_size.
+    budget = max(budget, 1)
+
+    resolved_batch_num = (
+        DEFAULT_EMBEDDING_BATCH_NUM
+        if embedding_batch_num is None
+        else int(embedding_batch_num)
+    )
+    resolved_max_async = (
+        DEFAULT_EMBEDDING_FUNC_MAX_ASYNC
+        if embedding_max_async is None
+        else int(embedding_max_async)
+    )
+    if resolved_max_async <= 0:
+        raise ValueError(
+            f"embedding_max_async must be positive, got {resolved_max_async}"
+        )
+
     loop = asyncio.get_running_loop()
-    adapter = _AsyncEmbeddingFuncAdapter(embedding_func, loop)
+    adapter = _AsyncEmbeddingFuncAdapter(
+        embedding_func,
+        loop,
+        tokenizer=tokenizer,
+        max_token_size=budget,
+        batch_size=resolved_batch_num,
+        max_concurrency=resolved_max_async,
+        budget_source=budget_source,
+    )
 
     chunker_kwargs: dict[str, Any] = {
         "embeddings": adapter,
@@ -291,7 +622,17 @@ async def chunking_by_semantic_vector(
         )
 
     splitter = SemanticChunker(**chunker_kwargs)
-    pieces = await asyncio.to_thread(_semantic_groups_with_spans, splitter, content)
+    try:
+        pieces = await asyncio.to_thread(_semantic_groups_with_spans, splitter, content)
+    except asyncio.CancelledError:
+        # ``to_thread`` returns on cancellation but the worker thread keeps
+        # running.  This both cancels the bounced call it is blocked on (so
+        # the loop-side worker pool is torn down instead of running to
+        # completion with its results discarded) and makes the refusal
+        # sticky, which is what covers the thread not having reached the
+        # adapter yet — see ``cancel_inflight``.
+        adapter.cancel_inflight()
+        raise
 
     # SemanticChunker has no internal size cap; oversized pieces here
     # would otherwise rely on the embedding-time hard fallback (which
@@ -304,8 +645,6 @@ async def chunking_by_semantic_vector(
     from lightrag.chunker.recursive_character import (
         chunking_by_recursive_character,
     )
-
-    target_max = max(int(chunk_token_size), 1)
 
     def _size_and_resplit() -> list[dict[str, Any]]:
         """Encode every semantic piece and re-split the oversized ones.

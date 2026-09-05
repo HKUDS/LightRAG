@@ -123,3 +123,63 @@ async def test_stream_closed_after_full_consumption_with_cot():
     assert chunks == ["<think>", "thinking", "</think>", "answer"]
     stream.aclose.assert_awaited()
     fake_client.close.assert_awaited()
+
+
+class _FailingOpenAIStream(_FakeOpenAIStream):
+    """Fake stream that raises after yielding its chunks, like an upstream 5xx."""
+
+    def __init__(self, chunks, error):
+        super().__init__(chunks)
+        self._error = error
+
+    async def __anext__(self):
+        if not self._chunks:
+            raise self._error
+        return self._chunks.pop(0)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_stream_closed_on_disconnect_during_error_path_cot_close():
+    """A disconnect at the ERROR path's COT close must not abort cleanup.
+
+    ``inner()`` closes an open ``<think>`` tag from three places. Only the two
+    inside the outer ``try`` were guarded: a ``GeneratorExit`` raised there is
+    caught by ``except GeneratorExit`` and tells the ``finally`` to skip its
+    own yield. The third close lives in the ``except Exception`` handler, and
+    ``GeneratorExit`` is a ``BaseException`` -- neither the handler's own
+    ``except Exception as close_error`` nor the co-sibling ``except
+    GeneratorExit`` can catch it. Left unguarded, the ``finally`` then yields
+    while the generator is closing, ``aclose()`` raises "async generator
+    ignored GeneratorExit", and the frame is abandoned before
+    ``response.aclose()`` and ``openai_async_client.close()`` -- leaking both.
+
+    Named as out of scope by #3635, which fixed the consumer-disconnect
+    variant.
+    """
+    stream = _FailingOpenAIStream(
+        [_make_chunk(reasoning_content="thinking...")],
+        RuntimeError("upstream 500 mid-reasoning"),
+    )
+    fake_client = _make_stream_client(stream)
+
+    yielded = []
+    with patch(
+        "lightrag.llm.openai.create_openai_async_client", return_value=fake_client
+    ):
+        gen = await openai_complete_if_cache.__wrapped__(
+            model="deepseek-reasoner",
+            prompt="hello",
+            enable_cot=True,
+            stream=True,
+            api_key="test-key",
+        )
+        async for piece in gen:
+            yielded.append(piece)
+            if piece == "</think>":
+                break  # consumer goes away right after the error path closes COT
+        await gen.aclose()
+
+    assert yielded == ["<think>", "thinking...", "</think>"]
+    stream.aclose.assert_awaited()
+    fake_client.close.assert_awaited()

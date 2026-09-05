@@ -1,0 +1,544 @@
+{
+  "settings": {
+    "language": "Bahasa",
+    "theme": "Tema",
+    "light": "Terang",
+    "dark": "Gelap",
+    "system": "Sistem"
+  },
+  "header": {
+    "documents": "Dokumen",
+    "knowledgeGraph": "Graf Pengetahuan",
+    "retrieval": "Retrieval",
+    "apiDocs": "Dokumentasi API",
+    "projectRepository": "Repositori Proyek",
+    "appSettings": "Pengaturan",
+    "deploymentInfo": "Informasi deployment",
+    "logout": "Keluar",
+    "frontendNeedsRebuild": "Frontend perlu dibangun ulang",
+    "themeToggle": {
+      "switchToLight": "Beralih ke tema terang",
+      "switchToDark": "Beralih ke tema gelap"
+    }
+  },
+  "login": {
+    "description": "Masukkan akun dan kata sandi Anda untuk masuk ke sistem",
+    "username": "Nama pengguna",
+    "usernamePlaceholder": "Masukkan nama pengguna",
+    "password": "Kata sandi",
+    "passwordPlaceholder": "Masukkan kata sandi",
+    "loginButton": "Masuk",
+    "loggingIn": "Sedang masuk...",
+    "successMessage": "Berhasil masuk",
+    "errorEmptyFields": "Masukkan nama pengguna dan kata sandi",
+    "errorInvalidCredentials": "Gagal masuk, periksa nama pengguna dan kata sandi",
+    "authDisabled": "Autentikasi dinonaktifkan. Menggunakan mode tanpa login.",
+    "guestMode": "Tanpa Login",
+    "consentLabel": "Saya menyetujui {{documents}}",
+    "consentDocuments": "Perjanjian Kebijakan Privasi",
+    "errorConsentRequired": "Baca dan setujui perjanjian sebelum masuk"
+  },
+  "common": {
+    "cancel": "Batal",
+    "save": "Simpan",
+    "saving": "Menyimpan...",
+    "saveFailed": "Gagal menyimpan",
+    "errorBoundaryTitle": "Terjadi kesalahan",
+    "errorBoundaryDescription": "Panel ini gagal ditampilkan. Coba lagi atau beralih ke tab lain.",
+    "errorBoundaryRetry": "Coba lagi"
+  },
+  "documentPanel": {
+    "clearDocuments": {
+      "button": "Bersihkan",
+      "tooltip": "Bersihkan dokumen",
+      "title": "Bersihkan Dokumen",
+      "description": "Tindakan ini akan menghapus semua dokumen dari sistem",
+      "warning": "PERINGATAN: Tindakan ini akan menghapus semua dokumen secara permanen dan tidak dapat dibatalkan!",
+      "confirm": "Apakah Anda benar-benar ingin membersihkan semua dokumen?",
+      "confirmPrompt": "Ketik 'yes' untuk mengonfirmasi tindakan ini",
+      "confirmPlaceholder": "Ketik yes untuk mengonfirmasi",
+      "clearCache": "Bersihkan cache LLM",
+      "confirmButton": "YA",
+      "clearing": "Membersihkan...",
+      "timeout": "Waktu operasi pembersihan habis, coba lagi",
+      "success": "Dokumen berhasil dibersihkan",
+      "cacheCleared": "Cache berhasil dibersihkan",
+      "cacheClearFailed": "Gagal membersihkan cache:\n{{error}}",
+      "failed": "Gagal Membersihkan Dokumen:\n{{message}}",
+      "error": "Gagal Membersihkan Dokumen:\n{{error}}"
+    },
+    "deleteDocuments": {
+      "button": "Hapus",
+      "tooltip": "Hapus dokumen yang dipilih",
+      "title": "Hapus Dokumen",
+      "description": "Tindakan ini akan menghapus dokumen yang dipilih secara permanen dari sistem",
+      "warning": "PERINGATAN: Tindakan ini akan menghapus dokumen yang dipilih secara permanen dan tidak dapat dibatalkan!",
+      "confirm": "Apakah Anda benar-benar ingin menghapus {{count}} dokumen yang dipilih?",
+      "confirmPrompt": "Ketik 'yes' untuk mengonfirmasi tindakan ini",
+      "confirmPlaceholder": "Ketik yes untuk mengonfirmasi",
+      "confirmButton": "YA",
+      "deleteFileOption": "Hapus juga file yang diunggah",
+      "deleteFileTooltip": "Centang opsi ini untuk turut menghapus file unggahan yang sesuai dari server",
+      "deleteLLMCacheOption": "Hapus juga cache LLM hasil ekstraksi",
+      "success": "Pipeline penghapusan dokumen berhasil dimulai",
+      "failed": "Gagal Menghapus Dokumen:\n{{message}}",
+      "error": "Gagal Menghapus Dokumen:\n{{error}}",
+      "busy": "Pipeline sedang sibuk, coba lagi nanti",
+      "notAllowed": "Tidak memiliki izin untuk melakukan operasi ini"
+    },
+    "selectDocuments": {
+      "selectCurrentPage": "Pilih Halaman Saat Ini ({{count}})",
+      "deselectAll": "Batalkan Semua Pilihan ({{count}})"
+    },
+    "uploadDocuments": {
+      "button": "Unggah",
+      "tooltip": "Unggah dokumen",
+      "title": "Unggah Dokumen",
+      "description": "Seret dan lepas dokumen Anda di sini atau klik untuk memilih.",
+      "single": {
+        "uploading": "Mengunggah {{name}}: {{percent}}%",
+        "success": "Unggahan Berhasil:\n{{name}} berhasil diunggah",
+        "failed": "Unggahan Gagal:\n{{name}}\n{{message}}",
+        "error": "Unggahan Gagal:\n{{name}}\n{{error}}"
+      },
+      "batch": {
+        "uploading": "Mengunggah file...",
+        "success": "File berhasil diunggah",
+        "error": "Beberapa file gagal diunggah"
+      },
+      "generalError": "Unggahan Gagal\n{{error}}",
+      "fileTypes": "Tipe yang didukung: {{types}}",
+      "fileUploader": {
+        "singleFileLimit": "Tidak dapat mengunggah lebih dari 1 file sekaligus",
+        "maxFilesLimit": "Tidak dapat mengunggah lebih dari {{count}} file",
+        "fileRejected": "File {{name}} ditolak",
+        "unsupportedType": "Tipe file tidak didukung",
+        "fileTooLarge": "File terlalu besar, ukuran maksimum {{maxSize}}",
+        "dropHere": "Lepaskan file di sini",
+        "dragAndDrop": "Seret dan lepas file di sini, atau klik untuk memilih file",
+        "removeFile": "Hapus file",
+        "uploadDescription": "Anda dapat mengunggah {{isMultiple ? 'multiple' : count}} file (maksimum {{maxSize}} per file)",
+        "duplicateFile": "Nama file sudah ada di cache server"
+      }
+    },
+    "documentManager": {
+      "title": "Manajemen Dokumen",
+      "scanButton": "Pindai/Coba Lagi",
+      "scanTooltip": "Pindai dan proses dokumen di folder input, serta proses ulang semua dokumen yang gagal",
+      "refreshTooltip": "Reset daftar dokumen",
+      "pipelineStatusButton": "Pipeline",
+      "pipelineStatusTooltip": "Lihat status pipeline pemrosesan dokumen",
+      "uploadedTitle": "Dokumen yang Diunggah",
+      "uploadedDescription": "Daftar dokumen yang diunggah beserta statusnya.",
+      "loading": "Memuat dokumen...",
+      "loadErrorTitle": "Tidak dapat memuat dokumen",
+      "retry": "Coba lagi",
+      "emptyTitle": "Belum Ada Dokumen",
+      "emptyDescription": "Belum ada dokumen yang diunggah.",
+      "columns": {
+        "id": "ID",
+        "fileName": "Nama File",
+        "summary": "Ringkasan",
+        "status": "Status",
+        "length": "Panjang",
+        "chunks": "Chunk",
+        "created": "Dibuat",
+        "updated": "Diperbarui",
+        "metadata": "Metadata",
+        "select": "Pilih"
+      },
+      "filters": {
+        "all": "Semua",
+        "completed": "Selesai",
+        "parse": "Parsing",
+        "analyze": "Menganalisis",
+        "process": "Memproses",
+        "failed": "Gagal"
+      },
+      "status": {
+        "all": "Semua",
+        "completed": "Selesai",
+        "preprocessed": "Pra-proses",
+        "parsing": "Parsing",
+        "analyzing": "Menganalisis",
+        "processing": "Memproses",
+        "pending": "Menunggu",
+        "failed": "Gagal"
+      },
+      "errors": {
+        "loadFailed": "Gagal memuat dokumen\n{{error}}",
+        "scanFailed": "Gagal memindai dokumen\n{{error}}",
+        "scanProgressFailed": "Gagal mendapatkan progres pemindaian\n{{error}}"
+      },
+      "fileNameLabel": "Nama File",
+      "showButton": "Tampilkan",
+      "hideButton": "Sembunyikan",
+      "showFileNameTooltip": "Tampilkan nama file",
+      "hideFileNameTooltip": "Sembunyikan nama file",
+      "details": {
+        "title": "Detail Status",
+        "openTooltip": "Lihat detail status",
+        "content": "Detail",
+        "copyButton": "Salin",
+        "copyTooltip": "Salin detail status",
+        "copySuccess": "Detail status berhasil disalin",
+        "copyFailed": "Gagal menyalin detail status"
+      }
+    },
+    "pipelineStatus": {
+      "title": "Status Pipeline",
+      "busy": "Pipeline Sibuk",
+      "cancellationRequested": "Pembatalan Diminta",
+      "jobName": "Nama Job",
+      "startTime": "Waktu Mulai",
+      "progress": "Progres",
+      "unit": "Batch",
+      "pipelineMessages": "Pesan Pipeline",
+      "cancelButton": "Batalkan",
+      "cancelTooltip": "Batalkan pemrosesan pipeline",
+      "cancelConfirmTitle": "Konfirmasi Pembatalan Pipeline",
+      "cancelConfirmDescription": "Tindakan ini akan menghentikan pemrosesan pipeline yang sedang berlangsung. Yakin ingin melanjutkan?",
+      "cancelConfirmButton": "Konfirmasi Pembatalan",
+      "cancelInProgress": "Pembatalan sedang diproses...",
+      "pipelineNotRunning": "Pipeline tidak berjalan",
+      "cancelSuccess": "Permintaan pembatalan pipeline dikirim",
+      "cancelFailed": "Gagal membatalkan pipeline\n{{error}}",
+      "cancelNotBusy": "Pipeline tidak berjalan, tidak perlu dibatalkan",
+      "errors": {
+        "fetchFailed": "Gagal mengambil status pipeline\n{{error}}"
+      }
+    }
+  },
+  "graphPanel": {
+    "dataIsTruncated": "Data graf dipotong hingga batas Maksimum Node",
+    "fetchRetriesExhausted": "Gagal memuat data graf. Gunakan refresh untuk mencoba lagi.",
+    "graphBuildFailed": "Gagal menampilkan data graf. Gunakan refresh untuk mencoba lagi.",
+    "statusDialog": {
+      "title": "Pengaturan Server LightRAG",
+      "description": "Lihat status sistem dan informasi koneksi saat ini"
+    },
+    "legend": "Legenda",
+    "nodeTypes": {
+      "person": "Orang",
+      "category": "Kategori",
+      "geo": "Geografis",
+      "location": "Lokasi",
+      "organization": "Organisasi",
+      "event": "Peristiwa",
+      "equipment": "Peralatan",
+      "weapon": "Senjata",
+      "animal": "Hewan",
+      "unknown": "Tidak Diketahui",
+      "object": "Objek",
+      "group": "Grup",
+      "technology": "Teknologi",
+      "product": "Produk",
+      "document": "Dokumen",
+      "content": "Konten",
+      "data": "Data",
+      "artifact": "Artefak",
+      "concept": "Konsep",
+      "naturalobject": "Objek Alami",
+      "method": "Metode",
+      "creature": "Makhluk",
+      "plant": "Tanaman",
+      "disease": "Penyakit",
+      "drug": "Obat",
+      "food": "Makanan",
+      "table": "Tabel",
+      "drawing": "Gambar",
+      "equation": "Persamaan",
+      "other": "Lainnya"
+    },
+    "sideBar": {
+      "settings": {
+        "settings": "Pengaturan",
+        "healthCheck": "Health Check",
+        "showPropertyPanel": "Tampilkan Panel Properti",
+        "showSearchBar": "Tampilkan Bilah Pencarian",
+        "showNodeLabel": "Tampilkan Label Node",
+        "nodeDraggable": "Node Dapat Diseret",
+        "showEdgeLabel": "Tampilkan Label Edge",
+        "hideUnselectedEdges": "Sembunyikan Edge yang Tidak Dipilih",
+        "edgeEvents": "Event Edge",
+        "edgeEventsDisabledHint": "Dinonaktifkan untuk graf dengan lebih dari {{count}} edge",
+        "maxQueryDepth": "Kedalaman Query Maksimum",
+        "maxNodes": "Node Maksimum",
+        "resetToDefault": "Reset ke default",
+        "edgeSizeRange": "Rentang Ukuran Edge",
+        "depth": "D",
+        "node": "node",
+        "edge": "edge",
+        "degree": "Derajat",
+        "apiKey": "API Key",
+        "enterYourAPIkey": "Masukkan API key Anda",
+        "save": "Simpan",
+        "refreshLayout": "Refresh Layout"
+      },
+      "zoomControl": {
+        "zoomIn": "Perbesar",
+        "zoomOut": "Perkecil",
+        "resetZoom": "Reset Zoom",
+        "rotateCamera": "Putar Searah Jarum Jam",
+        "rotateCameraCounterClockwise": "Putar Berlawanan Arah Jarum Jam"
+      },
+      "layoutsControl": {
+        "startAnimation": "Lanjutkan animasi layout",
+        "stopAnimation": "Hentikan animasi layout",
+        "layoutGraph": "Atur Layout Graf",
+        "layouts": {
+          "Circular": "Circular",
+          "Circlepack": "Circlepack",
+          "Random": "Random",
+          "Noverlaps": "Noverlaps",
+          "Force Directed": "Force Directed",
+          "Force Atlas": "Force Atlas"
+        }
+      },
+      "fullScreenControl": {
+        "fullScreen": "Layar Penuh",
+        "windowed": "Mode Jendela"
+      },
+      "legendControl": {
+        "toggleLegend": "Tampilkan/Sembunyikan Legenda"
+      }
+    },
+    "statusIndicator": {
+      "connected": "Terhubung",
+      "disconnected": "Terputus"
+    },
+    "statusCard": {
+      "unavailable": "Informasi status tidak tersedia",
+      "serverInfo": "Info Server",
+      "inputDirectory": "Direktori Input",
+      "parser": "Parser",
+      "mineru": "MinerU",
+      "docling": "Docling",
+      "otherSettings": "Pengaturan Lainnya",
+      "llmConfig": "Konfigurasi Model",
+      "llmBinding": "Binding LLM",
+      "llmBindingHost": "Endpoint LLM",
+      "llmModel": "Model LLM",
+      "embeddingConfig": "Konfigurasi Embedding",
+      "embeddingBinding": "Binding Embedding",
+      "embeddingBindingHost": "Endpoint Embedding",
+      "embeddingModel": "Model Embedding",
+      "storageConfig": "Konfigurasi Storage",
+      "kvStorage": "KV Storage",
+      "docStatusStorage": "Doc Status Storage",
+      "graphStorage": "Graph Storage",
+      "vectorStorage": "Vector Storage",
+      "workspace": "Workspace",
+      "rerankerConfig": "Konfigurasi Reranker",
+      "rerankerBindingHost": "Endpoint Reranker",
+      "rerankerModel": "Model Reranker",
+      "lockStatus": "Status Lock"
+    },
+    "propertiesView": {
+      "editProperty": "Edit {{property}}",
+      "editLockedByPipeline": "Pipeline sedang sibuk; pengeditan dinonaktifkan",
+      "editPropertyDescription": "Edit nilai properti pada area teks di bawah.",
+      "errors": {
+        "duplicateName": "Nama node sudah ada",
+        "invalidEntityName": "Masukkan nama node yang valid",
+        "updateFailed": "Gagal memperbarui node",
+        "tryAgainLater": "Coba lagi nanti",
+        "updateSuccessButMergeFailed": "Properti diperbarui, tetapi merge gagal: {{error}}",
+        "mergeFailed": "Merge gagal: {{error}}"
+      },
+      "success": {
+        "entityUpdated": "Node berhasil diperbarui",
+        "relationUpdated": "Relasi berhasil diperbarui",
+        "entityMerged": "Node berhasil di-merge"
+      },
+      "mergeOptionLabel": "Gabungkan secara otomatis ketika ditemukan nama duplikat",
+      "mergeOptionDescription": "Jika diaktifkan, mengganti nama menjadi nama yang sudah ada akan menggabungkan node ini ke node yang sudah ada alih-alih gagal.",
+      "mergeDialog": {
+        "title": "Node digabungkan",
+        "description": "\"{{source}}\" telah digabungkan ke \"{{target}}\".",
+        "refreshHint": "Refresh graf untuk memuat struktur terbaru.",
+        "keepCurrentStart": "Refresh dan pertahankan node awal saat ini",
+        "useMergedStart": "Refresh dan gunakan node hasil merge",
+        "refreshing": "Memperbarui graf..."
+      },
+      "node": {
+        "title": "Node",
+        "id": "ID",
+        "labels": "Label",
+        "degree": "Derajat",
+        "properties": "Properti",
+        "relationships": "Relasi (dalam subgraf)",
+        "expandNode": "Perluas Node",
+        "pruneNode": "Sembunyikan Node",
+        "deleteAllNodesError": "Tidak dapat menghapus semua node dalam graf",
+        "nodesRemoved": "{{count}} node dihapus, termasuk node orphan",
+        "noNewNodes": "Tidak ditemukan node yang dapat diperluas",
+        "propertyNames": {
+          "description": "Deskripsi",
+          "entity_id": "Nama",
+          "entity_type": "Tipe",
+          "source_id": "C-ID",
+          "Neighbour": "Tetangga",
+          "file_path": "File",
+          "keywords": "Kata Kunci",
+          "weight": "Bobot"
+        }
+      },
+      "edge": {
+        "title": "Relasi",
+        "id": "ID",
+        "type": "Tipe",
+        "source": "Sumber",
+        "target": "Target",
+        "properties": "Properti"
+      }
+    },
+    "search": {
+      "placeholder": "Cari node di halaman...",
+      "message": "Dan {{count}} lainnya"
+    },
+    "graphLabels": {
+      "selectTooltip": "Ambil subgraf dari sebuah node (label)",
+      "noLabels": "Tidak ditemukan node yang cocok",
+      "label": "Cari nama node",
+      "placeholder": "Cari nama node...",
+      "andOthers": "Dan {{count}} lainnya",
+      "refreshGlobalTooltip": "Refresh data graf global dan reset riwayat pencarian",
+      "refreshCurrentLabelTooltip": "Refresh data graf halaman saat ini",
+      "refreshingTooltip": "Memperbarui data..."
+    },
+    "emptyGraph": "Graf Kosong (Coba Muat Ulang)"
+  },
+  "retrievePanel": {
+    "chatMessage": {
+      "aiContentNotice": "Konten dibuat oleh AI — harap verifikasi.",
+      "copyTooltip": "Salin ke clipboard",
+      "copyError": "Gagal menyalin teks ke clipboard",
+      "copyEmpty": "Tidak ada konten untuk disalin",
+      "copySuccess": "Konten berhasil disalin ke clipboard",
+      "copySuccessLegacy": "Konten berhasil disalin (metode legacy)",
+      "copySuccessManual": "Konten berhasil disalin (metode manual)",
+      "copyFailed": "Gagal menyalin konten",
+      "copyManualInstruction": "Pilih dan salin teks secara manual",
+      "thinking": "Sedang berpikir...",
+      "thinkingTime": "Waktu berpikir {{time}} dtk",
+      "thinkingInProgress": "Sedang berpikir...",
+      "responseTime": "Waktu respons {{time}} dtk",
+      "firstTokenTime": "Token pertama {{time}} dtk",
+      "progress": {
+        "extracting_keywords": "Mengekstrak kata kunci...",
+        "retrieving_entities": "Mengambil entity...",
+        "retrieving_relations": "Mengambil relasi...",
+        "retrieving_chunks": "Mengambil text chunk...",
+        "reranking": "Melakukan reranking hasil...",
+        "generating_response": "Menghasilkan respons..."
+      }
+    },
+    "retrieval": {
+      "startPrompt": "Mulai retrieval dengan mengetik query Anda di bawah",
+      "scrollToBottom": "Gulir ke terbaru",
+      "clear": "Bersihkan",
+      "send": "Kirim",
+      "stop": "Hentikan",
+      "userTerminated": "Dihentikan pengguna — respons mungkin tidak lengkap",
+      "placeholder": "Masukkan query Anda (mendukung prefix: /<Query Mode>)",
+      "error": "Error: Gagal mendapatkan respons",
+      "queryModeError": "Hanya mendukung mode query berikut: {{modes}}",
+      "queryModePrefixInvalid": "Prefix mode query tidak valid. Gunakan: /<mode> [spasi] query Anda",
+      "queryEmpty": "Masukkan pertanyaan sebelum mengirim.",
+      "queryTooShort": "Query Anda terlalu pendek. Masukkan setidaknya 3 karakter bahasa Inggris atau kombinasi yang setara; setiap karakter Mandarin, Jepang, atau Korea dihitung sebagai 2.",
+      "dismissError": "Tutup error"
+    },
+    "querySettings": {
+      "parametersTitle": "Parameter",
+      "parametersDescription": "Konfigurasikan parameter query Anda",
+      "parametersScopeNotice": "Memengaruhi query dari browser ini",
+      "parametersScopeTooltip": "Parameter ini disimpan di browser ini dan tetap berlaku sampai Anda mengubahnya; query yang dikirim dari entry /workspace yang dibuka di browser ini juga menggunakannya. Ini adalah state lokal per browser, bukan kebijakan server-wide: browser dan perangkat lain tidak terpengaruh.",
+      "parametersScopeHelpLabel": "Tentang cakupan parameter",
+      "queryMode": "Mode Query",
+      "queryModeTooltip": "Pilih strategi retrieval:\n• Naive: Retrieval vector text chunk tradisional\n• Local: Fokus pada retrieval entity\n• Global: Fokus pada retrieval relasi\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Lewati retrieval, kirim riwayat percakapan dan pertanyaan saat ini ke LLM",
+      "queryModeWarning": "Dapat mengurangi kualitas retrieval",
+      "queryModeOptions": {
+        "naive": "Naive",
+        "local": "Local",
+        "global": "Global",
+        "hybrid": "Hybrid",
+        "mix": "Mix",
+        "bypass": "Bypass"
+      },
+      "responseFormat": "Format Respons",
+      "responseFormatTooltip": "Menentukan format respons. Contoh:\n• Beberapa Paragraf\n• Satu Paragraf\n• Poin-poin",
+      "responseFormatOptions": {
+        "multipleParagraphs": "Beberapa Paragraf",
+        "singleParagraph": "Satu Paragraf",
+        "bulletPoints": "Poin-poin"
+      },
+      "topK": "Top K KG",
+      "topKTooltip": "Jumlah entity dan relasi yang diambil. Berlaku untuk mode selain naive.",
+      "topKPlaceholder": "Masukkan nilai top_k",
+      "chunkTopK": "Top K Chunk",
+      "chunkTopKTooltip": "Jumlah text chunk yang diambil, berlaku untuk semua mode.",
+      "chunkTopKPlaceholder": "Masukkan nilai chunk_top_k",
+      "maxEntityTokens": "Token Entity Maksimum",
+      "maxEntityTokensTooltip": "Jumlah token maksimum yang dialokasikan untuk context entity dalam sistem kontrol token terpadu",
+      "maxRelationTokens": "Token Relasi Maksimum",
+      "maxRelationTokensTooltip": "Jumlah token maksimum yang dialokasikan untuk context relasi dalam sistem kontrol token terpadu",
+      "maxTotalTokens": "Total Token Maksimum",
+      "maxTotalTokensTooltip": "Budget total token maksimum untuk seluruh context query (entity + relasi + chunk + system prompt)",
+      "historyTurns": "Turn Riwayat",
+      "historyTurnsTooltip": "Jumlah turn percakapan lengkap (pasangan pengguna-asisten) yang dipertimbangkan dalam context respons",
+      "historyTurnsPlaceholder": "Jumlah turn riwayat",
+      "onlyNeedContext": "Hanya Butuh Context",
+      "onlyNeedContextTooltip": "Jika True, hanya mengembalikan context hasil retrieval tanpa menghasilkan respons",
+      "onlyNeedPrompt": "Hanya Butuh Prompt",
+      "onlyNeedPromptTooltip": "Jika True, hanya mengembalikan prompt yang dihasilkan tanpa menghasilkan respons",
+      "streamResponse": "Stream Respons",
+      "streamResponseTooltip": "Jika True, aktifkan output streaming untuk respons real-time",
+      "userPrompt": "Prompt Output Tambahan",
+      "userPromptTooltip": "Berikan persyaratan respons tambahan kepada LLM (tidak terkait dengan konten query, hanya untuk pemrosesan output). Server dapat menambahkan prompt global di depannya. Biarkan kosong untuk hanya mengirim prompt global server.",
+      "userPromptPlaceholder": "Masukkan prompt kustom (opsional)",
+      "disableUserPromptPrefix": "Abaikan Prompt Global",
+      "disableUserPromptPrefixTooltip": "Jangan tambahkan prompt output global server di depan prompt output tambahan di atas. Aktifkan ini untuk mengontrol instruksi akhir sepenuhnya dari sini.",
+      "enableRerank": "Aktifkan Rerank",
+      "enableRerankTooltip": "Aktifkan reranking untuk text chunk hasil retrieval. Jika True tetapi tidak ada model rerank yang dikonfigurasi, peringatan akan ditampilkan. Default adalah True."
+    }
+  },
+  "apiKeyAlert": {
+    "title": "API Key diperlukan",
+    "description": "Masukkan API key Anda untuk mengakses layanan",
+    "placeholder": "Masukkan API key Anda",
+    "save": "Simpan"
+  },
+  "pagination": {
+    "showing": "Menampilkan {{start}} sampai {{end}} dari {{total}} entri",
+    "page": "Halaman",
+    "pageSize": "Ukuran Halaman",
+    "firstPage": "Halaman Pertama",
+    "prevPage": "Halaman Sebelumnya",
+    "nextPage": "Halaman Berikutnya",
+    "lastPage": "Halaman Terakhir"
+  },
+  "workspace": {
+    "welcome": {
+      "defaultMarkdown": "Selamat datang! Ajukan pertanyaan tentang knowledge base dan dapatkan jawaban beserta sitasi. Masuk untuk memulai.",
+      "enterButton": "Masuk ke workspace",
+      "loginButton": "Masuk",
+      "enterFailed": "Tidak dapat menghubungi server. Coba lagi."
+    },
+    "queryEmpty": {
+      "defaultMarkdown": "Tanyakan apa pun tentang knowledge base untuk memulai."
+    }
+  },
+  "migration": {
+    "failedTitle": "Gagal menyiapkan pengaturan lokal",
+    "failedBody": "Pengaturan tersimpan Anda tidak dapat dimigrasikan ke format storage baru. Tidak ada data yang hilang — muat ulang untuk mencoba lagi.",
+    "dataLostTitle": "Sebagian pengaturan tersimpan tidak dapat dipulihkan",
+    "dataLostBody": "Storage browser penuh, sehingga sebagian pengaturan tersimpan Anda (tema, bahasa, API key) tidak dapat dipertahankan dan tidak dapat dipulihkan lagi. Melanjutkan akan mempertahankan data yang masih ada dan menggunakan default untuk sisanya.",
+    "continueAfterLoss": "Lanjutkan",
+    "retry": "Muat ulang",
+    "historyDropped": "Riwayat chat tidak muat di storage browser selama upgrade dan telah dibuang. Pengaturan berhasil dimigrasikan seperti biasa."
+  },
+  "retrievalHistory": {
+    "quotaDropped": "Storage browser penuh: riwayat chat tidak lagi disimpan. Percakapan saat ini tetap terlihat sampai Anda meninggalkan halaman."
+  }
+}

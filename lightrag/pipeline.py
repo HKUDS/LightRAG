@@ -5113,6 +5113,16 @@ class _PipelineMixin:
                         v_chunk_size = int(
                             v_opts.pop("chunk_token_size", resolved_chunk_size)
                         )
+                        # Deployment-level embedding knobs, not per-doc chunk
+                        # params: DISCARD any same-named key rather than let it
+                        # override the global config.  Popping is not optional
+                        # either — the HTTP model forbids extras, but
+                        # ``addon_params['chunker']['semantic_vector']`` is
+                        # free-form SDK input and a persisted snapshot outlives
+                        # schema changes, so leaving one in would reach the
+                        # ``**v_opts`` splat below as a duplicate keyword.
+                        v_opts.pop("embedding_batch_num", None)
+                        v_opts.pop("embedding_max_async", None)
                         # ``sentence_split_regex`` is the one key that does NOT
                         # win from the per-doc snapshot: it is re-read live from
                         # the operator-controlled config so a pattern persisted
@@ -5128,6 +5138,8 @@ class _PipelineMixin:
                             content,
                             v_chunk_size,
                             embedding_func=self.embedding_func,
+                            embedding_batch_num=self.embedding_batch_num,
+                            embedding_max_async=self.embedding_func_max_async,
                             **v_opts,
                         )
                         chunk_method = _CHUNKING_METHOD_LABELS["V"]

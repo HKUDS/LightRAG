@@ -13,6 +13,7 @@
     "apiDocs": "API 文件",
     "projectRepository": "專案庫",
     "appSettings": "設定",
+    "deploymentInfo": "部署資訊",
     "logout": "登出",
     "frontendNeedsRebuild": "前端程式碼需重新建置",
     "themeToggle": {
@@ -32,7 +33,10 @@
     "errorEmptyFields": "請輸入您的帳號和密碼",
     "errorInvalidCredentials": "登入失敗，請檢查帳號和密碼",
     "authDisabled": "認證已停用，使用免登入模式",
-    "guestMode": "免登入"
+    "guestMode": "免登入",
+    "consentLabel": "同意{{documents}}",
+    "consentDocuments": "《隱私政策協議》",
+    "errorConsentRequired": "請先閱讀並同意相關協議後再登入"
   },
   "common": {
     "cancel": "取消",
@@ -126,6 +130,9 @@
       "pipelineStatusTooltip": "查看文件處理管線狀態",
       "uploadedTitle": "已上傳文件",
       "uploadedDescription": "已上傳文件清單及其狀態",
+      "loading": "正在載入文件...",
+      "loadErrorTitle": "無法載入文件",
+      "retry": "重試",
       "emptyTitle": "無文件",
       "emptyDescription": "尚未上傳任何文件",
       "columns": {
@@ -404,6 +411,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "内容由AI生成，請注意辨別",
       "copyTooltip": "複製到剪貼簿",
       "copyError": "複製文字到剪貼簿失敗",
       "copyEmpty": "沒有內容可複製",
@@ -436,11 +444,17 @@
       "placeholder": "輸入查詢內容 (支援模式前綴：/<Query Mode>)",
       "error": "錯誤：取得回應失敗",
       "queryModeError": "僅支援以下查詢模式：{{modes}}",
-      "queryModePrefixInvalid": "無效的查詢模式前綴。請使用：/<模式> [空格] 查詢內容"
+      "queryModePrefixInvalid": "無效的查詢模式前綴。請使用：/<模式> [空格] 查詢內容",
+      "queryEmpty": "傳送前請先輸入問題。",
+      "queryTooShort": "查詢內容太短。請至少輸入 3 個英文字元或等效組合；每個中日韓字元按 2 個英文字元計算。",
+      "dismissError": "關閉錯誤提示"
     },
     "querySettings": {
       "parametersTitle": "參數",
       "parametersDescription": "設定查詢參數",
+      "parametersScopeNotice": "僅影響本瀏覽器的查詢",
+      "parametersScopeTooltip": "這些參數儲存在目前的瀏覽器中並持續生效，直到你再次修改；在同一瀏覽器上開啟的 /workspace 入口所發出的查詢同樣會使用它們。它們是瀏覽器本機狀態，而非伺服器全域策略：其他瀏覽器與其他裝置不受影響。",
+      "parametersScopeHelpLabel": "關於參數適用範圍",
       "queryMode": "查詢模式",
       "queryModeTooltip": "選擇檢索策略：\n• Naive：傳統文字塊向量檢索\n• Local：側重實體檢索\n• Global：側重關係檢索\n• Hybrid：Local+Global\n• Mix：Local+Global+Naive\n• Bypass：跳過檢索，把歷史會話與當前問題送LLM",
       "queryModeWarning": "可能降低檢索品質",
@@ -475,8 +489,10 @@
       "streamResponse": "串流回應",
       "streamResponseTooltip": "如果為True，啟用即時串流輸出回應",
       "userPrompt": "附加輸出提示詞",
-      "userPromptTooltip": "向LLM提供額外的響應要求（與查詢內容無關，僅用於處理輸出）。",
+      "userPromptTooltip": "向LLM提供額外的回應要求（與查詢內容無關，僅用於處理輸出）。伺服器端可能會在其前面拼接全域提示詞。留空則只發送伺服器端的全域提示詞。",
       "userPromptPlaceholder": "輸入自定義提示詞（可選）",
+      "disableUserPromptPrefix": "忽略全域提示詞",
+      "disableUserPromptPrefixTooltip": "不要將伺服器端的全域輸出提示詞拼接到上方的附加輸出提示詞前面。開啟後由此處完全控制最終指令。",
       "enableRerank": "啟用重排",
       "enableRerankTooltip": "為檢索到的文本塊啟用重排。如果為True但未配置重排模型，將發出警告。默認為True。",
       "maxEntityTokens": "實體詞元數上限",
@@ -501,5 +517,28 @@
     "prevPage": "上一頁",
     "nextPage": "下一頁",
     "lastPage": "最後一頁"
+  },
+  "workspace": {
+    "welcome": {
+      "defaultMarkdown": "歡迎使用！您可以就知識庫內容提問，並獲得帶引用的回答。登入後即可開始。",
+      "enterButton": "進入工作區",
+      "loginButton": "登入",
+      "enterFailed": "無法連接伺服器，請重試。"
+    },
+    "queryEmpty": {
+      "defaultMarkdown": "輸入您想了解的問題，開始查詢知識庫。"
+    }
+  },
+  "migration": {
+    "failedTitle": "本機設定準備失敗",
+    "failedBody": "您儲存的設定暫時無法遷移到新的儲存格式。資料未遺失——請重新整理重試。",
+    "dataLostTitle": "部分已儲存的設定無法復原",
+    "dataLostBody": "瀏覽器儲存空間已滿，您的部分設定（主題、語言、API 金鑰）未能保留，且已無法復原。繼續將保留尚存的設定，其餘使用預設值。",
+    "continueAfterLoss": "繼續",
+    "retry": "重新載入",
+    "historyDropped": "升級時聊天歷史超出瀏覽器儲存空間，已被捨棄。其餘設定已正常遷移。"
+  },
+  "retrievalHistory": {
+    "quotaDropped": "瀏覽器儲存空間已滿：聊天歷史已停止儲存。目前對話在離開頁面前仍然可見。"
   }
 }

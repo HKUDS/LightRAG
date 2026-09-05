@@ -13,6 +13,7 @@
     "apiDocs": "APIドキュメント",
     "projectRepository": "プロジェクトリポジトリ",
     "appSettings": "設定",
+    "deploymentInfo": "デプロイ情報",
     "logout": "ログアウト",
     "frontendNeedsRebuild": "フロントエンドの再ビルドが必要です",
     "themeToggle": {
@@ -32,7 +33,10 @@
     "errorEmptyFields": "ユーザー名とパスワードを入力してください",
     "errorInvalidCredentials": "ログインに失敗しました。ユーザー名とパスワードを確認してください",
     "authDisabled": "認証が無効になっています。ログインフリーモードを使用しています。",
-    "guestMode": "ログインフリー"
+    "guestMode": "ログインフリー",
+    "consentLabel": "{{documents}}に同意します",
+    "consentDocuments": "「プライバシーポリシー」",
+    "errorConsentRequired": "ログインする前に規約をお読みのうえ同意してください"
   },
   "common": {
     "cancel": "キャンセル",
@@ -126,6 +130,9 @@
       "pipelineStatusTooltip": "ドキュメント処理パイプラインのステータスを表示",
       "uploadedTitle": "アップロードされたドキュメント",
       "uploadedDescription": "アップロードされたドキュメントとそのステータスのリスト。",
+      "loading": "ドキュメントを読み込んでいます...",
+      "loadErrorTitle": "ドキュメントを読み込めませんでした",
+      "retry": "再試行",
       "emptyTitle": "ドキュメントなし",
       "emptyDescription": "まだアップロードされたドキュメントがありません。",
       "columns": {
@@ -404,6 +411,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "AI により生成された内容です。内容をご確認ください。",
       "copyTooltip": "クリップボードにコピー",
       "copyError": "クリップボードへのテキストコピーに失敗しました",
       "copyEmpty": "コピーするコンテンツがありません",
@@ -436,11 +444,17 @@
       "placeholder": "クエリを入力（プレフィックス対応: /<クエリモード>）",
       "error": "エラー: 応答の取得に失敗しました",
       "queryModeError": "次のクエリモードのみサポートされています: {{modes}}",
-      "queryModePrefixInvalid": "無効なクエリモードプレフィックス。使用: /<mode> [スペース] クエリ"
+      "queryModePrefixInvalid": "無効なクエリモードプレフィックス。使用: /<mode> [スペース] クエリ",
+      "queryEmpty": "送信する前に質問を入力してください。",
+      "queryTooShort": "クエリが短すぎます。英字3文字以上または同等の組み合わせを入力してください。日本語・中国語・韓国語の1文字は英字2文字として数えます。",
+      "dismissError": "エラーメッセージを閉じる"
     },
     "querySettings": {
       "parametersTitle": "パラメータ",
       "parametersDescription": "クエリパラメータを設定",
+      "parametersScopeNotice": "このブラウザーのクエリに適用",
+      "parametersScopeTooltip": "これらのパラメータはこのブラウザーに保存され、変更するまで有効なままです。同じブラウザーで開いた /workspace エントリからのクエリにも適用されます。ブラウザーごとのローカル状態であり、サーバー全体のポリシーではありません。他のブラウザーや他のデバイスには影響しません。",
+      "parametersScopeHelpLabel": "パラメータの適用範囲について",
       "queryMode": "クエリモード",
       "queryModeTooltip": "検索戦略を選択:\n• Naive: 従来のテキストチャンクベクトル検索\n• Local: エンティティ検索に焦点\n• Global: 関係検索に焦点\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: 検索をスキップし、会話履歴と現在の質問をLLMに送信",
       "queryModeWarning": "検索品質が低下する可能性があります",
@@ -481,8 +495,10 @@
       "streamResponse": "ストリーム応答",
       "streamResponseTooltip": "Trueの場合、リアルタイム応答のストリーミング出力を有効にします",
       "userPrompt": "追加出力プロンプト",
-      "userPromptTooltip": "LLMに追加の応答要件を提供します（クエリコンテンツとは無関係で、出力処理のみに使用）。",
+      "userPromptTooltip": "LLM に追加の応答要件を指定します（クエリ内容とは無関係で、出力処理のみに使用）。サーバーがこの前にグローバルプロンプトを連結する場合があります。 空のままにすると、サーバーのグローバルプロンプトのみが送信されます。",
       "userPromptPlaceholder": "カスタムプロンプトを入力（オプション）",
+      "disableUserPromptPrefix": "グローバルプロンプトを無視",
+      "disableUserPromptPrefixTooltip": "サーバーのグローバル出力プロンプトを上記の追加出力プロンプトの前に連結しません。有効にすると、最終的な指示をここで完全に制御できます。",
       "enableRerank": "リランクを有効化",
       "enableRerankTooltip": "取得されたテキストチャンクのリランクを有効にします。Trueに設定してもリランクモデルが設定されていない場合、警告が発行されます。デフォルトはTrueです。"
     }
@@ -501,5 +517,28 @@
     "prevPage": "前のページ",
     "nextPage": "次のページ",
     "lastPage": "最後のページ"
+  },
+  "workspace": {
+    "welcome": {
+      "defaultMarkdown": "ようこそ！ナレッジベースについて質問すると、引用付きの回答が得られます。ログインして始めましょう。",
+      "enterButton": "ワークスペースに入る",
+      "loginButton": "ログイン",
+      "enterFailed": "サーバーに接続できませんでした。もう一度お試しください。"
+    },
+    "queryEmpty": {
+      "defaultMarkdown": "ナレッジベースについて何でも質問して始めましょう。"
+    }
+  },
+  "migration": {
+    "failedTitle": "ローカル設定の準備に失敗しました",
+    "failedBody": "保存された設定を新しいストレージ形式に移行できませんでした。データは失われていません。再読み込みしてやり直してください。",
+    "dataLostTitle": "一部の保存済み設定を復元できませんでした",
+    "dataLostBody": "ブラウザーのストレージが満杯だったため、一部の設定（テーマ、言語、API キー）を保持できず、復元もできません。続行すると、残っている設定はそのまま使用し、それ以外は既定値になります。",
+    "continueAfterLoss": "続行",
+    "retry": "再読み込み",
+    "historyDropped": "アップグレード時にチャット履歴がブラウザのストレージ容量を超えたため破棄されました。その他の設定は正常に移行されました。"
+  },
+  "retrievalHistory": {
+    "quotaDropped": "ブラウザのストレージが満杯です。チャット履歴の保存を停止しました。現在の会話はページを離れるまで表示されます。"
   }
 }

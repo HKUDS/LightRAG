@@ -57,7 +57,7 @@ validation rules and provider-specific behavior.
 
 **RAG Configuration**
 
-- `MAX_ASYNC_LLM`: Maximum async operations (deprecated alias: `MAX_ASYNC`)
+- `MAX_ASYNC_LLM`: Base maximum LLM concurrency (deprecated alias: `MAX_ASYNC`). It also sets the per-document chunk-extraction task limit, while each entity/relation merge phase uses twice that task limit; see [File Processing Pipeline Specification](./FileProcessingPipeline.md) for the full pipeline and role-override rules.
 - `MAX_TOKENS`: Maximum token size
 - `EMBEDDING_DIM`: Embedding dimensions
 
@@ -247,6 +247,37 @@ Those templates already pin the matching vLLM `--dtype` (`float32` on CPU, `floa
 
 The setup wizard stages TLS certificate files under `./data/certs/` before generating the compose file.
 This keeps generated host mounts under the same `./data` root used by the default Docker deployment.
+
+### Custom UI content
+
+`docker-compose.yml` and `docker-compose-full.yml` mount `./data/ui_templates`
+read-only at `/app/data/ui_templates` and set `UI_TEMPLATES_DIR` to it. That
+entry overrides the same key in `.env`, like `WORKING_DIR` and `INPUT_DIR`, so
+one `.env` full of host paths keeps serving a source run as well. Both stay
+inert until the directory actually holds a bundle: with no `manifest.json`
+in it the server logs a warning naming the directory and serves its built-in
+branding, so the default deployment starts normally. Drop a bundle in and
+restart, and the server replaces the welcome page, the login-page text and user
+agreement, the query empty state, the copyright line and the brand logo with the
+bundle's content — per language, without rebuilding the frontend. From that point on the bundle
+is validated in full: an invalid one makes the server refuse to start.
+
+Create the directory before the first `up` so it is not created root-owned by
+Docker:
+
+```bash
+mkdir -p ./data/ui_templates
+cp -r docs/ui_templates_example/* ./data/ui_templates/
+```
+
+**Podman**: `docker-compose.podman.yml` keeps the mount and `UI_TEMPLATES_DIR`
+commented out, because Podman is stricter than Docker about a bind mount whose
+host source is missing. There, create the directory first and then uncomment
+**both** — uncommenting the environment entry alone leaves the server pointed
+at a path that is not mounted, and it refuses to start.
+
+See [UserDefinedUI.md](./UserDefinedUI.md) ([中文](./UserDefinedUI-zh.md)) for
+the bundle format and the full deployment guide.
 
 ### PostgreSQL image
 

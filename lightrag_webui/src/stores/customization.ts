@@ -1,0 +1,211 @@
+import { create } from 'zustand'
+import { fetchUICustomization, type UICustomization } from '@/api/customization'
+import { bundleLocaleToAdopt } from '@/lib/browserLanguage'
+import { useSettingsStore } from '@/stores/settings'
+
+/**
+ * In-memory snapshot of the UI customization for the current page.
+ * NEVER persisted to localStorage — a deployment update must not leave stale
+ * branding behind (`no-store` on the endpoint plus memory-only caching here).
+ *
+ * Loading rules (workspace-entry PRD §8.8):
+ * - the FIRST load shows a loading placeholder; frontend default content is
+ *   rendered only after a definite `customized: false` or a hard failure —
+ *   a bundle-configured deployment must never flash the default first;
+ * - a language switch keeps the current complete content until the new
+ *   response succeeds, then swaps logo, alt text and both texts atomically;
+ * - a temporarily failing re-request keeps the last successful snapshot;
+ * - correctness under fast switching (A → B while B is in flight → back to
+ *   A): a response is applied only when it is BOTH the newest request AND for
+ *   the locale the user still targets. Re-targeting a locale whose snapshot
+ *   is already loaded issues no network request but still invalidates every
+ *   response in flight — otherwise B's late response would land while A is
+ *   selected.
+ */
+
+export type CustomizationStatus = 'loading' | 'ready' | 'error'
+
+/**
+ * A bundle that does not declare the requested language answers with its own
+ * `default_locale`. When the request itself was only the last-resort fallback
+ * (no explicit choice, no browser match), follow the bundle so the chrome
+ * does not stay in a language the branding never uses — see
+ * `bundleLocaleToAdopt` for why an explicit choice and a real browser
+ * preference are never overridden. Not marked user-selected: this is a
+ * fallback, not a choice, so a later visit re-resolves from scratch.
+ *
+ * Isolated from the load's own try/catch on purpose: writing the settings
+ * store persists it, and a storage failure there (private mode, quota) must
+ * not be reported as a failed customization load — the snapshot is already
+ * applied and correct.
+ */
+function adoptBundleLocaleIntoUi(snapshot: UICustomization): void {
+  try {
+    const settings = useSettingsStore.getState()
+    const adopted = bundleLocaleToAdopt(
+      snapshot.locale,
+      settings.languageUserSelected,
+      settings.language
+    )
+    if (adopted) {
+      useSettingsStore.setState({ language: adopted })
+    }
+  } catch (error) {
+    console.error('Failed to adopt the bundle locale for the UI language:', error)
+  }
+}
+
+/**
+ * Sentinel target locale: request the customization WITHOUT a `locale`
+ * parameter, so the server resolves the bundle's `default_locale`.
+ *
+ * NOT what the UI surfaces send. They resolve a concrete language through
+ * `resolveUiLanguage`, because the UI chrome cannot wait for an async
+ * default: letting the bundle pick here left English buttons beside branding
+ * in the bundle's own default locale. A caller that genuinely wants the
+ * server to choose (and has nothing else to keep in sync) can still use it —
+ * the server falls back to `default_locale` for an undeclared locale anyway.
+ */
+export const SERVER_DEFAULT_LOCALE = ''
+
+interface CustomizationState {
+  status: CustomizationStatus
+  /** Last successful response (customized or not); null before the first. */
+  snapshot: UICustomization | null
+  /** Locale the user currently targets: last `load` argument (internal id,
+   * e.g. zh_TW, or SERVER_DEFAULT_LOCALE); null before the first load. */
+  targetLocale: string | null
+  /** Locale the current snapshot was loaded for. */
+  loadedLocale: string | null
+  /** Locale of the NEWEST in-flight request, or null when none is running.
+   * Lets repeated `load` calls for the same locale (several components
+   * mounting, or the retry gate re-firing while the request is still out)
+   * dedupe instead of issuing a request storm. */
+  pendingLocale: string | null
+  /** Failed attempts for `targetLocale` since it was last targeted. Bounds
+   * the automatic retry: without a cap, re-arming on completion would loop
+   * (fail → state change → gate re-fires → fail …) and storm the endpoint. */
+  failedAttempts: number
+  load: (locale: string) => Promise<void>
+}
+
+/** Automatic attempts per target locale: the first one plus ONE retry. */
+export const MAX_CUSTOMIZATION_ATTEMPTS = 2
+
+/**
+ * Whether the hook should ask the store to (re-)load `locale`. Pure so the
+ * retry contract is testable without a DOM:
+ * - target moved (a language switch, or the A → B → A re-target whose whole
+ *   job is invalidating B's in-flight response);
+ * - OR this locale is not the one actually LOADED — the retry case: a failed
+ *   request leaves `targetLocale` already equal to it, so keying on the
+ *   target alone would never try again (transient first-load failure = stuck
+ *   on default branding; failed switch = stuck on the previous locale).
+ * In-flight duplicates are absorbed by `pendingLocale` inside `load`.
+ */
+export function needsCustomizationLoad(
+  locale: string,
+  targetLocale: string | null,
+  loadedLocale: string | null,
+  failedAttempts = 0
+): boolean {
+  if (targetLocale !== locale) return true
+  if (loadedLocale === locale) return false
+  // Targeted but not loaded: in flight (deduped in `load`) or failed. Retry
+  // only while attempts remain, so a persistently failing endpoint settles
+  // on the default content instead of being hammered.
+  return failedAttempts < MAX_CUSTOMIZATION_ATTEMPTS
+}
+
+/**
+ * Whether the CONSENT verdict for `locale` is still unknown.
+ *
+ * Sibling of `needsCustomizationLoad`, and deliberately not the same
+ * question as `status === 'loading'`: a language switch keeps the previous
+ * snapshot and a 'ready' status on screen (rule 2 above) so the welcome page
+ * does not flash a spinner, but that snapshot carries the OLD locale's
+ * `consent_required`. Branding text merely looking briefly out of date is
+ * the intended trade; a login gate reading briefly out of date is not — an
+ * ungated → gated switch would leave the form submittable for the duration
+ * of the request.
+ *
+ * Bounded by the same `failedAttempts` budget the retry gate uses, so it can
+ * outlive neither the request nor its one retry: once the store stops
+ * retrying, the last known verdict stands rather than wedging the login page
+ * shut on an unreachable endpoint.
+ */
+export function isConsentVerdictPending(
+  status: CustomizationStatus,
+  locale: string,
+  loadedLocale: string | null,
+  failedAttempts = 0
+): boolean {
+  if (status === 'loading') return true
+  return loadedLocale !== locale && failedAttempts < MAX_CUSTOMIZATION_ATTEMPTS
+}
+
+let requestCounter = 0
+
+export const useCustomizationStore = create<CustomizationState>((set, get) => ({
+  status: 'loading',
+  snapshot: null,
+  targetLocale: null,
+  loadedLocale: null,
+  pendingLocale: null,
+  failedAttempts: 0,
+
+  load: async (locale: string) => {
+    if (get().pendingLocale === locale) {
+      // The NEWEST in-flight request is already for exactly this locale
+      // (pendingLocale is cleared by any newer request below, so it can only
+      // describe the current one). Re-assert the target and let it finish —
+      // bumping the counter here would invalidate the very request we are
+      // waiting on and leave nothing to replace it.
+      set({ targetLocale: locale })
+      return
+    }
+    // Every (re-)target bumps the counter, so responses for previously
+    // targeted locales can never be applied afterwards — even when this call
+    // itself needs no network request. Any older in-flight request is now
+    // stale, so it no longer owns `pendingLocale`.
+    const requestId = ++requestCounter
+    // A NEW target starts its own attempt budget.
+    set({
+      targetLocale: locale,
+      pendingLocale: null,
+      ...(get().targetLocale === locale ? {} : { failedAttempts: 0 })
+    })
+    if (get().loadedLocale === locale && get().snapshot !== null) {
+      // Already showing this locale. The counter bump above just invalidated
+      // any other locale's in-flight response (the A → B → A race).
+      return
+    }
+    if (get().snapshot === null) {
+      set({ status: 'loading' })
+    }
+    set({ pendingLocale: locale })
+    try {
+      const snapshot = await fetchUICustomization(
+        locale === SERVER_DEFAULT_LOCALE ? null : locale
+      )
+      // Apply only when still the newest request AND for the current target.
+      if (requestId !== requestCounter || get().targetLocale !== locale) return
+      // Atomic swap: one set() replaces the whole locale representation.
+      set({ status: 'ready', snapshot, loadedLocale: locale, failedAttempts: 0 })
+      adoptBundleLocaleIntoUi(snapshot)
+    } catch (error) {
+      if (requestId !== requestCounter || get().targetLocale !== locale) return
+      console.error('Failed to load UI customization:', error)
+      set({ failedAttempts: get().failedAttempts + 1 })
+      if (get().snapshot === null) {
+        // Hard failure on first load → frontend default content takes over.
+        set({ status: 'error' })
+      }
+      // With a previous snapshot: keep it (status stays 'ready').
+    } finally {
+      // Only the newest request owns the flag; a superseded one already had
+      // it cleared by whoever superseded it.
+      if (requestId === requestCounter) set({ pendingLocale: null })
+    }
+  }
+}))

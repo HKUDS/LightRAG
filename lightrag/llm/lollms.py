@@ -60,6 +60,15 @@ async def lollms_model_if_cache(
     Vision note:
     - lollms does not support image inputs. Passing a non-empty
       ``image_inputs`` raises :class:`NotImplementedError`.
+
+    Caching note:
+    - The ``/lollms_generate`` endpoint exposes no stop reason: its
+      response carries no field indicating whether generation completed
+      naturally or was cut off by ``n_predict``. A response capped by
+      ``n_predict`` (set explicitly, or derived from the generic
+      ``max_tokens`` alias) may therefore be cached as if complete, and
+      replayed unchanged from the cache even after the caller raises the
+      token budget.
     """
     if image_inputs:
         raise NotImplementedError(
@@ -100,11 +109,14 @@ async def lollms_model_if_cache(
     )
 
     # Extract lollms specific parameters
+    n_predict = kwargs.get("n_predict")
+    if n_predict is None:
+        n_predict = kwargs.get("max_tokens")
     request_data = {
         "prompt": prompt,
         "model_name": model,
         "personality": kwargs.get("personality", -1),
-        "n_predict": kwargs.get("n_predict", None),
+        "n_predict": n_predict,
         "stream": stream,
         "temperature": kwargs.get("temperature", 1.0),
         "top_k": kwargs.get("top_k", 50),
@@ -126,22 +138,25 @@ async def lollms_model_if_cache(
     request_data["prompt"] = full_prompt
     timeout = aiohttp.ClientTimeout(total=kwargs.get("timeout", None))
 
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        if stream:
+    if stream:
 
-            async def inner():
+        async def inner():
+            async with aiohttp.ClientSession(
+                timeout=timeout, headers=headers
+            ) as session:
                 async with session.post(
                     f"{base_url}/lollms_generate", json=request_data
                 ) as response:
                     async for line in response.content:
                         yield line.decode().strip()
 
-            return inner()
-        else:
-            async with session.post(
-                f"{base_url}/lollms_generate", json=request_data
-            ) as response:
-                return await response.text()
+        return inner()
+
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        async with session.post(
+            f"{base_url}/lollms_generate", json=request_data
+        ) as response:
+            return await response.text()
 
 
 async def lollms_model_complete(

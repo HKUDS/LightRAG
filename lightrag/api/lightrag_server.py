@@ -3,6 +3,7 @@ LightRAG FastAPI Server
 """
 
 from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, Response
 from fastapi.openapi.docs import (
@@ -70,6 +71,12 @@ from lightrag.parser.external.mineru.cache import MinerUParserOptions
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
+from lightrag.api.routers.ui_customization_routes import create_ui_customization_routes
+from lightrag.api.ui_customization import (
+    WEBUI_CHROME_LOCALES,
+    locales_without_chrome_translation,
+    resolve_ui_customization_snapshot,
+)
 
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
@@ -399,6 +406,20 @@ def _inject_swagger_theme(html: str, theme: str) -> str:
 # and matches how LightRAG is deployed in practice. See
 # docs/MultiSiteDeployment.md.
 WEBUI_PATH = "/webui"
+
+# Fixed mount path of the query-user entry (the "workspace" UI). Serves the
+# same static build directory as WEBUI_PATH but with workspace.html as its
+# directory index, so the entry identity is decided entirely by the URL.
+# NOTE: this is a WebUI URL, not the knowledge-base `workspace` parameter used
+# for data isolation — the two are unrelated (see the workspace-entry PRD).
+WORKSPACE_PATH = "/workspace"
+
+# Entry HTML filenames inside the shared build directory. Each mount serves
+# only its own file as the directory index and returns 404 for the other
+# entry's HTML (otherwise both files would be reachable under both mounts,
+# creating fully working aliases like /webui/workspace.html).
+WEBUI_INDEX_FILENAME = "index.html"
+WORKSPACE_INDEX_FILENAME = "workspace.html"
 
 
 class _RootPathNormalizationMiddleware:
@@ -1249,6 +1270,26 @@ def check_frontend_build():
         return (True, False)  # Assume assets exist and up-to-date on error
 
 
+def check_workspace_frontend_build() -> bool:
+    """Whether the workspace query entry's HTML (workspace.html) is bundled.
+
+    Checked independently from ``check_frontend_build()``: a stale build
+    directory (new server + old WebUI bundle) legitimately contains only
+    index.html, and that must degrade ONLY the /workspace entry — treating
+    the whole WebUI as "not built" would needlessly take the admin /webui
+    down with it.
+    """
+    workspace_html = Path(__file__).parent / "webui" / WORKSPACE_INDEX_FILENAME
+    if workspace_html.exists():
+        return True
+    ASCIIColors.yellow(
+        "WARNING: workspace.html is missing from the WebUI build directory. "
+        "The /workspace query entry will be unavailable (admin /webui is not "
+        "affected). Rebuild the frontend to enable it."
+    )
+    return False
+
+
 def _build_capability_status(rag) -> dict:
     """Strict-capability report, or ``{}`` when it cannot be determined.
 
@@ -1349,9 +1390,110 @@ def _create_llm_model_kwargs(binding: str, args, llm_timeout: int) -> dict:
     return {}
 
 
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Render a request-validation refusal in the shape each endpoint promises.
+
+    Module-level rather than a closure inside ``create_app`` so the real
+    handler can be exercised without standing up the whole application.
+    """
+    # Check if this is a request to /query/data endpoint
+    if request.url.path.endswith("/query/data"):
+        # Extract error details
+        error_details = []
+        for error in exc.errors():
+            field_path = " -> ".join(str(loc) for loc in error["loc"])
+            error_details.append(f"{field_path}: {error['msg']}")
+
+        error_message = "; ".join(error_details)
+
+        # Return in the expected format for /query/data
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "failure",
+                "message": f"Validation error: {error_message}",
+                "data": {},
+                "metadata": {},
+            },
+        )
+
+    # For other endpoints, return the default FastAPI validation error.
+    # `jsonable_encoder` is not optional here: a rejection raised as a
+    # ValueError inside a validator (the RAG query minimum, the non-empty
+    # check, the keyword and history checks, the aggregate text budget)
+    # carries the exception object itself in `ctx.error`, which json.dumps
+    # cannot serialize — without the encoder this handler raises and the
+    # client gets a 500 in place of the 422 the refusal actually is.
+    return JSONResponse(
+        status_code=422, content={"detail": jsonable_encoder(exc.errors())}
+    )
+
+
 def create_app(args):
-    # Check frontend build first and get status
+    # Check frontend build first and get status. The two entries are checked
+    # independently: an old build directory may carry only index.html, which
+    # degrades /workspace alone (see check_workspace_frontend_build).
     webui_assets_exist, is_frontend_outdated = check_frontend_build()
+    workspace_assets_exist = check_workspace_frontend_build()
+    # Scope of default_ui is exactly one behavior: the '/' redirect target.
+    # getattr default keeps create_app working for programmatic callers that
+    # build args without this field (tests, embedding).
+    default_ui = getattr(args, "default_ui", "webui")
+
+    # UI customization bundle (workspace-entry PRD §8). Completely orthogonal
+    # to the entry-HTML checks above: a configured-but-broken bundle fails
+    # startup regardless of which entry products exist, and a missing
+    # workspace.html never suppresses bundle validation. bundle_revision is
+    # logged HERE only — it appears in no /health tier.
+    ui_templates_dir = (getattr(args, "ui_templates_dir", "") or "").strip()
+    ui_customization_snapshot = None
+    if ui_templates_dir:
+        # Raises UICustomizationError → server startup fails (fail-fast; a
+        # silent fallback would show LightRAG content while the operator
+        # believes the customer branding is live). Returns None for the one
+        # sanctioned exception: a configured directory that holds no
+        # manifest.json yet, i.e. the unpopulated mount every default Docker
+        # deployment starts with (see resolve_ui_customization_snapshot).
+        ui_customization_snapshot = resolve_ui_customization_snapshot(ui_templates_dir)
+    if ui_customization_snapshot is not None:
+        logger.info(
+            "UI customization: bundle %s %s",
+            ui_customization_snapshot.bundle_revision,
+            sorted(ui_customization_snapshot.locales),
+        )
+        # A bundle may declare any valid BCP 47 locale, but the WebUI chrome
+        # only exists in the languages it ships. Content in another language
+        # renders fine while the buttons and settings around it stay in the
+        # visitor's resolved UI language — nothing the frontend can fix, so
+        # say it here instead of leaving the operator to discover it from a
+        # user's screenshot.
+        untranslated = locales_without_chrome_translation(
+            ui_customization_snapshot.locales
+        )
+        if untranslated:
+            logger.warning(
+                "UI customization: the WebUI ships no interface translation for "
+                "%s — content in %s locale(s) will render beside controls in the "
+                "visitor's resolved UI language (supported: %s)",
+                untranslated,
+                len(untranslated),
+                sorted(WEBUI_CHROME_LOCALES),
+            )
+    elif ui_templates_dir:
+        # Not an error, but not silent either: the only way to tell "I have
+        # not written my bundle yet" from "my mount did not land where I
+        # thought" is the path this names.
+        logger.warning(
+            "UI customization: UI_TEMPLATES_DIR=%s holds no manifest.json — "
+            "serving the built-in LightRAG branding. Put a bundle there and "
+            "restart to activate it; if you expected one, check that the "
+            "directory is the one you populated.",
+            ui_templates_dir,
+        )
+    else:
+        logger.info("UI customization: no bundle configured (UI_TEMPLATES_DIR unset)")
 
     # Create unified API version display with warning symbol if frontend is outdated
     api_version_display = (
@@ -1512,6 +1654,14 @@ def create_app(args):
     # diverge from the real route table.
     api_docs_enabled = bool(getattr(args, "enable_api_docs", True))
 
+    # Whether the two query UIs label every answer as AI-generated
+    # (ENABLE_AI_CONTENT_NOTICE). Deployment-level display configuration, so
+    # it rides the same responses as webui_title/webui_description: both
+    # entries read it once at boot from /auth-status (or /login), and the
+    # admin shell keeps it fresh from its /health poll. getattr keeps
+    # create_app working for callers that build args programmatically.
+    ai_content_notice_enabled = bool(getattr(args, "enable_ai_content_notice", False))
+
     base_description = (
         "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
     )
@@ -1546,34 +1696,9 @@ def create_app(args):
 
     app = FastAPI(**app_kwargs)
 
-    # Add custom validation error handler for /query/data endpoint
-    @app.exception_handler(RequestValidationError)
-    async def validation_exception_handler(
-        request: Request, exc: RequestValidationError
-    ):
-        # Check if this is a request to /query/data endpoint
-        if request.url.path.endswith("/query/data"):
-            # Extract error details
-            error_details = []
-            for error in exc.errors():
-                field_path = " -> ".join(str(loc) for loc in error["loc"])
-                error_details.append(f"{field_path}: {error['msg']}")
-
-            error_message = "; ".join(error_details)
-
-            # Return in the expected format for /query/data
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "status": "failure",
-                    "message": f"Validation error: {error_message}",
-                    "data": {},
-                    "metadata": {},
-                },
-            )
-        else:
-            # For other endpoints, return the default FastAPI validation error
-            return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    # Custom validation error handler, shaped per endpoint (see the
+    # module-level function for why it is not a closure).
+    app.add_exception_handler(RequestValidationError, validation_exception_handler)
 
     # Last-resort handler for any exception that escapes a route without being
     # converted to an HTTPException. It guarantees raw exception text never
@@ -2415,6 +2540,13 @@ def create_app(args):
     app.include_router(create_document_routes(rag, doc_manager, api_key))
     app.include_router(create_query_routes(rag, api_key, args.top_k))
     app.include_router(create_graph_routes(rag, api_key))
+    # Public read-only customization surface — registered unconditionally:
+    # without a bundle it answers 200 {"customized": false, ...}.
+    app.include_router(
+        create_ui_customization_routes(
+            ui_customization_snapshot, webui_title, webui_description
+        )
+    )
 
     # Add Ollama API routes
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
@@ -2465,22 +2597,74 @@ def create_app(args):
             }
         )
 
+    def workspace_unavailable_response(request: Request) -> JSONResponse:
+        """Fixed JSON degradation for the /workspace query entry.
+
+        Unlike the /webui fallback, this NEVER redirects to — nor links or
+        points at — the API docs, regardless of ENABLE_API_DOCS: sending a
+        query user to /docs is the same cross-entry leak as sending them to
+        the admin login page. HTTP 200 with a root_path-aware health_url.
+        """
+        root = request.scope.get("root_path", "")
+        return JSONResponse(
+            {
+                "status": "healthy",
+                "service": "LightRAG Server",
+                "api_version": api_version_display,
+                "message": (
+                    "The workspace query entry is not available: "
+                    "workspace.html is not bundled with this server. "
+                    "Rebuild the frontend to enable it."
+                ),
+                "health_url": f"{root}/health",
+            }
+        )
+
     @app.get("/")
-    async def redirect_to_webui(request: Request):
-        """Redirect root path based on WebUI availability.
+    async def redirect_to_default_ui(request: Request):
+        """Redirect root path to the configured default UI entry.
 
         Prepend the ASGI root_path so that, behind a reverse proxy, the
         absolute redirect target keeps the configured prefix instead of
-        bypassing it. With docs disabled and no WebUI there is no page to
-        redirect to, so answer with the JSON service info instead of a 404.
+        bypassing it. The '/' behavior equals the chosen entry's behavior
+        INCLUDING its degradation branch: when the default entry's assets
+        are missing, '/' answers with that entry's own fallback rather than
+        rerouting to the other entry (or, for workspace, to the API docs).
         """
         root = request.scope.get("root_path", "")
+        if default_ui == "workspace":
+            if workspace_assets_exist:
+                return RedirectResponse(url=f"{root}{WORKSPACE_PATH}/")
+            return workspace_unavailable_response(request)
         if webui_assets_exist:
             return RedirectResponse(url=f"{root}{webui_path}/")
         elif api_docs_enabled:
             return RedirectResponse(url=f"{root}/docs")
         else:
             return service_info_response(request)
+
+    # The verifier ignores WHITELIST_PATHS: its whole purpose is to report
+    # credential validity, and a whitelist entry covering it (e.g. "/auth/*")
+    # would otherwise turn it into an unconditional 200 while the protected
+    # routes still reject.
+    credential_verify_auth = get_combined_auth_dependency(
+        api_key, respect_whitelist=False
+    )
+
+    @app.get("/auth/verify", dependencies=[Depends(credential_verify_auth)])
+    async def verify_credentials():
+        """Verify that the caller's credentials satisfy the combined auth.
+
+        /health deliberately stays on the default whitelist as an
+        unauthenticated liveness probe, so it can never distinguish valid,
+        invalid and missing credentials. This endpoint ALWAYS runs the
+        combined dependency — WHITELIST_PATHS is deliberately ignored here —
+        so a missing or wrong X-API-Key fails with the standard 403 detail
+        ("API Key required" / "Invalid API Key"), which the WebUI's API-key
+        dialogs key on, while valid credentials get a trivial 200. No data is
+        exposed.
+        """
+        return {"status": "ok"}
 
     @app.get("/auth-status")
     async def get_auth_status():
@@ -2501,6 +2685,7 @@ def create_app(args):
                 "api_version": api_version_display,
                 "webui_title": webui_title,
                 "webui_description": webui_description,
+                "ai_content_notice_enabled": ai_content_notice_enabled,
             }
 
         return {
@@ -2510,6 +2695,7 @@ def create_app(args):
             "api_version": api_version_display,
             "webui_title": webui_title,
             "webui_description": webui_description,
+            "ai_content_notice_enabled": ai_content_notice_enabled,
         }
 
     # Brute-force protection for /login (CWE-307): throttle failed attempts per
@@ -2538,6 +2724,7 @@ def create_app(args):
                 "api_version": api_version_display,
                 "webui_title": webui_title,
                 "webui_description": webui_description,
+                "ai_content_notice_enabled": ai_content_notice_enabled,
             }
         username = form_data.username
         # Rate-limit key is client IP + username. X-Forwarded-For is NOT trusted
@@ -2596,6 +2783,7 @@ def create_app(args):
             "api_version": api_version_display,
             "webui_title": webui_title,
             "webui_description": webui_description,
+            "ai_content_notice_enabled": ai_content_notice_enabled,
         }
 
     @app.get(
@@ -2720,12 +2908,18 @@ def create_app(args):
                 "core_version": core_version,
                 "api_version": api_version_display,
                 "webui_available": webui_assets_exist,
+                # Same liveness tier as webui_available (both are trivially
+                # probeable by requesting the mount path). The two fields are
+                # independent checks over their own entry HTML — /health must
+                # be able to express "admin UI up, query entry missing".
+                "workspace_available": workspace_assets_exist,
                 # Whether /docs, /redoc and /openapi.json are served — same
                 # liveness tier as webui_available: the state is trivially
                 # probeable by requesting /docs, so it leaks nothing.
                 "api_docs_available": api_docs_enabled,
                 "webui_title": webui_title,
                 "webui_description": webui_description,
+                "ai_content_notice_enabled": ai_content_notice_enabled,
                 "pipeline_busy": pipeline_busy,
                 "pipeline_active": pipeline_active,
             }
@@ -2837,23 +3031,75 @@ def create_app(args):
     # `</` → `<\/` escaping prevents an embedded "</script>" sequence from
     # breaking out of the inline script (defense-in-depth — values come from
     # admin config, not user input).
+    #
+    # `webuiTitle` (WEBUI_TITLE) rides along and is applied to `document.title`
+    # in the same snippet: the tag sits in <head> right after the static
+    # <title>, so the tab carries the deployment's own name from the FIRST
+    # paint. Waiting for the SPA to read it from /health would show "LightRAG"
+    # until the bundle boots, and browsers cache that first title for history
+    # entries and bookmarks. `or None` normalizes an unset/empty variable to a
+    # single falsy value, which the client reads as "no custom title".
     _runtime_config_payload = json.dumps(
         {
             "apiPrefix": api_prefix,
             "webuiPrefix": f"{api_prefix}{webui_path}/",
+            "webuiTitle": webui_title or None,
         }
     ).replace("</", "<\\/")
     runtime_config_script = (
-        f"<script>window.__LIGHTRAG_CONFIG__ = {_runtime_config_payload};</script>"
+        f"<script>window.__LIGHTRAG_CONFIG__ = {_runtime_config_payload};"
+        "if(window.__LIGHTRAG_CONFIG__.webuiTitle)"
+        "{document.title=window.__LIGHTRAG_CONFIG__.webuiTitle;}</script>"
     )
 
     # Custom StaticFiles class for smart caching + runtime config injection
     class SmartStaticFiles(StaticFiles):  # Renamed from NoCacheStaticFiles
-        # Replaced in index.html on every request. Keep in sync with
-        # lightrag_webui/index.html.
+        # Replaced in every entry HTML on each request. Keep in sync with
+        # lightrag_webui/index.html AND lightrag_webui/workspace.html — the
+        # placeholder must exist in both entry files.
         RUNTIME_CONFIG_PLACEHOLDER = b"<!-- __LIGHTRAG_RUNTIME_CONFIG__ -->"
 
+        def __init__(
+            self,
+            *args,
+            index_file: str = WEBUI_INDEX_FILENAME,
+            blocked_html: tuple[str, ...] = (),
+            **kwargs,
+        ):
+            """``index_file``: directory-index filename for this mount.
+
+            Starlette's StaticFiles hardcodes ``index.html`` under
+            ``html=True`` with no configuration hook, so the workspace mount
+            overrides it here to serve workspace.html at its root.
+
+            ``blocked_html``: the OTHER entry's HTML filename(s); requests
+            for them return 404 on this mount. Both entry files live in one
+            shared directory, so without this each mount would also serve a
+            fully working alias of the other entry (/webui/workspace.html,
+            /workspace/index.html) and the URL would stop indicating the
+            entry. Same-entry explicit filenames (/webui/index.html,
+            /workspace/workspace.html) stay reachable.
+
+            Matched case-INSENSITIVELY: on a case-insensitive filesystem
+            (macOS, Windows) the underlying StaticFiles would happily serve
+            /webui/WORKSPACE.HTML, so an exact-case check would leave the
+            alias open exactly where the OS opens it.
+            """
+            super().__init__(*args, **kwargs)
+            self.index_file = index_file
+            self.blocked_html = {name.lower() for name in blocked_html}
+
         async def get_response(self, path: str, scope):
+            if path.lower() in self.blocked_html:
+                raise HTTPException(status_code=404, detail="Not Found")
+
+            # Rewrite the mount-root request ('' / '.') to this mount's own
+            # index file. The Router's redirect_slashes has already forced a
+            # trailing slash on the mount root, so this rewrite cannot bypass
+            # any redirect.
+            if path in ("", "."):
+                path = self.index_file
+
             response = await super().get_response(path, scope)
 
             # `path` is empty when accessing the mount root (StaticFiles
@@ -2879,9 +3125,11 @@ def create_app(args):
                 )
                 response.headers["Pragma"] = "no-cache"
                 response.headers["Expires"] = "0"
-            elif (
-                "/assets/" in path
-            ):  # Assets (JS, CSS, images, fonts) generated by Vite with hash in filename
+            elif path.startswith("assets/") or "/assets/" in path:
+                # Assets (JS, CSS, images, fonts) generated by Vite with hash
+                # in filename. Inside a Mount, `path` is relative (no leading
+                # slash) — "assets/x.js" — so match the top-level assets dir
+                # explicitly.
                 response.headers["Cache-Control"] = (
                     "public, max-age=31536000, immutable"
                 )
@@ -2930,18 +3178,24 @@ def create_app(args):
             name="swagger-ui-static",
         )
 
-    # Conditionally mount WebUI only if assets exist
+    # Conditionally mount each UI entry only if its own entry HTML exists.
+    # Both mounts serve the SAME build directory; entry identity is decided
+    # by which file each mount uses as its directory index.
+    static_dir = Path(__file__).parent / "webui"
     if webui_assets_exist:
-        static_dir = Path(__file__).parent / "webui"
         static_dir.mkdir(exist_ok=True)
         app.mount(
             webui_path,
             SmartStaticFiles(
-                directory=static_dir, html=True, check_dir=True
-            ),  # Use SmartStaticFiles
+                directory=static_dir,
+                html=True,
+                check_dir=True,
+                index_file=WEBUI_INDEX_FILENAME,
+                blocked_html=(WORKSPACE_INDEX_FILENAME,),
+            ),
             name="webui",
         )
-        logger.info(f"WebUI assets mounted at {webui_path}")
+        logger.info(f"Admin WebUI mounted at {api_prefix}{webui_path}/")
     else:
         logger.info("WebUI assets not available, WebUI route not mounted")
 
@@ -2958,6 +3212,33 @@ def create_app(args):
                 return service_info_response(request)
             root = request.scope.get("root_path", "")
             return RedirectResponse(url=f"{root}/docs")
+
+    if workspace_assets_exist:
+        app.mount(
+            WORKSPACE_PATH,
+            SmartStaticFiles(
+                directory=static_dir,
+                html=True,
+                check_dir=True,
+                index_file=WORKSPACE_INDEX_FILENAME,
+                blocked_html=(WEBUI_INDEX_FILENAME,),
+            ),
+            name="workspace",
+        )
+        logger.info(f"Workspace query UI mounted at {api_prefix}{WORKSPACE_PATH}/")
+    else:
+        logger.info(
+            "Workspace entry HTML not available, /workspace serves the "
+            "fixed service-info degradation"
+        )
+
+        # Fixed degradation, explicitly registered for both trailing-slash
+        # forms. Never redirects to /docs (or anywhere else) — see
+        # workspace_unavailable_response.
+        @app.get(WORKSPACE_PATH)
+        @app.get(f"{WORKSPACE_PATH}/")
+        async def workspace_unavailable(request: Request):
+            return workspace_unavailable_response(request)
 
     return app
 

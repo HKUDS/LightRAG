@@ -88,7 +88,7 @@ Notes:
 | **llm_model_name** | `str` | LLM model name for generation | `gpt-4o-mini` |
 | **summary_context_size** | `int` | Maximum tokens send to LLM to generate summaries for entity relation merging | `10000`（configured by env var SUMMARY_CONTEXT_SIZE) |
 | **summary_max_tokens** | `int` | Maximum token size for entity/relation description | `500`（configured by env var SUMMARY_MAX_TOKENS) |
-| **llm_model_max_async** | `int` | Maximum number of concurrent asynchronous LLM processes | `4`（default value changed by env var MAX_ASYNC_LLM; MAX_ASYNC is still accepted as a deprecated alias) |
+| **llm_model_max_async** | `int` | Base maximum LLM concurrency; also caps per-document chunk extraction tasks, while each entity/relation merge phase uses twice this task limit | `4`（default value changed by env var MAX_ASYNC_LLM; MAX_ASYNC is still accepted as a deprecated alias; `EXTRACT_MAX_ASYNC_LLM` can independently limit actual Extract-role requests) |
 | **llm_model_kwargs** | `dict` | Additional parameters for LLM generation | |
 | **vector_db_storage_cls_kwargs** | `dict` | Additional parameters for vector database, like setting the threshold for nodes and relations retrieval | cosine_better_than_threshold: 0.2（default value changed by env var COSINE_THRESHOLD) |
 | **enable_llm_cache** | `bool` | If `TRUE`, stores LLM results in cache; repeated prompts return cached responses | `TRUE` |
@@ -285,9 +285,12 @@ class QueryParam:
 
     user_prompt: str | None = None
     """User-provided prompt for the query.
-    Addition instructions for LLM. If provided, this will be inject into the prompt template.
-    It's purpose is the let user customize the way LLM generate the response.
+    Additional instructions for LLM. If provided, this will be injected into the prompt template.
+    Its purpose is to let the user customize the way LLM generates the response.
     """
+
+    disable_user_prompt_prefix: bool = False
+    """If True, the server-side global prompt prefix is NOT prepended to `user_prompt`."""
 
     enable_rerank: bool = True
     """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.
@@ -612,6 +615,8 @@ same underlying BPE engine.
 
 When using LightRAG for content queries, avoid combining the search process with unrelated output processing, as this significantly impacts query effectiveness. The `user_prompt` parameter in `QueryParam` does not participate in the RAG retrieval phase — it guides the LLM on how to process the retrieved results after the query is completed.
 
+"Does not participate in retrieval" means it does not influence *what* is found or *how* it is ranked: it is not used for keyword extraction, vector search, or reranking. It does still consume part of the token budget, because it genuinely occupies space in the final prompt alongside the retrieved context.
+
 ```python
 query_param = QueryParam(
     mode="hybrid",
@@ -624,6 +629,75 @@ response_default = rag.query(
 )
 print(response_default)
 ```
+
+### A Global User Prompt Prefix
+
+`user_prompt` is supplied per request, so it cannot express an output policy
+that should hold for every caller. `LightRAG.user_prompt_prefix` is that policy:
+a server-side string prepended to each request's `user_prompt`.
+
+```python
+rag = LightRAG(..., user_prompt_prefix="Answer in the language of the question.\n\n")
+```
+
+For the API server it comes from the environment instead — `USER_PROMPT_PREFIX`
+for a short value, or `USER_PROMPT_PREFIX_FILE` (a `.md`/`.txt` file name under
+`PROMPT_DIR/user_prompt`) when the text is long, multi-paragraph, or contains
+`${...}`, which python-dotenv would otherwise interpolate away.
+
+The two strings are concatenated **verbatim, with no separator inserted** — end
+the prefix with your own `\n\n` so it does not run into the caller's text. The
+prefix comes first because a model weights later instructions more heavily on
+conflict, so the per-request prompt wins.
+
+**An empty `user_prompt` does not disable the prefix.** When a request sends no
+`user_prompt` — `None`, `""`, or the field omitted entirely — the prefix alone
+becomes the instructions sent to the LLM. This is the common deployment: the
+operator sets one policy and callers send nothing.
+
+```python
+# All three send exactly "Answer in the language of the question." to the model.
+rag.query("...", param=QueryParam(mode="hybrid"))
+rag.query("...", param=QueryParam(mode="hybrid", user_prompt=None))
+rag.query("...", param=QueryParam(mode="hybrid", user_prompt=""))
+```
+
+This matters for the WebUI in particular, which ships `user_prompt: ""` as its
+default: leaving the box blank applies the operator's policy rather than
+clearing it. The `Additional Instructions` section falls back to `n/a` only when
+**both** the prefix and the request's `user_prompt` are empty.
+
+A request opts out with `disable_user_prompt_prefix` — the only way to suppress
+the prefix — which is what lets a front-end take full control of the final
+instruction text:
+
+```python
+QueryParam(user_prompt="...", disable_user_prompt_prefix=True)
+```
+
+The prefix is configuration, not request data: a request can decline it but can
+never read or replace it. Three limits are worth knowing:
+
+- **`bypass` mode ignores it**, as it ignores `user_prompt` entirely — empty or
+  not. That path has no `{user_prompt}` slot and its `system_prompt` argument
+  belongs to the caller, so this is not an exception to the rule above: bypass
+  simply sends no user instructions at all.
+- **`only_need_prompt=True` returns the composed prompt**, so any client that
+  can set that debug flag can read the prefix verbatim.
+- **`only_need_context` and `only_need_prompt` are charged for the prefix**, even
+  though `only_need_context` returns before any prompt is sent. These switches
+  preview the real request: if retrieval-only calls skipped the charge they
+  would report more chunks than a live query retrieves, and context sized
+  against that number would be truncated at answer time. `/query/data`
+  (`aquery_data`) is retrieval-only and follows the same rule.
+- **A custom `system_prompt` without a `{user_prompt}` placeholder drops it**,
+  the same way it already drops `user_prompt`. The token budget accounts for
+  this: the prefix is charged against the context allowance only when the
+  template that will actually be rendered has somewhere to put it.
+
+The prefix participates in the answer cache key, so editing it invalidates
+answers generated under the old one. With no prefix configured the key is
+unchanged, so existing cache entries keep hitting.
 
 
 ## Storage Backends
@@ -638,6 +712,13 @@ LightRAG uses 4 types of storage for different purposes:
 | **VECTOR_STORAGE** | Entity/relation/chunk embedding vectors |
 | **GRAPH_STORAGE** | Entity-relation graph structure |
 | **DOC_STATUS_STORAGE** | Document indexing status |
+
+The default implementation of each storage type (marked `(default)` below) is an
+in-memory database persisted to local files under `working_dir`: the whole
+dataset resides in the process's memory, so capacity is bounded by available
+RAM. The defaults are suitable **only for small-scale testing, evaluation, and
+debugging, and are not suitable for production** — for production, PostgreSQL is
+the recommended backend and can serve all four storage types on its own.
 
 ### Supported Implementations
 
@@ -770,11 +851,24 @@ Example connection configurations for each storage type can be found in the repo
 For production level scenarios you will most likely want to leverage an enterprise solution for KG storage. Running Neo4J in Docker is recommended for seamless local testing. See: https://hub.docker.com/_/neo4j
 
 ```bash
-export NEO4J_URI="neo4j://localhost:7687"
+export NEO4J_URI="bolt://localhost:7687"  # Single instance / Docker: direct connection
 export NEO4J_USERNAME="neo4j"
 export NEO4J_PASSWORD="password"
 export NEO4J_DATABASE="neo4j"  # Required for community edition
 ```
+
+**Choosing the URI scheme.** The scheme prefix of `NEO4J_URI` selects the driver's connection mode:
+
+- `bolt://` / `bolt+s://` — direct connection. The driver talks only to the host and port written in the URI. Use this for a single Neo4j instance, a single Docker container, or any deployment reached through a port mapping or proxy.
+- `neo4j://` / `neo4j+s://` — routing connection. The driver first asks the server for a routing table and then connects to the addresses the server advertises. Use this for Neo4j Aura and clustered deployments, where it provides read/write routing and failover.
+
+**Troubleshooting `Unable to retrieve routing information`.** This error is raised by the Neo4j driver, not by LightRAG, and it only occurs with the `neo4j://` scheme. It means none of the routers returned a routing table. Check, in order:
+
+1. The Neo4j server is actually running and reachable on the configured host and port (a stopped or restarting instance produces exactly this message).
+2. If the instance is a single node or a Docker container, switch `NEO4J_URI` to `bolt://`. A single instance advertises its own address in the routing table; when the server is reached through Docker port mapping or a proxy, that advertised address is often not reachable from the client, so the routing refresh fails even though the initial connection succeeded. The direct scheme skips the routing table entirely.
+3. If you must keep `neo4j://` against a single Docker container, set `server.default_advertised_address` on the Neo4j side to an address the client can reach.
+
+LightRAG retries transient `ServiceUnavailable` errors a few times with backoff, but it cannot recover from a database that stays unreachable; the storage call fails after the retries are exhausted.
 
 ```python
 from lightrag.utils import setup_logger

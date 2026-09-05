@@ -1,0 +1,36 @@
+# Purge Recovery Contract
+
+Read this before changing `_purge_kg_contributions`, `adelete_by_doc_id`, `merge_nodes_and_edges` Phase 0 anchors, the `kg_write_state` / `kg_purge` doc-status metadata, the metadata carry-over whitelists in `lightrag/utils_pipeline.py`, or `compute_incremental_chunk_ids`. Summary in [AGENTS.md](../../AGENTS.md#purge-recovery-contract).
+
+The KG is shared across documents, so "what did this document contribute?" can only be answered from the per-document **write-ahead recovery anchors** (`full_entities` / `full_relations`, written and flushed in `merge_nodes_and_edges` Phase 0 *before* the first graph mutation). The reverse lookup — graph `source_id` → `text_chunks` → `full_doc_id` — is not a fallback, because purge deletes those chunks.
+
+The governing invariant is narrower than "every purge needs a proof":
+
+> **A purge must never delete something that CARRIES attribution — a chunk row or an anchor row that names objects — and leave those objects behind.** An operation that removes no such carrier cannot strand anything and needs no proof.
+
+`_purge_kg_contributions` therefore **fails closed** (`RecoveryAnchorMissingError`, surfaced as HTTP 409, nothing deleted) when it would remove a carrier without one of these proofs. Treating absent anchors as an empty candidate list was issue #3400's silent-skip defect: graph cleanup was skipped while the chunks went anyway, stranding unattributable entities that `audit_kg_integrity` can only report as unrecoverable orphans.
+
+| Proof | Established by |
+|---|---|
+| `anchors` | Both anchor ROWS present and structurally usable. **Row presence is the test, never list truthiness** — an empty row is a document that extracted no entities, and conflating the two is the original bug. |
+| `pre_graph` | `doc_status.metadata.kg_write_state`. Stamped `pre_graph` at enqueue so every pre-merge failure state inherits it by carry-over; advanced to `graph_mutation_started` only by `merge_nodes_and_edges`' `on_anchors_durable` hook. **Monotonic** — nothing writes it back, because re-stamping `pre_graph` on reprocess would let the resume purge skip and orphan the previous run's contributions. Absent means UNKNOWN (pre-#3416), which fails closed. |
+| `journal` | `doc_status.metadata.kg_purge` at a phase past `prepared`, i.e. a previous attempt got far enough to have deleted the anchors itself. |
+| `empty_scope` | No chunks AND no anchor row that names anything — so the delete removes no carrier at all and the invariant is satisfied outright. This is what lets a row enqueued before the marker existed, still holding no chunks, be deleted directly (no scan, no audit). |
+
+**`kg_write_state` must never be inferred.** `pre_graph` asserts "this document never touched the graph", which licenses deleting its chunks while *skipping the graph* — sound only because the marker is written once, at enqueue, when it is necessarily true and the document has no history to misread. A backfill keying off a momentarily-empty `chunks_list` would stamp a document that does own graph objects, and because the stamp is durable the damage lands later, when the chunks reappear: chunks deleted, graph skipped, issue #3400 reproduced exactly. `empty_scope` is safe where such a backfill is not, because it is re-evaluated against live state on every call and grants nothing beyond that call. `tests/pipeline/test_purge_fail_closed.py::test_a_false_pre_graph_marker_would_reproduce_the_original_defect` pins the cost.
+
+Anchor-driven whole-document purge is **journaled and resumable** through four ordered phases — `prepared` → `derived_committed` → `anchors_pending` → `completed` — keyed by an operation id over the document key plus its chunk SET. The journal is *required by* fail-closed rather than an optimisation: purge's last step deletes the anchors, so without it any later failure would make every retry refuse forever. A resumed purge skips exactly the phases already persisted (so it never re-runs the LLM-cache-backed rebuild); an in-flight journal for a different operation is refused (`KGPurgeOperationConflictError`), while a stale `completed` one is ignored as dead bookkeeping.
+
+Both metadata keys are in the `_DOC_STATUS_METADATA_CARRY_OVER_KEYS` **and** `_DOC_STATUS_METADATA_DIRECTIVE_KEYS` whitelists in `lightrag/utils_pipeline.py`; dropping either at a transition or a FAILED→PENDING reset turns a resumable purge into a permanent refusal. Retiring one requires `doc_status_transition_metadata(..., drop=...)` — passing it via `extra` would persist the value, and omitting it lets carry-over restore it.
+
+Callers: `adelete_by_doc_id` (delegates wholly to the primitive; the chunk-less branch runs it too), and the pipeline's resume path `_purge_stale_extraction_if_resuming` (which retires the journal and persists `chunks_list=[]` in one targeted write). Explicit-candidate mode — custom-chunk patch rollback — is neither journaled nor proof-checked, because its own operation journal already names the complete candidate superset; the primitive reads that journal to union in candidates no anchor row can name yet.
+
+A document can legitimately own nothing: `skip_kg` (`process_options` `'!'`) skips extraction and the merge, so no anchor rows are ever written. Post-change those documents carry `pre_graph` and delete normally; older ones have neither proof, and anchor repair has nothing to rebuild from.
+
+The offline remedy for a document with no proof is `audit_kg_integrity(..., apply=True)` (`lightrag/tools/kg_integrity_repair.py`): it rebuilds anchors from surviving chunk provenance, and — because it enumerates the **whole** graph, which the hot paths never do — it can additionally certify that a document appearing nowhere in that scan owns nothing, writing it the empty anchor rows that are the normal proof for such a document (`anchorless_docs` in the report). Absence is only ever concluded from the completed scan; a document that does own graph objects is repaired with its real names, never blanked.
+
+## Chunk tracking authority
+
+**Chunk tracking outranks graph `source_id`.** Within a surviving entity or relation, the `entity_chunks` / `relation_chunks` row is the authoritative chunk list; the graph node's `source_id` is only a truncated view of it (`apply_source_ids_limit`) and may legitimately still name chunks a previous purge already pruned — `_purge_kg_contributions` reads tracking first, falls back to `source_id` only when the row is absent, and its `graph_references_deleted_chunks` branch exists to repair exactly that lag. So code that folds a `source_id` delta back into tracking must append genuine additions only: restoring an ID that is in the graph but not in tracking writes stale attribution into the authoritative store, and a later purge would rebuild or retain KG objects from chunks that no longer exist. `compute_incremental_chunk_ids` carries this rule and `tests/utils/test_compute_incremental_chunk_ids.py` pins it. Genuinely missing attribution is repaired by `audit_kg_integrity`, never by the incremental path.
+
+Relation chunk tracking is the authoritative chunk list, so the no-source placeholders must never be written into it.

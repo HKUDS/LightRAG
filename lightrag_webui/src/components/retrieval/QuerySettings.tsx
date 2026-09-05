@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { QueryMode, QueryRequest } from '@/api/lightrag'
 // Removed unused import for Text component
 import Checkbox from '@/components/ui/Checkbox'
@@ -15,8 +15,9 @@ import {
 } from '@/components/ui/Select'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 import { useSettingsStore } from '@/stores/settings'
+import { useQuerySettingsStore } from '@/stores/querySettings'
 import { useTranslation } from 'react-i18next'
-import { RotateCcw } from 'lucide-react'
+import { CircleHelp, RotateCcw } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const ResetButton = ({ onClick, title }: { onClick: () => void; title: string }) => (
@@ -41,11 +42,17 @@ const ResetButton = ({ onClick, title }: { onClick: () => void; title: string })
 
 export default function QuerySettings() {
   const { t } = useTranslation()
-  const querySettings = useSettingsStore((state) => state.querySettings)
+  const querySettings = useQuerySettingsStore((state) => state.querySettings)
   const userPromptHistory = useSettingsStore((state) => state.userPromptHistory)
+  const [scopeHelpOpen, setScopeHelpOpen] = useState(false)
+  // What the tooltip's state was when the tap STARTED. Radix dismisses an open
+  // tooltip from a document-level pointerdown listener, so by the time the
+  // click lands the state no longer says whether the user meant to open or to
+  // close — this does. React's capture handler runs before that listener.
+  const scopeHelpOpenAtPointerDown = useRef(false)
 
   const handleChange = useCallback((key: keyof QueryRequest, value: any) => {
-    useSettingsStore.getState().updateQuerySettings({ [key]: value })
+    useQuerySettingsStore.getState().updateQuerySettings({ [key]: value })
   }, [])
 
   const handleSelectFromHistory = useCallback((prompt: string) => {
@@ -82,6 +89,40 @@ export default function QuerySettings() {
       <CardHeader className="px-4 pt-4 pb-2">
         <CardTitle>{t('retrievePanel.querySettings.parametersTitle')}</CardTitle>
         <CardDescription className="sr-only">{t('retrievePanel.querySettings.parametersDescription')}</CardDescription>
+        {/* The query entry (/workspace) reads these same settings from this browser's
+            storage, so say whose queries they affect right where they are edited.
+            One line here, the rest behind the help tooltip. */}
+        <div className="text-muted-foreground flex items-center gap-1 text-[11px] leading-none">
+          {/* One line, always: a longer translation is ellipsized rather than
+              pushing the panel's controls down. The full text is in the tooltip. */}
+          <span className="min-w-0 truncate">
+            {t('retrievePanel.querySettings.parametersScopeNotice')}
+          </span>
+          <TooltipProvider>
+            <Tooltip open={scopeHelpOpen} onOpenChange={setScopeHelpOpen}>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={t('retrievePanel.querySettings.parametersScopeHelpLabel')}
+                  // Hover opens it on a pointer device; a tap has to work too —
+                  // and a 12px icon is not a tap target, so the padding grows the
+                  // hit box to 24x24 (WCAG 2.2 target size) while the negative
+                  // margins keep it occupying exactly the icon's own space.
+                  className="-my-1.5 -mr-1.5 shrink-0 cursor-help p-1.5 hover:text-foreground"
+                  onPointerDownCapture={() => {
+                    scopeHelpOpenAtPointerDown.current = scopeHelpOpen
+                  }}
+                  onClick={() => setScopeHelpOpen(!scopeHelpOpenAtPointerDown.current)}
+                >
+                  <CircleHelp className="h-3 w-3" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="left" className="max-w-[min(20rem,calc(100vw-2rem))]">
+                {t('retrievePanel.querySettings.parametersScopeTooltip')}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
       </CardHeader>
       <CardContent className="m-0 flex grow flex-col p-0 text-xs">
         <div className="relative size-full">
@@ -110,6 +151,35 @@ export default function QuerySettings() {
                   history={userPromptHistory}
                   placeholder={t('retrievePanel.querySettings.userPromptPlaceholder')}
                   className="h-9"
+                />
+              </div>
+              {/* Sits with the field whose meaning it changes, not with the
+                  debug switches further down. */}
+              <div className="flex items-center gap-2">
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label
+                        htmlFor="disable_user_prompt_prefix"
+                        className="flex-1 ml-1 cursor-help"
+                      >
+                        {t('retrievePanel.querySettings.disableUserPromptPrefix')}
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">
+                      <p>
+                        {t('retrievePanel.querySettings.disableUserPromptPrefixTooltip')}
+                      </p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                <Checkbox
+                  className="mr-10 cursor-pointer"
+                  id="disable_user_prompt_prefix"
+                  checked={querySettings.disable_user_prompt_prefix ?? false}
+                  onCheckedChange={(checked) =>
+                    handleChange('disable_user_prompt_prefix', checked)
+                  }
                 />
               </div>
             </>

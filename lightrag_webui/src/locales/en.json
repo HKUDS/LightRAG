@@ -13,6 +13,7 @@
     "apiDocs": "API Documentation",
     "projectRepository": "Project Repository",
     "appSettings": "Settings",
+    "deploymentInfo": "Deployment information",
     "logout": "Logout",
     "frontendNeedsRebuild": "Frontend needs rebuild",
     "themeToggle": {
@@ -32,7 +33,10 @@
     "errorEmptyFields": "Please enter your username and password",
     "errorInvalidCredentials": "Login failed, please check username and password",
     "authDisabled": "Authentication is disabled. Using login free mode.",
-    "guestMode": "Login Free"
+    "guestMode": "Login Free",
+    "consentLabel": "I agree to the {{documents}}",
+    "consentDocuments": "Privacy Policy Agreement",
+    "errorConsentRequired": "Please read and agree to the agreements before signing in"
   },
   "common": {
     "cancel": "Cancel",
@@ -126,6 +130,9 @@
       "pipelineStatusTooltip": "View document processing pipeline status",
       "uploadedTitle": "Uploaded Documents",
       "uploadedDescription": "List of uploaded documents and their statuses.",
+      "loading": "Loading documents...",
+      "loadErrorTitle": "Could not load documents",
+      "retry": "Retry",
       "emptyTitle": "No Documents",
       "emptyDescription": "There are no uploaded documents yet.",
       "columns": {
@@ -404,6 +411,7 @@
   },
   "retrievePanel": {
     "chatMessage": {
+      "aiContentNotice": "AI-generated content — please verify.",
       "copyTooltip": "Copy to clipboard",
       "copyError": "Failed to copy text to clipboard",
       "copyEmpty": "No content to copy",
@@ -436,11 +444,17 @@
       "placeholder": "Enter your query (Support prefix: /<Query Mode>)",
       "error": "Error: Failed to get response",
       "queryModeError": "Only supports the following query modes: {{modes}}",
-      "queryModePrefixInvalid": "Invalid query mode prefix. Use: /<mode> [space] your query"
+      "queryModePrefixInvalid": "Invalid query mode prefix. Use: /<mode> [space] your query",
+      "queryEmpty": "Please enter a question before sending.",
+      "queryTooShort": "Your query is too short. Enter at least 3 English characters or an equivalent combination; each Chinese, Japanese or Korean character counts as 2.",
+      "dismissError": "Dismiss error"
     },
     "querySettings": {
       "parametersTitle": "Parameters",
       "parametersDescription": "Configure your query parameters",
+      "parametersScopeNotice": "Affects queries from this browser",
+      "parametersScopeTooltip": "These parameters are saved in this browser and stay in effect until you change them; queries sent from the /workspace entry opened in it use them too. They are per-browser local state, not a server-wide policy: other browsers and devices are unaffected.",
+      "parametersScopeHelpLabel": "About parameter scope",
       "queryMode": "Query Mode",
       "queryModeTooltip": "Select the retrieval strategy:\n• Naive: Traditional text chunk vector retrieval\n• Local: Focus on entity retrieval\n• Global: Focus on relationship retrieval\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Skip retrieval, send conversation history and current question to LLM",
       "queryModeWarning": "May reduce retrieval quality",
@@ -481,8 +495,10 @@
       "streamResponse": "Stream Response",
       "streamResponseTooltip": "If True, enables streaming output for real-time responses",
       "userPrompt": "Additional Output Prompt",
-      "userPromptTooltip": "Provide additional response requirements to the LLM (unrelated to query content, only for output processing).",
+      "userPromptTooltip": "Provide additional response requirements to the LLM (unrelated to query content, only for output processing). The server may prepend a global prompt to this. Leave it empty to send only the server's global prompt.",
       "userPromptPlaceholder": "Enter custom prompt (optional)",
+      "disableUserPromptPrefix": "Ignore Global Prompt",
+      "disableUserPromptPrefixTooltip": "Do not prepend the server's global output prompt to the additional output prompt above. Enable this to control the final instructions entirely from here.",
       "enableRerank": "Enable Rerank",
       "enableRerankTooltip": "Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True."
     }
@@ -501,5 +517,28 @@
     "prevPage": "Previous Page",
     "nextPage": "Next Page",
     "lastPage": "Last Page"
+  },
+  "workspace": {
+    "welcome": {
+      "defaultMarkdown": "Welcome! Ask questions about the knowledge base and get answers with citations. Sign in to get started.",
+      "enterButton": "Enter workspace",
+      "loginButton": "Sign in",
+      "enterFailed": "Could not reach the server. Please try again."
+    },
+    "queryEmpty": {
+      "defaultMarkdown": "Ask anything about the knowledge base to get started."
+    }
+  },
+  "migration": {
+    "failedTitle": "Failed to prepare local settings",
+    "failedBody": "Your saved settings could not be migrated to the new storage format. Nothing was lost — reload to try again.",
+    "dataLostTitle": "Some saved settings could not be recovered",
+    "dataLostBody": "Browser storage was full, so some of your saved settings (theme, language, API key) could not be preserved and are no longer recoverable. Continuing will keep whatever survived and use defaults for the rest.",
+    "continueAfterLoss": "Continue",
+    "retry": "Reload",
+    "historyDropped": "Chat history could not fit in browser storage during the upgrade and was discarded. Settings were migrated normally."
+  },
+  "retrievalHistory": {
+    "quotaDropped": "Browser storage is full: the chat history is no longer being saved. The current conversation stays visible until you leave the page."
   }
 }

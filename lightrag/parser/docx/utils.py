@@ -26,6 +26,8 @@ except ImportError:  # pragma: no cover - optional dependency
     openai = None
     HAS_OPENAI = False
 
+from lightrag.llm._error_utils import is_permanent_rate_limit_error
+
 
 def estimate_tokens(text: str) -> int:
     """
@@ -248,9 +250,13 @@ def is_openai_retryable(error: Exception) -> bool:
     - PermissionDeniedError (403): No access to resource
     - BadRequestError (400): Invalid request format
     - NotFoundError (404): Model or resource not found
+    - RateLimitError (429) that is a permanent spend stop: a LiteLLM Proxy
+      ``budget_exceeded`` or an OpenAI ``insufficient_quota``. Only an operator
+      raising the budget or topping up billing clears these, so backoff cannot
+      help.
 
     Retryable errors:
-    - RateLimitError (429): Rate limit exceeded
+    - RateLimitError (429): Rate limit exceeded (throughput throttle)
     - APIConnectionError: Network issues
     - InternalServerError (500): Server errors
     - APIStatusError with 502, 503, 504: Gateway/service errors
@@ -280,9 +286,10 @@ def is_openai_retryable(error: Exception) -> bool:
     if isinstance(error, openai.NotFoundError):
         return False
 
-    # Rate limit exceeded - should retry with backoff (429)
+    # Rate limit exceeded - should retry with backoff (429), unless the 429 is
+    # a permanent spend stop that no amount of backoff can clear.
     if isinstance(error, openai.RateLimitError):
-        return True
+        return not is_permanent_rate_limit_error(error)
 
     # API connection error - network issues, should retry
     if isinstance(error, openai.APIConnectionError):
@@ -294,8 +301,13 @@ def is_openai_retryable(error: Exception) -> bool:
 
     # For other APIStatusError, check HTTP status code
     if isinstance(error, openai.APIStatusError):
+        # A 429 reaching here is not a RateLimitError instance (a proxy may
+        # surface it as a bare APIStatusError), so it needs the same spend-stop
+        # check as the branch above.
+        if error.status_code == 429:
+            return not is_permanent_rate_limit_error(error)
         # Retryable server-side errors
-        return error.status_code in (429, 500, 502, 503, 504)
+        return error.status_code in (500, 502, 503, 504)
 
     # For unknown errors, default to retry (network issues, timeouts, etc.)
     return True

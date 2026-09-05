@@ -3795,27 +3795,27 @@ class PGKVStorage(BaseKVStorage):
 
         delete_sql = f"DELETE FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
 
-        # Chunk the id list so each statement's ANY($2) array stays bounded
-        # (a non-positive cap disables chunking). All chunks run in ONE
-        # transaction so a mid-delete failure rolls every chunk back, preserving
+        # Batch the id list so each statement's ANY($2) array stays bounded
+        # (a non-positive cap disables batching). All batches run in ONE
+        # transaction so a mid-delete failure rolls every batch back, preserving
         # the original single-statement all-or-nothing behaviour; _run_with_retry
         # re-runs the whole closure on transient errors (DELETE is idempotent).
-        chunk = (
+        delete_batch_size = (
             self._max_delete_records_per_batch
             if self._max_delete_records_per_batch > 0
             else len(ids)
         )
-        if len(ids) > chunk:
+        if len(ids) > delete_batch_size:
             logger.info(
                 f"[{self.workspace}] {self.namespace} delete: {len(ids)} ids "
-                f"split into chunks (chunk={chunk})"
+                f"split into batches (batch_size={delete_batch_size})"
             )
 
         async def _batch_delete(connection: asyncpg.Connection) -> None:
             async with connection.transaction():
-                for i in range(0, len(ids), chunk):
+                for i in range(0, len(ids), delete_batch_size):
                     await connection.execute(
-                        delete_sql, self.workspace, ids[i : i + chunk]
+                        delete_sql, self.workspace, ids[i : i + delete_batch_size]
                     )
 
         try:
@@ -4781,15 +4781,15 @@ class PGVectorStorage(BaseVectorStorage):
             # (<= 0) and no pending deletes, the fallback would be 0 and the
             # range() step below would raise even though there is nothing to
             # delete. The empty-list loop then simply no-ops.
-            delete_chunk = (
+            delete_batch_size = (
                 self._max_delete_records_per_batch
                 if self._max_delete_records_per_batch > 0
                 else len(pending_delete_ids) or 1
             )
-            if pending_delete_ids and len(pending_delete_ids) > delete_chunk:
+            if pending_delete_ids and len(pending_delete_ids) > delete_batch_size:
                 logger.info(
                     f"{log_prefix} delete {len(pending_delete_ids)} ids split "
-                    f"into chunks (chunk={delete_chunk})"
+                    f"into batches (batch_size={delete_batch_size})"
                 )
             delete_sql = (
                 f"DELETE FROM {self.table_name} WHERE workspace=$1 AND id = ANY($2)"
@@ -4832,8 +4832,8 @@ class PGVectorStorage(BaseVectorStorage):
                         _flush_upsert, timing_label=timing_label
                     )
 
-                for i in range(0, len(pending_delete_ids), delete_chunk):
-                    id_slice = pending_delete_ids[i : i + delete_chunk]
+                for i in range(0, len(pending_delete_ids), delete_batch_size):
+                    id_slice = pending_delete_ids[i : i + delete_batch_size]
 
                     async def _flush_delete(
                         connection: asyncpg.Connection,
@@ -6474,61 +6474,6 @@ class PGDocStatusStorage(DocStatusStorage):
             counts[doc["status"]] = doc["count"]
         return counts
 
-    async def get_docs_by_status(
-        self, status: DocStatus
-    ) -> dict[str, DocProcessingStatus]:
-        """all documents with a specific status"""
-        sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and status=$2"
-        params = {"workspace": self.workspace, "status": status.value}
-        result = await self.db.query(sql, list(params.values()), True)
-
-        docs_by_status = {}
-        for element in result:
-            # Parse chunks_list JSON string back to list
-            chunks_list = element.get("chunks_list", [])
-            if isinstance(chunks_list, str):
-                try:
-                    chunks_list = json.loads(chunks_list)
-                except json.JSONDecodeError:
-                    chunks_list = []
-
-            # Parse metadata JSON string back to dict
-            metadata = element.get("metadata", {})
-            if isinstance(metadata, str):
-                try:
-                    metadata = json.loads(metadata)
-                except json.JSONDecodeError:
-                    metadata = {}
-            # Ensure metadata is a dict
-            if not isinstance(metadata, dict):
-                metadata = {}
-
-            # Safe handling for file_path
-            file_path = element.get("file_path")
-            if file_path is None:
-                file_path = "no-file-path"
-
-            # Convert datetime objects to ISO format strings with timezone info
-            created_at = self._format_datetime_with_timezone(element["created_at"])
-            updated_at = self._format_datetime_with_timezone(element["updated_at"])
-
-            docs_by_status[element["id"]] = DocProcessingStatus(
-                content_summary=element["content_summary"],
-                content_length=element["content_length"],
-                status=element["status"],
-                created_at=created_at,
-                updated_at=updated_at,
-                chunks_count=element["chunks_count"],
-                file_path=file_path,
-                chunks_list=chunks_list,
-                metadata=metadata,
-                error_msg=element.get("error_msg"),
-                track_id=element.get("track_id"),
-                content_hash=element.get("content_hash"),
-            )
-
-        return docs_by_status
-
     def _pg_doc_processing_status_from_row(
         self, element: dict[str, Any]
     ) -> DocProcessingStatus:
@@ -6578,7 +6523,7 @@ class PGDocStatusStorage(DocStatusStorage):
     ) -> dict[str, DocProcessingStatus]:
         """Fetch documents matching any of the given statuses in a single query.
 
-        Replaces multiple sequential/parallel get_docs_by_status() calls when the
+        Replaces multiple sequential/parallel per-status reads when the
         caller needs documents across several statuses (e.g. PROCESSING + FAILED + PENDING).
         Uses a single ANY($2) query instead of N separate round-trips.  Query
         errors always propagate; ``strict=True`` additionally raises on any row
@@ -6916,27 +6861,27 @@ class PGDocStatusStorage(DocStatusStorage):
 
         delete_sql = f"DELETE FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
 
-        # Chunk the id list so each statement's ANY($2) array stays bounded
-        # (a non-positive cap disables chunking). All chunks run in ONE
-        # transaction so a mid-delete failure rolls every chunk back, preserving
+        # Batch the id list so each statement's ANY($2) array stays bounded
+        # (a non-positive cap disables batching). All batches run in ONE
+        # transaction so a mid-delete failure rolls every batch back, preserving
         # the original single-statement all-or-nothing behaviour; _run_with_retry
         # re-runs the whole closure on transient errors (DELETE is idempotent).
-        chunk = (
+        delete_batch_size = (
             self._max_delete_records_per_batch
             if self._max_delete_records_per_batch > 0
             else len(ids)
         )
-        if len(ids) > chunk:
+        if len(ids) > delete_batch_size:
             logger.info(
                 f"[{self.workspace}] {self.namespace} delete: {len(ids)} ids "
-                f"split into chunks (chunk={chunk})"
+                f"split into batches (batch_size={delete_batch_size})"
             )
 
         async def _batch_delete(connection: asyncpg.Connection) -> None:
             async with connection.transaction():
-                for i in range(0, len(ids), chunk):
+                for i in range(0, len(ids), delete_batch_size):
                     await connection.execute(
-                        delete_sql, self.workspace, ids[i : i + chunk]
+                        delete_sql, self.workspace, ids[i : i + delete_batch_size]
                     )
 
         try:

@@ -26,10 +26,12 @@ from hashlib import md5
 from pathlib import Path
 from typing import (
     Any,
+    Awaitable,
     Protocol,
     Callable,
     TYPE_CHECKING,
     List,
+    NamedTuple,
     Optional,
     Iterable,
     Sequence,
@@ -378,6 +380,47 @@ def get_env_value(
     return converted
 
 
+class EffectiveUserPrompt(NamedTuple):
+    """The instruction text a query actually sends, and how it renders."""
+
+    text: str
+    """Composed instructions, ``""`` when there are none. Cache-key material."""
+
+    slot: str
+    """Value for the ``{user_prompt}`` placeholder; ``"n/a"`` when there are none."""
+
+
+def resolve_user_prompt(
+    user_prompt: str | None,
+    prefix: str | None,
+    disable_prefix: bool = False,
+) -> EffectiveUserPrompt:
+    """Compose the server-side prompt prefix with a request's ``user_prompt``.
+
+    ``prefix`` is operator configuration (``USER_PROMPT_PREFIX`` or
+    ``USER_PROMPT_PREFIX_FILE``); ``user_prompt`` is what the caller sent.
+
+    Neither side is normalized: no stripping, no separator inserted. The
+    operator owns the formatting and ends the prefix with its own ``\n\n``
+    when it should not run into the caller's text — stripping here would eat
+    exactly that. Not stripping ``user_prompt`` matters too: it keeps
+    ``text`` byte-identical to the pre-prefix ``user_prompt or ""`` whenever no
+    prefix is configured, so existing answer-cache entries keep hitting (see
+    :func:`compute_args_hash` call sites in ``operate.py``).
+
+    **An empty ``user_prompt`` does not disable the prefix.** When the caller
+    sends nothing, the prefix alone becomes the instructions sent to the LLM --
+    it is indistinguishable downstream from a caller having sent exactly that
+    text, which is also why the prompt templates need no second placeholder.
+    Only ``disable_prefix`` suppresses it. ``"n/a"`` is reached solely when
+    BOTH sides are empty.
+    """
+
+    resolved_prefix = "" if disable_prefix else (prefix or "")
+    text = resolved_prefix + (user_prompt or "")
+    return EffectiveUserPrompt(text=text, slot=f"\n\n{text}" if text else "n/a")
+
+
 # Use TYPE_CHECKING to avoid circular imports
 if TYPE_CHECKING:
     from lightrag.base import BaseKVStorage, BaseVectorStorage, QueryParam
@@ -460,7 +503,6 @@ class LightragPathFilter(logging.Filter):
         super().__init__()
         # Define paths to be filtered
         self.filtered_paths = [
-            "/documents",
             "/documents/paginated",
             "/health",
             "/webui/",
@@ -2725,28 +2767,87 @@ def _consume_future_exception(fut: "asyncio.Future") -> None:
         fut.exception()
 
 
-async def bounded_submit(
+async def _wait_deferring_cancellation(
+    future: "asyncio.Future",
+    pending_cancel: Optional[asyncio.CancelledError],
+) -> Optional[asyncio.CancelledError]:
+    """Await ``future`` to completion, deferring cancellation of the caller.
+
+    Loop + shield, not a single shield: a lone ``await asyncio.shield(...)``
+    returns immediately on RE-cancellation, so a second cancel would let the
+    caller escape while the work is still running. Same shape and same reason as
+    ``_KeyedLockContext.__aexit__`` in ``lightrag/kg/shared_storage.py``.
+
+    Returns the cancellation to re-raise once every step is done (the first one
+    seen, if any). Cancelling ``future`` ITSELF still propagates immediately: it
+    did not run to completion and we must not pretend it did.
+    """
+    while not future.done():
+        try:
+            await asyncio.shield(future)
+        except asyncio.CancelledError as exc:
+            if future.cancelled():
+                raise
+            pending_cancel = pending_cancel or exc
+        except BaseException:
+            # The awaited work failed. Do NOT let that exception out from here: a
+            # cancellation recorded on an earlier round has to take precedence,
+            # and deciding that is the caller's job. The exception stays on
+            # ``future`` for the caller to re-raise or log. Anything raised while
+            # the future is still pending came from elsewhere and propagates.
+            if not future.done():
+                raise
+            break
+    return pending_cancel
+
+
+async def _bounded_submit_impl(
     executor: ThreadPoolExecutor,
     semaphore: asyncio.Semaphore,
     fn: Callable[..., Any],
-    /,
-    *args: Any,
-    **kwargs: Any,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    *,
+    wait_for_completion: bool,
+    on_committed: Optional[Callable[[], Awaitable[Any]]] = None,
 ) -> Any:
-    """Run ``fn`` in ``executor`` under a permit owned by the executor future.
+    """Shared body of :func:`bounded_submit` and :func:`run_in_storage_io`.
 
-    Args:
-        executor: destination pool.
-        semaphore: submission ceiling for this pool, from :func:`get_loop_semaphore`.
-        fn: synchronous callable to run in the pool.
-        *args, **kwargs: forwarded to ``fn``.
+    Private, and takes ``args`` / ``kwargs`` as explicit containers rather than
+    ``*args, **kwargs``, so the control flag can never collide with an argument
+    meant for ``fn``. ``bounded_submit`` forwards its ``**kwargs`` verbatim, so
+    putting ``wait_for_completion`` on its own signature would either make it
+    positional-only (before the ``/``, where passing it by keyword would silently
+    forward it to ``fn`` instead of setting it) or steal a legitimate argument of
+    ``fn`` (after ``*args``).
 
-    Returns:
-        Whatever ``fn`` returns.
+    ``wait_for_completion`` selects what happens AFTER the work is submitted:
 
-    Cancelling the caller does not cancel the thread: the work runs to completion
-    and only then is the permit returned. That is deliberate — see the module
-    comment above.
+    * ``False`` — cancelling the caller returns immediately. The thread still
+      runs to completion and still owns the permit; the caller just stops
+      waiting for it.
+    * ``True`` — the caller refuses to return until the worker is done, because
+      the worker may be halfway through mutating state the caller's lock is
+      protecting (see :func:`run_in_storage_io`).
+
+    Either way the permit wait itself stays cancellable: nothing has been
+    submitted at that point, so a cancelled caller leaves no work in flight and
+    can release whatever lock it holds immediately.
+
+    ``on_committed`` (requires ``wait_for_completion``) is the bookkeeping that
+    must not be separated from a write that already landed — flipping other
+    processes' reload flags, retiring a redo log. It runs inside the SAME
+    uncancellable region as the write, and only when the write actually
+    succeeded:
+
+    * write succeeded → ``on_committed`` runs to completion, and only then is a
+      deferred cancellation re-raised;
+    * ``fn`` raised → ``on_committed`` does NOT run and the exception
+      propagates; the write did not land, so its bookkeeping must not either;
+    * cancelled while waiting for a permit → ``on_committed`` does NOT run,
+      because nothing was ever submitted. That is load-bearing, not tidiness:
+      Nano's bookkeeping retires the redo log, and running it without a write
+      would discard rows that were never persisted.
     """
     await semaphore.acquire()
     try:
@@ -2772,7 +2873,72 @@ async def bounded_submit(
 
     async_future = asyncio.wrap_future(concurrent_future)
     async_future.add_done_callback(_consume_future_exception)
-    return await asyncio.shield(async_future)
+
+    if not wait_for_completion:
+        if on_committed is not None:
+            raise ValueError("on_committed requires wait_for_completion")
+        return await asyncio.shield(async_future)
+
+    pending_cancel = await _wait_deferring_cancellation(async_future, None)
+
+    write_exc = None if async_future.cancelled() else async_future.exception()
+
+    commit_exc: Optional[BaseException] = None
+    if write_exc is None and on_committed is not None:
+        # The write landed, so its bookkeeping is no longer optional: a cancel
+        # here would leave the file published with the other processes never told
+        # to reload it. Deferred through this step too — without the second wait
+        # the gap simply moves one layer down, onto whatever this awaits.
+        commit_future = asyncio.ensure_future(on_committed())
+        commit_future.add_done_callback(_consume_future_exception)
+        pending_cancel = await _wait_deferring_cancellation(
+            commit_future, pending_cancel
+        )
+        if not commit_future.cancelled():
+            commit_exc = commit_future.exception()
+
+    if pending_cancel is not None:
+        # The caller gets CancelledError, so nobody will ever see these.
+        # ``_consume_future_exception`` already marked them retrieved (no
+        # "exception was never retrieved" noise at GC time); log them so the
+        # failure is not lost entirely.
+        for label, exc in (("Offloaded work", write_exc), ("Commit hook", commit_exc)):
+            if exc is not None:
+                logger.error(f"{label} failed while its caller was cancelled: {exc}")
+        raise pending_cancel
+    if commit_exc is not None:
+        raise commit_exc
+    return async_future.result()
+
+
+async def bounded_submit(
+    executor: ThreadPoolExecutor,
+    semaphore: asyncio.Semaphore,
+    fn: Callable[..., Any],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Run ``fn`` in ``executor`` under a permit owned by the executor future.
+
+    Args:
+        executor: destination pool.
+        semaphore: submission ceiling for this pool, from :func:`get_loop_semaphore`.
+        fn: synchronous callable to run in the pool.
+        *args, **kwargs: forwarded to ``fn`` verbatim. This function declares no
+            keyword arguments of its own, so ``fn`` may use any parameter name.
+
+    Returns:
+        Whatever ``fn`` returns.
+
+    Cancelling the caller does not cancel the thread: the work runs to completion
+    and only then is the permit returned. That is deliberate — see the module
+    comment above. Callers that must not RETURN before the thread finishes use
+    :func:`run_in_storage_io` instead.
+    """
+    return await _bounded_submit_impl(
+        executor, semaphore, fn, args, kwargs, wait_for_completion=False
+    )
 
 
 # Semaphores are per event loop, executors are per process. ``asyncio.Semaphore``
@@ -2885,6 +3051,120 @@ async def run_in_chunking_executor(fn: Callable[..., Any], *args: Any, **kwargs)
     semaphore = get_loop_semaphore("chunking", CHUNKING_SUBMIT_LIMIT)
     return await bounded_submit(
         get_chunking_executor(), semaphore, partial(fn, *args, **kwargs)
+    )
+
+
+# ---------------------------------------------------------------------------
+# File-backend persistence off the event loop
+# ---------------------------------------------------------------------------
+#
+# The file backends rewrite their whole file on every commit, synchronously, on
+# the event loop: ``write_json`` for the JSON KV / doc-status stores,
+# ``nx.write_graphml`` for NetworkX, ``NanoVectorDB.save`` for nano. A single
+# ``_insert_done`` flushes every storage, and a document purge issues several of
+# them, so on a large corpus the loop stops serving HTTP for seconds at a time —
+# the same failure mode as GHSA-26pm-px5v-8c4w, in a different place.
+#
+# One worker. Those commits are ALREADY serialized today: ``_flush_storages``
+# gathers them, but each synchronous write runs to completion without yielding,
+# so they happen one after another anyway. A single worker preserves that
+# concurrency exactly while freeing the loop. More workers would only make the
+# pure-Python encoders (``json.dump`` with ``indent``, GraphML's per-element
+# loop) contend for the GIL with each other AND with the loop — turning "the
+# loop is blocked for N seconds" into "the loop is starved for N seconds",
+# which is worse.
+#
+# Not the default executor: that one is shared with
+# ``UnifiedLock._acquire_mp_lock_in_executor``, password hashing and ``stat``
+# calls, and parking it behind a multi-second file write would delay work that
+# has to run promptly.
+#
+# Invariants for anything submitted here:
+#   * no nested submission to this pool — one worker plus a held permit
+#     deadlocks;
+#   * no calling back into the storage layer (``_get_client`` / ``_get_graph``):
+#     they take ``NamespaceLock``, which the caller already holds and which is
+#     not reentrant;
+#   * therefore the pool holds no locks, so it cannot take part in a cycle.
+
+_STORAGE_IO_EXECUTOR: Optional[ThreadPoolExecutor] = None
+_STORAGE_IO_EXECUTOR_GUARD = threading.Lock()
+
+
+def get_storage_io_executor() -> ThreadPoolExecutor:
+    """The process-wide single-worker pool used for file-backend persistence."""
+    global _STORAGE_IO_EXECUTOR
+    if _STORAGE_IO_EXECUTOR is None:
+        with _STORAGE_IO_EXECUTOR_GUARD:
+            if _STORAGE_IO_EXECUTOR is None:
+                _STORAGE_IO_EXECUTOR = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="lightrag-storage-io"
+                )
+    return _STORAGE_IO_EXECUTOR
+
+
+async def run_in_storage_io(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Run a synchronous storage-persistence callable off the event loop.
+
+    Uncancellable once submitted, unlike :func:`bounded_submit`. Callers hold
+    their storage lock across this call and the worker may be halfway through
+    mutating shared state — ``NanoVectorDBStorage`` points its client's
+    ``storage_file`` at the temporary sibling for the duration of the save.
+    Returning early would release the lock with that state still swapped, a
+    window the synchronous write being replaced here did not have, because it
+    could not be cancelled at all.
+
+    The wait for a submission permit stays cancellable: at that point nothing has
+    been submitted, so a cancelled caller leaves no half-written file behind and
+    releases its lock immediately.
+    """
+    from lightrag.constants import STORAGE_IO_SUBMIT_LIMIT
+
+    semaphore = get_loop_semaphore("storage_io", STORAGE_IO_SUBMIT_LIMIT)
+    return await _bounded_submit_impl(
+        get_storage_io_executor(),
+        semaphore,
+        fn,
+        args,
+        kwargs,
+        wait_for_completion=True,
+    )
+
+
+async def commit_in_storage_io(
+    fn: Callable[[], Any],
+    on_committed: Callable[[], Awaitable[Any]],
+) -> Any:
+    """``run_in_storage_io`` for a write whose bookkeeping must not be orphaned.
+
+    Backends that publish a file and then tell the other processes to reload it
+    (``set_all_update_flags``) have two steps that must not come apart. A cancel
+    landing between them leaves the file published while every other worker keeps
+    reading the previous snapshot, until some later commit happens to fix it.
+
+    The synchronous writes this replaces had the same gap — with the loop frozen
+    for the whole write, cancellation could only be delivered at the first
+    suspension point after it, which in multiprocess mode is the lock acquire
+    inside ``set_all_update_flags``, before any flag is flipped. Freeing the
+    event loop makes the window far easier to hit, so it is closed here rather
+    than left to grow.
+
+    ``fn`` takes no arguments (wrap it in a lambda or ``partial``), which keeps
+    this signature clear of the keyword-forwarding hazard ``run_in_storage_io``
+    has to live with. ``on_committed`` runs ONLY if ``fn`` succeeded — see
+    ``_bounded_submit_impl`` for why running it otherwise would lose data.
+    """
+    from lightrag.constants import STORAGE_IO_SUBMIT_LIMIT
+
+    semaphore = get_loop_semaphore("storage_io", STORAGE_IO_SUBMIT_LIMIT)
+    return await _bounded_submit_impl(
+        get_storage_io_executor(),
+        semaphore,
+        fn,
+        (),
+        {},
+        wait_for_completion=True,
+        on_committed=on_committed,
     )
 
 
@@ -3005,12 +3285,19 @@ class Tokenizer:
     # the cost of a handful of extra ``encode()`` calls per span compared to
     # the tiktoken fast path.
     #
-    # BPE token count is not monotonic in character-prefix length, so this is
-    # a bounded, STRICTLY ONE-DIRECTIONAL retreat: candidate length only ever
-    # decreases (by exponential character steps: 1, 2, 4, 8, ...), never
-    # re-expands. That rules out oscillation and bounds the number of
-    # re-encodes to O(log max_tokens) regardless of how good the initial
-    # char/token ratio estimate turns out to be for a given region of text.
+    # BPE token count is not monotonic in character-prefix length, so no
+    # candidate is ever trusted without encoding it. The search brackets the
+    # answer between a length verified to fit and one verified to overflow --
+    # reached by doubling or halving from the ratio estimate -- and then
+    # bisects that bracket. The bracket only ever narrows, which rules out
+    # oscillation, and both phases are logarithmic in the remaining character
+    # count, so the number of re-encodes stays bounded however wrong the
+    # initial char/token ratio estimate is for a given region of text.
+    #
+    # Bracketing is an assumption about the sampled lengths, not a proof about
+    # every length between them: the span returned is always verified to fit,
+    # but under a sufficiently non-monotonic tokenizer a longer one may exist
+    # that the bisection never sampled.
     #
     # No cross-call state: nothing here is written back onto ``self``. An
     # injected tokenizer must remain safe under concurrent calls from
@@ -3026,19 +3313,62 @@ class Tokenizer:
         whole-content encode) used only to pick a starting candidate length;
         the result is always independently verified by encoding the exact
         candidate substring.
+
+        That estimate is a whole-content average, so wherever token density
+        varies it is wrong in one of two directions at ``start``: a region
+        sparser than the average makes the seed too short, a denser one makes
+        it too long. Accepting the first candidate that happens to fit leaves
+        most of the budget unspent in the first case; stepping down from an
+        over-long seed by exponentially growing amounts overshoots the whole
+        remainder in the second, which is why that step-down had to clamp at
+        one character. Both are avoided by bracketing the answer between a
+        length verified to fit and one verified to overflow, then bisecting.
         """
         remaining_len = len(content) - start
-        candidate_len = min(remaining_len, max(1, int(max_tokens * chars_per_token)))
-        step = 1
-        while True:
-            candidate = content[start : start + candidate_len]
-            count = len(self.encode(candidate))
-            if count <= max_tokens:
-                return TokenSpan(start, start + candidate_len, count)
-            if candidate_len <= 1:
-                break
-            candidate_len = max(1, candidate_len - step)
-            step *= 2
+        seed = min(remaining_len, max(1, int(max_tokens * chars_per_token)))
+
+        # ``good`` is the longest length verified to fit, ``bad`` the shortest
+        # verified not to; ``bad`` starts one past the end as a sentinel for
+        # "nothing has overflowed yet".
+        good, good_count = 0, 0
+        bad = remaining_len + 1
+
+        count = len(self.encode(content[start : start + seed]))
+        if count <= max_tokens:
+            good, good_count = seed, count
+            if seed == remaining_len:
+                return TokenSpan(start, start + good, good_count)
+            candidate = seed
+            while True:  # double until a candidate overflows
+                candidate = min(remaining_len, candidate * 2)
+                probe_count = len(self.encode(content[start : start + candidate]))
+                if probe_count > max_tokens:
+                    bad = candidate
+                    break
+                good, good_count = candidate, probe_count
+                if candidate == remaining_len:
+                    return TokenSpan(start, start + good, good_count)
+        else:
+            bad = seed
+            candidate = seed
+            while candidate > 1:  # halve until a candidate fits
+                candidate //= 2
+                probe_count = len(self.encode(content[start : start + candidate]))
+                if probe_count <= max_tokens:
+                    good, good_count = candidate, probe_count
+                    break
+                bad = candidate
+
+        while bad - good > 1:  # bisect the bracket
+            midpoint = (good + bad) // 2
+            probe_count = len(self.encode(content[start : start + midpoint]))
+            if probe_count <= max_tokens:
+                good, good_count = midpoint, probe_count
+            else:
+                bad = midpoint
+
+        if good > 0:
+            return TokenSpan(start, start + good, good_count)
 
         first_cp = content[start : start + 1]
         first_cp_tokens = len(self.encode(first_cp))
@@ -3049,12 +3379,15 @@ class Tokenizer:
         return TokenSpan(start, start + 1, first_cp_tokens)
 
     def truncate_by_token_limit(self, content: str, max_tokens: int) -> TokenSpan:
-        """Return the longest safe prefix of ``content`` that fits ``max_tokens``.
+        """Return a verified safe prefix of ``content`` that fits ``max_tokens``.
 
         The result always starts at character offset 0. If the whole string
-        already fits, the returned span covers it entirely. Raises
-        ``ValueError`` for a non-positive budget, and ``TokenBudgetError`` if
-        not even the first complete Unicode code point fits.
+        already fits, the returned span covers it entirely. Otherwise the
+        bracketed search aims to use the available budget efficiently, but a
+        non-monotonic tokenizer may have a longer fitting prefix that was not
+        sampled. Raises ``ValueError`` for a non-positive budget, and
+        ``TokenBudgetError`` if not even the first complete Unicode code point
+        fits.
         """
         if max_tokens <= 0:
             raise ValueError(f"max_tokens must be positive, got {max_tokens}")
@@ -3164,7 +3497,7 @@ class TiktokenTokenizer(Tokenizer):
             import tiktoken
         except ImportError:
             raise ImportError(
-                "tiktoken is not installed. Please install it with `pip install tiktoken` or define custom `tokenizer_func`."
+                "tiktoken is not installed. Please install it with `pip install tiktoken` or pass a custom `tokenizer`."
             )
 
         try:
@@ -4166,13 +4499,76 @@ async def aexport_data(
                 relations_data.append(relation_row)
 
     # --- Relationships (from VectorDB) ---
-    all_relationships = await relationships_vdb.client_storage
-    for rel in all_relationships["data"]:
-        relationships_data.append(
-            {
-                "relationship_id": rel["__id__"],
-                "data": str(rel),  # Convert to string for compatibility
-            }
+    # ``client_storage`` is a debug/snapshot escape hatch, not part of the
+    # BaseVectorStorage contract: only NanoVectorDBStorage (async property)
+    # and FaissVectorDBStorage (sync property) implement it. Every other
+    # backend (Milvus, Qdrant, Postgres, Redis, MongoDB, OpenSearch) has no
+    # such attribute at all. This section is a supplementary raw-record
+    # dump; the entity/relation data above already carries the authoritative
+    # graph content, so skip it rather than fail the whole export on a
+    # backend that doesn't support it.
+    #
+    # Check the class, not the instance, for attribute presence:
+    # ``hasattr(relationships_vdb, ...)`` would call the getter to answer
+    # the question, and for NanoVectorDB's *async* property that getter
+    # returns a coroutine that ``hasattr`` immediately discards --
+    # "coroutine was never awaited" plus doing the (wasted) work twice.
+    # Attribute access on the class itself returns the property descriptor
+    # without invoking it.
+    if hasattr(type(relationships_vdb), "client_storage"):
+        # The two implementations disagree on sync vs. async (NanoVectorDB's
+        # is async, Faiss's is a plain sync property), so the value itself
+        # decides whether to await -- a fixed isinstance/backend-name check
+        # would silently break the moment either changes.
+        client_storage = relationships_vdb.client_storage
+        if inspect.isawaitable(client_storage):
+            # Freshness-aware shape (NanoVectorDBStorage): awaiting the
+            # property funnels through the backend's reload-if-stale path,
+            # so the snapshot picks up whatever another process committed.
+            client_storage = await client_storage
+        else:
+            # Synchronous shape (FaissVectorDBStorage), which is documented
+            # as deliberately NOT going through `_get_index`: in a reader
+            # process it can hand back a snapshot older than the latest
+            # committed one until some other call triggers a reload. That
+            # is fine in the single-process case a local file-backed store
+            # usually runs in, and this section is a supplementary raw dump
+            # -- the authoritative entity/relation content above comes from
+            # the graph storage -- so the export proceeds. But it must not
+            # pass silently: exports get used for backups, and a section
+            # that quietly omits recent records is worse than one whose
+            # limits are stated.
+            logger.warning(
+                f"{type(relationships_vdb).__name__}.client_storage is a "
+                "synchronous snapshot that does not check for a newer "
+                "on-disk commit; in a multi-process deployment the raw "
+                "VectorDB relationships section of this export may lag "
+                "records committed by another process."
+            )
+        for rel in client_storage["data"]:
+            # Faiss materializes the embedding INTO its metadata rows -- at
+            # flush time, and again by reconstruction when loading a
+            # persisted index -- so a raw `str(rel)` would carry the full
+            # vector even for the default vector-free export, inflating the
+            # file by orders of magnitude and emitting embeddings the caller
+            # asked to leave out. Faiss's own read paths filter the key for
+            # exactly this reason. NanoVectorDB is unaffected either way: it
+            # keeps vectors in a separate `matrix`, not in these rows.
+            #
+            # Build a new dict rather than popping: these rows are live
+            # references into the backend's own metadata store.
+            if not include_vector_data:
+                rel = {k: v for k, v in rel.items() if k != "__vector__"}
+            relationships_data.append(
+                {
+                    "relationship_id": rel["__id__"],
+                    "data": str(rel),  # Convert to string for compatibility
+                }
+            )
+    else:
+        logger.debug(
+            f"{type(relationships_vdb).__name__} does not expose client_storage; "
+            "skipping the raw VectorDB relationships dump in the export."
         )
 
     # Export based on format

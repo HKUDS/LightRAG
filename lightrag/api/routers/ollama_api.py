@@ -21,6 +21,11 @@ from lightrag.constants import (
     MAX_REQUEST_TEXT_CHARS,
     MAX_ROLE_CHARS,
 )
+from lightrag.query_validation import (
+    QueryValidationError,
+    validate_query_not_empty,
+    validate_rag_query,
+)
 from lightrag.utils import TiktokenTokenizer, acount_tokens
 from lightrag.api.utils_api import get_combined_auth_dependency, internal_server_error
 from fastapi import Depends
@@ -44,6 +49,31 @@ class PayloadTooLargeError(ValueError):
     ``parse_request_body`` from having to match on error strings, which would
     silently stop working the next time a message is reworded.
     """
+
+
+def _require_nonempty_ollama_query(query: str) -> None:
+    """Reject an empty prompt on every branch, RAG or direct-LLM.
+
+    Checks the stripped text but does not return it: these are compatibility
+    paths that forward the prompt to the provider VERBATIM, and leading or
+    trailing whitespace is meaningful there — a completion prompt ending in a
+    newline, an indented code block. Only the emptiness question is asked; the
+    caller keeps the text it was given.
+    """
+
+    try:
+        validate_query_not_empty(query)
+    except QueryValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _validate_ollama_rag_query(query: str) -> str:
+    """Validate only chat branches that enter the RAG retrieval pipeline."""
+
+    try:
+        return validate_rag_query(query)
+    except QueryValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _bound_input_chars(total: int) -> None:
@@ -414,6 +444,9 @@ class OllamaAPI:
                 # Parse the request body manually
                 request = await parse_request_body(raw_request, OllamaGenerateRequest)
 
+                # Direct-LLM path: exempt from the RAG minimum, not from
+                # having to carry a prompt. Forwarded verbatim — see the helper.
+                _require_nonempty_ollama_query(request.prompt)
                 query = request.prompt
                 start_time = time.time_ns()
                 prompt_tokens = await aestimate_tokens(query)
@@ -627,6 +660,13 @@ class OllamaAPI:
                     query
                 )
 
+                # A mode prefix can consume the whole message ("/local[hint]"),
+                # so the cleaned query is checked before either branch runs.
+                # `cleaned_query` itself is left alone: the bypass and Open WebUI
+                # metadata branches below forward it to the LLM unchanged, and
+                # the RAG branches normalize it themselves.
+                _require_nonempty_ollama_query(cleaned_query)
+
                 start_time = time.time_ns()
                 prompt_tokens = await aestimate_tokens(cleaned_query)
 
@@ -662,6 +702,7 @@ class OllamaAPI:
                             **role_kwargs,
                         )
                     else:
+                        cleaned_query = _validate_ollama_rag_query(cleaned_query)
                         response = await self.rag.aquery(
                             cleaned_query, param=query_param
                         )
@@ -831,6 +872,7 @@ class OllamaAPI:
                             **role_kwargs,
                         )
                     else:
+                        cleaned_query = _validate_ollama_rag_query(cleaned_query)
                         response_text = await self.rag.aquery(
                             cleaned_query, param=query_param
                         )

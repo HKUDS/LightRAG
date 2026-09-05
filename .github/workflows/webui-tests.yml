@@ -1,0 +1,56 @@
+name: WebUI Unit Tests
+
+on:
+  push:
+    branches: [ main, dev, 'dev-*' ]
+    paths:
+      - 'lightrag_webui/**'
+      - '.github/workflows/webui-tests.yml'
+  pull_request:
+    branches: [ main, dev, 'dev-*' ]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'lightrag_webui/**'
+      - '.github/workflows/webui-tests.yml'
+
+jobs:
+  webui-tests:
+    name: WebUI Tests
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: lightrag_webui
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Set up Bun
+      uses: oven-sh/setup-bun@v2
+      with:
+        # Matches the frontend-builder stage in the Dockerfile.
+        bun-version: latest
+
+    - name: Install dependencies (locked)
+      # --frozen-lockfile installs exactly what bun.lock pins, so CI and a
+      # local `bun install` resolve the same tree.
+      run: bun install --frozen-lockfile
+
+    - name: Typecheck
+      # `bun run build` does NOT typecheck (Vite transpiles without checking),
+      # so the only thing that catches a type error is this step.
+      run: bunx tsc --noEmit
+
+    - name: Lint
+      run: bun run lint
+
+    - name: Unit tests
+      # Component tests need a DOM; it is installed by the bunfig.toml
+      # preload (src/test/happydom.ts), so no extra CI setup is required.
+      run: bun test
+
+    - name: Production build
+      # Also enforces the workspace first-load byte budget
+      # (see workspaceFirstLoadAuditPlugin in vite.config.ts), which is what
+      # proves the test harness stayed out of the bundle.
+      run: bun run build
