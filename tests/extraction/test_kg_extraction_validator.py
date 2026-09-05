@@ -585,11 +585,18 @@ async def test_validator_text_is_sanitized_like_the_provider_input():
     from lightrag.operate import extract_entities
     from lightrag.utils import sanitize_text_for_encoding
 
-    stored = "Alpha content about ALP\x01HA and AT&amp;T."
+    # Padded on both sides: the chunk is a FRAGMENT of the prompt, sitting
+    # inside the fenced ---Input Text--- section, so its boundary whitespace is
+    # interior to the prompt and stays model-visible. Sanitizing it in
+    # isolation must therefore not trim it.
+    stored = "\n\n  Alpha content about ALP\x01HA and AT&amp;T.  \n\n"
     visible = sanitize_text_for_encoding(
-        strip_internal_multimodal_markup_for_extraction(stored)
+        strip_internal_multimodal_markup_for_extraction(stored), strip=False
     )
     assert visible != stored, "fixture must actually exercise the sanitizer"
+    assert visible.startswith("\n\n  ") and visible.endswith("  \n\n"), (
+        "boundary whitespace must survive: the model saw it inside the fence"
+    )
 
     chunks = _make_chunks()
     chunks["chunk-alpha"]["content"] = stored
@@ -616,3 +623,5 @@ async def test_validator_text_is_sanitized_like_the_provider_input():
     # The concrete difference, spelled out.
     assert "\x01" in stored and "\x01" not in seen["chunk-alpha"]
     assert "&amp;" in stored and "AT&T" in seen["chunk-alpha"]
+    # ...and the whitespace the model saw is still there.
+    assert seen["chunk-alpha"] != seen["chunk-alpha"].strip()

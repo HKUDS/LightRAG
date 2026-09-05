@@ -1009,7 +1009,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     ``---Input Text---``: the chunk content with parser-internal markup
     stripped, then passed through
     :func:`lightrag.utils.sanitize_text_for_encoding`, exactly as the LLM
-    wrapper does before handing the prompt to the provider. Not the stored
+    wrapper does before handing the prompt to the provider. Boundary
+    whitespace is preserved (``strip=False``): the chunk sits inside the
+    prompt's fenced ``---Input Text---`` section, so its own leading and
+    trailing whitespace is interior to the prompt and the model sees it. Not the stored
     chunk content — that still carries ``<drawing id/path/src>``, ``<table id>``,
     ``<equation id>`` and ``<cite refid>`` metadata, so grounding against it
     would accept an entity named after a hidden identifier or file path the

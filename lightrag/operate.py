@@ -4402,10 +4402,17 @@ async def extract_entities(
                 # use_llm_func_with_cache, which drops control characters,
                 # unescapes HTML entities and repairs surrogates. Passing the
                 # unsanitized `content` would leave the hook comparing against
-                # a string the model never received. Idempotent, and it does
-                # not touch the prompt or the cache key — those are built from
-                # the sanitized text already.
-                sanitize_text_for_encoding(content),
+                # a string the model never received. It does not touch the
+                # prompt or the cache key — those are built from the sanitized
+                # text already.
+                #
+                # strip=False because the chunk is a FRAGMENT of the prompt,
+                # sitting inside the fenced ---Input Text--- section. The
+                # wrapper's strip trims the ends of the whole prompt, so the
+                # chunk's own leading/trailing whitespace is interior there
+                # and stays model-visible; trimming it in isolation would
+                # hand the hook something the model never saw.
+                sanitize_text_for_encoding(content, strip=False),
                 maybe_nodes,
                 maybe_edges,
             )

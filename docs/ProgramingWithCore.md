@@ -669,7 +669,9 @@ Contract:
   `---Input Text---`, not the stored chunk content: parser-internal markup
   (`<drawing id/path/src>`, `<table id>`, `<equation id>`, `<cite refid>`) is
   stripped, and the result goes through `sanitize_text_for_encoding` just as
-  the LLM wrapper does before calling the provider. Grounding against the
+  the LLM wrapper does before calling the provider — keeping the chunk's own
+  boundary whitespace, which the model sees because the chunk sits inside the
+  prompt's fenced `---Input Text---` section. Grounding against the
   stored form would accept an entity named after a hidden identifier or file
   path the model never saw, and reject one it did see wherever removing a
   `<cite>` wrapper joins two words.
