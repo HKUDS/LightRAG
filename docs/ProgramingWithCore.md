@@ -660,13 +660,21 @@ Contract:
 - **Signature** `(chunk_key, chunk_text, maybe_nodes, maybe_edges)`, returning a
   `(maybe_nodes, maybe_edges)` pair of dicts with the same shapes. Filtering in
   place and returning the same objects is fine.
-- **`chunk_text` is the extraction-visible text**, not the stored chunk content:
-  parser-internal markup (`<drawing id/path/src>`, `<table id>`,
-  `<equation id>`, `<cite refid>`) is stripped, so it is byte-for-byte what the
-  extraction prompt carried. That is the only text a grounding check can
-  meaningfully compare against — the stored form would accept an entity named
-  after a hidden identifier or file path the model never saw, and reject one it
-  did see wherever removing a `<cite>` wrapper joins two words.
+- **`chunk_text` is the prompt's `---Input Text---` verbatim**, not the stored
+  chunk content: parser-internal markup (`<drawing id/path/src>`, `<table id>`,
+  `<equation id>`, `<cite refid>`) is stripped. Grounding against the stored
+  form would accept an entity named after a hidden identifier or file path the
+  model never saw, and reject one it did see wherever removing a `<cite>`
+  wrapper joins two words.
+- **It is the input text, not the whole prompt.** For a chunk with a heading,
+  the prompt also carries a `---Section Context---` block with the heading
+  path. That is deliberately excluded: the extraction prompt tells the model to
+  use the heading path as background only and **not** to extract entities or
+  relationships from the heading text. Folding it into `chunk_text` would make
+  a grounding rule accept precisely the names the prompt forbids, legitimising
+  heading-derived entities instead of catching them. Heading context can
+  legitimately shape a *description*, but descriptions are model-authored prose
+  that no substring check grounds anyway.
 - **Synchronous or async.** An awaitable return value is awaited. A sync hook
   runs on the event loop, so a CPU-heavy validator should do its own
   `asyncio.to_thread` — the same guidance as a custom `chunking_func`.

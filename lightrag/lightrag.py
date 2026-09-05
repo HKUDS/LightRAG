@@ -1005,15 +1005,26 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     pipeline unchanged. Synchronous or async — an awaitable return value is
     awaited.
 
-    ``chunk_text`` is the **extraction-visible** text: the chunk content with
-    parser-internal markup stripped, byte-for-byte what the extraction prompt
-    carried, not the stored chunk content. Grounding is only meaningful
-    against what the model actually saw. The stored form still carries
-    ``<drawing id/path/src>``, ``<table id>``, ``<equation id>`` and
-    ``<cite refid>`` metadata, so checking against it would accept an entity
-    named after a hidden identifier or file path the model never received —
-    and, where stripping a ``<cite>`` wrapper joins two words the stored form
-    keeps apart, reject a name the model plainly did see.
+    ``chunk_text`` is the prompt's ``---Input Text---`` verbatim: the chunk
+    content with parser-internal markup stripped. Not the stored chunk
+    content — that still carries ``<drawing id/path/src>``, ``<table id>``,
+    ``<equation id>`` and ``<cite refid>`` metadata, so grounding against it
+    would accept an entity named after a hidden identifier or file path the
+    model never received, and, where stripping a ``<cite>`` wrapper joins two
+    words the stored form keeps apart, reject a name the model plainly did
+    see.
+
+    It is the input text, not the whole prompt. The prompt also carries a
+    ``---Section Context---`` block with the chunk's heading path when it has
+    one, and that is deliberately excluded: the extraction prompt tells the
+    model to treat the heading path as background only and to **not** extract
+    entities or relationships from the heading text (see
+    ``entity_extraction_system_prompt``). Folding it into ``chunk_text``
+    would make a grounding rule accept exactly the names the prompt forbids —
+    it would legitimise heading-derived entities instead of catching them.
+    Heading context can legitimately shape a *description*, but descriptions
+    are model-authored prose that no substring check grounds in the first
+    place.
 
     **Where it runs.** Inside ``extract_entities``, on one chunk's extraction
     result: after the gleaning merge, before the multimodal sidecar
