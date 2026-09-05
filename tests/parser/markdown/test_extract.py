@@ -146,6 +146,219 @@ def test_html_table_captured_verbatim_spanning_lines():
     assert "<thead>" in table["html"] and "</table>" in table["html"]
 
 
+def test_html_table_preserves_same_line_trailing_text():
+    ex = _extract("<table><tr><td>a</td></tr></table> trailing prose")
+
+    (table,) = ex.tables.values()
+    assert table["html"] == "<table><tr><td>a</td></tr></table>"
+    assert ex.blocks[0]["content"].endswith(" trailing prose")
+
+
+def test_html_table_preserves_trailing_text_after_multiline_close():
+    ex = _extract("<table>\n<tr><td>a</td></tr>\n</table> trailing prose")
+
+    (table,) = ex.tables.values()
+    assert table["html"].endswith("</table>")
+    assert ex.blocks[0]["content"].endswith(" trailing prose")
+
+
+def test_html_table_preserves_trailing_text_after_unicode_content():
+    ex = _extract("<table><tr><td>İ</td></tr></table>tail")
+
+    (table,) = ex.tables.values()
+    assert table["html"] == "<table><tr><td>İ</td></tr></table>"
+    assert ex.blocks[0]["content"].endswith("tail")
+
+
+def test_html_table_ignores_closing_tag_text_inside_attribute():
+    ex = _extract('<table data-note="</table>"><tr><td>a</td></tr></table> tail')
+
+    (table,) = ex.tables.values()
+    assert table["html"] == ('<table data-note="</table>"><tr><td>a</td></tr></table>')
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
+def test_html_table_ignores_quotes_inside_comments():
+    ex = _extract("<table><!-- don't remove --><tr><td>a</td></tr></table> tail")
+
+    (table,) = ex.tables.values()
+    assert table["html"] == ("<table><!-- don't remove --><tr><td>a</td></tr></table>")
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
+def test_html_table_processes_inline_image_in_trailing_text():
+    resolver = _StubResolver()
+    ex = extract_markdown(
+        "<table><tr><td>a</td></tr></table> ![plot](plot.png)",
+        image_resolver=resolver,
+    )
+
+    assert len(ex.drawings) == 1
+    assert resolver.calls == ["plot.png"]
+    assert "![plot](plot.png)" not in ex.blocks[0]["content"]
+
+
+def test_html_table_ignores_unmatched_quote_inside_textarea():
+    """Codex finding: an apostrophe inside RCDATA content (textarea/title)
+    must not be tracked as an attribute quote -- it previously left the
+    parser's quote-tracking state open indefinitely, swallowing the real
+    </table> that followed."""
+    ex = _extract(
+        "<table>\n<tr><td><textarea>x<y's value</textarea></td></tr>\n</table> tail"
+    )
+
+    (table,) = ex.tables.values()
+    assert table["html"].endswith("</table>")
+    assert "<y's value</textarea>" in table["html"]
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
+def test_html_table_raw_mode_waits_for_opening_tag_to_close():
+    """A decoy closing sequence inside the textarea's own opening-tag
+    attributes (still ordinary markup, quote-tracked as normal) must not be
+    mistaken for the real content boundary -- raw mode must not begin until
+    that opening tag's own unquoted ">" is reached."""
+    ex = _extract(
+        '<table><textarea data-note="</textarea>">x<y\'s value</textarea></table> tail'
+    )
+
+    (table,) = ex.tables.values()
+    assert table["html"].endswith("</table>")
+    assert 'data-note="</textarea>">x<y\'s value</textarea>' in table["html"]
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
+def test_html_table_raw_mode_closing_tag_split_across_lines():
+    """A raw-text closing tag broken by a line break, e.g. </textarea then a
+    bare > on the next line, is still valid HTML and must still be found --
+    a per-line search would miss it and lose the rest of the document."""
+    ex = _extract("<table><textarea>x</textarea\n>\n</table> tail")
+
+    (table,) = ex.tables.values()
+    assert table["html"].endswith("</table>")
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
+def test_html_table_tag_name_split_across_lines_is_not_recognized():
+    """A line break inside a tag NAME itself (as opposed to the whitespace
+    before ">") is not valid HTML -- a real tokenizer has no "</textarea"
+    substring to match here, so the element never closes and the table is
+    left as plain text, same as any other genuinely unclosed table."""
+    ex = _extract("<table><textarea>x</texta\nrea></table> tail")
+
+    assert not ex.tables
+    assert ex.blocks[0]["content"] == "<table><textarea>x</texta\nrea></table> tail"
+
+
+def test_html_table_ignores_closing_tag_text_inside_cdata():
+    """Codex finding: a bare ">" inside foreign-content CDATA (e.g. an <svg>
+    cell) must not end a fake in_tag state and expose a literal
+    "</table>"-shaped string inside the payload as the real close."""
+    ex = _extract(
+        "<table><tr><td><svg><![CDATA[x > </table> y]]></svg></td></tr></table> tail"
+    )
+
+    (table,) = ex.tables.values()
+    assert table["html"].endswith("</table>")
+    assert "<![CDATA[x > </table> y]]>" in table["html"]
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
+def test_html_table_tracks_nested_same_line_table_depth():
+    """Codex finding: a same-line nested table's inner </table> must not be
+    accepted as the outer block's close. The nested table's own structure is
+    never separately parsed -- it stays verbatim inside the captured html,
+    same as everything else this parser doesn't specially understand."""
+    ex = _extract("<table><tr><td><table>x</table></td></tr></table> tail")
+
+    (table,) = ex.tables.values()
+    assert table["html"] == "<table><tr><td><table>x</table></td></tr></table>"
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
+def test_html_table_requires_boundary_after_raw_element_name():
+    """Codex finding: a custom/namespaced tag like <textarea:widget> must not
+    trigger raw mode just because its name starts with a known raw-mode
+    element name -- only a real boundary (whitespace, "/" or ">") after the
+    matched name counts."""
+    ex = _extract("<table><textarea:widget>x</textarea:widget></table> tail")
+
+    (table,) = ex.tables.values()
+    assert table["html"].endswith("</table>")
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
+def test_html_table_ignores_tag_like_text_inside_script():
+    """RCDATA/raw-text elements (script here) must not have their content
+    scanned for tags either -- a literal </table>-shaped string inside
+    <script> content must not be mistaken for the real closing tag."""
+    ex = _extract(
+        '<table><tr><td><script>if (a < b) { x.close("</table>"); }</script>'
+        "</td></tr></table> tail"
+    )
+
+    (table,) = ex.tables.values()
+    assert table["html"].endswith("</table>")
+    assert 'x.close("</table>")' in table["html"]
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
+def test_html_table_ignores_quote_inside_style():
+    """Same unmatched-quote hazard as textarea, for the other raw-text
+    element (style)."""
+    ex = _extract(
+        '<table><tr><td><style>content: "it\'s";</style></td></tr></table> tail'
+    )
+
+    (table,) = ex.tables.values()
+    assert table["html"].endswith("</table>")
+    assert 'content: "it\'s";' in table["html"]
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
+def test_html_table_recognizes_second_same_line_table():
+    """Codex finding: a second supported table on the same line as the
+    first's close must not be swallowed as inline prose -- the suffix is fed
+    back through normal block extraction so it gets its own entry too."""
+    ex = _extract("<table>A</table><table>B</table>")
+
+    assert [t["html"] for t in ex.tables.values()] == [
+        "<table>A</table>",
+        "<table>B</table>",
+    ]
+    (ref1, ref2) = ex.tables.keys()
+    assert (
+        ex.blocks[0]["content"] == f'<mdtable ref="{ref1}"/>\n<mdtable ref="{ref2}"/>'
+    )
+
+
+def test_html_table_ignores_non_ascii_tag_open():
+    """Codex finding: a non-ASCII letter after "<" (e.g. "<é") must not
+    be treated as a tag opener -- Python's str.isalpha() is true for it, but
+    real HTML tag names start with an ASCII letter only. Before the fix this
+    entered a fake in_tag state, mistook the following apostrophe for a
+    quote, and swallowed the real closing tag."""
+    ex = _extract("<table><td>x <é's text</td></table> tail")
+
+    (table,) = ex.tables.values()
+    assert table["html"] == "<table><td>x <é's text</td></table>"
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
+def test_html_table_ignores_comment_marker_inside_title():
+    """RCDATA content must not be scanned for HTML comments either -- a
+    literal <!-- inside <title> text must stay literal, not open a
+    (never-closing) comment state."""
+    ex = _extract(
+        "<table><tr><td><title>a <!-- not a comment</title></td></tr></table> tail"
+    )
+
+    (table,) = ex.tables.values()
+    assert table["html"].endswith("</table>")
+    assert "<!-- not a comment</title>" in table["html"]
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
 def test_block_equation_single_and_multiline():
     md = "$$ E = mc^2 $$\n\ntext\n\n$$\n\\sum x\n$$\n"
     ex = _extract(md)

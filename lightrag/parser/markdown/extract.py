@@ -34,6 +34,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from html.parser import HTMLParser
 from typing import Protocol
 
 from lightrag.parser._html_table import starts_with_html_tag
@@ -453,13 +454,24 @@ def extract_markdown(
 
         # --- HTML <table> block --------------------------------------------
         if starts_with_html_tag(stripped.lower(), "table"):
-            consumed, html = _consume_html_table(lines, i)
+            consumed, html, trailing = _consume_html_table(lines, i)
             if consumed > 0:
                 ref = _next_ref("t")
                 out.tables[ref] = {"kind": "html", "html": html}
                 cur_lines.append(table_marker(ref))
                 has_block_payload = True
-                i += consumed
+                if trailing:
+                    # Feed the suffix back through the normal per-line
+                    # dispatch (not just inline-image resolution) so a
+                    # second same-line construct -- most notably another
+                    # <table>...</table>, e.g. "<table>A</table><table>B</table>"
+                    # -- is recognised instead of falling back to raw text.
+                    # `lines` is this function's own local list; overwriting
+                    # an already-consumed index and re-visiting it is safe.
+                    lines[i + consumed - 1] = trailing
+                    i += consumed - 1
+                else:
+                    i += consumed
                 continue
 
         # --- pipe table ----------------------------------------------------
@@ -511,17 +523,75 @@ def _consume_block_equation(lines: list[str], start: int) -> tuple[int, str]:
     return 0, ""
 
 
-def _consume_html_table(lines: list[str], start: int) -> tuple[int, str]:
-    """Collect a ``<table>…</table>`` block (line-spanning). ``(consumed, html)``
-    or ``(0, "")`` when no closing ``</table>`` is found."""
-    buf: list[str] = []
-    j = start
-    while j < len(lines):
-        buf.append(lines[j])
-        if "</table>" in lines[j].lower():
-            return (j - start + 1), "\n".join(buf).strip()
-        j += 1
-    return 0, ""
+class _HTMLTableBoundaryFinder(HTMLParser):
+    """Tracks ``<table>`` nesting depth to find the matching outer close.
+
+    All actual HTML tokenization -- quoted attributes, comments, CDATA,
+    RCDATA/raw-text elements (``script``/``style``/``textarea``/``title``),
+    tag-name rules -- is delegated to the standard library's tokenizer
+    instead of being re-implemented by hand. This class only watches the
+    ``table`` start/end tag events it already reports correctly.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self._depth = 0
+        self.end_pos: tuple[int, int] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self.end_pos is None and tag == "table":
+            self._depth += 1
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # A self-closing "<table/>": open then immediately close, same as a
+        # real browser would for an element that isn't actually void.
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        if self.end_pos is None and tag == "table":
+            self._depth -= 1
+            if self._depth == 0:
+                self.end_pos = self.getpos()
+
+
+def _consume_html_table(lines: list[str], start: int) -> tuple[int, str, str]:
+    """Collect a ``<table>…</table>`` block (line-spanning).
+
+    Returns ``(consumed, html, trailing)`` or ``(0, "", "")`` when no closing
+    ``</table>`` is found. Text after the closing tag remains in ``trailing``.
+
+    ``html`` is always a verbatim slice of the source, located via
+    ``HTMLParser.getpos()`` -- never a re-serialization of parsed tokens, so
+    original casing, whitespace and attribute quoting survive untouched. The
+    parser is fed one line at a time and stops as soon as the boundary is
+    found, so a table that closes early in a large document costs only the
+    lines actually consumed rather than the whole remaining text.
+    """
+    finder = _HTMLTableBoundaryFinder()
+    for idx in range(start, len(lines)):
+        if idx > start:
+            finder.feed("\n")
+        finder.feed(lines[idx])
+        if finder.end_pos is not None:
+            break
+    if finder.end_pos is None:
+        return 0, "", ""
+
+    line, col = finder.end_pos  # 1-indexed line relative to what was fed
+    target_line = lines[start + line - 1]
+    # getpos() lands at the start of the closing tag ("</table" or a
+    # case-varied/whitespace-padded equivalent); find its terminating ">" in
+    # the original text rather than reconstructing the tag ourselves.
+    gt = target_line.find(">", col)
+    if gt == -1:
+        return 0, "", ""
+    end_col = gt + 1
+
+    html_lines = lines[start : start + line - 1] + [target_line[:end_col]]
+    html = "\n".join(html_lines).strip()
+    trailing = target_line[end_col:]
+    return line, html, trailing
 
 
 def _consume_pipe_table(
