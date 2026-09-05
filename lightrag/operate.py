@@ -4,6 +4,7 @@ from functools import partial
 from pathlib import Path
 
 import asyncio
+import inspect
 import json
 import logging
 import re
@@ -3971,6 +3972,11 @@ async def extract_entities(
     # Extraction-scoped truncation tally; see _publish_truncation_summary below.
     stage_tally = TokenLimitTruncationTally()
 
+    # Optional per-chunk extraction-quality hook (#3691); None leaves the
+    # pipeline unchanged. Applied to every chunk result — see the call site in
+    # _process_single_content, just before the multimodal sidecar injection.
+    kg_extraction_validator = global_config.get("kg_extraction_validator")
+
     use_llm_func: callable = global_config["role_llm_funcs"]["extract"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
     # Cap on the gleaning LLM call's combined input (system + history user
@@ -4327,9 +4333,109 @@ async def extract_entities(
                     maybe_edges[edge_key] = list(glean_edge_list)
                 await _cooperative_yield(i, every=8)
 
+        # Batch update chunk's llm_cache_list with all collected cache keys.
+        #
+        # Ordered BEFORE the validator on purpose. save_to_cache has already
+        # written each entry durably by now, but its key lives only in the
+        # in-memory cache_keys_collector until this call attaches it to the
+        # chunk. A validator that raises (or returns a malformed pair) exits
+        # the chunk here, and recovery collects operation-scoped cache ids
+        # exclusively from each staged chunk's llm_cache_list
+        # (_rollback_one_custom_chunk_patch) — so a key never attached is a
+        # cache row nothing can ever reach again, orphaned even after
+        # /documents/scan rolls the operation back and deletes the chunk.
+        #
+        # Ordering is all this buys, NOT durability: update_chunk_cache_list
+        # swallows every storage exception and only logs a warning, and a
+        # sibling chunk cancelled by the FIRST_EXCEPTION path below never
+        # reaches its own call at all. Both leave the same orphan. Closing
+        # that off needs recovery to find cache rows without the chunk
+        # pointer — they already carry `chunk_id` — which is issue #3833, not
+        # something more ordering here can fix.
+        #
+        # Nothing after this point adds keys: the collector is filled by the
+        # initial extraction and the gleaning call, both above, and the
+        # multimodal injection below builds records from sidecar metadata
+        # without calling the LLM.
+        if cache_keys_collector and text_chunks_storage:
+            await update_chunk_cache_list(
+                chunk_key,
+                text_chunks_storage,
+                cache_keys_collector,
+                "entity_extraction",
+            )
+
+        # Optional extraction-quality hook (#3691): the last word on what the
+        # LLM extracted from this chunk. Whatever the validator drops never
+        # reaches merge_nodes_and_edges, the vector stores, or any source_id
+        # chain.
+        #
+        # Deliberately placed BEFORE the multimodal injection below. That
+        # entity is core-generated, not LLM output, and it is linked to every
+        # surviving entity of the chunk: filtering afterwards would both
+        # expose it to rules written for LLM output (a "name must appear in
+        # chunk_text" grounding check deletes it) and leave the injected
+        # (multimodal_entity, rejected_entity) edges dangling, so the merge's
+        # endpoint upsert would re-create the very entities the hook rejected.
+        #
+        # Core does NOT police the hook's own output the same way: a validator
+        # is responsible for applying its rule to relation ENDPOINTS as well as
+        # entity names. That is not core being lenient — a rule expressed as a
+        # function of the name is the only form that behaves identically in
+        # every chunk, including a chunk where the name appears solely as an
+        # endpoint. Pruning on core's side would cover that chunk and not the
+        # next one, which is worse than not covering it at all.
+        if kg_extraction_validator is not None:
+            validated = kg_extraction_validator(
+                chunk_key,
+                # The EXTRACTION-VISIBLE text, not the stored chunk content.
+                # Grounding compares against what the model actually saw, and
+                # the stored form still carries parser-internal markup: an
+                # entity named after a hidden id/path/src/refid would pass a
+                # grounding check the model could never have produced it
+                # from, while stripping a <cite> wrapper can join two words
+                # the stored form keeps apart, failing the check for a name
+                # the model DID see.
+                #
+                # Sanitized here for the same reason: the provider is handed
+                # sanitize_text_for_encoding(prompt) inside
+                # use_llm_func_with_cache, which drops control characters,
+                # unescapes HTML entities and repairs surrogates. Passing the
+                # unsanitized `content` would leave the hook comparing against
+                # a string the model never received. It does not touch the
+                # prompt or the cache key — those are built from the sanitized
+                # text already.
+                #
+                # strip=False because the chunk is a FRAGMENT of the prompt,
+                # sitting inside the fenced ---Input Text--- section. The
+                # wrapper's strip trims the ends of the whole prompt, so the
+                # chunk's own leading/trailing whitespace is interior there
+                # and stays model-visible; trimming it in isolation would
+                # hand the hook something the model never saw.
+                sanitize_text_for_encoding(content, strip=False),
+                maybe_nodes,
+                maybe_edges,
+            )
+            if inspect.isawaitable(validated):
+                validated = await validated
+            # Validate the shape before unpacking. A bare unpack accepts a
+            # two-key dict and silently binds the KEYS as maybe_nodes /
+            # maybe_edges, which only surfaces much later inside the merge as
+            # an unrelated-looking failure.
+            if (
+                not isinstance(validated, (tuple, list))
+                or len(validated) != 2
+                or not all(isinstance(part, dict) for part in validated)
+            ):
+                raise TypeError(
+                    "kg_extraction_validator must return a (maybe_nodes, "
+                    "maybe_edges) pair of dicts; got "
+                    f"{type(validated).__name__} for chunk {chunk_key}"
+                )
+            maybe_nodes, maybe_edges = validated
+
         # Inject multimodal entity + associations for drawing/table/equation
-        # chunks. Placed before update_chunk_cache_list so the per-chunk
-        # cache write still happens after; placed inside the chunk's
+        # chunks. Placed inside the chunk's
         # concurrency slot (rather than the centralized post-pass that used
         # to live in utils_pipeline.augment_chunk_results_with_mm_entities)
         # so each multimodal chunk benefits from the chunk-level concurrency
@@ -4396,15 +4502,6 @@ async def extract_entities(
                             "timestamp": now_ts,
                         }
                     )
-
-        # Batch update chunk's llm_cache_list with all collected cache keys
-        if cache_keys_collector and text_chunks_storage:
-            await update_chunk_cache_list(
-                chunk_key,
-                text_chunks_storage,
-                cache_keys_collector,
-                "entity_extraction",
-            )
 
         processed_chunks += 1
         entities_count = len(maybe_nodes)

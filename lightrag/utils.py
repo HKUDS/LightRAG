@@ -5526,7 +5526,9 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
     return name
 
 
-def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
+def sanitize_text_for_encoding(
+    text: str, replacement_char: str = "", *, strip: bool = True
+) -> str:
     """Sanitize text to ensure safe UTF-8 encoding by removing or replacing problematic characters.
 
     This function handles:
@@ -5535,11 +5537,19 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
     - Control characters that might cause issues
     - Unescape HTML escapes
     - Remove control characters
-    - Whitespace trimming
+    - Whitespace trimming (see ``strip``)
 
     Args:
         text: Input text to sanitize
         replacement_char: Character to use for replacing invalid sequences
+        strip: Trim leading/trailing whitespace. Default ``True``, which is
+            what every caller sanitizing a whole payload wants. Pass ``False``
+            when the text is a FRAGMENT that will sit inside a larger
+            sanitized string: its boundary whitespace is interior to that
+            string and survives there, so trimming the fragment in isolation
+            would produce something the consumer of the larger string never
+            saw. ``kg_extraction_validator`` is the case in point — the chunk
+            sits inside a fenced ``---Input Text---`` section of the prompt.
 
     Returns:
         Sanitized text that can be safely encoded as UTF-8
@@ -5548,7 +5558,8 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
         return text
 
     # First, strip whitespace
-    text = text.strip()
+    if strip:
+        text = text.strip()
 
     # Early return if text is empty after basic cleaning
     if not text:
@@ -5564,7 +5575,7 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
     # 3. Remove control characters but preserve common whitespace (\t, \n, \r)
     text = _CONTROL_CHAR_PATTERN_ALL.sub(replacement_char, text)
 
-    return text.strip()
+    return text.strip() if strip else text
 
 
 def strip_control_characters(text: str, replacement_char: str = "") -> str:
