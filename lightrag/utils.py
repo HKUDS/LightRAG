@@ -6306,7 +6306,7 @@ async def process_chunks_unified(
 
     Args:
         query: Search query for reranking
-        chunks: List of text chunks to process
+        unique_chunks: List of deduplicated text chunks to process
         query_param: Query parameters containing configuration
         global_config: Global configuration dictionary
         source_type: Source type for logging ("vector", "entity", "relationship", "mixed")
