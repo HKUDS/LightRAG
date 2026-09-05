@@ -249,6 +249,44 @@ def test_html_table_raw_mode_tag_name_split_across_lines():
     assert ex.blocks[0]["content"].endswith(" tail")
 
 
+def test_html_table_ignores_closing_tag_text_inside_cdata():
+    """Codex finding: a bare ">" inside foreign-content CDATA (e.g. an <svg>
+    cell) must not end a fake in_tag state and expose a literal
+    "</table>"-shaped string inside the payload as the real close."""
+    ex = _extract(
+        "<table><tr><td><svg><![CDATA[x > </table> y]]></svg></td></tr></table> tail"
+    )
+
+    (table,) = ex.tables.values()
+    assert table["html"].endswith("</table>")
+    assert "<![CDATA[x > </table> y]]>" in table["html"]
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
+def test_html_table_tracks_nested_same_line_table_depth():
+    """Codex finding: a same-line nested table's inner </table> must not be
+    accepted as the outer block's close. The nested table's own structure is
+    never separately parsed -- it stays verbatim inside the captured html,
+    same as everything else this parser doesn't specially understand."""
+    ex = _extract("<table><tr><td><table>x</table></td></tr></table> tail")
+
+    (table,) = ex.tables.values()
+    assert table["html"] == "<table><tr><td><table>x</table></td></tr></table>"
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
+def test_html_table_requires_boundary_after_raw_element_name():
+    """Codex finding: a custom/namespaced tag like <textarea:widget> must not
+    trigger raw mode just because its name starts with a known raw-mode
+    element name -- only a real boundary (whitespace, "/" or ">") after the
+    matched name counts."""
+    ex = _extract("<table><textarea:widget>x</textarea:widget></table> tail")
+
+    (table,) = ex.tables.values()
+    assert table["html"].endswith("</table>")
+    assert ex.blocks[0]["content"].endswith(" tail")
+
+
 def test_html_table_ignores_tag_like_text_inside_script():
     """RCDATA/raw-text elements (script here) must not have their content
     scanned for tags either -- a literal </table>-shaped string inside

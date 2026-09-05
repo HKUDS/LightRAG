@@ -527,6 +527,11 @@ def _consume_html_table(lines: list[str], start: int) -> tuple[int, str, str]:
     j = start
     in_tag = False
     in_comment = False
+    in_cdata = False
+    # Incremented/decremented by the scan itself as it re-processes the
+    # opening <table> at `start` along with everything after it -- starts at
+    # 0, not 1, so that very first tag isn't double-counted.
+    table_depth = 0
     quote: str | None = None
     raw_element: str | None = None  # inside <script>/<style>/<textarea>/<title>
     # Matched so far against raw_target ("</" + raw_element), one char at a
@@ -575,6 +580,17 @@ def _consume_html_table(lines: list[str], start: int) -> tuple[int, str, str]:
                 raw_progress = 1 if char == "<" else 0
                 index += 1
                 continue
+            if in_cdata:
+                # Foreign-content CDATA (e.g. inside <svg>): not parsed for
+                # tags at all -- a bare ">" here must not end a fake in_tag
+                # state and let a literal "</table>" inside the payload be
+                # mistaken for the real close.
+                cdata_end = line.find("]]>", index)
+                if cdata_end == -1:
+                    break
+                in_cdata = False
+                index = cdata_end + 3
+                continue
             if in_comment:
                 comment_end = line.find("-->", index)
                 if comment_end == -1:
@@ -585,6 +601,10 @@ def _consume_html_table(lines: list[str], start: int) -> tuple[int, str, str]:
             if not in_tag and line.startswith("<!--", index):
                 in_comment = True
                 index += 4
+                continue
+            if not in_tag and line.startswith("<![CDATA[", index):
+                in_cdata = True
+                index += 9
                 continue
             char = line[index]
             if quote is not None:
@@ -612,12 +632,28 @@ def _consume_html_table(lines: list[str], start: int) -> tuple[int, str, str]:
                 closing = _HTML_TABLE_CLOSE_RE.match(line, index)
                 if closing:
                     end = closing.end()
-                    buf.append(line[:end])
-                    return (j - start + 1), "\n".join(buf).strip(), line[end:]
+                    table_depth -= 1
+                    if table_depth == 0:
+                        buf.append(line[:end])
+                        return (j - start + 1), "\n".join(buf).strip(), line[end:]
+                    # An inner </table> of a same-line nested table: keep
+                    # scanning for the real (outer) close instead of
+                    # accepting this one -- left verbatim inside the
+                    # captured html, never separately parsed.
+                    index = end
+                    continue
                 if line[index + 1].isalpha():
                     name_match = _TAG_NAME_RE.match(line, index + 1)
-                    if name_match and name_match.group().lower() in _RAW_MODE_ELEMENTS:
-                        pending_raw_name = name_match.group().lower()
+                    if name_match:
+                        candidate = name_match.group().lower()
+                        if candidate == "table" and starts_with_html_tag(
+                            line[index:].lower(), "table"
+                        ):
+                            table_depth += 1
+                        elif candidate in _RAW_MODE_ELEMENTS and starts_with_html_tag(
+                            line[index:].lower(), candidate
+                        ):
+                            pending_raw_name = candidate
                 in_tag = True
             index += 1
         buf.append(line)
