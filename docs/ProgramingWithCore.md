@@ -626,7 +626,15 @@ def validate(chunk_key, chunk_text, maybe_nodes, maybe_edges):
     # maybe_nodes: entity_name -> list[entity_dict]
     # maybe_edges: (src, tgt)  -> list[edge_dict]
     # Both carry source_id / file_path already — these are the merge inputs.
-    for name in [n for n in maybe_nodes if len(n) < 2 or n not in chunk_text]:
+
+    # Case-fold before testing membership: the extraction prompt asks the model
+    # to title-case case-insensitive names, so a chunk that says "machine
+    # learning" yields the entity "Machine Learning". A case-sensitive `in`
+    # here would reject it and quietly drop a legitimate entity.
+    haystack = chunk_text.casefold()
+    for name in [
+        n for n in maybe_nodes if len(n) < 2 or n.casefold() not in haystack
+    ]:
         logger.info("rejected entity %s from %s", name, chunk_key)
         del maybe_nodes[name]
     for key in [(s, t) for (s, t) in maybe_edges
