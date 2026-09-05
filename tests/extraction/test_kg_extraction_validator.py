@@ -415,3 +415,65 @@ async def test_relations_to_never_extracted_endpoints_are_kept():
     assert ("ALPHA", "CHARLIE") in surviving_edges, (
         "a baseline relation to a never-extracted endpoint must not be pruned"
     )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_validator_receives_the_extraction_visible_text():
+    """``chunk_text`` must be what the PROMPT carried, not the stored content.
+
+    The stored chunk keeps parser-internal markup so query-time citations
+    still resolve; extraction strips it. Handing the validator the stored
+    form breaks grounding in both directions: a hidden id/path/refid would
+    ground an entity the model never saw, and stripping a ``<cite>`` wrapper
+    joins two words the stored form keeps apart, so a name the model DID see
+    would fail the check.
+    """
+    from lightrag.chunk_schema import (
+        strip_internal_multimodal_markup_for_extraction,
+    )
+    from lightrag.operate import extract_entities
+
+    stored = (
+        '<drawing id="im-7f3a9c" path="/data/figs/pump.png" src="pump.png" '
+        'caption="Fig 1" />Alpha content about '
+        '<cite type="table" refid="tb-91">Machine</cite> Learning.'
+    )
+    visible = strip_internal_multimodal_markup_for_extraction(stored)
+
+    chunks = _make_chunks()
+    chunks["chunk-alpha"]["content"] = stored
+
+    async def extract(prompt: str, *args, **kwargs) -> str:
+        if visible in prompt:
+            return _extraction_result("ALPHA")
+        if _CHUNK_CONTENTS["chunk-bravo"] in prompt:
+            return _extraction_result("BRAVO")
+        raise AssertionError(f"unexpected prompt: {prompt[:300]!r}")
+
+    seen: dict[str, str] = {}
+
+    def capture(chunk_key, chunk_text, maybe_nodes, maybe_edges):
+        seen[chunk_key] = chunk_text
+        return maybe_nodes, maybe_edges
+
+    await extract_entities(
+        chunks=chunks,
+        global_config=_make_global_config(
+            AsyncMock(side_effect=extract), validator=capture
+        ),
+    )
+
+    assert seen["chunk-alpha"] == visible
+
+    # The concrete consequences, spelled out on the text the hook received.
+    for hidden in ("im-7f3a9c", "/data/figs/pump.png", "tb-91"):
+        assert hidden in stored and hidden not in seen["chunk-alpha"], (
+            f"{hidden} is parser-internal: grounding against it would accept "
+            "an entity the model never saw"
+        )
+    assert "Machine Learning" not in stored
+    assert "Machine Learning" in seen["chunk-alpha"], (
+        "the stored form keeps the words apart, so grounding against it would "
+        "reject a name the model plainly did see"
+    )

@@ -651,6 +651,13 @@ Contract:
 - **Signature** `(chunk_key, chunk_text, maybe_nodes, maybe_edges)`, returning a
   `(maybe_nodes, maybe_edges)` pair of dicts with the same shapes. Filtering in
   place and returning the same objects is fine.
+- **`chunk_text` is the extraction-visible text**, not the stored chunk content:
+  parser-internal markup (`<drawing id/path/src>`, `<table id>`,
+  `<equation id>`, `<cite refid>`) is stripped, so it is byte-for-byte what the
+  extraction prompt carried. That is the only text a grounding check can
+  meaningfully compare against — the stored form would accept an entity named
+  after a hidden identifier or file path the model never saw, and reject one it
+  did see wherever removing a `<cite>` wrapper joins two words.
 - **Synchronous or async.** An awaitable return value is awaited. A sync hook
   runs on the event loop, so a CPU-heavy validator should do its own
   `asyncio.to_thread` — the same guidance as a custom `chunking_func`.

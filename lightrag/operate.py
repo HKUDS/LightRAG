@@ -4353,7 +4353,15 @@ async def extract_entities(
             pre_hook_entities = set(maybe_nodes)
             validated = kg_extraction_validator(
                 chunk_key,
-                chunk_dp.get("content", "") or "",
+                # The EXTRACTION-VISIBLE text (line ~4103), not the stored
+                # chunk content. Grounding is a comparison against what the
+                # model actually saw, and the stored form still carries
+                # parser-internal markup: an entity named after a hidden
+                # id/path/src/refid would pass a grounding check the model
+                # could never have produced it from, while stripping a
+                # <cite> wrapper can join two words the stored form keeps
+                # apart, failing the check for a name the model DID see.
+                content,
                 maybe_nodes,
                 maybe_edges,
             )
