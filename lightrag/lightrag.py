@@ -553,31 +553,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         ],
         Union[List[Dict[str, Any]], Awaitable[List[Dict[str, Any]]]],
     ] = field(default_factory=lambda: chunking_by_token_size)
-
-    kg_extraction_validator: Callable | None = field(default=None)
-    """
-    Optional per-chunk extraction-quality hook, run BEFORE merge (#3691).
-
-    Called once per chunk with ``(chunk_key, chunk_text, maybe_nodes,
-    maybe_edges)`` and must return a possibly-filtered
-    ``(maybe_nodes, maybe_edges)`` pair of the same shapes. ``None`` (the
-    default) leaves the pipeline byte-identical. Synchronous or async.
-
-    **Where it runs.** After entity/relation extraction and before
-    ``merge_nodes_and_edges`` — junk that the hook drops never enters the
-    knowledge graph, the vector stores, or any ``source_id`` chain, which is
-    the whole point: post-merge cleanup (delete + purge + re-ingest) cannot
-    unwind a polluted ``source_id`` list cheaply.
-
-    **What users do inside**: drop junk entities (column headers, single
-    letters), drop relations whose endpoints are missing from the entity
-    set, reject non-grounded names absent from ``chunk_text``, write audit
-    logs of reject reasons.
-
-    **Also runs** on the custom-chunk ingest path in ``apipeline_enqueue_...``
-    / ainsert_custom_chunks, so every path that merges extraction results
-    passes through the same hook.
-    """
     """
     Legacy chunking-function customization point. Synchronous or async.
 
@@ -648,6 +623,61 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
           chunk's order in the document.
 
     Defaults to :func:`lightrag.chunker.chunking_by_token_size`.
+    """
+
+    kg_extraction_validator: Callable | None = field(default=None)
+    """
+    Optional per-chunk extraction-quality hook, run BEFORE merge (#3691).
+
+    Called once per chunk with ``(chunk_key, chunk_text, maybe_nodes,
+    maybe_edges)`` and must return a ``(maybe_nodes, maybe_edges)`` pair of
+    the same shapes, possibly filtered. ``None`` (the default) leaves the
+    pipeline unchanged. Synchronous or async — an awaitable return value is
+    awaited.
+
+    **Where it runs.** Inside ``extract_entities``, on one chunk's extraction
+    result: after the gleaning merge, before the multimodal sidecar
+    injection, and before ``merge_nodes_and_edges``. Whatever the hook drops
+    therefore never reaches the knowledge graph, the vector stores, or any
+    ``source_id`` chain — which is the point, since post-merge cleanup
+    (delete + purge + re-ingest) cannot cheaply unwind a polluted
+    ``source_id`` list.
+
+    Running *before* the sidecar injection is deliberate. The multimodal
+    entity that ``extract_entities`` synthesizes for a drawing/table/equation
+    chunk is core-generated rather than LLM output, and it is linked to every
+    surviving entity of that chunk. A hook that saw it would have to
+    special-case it (the "entity name must appear in ``chunk_text``"
+    grounding rule deletes it), and a hook running after it would leave the
+    injected ``(multimodal_entity, rejected_entity)`` edges dangling —
+    re-creating through the merge's endpoint upsert exactly the entities the
+    hook had rejected.
+
+    **Which ingest paths.** ``extract_entities`` is the single extraction
+    path, reached through ``_process_extract_entities`` by both the document
+    pipeline and :meth:`ainsert_custom_chunks`, so this one hook covers every
+    path that extracts. :meth:`ainsert_custom_kg` does not extract — the
+    caller supplies the graph directly — and is not filtered by the hook.
+
+    **What users do inside**: drop junk entities (column headers, single
+    letters), drop relations whose endpoints are missing from the entity
+    set, reject non-grounded names absent from ``chunk_text``, write audit
+    logs of reject reasons.
+
+    **Failures are not swallowed.** A hook that raises — or that returns
+    anything other than a two-element sequence of dicts, which raises
+    ``TypeError`` naming the offending chunk — fails the chunk;
+    ``_process_extract_entities`` logs it and the document ends up FAILED.
+    That is deliberate: a validator silently skipped is a validator that is
+    not validating.
+
+    **Deep-copy contract**, shared with ``tokenizer``. ``_build_global_config``
+    restores this attribute by identity after its ``asdict(self)``, so a
+    stateful validator (an audit-log collector, a bound method, a
+    ``functools.partial``) sees its own object rather than a per-document
+    copy. ``asdict`` still deep-copies it on the way through, so a validator
+    holding something ``copy.deepcopy`` rejects (a bare ``threading.Lock``)
+    must declare ``__deepcopy__`` returning ``self``.
     """
 
     # Embedding
@@ -1238,6 +1268,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # instance's, so every "independent" copy already shared one CoreBPE. Now
         # that the injection contract is thread safety, sharing is what it asks for.
         global_config["tokenizer"] = self.tokenizer
+        # Same identity restoration for the extraction-quality hook (#3691),
+        # for a different reason: a validator is allowed to be STATEFUL (the
+        # issue's own example writes an audit log of reject reasons). asdict
+        # deep-copies a bound method's __self__, a callable object, and a
+        # functools.partial, so without this line every document would filter
+        # against a fresh throwaway copy and the collected state would be lost
+        # silently. A plain function is deep-copied atomically and was never
+        # affected, which is exactly why this is easy to miss.
+        global_config["kg_extraction_validator"] = self.kg_extraction_validator
         global_config.pop("_addon_params", None)
         global_config.pop("_addon_params_dirty", None)
         global_config.pop("_cached_entity_extraction_use_json", None)

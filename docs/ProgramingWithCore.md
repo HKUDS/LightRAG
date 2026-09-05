@@ -79,6 +79,7 @@ Notes:
 | **tokenizer** | `Tokenizer` | The function used to convert text into tokens (numbers) and back using .encode() and .decode() functions following `TokenizerInterface` protocol. If you don't specify one, it will use the default Tiktoken tokenizer. An injected tokenizer must be safe to call concurrently from multiple threads and must survive `copy.deepcopy` — see [Injecting a custom tokenizer](#injecting-a-custom-tokenizer). | `TiktokenTokenizer` |
 | **tiktoken_model_name** | `str` | If you're using the default Tiktoken tokenizer, this is the name of the specific Tiktoken model to use. This setting is ignored if you provide your own tokenizer. | `gpt-4o-mini` |
 | **entity_extract_max_gleaning** | `int` | Number of loops in the entity extraction process, appending history messages | `1` |
+| **kg_extraction_validator** | `Callable \| None` | Optional per-chunk hook run after extraction and **before the merge**, so rejected entities/relations never enter the graph, the vector stores, or a `source_id` chain. Signature `(chunk_key, chunk_text, maybe_nodes, maybe_edges)` returning a filtered pair; sync or async. See [Extraction quality hook](#extraction-quality-hook-kg_extraction_validator). | `None` |
 | **node_embedding_algorithm** | `str` | Algorithm for node embedding (currently not used) | `node2vec` |
 | **node2vec_params** | `dict` | Parameters for node embedding | `{"dimensions": 1536,"num_walks": 10,"walk_length": 40,"window_size": 2,"iterations": 3,"random_seed": 3,}` |
 | **embedding_func** | `EmbeddingFunc` | Function to generate embedding vectors from text | `openai_embed` |
@@ -610,6 +611,59 @@ The built-in `TiktokenTokenizer` satisfies both. Note that copying it is not a
 way to get isolation: `tiktoken` caches encodings in a process-wide registry, so
 every `TiktokenTokenizer` for a given model — copies included — resolves to the
 same underlying BPE engine.
+
+### Extraction Quality Hook (`kg_extraction_validator`)
+
+`kg_extraction_validator` is an optional per-chunk hook that runs after entity /
+relation extraction and **before the merge**, so anything it rejects never
+enters the knowledge graph, the vector stores, or an entity's `source_id`
+chain. Filtering here is cheaper than cleaning up afterwards: deleting an entity
+post-merge leaves its `source_id` contributions behind, and unwinding those
+takes a purge and a re-ingest.
+
+```python
+def validate(chunk_key, chunk_text, maybe_nodes, maybe_edges):
+    # maybe_nodes: entity_name -> list[entity_dict]
+    # maybe_edges: (src, tgt)  -> list[edge_dict]
+    # Both carry source_id / file_path already — these are the merge inputs.
+    for name in [n for n in maybe_nodes if len(n) < 2 or n not in chunk_text]:
+        logger.info("rejected entity %s from %s", name, chunk_key)
+        del maybe_nodes[name]
+    for key in [(s, t) for (s, t) in maybe_edges
+                if s not in maybe_nodes or t not in maybe_nodes]:
+        del maybe_edges[key]
+    return maybe_nodes, maybe_edges
+
+rag = LightRAG(..., kg_extraction_validator=validate)
+```
+
+Contract:
+
+- **Signature** `(chunk_key, chunk_text, maybe_nodes, maybe_edges)`, returning a
+  `(maybe_nodes, maybe_edges)` pair of dicts with the same shapes. Filtering in
+  place and returning the same objects is fine.
+- **Synchronous or async.** An awaitable return value is awaited. A sync hook
+  runs on the event loop, so a CPU-heavy validator should do its own
+  `asyncio.to_thread` — the same guidance as a custom `chunking_func`.
+- **`None` (the default) leaves the pipeline unchanged.**
+- **Coverage.** Every path that extracts goes through it: the document pipeline
+  and `ainsert_custom_chunks` alike. `ainsert_custom_kg` does not extract — the
+  caller supplies the graph directly — so it is not filtered.
+- **Multimodal entities are not shown to the hook.** For a drawing / table /
+  equation chunk, LightRAG synthesizes one entity from the sidecar and links it
+  to the chunk's surviving entities. That injection happens *after* the hook, so
+  a grounding rule like the one above cannot delete it, and an entity the hook
+  rejected cannot reappear as the endpoint of an injected edge.
+- **Failures are not swallowed.** A hook that raises, or that returns anything
+  other than a two-element sequence of dicts (`TypeError`), fails the chunk and
+  the document ends up FAILED. A validator that is silently skipped is a
+  validator that is not validating.
+- **A stateful validator keeps its identity.** A bound method or callable object
+  that accumulates an audit log sees its own instance, not a per-document copy.
+  As with a custom tokenizer, however, `LightRAG` builds its internal config
+  with `dataclasses.asdict`, so a validator holding something `copy.deepcopy`
+  rejects (a bare `threading.Lock`) must declare `__deepcopy__` returning
+  `self` — see *Injecting a Custom Tokenizer* above.
 
 ### User Prompt vs. Query
 

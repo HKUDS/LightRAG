@@ -1,16 +1,19 @@
 """Tests for the optional per-chunk extraction-quality hook (#3691).
 
-``LightRAG.kg_extraction_validator`` is the last word before the merge:
-whatever it drops never reaches ``merge_nodes_and_edges``, the vector
-stores, or any ``source_id`` chain. ``None`` (the default) must leave the
-pipeline byte-identical.
+``LightRAG.kg_extraction_validator`` is the last word on what the LLM
+extracted from a chunk: whatever it drops never reaches
+``merge_nodes_and_edges``, the vector stores, or any ``source_id`` chain.
+``None`` (the default) must leave the pipeline byte-identical.
 """
 
+from pathlib import Path
 from unittest.mock import AsyncMock
 
+import numpy as np
 import pytest
 
-from lightrag.utils import Tokenizer, TokenizerInterface
+from lightrag import LightRAG
+from lightrag.utils import EmbeddingFunc, Tokenizer, TokenizerInterface
 
 
 class DummyTokenizer(TokenizerInterface):
@@ -72,11 +75,7 @@ def _make_global_config(extract_func, validator=None, max_async: int = 3) -> dic
 
 
 def _collect_names(chunk_results) -> list[str]:
-    return [
-        name
-        for maybe_nodes, _ in chunk_results
-        for name in maybe_nodes
-    ]
+    return [name for maybe_nodes, _ in chunk_results for name in maybe_nodes]
 
 
 @pytest.mark.offline
@@ -158,8 +157,8 @@ async def test_async_validator_is_awaited():
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_hook_runs_after_extraction_before_return():
-    """The hook is the LAST word per chunk: a validator that inspects
-    maybe_nodes sees exactly what the merge would have received."""
+    """The hook runs after extraction: a validator that inspects maybe_nodes
+    sees fully merge-shaped records, ``source_id`` already stamped."""
     from lightrag.operate import extract_entities
 
     received: dict[str, dict] = {}
@@ -184,3 +183,148 @@ async def test_hook_runs_after_extraction_before_return():
             assert source_ids == [chunk_key], (
                 "the hook must see the merge-shaped records, source_id included"
             )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_hook_runs_before_multimodal_injection():
+    """The hook filters LLM output only, and runs BEFORE the core-generated
+    multimodal entity is injected.
+
+    Two things would break if the order were reversed: the hook would be
+    handed an entity it never extracted (a grounding rule deletes it), and an
+    entity it rejects would come back through the injected
+    ``(multimodal_entity, rejected_entity)`` edge when the merge upserts the
+    edge's endpoints.
+    """
+    from lightrag.operate import extract_entities
+
+    chunks = _make_chunks()
+    chunks["chunk-alpha"]["sidecar"] = {"type": "table", "id": "table-1"}
+
+    seen: dict[str, list[str]] = {}
+
+    def drop_alpha(chunk_key, chunk_text, maybe_nodes, maybe_edges):
+        seen[chunk_key] = sorted(maybe_nodes)
+        maybe_nodes.pop("ALPHA", None)
+        return maybe_nodes, maybe_edges
+
+    chunk_results = await extract_entities(
+        chunks=chunks,
+        global_config=_make_global_config(
+            AsyncMock(side_effect=_fake_extract), validator=drop_alpha
+        ),
+    )
+
+    # The hook saw the LLM's entity, never the multimodal one.
+    assert seen["chunk-alpha"] == ["ALPHA"]
+
+    nodes_by_chunk = {}
+    edges_by_chunk = {}
+    for maybe_nodes, maybe_edges in chunk_results:
+        for records in list(maybe_nodes.values()) + list(maybe_edges.values()):
+            key = records[0]["source_id"]
+            break
+        nodes_by_chunk[key] = sorted(maybe_nodes)
+        edges_by_chunk[key] = sorted(maybe_edges)
+
+    # The multimodal entity is still injected — the hook does not suppress it.
+    assert nodes_by_chunk["chunk-alpha"] == ["table-1"]
+    # ...and it carries no edge to the entity the hook rejected, so the merge
+    # cannot resurrect ALPHA through an endpoint upsert.
+    assert edges_by_chunk["chunk-alpha"] == []
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "returned",
+    [
+        None,
+        ({"ALPHA": []},),
+        {"maybe_nodes": {}, "maybe_edges": {}},
+        ({}, {}, {}),
+        ({}, ["not-a-dict"]),
+    ],
+    ids=["none", "one-tuple", "two-key-dict", "three-tuple", "non-dict-member"],
+)
+async def test_validator_returning_a_non_pair_raises_type_error(returned):
+    """A malformed return value fails the chunk with a named TypeError.
+
+    ``{"maybe_nodes": ..., "maybe_edges": ...}`` is the dangerous one: a bare
+    unpack accepts it and silently binds the two KEY STRINGS, which only
+    surfaces much later inside the merge as an unrelated-looking failure.
+    """
+    from lightrag.operate import extract_entities
+
+    def bad_validator(chunk_key, chunk_text, maybe_nodes, maybe_edges):
+        return returned
+
+    with pytest.raises(TypeError, match="kg_extraction_validator must return"):
+        await extract_entities(
+            chunks=_make_chunks(),
+            global_config=_make_global_config(
+                AsyncMock(side_effect=_fake_extract), validator=bad_validator
+            ),
+        )
+
+
+class _Auditor:
+    """A stateful validator — the issue's own "write audit logs" use case."""
+
+    def __init__(self):
+        self.seen: list[str] = []
+
+    def validate(self, chunk_key, chunk_text, maybe_nodes, maybe_edges):
+        self.seen.append(chunk_key)
+        return maybe_nodes, maybe_edges
+
+
+async def _mock_embedding(texts: list[str]) -> np.ndarray:
+    return np.full((len(texts), 32), 0.1, dtype=np.float32)
+
+
+async def _mock_llm(prompt, **kwargs):
+    return ""
+
+
+def _new_rag(tmp_path: Path, validator) -> LightRAG:
+    return LightRAG(
+        working_dir=str(tmp_path),
+        workspace=f"kgvalidator-{tmp_path.name}",
+        llm_model_func=_mock_llm,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=32, max_token_size=4096, func=_mock_embedding
+        ),
+        tokenizer=Tokenizer("dummy", DummyTokenizer()),
+        kg_extraction_validator=validator,
+    )
+
+
+@pytest.mark.offline
+def test_stateful_validator_keeps_its_identity_through_global_config(tmp_path):
+    """The wiring test the pure-``extract_entities`` cases cannot cover.
+
+    ``_build_global_config`` starts from ``asdict(self)``, which deep-copies
+    every non-dataclass field. A plain function is copied atomically and looks
+    fine; a bound method is NOT — its ``__self__`` is deep-copied, so a
+    stateful validator would filter against a throwaway copy per document and
+    lose everything it collected, silently.
+    """
+    auditor = _Auditor()
+    rag = _new_rag(tmp_path, auditor.validate)
+
+    config = rag._build_global_config()
+    assert config["kg_extraction_validator"].__self__ is auditor
+
+    # Two builds (two documents) must not hand out two different objects.
+    assert (
+        rag._build_global_config()["kg_extraction_validator"].__self__
+        is rag._build_global_config()["kg_extraction_validator"].__self__
+    )
+
+
+@pytest.mark.offline
+def test_default_validator_is_none_in_global_config(tmp_path):
+    rag = _new_rag(tmp_path, None)
+    assert rag._build_global_config()["kg_extraction_validator"] is None

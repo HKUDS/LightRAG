@@ -3973,8 +3973,8 @@ async def extract_entities(
     stage_tally = TokenLimitTruncationTally()
 
     # Optional per-chunk extraction-quality hook (#3691); None leaves the
-    # pipeline unchanged. Applied at every chunk result — see
-    # _process_single_content's return path.
+    # pipeline unchanged. Applied to every chunk result — see the call site in
+    # _process_single_content, just before the multimodal sidecar injection.
     kg_extraction_validator = global_config.get("kg_extraction_validator")
 
     use_llm_func: callable = global_config["role_llm_funcs"]["extract"]
@@ -4333,6 +4333,43 @@ async def extract_entities(
                     maybe_edges[edge_key] = list(glean_edge_list)
                 await _cooperative_yield(i, every=8)
 
+        # Optional extraction-quality hook (#3691): the last word on what the
+        # LLM extracted from this chunk. Whatever the validator drops never
+        # reaches merge_nodes_and_edges, the vector stores, or any source_id
+        # chain.
+        #
+        # Deliberately placed BEFORE the multimodal injection below. That
+        # entity is core-generated, not LLM output, and it is linked to every
+        # surviving entity of the chunk: filtering afterwards would both
+        # expose it to rules written for LLM output (a "name must appear in
+        # chunk_text" grounding check deletes it) and leave the injected
+        # (multimodal_entity, rejected_entity) edges dangling, so the merge's
+        # endpoint upsert would re-create the very entities the hook rejected.
+        if kg_extraction_validator is not None:
+            validated = kg_extraction_validator(
+                chunk_key,
+                chunk_dp.get("content", "") or "",
+                maybe_nodes,
+                maybe_edges,
+            )
+            if inspect.isawaitable(validated):
+                validated = await validated
+            # Validate the shape before unpacking. A bare unpack accepts a
+            # two-key dict and silently binds the KEYS as maybe_nodes /
+            # maybe_edges, which only surfaces much later inside the merge as
+            # an unrelated-looking failure.
+            if (
+                not isinstance(validated, (tuple, list))
+                or len(validated) != 2
+                or not all(isinstance(part, dict) for part in validated)
+            ):
+                raise TypeError(
+                    "kg_extraction_validator must return a (maybe_nodes, "
+                    "maybe_edges) pair of dicts; got "
+                    f"{type(validated).__name__} for chunk {chunk_key}"
+                )
+            maybe_nodes, maybe_edges = validated
+
         # Inject multimodal entity + associations for drawing/table/equation
         # chunks. Placed before update_chunk_cache_list so the per-chunk
         # cache write still happens after; placed inside the chunk's
@@ -4411,20 +4448,6 @@ async def extract_entities(
                 cache_keys_collector,
                 "entity_extraction",
             )
-
-        # Optional extraction-quality hook (#3691): the LAST word before the
-        # merge. Whatever the validator drops never reaches
-        # merge_nodes_and_edges, the vector stores, or any source_id chain.
-        if kg_extraction_validator is not None:
-            validated = kg_extraction_validator(
-                chunk_key,
-                chunk_dp.get("content", "") or "",
-                maybe_nodes,
-                maybe_edges,
-            )
-            if inspect.isawaitable(validated):
-                validated = await validated
-            maybe_nodes, maybe_edges = validated
 
         processed_chunks += 1
         entities_count = len(maybe_nodes)
