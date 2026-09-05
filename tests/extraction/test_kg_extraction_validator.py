@@ -34,16 +34,6 @@ def _extraction_result(name: str) -> str:
     return f"(entity<|#|>{name}<|#|>CONCEPT<|#|>Description of {name})<|COMPLETE|>"
 
 
-def _extraction_result_with_relation(name: str, other: str) -> str:
-    """One entity record plus a relation to ``other``, which may or may not
-    have an entity record of its own — both shapes occur in real output."""
-    return (
-        f"entity<|#|>{name}<|#|>CONCEPT<|#|>Description of {name}"
-        f"\nrelation<|#|>{name}<|#|>{other}<|#|>related<|#|>{name} relates to {other}."
-        "\n<|COMPLETE|>"
-    )
-
-
 async def _fake_extract(prompt: str, *args, **kwargs) -> str:
     for key, content in _CHUNK_CONTENTS.items():
         if content in prompt:
@@ -340,19 +330,20 @@ def test_default_validator_is_none_in_global_config(tmp_path):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_relations_incident_to_a_rejected_entity_are_pruned():
-    """Dropping an entity but leaving its relation must not resurrect it.
+async def test_core_does_not_prune_edges_for_the_validator():
+    """Endpoint filtering belongs to the rule, and core must not fake it.
 
-    ``_merge_edges_then_upsert`` materializes a missing endpoint as an
-    UNKNOWN-typed node, so an orphaned relation would put the rejected entity
-    back into the graph, the entity vector store, and its source_id chain —
-    defeating the hook entirely through the one mistake a validator is most
-    likely to make.
+    A rule that deletes an entity but leaves a relation pointing at it undoes
+    its own deletion — ``_merge_edges_then_upsert`` materializes the missing
+    endpoint as an UNKNOWN-typed node. Core deliberately does not clean that
+    up: the same omission also lets a name through in a chunk where it occurs
+    only as an endpoint, which core cannot see, so covering one case and not
+    the other would be less predictable than covering neither. This test pins
+    the contract so nobody reintroduces a half guarantee.
     """
     from lightrag.operate import extract_entities
 
     async def extract(prompt: str, *args, **kwargs) -> str:
-        # ALPHA has an entity record AND a relation; BRAVO only an entity.
         if _CHUNK_CONTENTS["chunk-alpha"] in prompt:
             return (
                 "entity<|#|>ALPHA<|#|>CONCEPT<|#|>Description of ALPHA"
@@ -362,59 +353,78 @@ async def test_relations_incident_to_a_rejected_entity_are_pruned():
             )
         return _extraction_result("BRAVO")
 
-    def drop_alpha(chunk_key, chunk_text, maybe_nodes, maybe_edges):
-        # Deliberately leaves the (ALPHA, BRAVO) relation behind.
+    def nodes_only(chunk_key, chunk_text, maybe_nodes, maybe_edges):
+        # The incomplete rule: entity deleted, its relation left behind.
         maybe_nodes.pop("ALPHA", None)
         return maybe_nodes, maybe_edges
 
     chunk_results = await extract_entities(
         chunks=_make_chunks(),
         global_config=_make_global_config(
-            AsyncMock(side_effect=extract), validator=drop_alpha
+            AsyncMock(side_effect=extract), validator=nodes_only
         ),
     )
 
     surviving_edges = [key for _, maybe_edges in chunk_results for key in maybe_edges]
-    assert all("ALPHA" not in key for key in surviving_edges), (
-        f"a relation incident to the rejected entity survived: {surviving_edges}"
+    assert ("ALPHA", "BRAVO") in surviving_edges, (
+        "core must pass the hook's output through untouched; filtering "
+        "endpoints is the rule's job"
     )
-    assert "ALPHA" not in _collect_names(chunk_results)
 
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_relations_to_never_extracted_endpoints_are_kept():
-    """The counterpart, and the reason the pruning is scoped to REMOVED names.
+async def test_a_name_keyed_rule_filters_nodes_and_endpoints_in_every_chunk():
+    """The documented shape, and the reason it is the documented shape.
 
-    An extracted relation whose endpoint has no entity record of its own is
-    normal output, not an inconsistency — relation processing materializing
-    that endpoint is designed behaviour (see ``collect_kg_merge_candidates``).
-    Pruning every dangling edge instead of only the hook-rejected ones would
-    silently delete legitimate relations for anyone with a hook installed,
-    a pass-through validator included.
+    ``is_junk`` is a function of the NAME, applied to entities and to relation
+    endpoints. Chunk alpha has JUNK as a full entity plus a relation; chunk
+    bravo has it ONLY as a relation endpoint — the cross-chunk case core
+    cannot see, since JUNK never enters that chunk's ``maybe_nodes``. One rule
+    handles both, with no cross-chunk state and no dependence on the order the
+    concurrent chunk tasks happen to finish in.
     """
     from lightrag.operate import extract_entities
 
     async def extract(prompt: str, *args, **kwargs) -> str:
         if _CHUNK_CONTENTS["chunk-alpha"] in prompt:
-            # CHARLIE is an endpoint that was never extracted as an entity.
-            return _extraction_result_with_relation("ALPHA", "CHARLIE")
-        return _extraction_result("BRAVO")
+            return (
+                "entity<|#|>ALPHA<|#|>CONCEPT<|#|>Description of ALPHA"
+                "\nentity<|#|>JUNK<|#|>CONCEPT<|#|>Description of JUNK"
+                "\nrelation<|#|>ALPHA<|#|>JUNK<|#|>related<|#|>ALPHA relates to JUNK."
+                "\n<|COMPLETE|>"
+            )
+        # Relation-only occurrence: no JUNK entity record in this chunk.
+        return (
+            "entity<|#|>BRAVO<|#|>CONCEPT<|#|>Description of BRAVO"
+            "\nrelation<|#|>BRAVO<|#|>JUNK<|#|>related<|#|>BRAVO relates to JUNK."
+            "\n<|COMPLETE|>"
+        )
 
-    def passthrough(chunk_key, chunk_text, maybe_nodes, maybe_edges):
+    def is_junk(name: str) -> bool:
+        return name == "JUNK"
+
+    def rule(chunk_key, chunk_text, maybe_nodes, maybe_edges):
+        for name in [n for n in maybe_nodes if is_junk(n)]:
+            del maybe_nodes[name]
+        for key in [k for k in maybe_edges if is_junk(k[0]) or is_junk(k[1])]:
+            del maybe_edges[key]
         return maybe_nodes, maybe_edges
 
     chunk_results = await extract_entities(
         chunks=_make_chunks(),
         global_config=_make_global_config(
-            AsyncMock(side_effect=extract), validator=passthrough
+            AsyncMock(side_effect=extract), validator=rule
         ),
     )
 
+    assert "JUNK" not in _collect_names(chunk_results)
     surviving_edges = [key for _, maybe_edges in chunk_results for key in maybe_edges]
-    assert ("ALPHA", "CHARLIE") in surviving_edges, (
-        "a baseline relation to a never-extracted endpoint must not be pruned"
+    assert all("JUNK" not in key for key in surviving_edges), (
+        f"JUNK survived as a relation endpoint: {surviving_edges}"
     )
+    # The rule is targeted, not a blanket purge: untouched output survives.
+    assert sorted(_collect_names(chunk_results)) == ["ALPHA", "BRAVO"]
 
 
 @pytest.mark.offline

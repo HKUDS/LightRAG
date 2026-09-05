@@ -627,20 +627,26 @@ def validate(chunk_key, chunk_text, maybe_nodes, maybe_edges):
     # maybe_edges: (src, tgt)  -> list[edge_dict]
     # Both carry source_id / file_path already — these are the merge inputs.
 
-    # Case-fold before testing membership: the extraction prompt asks the model
-    # to title-case case-insensitive names, so a chunk that says "machine
-    # learning" yields the entity "Machine Learning". A case-sensitive `in`
-    # here would reject it and quietly drop a legitimate entity.
+    # One rule, expressed as a function of the NAME, so every chunk decides
+    # the same way. Case-fold before testing membership: the extraction prompt
+    # asks the model to title-case case-insensitive names, so a chunk that says
+    # "machine learning" yields the entity "Machine Learning" and a
+    # case-sensitive `in` would reject a legitimate entity.
     haystack = chunk_text.casefold()
-    for name in [
-        n for n in maybe_nodes if len(n) < 2 or n.casefold() not in haystack
-    ]:
+
+    def is_junk(name: str) -> bool:
+        return len(name) < 2 or name.casefold() not in haystack
+
+    # Apply it to entities...
+    for name in [n for n in maybe_nodes if is_junk(n)]:
         logger.info("rejected entity %s from %s", name, chunk_key)
         del maybe_nodes[name]
-    # No need to clean up relations pointing at the names just deleted — core
-    # prunes those. Do NOT delete every relation whose endpoints are missing
-    # from maybe_nodes: an endpoint that was never extracted as an entity is
-    # normal output, and dropping it here would lose a legitimate relation.
+    # ...and to relation endpoints. A name reaches the graph through either
+    # shape: an endpoint with no entity record is materialized as an UNKNOWN
+    # node, so skipping this loop lets the names you just deleted back in.
+    for key in [k for k in maybe_edges if is_junk(k[0]) or is_junk(k[1])]:
+        logger.info("rejected relation %s from %s", key, chunk_key)
+        del maybe_edges[key]
     return maybe_nodes, maybe_edges
 
 rag = LightRAG(..., kg_extraction_validator=validate)
@@ -670,14 +676,21 @@ Contract:
   to the chunk's surviving entities. That injection happens *after* the hook, so
   a grounding rule like the one above cannot delete it, and an entity the hook
   rejected cannot reappear as the endpoint of an injected edge.
-- **Relations incident to a dropped entity are pruned for you.** If you delete
-  an entity and leave a relation pointing at it, core removes that relation
-  before the merge — otherwise `_merge_edges_then_upsert` would materialize the
-  missing endpoint as an `UNKNOWN`-typed node and put the entity you rejected
-  straight back into the graph and the vector store. Only relations touching
-  the names *you removed* are pruned; a relation whose endpoint was never
-  extracted as an entity is left alone, because materializing that endpoint is
-  normal, intended behavior.
+- **Filter relation endpoints too — core does not do it for you.** A name
+  reaches the graph through either shape: `_merge_edges_then_upsert`
+  materializes an endpoint that has no entity record as an `UNKNOWN`-typed
+  node, into the graph, the vector store and the `source_id` chain. So
+  deleting an entity while leaving a relation pointing at it undoes the
+  deletion, and a chunk where the name appears *only* as an endpoint stores it
+  even though another chunk rejected it. The example above closes both by
+  running the same `is_junk` over `maybe_edges`.
+- **Make the rule a function of the name**, so every chunk decides the same
+  way. Chunks are extracted concurrently and independently; a rule that is not
+  name-deterministic can reject a name in one chunk and keep it in the next,
+  and the entity survives through whichever chunk kept it. Core deliberately
+  does not aggregate rejections across chunks — a verdict on one chunk is not
+  a verdict on the document, and only your rule knows whether it was meant to
+  be.
 - **Failures are not swallowed.** A hook that raises, or that returns anything
   other than a two-element sequence of dicts (`TypeError`), fails the chunk and
   therefore the ingest — the pipeline marks the document FAILED, and

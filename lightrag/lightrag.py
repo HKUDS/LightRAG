@@ -1017,11 +1017,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
     **Where it runs.** Inside ``extract_entities``, on one chunk's extraction
     result: after the gleaning merge, before the multimodal sidecar
-    injection, and before ``merge_nodes_and_edges``. Whatever the hook drops
-    therefore never reaches the knowledge graph, the vector stores, or any
-    ``source_id`` chain — which is the point, since post-merge cleanup
-    (delete + purge + re-ingest) cannot cheaply unwind a polluted
+    injection, and before ``merge_nodes_and_edges``. What the hook drops from
+    THIS chunk therefore never reaches the knowledge graph, the vector
+    stores, or any ``source_id`` chain — which is the point, since post-merge
+    cleanup (delete + purge + re-ingest) cannot cheaply unwind a polluted
     ``source_id`` list.
+
+    The scope of that sentence is the chunk, and it is the hook's own output
+    that defines it: core filters nothing on the hook's behalf.
 
     Running *before* the sidecar injection is deliberate. The multimodal
     entity that ``extract_entities`` synthesizes for a drawing/table/equation
@@ -1043,13 +1046,28 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     letters), reject non-grounded names absent from ``chunk_text``, write
     audit logs of reject reasons.
 
-    **Relations incident to a dropped entity are pruned for you.** Deleting an
-    entity and leaving a relation pointing at it would otherwise resurrect it:
-    ``_merge_edges_then_upsert`` materializes a missing endpoint as an
-    ``UNKNOWN``-typed node, back into the graph, the vector store and the
-    ``source_id`` chain. Only relations touching the names the hook *removed*
-    are pruned — a relation whose endpoint was never extracted as an entity is
-    ordinary output, and materializing that endpoint is intended behaviour.
+    **Apply the rule to relation ENDPOINTS too, not just entity names.** A
+    name reaches storage through either shape, and ``_merge_edges_then_upsert``
+    materializes an endpoint that has no entity record as an
+    ``UNKNOWN``-typed node — into the graph, the vector store and the
+    ``source_id`` chain. Deleting an entity while leaving a relation that
+    points at it therefore undoes the deletion, and a chunk where the name
+    occurs *only* as an endpoint puts it in storage even though another chunk
+    rejected it. Both are the same omission, and both close the same way::
+
+        for name in [n for n in maybe_nodes if is_junk(n)]:
+            del maybe_nodes[name]
+        for key in [k for k in maybe_edges if is_junk(k[0]) or is_junk(k[1])]:
+            del maybe_edges[key]
+
+    **Express the rule as a function of the name**, so it decides identically
+    in every chunk. Chunks are processed concurrently and independently, so a
+    rule that is not name-deterministic can reject a name in one chunk and
+    keep it in the next, and the entity survives through whichever chunk kept
+    it. That is also why core does not aggregate rejections across chunks: a
+    verdict on one chunk is not a verdict on the document, only the rule knows
+    whether it was meant to be, and half-covering the cases from core's side
+    would be less predictable than not covering them at all.
 
     **Failures are not swallowed.** A hook that raises — or that returns
     anything other than a two-element sequence of dicts, which raises
