@@ -1072,10 +1072,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     **Failures are not swallowed.** A hook that raises — or that returns
     anything other than a two-element sequence of dicts, which raises
     ``TypeError`` naming the offending chunk — fails the chunk;
-    ``_process_extract_entities`` logs it and the ingest fails (the pipeline
-    marks the document FAILED, ``ainsert_custom_chunks`` rolls its journal
-    back). That is deliberate: a validator silently skipped is a validator
-    that is not validating.
+    ``_process_extract_entities`` logs it and the ingest fails. That is
+    deliberate: a validator silently skipped is a validator that is not
+    validating.
+
+    What a failure leaves behind depends on the path. The pipeline marks the
+    document FAILED. ``ainsert_custom_chunks`` also marks it FAILED but
+    **retains** its journal and any staged data rather than rolling back:
+    repeating the same call resumes the operation (roll-forward is the SDK
+    caller's), while ``/documents/scan`` — via
+    :meth:`arollback_failed_custom_chunk_patches` — is what rolls it back. So
+    a validator that fails an ingest leaves recoverable state on that path,
+    not a clean slate.
 
     **Deep-copy contract**, shared with ``tokenizer``. ``_build_global_config``
     restores this attribute by identity after its ``asdict(self)``, so a

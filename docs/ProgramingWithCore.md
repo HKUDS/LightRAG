@@ -622,6 +622,9 @@ post-merge leaves its `source_id` contributions behind, and unwinding those
 takes a purge and a re-ingest.
 
 ```python
+from lightrag.utils import logger
+
+
 def validate(chunk_key, chunk_text, maybe_nodes, maybe_edges):
     # maybe_nodes: entity_name -> list[entity_dict]
     # maybe_edges: (src, tgt)  -> list[edge_dict]
@@ -693,9 +696,15 @@ Contract:
   be.
 - **Failures are not swallowed.** A hook that raises, or that returns anything
   other than a two-element sequence of dicts (`TypeError`), fails the chunk and
-  therefore the ingest — the pipeline marks the document FAILED, and
-  `ainsert_custom_chunks` rolls its journal back. A validator that is silently
-  skipped is a validator that is not validating.
+  therefore the ingest. A validator that is silently skipped is a validator
+  that is not validating.
+- **What a failed ingest leaves behind depends on the path.** The pipeline
+  marks the document FAILED. `ainsert_custom_chunks` also marks it FAILED but
+  **retains** its journal and any staged data instead of rolling back:
+  repeating the same call resumes the operation (roll-forward belongs to the
+  SDK caller), while `/documents/scan` — through
+  `arollback_failed_custom_chunk_patches` — is what rolls it back. Do not
+  assume a failed custom-chunk call left no recoverable state.
 - **A stateful validator keeps its identity.** A bound method or callable object
   that accumulates an audit log sees its own instance, not a per-document copy.
   As with a custom tokenizer, however, `LightRAG` builds its internal config
