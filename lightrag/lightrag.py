@@ -1057,6 +1057,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     letters), reject non-grounded names absent from ``chunk_text``, write
     audit logs of reject reasons.
 
+    A grounding check must canonicalize **both** sides. The keys of
+    ``maybe_nodes`` have already been through
+    :func:`lightrag.utils.normalize_entity_name`, which does more than case:
+    full-width ``ＡＩ`` becomes ``AI``, and spaces between Chinese and Latin
+    characters are removed, so a source reading ``北京 AI`` arrives as the
+    entity ``北京AI``. Testing such a name against raw ``chunk_text`` matches
+    nothing and silently deletes a legitimate entity, so run the same
+    normalization over the text before comparing.
+
     **Apply the rule to relation ENDPOINTS too, not just entity names.** A
     name reaches storage through either shape, and ``_merge_edges_then_upsert``
     materializes an endpoint that has no entity record as an

@@ -622,7 +622,7 @@ post-merge leaves its `source_id` contributions behind, and unwinding those
 takes a purge and a re-ingest.
 
 ```python
-from lightrag.utils import logger
+from lightrag.utils import logger, normalize_entity_name
 
 
 def validate(chunk_key, chunk_text, maybe_nodes, maybe_edges):
@@ -630,13 +630,18 @@ def validate(chunk_key, chunk_text, maybe_nodes, maybe_edges):
     # maybe_edges: (src, tgt)  -> list[edge_dict]
     # Both carry source_id / file_path already — these are the merge inputs.
 
-    # One rule, expressed as a function of the NAME, so every chunk decides
-    # the same way. Case-fold before testing membership: the extraction prompt
-    # asks the model to title-case case-insensitive names, so a chunk that says
-    # "machine learning" yields the entity "Machine Learning" and a
-    # case-sensitive `in` would reject a legitimate entity.
-    haystack = chunk_text.casefold()
+    # Canonicalize BOTH sides of the grounding comparison. Extraction runs
+    # every name through normalize_entity_name, which does more than case:
+    # full-width ＡＩ becomes AI, and spaces between Chinese and Latin are
+    # removed, so "北京 AI" in the source arrives as the entity 北京AI. Testing
+    # such a name against raw chunk text finds nothing and silently deletes a
+    # legitimate entity, so run the same normalization over the haystack.
+    # Case-folding on top: the prompt asks the model to title-case
+    # case-insensitive names, so "machine learning" arrives as
+    # "Machine Learning".
+    haystack = normalize_entity_name(chunk_text).casefold()
 
+    # The keys are already normalized by extraction, so only case-fold here.
     def is_junk(name: str) -> bool:
         return len(name) < 2 or name.casefold() not in haystack
 
