@@ -799,6 +799,101 @@ def test_adapter_drawing_asset_source_only_when_file_exists(
 
 
 @pytest.mark.offline
+def test_adapter_chart_item_becomes_drawing(tmp_path: Path) -> None:
+    """MinerU emits ``chart`` items (diagrams, plots, oscillograms) with
+    ``img_path`` + ``chart_caption`` / ``chart_footnote`` and an often empty
+    ``content``. They must become drawings like ``image`` items — otherwise
+    the text fallback silently drops picture, caption and footnote.
+    """
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {
+                "type": "chart",
+                "img_path": "images/chart_001.jpg",
+                "content": "",
+                "chart_caption": ["Abbildung 3-58"],
+                "chart_footnote": [],
+                "bbox": [57, 621, 318, 762],
+                "page_idx": 125,
+            },
+            {
+                "type": "chart",
+                "img_path": "images/chart_002.jpg",
+                "content": "",
+                "chart_caption": [],
+                "chart_footnote": ["Abbildung 4-17. Das obere Diagramm …"],
+                "page_idx": 166,
+            },
+        ],
+    )
+    (raw / "images").mkdir()
+    (raw / "images" / "chart_001.jpg").write_bytes(b"\xff\xd8\xffJPG")
+
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="c.pdf")
+
+    drawings = [d for b in ir.blocks for d in b.drawings]
+    assert len(drawings) == 2
+    assert drawings[0].asset_ref == "images/chart_001.jpg"
+    assert drawings[0].fmt == "jpg"
+    assert drawings[0].caption == "Abbildung 3-58"
+    assert drawings[0].self_ref == "content_list.json#/0"
+    assert drawings[1].footnotes == ["Abbildung 4-17. Das obere Diagramm …"]
+
+    # Placeholders are emitted into the block body like for images.
+    body = "\n".join(b.content_template for b in ir.blocks)
+    assert f"{{{{IMG:{drawings[0].placeholder_key}}}}}" in body
+
+    # Both charts are declared as assets; bytes are attached when on disk.
+    by_ref = {a.ref: a for a in ir.assets}
+    assert by_ref["images/chart_001.jpg"].source is not None
+    assert by_ref["images/chart_002.jpg"].source is None
+
+
+@pytest.mark.offline
+def test_adapter_drawing_body_content_kept_next_to_placeholder(
+    tmp_path: Path,
+) -> None:
+    """MinerU fills ``content`` on ``chart`` / ``image`` items whenever the
+    model recognised the picture's data (e.g. a chart's data table). That
+    text must stay in the block body next to the ``{{IMG:k}}`` placeholder —
+    it is the only retrievable form of it when no VLM analysis runs.
+    """
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {"type": "text", "text": "Results", "text_level": 1},
+            {
+                "type": "chart",
+                "img_path": "images/c1.jpg",
+                "content": "| year | value |\n|---|---|\n| 2024 | 42 |",
+                "chart_caption": ["Abb. 3-58"],
+                "chart_footnote": ["src: X"],
+            },
+            {
+                "type": "image",
+                "img_path": "images/i1.jpg",
+                "content": "OCR'd label text",
+            },
+        ],
+    )
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="c.pdf")
+
+    block = ir.blocks[0]
+    chart, image = block.drawings
+    assert block.content_template == (
+        "# Results\n"
+        f"{{{{IMG:{chart.placeholder_key}}}}}\n"
+        "| year | value |\n|---|---|\n| 2024 | 42 |\n"
+        f"{{{{IMG:{image.placeholder_key}}}}}\n"
+        "OCR'd label text"
+    )
+    # Caption / footnote still travel on the drawing, not in the body text.
+    assert chart.caption == "Abb. 3-58"
+    assert chart.footnotes == ["src: X"]
+
+
+@pytest.mark.offline
 def test_adapter_refuses_path_traversal_img_path(tmp_path: Path) -> None:
     """Untrusted img_path with ``..`` or absolute filesystem segments must
     not be allowed to point ``AssetSpec.source`` outside ``raw_dir``.
