@@ -109,10 +109,32 @@ def _build_client(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize(
     "document_date",
-    ["2018/10/01", "2018-02-30", "", "2018-10-01T00:00:00Z"],
+    [
+        "0000",
+        "2018-0",
+        "2018-00",
+        "2018-13",
+        "2018-00-00",
+        "2018-00-01",
+        "2018-10-00",
+        "2019-02-29",
+        "2018-02-30",
+        "",
+        " 2018",
+        "2018 ",
+        "2018/10/01",
+        # Date-times and EDTF extensions remain outside the phase-one contract.
+        "2018-10-01T00:00:00Z",
+        pytest.param("2018?", id="edtf-uncertain"),
+        pytest.param("2018~", id="edtf-approximate"),
+        pytest.param("2018%", id="edtf-uncertain-and-approximate"),
+        pytest.param("201X", id="edtf-unspecified-year-digit"),
+        pytest.param("2018/2020", id="edtf-interval"),
+        pytest.param("[2018,2019]", id="edtf-set"),
+    ],
 )
 def test_text_request_rejects_invalid_document_date(document_date):
-    with pytest.raises(ValidationError, match="YYYY-MM-DD"):
+    with pytest.raises(ValidationError, match="YYYY, YYYY-MM, or YYYY-MM-DD"):
         InsertTextRequest(
             text="historical facts",
             file_source="organization.txt",
@@ -120,13 +142,16 @@ def test_text_request_rejects_invalid_document_date(document_date):
         )
 
 
-def test_text_request_accepts_strict_calendar_date():
+@pytest.mark.parametrize(
+    "document_date", ["2018", "2018-10", "2018-10-01", "2024-02-29"]
+)
+def test_text_request_accepts_reduced_precision_calendar_date(document_date):
     request = InsertTextRequest(
         text="historical facts",
         file_source="organization.txt",
-        document_date="2018-10-01",
+        document_date=document_date,
     )
-    assert request.document_date == "2018-10-01"
+    assert request.document_date == document_date
 
 
 def test_batch_dates_must_align_with_texts():
@@ -166,9 +191,9 @@ def test_pipeline_index_texts_keeps_legacy_positional_parameter_order():
         (
             "/documents/texts",
             {
-                "texts": ["historical facts"],
-                "file_sources": ["organization.txt"],
-                "document_dates": ["2018-02-30"],
+                "texts": ["valid historical facts", "invalid historical facts"],
+                "file_sources": ["valid.txt", "invalid.txt"],
+                "document_dates": ["2018", "2018-02-30"],
             },
         ),
     ],
@@ -180,7 +205,7 @@ def test_text_endpoints_return_422_for_invalid_dates(
     response = client.post(path, headers=_HEADERS, json=payload)
 
     assert response.status_code == 422
-    assert "YYYY-MM-DD" in str(response.json()["detail"])
+    assert "YYYY, YYYY-MM, or YYYY-MM-DD" in str(response.json()["detail"])
     assert captured["texts"] == []
 
 
@@ -193,7 +218,7 @@ def test_text_endpoints_forward_dates_one_to_one(monkeypatch, tmp_path):
         json={
             "text": "facts from 2018",
             "file_source": "organization-2018.txt",
-            "document_date": "2018-10-01",
+            "document_date": "2018",
         },
     )
     batch = client.post(
@@ -202,14 +227,14 @@ def test_text_endpoints_forward_dates_one_to_one(monkeypatch, tmp_path):
         json={
             "texts": ["facts from 2019", "undated facts"],
             "file_sources": ["organization-2019.txt", "organization.txt"],
-            "document_dates": ["2019-10-01", None],
+            "document_dates": ["2019-10", None],
         },
     )
 
     assert single.status_code == 200
     assert batch.status_code == 200
-    assert captured["texts"][0]["document_dates"] == ["2018-10-01"]
-    assert captured["texts"][1]["document_dates"] == ["2019-10-01", None]
+    assert captured["texts"][0]["document_dates"] == ["2018"]
+    assert captured["texts"][1]["document_dates"] == ["2019-10", None]
 
 
 def test_omitted_text_dates_keep_the_legacy_none_path(monkeypatch, tmp_path):
@@ -232,14 +257,14 @@ def test_upload_forwards_valid_form_date(monkeypatch, tmp_path):
         "/documents/upload",
         headers=_HEADERS,
         files={"file": ("organization.txt", b"historical facts", "text/plain")},
-        data={"document_date": "2018-10-01"},
+        data={"document_date": "2018-10"},
     )
 
     assert response.status_code == 200
-    assert captured["uploads"][0]["document_date"] == "2018-10-01"
+    assert captured["uploads"][0]["document_date"] == "2018-10"
 
 
-@pytest.mark.parametrize("document_date", ["2018-02-30", ""])
+@pytest.mark.parametrize("document_date", ["2018-02-30", "2018?", ""])
 def test_upload_returns_422_before_writing_for_invalid_form_date(
     monkeypatch, tmp_path, document_date
 ):
@@ -253,7 +278,7 @@ def test_upload_returns_422_before_writing_for_invalid_form_date(
     )
 
     assert response.status_code == 422
-    assert "YYYY-MM-DD" in response.json()["detail"]
+    assert "YYYY, YYYY-MM, or YYYY-MM-DD" in response.json()["detail"]
     assert captured["uploads"] == []
     assert not (tmp_path / "organization.txt").exists()
 

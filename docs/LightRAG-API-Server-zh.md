@@ -1277,6 +1277,42 @@ notes.[-R].md
 
 `/health` 端点会返回运行状态和关键配置，包括角色 LLM 配置、LLM/embedding/rerank 队列状态、workspace/storage workspace 映射、VLM 是否启用、rerank 是否启用，以及流水线 busy/scanning/destructive 状态。该端点始终返回 HTTP 200 以便用作存活探针，但配置与运行诊断信息**仅返回给已认证调用方**（携带有效 JWT 或 `X-API-Key`）。未认证调用方只会收到存活信号（`status`、`auth_mode`、`core_version`、`api_version`、`pipeline_busy`/`pipeline_active`，以及 WebUI 标题/可用性等字段——这些要么同样由未认证的 `/auth-status` 端点公开，要么只是布尔值）。需携带凭证才能取得完整内容，例如 `curl -H "X-API-Key: <key>" http://localhost:9621/health`。
 
+### 可选的文档日期上下文
+
+文档摄取可以携带由调用方提供的可选事实日期。该日期表示文档中的事实适用的
+时间（即文档的 as-of date），而不是 LightRAG 上传或索引文档的时间。支持
+`YYYY`、`YYYY-MM` 和 `YYYY-MM-DD` 三种格式。如果文档没有有意义的事实日期，
+可以省略该字段；未提供该字段的现有请求保持原有行为。
+
+| 端点 | 可选字段 | 请求编码 |
+| --- | --- | --- |
+| `/documents/text` | `document_date` | JSON 字符串 |
+| `/documents/texts` | `document_dates` | 与 `texts` 一一对应的 JSON 数组 |
+| `/documents/upload` | `document_date` | multipart 表单字段 |
+
+批量请求提供 `document_dates` 时，其条目数必须与 `texts` 相同；每个位置的日期
+对应相同位置的文本。单篇文档没有日期时，在对应位置使用 `null`：
+
+```json
+{
+  "texts": [
+    "2018 年的组织结构……",
+    "没有单一有效日期的笔记……"
+  ],
+  "file_sources": ["organization-2018.txt", "notes.txt"],
+  "document_dates": ["2018", null]
+}
+```
+
+上传文件时，将日期与文件一起放入 multipart 请求体：
+
+```bash
+curl -X POST "http://localhost:9621/documents/upload" \
+  -H "X-API-Key: <key>" \
+  -F "file=@organization-2018.pdf" \
+  -F "document_date=2018-10-01"
+```
+
 ## 异步文档索引与进度跟踪
 
 LightRAG采用异步文档索引机制，便于前端监控和查询文档处理进度。用户通过指定端点上传文件或插入文本时，系统将返回唯一的跟踪ID，以便实时监控处理进度。

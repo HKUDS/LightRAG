@@ -1774,7 +1774,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             ids: single string of the document ID or list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: single string of the file path or list of file paths, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
-            document_date: optional fact date for one document, in YYYY-MM-DD format
+            document_date: optional fact date for one document, in YYYY,
+                YYYY-MM, or YYYY-MM-DD format. For batches, use
+                apipeline_enqueue_documents(document_dates=...).
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -1833,7 +1835,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
-            document_date: optional fact date for one document, in YYYY-MM-DD format
+            document_date: optional fact date for one document, in YYYY,
+                YYYY-MM, or YYYY-MM-DD format. For batches, use
+                apipeline_enqueue_documents(document_dates=...).
 
         Returns:
             str: tracking ID for monitoring processing status

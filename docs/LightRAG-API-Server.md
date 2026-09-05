@@ -1277,6 +1277,44 @@ You can test the API endpoints using the provided curl commands or through the S
 
 The `/health` endpoint reports operational state and selected configuration, including role LLM configuration, LLM/embedding/rerank queue status, workspace/storage workspace mapping, VLM enablement, rerank enablement, and pipeline busy/scanning/destructive status. It always returns HTTP 200 so it stays usable as a liveness probe, but the configuration and operational diagnostics are returned **only to authenticated callers** (valid JWT or `X-API-Key`). Unauthenticated callers receive only liveness signals (`status`, `auth_mode`, `core_version`, `api_version`, `pipeline_busy`/`pipeline_active`, and the WebUI title/availability fields — all of which are also exposed by the unauthenticated `/auth-status` endpoint or are plain booleans). Provide credentials to retrieve the full payload, e.g. `curl -H "X-API-Key: <key>" http://localhost:9621/health`.
 
+### Optional Document Date Context
+
+Document ingestion can include an optional caller-supplied fact date. This is
+the date when the document's facts apply (its as-of date), not the time when
+LightRAG uploads or indexes the document. Accepted formats are `YYYY`,
+`YYYY-MM`, and `YYYY-MM-DD`. Omit the field when the document has no meaningful
+fact date; existing requests that omit it keep their previous behavior.
+
+| Endpoint | Optional field | Request encoding |
+| --- | --- | --- |
+| `/documents/text` | `document_date` | JSON string |
+| `/documents/texts` | `document_dates` | JSON array aligned one-to-one with `texts` |
+| `/documents/upload` | `document_date` | Multipart form field |
+
+For a batch request, `document_dates` must contain the same number of entries as
+`texts`. Each position supplies the date for the text at the same position; use
+`null` for an individual document without a date:
+
+```json
+{
+  "texts": [
+    "Organization structure in 2018...",
+    "Notes without one meaningful date..."
+  ],
+  "file_sources": ["organization-2018.txt", "notes.txt"],
+  "document_dates": ["2018", null]
+}
+```
+
+For file upload, send the date beside the file in the multipart body:
+
+```bash
+curl -X POST "http://localhost:9621/documents/upload" \
+  -H "X-API-Key: <key>" \
+  -F "file=@organization-2018.pdf" \
+  -F "document_date=2018-10-01"
+```
+
 ## Asynchronous Document Indexing with Progress Tracking
 
 LightRAG implements asynchronous document indexing to enable frontend monitoring and querying of document processing progress. Upon uploading files or inserting text through designated endpoints, a unique Track ID is returned to facilitate real-time progress monitoring.

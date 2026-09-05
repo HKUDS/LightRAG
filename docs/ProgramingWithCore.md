@@ -1145,6 +1145,35 @@ rag.insert("TEXT1", ids=["ID_FOR_TEXT1"])
 rag.insert(["TEXT1", "TEXT2", ...], ids=["ID_FOR_TEXT1", "ID_FOR_TEXT2"])
 ```
 
+* Async Insert with Document Date
+
+For a single document, `ainsert` accepts an optional caller-supplied
+`document_date` in `YYYY`, `YYYY-MM`, or `YYYY-MM-DD` format:
+
+```python
+await rag.ainsert(
+    "Organization structure during October 2018...",
+    file_paths="organization-2018.txt",
+    document_date="2018-10",
+)
+```
+
+`document_date` describes when the facts in the document apply (the document's
+as-of date), not when LightRAG ingests the document. It provides document-level
+temporal context during extraction and answer generation. Omit it when the
+document has no meaningful fact date; calls that omit it keep the existing
+behavior. The scalar argument applies when `ainsert` receives exactly one
+document. For batches, use the lower-level pipeline API with one date or
+`None` per input document, then run the processor:
+
+```python
+await rag.apipeline_enqueue_documents(
+    ["Document about 2018...", "Document without a fact date..."],
+    document_dates=["2018", None],
+)
+await rag.apipeline_process_enqueue_documents()
+```
+
 * Insert using Pipeline
 
 `apipeline_enqueue_documents` and `apipeline_process_enqueue_documents` allow incremental insertion of documents in the background while the main thread continues executing.
@@ -1153,7 +1182,7 @@ rag.insert(["TEXT1", "TEXT2", ...], ids=["ID_FOR_TEXT1", "ID_FOR_TEXT2"])
 rag = LightRAG(..)
 await rag.apipeline_enqueue_documents(input)
 # Your routine in loop
-await rag.apipeline_process_enqueue_documents(input)
+await rag.apipeline_process_enqueue_documents()
 ```
 
 * Insert Multi-file Type Support

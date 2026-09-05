@@ -826,7 +826,10 @@ class InsertTextRequest(BaseModel):
     )
     document_date: Optional[str] = Field(
         default=None,
-        description="Fact date represented by the document, in YYYY-MM-DD format",
+        description=(
+            "Fact date represented by the document, in YYYY, YYYY-MM, or "
+            "YYYY-MM-DD format"
+        ),
     )
     chunking: Optional[TextChunkingConfig] = Field(
         default=None,
@@ -897,7 +900,7 @@ class InsertTextsRequest(BaseModel):
         default=None,
         description=(
             "Fact dates represented by the texts, aligned one-to-one with texts "
-            "and formatted as YYYY-MM-DD"
+            "and formatted as YYYY, YYYY-MM, or YYYY-MM-DD"
         ),
     )
     chunking: Optional[TextChunkingConfig] = Field(
@@ -2339,8 +2342,8 @@ async def pipeline_enqueue_file(
         admission_token: the caller's pending-enqueue reservation, forwarded to
             the admission guard so it re-weights that token rather than
             registering a second one (LR2 §9.2)
-        document_date: optional fact date for the uploaded document, in
-            YYYY-MM-DD format
+        document_date: optional fact date for the uploaded document, in YYYY,
+            YYYY-MM, or YYYY-MM-DD format
         from_scan: True only when invoked by the scan-owned background task,
             which already holds ``pipeline_status["scanning"]``.  Forwarded to
             ``apipeline_enqueue_documents`` so the scan can enqueue the files
@@ -2542,8 +2545,8 @@ async def pipeline_index_file(
         admission_token: the endpoint's pending-enqueue reservation, forwarded
             so the admission guard re-weights THAT token to the deduped count
             instead of counting this request twice (LR2 §9.2)
-        document_date: optional fact date for the uploaded document, in
-            YYYY-MM-DD format
+        document_date: optional fact date for the uploaded document, in YYYY,
+            YYYY-MM, or YYYY-MM-DD format
     """
     try:
         enqueue_kwargs = {"admission_token": admission_token}
@@ -5254,7 +5257,7 @@ def create_document_routes(
                 runs as a tracked asyncio task, not a Starlette callback
             file (UploadFile): The file to be uploaded. It must have an allowed extension.
             document_date: optional fact date represented by the document, in
-                YYYY-MM-DD format
+                YYYY, YYYY-MM, or YYYY-MM-DD format
 
         Returns:
             InsertResponse: A response object containing the upload status and a message.

@@ -1923,7 +1923,7 @@ class PostgreSQLDB:
             ("process_options", "TEXT NULL"),
             ("chunk_options", "JSONB NULL DEFAULT '{}'::jsonb"),
             ("parse_engine", "TEXT NULL"),
-            ("document_date", "DATE NULL"),
+            ("document_date", "VARCHAR(10) NULL"),
         ]
         try:
             existing = await self.query(
@@ -9492,7 +9492,7 @@ TABLES = {
                     process_options TEXT NULL,
                     chunk_options JSONB NULL DEFAULT '{}'::jsonb,
                     parse_engine TEXT NULL,
-                    document_date DATE NULL,
+                    document_date VARCHAR(10) NULL,
                     create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_DOC_FULL_PK PRIMARY KEY (workspace, id)
@@ -9653,7 +9653,7 @@ SQL_TEMPLATES = {
                                 process_options,
                                 COALESCE(chunk_options, '{}'::jsonb) as chunk_options,
                                 parse_engine,
-                                TO_CHAR(document_date, 'YYYY-MM-DD') as document_date
+                                document_date
                                 FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id=$2
                             """,
     "get_by_id_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
@@ -9678,7 +9678,7 @@ SQL_TEMPLATES = {
                                  process_options,
                                  COALESCE(chunk_options, '{}'::jsonb) as chunk_options,
                                  parse_engine,
-                                 TO_CHAR(document_date, 'YYYY-MM-DD') as document_date
+                                 document_date
                                  FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id = ANY($2)
                             """,
     "get_by_ids_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
@@ -9749,7 +9749,7 @@ SQL_TEMPLATES = {
     "upsert_doc_full": """INSERT INTO LIGHTRAG_DOC_FULL (id, content, doc_name, workspace,
                             sidecar_location, parse_format, content_hash,
                             process_options, chunk_options, parse_engine, document_date)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::TEXT::DATE)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                         ON CONFLICT (workspace,id) DO UPDATE
                            SET content = EXCLUDED.content,
                                doc_name = EXCLUDED.doc_name,
@@ -9780,7 +9780,7 @@ SQL_TEMPLATES = {
                                    LIGHTRAG_DOC_FULL.parse_engine
                                ),
                                document_date = COALESCE(
-                                   EXCLUDED.document_date,
+                                   NULLIF(EXCLUDED.document_date, ''),
                                    LIGHTRAG_DOC_FULL.document_date
                                ),
                                update_time = CURRENT_TIMESTAMP

@@ -744,9 +744,9 @@ class _PipelineMixin:
                 scan-owned write inside the classification window is
                 allowed through.  External callers must leave this False.
             document_dates: optional document-level fact dates, aligned with
-                ``input``. Each value must be a strict ``YYYY-MM-DD`` date.
-                Dates are persisted only on the corresponding ``full_docs``
-                record, never on chunks.
+                ``input``. Each value must use ``YYYY``, ``YYYY-MM``, or
+                ``YYYY-MM-DD`` precision. Dates are persisted only on the
+                corresponding ``full_docs`` record, never on chunks.
 
         Returns:
             str: tracking ID for monitoring processing status

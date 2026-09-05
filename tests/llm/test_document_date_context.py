@@ -75,6 +75,41 @@ def _config(query_model):
     }
 
 
+@pytest.mark.parametrize(
+    "prompt_key", ["kg_query_context", "naive_query_context"], ids=["kg", "naive"]
+)
+def test_query_context_prompt_defines_document_date_semantics(prompt_key):
+    from lightrag.prompt import PROMPTS
+
+    prompt = " ".join(PROMPTS[prompt_key].split())
+    assert "optional `document_date` field" in prompt
+    assert "source document's as-of date" in prompt
+    assert "ISO 8601" in prompt
+    assert "ingestion or processing time" in prompt
+    assert "`YYYY`, `YYYY-MM`, or `YYYY-MM-DD`" in prompt
+
+
+@pytest.mark.parametrize(
+    "prompt_key", ["rag_response", "naive_rag_response"], ids=["kg", "naive"]
+)
+def test_response_prompt_handles_dated_evidence_without_inventing_precision(
+    prompt_key,
+):
+    from lightrag.prompt import PROMPTS
+
+    prompt = PROMPTS[prompt_key]
+    assert "dated chunk's time-dependent facts" in prompt
+    assert "not its ingestion time" in prompt
+    assert "alongside relevant time-dependent claims" in prompt
+    assert "dated sources disagree about the current state" in prompt
+    assert "prefer the clearly later evidence" in prompt
+    assert "neither date is clearly later" in prompt
+    assert "point-in-time or trend questions" in prompt
+    assert "organize dated evidence chronologically" in prompt
+    assert "Preserve the supplied precision" in prompt
+    assert "do not infer a missing month or day" in prompt
+
+
 @pytest.mark.asyncio
 async def test_naive_answer_prompt_contains_dates_loaded_from_full_docs():
     captured: dict[str, str] = {}
