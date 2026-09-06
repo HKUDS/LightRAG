@@ -191,7 +191,7 @@ async def llama_index_complete(
         )
     kwargs.pop("response_format", None)
     result = await llama_index_complete_if_cache(
-        kwargs.get("llm_instance"),
+        kwargs.pop("llm_instance", None),
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
@@ -230,6 +230,7 @@ async def llama_index_embed(
     if embed_model is None:
         raise ValueError("embed_model must be provided")
 
-    # Use _get_text_embeddings for batch processing
-    embeddings = embed_model._get_text_embeddings(texts)
+    # Use the async batch method -- the sync _get_text_embeddings would
+    # block the event loop for the whole embedding call.
+    embeddings = await embed_model._aget_text_embeddings(texts)
     return np.array(embeddings)
