@@ -6013,11 +6013,12 @@ async def pick_by_vector_similarity(
     if not entity_info or num_of_chunks <= 0:
         return []
 
-    # Collect all unique chunk IDs from entity info
-    all_chunk_ids = set()
-    for i, entity in enumerate(entity_info):
-        chunk_ids = entity.get("sorted_chunks", [])
-        all_chunk_ids.update(chunk_ids)
+    # Preserve first occurrence order for similarity ties and fallback selection.
+    all_chunk_ids = dict.fromkeys(
+        chunk_id
+        for entity in entity_info
+        for chunk_id in entity.get("sorted_chunks", [])
+    )
 
     if not all_chunk_ids:
         logger.warning(
