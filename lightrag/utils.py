@@ -745,27 +745,40 @@ class EmbeddingFunc:
         # Call the actual embedding function
         result = await self.func(*args, **kwargs)
 
-        # Validate embedding dimensions using total element count
-        total_elements = result.size  # Total number of elements in the numpy array
+        # Validate the result shape directly rather than inferring it from a
+        # total-element count. A total-element check cannot tell a genuine
+        # vector-count mismatch (2N, D) apart from a dimension mismatch
+        # (N, 2D) -- both divide out to the same "actual vectors" number, so
+        # the wrong one of the two gets reported. Checking ndim/shape[0]/
+        # shape[1] directly identifies which one actually happened.
         expected_dim = self.embedding_dim
-
-        # Check if total elements can be evenly divided by embedding_dim
-        if total_elements % expected_dim != 0:
+        if result.ndim != 2:
             raise ValueError(
-                f"Embedding dimension mismatch detected: "
-                f"total elements ({total_elements}) cannot be evenly divided by "
-                f"expected dimension ({expected_dim}). "
+                f"Embedding result has unexpected shape: expected a 2D "
+                f"array (vectors, dimension) but got ndim={result.ndim} "
+                f"(shape={result.shape})."
             )
 
-        # Optional: Verify vector count matches input text count
-        actual_vectors = total_elements // expected_dim
         if args and isinstance(args[0], (list, tuple)):
             expected_vectors = len(args[0])
-            if actual_vectors != expected_vectors:
+            if result.shape[0] != expected_vectors:
                 raise ValueError(
-                    f"Vector count mismatch: "
-                    f"expected {expected_vectors} vectors but got {actual_vectors} vectors (from embedding result)."
+                    f"Vector count mismatch: expected {expected_vectors} "
+                    f"vectors (one per input text) but got {result.shape[0]} "
+                    f"(shape={result.shape}). If this embedding provider "
+                    f"legitimately returns multiple vectors per input, "
+                    f"normalize its output to one vector per input in a "
+                    f"dedicated provider adapter before it reaches this "
+                    f"wrapper -- do not silently reshape or truncate here, "
+                    f"since there is no general contract for which rows "
+                    f"correspond to which inputs."
                 )
+
+        if result.shape[1] != expected_dim:
+            raise ValueError(
+                f"Embedding dimension mismatch: expected dimension "
+                f"{expected_dim} but got {result.shape[1]} (shape={result.shape})."
+            )
 
         return result
 
