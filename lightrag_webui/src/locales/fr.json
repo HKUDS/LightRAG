@@ -4,7 +4,12 @@
     "theme": "Thème",
     "light": "Clair",
     "dark": "Sombre",
-    "system": "Système"
+    "system": "Système",
+    "langfuseTracing": "Traçage Langfuse",
+    "langfuseTracingDescription": "Exportez les traces LLM compatibles avec OpenAI via la connexion Langfuse configurée par l’opérateur.",
+    "langfuseUnavailable": "Installez l’extension d’observabilité et configurez les identifiants Langfuse pour utiliser ce bouton.",
+    "langfuseLoadFailed": "Impossible de charger l’état du traçage Langfuse.",
+    "langfuseUpdateFailed": "Impossible de mettre à jour le traçage Langfuse."
   },
   "header": {
     "documents": "Documents",

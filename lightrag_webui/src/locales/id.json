@@ -4,7 +4,12 @@
     "theme": "Tema",
     "light": "Terang",
     "dark": "Gelap",
-    "system": "Sistem"
+    "system": "Sistem",
+    "langfuseTracing": "Pelacakan Langfuse",
+    "langfuseTracingDescription": "Ekspor jejak LLM yang kompatibel dengan OpenAI melalui koneksi Langfuse yang dikonfigurasi operator.",
+    "langfuseUnavailable": "Instal fitur observabilitas dan konfigurasikan kredensial Langfuse untuk menggunakan tombol ini.",
+    "langfuseLoadFailed": "Tidak dapat memuat status pelacakan Langfuse.",
+    "langfuseUpdateFailed": "Tidak dapat memperbarui pelacakan Langfuse."
   },
   "header": {
     "documents": "Dokumen",

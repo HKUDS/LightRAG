@@ -4,7 +4,12 @@
     "theme": "主題",
     "light": "淺色",
     "dark": "深色",
-    "system": "系統"
+    "system": "系統",
+    "langfuseTracing": "Langfuse 追蹤",
+    "langfuseTracingDescription": "透過維運人員設定的 Langfuse 連線匯出與 OpenAI 相容的 LLM 追蹤資料。",
+    "langfuseUnavailable": "安裝可觀測性擴充功能並設定 Langfuse 憑證後才能使用此開關。",
+    "langfuseLoadFailed": "無法載入 Langfuse 追蹤狀態。",
+    "langfuseUpdateFailed": "無法更新 Langfuse 追蹤設定。"
   },
   "header": {
     "documents": "文件",
