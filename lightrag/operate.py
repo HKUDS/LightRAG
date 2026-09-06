@@ -4,6 +4,7 @@ from functools import partial
 from pathlib import Path
 
 import asyncio
+import inspect
 import json
 import logging
 import re
@@ -3971,6 +3972,10 @@ async def extract_entities(
     # Extraction-scoped truncation tally; see _publish_truncation_summary below.
     stage_tally = TokenLimitTruncationTally()
 
+    # Optional per-chunk extraction-quality hook; None leaves the pipeline
+    # unchanged. See the call site in _process_single_content below.
+    kg_extraction_validator = global_config.get("kg_extraction_validator")
+
     use_llm_func: callable = global_config["role_llm_funcs"]["extract"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
     # Cap on the gleaning LLM call's combined input (system + history user
@@ -4327,9 +4332,81 @@ async def extract_entities(
                     maybe_edges[edge_key] = list(glean_edge_list)
                 await _cooperative_yield(i, every=8)
 
+        # Batch update chunk's llm_cache_list with all collected cache keys.
+        #
+        # Ordered BEFORE the validator on purpose. The rows are already
+        # written durably, but their keys live only in the in-memory
+        # cache_keys_collector until this call attaches them to the chunk, and
+        # recovery (_rollback_one_custom_chunk_patch) reaches cache rows
+        # exclusively through a chunk's llm_cache_list. A validator that raises
+        # exits the chunk here, so a key never attached is a row nothing can
+        # reach again — orphaned even after /documents/scan rolls the operation
+        # back. Ordering is all this buys, NOT durability: this call swallows
+        # storage errors, and a sibling cancelled by the FIRST_EXCEPTION path
+        # never reaches its own call. Both leave the same orphan; closing that
+        # off needs recovery to find rows by the `chunk_id` they already carry
+        # (issue #3833), not more ordering here.
+        #
+        # Nothing after this point adds keys: the collector is filled by the
+        # extraction and gleaning calls above, and the multimodal injection
+        # below builds records from sidecar metadata without calling the LLM.
+        if cache_keys_collector and text_chunks_storage:
+            await update_chunk_cache_list(
+                chunk_key,
+                text_chunks_storage,
+                cache_keys_collector,
+                "entity_extraction",
+            )
+
+        # Optional extraction-quality hook: the last word on what the LLM
+        # extracted from this chunk. Caller-facing contract, including why core
+        # never prunes on the hook's behalf, is documented under "Extraction
+        # Quality Hook" in docs/ProgramingWithCore.md.
+        #
+        # Deliberately placed BEFORE the multimodal injection below. That entity
+        # is core-generated, not LLM output, and it is linked to every surviving
+        # entity of the chunk: filtering afterwards would both expose it to
+        # rules written for LLM output (a "name must appear in chunk_text"
+        # grounding check deletes it) and leave the injected
+        # (multimodal_entity, rejected_entity) edges dangling, so the merge's
+        # endpoint upsert would re-create the very entities the hook rejected.
+        if kg_extraction_validator is not None:
+            validated = kg_extraction_validator(
+                chunk_key,
+                # The EXTRACTION-VISIBLE text: `content` already has the
+                # parser-internal markup stripped, and this reproduces the
+                # sanitize_text_for_encoding that use_llm_func_with_cache
+                # applies to the whole prompt. The invariant is that the hook
+                # sees byte-for-byte what sat between the ---Input Text---
+                # fences of the prompt the provider received. strip=False
+                # follows from it: the chunk is a FRAGMENT sitting inside those
+                # fences, so its own boundary whitespace is interior to the
+                # prompt and stays model-visible, while the wrapper's strip only
+                # trims the template's ends.
+                sanitize_text_for_encoding(content, strip=False),
+                maybe_nodes,
+                maybe_edges,
+            )
+            if inspect.isawaitable(validated):
+                validated = await validated
+            # Validate the shape before unpacking: a bare unpack accepts a
+            # two-key dict and silently binds its KEYS as maybe_nodes /
+            # maybe_edges, surfacing much later inside the merge as an
+            # unrelated-looking failure.
+            if (
+                not isinstance(validated, (tuple, list))
+                or len(validated) != 2
+                or not all(isinstance(part, dict) for part in validated)
+            ):
+                raise TypeError(
+                    "kg_extraction_validator must return a (maybe_nodes, "
+                    "maybe_edges) pair of dicts; got "
+                    f"{type(validated).__name__} for chunk {chunk_key}"
+                )
+            maybe_nodes, maybe_edges = validated
+
         # Inject multimodal entity + associations for drawing/table/equation
-        # chunks. Placed before update_chunk_cache_list so the per-chunk
-        # cache write still happens after; placed inside the chunk's
+        # chunks. Placed inside the chunk's
         # concurrency slot (rather than the centralized post-pass that used
         # to live in utils_pipeline.augment_chunk_results_with_mm_entities)
         # so each multimodal chunk benefits from the chunk-level concurrency
@@ -4396,15 +4473,6 @@ async def extract_entities(
                             "timestamp": now_ts,
                         }
                     )
-
-        # Batch update chunk's llm_cache_list with all collected cache keys
-        if cache_keys_collector and text_chunks_storage:
-            await update_chunk_cache_list(
-                chunk_key,
-                text_chunks_storage,
-                cache_keys_collector,
-                "entity_extraction",
-            )
 
         processed_chunks += 1
         entities_count = len(maybe_nodes)

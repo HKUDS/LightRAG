@@ -992,6 +992,32 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     `QueryParam.disable_user_prompt_prefix`, but can never read or replace it.
     """
 
+    # Declared last for the same reason as `user_prompt_prefix` above: new
+    # fields go at the END of this dataclass, never mid-class. See
+    # tests/test_dataclass_positional_compatibility.py.
+    kg_extraction_validator: Callable | None = field(default=None)
+    """
+    Optional per-chunk extraction-quality hook, run BEFORE merge.
+
+    Called once per chunk with ``(chunk_key, chunk_text, maybe_nodes,
+    maybe_edges)`` and must return a ``(maybe_nodes, maybe_edges)`` pair of
+    dicts of the same shapes, possibly filtered. Sync or async. ``None`` (the
+    default) leaves the pipeline unchanged.
+
+    Anything the hook drops never reaches the graph, the vector stores, or a
+    ``source_id`` chain. Three rules a validator gets wrong at its own cost:
+    filter relation ENDPOINTS as well as entity names (a bare endpoint is
+    materialized as an ``UNKNOWN`` node); make the rule a function of the name,
+    since chunks are judged concurrently and independently and core aggregates
+    nothing across them; and canonicalize both sides of any grounding check,
+    because ``maybe_nodes`` keys have been through
+    :func:`lightrag.utils.normalize_entity_name`. Failures are not swallowed —
+    a raising or malformed hook fails the chunk and the ingest.
+
+    Full contract, worked example and the exact definition of ``chunk_text``:
+    see "Extraction Quality Hook" in ``docs/ProgramingWithCore.md``.
+    """
+
     def _mark_addon_params_dirty(self) -> None:
         self._addon_params_dirty = True
 
@@ -1213,6 +1239,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # instance's, so every "independent" copy already shared one CoreBPE. Now
         # that the injection contract is thread safety, sharing is what it asks for.
         global_config["tokenizer"] = self.tokenizer
+        # Same identity restoration for the extraction-quality hook, for a
+        # different reason: a validator is allowed to be STATEFUL (an audit log
+        # of reject reasons, say). asdict deep-copies a bound method's __self__,
+        # a callable object, and a functools.partial, so without this line every
+        # document would filter against a fresh throwaway copy and the collected
+        # state would be lost silently. A plain function is deep-copied
+        # atomically and was never affected, which is why this is easy to miss.
+        global_config["kg_extraction_validator"] = self.kg_extraction_validator
         global_config.pop("_addon_params", None)
         global_config.pop("_addon_params_dirty", None)
         global_config.pop("_cached_entity_extraction_use_json", None)
