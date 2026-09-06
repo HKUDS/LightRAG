@@ -996,6 +996,45 @@ class NetworkXStorage(BaseGraphStorage):
                 # PROCESSED with the graph changes unpersisted. Surfacing it
                 # aligns this backend with the others (faiss/nano raise too).
                 logger.error(f"[{self.workspace}] Error saving graph: {e}")
+                # Restore the process view from the file before re-raising,
+                # symmetrically with the declined-commit branch above. The write
+                # did not land, so self._graph now claims a state the file does
+                # not have -- and nothing would ever repair it: a failed write
+                # never reaches _committed, so storage_updated stays False and
+                # _get_graph's reload branch never fires again. A caller must
+                # not be told an object is absent while it is still on disk:
+                # utils_graph's deletion retry reads that as a durable removal
+                # and sweeps the object's authoritative tracking row, leaving a
+                # live node on disk with no provenance. It also stops the next
+                # successful commit from publishing mutations that belong to
+                # the failed batch, whose documents are marked FAILED and
+                # reprocessed from scratch.
+                #
+                # Safe here: _storage_lock is held and the commit gate is still
+                # closed (the finally below reopens it), so no other coroutine
+                # can be reading or mutating self._graph.
+                try:
+                    self._graph = (
+                        NetworkXStorage.load_nx_graph(self._graphml_xml_file)
+                        or nx.Graph()
+                    )
+                    self.storage_updated.value = False
+                except Exception as reload_error:
+                    # Report, never mask: the save error is what the caller
+                    # must see, and a failed reload leaves the divergence in
+                    # place, so it has to be visible in the log on its own.
+                    # Keep the reload flag armed as a recovery fence: every
+                    # later public graph operation enters through _get_graph,
+                    # which will retry the disk reload before trusting this
+                    # process-local view. Without the flag, a deletion retry
+                    # could mistake the unpersisted mutation for durable state
+                    # and sweep the live object's tracking row.
+                    self.storage_updated.value = True
+                    logger.error(
+                        f"[{self.workspace}] Failed to restore the in-memory "
+                        f"graph after a failed save; it may not match "
+                        f"{self._graphml_xml_file}: {reload_error}"
+                    )
                 raise
             finally:
                 # Every path, including CancelledError. Leaking a cleared gate
