@@ -1383,40 +1383,97 @@ class NanoVectorDBStorage(BaseVectorStorage):
         Returns:
             dict[str, str]: Operation status and message
             - On success: {"status": "success", "message": "data dropped"}
-            - On failure: {"status": "error", "message": "<error details>"}
+            - On destructive failure: {"status": "error", "message": "<error details>"}
+
+            The status reports the durable file removal only. A peer
+            reload-notification failure afterwards is logged as partial
+            propagation and does not turn the completed destruction into an
+            error — ``/documents/clear`` uses this status to decide whether the
+            input files are safe to delete, so reporting a drop that already
+            happened as failed leaves those files ready to be re-ingested
+            against storage that no longer matches.
+            Success confirms durable deletion, not convergence of all worker
+            snapshots. A worker that missed the notification may later write its
+            stale vectors back. Stop workspace writes and restart affected
+            workers before resuming; if stale data has already been written,
+            clear again.
+
+        Cancellation:
+            Before submission, cancellation leaves storage unchanged — the
+            buffers and both redo logs are discarded only after the file is
+            gone. Once deletion is submitted, the storage lock stays held until
+            deletion and its notification/reset/logging hook finish, then caller
+            cancellation propagates. Notification errors are still logged.
         """
+
+        def _delete_file() -> None:
+            # delete _client_file_name
+            if os.path.exists(self._client_file_name):
+                os.remove(self._client_file_name)
+
+        async def _committed() -> None:
+            # Discard buffered (unflushed) upserts and queued deletes
+            # along with the data — and both redo logs: there is nothing
+            # left to replay onto.
+            self._pending_upserts.clear()
+            self._pending_deletes.clear()
+            self._unsaved_deletes.clear()
+            self._unsaved_upserts.clear()
+
+            self._client = NanoVectorDB(
+                self.embedding_func.embedding_dim,
+                storage_file=self._client_file_name,
+            )
+            self._client_dirty = False
+
+            # Keep publication under the storage lock. Once deletion starts,
+            # commit_in_storage_io defers caller cancellation through this hook
+            # so it cannot release readers before the notification attempt.
+            try:
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
+            except Exception as notification_error:
+                # Notification can fail partway through the registered flags.
+                # A missed worker may later become the writer and save its
+                # stale matrix over the deleted file, resurrecting dropped
+                # vectors. A notification from that writer would spread the
+                # stale state, not repair it.
+                logger.error(
+                    f"[{self.workspace}] Dropped {self.namespace}"
+                    f"(file:{self._client_file_name}), but failed while notifying "
+                    "all processes; some processes may not reload and may restore "
+                    "deleted data if they later write. Stop workspace writes and "
+                    f"restart all affected workers before resuming: "
+                    f"{notification_error}"
+                )
+            # Reset own update flag to avoid self-reloading. Unlike the
+            # notification above, a failure here is harmless: the file is gone
+            # and both redo logs are empty, so the self-reload this flag would
+            # trigger just re-reads an absent file into the empty client we
+            # already hold. Report it, and never let it misclassify the durable
+            # deletion as failed.
+            try:
+                self.storage_updated.value = False
+            except Exception as reset_error:
+                logger.error(
+                    f"[{self.workspace}] Dropped {self.namespace}"
+                    f"(file:{self._client_file_name}), but failed to reset the "
+                    f"writer reload flag; a redundant reload of the now-empty "
+                    f"client may follow: {reset_error}"
+                )
+            # Log inside the cancellation-protected hook: the caller may receive
+            # CancelledError after it completes instead of a success response.
+            logger.info(
+                f"[{self.workspace}] Process {os.getpid()} drop {self.namespace}(file:{self._client_file_name})"
+            )
+
         try:
             async with self._storage_lock:
-                # Discard buffered (unflushed) upserts and queued deletes
-                # along with the data — and both redo logs: there is nothing
-                # left to replay onto.
-                self._pending_upserts.clear()
-                self._pending_deletes.clear()
-                self._unsaved_deletes.clear()
-                self._unsaved_upserts.clear()
-
-                # delete _client_file_name
-                if os.path.exists(self._client_file_name):
-                    os.remove(self._client_file_name)
-
-                self._client = NanoVectorDB(
-                    self.embedding_func.embedding_dim,
-                    storage_file=self._client_file_name,
-                )
-                self._client_dirty = False
-
-                # Notify other processes that data has been updated
-                await set_all_update_flags(self.namespace, workspace=self.workspace)
-                # Reset own update flag to avoid self-reloading
-                self.storage_updated.value = False
-
-                logger.info(
-                    f"[{self.workspace}] Process {os.getpid()} drop {self.namespace}(file:{self._client_file_name})"
-                )
-            return {"status": "success", "message": "data dropped"}
+                await commit_in_storage_io(_delete_file, _committed)
         except Exception as e:
             logger.error(f"[{self.workspace}] Error dropping {self.namespace}: {e}")
             return {"status": "error", "message": str(e)}
+
+        return {"status": "success", "message": "data dropped"}
 
     async def finalize(self):
         """Flush any buffered upserts and persist before shutdown (safety net).

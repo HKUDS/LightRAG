@@ -1705,10 +1705,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
         """Drop all vector data from storage and reinitialize the index.
 
         This method will:
-            1. Reset ``self._index`` to a fresh ``IndexFlatIP`` and clear
-               ``self._id_to_meta``.
-            2. Remove both on-disk files (``.index`` and ``.meta.json``)
+            1. Remove both on-disk files (``.index`` and ``.meta.json``)
                if they exist.
+            2. Reset ``self._index`` to a fresh ``IndexFlatIP`` and clear
+               ``self._id_to_meta``.
             3. Notify other processes via ``set_all_update_flags`` and
                reset the writer's own flag.
 
@@ -1724,44 +1724,108 @@ class FaissVectorDBStorage(BaseVectorStorage):
         Returns:
             dict[str, str]: Operation status and message
             - On success: {"status": "success", "message": "data dropped"}
-            - On failure: {"status": "error", "message": "<error details>"}
+            - On destructive failure: {"status": "error", "message": "<error details>"}
+
+            The status reports the durable file removal only. Both removals are
+            part of it: this backend keeps two independent files, so a failure
+            between them leaves one behind — a genuinely partial destruction
+            that must keep reporting ``"error"``. A peer reload-notification
+            failure after BOTH files are gone is logged as partial propagation
+            and does not turn the completed destruction into an error —
+            ``/documents/clear`` uses this status to decide whether the input
+            files are safe to delete, so reporting a drop that already happened
+            as failed leaves those files ready to be re-ingested against
+            storage that no longer matches.
+            Success confirms durable deletion, not convergence of all worker
+            snapshots. A worker that missed the notification may later write its
+            stale index back. Stop workspace writes and restart affected workers
+            before resuming; if stale data has already been written, clear
+            again.
+
+        Cancellation:
+            Before submission, cancellation leaves storage unchanged — the
+            buffers and both redo logs are discarded only after both files are
+            gone. Once deletion is submitted, the storage lock stays held until
+            deletion and its notification/reset/logging hook finish, then caller
+            cancellation propagates. Notification errors are still logged.
         """
+
+        def _delete_files() -> None:
+            # Remove storage files if they exist. Both removals stay in the
+            # destructive phase: the pair is what a drop destroys, and a
+            # failure on the second one must not be reported as a completed
+            # drop just because the first one landed.
+            if os.path.exists(self._faiss_index_file):
+                os.remove(self._faiss_index_file)
+            if os.path.exists(self._meta_file):
+                os.remove(self._meta_file)
+
+        async def _committed() -> None:
+            # Discard buffered (unflushed) upserts, queued deletes and
+            # both redo logs along with the data.
+            self._pending_upserts.clear()
+            self._pending_deletes.clear()
+            self._unsaved_deletes.clear()
+            self._unsaved_upserts.clear()
+
+            # Reset the index. Kept on the event loop: mutating ``self._index``
+            # / ``self._id_to_meta`` off the loop would break concurrency
+            # invariant (3) in the class docstring. ``_load_faiss_index`` runs
+            # against the just-removed files, so it observes an absent index
+            # and returns without touching either structure.
+            self._index = faiss.IndexFlatIP(self._dim)
+            self._id_to_meta = {}
+            self._load_faiss_index()
+            self._index_dirty = False
+
+            # Keep publication under the storage lock. Once deletion starts,
+            # commit_in_storage_io defers caller cancellation through this hook
+            # so it cannot release readers before the notification attempt.
+            try:
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
+            except Exception as notification_error:
+                # Notification can fail partway through the registered flags.
+                # A missed worker may later become the writer and save its
+                # stale index over the deleted files, resurrecting dropped
+                # vectors. A notification from that writer would spread the
+                # stale state, not repair it.
+                logger.error(
+                    f"[{self.workspace}] Dropped FAISS index {self.namespace}, but "
+                    "failed while notifying all processes; some processes may not "
+                    "reload and may restore deleted data if they later write. Stop "
+                    "workspace writes and restart all affected workers before "
+                    f"resuming: {notification_error}"
+                )
+            # Reset own update flag to avoid self-reloading. Unlike the
+            # notification above, a failure here is harmless: both files are
+            # gone and both redo logs are empty, so the self-reload this flag
+            # would trigger just re-reads absent files into the empty index we
+            # already hold. Report it, and never let it misclassify the durable
+            # deletion as failed.
+            try:
+                self.storage_updated.value = False
+            except Exception as reset_error:
+                logger.error(
+                    f"[{self.workspace}] Dropped FAISS index {self.namespace}, but "
+                    "failed to reset the writer reload flag; a redundant reload of "
+                    f"the now-empty index may follow: {reset_error}"
+                )
+            # Log inside the cancellation-protected hook: the caller may receive
+            # CancelledError after it completes instead of a success response.
+            logger.info(
+                f"[{self.workspace}] Process {os.getpid()} drop FAISS index {self.namespace}"
+            )
+
         try:
             async with self._storage_lock:
-                # Discard buffered (unflushed) upserts, queued deletes and
-                # both redo logs along with the data.
-                self._pending_upserts.clear()
-                self._pending_deletes.clear()
-                self._unsaved_deletes.clear()
-                self._unsaved_upserts.clear()
-
-                # Reset the index
-                self._index = faiss.IndexFlatIP(self._dim)
-                self._id_to_meta = {}
-
-                # Remove storage files if they exist
-                if os.path.exists(self._faiss_index_file):
-                    os.remove(self._faiss_index_file)
-                if os.path.exists(self._meta_file):
-                    os.remove(self._meta_file)
-
-                self._id_to_meta = {}
-                self._load_faiss_index()
-                self._index_dirty = False
-
-                # Notify other processes
-                await set_all_update_flags(self.namespace, workspace=self.workspace)
-                self.storage_updated.value = False
-
-                logger.info(
-                    f"[{self.workspace}] Process {os.getpid()} drop FAISS index {self.namespace}"
-                )
-            return {"status": "success", "message": "data dropped"}
+                await commit_in_storage_io(_delete_files, _committed)
         except Exception as e:
             logger.error(
                 f"[{self.workspace}] Error dropping FAISS index {self.namespace}: {e}"
             )
             return {"status": "error", "message": str(e)}
+
+        return {"status": "success", "message": "data dropped"}
 
     async def finalize(self):
         """Flush buffered upserts/deletes and persist before shutdown (safety net).
