@@ -19,198 +19,92 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Prepare a clean contribution worktree
-        run: git worktree add --detach ../candidate fa422e6d498c2befd4fb40959924711f6daf5bcd
-      - name: Apply the hash-checked source change and regression tests
-        shell: bash
+      - name: Prepare the reviewed candidate
         run: |
+          python -m pip install uv pyyaml
+          git worktree add --detach ../candidate fa422e6d498c2befd4fb40959924711f6daf5bcd
+          git show 54da71ef6c5bb0dfdbfb6979000c72c73e6508f0:.github/workflows/validate-vector-selection-contribution.yml > /tmp/original-validation.yml
           python - <<'PY'
-          from hashlib import sha1
+          import subprocess
+          import yaml
           from pathlib import Path
-          p = Path('../candidate/lightrag/utils.py')
-          raw = p.read_bytes()
-          assert sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest() == '23f659e505e2006f811589de50e3308d880e6573'
-          old = '    # Collect all unique chunk IDs from entity info\n    all_chunk_ids = set()\n    for i, entity in enumerate(entity_info):\n        chunk_ids = entity.get("sorted_chunks", [])\n        all_chunk_ids.update(chunk_ids)\n'
-          new = '    # Preserve first occurrence order for similarity ties and fallback selection.\n    all_chunk_ids = dict.fromkeys(\n        chunk_id\n        for entity in entity_info\n        for chunk_id in entity.get("sorted_chunks", [])\n    )\n'
-          text = raw.decode('utf-8')
-          assert text.count(old) == 1
-          p.write_text(text.replace(old, new), encoding='utf-8')
-          test = Path('../candidate/tests/llm/test_vector_similarity_order.py')
-          assert not test.exists()
-          test.write_text('''import asyncio
-          from copy import deepcopy
-          from itertools import permutations
-          from unittest.mock import AsyncMock
-
-          import numpy as np
-          import pytest
-
-          from lightrag.utils import pick_by_vector_similarity
-
-
-          class VectorStore:
-              def __init__(self, vectors):
-                  self.vectors = vectors
-                  self.requested_ids = None
-
-              async def get_vectors_by_ids(self, ids):
-                  self.requested_ids = list(ids)
-                  # The returned mapping's order must not control tie-breaking either.
-                  return {key: self.vectors[key] for key in reversed(ids) if key in self.vectors}
-
-
-          def _select(entities, vectors, count, *, embedding=None, query_embedding=None):
-              store = VectorStore(vectors)
-              result = asyncio.run(
-                  pick_by_vector_similarity(
-                      query="evidence",
-                      text_chunks_storage=None,
-                      chunks_vdb=store,
-                      num_of_chunks=count,
-                      entity_info=entities,
-                      embedding_func=embedding,
-                      query_embedding=(
-                          np.array([1.0, 0.0])
-                          if query_embedding is None
-                          else query_embedding
-                      ),
-                  )
-              )
-              return result, store
-
-
-          @pytest.mark.parametrize("order", list(permutations(["chunk-a", "chunk-b", "chunk-c"])))
-          def test_similarity_ties_preserve_candidate_order(order):
-              vectors = {key: np.array([1.0, 0.0]) for key in order}
-              result, store = _select([{"sorted_chunks": list(order)}], vectors, 2)
-              assert result == list(order[:2])
-              assert store.requested_ids == list(order)
-
-
-          def test_duplicate_chunks_keep_their_first_position():
-              entities = [
-                  {"sorted_chunks": ["chunk-c", "chunk-a", "chunk-c"]},
-                  {"sorted_chunks": ["chunk-b", "chunk-a"]},
-              ]
-              before = deepcopy(entities)
-              vectors = {key: np.array([1.0, 0.0]) for key in ["chunk-a", "chunk-b", "chunk-c"]}
-              result, store = _select(entities, vectors, 10)
-              assert result == ["chunk-c", "chunk-a", "chunk-b"]
-              assert store.requested_ids == result
-              assert entities == before
-
-
-          def test_similarity_still_takes_precedence_over_candidate_order():
-              vectors = {
-                  "low": np.array([-1.0, 0.0]),
-                  "high": np.array([1.0, 0.0]),
-                  "middle": np.array([0.0, 1.0]),
-              }
-              result, _ = _select([{"sorted_chunks": ["low", "high", "middle"]}], vectors, 2)
-              assert result == ["high", "middle"]
-
-
-          def test_ties_only_affect_equal_scores():
-              vectors = {
-                  "tie-b": np.array([0.0, 1.0]),
-                  "best": np.array([1.0, 0.0]),
-                  "tie-a": np.array([0.0, -1.0]),
-                  "worst": np.array([-1.0, 0.0]),
-              }
-              result, _ = _select([{"sorted_chunks": list(vectors)}], vectors, 3)
-              assert result == ["best", "tie-b", "tie-a"]
-
-
-          @pytest.mark.parametrize("order", list(permutations(["chunk-a", "chunk-b", "chunk-c"])))
-          def test_storage_error_fallback_preserves_candidate_order(order):
-              class FailingStore:
-                  async def get_vectors_by_ids(self, ids):
-                      raise RuntimeError("storage unavailable")
-
-              result = asyncio.run(
-                  pick_by_vector_similarity(
-                      "evidence",
-                      None,
-                      FailingStore(),
-                      2,
-                      [{"sorted_chunks": list(order)}],
-                      None,
-                      query_embedding=np.array([1.0, 0.0]),
-                  )
-              )
-              assert result == list(order[:2])
-
-
-          @pytest.mark.parametrize("vectors", [{}, {"chunk-a": np.array([1.0, 0.0])}])
-          def test_missing_vectors_still_request_weight_fallback(vectors):
-              result, _ = _select([{"sorted_chunks": ["chunk-a", "chunk-b"]}], vectors, 2)
-              assert result == []
-
-
-          @pytest.mark.parametrize(
-              "entities, count",
-              [([], 2), ([{}], 2), ([{"sorted_chunks": ["a"]}], 0)],
-          )
-          def test_empty_selection_does_not_read_vectors(entities, count):
-              result, store = _select(entities, {}, count)
-              assert result == []
-              assert store.requested_ids is None
-
-
-          def test_embedding_computation_path_uses_same_ordering():
-              embedding = AsyncMock(return_value=np.array([[1.0, 0.0]]))
-              vectors = {key: np.array([1.0, 0.0]) for key in ["chunk-c", "chunk-a", "chunk-b"]}
-              store = VectorStore(vectors)
-              result = asyncio.run(
-                  pick_by_vector_similarity(
-                      "evidence",
-                      None,
-                      store,
-                      2,
-                      [{"sorted_chunks": list(vectors)}],
-                      embedding,
-                  )
-              )
-              embedding.assert_awaited_once_with(["evidence"], context="query")
-              assert result == ["chunk-c", "chunk-a"]
-          ''', encoding='utf-8')
+          # Reuse the exact hash-checked patch and regression tests from the
+          # first validation run, not mutable branch content.
+          workflow = yaml.safe_load(Path('/tmp/original-validation.yml').read_text())
+          step = workflow['jobs']['validate']['steps'][3]
+          assert step['name'] == 'Apply the hash-checked source change and regression tests'
+          subprocess.run(['bash', '-e', '-c', step['run']], check=True)
           PY
-      - name: Install native project dependencies
+      - name: Install native dependencies and the repository's pinned Ruff
         working-directory: ../candidate
-        run: |
-          python -m pip install uv
-          uv pip install --system -e '.[test]'
-      - name: Format and check the changed code
+        run: uv pip install --system -e '.[test]' 'ruff==0.15.17'
+      - name: Check new tests and compare source lint against the unchanged baseline
         working-directory: ../candidate
         run: |
           ruff format tests/llm/test_vector_similarity_order.py
-          ruff check lightrag/utils.py tests/llm/test_vector_similarity_order.py
-          ruff format --check lightrag/utils.py tests/llm/test_vector_similarity_order.py
+          ruff check tests/llm/test_vector_similarity_order.py
+          ruff format --check tests/llm/test_vector_similarity_order.py
+          python - <<'PY'
+          from collections import Counter
+          from pathlib import Path
+          import json
+          import subprocess
+          p = Path('lightrag/utils.py')
+          fixed = p.read_bytes()
+          original = subprocess.check_output(['git', 'show', 'fa422e6d498c2befd4fb40959924711f6daf5bcd:lightrag/utils.py'])
+          def lint():
+              run = subprocess.run(['ruff', 'check', '--ignore=E402', '--output-format=json', str(p)], capture_output=True, text=True)
+              assert run.returncode in (0, 1), run.stderr
+              return json.loads(run.stdout)
+          try:
+              p.write_bytes(original)
+              before = lint()
+          finally:
+              p.write_bytes(fixed)
+          after = lint()
+          key = lambda errors: Counter((e['code'], e['message']) for e in errors)
+          introduced = key(after) - key(before)
+          assert not introduced, introduced
+          print(f'Source lint: {len(before)} baseline findings, {len(after)} patched findings; no additional findings.')
+          Path('/tmp/vector-lint.json').write_text(json.dumps({'baseline': before, 'patched': after}, indent=2))
+          PY
+          python -m py_compile lightrag/utils.py tests/llm/test_vector_similarity_order.py
           git diff --check
-      - name: Verify regression failure on the unchanged implementation
+      - name: Confirm native regression failures before the fix
         working-directory: ../candidate
         env:
           PYTHONHASHSEED: '0'
-        shell: bash
         run: |
-          cp lightrag/utils.py /tmp/patched-vector-utils.py
-          git show fa422e6d498c2befd4fb40959924711f6daf5bcd:lightrag/utils.py > lightrag/utils.py
-          set +e
-          python -m pytest tests/llm/test_vector_similarity_order.py -q --tb=short > /tmp/vector-before.txt 2>&1
-          status=$?
-          set -e
-          cp /tmp/patched-vector-utils.py lightrag/utils.py
-          cat /tmp/vector-before.txt
-          test "$status" -eq 1
-          grep -q '11 failed, 10 passed' /tmp/vector-before.txt
-      - name: Run native regression tests on the fixed implementation
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          import xml.etree.ElementTree as ET
+          p = Path('lightrag/utils.py')
+          fixed = p.read_bytes()
+          try:
+              p.write_bytes(subprocess.check_output(['git', 'show', 'fa422e6d498c2befd4fb40959924711f6daf5bcd:lightrag/utils.py']))
+              run = subprocess.run(['python', '-m', 'pytest', 'tests/llm/test_vector_similarity_order.py', '-q', '--tb=short', '--junitxml=/tmp/vector-before.xml'], capture_output=True, text=True)
+          finally:
+              p.write_bytes(fixed)
+          Path('/tmp/vector-before.txt').write_text(run.stdout + run.stderr)
+          print(run.stdout)
+          print(run.stderr)
+          assert run.returncode == 1, run.returncode
+          suites = ET.parse('/tmp/vector-before.xml').getroot().iter('testsuite')
+          totals = {key: 0 for key in ('tests', 'failures', 'errors')}
+          for suite in suites:
+              for key in totals:
+                  totals[key] += int(suite.get(key, 0))
+          assert totals['tests'] == 21 and totals['failures'] > 0 and totals['errors'] == 0, totals
+          PY
+      - name: Run fixed native tests across hash seeds
         working-directory: ../candidate
-        env:
-          PYTHONHASHSEED: '0'
-        shell: bash
         run: |
           set -o pipefail
-          python -m pytest tests/llm/test_vector_similarity_order.py -q --tb=short | tee /tmp/vector-after.txt
+          for seed in 0 1 2 3 7 42; do
+            echo "PYTHONHASHSEED=$seed"
+            PYTHONHASHSEED=$seed python -m pytest tests/llm/test_vector_similarity_order.py -q --tb=short
+          done | tee /tmp/vector-after.txt
           python -m pip freeze > /tmp/vector-environment.txt
       - name: Publish only the source fix and regression test
         working-directory: ../candidate
@@ -229,10 +123,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: vector-selection-validation
-          path: |
-            /tmp/vector-before.txt
-            /tmp/vector-after.txt
-            /tmp/vector-environment.txt
-            /tmp/vector-commit.txt
+          path: /tmp/vector-*
           if-no-files-found: ignore
           retention-days: 7
