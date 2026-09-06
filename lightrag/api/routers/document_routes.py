@@ -5749,13 +5749,25 @@ def create_document_routes(
     @router.delete(
         "", response_model=ClearDocumentsResponse, dependencies=[Depends(combined_auth)]
     )
-    async def clear_documents():
+    async def clear_documents(
+        delete_parsed_files: Annotated[
+            bool,
+            Query(
+                description=(
+                    "Also delete the __parsed__ directory contents. Preserved "
+                    "by default so parsed artifacts survive re-adding the "
+                    "same files."
+                )
+            ),
+        ] = False,
+    ):
         """
         Clear all documents from the RAG system.
 
         This endpoint deletes all documents, entities, relationships, and files from the system.
         It uses the storage drop methods to properly clean up all data and removes all files
-        from the input directory.
+        from the input directory. The __parsed__ directory is preserved unless
+        delete_parsed_files=True is passed.
 
         **Concurrency Constraint:**
         - Atomically reserves the destructive slot (sets ``busy=True``
@@ -6014,13 +6026,37 @@ def create_document_routes(
                     pipeline_status, f"Successfully deleted {deleted_files_count} files"
                 )
 
+            # __parsed__ is preserved by default so re-adding the same file
+            # does not require re-parsing, and so a deleted document's raw
+            # upload can still be recovered from there. Only remove it when
+            # the caller explicitly opts in.
+            parsed_dir_message = ""
+            if delete_parsed_files:
+                parsed_dir = doc_manager.input_dir / PARSED_DIR_NAME
+                if parsed_dir.exists():
+                    try:
+                        shutil.rmtree(parsed_dir)
+                        parsed_dir_message = " Deleted __parsed__ directory."
+                        append_pipeline_history(
+                            pipeline_status, "Deleted __parsed__ directory"
+                        )
+                    except Exception as e:
+                        logger.error(f"Error deleting {parsed_dir}: {str(e)}")
+                        errors.append(f"Failed to delete __parsed__ directory: {e}")
+
             # Prepare final result message
             final_message = ""
             if errors:
-                final_message = f"Cleared documents with some errors. Deleted {deleted_files_count} files."
+                final_message = (
+                    f"Cleared documents with some errors. Deleted "
+                    f"{deleted_files_count} files.{parsed_dir_message}"
+                )
                 status = "partial_success"
             else:
-                final_message = f"All documents cleared successfully. Deleted {deleted_files_count} files."
+                final_message = (
+                    f"All documents cleared successfully. Deleted "
+                    f"{deleted_files_count} files.{parsed_dir_message}"
+                )
                 status = "success"
 
             # Log final result
