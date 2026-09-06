@@ -8,16 +8,16 @@ The governing invariant is narrower than "every purge needs a proof":
 
 > **A purge must never delete something that CARRIES attribution — a chunk row or an anchor row that names objects — and leave those objects behind.** An operation that removes no such carrier cannot strand anything and needs no proof.
 
-`_purge_kg_contributions` therefore **fails closed** (`RecoveryAnchorMissingError`, surfaced as HTTP 409, nothing deleted) when it would remove a carrier without one of these proofs. Treating absent anchors as an empty candidate list was issue #3400's silent-skip defect: graph cleanup was skipped while the chunks went anyway, stranding unattributable entities that `audit_kg_integrity` can only report as unrecoverable orphans.
+`_purge_kg_contributions` therefore **fails closed** (`RecoveryAnchorMissingError`, surfaced as HTTP 409, nothing deleted) when it would remove a carrier without one of these proofs. Treating absent anchors as an empty candidate list was the silent-skip defect this contract exists for: graph cleanup was skipped while the chunks went anyway, stranding unattributable entities that `audit_kg_integrity` can only report as unrecoverable orphans.
 
 | Proof | Established by |
 |---|---|
 | `anchors` | Both anchor ROWS present and structurally usable. **Row presence is the test, never list truthiness** — an empty row is a document that extracted no entities, and conflating the two is the original bug. |
-| `pre_graph` | `doc_status.metadata.kg_write_state`. Stamped `pre_graph` at enqueue so every pre-merge failure state inherits it by carry-over; advanced to `graph_mutation_started` only by `merge_nodes_and_edges`' `on_anchors_durable` hook. **Monotonic** — nothing writes it back, because re-stamping `pre_graph` on reprocess would let the resume purge skip and orphan the previous run's contributions. Absent means UNKNOWN (pre-#3416), which fails closed. |
+| `pre_graph` | `doc_status.metadata.kg_write_state`. Stamped `pre_graph` at enqueue so every pre-merge failure state inherits it by carry-over; advanced to `graph_mutation_started` only by `merge_nodes_and_edges`' `on_anchors_durable` hook. **Monotonic** — nothing writes it back, because re-stamping `pre_graph` on reprocess would let the resume purge skip and orphan the previous run's contributions. Absent means UNKNOWN (a row enqueued before the marker existed), which fails closed. |
 | `journal` | `doc_status.metadata.kg_purge` at a phase past `prepared`, i.e. a previous attempt got far enough to have deleted the anchors itself. |
 | `empty_scope` | No chunks AND no anchor row that names anything — so the delete removes no carrier at all and the invariant is satisfied outright. This is what lets a row enqueued before the marker existed, still holding no chunks, be deleted directly (no scan, no audit). |
 
-**`kg_write_state` must never be inferred.** `pre_graph` asserts "this document never touched the graph", which licenses deleting its chunks while *skipping the graph* — sound only because the marker is written once, at enqueue, when it is necessarily true and the document has no history to misread. A backfill keying off a momentarily-empty `chunks_list` would stamp a document that does own graph objects, and because the stamp is durable the damage lands later, when the chunks reappear: chunks deleted, graph skipped, issue #3400 reproduced exactly. `empty_scope` is safe where such a backfill is not, because it is re-evaluated against live state on every call and grants nothing beyond that call. `tests/pipeline/test_purge_fail_closed.py::test_a_false_pre_graph_marker_would_reproduce_the_original_defect` pins the cost.
+**`kg_write_state` must never be inferred.** `pre_graph` asserts "this document never touched the graph", which licenses deleting its chunks while *skipping the graph* — sound only because the marker is written once, at enqueue, when it is necessarily true and the document has no history to misread. A backfill keying off a momentarily-empty `chunks_list` would stamp a document that does own graph objects, and because the stamp is durable the damage lands later, when the chunks reappear: chunks deleted, graph skipped, the original silent-skip defect reproduced exactly. `empty_scope` is safe where such a backfill is not, because it is re-evaluated against live state on every call and grants nothing beyond that call. `tests/pipeline/test_purge_fail_closed.py::test_a_false_pre_graph_marker_would_reproduce_the_original_defect` pins the cost.
 
 Anchor-driven whole-document purge is **journaled and resumable** through four ordered phases — `prepared` → `derived_committed` → `anchors_pending` → `completed` — keyed by an operation id over the document key plus its chunk SET. The journal is *required by* fail-closed rather than an optimisation: purge's last step deletes the anchors, so without it any later failure would make every retry refuse forever. A resumed purge skips exactly the phases already persisted (so it never re-runs the LLM-cache-backed rebuild); an in-flight journal for a different operation is refused (`KGPurgeOperationConflictError`), while a stale `completed` one is ignored as dead bookkeeping.
 
@@ -34,3 +34,48 @@ The offline remedy for a document with no proof is `audit_kg_integrity(..., appl
 **Chunk tracking outranks graph `source_id`.** Within a surviving entity or relation, the `entity_chunks` / `relation_chunks` row is the authoritative chunk list; the graph node's `source_id` is only a truncated view of it (`apply_source_ids_limit`) and may legitimately still name chunks a previous purge already pruned — `_purge_kg_contributions` reads tracking first, falls back to `source_id` only when the row is absent, and its `graph_references_deleted_chunks` branch exists to repair exactly that lag. So code that folds a `source_id` delta back into tracking must append genuine additions only: restoring an ID that is in the graph but not in tracking writes stale attribution into the authoritative store, and a later purge would rebuild or retain KG objects from chunks that no longer exist. `compute_incremental_chunk_ids` carries this rule and `tests/utils/test_compute_incremental_chunk_ids.py` pins it. Genuinely missing attribution is repaired by `audit_kg_integrity`, never by the incremental path.
 
 Relation chunk tracking is the authoritative chunk list, so the no-source placeholders must never be written into it.
+
+## Merge and rename failure model
+
+Read this before reordering anything in `_merge_entities_impl` or the rename branch of `_edit_entity_impl`. Both write to three stores that have **no transaction between them** — the graph, the chunk-tracking KV, and the vector storage — so every ordering has intermediate states. The question a change has to answer is never "does an inconsistent state exist" (one always does) but **which** inconsistency it keeps.
+
+### The rule
+
+> Without a distributed transaction, an inconsistency is acceptable when it **heals itself later** or is **harmless in direction**. A change may only trade one accepted residue for a better one; a change that merely moves the window to the opposite direction is not an improvement.
+
+"Better" is ranked: losing data outranks retaining an object that could have been deleted, which outranks surfacing chunks a query did not need.
+
+The two directions are mutually exclusive by construction, which is why the choice is forced:
+
+| Direction | Reached by | Consequence |
+|---|---|---|
+| rows ⊃ graph | flushing tracking **before** the graph commit | a purge subtracting from the row is more conservative: it can keep an object it could have deleted, and retrieval can surface chunks of a source whose merge did not land. **No data is lost.** |
+| rows ⊂ graph | flushing tracking **after** the graph commit | a purge concludes the object has no remaining sources and deletes it, while the graph already carries the merged evidence. **Data is lost.** |
+
+Both paths therefore flush the migrated rows before the first commit that publishes the objects they describe, and accept the first direction.
+
+### Ordering invariants
+
+1. **A graph commit may only publish objects whose tracking rows are already on disk.** Stated over *every* commit in the function, not just the last one — `_merge_entities_impl` commits twice, and the first one publishes the merged target and its redirected relations.
+2. **A tracking row is retired only after a confirmed commit removed the object it described.** The reverse is the state the governing invariant above forbids: a live object whose attribution carrier is gone, from which a purge reads the KEEP-truncated `source_id` and can conclude "no remaining sources".
+3. **The new key is written before the old key is deleted** (f86ef93c). An orphaned new-key row is dead bookkeeping a retry overwrites; a row under neither key loses the curated list outright.
+4. **The removal, its commit and the retirement are one cancellation-deferring region** (`_finish_deferring_cancellation`), starting *before* `delete_node`: on an immediate-write graph backend (Neo4j, Memgraph, MongoDB, PostgreSQL — their graph `index_done_callback` is a no-op) the removal is durable as it returns, so a region that began at the commit would already be too late.
+5. **A failure after a durable graph mutation is raised as `VectorStorageConsistencyError`.** `_edit_entity_impl`'s `allow_merge` branch re-raises only that type and folds everything else into a partial-success summary answering HTTP 200 with `final_entity` set to the source — a source the commit has just removed. A landed merge must never be reported as one that did not happen.
+
+### Accepted residues
+
+| State | Why it is accepted |
+|---|---|
+| Tracking rows on disk for objects the commit did not publish (failed or declined commit, or a crash) | Self-healing: the content written is what a successful merge or rename is supposed to write, so a retry reads it as its baseline, `merge_source_ids` deduplicates, and the commit brings the graph into line. Harmless in direction (rows ⊃ graph). For an **existing** target the row is not dead bookkeeping — it over-claims for a live object — which is why this is listed rather than dismissed. |
+| Orphaned old-key rows after a durable removal (a retirement failure, a crash, or a direct cancellation of the region) | Dead bookkeeping until the key recurs; the failure names the keys in the log and raises typed. Nothing converges on it automatically — tracked in the follow-up issue on orphaned chunk-tracking rows. |
+| Vector storage lagging the graph | The graph is authoritative; `lightrag-rebuild-vdb` restores it. |
+| A vector record deleted while its graph object survives (the merge deletes source vectors before removing the nodes) | Chosen deliberately over the inverse: a missing embedding is rebuildable, a vanished node with live tracking rows is not. |
+| A rename partially applied — new node and edges durable, old node intact | No carrier was deleted ahead of its object, and the new objects fall back to the `source_id` copied from the old edge. Not retryable because of the target-exists precheck; tracked with the orphaned-row follow-up. |
+| A multi-source merge whose `delete_node` raises mid-loop on an immediate-write backend | Fails closed: on a deferred backend `delete_node` returning is not evidence of durability, so retiring the rows of "successfully deleted" sources would retire authoritative rows of nodes still on disk. Tracked with the orphaned-row follow-up. |
+
+### Rejected remedies
+
+- **Reporting a durable write as a failure** to protect unnotified workers. It fences no one — a worker that missed the reload notification is in the same state whether the commit returns `True`, returns `False`, or raises — while costing the two defects above (skipped retirement, documents marked FAILED whose graph writes are on disk). The fence needs a channel that cannot fail with the shared-storage manager, which is its own follow-up.
+- **A persistent journal** of the staged cleanup. Removed from this series on purpose in 0258af56, which kept the cancellation region and dropped the journal.
+- **An in-memory undo log** restoring the previous rows on a failed first commit. It covers only the process-survives path — the one that already heals on retry — and does nothing for a crash.
+- **Treating a call's return as durability evidence.** `delete_node` returning normally means nothing on a deferred backend; only a confirmed `index_done_callback` does, which is what `_commit_graph_or_raise` checks (an explicit `False` is a decline; backends returning `None` are unaffected).

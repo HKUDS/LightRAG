@@ -972,15 +972,41 @@ class NetworkXStorage(BaseGraphStorage):
                 # call time on purpose: test_networkx_index_done.py monkeypatches
                 # write_nx_graph, and hoisting the reference would leave that
                 # test green while testing nothing.
+                publish_error: list[Exception] = []
+
                 async def _committed() -> None:
                     # Runs inside the same uncancellable region as the write,
                     # and only if the write landed. Inlined after the offload it
                     # would be skippable by a cancel, leaving the new GraphML
                     # published while every other process keeps reading the
                     # previous one until some later commit happens to notify it.
-                    await set_all_update_flags(self.namespace, workspace=self.workspace)
-                    # Reset own update flag to avoid self-reloading
-                    self.storage_updated.value = False
+                    try:
+                        await set_all_update_flags(
+                            self.namespace, workspace=self.workspace
+                        )
+                        # Reset own update flag to avoid self-reloading. Inside
+                        # the same guard on purpose: in multiprocess mode this
+                        # flag is a `Manager().Value` proxy, so the assignment
+                        # is another RPC to the very process whose outage makes
+                        # the call above fail. Guarding only the first one lets
+                        # the identical failure escape one line later.
+                        self.storage_updated.value = False
+                    except Exception as e:
+                        # Recorded, never raised. Reaching this line means the
+                        # write already landed (`on_committed` runs only after
+                        # `fn` succeeded), so what failed is the publication of
+                        # that write, not the write: other workers keep reading
+                        # the previous snapshot until the next commit anywhere
+                        # flips their flags, and this process may redundantly
+                        # reload the file it just wrote. Both are visibility
+                        # effects, not a lost write. Raising them would report a
+                        # durable mutation as a failed one, and every caller
+                        # inherits that lie -- the deletion paths in utils_graph
+                        # skip the tracking retirement they still owe (leaving a
+                        # vanished object's authoritative rows behind), and
+                        # _insert_done marks a document FAILED whose graph
+                        # writes are on disk.
+                        publish_error.append(e)
 
                 await commit_in_storage_io(
                     lambda: NetworkXStorage.write_nx_graph(
@@ -988,8 +1014,24 @@ class NetworkXStorage(BaseGraphStorage):
                     ),
                     _committed,
                 )
+                if publish_error:
+                    logger.error(
+                        f"[{self.workspace}] Graph saved to "
+                        f"{self._graphml_xml_file}, but publishing that write "
+                        f"failed: {publish_error[0]}. The notification flips "
+                        "one flag per process, so an unknown remainder of them "
+                        "keeps reading the previous snapshot until the next "
+                        "commit notifies them; this process may also reload "
+                        "the file it just wrote."
+                    )
                 return True  # Return success
             except Exception as e:
+                # Only a genuine write failure reaches here. A failure of the
+                # publication hook is recorded above and does not raise: the
+                # file is already on disk by the time that hook runs, so the
+                # recovery reload below -- and the "the write did not land"
+                # reasoning it rests on -- would both be wrong for it.
+                #
                 # Raise (do NOT swallow + return False): _insert_done's
                 # _flush_one only detects failures via exceptions, so a
                 # swallowed graph-save error would let the document be marked

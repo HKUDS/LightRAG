@@ -1034,20 +1034,30 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         ``recursive_character`` dict stays the object that is read later, and so
         it cannot recursively re-enter this callback through
         ``ObservableAddonParams.__setitem__``.
-        """
-        chunker_config = self._addon_params.get("chunker")
-        if isinstance(chunker_config, Mapping):
-            from lightrag.parser.routing import normalize_chunker_r_separators
 
-            normalized, corrected = normalize_chunker_r_separators(
-                chunker_config, context="addon_params['chunker']", in_place=True
-            )
-            if corrected and normalized is not chunker_config:
-                # ``in_place`` could not apply (an immutable mapping was
-                # supplied). Store the corrected copy without re-entering this
-                # callback; the dirty mark below already covers it.
-                dict.__setitem__(self._addon_params, "chunker", dict(normalized))
-        self._mark_addon_params_dirty()
+        The dirty mark is in a ``finally`` on purpose. By the time this callback
+        runs the live mapping has ALREADY changed, so the derived cache is
+        already stale — normalization raising (a malformed replacement chunker
+        config such as ``{"separators": [1, 2]}`` reaches ``len()`` on a
+        non-string) must not be able to leave the mapping ahead of a cache that
+        still looks clean. The caller still sees the error; it just cannot cost
+        us the invalidation.
+        """
+        try:
+            chunker_config = self._addon_params.get("chunker")
+            if isinstance(chunker_config, Mapping):
+                from lightrag.parser.routing import normalize_chunker_r_separators
+
+                normalized, corrected = normalize_chunker_r_separators(
+                    chunker_config, context="addon_params['chunker']", in_place=True
+                )
+                if corrected and normalized is not chunker_config:
+                    # ``in_place`` could not apply (an immutable mapping was
+                    # supplied). Store the corrected copy without re-entering
+                    # this callback; the dirty mark below already covers it.
+                    dict.__setitem__(self._addon_params, "chunker", dict(normalized))
+        finally:
+            self._mark_addon_params_dirty()
 
     def _replace_addon_params(
         self, addon_params: Mapping[str, Any] | None, *, mark_dirty: bool

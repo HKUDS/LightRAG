@@ -996,13 +996,26 @@ class QueueFullError(Exception):
 
 
 class VectorStorageConsistencyError(Exception):
-    """Raised when a vector storage write fails after the graph has already been updated.
+    """Raised when a step AFTER a durable graph update fails.
 
     The knowledge graph (plus the text_chunks KV store) is the authoritative data
-    source, so no data is lost — but the vector storage no longer mirrors the graph
-    and query results may be incomplete until it is rebuilt. Stop the LightRAG
-    server and run the offline rebuild tool (``lightrag-rebuild-vdb``) to restore
-    consistency.
+    source, so no data is lost — but something that mirrors or annotates it did
+    not complete:
+
+    * a **vector storage** write, so the vector records no longer mirror the
+      graph and query results may be incomplete until they are rebuilt. Stop the
+      LightRAG server and run the offline rebuild tool (``lightrag-rebuild-vdb``)
+      to restore consistency.
+    * a **chunk-tracking** retirement, so rows survive for graph objects a merge
+      or rename has removed. Those are dead bookkeeping until the same key
+      recurs; the message names the keys.
+
+    What every case shares is the reason this type exists at all: the graph
+    mutation IS durable, so the failure must not be reported as one that did not
+    happen. ``_edit_entity_impl``'s ``allow_merge`` handler re-raises exactly
+    this type and folds every other exception into a partial-success summary
+    answering HTTP 200 — which for a landed merge would name the source entity
+    it just deleted as the surviving one.
     """
 
     pass
