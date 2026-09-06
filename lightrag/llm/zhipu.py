@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import warnings
 from ..utils import verbose_debug
@@ -137,7 +138,13 @@ async def zhipu_complete_if_cache(
     if thinking is not None:
         kwargs["thinking"] = thinking
 
-    response = client.chat.completions.create(model=model, messages=messages, **kwargs)
+    # ZhipuAI's client wraps a synchronous httpx.Client, not an async one --
+    # calling it directly here would block the whole event loop for the
+    # duration of the HTTP request, stalling every other concurrent task
+    # (other LLM calls, embeddings, storage I/O) sharing the loop.
+    response = await asyncio.to_thread(
+        client.chat.completions.create, model=model, messages=messages, **kwargs
+    )
     if not response.choices or response.choices[0].message is None:
         return ""
     message = response.choices[0].message
@@ -246,8 +253,13 @@ async def zhipu_embedding(
             request_kwargs = dict(kwargs)
             if embedding_dim is not None:
                 request_kwargs["dimensions"] = embedding_dim
-            response = client.embeddings.create(
-                model=model, input=[text], **request_kwargs
+            # Same blocking-client concern as zhipu_complete_if_cache: run
+            # each synchronous HTTP call off the event loop thread.
+            response = await asyncio.to_thread(
+                client.embeddings.create,
+                model=model,
+                input=[text],
+                **request_kwargs,
             )
             embeddings.append(response.data[0].embedding)
         except Exception as e:
