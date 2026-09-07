@@ -259,6 +259,75 @@ async def test_hf_embed_runs_forward_pass_off_the_event_loop_thread(hf_module):
 
 
 @pytest.mark.asyncio
+async def test_hf_embed_runs_cpu_conversion_off_the_event_loop_thread(hf_module):
+    """.cpu() on a CUDA tensor synchronizes the device (blocks until
+    pending GPU work finishes), which can take as long as the forward pass
+    itself -- it must run in the same background thread, not back on the
+    event loop after the forward pass returns."""
+    main_thread_id = threading.get_ident()
+    cpu_call_thread_id = {}
+
+    class _FakeModelOutput:
+        def __init__(self, last_hidden_state):
+            self.last_hidden_state = last_hidden_state
+
+    class _FakeHidden:
+        dtype = "float32"
+
+        def unsqueeze(self, dim):
+            return self
+
+        def to(self, target):
+            return self
+
+        def __mul__(self, other):
+            return self
+
+        def sum(self, dim):
+            return self
+
+        def clamp_min(self, value):
+            return self
+
+        def __truediv__(self, other):
+            return self
+
+        def detach(self):
+            return self
+
+        def cpu(self):
+            cpu_call_thread_id["id"] = threading.get_ident()
+            return self
+
+        def numpy(self):
+            return np.zeros((1, 1024), dtype=np.float32)
+
+    class _FakeEmbedModel:
+        def to(self, device):
+            return self
+
+        def __call__(self, input_ids, attention_mask):
+            return _FakeModelOutput(_FakeHidden())
+
+        def parameters(self):
+            yield _FakeHidden()
+
+    class _FakeTokenizerOutput(dict):
+        def to(self, device):
+            return self
+
+    class _FakeTokenizer:
+        def __call__(self, texts, return_tensors="pt", padding=True, truncation=True):
+            return _FakeTokenizerOutput(
+                {"input_ids": _FakeHidden(), "attention_mask": _FakeHidden()}
+            )
+
+    await hf_module.hf_embed(["hello"], _FakeTokenizer(), _FakeEmbedModel())
+
+    assert cpu_call_thread_id["id"] != main_thread_id
+
+
+@pytest.mark.asyncio
 async def test_hf_embed_logs_and_repropagates_cancellation(hf_module, monkeypatch):
     call_started = threading.Event()
     release_call = threading.Event()

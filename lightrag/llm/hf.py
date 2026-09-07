@@ -287,13 +287,22 @@ async def hf_embed(
             hidden_fp32 = outputs.last_hidden_state.to(torch.float32)
             summed = (hidden_fp32 * mask).sum(dim=1)
             counts = mask.sum(dim=1).clamp_min(1)
-            return (summed / counts).to(outputs.last_hidden_state.dtype)
+            embeddings = (summed / counts).to(outputs.last_hidden_state.dtype)
+
+        # Convert to NumPy in the same thread: .cpu() on a CUDA tensor
+        # synchronizes the device (waits for pending GPU work to finish),
+        # which can block just as long as the forward pass itself -- doing
+        # it back on the event loop thread would defeat the point of
+        # offloading generate()/the forward pass in the first place.
+        if embeddings.dtype == torch.bfloat16:
+            return embeddings.detach().to(torch.float32).cpu().numpy()
+        return embeddings.detach().cpu().numpy()
 
     # Same cancellation caveat as hf_model_if_cache's generate() call: a
     # timeout here cannot stop the forward pass early, only stop waiting
     # for it.
     try:
-        embeddings = await asyncio.to_thread(_run_forward)
+        return await asyncio.to_thread(_run_forward)
     except asyncio.CancelledError:
         logger.warning(
             "hf_embed: cancelled while awaiting the forward pass; the "
@@ -301,9 +310,3 @@ async def hf_embed(
             "completes on its own"
         )
         raise
-
-    # Convert embeddings to NumPy
-    if embeddings.dtype == torch.bfloat16:
-        return embeddings.detach().to(torch.float32).cpu().numpy()
-    else:
-        return embeddings.detach().cpu().numpy()
