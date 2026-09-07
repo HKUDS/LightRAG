@@ -1109,7 +1109,9 @@ class NetworkXStorage(BaseGraphStorage):
             - On destructive failure: {"status": "error", "message": "<error details>"}
 
             A peer notification failure after the file deletion is logged but
-            does not change the successful status of the completed drop.
+            does not change the successful status of the completed drop. No
+            step after the deletion — notification, writer-flag reset, or the
+            success log — can turn it into an error response.
             This status confirms durable deletion, not convergence of all worker
             snapshots. A worker that missed the notification may later write its
             stale graph back. Stop workspace writes and restart affected workers
@@ -1157,9 +1159,18 @@ class NetworkXStorage(BaseGraphStorage):
                 )
             # Log inside the cancellation-protected hook: the caller may receive
             # CancelledError after it completes instead of a success response.
-            logger.info(
-                f"[{self.workspace}] Process {os.getpid()} drop graph file:{self._graphml_xml_file}"
-            )
+            # Guarded like every other step past the deletion: a broken log
+            # sink (handler, formatter, or output target) cannot unmake the
+            # removal, so it must not surface as a failed drop. There is
+            # nowhere left to report the failure — the report would travel the
+            # same broken sink — so it is deliberately swallowed rather than
+            # escalated into a wrong status.
+            try:
+                logger.info(
+                    f"[{self.workspace}] Process {os.getpid()} drop graph file:{self._graphml_xml_file}"
+                )
+            except Exception:
+                pass
 
         try:
             async with self._storage_lock:

@@ -238,3 +238,29 @@ async def test_drop_stays_successful_when_the_in_memory_reset_fails(
         assert storage.storage_updated.value is False
     finally:
         await storage.finalize()
+
+
+@pytest.mark.asyncio
+async def test_drop_stays_successful_when_the_success_log_fails(tmp_path, monkeypatch):
+    """A broken log sink is not a failed deletion.
+
+    The success log is the last step of the commit hook, so an exception there
+    propagates out of ``commit_in_storage_io`` and would be reported as an
+    error for a drop that already happened.
+    """
+    storage = await _seeded_storage(tmp_path)
+    try:
+
+        def log_boom(msg):
+            raise RuntimeError("log sink boom")
+
+        monkeypatch.setattr(nano_impl.logger, "info", log_boom)
+
+        result = await storage.drop()
+
+        assert result == {"status": "success", "message": "data dropped"}
+        assert not Path(storage._client_file_name).exists()
+        assert len(storage._client.get(["v1"])) == 0
+        assert storage.storage_updated.value is False
+    finally:
+        await storage.finalize()

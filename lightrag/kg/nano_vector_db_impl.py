@@ -1385,8 +1385,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
             - On success: {"status": "success", "message": "data dropped"}
             - On destructive failure: {"status": "error", "message": "<error details>"}
 
-            The status reports the durable file removal only. A peer
-            reload-notification failure afterwards is logged as partial
+            The status reports the durable file removal only. No step after
+            that removal — notification, writer-flag reset, or the success log
+            — can turn the completed destruction into an error response. A peer
+            reload-notification failure is logged as partial
             propagation and does not turn the completed destruction into an
             error — ``/documents/clear`` uses this status to decide whether the
             input files are safe to delete, so reporting a drop that already
@@ -1488,9 +1490,18 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 )
             # Log inside the cancellation-protected hook: the caller may receive
             # CancelledError after it completes instead of a success response.
-            logger.info(
-                f"[{self.workspace}] Process {os.getpid()} drop {self.namespace}(file:{self._client_file_name})"
-            )
+            # Guarded like every other step past the deletion: a broken log
+            # sink (handler, formatter, or output target) cannot unmake the
+            # removal, so it must not surface as a failed drop. There is
+            # nowhere left to report the failure — the report would travel the
+            # same broken sink — so it is deliberately swallowed rather than
+            # escalated into a wrong status.
+            try:
+                logger.info(
+                    f"[{self.workspace}] Process {os.getpid()} drop {self.namespace}(file:{self._client_file_name})"
+                )
+            except Exception:
+                pass
 
         try:
             async with self._storage_lock:

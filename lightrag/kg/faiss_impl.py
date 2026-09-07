@@ -1730,9 +1730,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
             The status reports the durable file removal only. Both removals are
             part of it: this backend keeps two independent files, so a failure
             between them leaves one behind — a genuinely partial destruction
-            that must keep reporting ``"error"``. A peer reload-notification
-            failure after BOTH files are gone is logged as partial propagation
-            and does not turn the completed destruction into an error —
+            that must keep reporting ``"error"``. No step after both removals
+            — notification, writer-flag reset, or the success log — can turn
+            the completed destruction into an error response. A peer
+            reload-notification failure after BOTH files are gone is logged as
+            partial propagation and does not turn the completed destruction
+            into an error —
             ``/documents/clear`` uses this status to decide whether the input
             files are safe to delete, so reporting a drop that already happened
             as failed leaves those files ready to be re-ingested against
@@ -1839,9 +1842,18 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 )
             # Log inside the cancellation-protected hook: the caller may receive
             # CancelledError after it completes instead of a success response.
-            logger.info(
-                f"[{self.workspace}] Process {os.getpid()} drop FAISS index {self.namespace}"
-            )
+            # Guarded like every other step past the deletion: a broken log
+            # sink (handler, formatter, or output target) cannot unmake the
+            # removal, so it must not surface as a failed drop. There is
+            # nowhere left to report the failure — the report would travel the
+            # same broken sink — so it is deliberately swallowed rather than
+            # escalated into a wrong status.
+            try:
+                logger.info(
+                    f"[{self.workspace}] Process {os.getpid()} drop FAISS index {self.namespace}"
+                )
+            except Exception:
+                pass
 
         try:
             async with self._storage_lock:
