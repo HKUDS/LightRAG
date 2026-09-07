@@ -1315,18 +1315,43 @@ class NetworkXStorage(BaseGraphStorage):
                     # Report, never mask: the save error is what the caller
                     # must see, and a failed reload leaves the divergence in
                     # place, so it has to be visible in the log on its own.
-                    # Keep the reload flag armed as a recovery fence: every
-                    # later public graph operation enters through _get_graph,
-                    # which will retry the disk reload before trusting this
-                    # process-local view. Without the flag, a deletion retry
-                    # could mistake the unpersisted mutation for durable state
-                    # and sweep the live object's tracking row.
-                    self.storage_updated.value = True
-                    # Re-arm the file channel as well, so the fence holds even
-                    # if the flag assignment above failed too (both go through
-                    # the same manager). None differs from any real file, so
-                    # the next _get_graph retries the reload on its own.
+                    # Both fence channels are armed here as a recovery fence:
+                    # every later public graph operation enters through
+                    # _get_graph, which will retry the disk reload before
+                    # trusting this process-local view. Without that, a
+                    # deletion retry could mistake the unpersisted mutation for
+                    # durable state and sweep the live object's tracking row.
+                    #
+                    # LOCAL FIRST, fallible RPC second, and the order is
+                    # load-bearing. The fingerprint is a plain attribute write
+                    # that cannot fail with the manager; the flag write below
+                    # is another RPC to the very process whose outage may be
+                    # why the reload just failed. Armed the other way round, a
+                    # manager outage would leave NEITHER channel armed:
+                    # self._graph would still hold the mutation whose save
+                    # failed, while the recorded fingerprint still matched the
+                    # untouched file -- so _get_graph would accept the
+                    # divergent graph and a later flush could persist work
+                    # already reported as failed.
+                    #
+                    # None differs from any real file, so the next _get_graph
+                    # retries the reload through the file channel on its own.
                     self._loaded_fingerprint = None
+                    try:
+                        self.storage_updated.value = True
+                    except Exception as flag_error:
+                        # Best effort, and safe to be: this assignment can only
+                        # fail in multiprocess mode (single-process flags are a
+                        # local MutableBoolean), which is exactly where the
+                        # file channel above is armed and covers it. Letting it
+                        # out would replace the save error the caller must see
+                        # with a manager outage.
+                        log_without_raising(
+                            logger.error,
+                            f"[{self.workspace}] Failed to arm the reload flag "
+                            "after a failed save; the file fingerprint fence "
+                            f"covers this process instead: {flag_error}",
+                        )
                     logger.error(
                         f"[{self.workspace}] Failed to restore the in-memory "
                         f"graph after a failed save; it may not match "

@@ -330,3 +330,72 @@ async def test_drop_adopts_the_files_absence(tmp_path, multiprocess, monkeypatch
         assert worker._missed_notification_reloads == 0
     finally:
         await worker.finalize()
+
+
+class _WriteOnlyDeadFlag:
+    """A flag proxy whose Manager died after the last successful read.
+
+    Models the reachable sequence: `index_done_callback` reads the flag while
+    the manager is alive, the offloaded save then fails, and by the time the
+    recovery block tries to arm the flag the manager is gone. Reads keep
+    working so the call gets as far as the save.
+    """
+
+    def __init__(self):
+        self.write_attempts = 0
+
+    @property
+    def value(self):
+        return False
+
+    @value.setter
+    def value(self, _v):
+        self.write_attempts += 1
+        raise BrokenPipeError("manager gone")
+
+
+@pytest.mark.asyncio
+async def test_failed_save_arms_the_file_channel_even_if_the_flag_write_fails(
+    tmp_path, multiprocess, monkeypatch
+):
+    """The recovery fence must survive the manager being gone.
+
+    When a save fails, the in-memory graph holds a mutation the file does not
+    have, and both channels are armed so the next `_get_graph` reloads instead
+    of trusting it. The flag half is a Manager RPC, so it can fail for the very
+    reason the reload just did. Armed after it, a manager outage would leave
+    NEITHER channel armed, and a later flush could persist work already
+    reported as failed.
+    """
+    worker = await _worker(tmp_path)
+    real_flag = worker.storage_updated
+    try:
+        await worker.upsert_node("durable", {"entity_id": "durable"})
+        assert await worker.index_done_callback() is True
+        assert worker._loaded_fingerprint is not None
+
+        await worker.upsert_node("never_saved", {"entity_id": "never_saved"})
+
+        def save_boom(graph, file_name, workspace):
+            raise OSError("save boom")
+
+        def reload_boom(file_name):
+            raise OSError("reload boom")
+
+        monkeypatch.setattr(NetworkXStorage, "write_nx_graph", staticmethod(save_boom))
+        monkeypatch.setattr(NetworkXStorage, "load_nx_graph", staticmethod(reload_boom))
+        dead_flag = _WriteOnlyDeadFlag()
+        worker.storage_updated = dead_flag
+
+        # The SAVE error is what the caller must see -- not the manager outage
+        # raised while arming the flag.
+        with pytest.raises(OSError, match="save boom"):
+            await worker.index_done_callback()
+
+        # The flag arming was attempted and failed...
+        assert dead_flag.write_attempts >= 1
+        # ...and the file channel is armed regardless, which is the point.
+        assert worker._loaded_fingerprint is None
+    finally:
+        worker.storage_updated = real_flag
+        await worker.finalize()
