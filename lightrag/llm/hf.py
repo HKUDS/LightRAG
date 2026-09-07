@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import os
 import warnings
@@ -117,7 +118,11 @@ async def hf_model_if_cache(
     # hf_model is loaded with device_map="auto" (see initialize_hf_model),
     # so hf_model.device already reflects accelerate's placement.
     inputs = {k: v.to(hf_model.device) for k, v in input_ids.items()}
-    output = hf_model.generate(
+    # generate() runs the actual model inference synchronously and can take
+    # seconds to minutes -- calling it directly here would block the whole
+    # event loop for that duration, stalling every other concurrent task.
+    output = await asyncio.to_thread(
+        hf_model.generate,
         **inputs,
         max_new_tokens=max_new_tokens,
         num_return_sequences=1,
@@ -244,28 +249,34 @@ async def hf_embed(
         texts, return_tensors="pt", padding=True, truncation=True
     ).to(device)
 
-    # Perform inference
-    with torch.no_grad():
-        attention_mask = encoded_texts["attention_mask"]
-        outputs = embed_model(
-            input_ids=encoded_texts["input_ids"],
-            attention_mask=attention_mask,
-        )
-        # Plain .mean(dim=1) counts padding-token hidden states, so the same
-        # text's embedding shifts depending on what else is in the batch.
-        # Weight by attention_mask instead. The reduction runs in float32
-        # regardless of the model's own dtype: accumulating in fp16/bf16
-        # risks the summed hidden states overflowing to infinity on long
-        # inputs, and token counts above ~2048 (fp16) or ~256 (bf16) can't
-        # be represented exactly, biasing the mean. clamp_min(1) keeps a
-        # fully-masked row finite (all-padding input) rather than dividing
-        # by zero. The result is cast back to the original hidden-state
-        # dtype so output dtype behaviour is unchanged.
-        mask = attention_mask.unsqueeze(-1).to(torch.float32)
-        hidden_fp32 = outputs.last_hidden_state.to(torch.float32)
-        summed = (hidden_fp32 * mask).sum(dim=1)
-        counts = mask.sum(dim=1).clamp_min(1)
-        embeddings = (summed / counts).to(outputs.last_hidden_state.dtype)
+    # Perform inference. The forward pass is synchronous model compute that
+    # can take seconds -- run it off the event loop thread, same reasoning
+    # as hf_model_if_cache's generate() call.
+    def _run_forward():
+        with torch.no_grad():
+            attention_mask = encoded_texts["attention_mask"]
+            outputs = embed_model(
+                input_ids=encoded_texts["input_ids"],
+                attention_mask=attention_mask,
+            )
+            # Plain .mean(dim=1) counts padding-token hidden states, so the
+            # same text's embedding shifts depending on what else is in the
+            # batch. Weight by attention_mask instead. The reduction runs in
+            # float32 regardless of the model's own dtype: accumulating in
+            # fp16/bf16 risks the summed hidden states overflowing to
+            # infinity on long inputs, and token counts above ~2048 (fp16)
+            # or ~256 (bf16) can't be represented exactly, biasing the mean.
+            # clamp_min(1) keeps a fully-masked row finite (all-padding
+            # input) rather than dividing by zero. The result is cast back
+            # to the original hidden-state dtype so output dtype behaviour
+            # is unchanged.
+            mask = attention_mask.unsqueeze(-1).to(torch.float32)
+            hidden_fp32 = outputs.last_hidden_state.to(torch.float32)
+            summed = (hidden_fp32 * mask).sum(dim=1)
+            counts = mask.sum(dim=1).clamp_min(1)
+            return (summed / counts).to(outputs.last_hidden_state.dtype)
+
+    embeddings = await asyncio.to_thread(_run_forward)
 
     # Convert embeddings to NumPy
     if embeddings.dtype == torch.bfloat16:
