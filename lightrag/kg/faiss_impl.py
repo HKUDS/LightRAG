@@ -129,12 +129,16 @@ class FaissVectorDBStorage(BaseVectorStorage):
           ``(st_mtime_ns, st_size)`` of **both** files against what this
           process recorded when it last loaded or wrote them
           (``_loaded_fingerprint``). State, not an event: nothing consumes
-          it and a failed notification cannot lose it. Sampling the pair
-          together matters more here than for the single-file backends —
-          cross-file atomicity is best-effort (see above), so a pair where
-          only one file moved is a real state this fence must not read as
-          "unchanged". Blind spot: two commits inside one filesystem
-          timestamp tick with identical sizes.
+          it and a failed notification cannot lose it. **Both files must
+          have moved** for the change to count: the publication renames them
+          one at a time, so a pair where only one moved does not describe a
+          single state, and reloading THAT is the corruption vector —
+          ``_load_faiss_index`` binds every in-range metadata row to whatever
+          vector the other file now holds. A partial change therefore reports
+          "no change" and this process keeps the older self-consistent
+          snapshot until the writer's retry completes the set (see
+          ``file_fingerprint.peer_commit_detected``). Blind spot: two
+          commits inside one filesystem timestamp tick with identical sizes.
         * **Accelerator channel — the ``storage_updated`` flag.** Read
           first, because a ``True`` value already answers the question.
           ``set_all_update_flags`` publishes it with one Manager RPC per
@@ -165,6 +169,11 @@ class FaissVectorDBStorage(BaseVectorStorage):
             ``NetworkXStorage``, which invalidates its fingerprint after a
             failed save *in order to* reload: it has no redo log, so its
             in-memory graph is the untrustworthy side.
+
+            Adoption covers the failing writer only. Every OTHER process is
+            covered by the both-files-must-move rule above — they never
+            recorded this pair, so nothing local tells them the publication
+            was interrupted; only the shape of the change on disk does.
         Reader and writer side (everything through
         ``_reload_index_from_disk_locked``):
             1. Inside ``_storage_lock``, test the flag; if it is ``False``,

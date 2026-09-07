@@ -134,25 +134,89 @@ async def test_reader_picks_up_a_peer_commit_it_was_never_told_about(
         await worker_b.finalize()
 
 
+@pytest.mark.parametrize("moved", ["index", "meta"])
 @pytest.mark.asyncio
-async def test_a_change_to_the_meta_file_alone_is_a_peer_commit(tmp_path, multiprocess):
-    """The pair is sampled, not just the index file. Cross-file atomicity is
-    best-effort, so a pair where only the metadata moved is a real state — and
-    reading it as "unchanged" would serve rows the metadata no longer has."""
+async def test_a_half_published_pair_is_not_a_peer_commit(
+    tmp_path, multiprocess, moved
+):
+    """Both files are sampled, and BOTH must have moved to count.
+
+    A publication renames the two files one at a time, so a pair where only
+    one moved does not describe a single state. Reloading it is the corruption
+    vector — ``_load_faiss_index`` binds in-range metadata rows to whatever
+    vectors the other file now holds. Keeping the older self-consistent
+    snapshot is the safe direction, and it is what this process did before the
+    fence existed.
+    """
     worker = await _worker(tmp_path)
     try:
         await worker.upsert({"n1": {"content": "x"}})
         assert await worker.index_done_callback() is True
         assert worker._peer_commit_detected() is False
 
-        with open(worker._meta_file, encoding="utf-8") as fh:
-            meta = fh.read()
-        with open(worker._meta_file, "w", encoding="utf-8") as fh:
-            fh.write(meta + " ")  # same index file, different metadata
+        target = worker._meta_file if moved == "meta" else worker._faiss_index_file
+        with open(target, "rb") as fh:
+            payload = fh.read()
+        with open(target, "wb") as fh:
+            fh.write(payload + b" ")  # one file of the pair moves, not both
 
-        assert worker._peer_commit_detected() is True
+        assert worker._peer_commit_detected() is False
     finally:
         await worker.finalize()
+
+
+@pytest.mark.asyncio
+async def test_a_peer_does_not_reload_another_workers_half_published_pair(
+    tmp_path, multiprocess, lost_notification, monkeypatch
+):
+    """The finding the failure-path adoption did not cover.
+
+    Adopting the pair protects the writer that failed. A PEER sees the moved
+    ``.index``, has no flag to tell it otherwise, and — before the
+    all-files-must-move rule — read that as a peer commit: it reloaded the
+    mismatched pair and, as the next writer, persisted the corruption. Codex
+    review on #3867 traced it as losing untouched row B.
+    """
+    worker_a = await _worker(tmp_path)
+    worker_b = await _worker(tmp_path)
+    try:
+        await worker_a.upsert({"A": {"content": "a"}, "B": {"content": "b"}})
+        assert await worker_a.index_done_callback() is True
+        # B adopts the complete pair by reading through it. That read is
+        # itself a lost-notification recovery (the fixture publishes nothing),
+        # so the counter is already 1 — what matters below is that the
+        # half-published pair does not add to it.
+        assert await worker_b.get_by_id("B") is not None
+        recoveries = worker_b._missed_notification_reloads
+
+        # A deletes A and fails the metadata half of its save.
+        await worker_a.delete(["A"])
+        real_atomic_write = faiss_impl.atomic_write
+
+        def fail_on_meta(file_name, write_fn, workspace="_", *args, **kwargs):
+            if file_name == worker_a._meta_file:
+                raise OSError("meta write boom")
+            return real_atomic_write(file_name, write_fn, workspace, *args, **kwargs)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(faiss_impl, "atomic_write", fail_on_meta)
+            with pytest.raises(OSError, match="meta write boom"):
+                await worker_a.index_done_callback()
+
+        # The peer must NOT take the half-published pair for a commit.
+        assert worker_b._peer_commit_detected() is False
+        assert worker_b._missed_notification_reloads == recoveries
+        # It keeps serving its own consistent snapshot.
+        assert await worker_b.get_by_id("B") is not None
+
+        # Once A's retry completes the pair, the peer does converge on it.
+        assert await worker_a.index_done_callback() is True
+        assert worker_b._peer_commit_detected() is True
+        assert await worker_b.get_by_id("A") is None
+        assert await worker_b.get_by_id("B") is not None
+    finally:
+        await worker_a.finalize()
+        await worker_b.finalize()
 
 
 @pytest.mark.asyncio
