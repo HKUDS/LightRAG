@@ -285,6 +285,9 @@ async def test_drop_survives_a_broken_sink_reached_through_an_error_path(
             raise RuntimeError("log sink boom")
 
         async def notification_boom(namespace, workspace=None):
+            # Model partial publication before the failure, so the reload-flag
+            # assignment below is an observable step and not a no-op.
+            storage.storage_updated.value = True
             raise RuntimeError("notification boom")
 
         monkeypatch.setattr(nano_impl, "set_all_update_flags", notification_boom)
@@ -296,6 +299,11 @@ async def test_drop_survives_a_broken_sink_reached_through_an_error_path(
         assert result == {"status": "success", "message": "data dropped"}
         assert not Path(storage._client_file_name).exists()
         assert len(storage._client.get(["v1"])) == 0
+        # The step past the unreportable diagnostic still runs. Skipping it
+        # would leave the flag set and self-reload a snapshot that is
+        # already correct — harmless here, and the same skip on the
+        # snapshot-reset path is what serves dropped rows.
+        assert storage.storage_updated.value is False
     finally:
         await storage.finalize()
 
