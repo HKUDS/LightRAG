@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import asyncio
-from typing import Any, cast
+from typing import Any, Awaitable, Callable, cast
 
 from .base import DeletionResult
 from .kg.shared_storage import get_storage_keyed_lock
@@ -1685,11 +1685,17 @@ async def acreate_entity(
     entity_data: dict[str, Any],
     entity_chunks_storage=None,
     relation_chunks_storage=None,
+    *,
+    before_create: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Asynchronously create a new entity.
 
     Creates a new entity in the knowledge graph and adds it to the vector database.
-    Also synchronizes entity_chunks_storage to track chunk references.
+    Replaces entity chunk tracking with the distinct real source IDs supplied
+    for this creation, or an explicit empty row when there are none. Historical
+    no-source placeholders do not count as evidence.
+    Manual creation does not protect the entity or its description from deletion:
+    once documents mention it, purging its last real source may delete it entirely.
 
     Args:
         chunk_entity_relation_graph: Graph storage instance
@@ -1699,6 +1705,7 @@ async def acreate_entity(
         entity_data: Dictionary containing entity attributes, e.g. {"description": "description", "entity_type": "type"}
         entity_chunks_storage: Optional KV storage for tracking chunks that reference this entity
         relation_chunks_storage: Optional KV storage for tracking chunks that reference relations
+        before_create: Optional migration hook, awaited after validation and before writes
 
     Returns:
         Dictionary containing created entity information
@@ -1786,6 +1793,9 @@ async def acreate_entity(
                 }
             }
 
+            if before_create is not None:
+                await before_create()
+
             # Add entity to knowledge graph
             await chunk_entity_relation_graph.upsert_node(entity_name, node_data)
 
@@ -1795,20 +1805,27 @@ async def acreate_entity(
             # Update entity_chunks_storage to track chunk references
             if entity_chunks_storage is not None:
                 source_id = node_data.get("source_id", "")
-                chunk_ids = [cid for cid in source_id.split(GRAPH_FIELD_SEP) if cid]
+                chunk_ids = list(
+                    dict.fromkeys(
+                        cid
+                        for cid in source_id.split(GRAPH_FIELD_SEP)
+                        if cid and cid not in RELATION_NO_EVIDENCE_SOURCE_IDS
+                    )
+                )
 
-                if chunk_ids:
-                    await entity_chunks_storage.upsert(
-                        {
-                            entity_name: {
-                                "chunk_ids": chunk_ids,
-                                "count": len(chunk_ids),
-                            }
+                # Explicit creation starts new attribution, never inherits an
+                # orphan row from a previously deleted object (issue #3838).
+                await entity_chunks_storage.upsert(
+                    {
+                        entity_name: {
+                            "chunk_ids": chunk_ids,
+                            "count": len(chunk_ids),
                         }
-                    )
-                    logger.info(
-                        f"Entity Create: tracked {len(chunk_ids)} chunks for `{entity_name}`"
-                    )
+                    }
+                )
+                logger.info(
+                    f"Entity Create: tracked {len(chunk_ids)} chunks for `{entity_name}`"
+                )
 
             # Save changes
             await _persist_graph_updates(
@@ -1839,11 +1856,17 @@ async def acreate_relation(
     target_entity: str,
     relation_data: dict[str, Any],
     relation_chunks_storage=None,
+    *,
+    before_create: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Asynchronously create a new relation between entities.
 
     Creates a new relation (edge) in the knowledge graph and adds it to the vector database.
-    Also synchronizes relation_chunks_storage to track chunk references.
+    Replaces relation chunk tracking with the distinct real source IDs supplied
+    for this creation, or an explicit empty row when there are none. Orphan rows
+    from a previous relation are never inherited.
+    Manual creation does not protect the relation or its description from deletion:
+    once documents mention it, purging its last real source may delete it entirely.
 
     Args:
         chunk_entity_relation_graph: Graph storage instance
@@ -1856,6 +1879,7 @@ async def acreate_relation(
             values in ``source_id``. An omitted ``source_id`` is stored as an
             empty string and permits a non-negative fractional weight.
         relation_chunks_storage: Optional KV storage for tracking chunks that reference this relation
+        before_create: Optional migration hook, awaited after validation and before writes
 
     Returns:
         Dictionary containing created relation information
@@ -1964,6 +1988,9 @@ async def acreate_relation(
                 }
             }
 
+            if before_create is not None:
+                await before_create()
+
             # Add relation to knowledge graph
             await chunk_entity_relation_graph.upsert_edge(
                 source_entity, target_entity, edge_data
@@ -1981,18 +2008,19 @@ async def acreate_relation(
                 source_id = edge_data.get("source_id", "")
                 chunk_ids = relation_evidence_source_ids(source_id)
 
-                if chunk_ids:
-                    await relation_chunks_storage.upsert(
-                        {
-                            storage_key: {
-                                "chunk_ids": chunk_ids,
-                                "count": len(chunk_ids),
-                            }
+                # Explicit creation starts new attribution, never inherits an
+                # orphan row from a previously deleted object (issue #3838).
+                await relation_chunks_storage.upsert(
+                    {
+                        storage_key: {
+                            "chunk_ids": chunk_ids,
+                            "count": len(chunk_ids),
                         }
-                    )
-                    logger.info(
-                        f"Relation Create: tracked {len(chunk_ids)} chunks for `{vdb_src}`~`{vdb_tgt}`"
-                    )
+                    }
+                )
+                logger.info(
+                    f"Relation Create: tracked {len(chunk_ids)} chunks for `{vdb_src}`~`{vdb_tgt}`"
+                )
 
             # Save changes
             await _persist_graph_updates(

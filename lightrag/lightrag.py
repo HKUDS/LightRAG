@@ -1557,6 +1557,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         self._llm_role_builder = None
         self._retired_llm_queue_cleanup_tasks: set[asyncio.Task] = set()
+        self._chunk_tracking_migration_checked = False
 
         # The event loop this instance's storages bind to (set in
         # initialize_storages). Kept off the dataclass fields so asdict() in
@@ -6817,6 +6818,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             self.relationships_vdb,
             entity_name,
             entity_data,
+            before_create=self._migrate_chunk_tracking_before_creation,
+            entity_chunks_storage=self.entity_chunks,
+            relation_chunks_storage=self.relation_chunks,
         )
 
     def create_entity(
@@ -6858,6 +6862,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             source_entity,
             target_entity,
             relation_data,
+            before_create=self._migrate_chunk_tracking_before_creation,
+            relation_chunks_storage=self.relation_chunks,
         )
 
     def create_relation(

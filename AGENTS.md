@@ -252,21 +252,7 @@ asyncio.run(main())
 
 ### Custom Embedding Functions
 
-Use `@wrap_embedding_func_with_attrs` decorator and call `.func` when wrapping (already-decorated functions cannot be wrapped again — access the underlying via `.func`):
-
-```python
-from lightrag.utils import wrap_embedding_func_with_attrs
-
-@wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)
-async def custom_embed(texts: list[str]) -> np.ndarray:
-    # Call underlying function, not wrapped version
-    return await openai_embed.func(texts, model="text-embedding-3-large")
-
-# Wrong: EmbeddingFunc(func=openai_embed)
-# Right: EmbeddingFunc(func=openai_embed.func)
-```
-
-> **Pitfall — switching embedding models**: when changing the embedding model you MUST clear the data directory (optionally keeping `kv_store_llm_response_cache.json` for LLM cache). Existing vectors will not match the new model's space.
+**Full guide: [docs/ProgramingWithCore.md](docs/ProgramingWithCore.md#custom-embedding-functions)** — the `.func` unwrapping rule, `max_token_size`, the `(len(texts), embedding_dim)` return contract that `EmbeddingFunc.__call__` enforces on every call, and the clear-the-data-directory pitfall when switching models. Read it before writing or wrapping an embedding function.
 
 ### Storage Configuration
 

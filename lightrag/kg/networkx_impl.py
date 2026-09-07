@@ -8,10 +8,11 @@ from typing import final
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from lightrag.utils import (
-    logger,
-    validate_xml_attributes,
-    validate_workspace,
     commit_in_storage_io,
+    log_without_raising,
+    logger,
+    validate_workspace,
+    validate_xml_attributes,
 )
 from lightrag.base import BaseGraphStorage
 import networkx as nx
@@ -1106,24 +1107,78 @@ class NetworkXStorage(BaseGraphStorage):
         Returns:
             dict[str, str]: Operation status and message
             - On success: {"status": "success", "message": "data dropped"}
-            - On failure: {"status": "error", "message": "<error details>"}
+            - On destructive failure: {"status": "error", "message": "<error details>"}
+
+            A peer notification failure after the file deletion is logged but
+            does not change the successful status of the completed drop. No
+            step after the deletion — notification, writer-flag reset, or the
+            success log — can turn it into an error response.
+            This status confirms durable deletion, not convergence of all worker
+            snapshots. A worker that missed the notification may later write its
+            stale graph back. Stop workspace writes and restart affected workers
+            before resuming; if stale data has already been written, clear again.
+
+        Cancellation:
+            Before submission, cancellation leaves storage unchanged. Once file
+            deletion is submitted, the storage lock stays held until deletion
+            and its notification/reset/logging hook finish, then caller
+            cancellation propagates. Notification errors are still logged.
         """
+
+        def _delete_file() -> None:
+            if os.path.exists(self._graphml_xml_file):
+                os.remove(self._graphml_xml_file)
+
+        async def _committed() -> None:
+            self._graph = nx.Graph()
+            # Keep publication under the storage lock. Once deletion starts,
+            # commit_in_storage_io defers caller cancellation through this hook
+            # so it cannot release readers before the notification attempt.
+            try:
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
+            except Exception as notification_error:
+                # Notification can fail partway through the registered flags.
+                # A missed worker may later become the writer and persist its
+                # stale graph, resurrecting deleted data. A notification from
+                # that writer would spread the stale state, not repair it.
+                log_without_raising(
+                    logger.error,
+                    f"[{self.workspace}] Dropped graph file:{self._graphml_xml_file}, "
+                    "but failed while notifying all processes; some processes may "
+                    "not reload and may restore deleted data if they later write. "
+                    "Stop workspace writes and restart all affected workers before "
+                    f"resuming: {notification_error}",
+                )
+            # The local graph is already empty, even after partial notification.
+            # A broken shared-state manager can fail this reset independently;
+            # report it without misclassifying the durable deletion as failed.
+            try:
+                self.storage_updated.value = False
+            except Exception as reset_error:
+                log_without_raising(
+                    logger.error,
+                    f"[{self.workspace}] Dropped graph file:{self._graphml_xml_file}, "
+                    f"but failed to reset the writer reload flag: {reset_error}",
+                )
+            # Log inside the cancellation-protected hook: the caller may receive
+            # CancelledError after it completes instead of a success response.
+            # Routed through log_without_raising like every other log call in
+            # this hook: a broken log sink cannot unmake the removal, so it
+            # must not surface as a failed drop. See that helper for why the
+            # failure is swallowed rather than re-reported.
+            log_without_raising(
+                logger.info,
+                f"[{self.workspace}] Process {os.getpid()} drop graph file:{self._graphml_xml_file}",
+            )
+
         try:
             async with self._storage_lock:
-                # delete _client_file_name
-                if os.path.exists(self._graphml_xml_file):
-                    os.remove(self._graphml_xml_file)
-                self._graph = nx.Graph()
-                # Notify other processes that data has been updated
-                await set_all_update_flags(self.namespace, workspace=self.workspace)
-                # Reset own update flag to avoid self-reloading
-                self.storage_updated.value = False
-                logger.info(
-                    f"[{self.workspace}] Process {os.getpid()} drop graph file:{self._graphml_xml_file}"
-                )
-            return {"status": "success", "message": "data dropped"}
+                await commit_in_storage_io(_delete_file, _committed)
         except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error dropping graph file:{self._graphml_xml_file}: {e}"
+            log_without_raising(
+                logger.error,
+                f"[{self.workspace}] Error dropping graph file:{self._graphml_xml_file}: {e}",
             )
             return {"status": "error", "message": str(e)}
+
+        return {"status": "success", "message": "data dropped"}
