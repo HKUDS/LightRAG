@@ -668,7 +668,13 @@ class EmbeddingFunc:
         (``embeddings[i]`` belongs to ``texts[i]``), so any other shape is
         rejected with a ValueError; the wrapper never reshapes, slices or pads
         the result, because the row-to-input mapping cannot be recovered once
-        it is wrong. In particular:
+        it is wrong.
+
+        Rank and dimension are always checked. The row count is checked
+        against the input batch, resolved from the first positional argument
+        or from the kwarg named after the wrapped function's first parameter;
+        when neither applies the row count is left unverified rather than
+        guessed at. In particular:
 
         - A single input still returns ``(1, embedding_dim)``, not
           ``(embedding_dim,)``.
@@ -727,6 +733,40 @@ class EmbeddingFunc:
                 "Consider using .func to access the unwrapped function directly."
             )
 
+    def _resolve_input_batch(self, args: tuple, kwargs: dict) -> Any:
+        """Return the sequence of texts the caller passed, or None if unknown.
+
+        The vector count can only be checked against something. Positional is
+        the overwhelmingly common path and costs nothing to read. A keyword
+        call needs the wrapped function's first parameter name to know which
+        kwarg holds the texts, so the signature is inspected only on that
+        path -- and only the parameter name is read, never a full bind(),
+        which would raise on the extra kwargs this wrapper and its priority
+        decorator pass through (``_priority``, ``context``, ...).
+
+        Returning None means "not resolvable", which downgrades the vector
+        count check to unverifiable rather than guessing at a mapping.
+        """
+        if args:
+            return args[0]
+        if not kwargs:
+            return None
+        try:
+            params = inspect.signature(self.func).parameters
+        except (TypeError, ValueError):
+            # Builtins and C-implemented callables expose no signature.
+            return None
+        for param in params.values():
+            if param.kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            ):
+                return kwargs.get(param.name)
+            # A positional-only or *args first parameter cannot be addressed
+            # by keyword at all, so the batch stays unknown.
+            return None
+        return None
+
     async def __call__(self, *args, **kwargs) -> np.ndarray:
         # Only inject embedding_dim when send_dimensions is True
         if self.send_dimensions:
@@ -775,10 +815,11 @@ class EmbeddingFunc:
         # likely cause and the fix, so the short exception message stays
         # readable while the diagnosis is still available in the logs.
         expected_dim = self.embedding_dim
-        # None means "the caller did not pass the texts positionally", so the
-        # input count is unknown and the vector count cannot be checked.
+        # None means the input batch could not be resolved from the call, so
+        # the vector count is unverifiable -- see _resolve_input_batch.
+        input_batch = self._resolve_input_batch(args, kwargs)
         expected_vectors = (
-            len(args[0]) if args and isinstance(args[0], (list, tuple)) else None
+            len(input_batch) if isinstance(input_batch, (list, tuple)) else None
         )
 
         # An empty batch carries no vectors and no dimension to validate. A

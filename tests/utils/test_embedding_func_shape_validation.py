@@ -123,6 +123,45 @@ async def test_dimension_is_checked_when_texts_are_not_passed_positionally():
 
 
 @pytest.mark.asyncio
+async def test_count_is_checked_when_texts_arrive_by_keyword():
+    """The input batch is resolved from the wrapped function's first
+    parameter name when the caller does not pass it positionally, so the
+    vector count is verifiable on that path too. Before this, a keyword call
+    skipped the count check entirely."""
+
+    async def embed(texts):
+        return np.zeros((len(texts) * 2, 4), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="Vector count mismatch"):
+        await _make(embed)(texts=["a", "b", "c"])
+
+
+@pytest.mark.asyncio
+async def test_keyword_batch_resolution_is_not_hardcoded_to_texts():
+    """Resolution reads the wrapped function's actual first parameter, so a
+    custom embedding function is free to name it something else."""
+
+    async def embed(sentences):
+        return np.zeros((len(sentences) * 2, 4), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="Vector count mismatch"):
+        await _make(embed)(sentences=["a", "b", "c"])
+
+
+@pytest.mark.asyncio
+async def test_unresolvable_keyword_batch_skips_the_count_check():
+    """A *args-only signature cannot map a keyword to the batch. That makes
+    the count unverifiable, which must degrade to skipping that one check --
+    not to an error and not to a guess. The dimension check still runs."""
+
+    async def embed(**kwargs):
+        return np.zeros((5, 4), dtype=np.float32)
+
+    result = await _make(embed)(texts=["a", "b", "c"])
+    assert result.shape == (5, 4)
+
+
+@pytest.mark.asyncio
 async def test_1d_result_is_rejected():
     async def embed(texts):
         return np.zeros(4, dtype=np.float32)
@@ -153,6 +192,22 @@ async def test_empty_batch_with_bare_empty_array_is_accepted():
         return np.zeros((len(texts), 4), dtype=np.float32)
 
     result = await _make(embed)([])
+    assert result.size == 0
+
+
+@pytest.mark.asyncio
+async def test_empty_batch_by_keyword_is_accepted():
+    """Same allowance on the keyword path. Keying the empty-batch exemption
+    to positional arguments only would reject `np.array([])` here while
+    accepting it two lines above -- and the element-count check this PR
+    replaces accepted both."""
+
+    async def embed(texts):
+        if not texts:
+            return np.array([])
+        return np.zeros((len(texts), 4), dtype=np.float32)
+
+    result = await _make(embed)(texts=[])
     assert result.size == 0
 
 

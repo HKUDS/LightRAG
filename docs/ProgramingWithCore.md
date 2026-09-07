@@ -585,7 +585,9 @@ async def custom_embed(texts: list[str]) -> np.ndarray:
 
 ### Embedding Function Return Contract
 
-Every embedding function — built-in or custom — MUST return a 2D numpy array of shape `(len(texts), embedding_dim)`: exactly one row per input text, in input order. Every vector storage backend consumes the result positionally (`embeddings[i]` is stored for `texts[i]`), so `EmbeddingFunc` validates the shape on every call and raises `ValueError` on any mismatch. It never reshapes, slices or pads the result — once the row-to-input mapping is wrong it cannot be recovered, and a silent repair would store vectors under the wrong records.
+Every embedding function — built-in or custom — MUST return a 2D numpy array of shape `(len(texts), embedding_dim)`: exactly one row per input text, in input order. Every vector storage backend consumes the result positionally (`embeddings[i]` is stored for `texts[i]`), so `EmbeddingFunc` validates the result on every call and raises `ValueError` on any mismatch. It never reshapes, slices or pads the result — once the row-to-input mapping is wrong it cannot be recovered, and a silent repair would store vectors under the wrong records.
+
+The array rank and the dimension are always checked. The row count is checked against the input batch, which is read from the first positional argument, or — for a keyword call — from the kwarg matching the wrapped function's first parameter name. If the batch cannot be resolved that way (a callable whose first parameter is positional-only or `*args`, or one exposing no signature), the row count alone is left unverified rather than guessed at.
 
 | Returned shape | Result |
 | --- | --- |
