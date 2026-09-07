@@ -188,3 +188,53 @@ async def test_drop_adopts_the_files_absence(tmp_path, multiprocess):
         assert worker._peer_commit_detected() is False
     finally:
         await worker.finalize()
+
+
+@pytest.mark.asyncio
+async def test_a_partial_two_file_save_is_not_read_as_a_peer_commit(
+    tmp_path, multiprocess, monkeypatch
+):
+    """The one hazard the fence adds to a TWO-file backend.
+
+    ``_write_both`` is two ``atomic_write`` calls, so a failure between them
+    publishes a MISMATCHED pair: a new ``.index`` beside the previous
+    ``.meta.json``. The pair's fingerprint has moved, so a fence that took that
+    at face value would reload this process's own half-finished write as if it
+    were a peer commit — replacing the complete in-memory snapshot with a pair
+    that binds one row's metadata to another's vector, after which the redo
+    replay deletes the wrong vector and the next save makes it permanent.
+
+    Codex review on #3867 traced it as: delete A from ``[A, B]`` and lose B.
+    """
+    worker = await _worker(tmp_path)
+    try:
+        await worker.upsert({"A": {"content": "a"}, "B": {"content": "b"}})
+        assert await worker.index_done_callback() is True
+        assert _ids_on_disk(worker) == {"A", "B"}
+
+        # Delete A, then fail the metadata half of the save.
+        await worker.delete(["A"])
+
+        real_atomic_write = faiss_impl.atomic_write
+
+        def fail_on_meta(file_name, write_fn, workspace="_", *args, **kwargs):
+            if file_name == worker._meta_file:
+                raise OSError("meta write boom")
+            return real_atomic_write(file_name, write_fn, workspace, *args, **kwargs)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(faiss_impl, "atomic_write", fail_on_meta)
+            with pytest.raises(OSError, match="meta write boom"):
+                await worker.index_done_callback()
+
+        # The pair on disk is this process's own partial write, so the fence
+        # must NOT offer to reload it.
+        assert worker._peer_commit_detected() is False
+
+        # The retry writes both files from the snapshot still held in memory:
+        # A is gone, and B — which the operation never touched — survives.
+        assert await worker.index_done_callback() is True
+        assert _ids_on_disk(worker) == {"B"}
+        assert await worker.get_by_id("B") is not None
+    finally:
+        await worker.finalize()

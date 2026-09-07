@@ -154,6 +154,17 @@ class FaissVectorDBStorage(BaseVectorStorage):
             3. ``set_all_update_flags`` flips every process's
                ``storage_updated`` flag (including the writer's own), then
                reset the writer's own flag to ``False``.
+            On a FAILED save the pair is adopted too. Step 1 is two
+            ``atomic_write`` calls, so a failure between them publishes a
+            MISMATCHED pair (a new ``.index`` beside the previous
+            ``.meta.json``) — this process's own doing, not a peer's. The
+            in-memory index plus the redo logs are the authority the retry
+            writes from; reloading the mismatched pair instead would bind one
+            row's metadata to another's vector and the replay would then
+            delete the wrong one. Opposite direction from
+            ``NetworkXStorage``, which invalidates its fingerprint after a
+            failed save *in order to* reload: it has no redo log, so its
+            in-memory graph is the untrustworthy side.
         Reader and writer side (everything through
         ``_reload_index_from_disk_locked``):
             1. Inside ``_storage_lock``, test the flag; if it is ``False``,
@@ -1444,7 +1455,37 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 self._record_fingerprint()
                 await on_committed()
 
-            await commit_in_storage_io(_write_both, _committed)
+            try:
+                await commit_in_storage_io(_write_both, _committed)
+            except CommitBookkeepingError:
+                raise
+            except BaseException:
+                # A FAILED save still leaves the files on disk as THIS
+                # process's doing, so adopt them: the fingerprint fence must
+                # not read this process's own half-finished write as a peer
+                # commit.
+                #
+                # Unlike the single-file backends, ``_write_both`` is two
+                # ``atomic_write`` calls, so a failure between them publishes a
+                # MISMATCHED pair (a new ``.index`` beside the previous
+                # ``.meta.json``). ``self._index`` / ``self._id_to_meta`` still
+                # hold the complete post-flush snapshot, and the retry's job is
+                # to write both files from it. Reloading instead would replace
+                # that snapshot with the mismatched pair -- binding one row's
+                # metadata to another's vector (``_load_faiss_index`` keeps
+                # every metadata row whose fid is inside the shorter index and
+                # reconstructs its vector from there) -- and the redo replay
+                # would then delete the wrong vector and the next save would
+                # make that permanent, losing rows the operation never touched.
+                #
+                # Adopting hides nothing: a genuine peer commit after this
+                # moves the pair again, away from what was adopted here. The
+                # mismatched pair on disk is a pre-existing residue of the
+                # best-effort cross-file write (see the class docstring's
+                # storage model and ``_load_faiss_index``'s skew detection),
+                # not something this fence can repair.
+                self._record_fingerprint()
+                raise
         except CommitBookkeepingError as e:
             # Both files are already renamed into place, so the rows ARE durable
             # and the caller must not hear otherwise: `index_done_callback`'s

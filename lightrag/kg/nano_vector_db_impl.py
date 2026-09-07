@@ -880,6 +880,20 @@ class NanoVectorDBStorage(BaseVectorStorage):
             self._record_fingerprint()
             await on_committed()
 
+        # No fingerprint handling on the FAILURE path, unlike
+        # ``FaissVectorDBStorage._save_faiss_index``: this is ONE
+        # ``atomic_write``, so a failed save leaves the previous file in place
+        # and its fingerprint unchanged, and the fence correctly sees no
+        # change. FAISS writes two files and can publish a mismatched pair, so
+        # it has to adopt them explicitly to keep the fence from reading its
+        # own partial write as a peer commit.
+        #
+        # And note the direction differs from ``NetworkXStorage``, which
+        # INVALIDATES its fingerprint after a failed save to force a reload:
+        # it has no redo log, so its in-memory graph is untrustworthy and the
+        # file is the only authority. Here the in-memory client plus the redo
+        # logs ARE the authority to retry from, so the snapshot must be kept.
+
         try:
             await commit_in_storage_io(
                 partial(
