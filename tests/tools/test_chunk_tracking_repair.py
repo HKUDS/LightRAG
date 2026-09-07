@@ -20,11 +20,12 @@ boundary required by rename, merge, and explicit creation:
 """
 
 import argparse
+from types import SimpleNamespace
 import json
 
 import pytest
 
-from lightrag.base import DocStatus
+from lightrag.base import CURSOR_END, CURSOR_START, DocStatus
 from lightrag.tools import chunk_tracking_repair
 from lightrag.tools.chunk_tracking_repair import (
     apply_chunk_tracking_repair_plan,
@@ -67,12 +68,30 @@ class _DocStatus:
         self.docs = docs
         self.boom = boom
         self.strict_calls: list[bool] = []
+        self.max_page_size = 0
 
-    async def get_docs_by_statuses(self, statuses, strict: bool = False):
+    async def get_docs_by_statuses_page(
+        self, statuses, *, limit, position=CURSOR_START, strict=False
+    ):
         self.strict_calls.append(strict)
         if self.boom:
             raise KeyError("unparseable doc_status row")
-        return dict(self.docs)
+        start = 0 if position is CURSOR_START else position
+        ids = list(self.docs)[start : start + limit]
+        self.max_page_size = max(self.max_page_size, len(ids))
+        next_position = start + len(ids)
+        if next_position >= len(self.docs):
+            next_position = CURSOR_END
+        return SimpleNamespace(
+            docs={doc_id: SimpleNamespace(id=doc_id) for doc_id in ids},
+            next_position=next_position,
+        )
+
+    async def get_full_docs_by_ids(self, ids, *, strict=False):
+        self.strict_calls.append(strict)
+        if self.boom:
+            raise KeyError("unparseable doc_status row")
+        return {doc_id: self.docs[doc_id] for doc_id in ids if doc_id in self.docs}
 
 
 class _KV:
@@ -133,6 +152,17 @@ class _Graph:
             }
             for src, tgt in self._edges
         ]
+
+    async def iter_labels(self, batch_size):
+        for start in range(0, len(self._labels), batch_size):
+            yield self._labels[start : start + batch_size]
+
+    async def iter_edges(self, batch_size):
+        for start in range(0, len(self._edges), batch_size):
+            yield [
+                {"source": src, "target": tgt}
+                for src, tgt in self._edges[start : start + batch_size]
+            ]
 
 
 class _Repairer:
@@ -273,6 +303,79 @@ async def test_plan_is_complete_and_read_only_before_apply():
     assert relation_chunks.data == {"OLD": {"chunk_ids": ["old"], "count": 1}}
     assert entity_chunks.drops == 0
     assert relation_chunks.drops == 0
+
+    plan_path = plan.disk.path
+    assert plan_path.exists()
+    plan.close()
+    assert not plan_path.exists()
+
+
+async def test_large_repair_uses_only_bounded_scan_and_write_batches(monkeypatch):
+    monkeypatch.setattr(chunk_tracking_repair, "_CHUNK_SCAN_BATCH", 3)
+    monkeypatch.setattr(chunk_tracking_repair, "_UPSERT_BATCH", 2)
+
+    docs = {f"doc-{index:02d}": _Doc([f"c{index:02d}"]) for index in range(11)}
+    chunks = {
+        f"c{index:02d}": {
+            "content": str(index),
+            "llm_cache_list": [f"cache-{index:02d}"],
+        }
+        for index in range(11)
+    }
+    cache = {
+        f"cache-{index:02d}": {
+            "cache_type": "extract",
+            "chunk_id": f"c{index:02d}",
+            "return": _extraction_payload(entities=[f"E{index:02d}"]),
+            "create_time": index,
+        }
+        for index in range(11)
+    }
+
+    class _BoundedGraph(_Graph):
+        async def get_all_labels(self):  # pragma: no cover - must stay unused
+            raise AssertionError("unbounded label API used")
+
+        async def get_all_edges(self):  # pragma: no cover - must stay unused
+            raise AssertionError("unbounded edge API used")
+
+    class _ObservedKV(_KV):
+        def __init__(self, data=None):
+            super().__init__(data)
+            self.max_get = 0
+            self.max_filter = 0
+            self.max_upsert = 0
+
+        async def get_by_ids(self, ids):
+            self.max_get = max(self.max_get, len(ids))
+            return await super().get_by_ids(ids)
+
+        async def filter_keys(self, keys):
+            self.max_filter = max(self.max_filter, len(keys))
+            return await super().filter_keys(keys)
+
+        async def upsert(self, payload):
+            self.max_upsert = max(self.max_upsert, len(payload))
+            await super().upsert(payload)
+
+    entity_chunks = _ObservedKV()
+    repairer = _Repairer(
+        docs=docs,
+        chunks=chunks,
+        cache=cache,
+        graph=_BoundedGraph([f"E{index:02d}" for index in range(11)], []),
+        entity_chunks=entity_chunks,
+        relation_chunks=_ObservedKV(),
+    )
+    repairer.text_chunks = _ObservedKV(chunks)
+
+    report = await _repair(repairer)
+
+    assert report.entity_rows_written == 11
+    assert repairer.doc_status.max_page_size <= 3
+    assert entity_chunks.max_get <= 3
+    assert repairer.text_chunks.max_filter <= 3
+    assert entity_chunks.max_upsert <= 2
 
 
 async def test_no_row_is_written_for_an_object_without_cached_extraction():
@@ -456,13 +559,13 @@ async def test_every_doc_status_state_contributes_its_chunks():
     )
 
     captured: list[list] = []
-    original = doc_status.get_docs_by_statuses
+    original = doc_status.get_docs_by_statuses_page
 
-    async def _spy(statuses, strict: bool = False):
+    async def _spy(statuses, **kwargs):
         captured.append(list(statuses))
-        return await original(statuses, strict=strict)
+        return await original(statuses, **kwargs)
 
-    doc_status.get_docs_by_statuses = _spy
+    doc_status.get_docs_by_statuses_page = _spy
     await _repair(repairer)
 
     assert set(captured[0]) == set(DocStatus)

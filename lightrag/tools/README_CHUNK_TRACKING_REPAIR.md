@@ -70,6 +70,16 @@ cache still carries the old names and cannot reconstruct those transformations.
 Graph `source_id` and document-level recovery anchors are never used as tracking
 evidence.
 
+Planning is memory-bounded. Document status and graph objects are read through
+bounded pages, and the distinct chunk set, graph membership indexes, and final
+replacement rows are held in a temporary SQLite database. Apply also reads that
+database in bounded upsert batches. Python memory therefore grows with the
+configured batch size and the largest single tracking row, not with total
+document, graph-object, or attribution counts. The temporary database requires
+local disk space proportional to the plan. A backend's own baseline still
+applies—for example, `NetworkXStorage` keeps its graph in memory by design—but
+the repair no longer creates another full graph-sized copy.
+
 If the graph contains entities or relations but retained rows plus cached
 evidence would produce an empty corresponding namespace, apply is refused
 before any drop. More generally, a plan leaving **any** current graph object

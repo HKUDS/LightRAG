@@ -1712,6 +1712,33 @@ class Neo4JStorage(BaseGraphStorage):
                 )  # Ensure results are consumed even if processing fails
             return labels
 
+    async def iter_labels(self, batch_size: int):
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        workspace_label = self._get_workspace_label()
+        async with self._driver.session(
+            database=self._DATABASE, default_access_mode="READ"
+        ) as session:
+            result = await session.run(
+                f"""
+                MATCH (n:`{workspace_label}`)
+                WHERE n.entity_id IS NOT NULL
+                RETURN DISTINCT n.entity_id AS label
+                ORDER BY label
+                """
+            )
+            batch: list[str] = []
+            try:
+                async for record in result:
+                    batch.append(record["label"])
+                    if len(batch) == batch_size:
+                        yield batch
+                        batch = []
+                if batch:
+                    yield batch
+            finally:
+                await result.consume()
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -1867,6 +1894,35 @@ class Neo4JStorage(BaseGraphStorage):
                 edges.append(edge_properties)
             await result.consume()
             return edges
+
+    async def iter_edges(self, batch_size: int):
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        workspace_label = self._get_workspace_label()
+        async with self._driver.session(
+            database=self._DATABASE, default_access_mode="READ"
+        ) as session:
+            result = await session.run(
+                f"""
+                MATCH (a:`{workspace_label}`)-[r]-(b:`{workspace_label}`)
+                RETURN DISTINCT a.entity_id AS source, b.entity_id AS target,
+                       properties(r) AS properties
+                """
+            )
+            batch: list[dict] = []
+            try:
+                async for record in result:
+                    edge = dict(record["properties"])
+                    edge["source"] = record["source"]
+                    edge["target"] = record["target"]
+                    batch.append(edge)
+                    if len(batch) == batch_size:
+                        yield batch
+                        batch = []
+                if batch:
+                    yield batch
+            finally:
+                await result.consume()
 
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
         """Get popular labels(entity names) by node degree (most connected entities)

@@ -1628,6 +1628,11 @@ lightrag-repair-chunk-tracking --apply --namespace entity  # or relation
 # equivalent: python -m lightrag.tools.chunk_tracking_repair [--apply]
 ```
 
+The repair scans document status and graph objects in bounded batches. Its
+deduplication and replacement plan live in a temporary SQLite database, so
+client memory is bounded by a batch plus the largest individual tracking row;
+local temporary disk usage grows with the complete plan.
+
 The tool asks for an offline confirmation before initializing storage and asks
 again before the destructive apply. `--yes` is intended for an already-isolated
 maintenance environment. It prints the configured working directory, workspace,
