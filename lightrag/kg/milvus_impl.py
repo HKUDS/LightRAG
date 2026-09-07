@@ -2354,8 +2354,10 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         embeds and writes them. Callers that need read-after-write visibility
         for similarity search must run an explicit flush first.
         """
-        # Ensure collection is loaded before querying
-        self._ensure_collection_loaded()
+        # Ensure collection is loaded before querying. MilvusClient is a
+        # synchronous SDK (blocking gRPC calls) -- run it off the event loop
+        # thread so a search doesn't stall every other concurrent task.
+        await asyncio.to_thread(self._ensure_collection_loaded)
 
         # Use provided embedding or compute it
         if query_embedding is not None:
@@ -2380,7 +2382,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             },
         }
 
-        results = self._client.search(
+        results = await asyncio.to_thread(
+            self._client.search,
             collection_name=self.final_namespace,
             data=embedding,
             limit=top_k,
@@ -2496,7 +2499,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 return
 
             # Milvus requires the collection to be loaded before upsert/delete.
-            self._ensure_collection_loaded()
+            # MilvusClient is synchronous (blocking gRPC) -- run it off the
+            # event loop thread, same reasoning as query()'s search() call.
+            await asyncio.to_thread(self._ensure_collection_loaded)
 
             pending_docs = self._pending_vector_docs
             pending_deletes = self._pending_vector_deletes
@@ -2596,8 +2601,10 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                             f"[{self.workspace}] Milvus upsert batch {batch_index}/{len(upsert_batches)}: "
                             f"records={len(records_batch)}, estimated_payload_bytes={estimated_bytes}"
                         )
-                        self._client.upsert(
-                            collection_name=self.final_namespace, data=records_batch
+                        await asyncio.to_thread(
+                            self._client.upsert,
+                            collection_name=self.final_namespace,
+                            data=records_batch,
                         )
                 if pending_deletes:
                     # Chunk deletes by record count; pks are short strings so a
@@ -2609,7 +2616,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                         else len(delete_ids)
                     )
                     for i in range(0, len(delete_ids), delete_chunk):
-                        self._client.delete(
+                        await asyncio.to_thread(
+                            self._client.delete,
                             collection_name=self.final_namespace,
                             pks=delete_ids[i : i + delete_chunk],
                         )
