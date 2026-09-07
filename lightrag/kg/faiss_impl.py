@@ -116,7 +116,17 @@ class FaissVectorDBStorage(BaseVectorStorage):
            unsnapshotted dict iteration) into the pool would break the
            invariant and would require widening the lock scope instead.
 
-    Cross-process sync protocol:
+    Cross-process sync protocol (flag-only — see #3854):
+        This protocol has ONE channel, and it can fail: the
+        ``storage_updated`` flag is published with one Manager RPC per
+        process, so a partial publication leaves a peer unnotified. That
+        peer does not reload here and, on the ``for_write=True`` path,
+        saves its stale snapshot over the durable rows. ``NetworkXStorage``
+        already pairs the flag with a file fingerprint that cannot be lost
+        with the manager (see its *Cross-process sync protocol*); phase 2
+        of #3854 brings the same fence here. Until then the redo logs
+        retained past the publication (#3858) downgrade a peer overwrite
+        from lost to recovered-on-the-next-commit; they do not close it.
         Writer side (``index_done_callback``):
             1. ``_save_faiss_index`` writes both files atomically (per
                file; cross-file atomicity is best-effort, see above).
