@@ -1603,9 +1603,62 @@ deletion is always the recovery step:
 | --- | --- | --- |
 | Graph commit | Entity live, rows live | Consistent; retry the deletion |
 | Tracking delete or commit | Entity gone, its row stale | Retry: a deletion reporting `not_found` sweeps a stale row for that name and flushes pending tracking state whether or not a row is still visible in memory |
-| A failing tracking delete leaves incident relation rows of an entity deletion | Entity gone, relation rows stale | Not reachable automatically — the node is gone, so its edges are unknowable. Logged with the exact storage keys; delete the relation directly to sweep its row |
-| The cleanup never runs although the graph commit landed — process exit before a **deferred** tracking backend (JSON) flushes, the graph backend's commit notification raising after the write, or a direct cancellation of the deletion task mid-write | Entity gone, its rows and its relations' rows stale | The entity's own row is swept by a repeated deletion; its incident relation rows are not, and their keys are not logged because nothing failed. Delete the relations directly, or rebuild tracking. Not closed by this staging: the file-backed commit layer cannot tell a caller what landed |
+| A failing tracking delete leaves incident relation rows of an entity deletion | Entity gone, relation rows stale | Not reachable automatically — the node is gone, so its edges are unknowable. Logged with the exact storage keys; delete the relation directly to sweep its row, or run the [chunk-tracking repair](#repairing-chunk-tracking) |
+| The cleanup never runs although the graph commit landed — process exit before a **deferred** tracking backend (JSON) flushes, the graph backend's commit notification raising after the write, or a direct cancellation of the deletion task mid-write | Entity gone, its rows and its relations' rows stale | The entity's own row is swept by a repeated deletion; its incident relation rows are not, and their keys are not logged because nothing failed — so there is nothing to delete directly *by*. The recovery is the [chunk-tracking repair](#repairing-chunk-tracking). Not closed by this staging: the file-backed commit layer cannot tell a caller what landed |
 | Vector flush | Entity and rows gone, vector record stale | The rebuildable window this codebase accepts elsewhere; `lightrag-rebuild-vdb` restores it |
+
+#### Repairing chunk tracking
+
+A stale or orphaned `entity_chunks` / `relation_chunks` row cannot be found, let
+alone pruned, one row at a time: `BaseKVStorage` has no enumeration API, so
+nothing can sweep for it. The repair is therefore whole-namespace — it drops
+both namespaces and rebuilds them from the cached extraction results:
+
+```python
+report = await rag.arepair_chunk_tracking()
+print(report.as_dict())
+```
+
+```bash
+curl -X POST "$LIGHTRAG_URL/documents/recovery/repair_chunk_tracking" \
+     -H 'Content-Type: application/json' -d '{"confirm": true}'
+```
+
+It is deliberately **not** the startup migration, which cannot repair anything:
+
+|                | startup chunk-tracking migration | `arepair_chunk_tracking` |
+| --- | --- | --- |
+| When           | startup / first explicit creation | operator, on demand |
+| Gate           | only when the namespace `is_empty()` | never gated |
+| Seed           | graph `source_id` | cached extraction results |
+| Existing rows  | left untouched | dropped and rebuilt |
+
+The seed is the point. Graph `source_id` is KEEP-truncated and chunk tracking
+outranks it, so re-seeding from it downgrades provenance across the whole
+install. The repair never reads it; the graph is consulted only for which
+objects exist, so an object deleted by an admin call is not resurrected. The
+attribution itself is chunk-granular and comes from the extraction cache
+(`text_chunks.llm_cache_list` → `llm_response_cache`), the same source the
+deletion rebuild reads — `text_chunks` carries the text, not the attribution,
+and the `full_entities` / `full_relations` anchors are document-granular, one
+level too coarse to write a row from.
+
+Two consequences an operator has to plan for, both reported in the response:
+
+- An object whose chunks are **not in the cache** (cache cleared, or extraction
+  caching disabled) gets **no row**. That restores the purge classifier's
+  `source_id` fallback for it — a bounded degradation, and strictly better than
+  a row claiming evidence nobody can substantiate.
+- If a namespace ends up **empty**, the next startup's `is_empty()`-gated
+  migration will re-seed it from `source_id`. Restore the extraction cache (or
+  re-ingest) before restarting if that matters.
+
+The repair holds the destructive reservation (`busy` + `destructive_busy`) for
+its duration and answers `status="busy"` when another writer holds the
+workspace. It computes the whole mapping before the first `drop()`, so a read
+failure leaves every existing row untouched; a crash between the drops and the
+writes leaves tracking half-rebuilt, which re-running the repair fully heals —
+its output is a pure function of the extraction cache.
 
 ### Delete Relations
 
