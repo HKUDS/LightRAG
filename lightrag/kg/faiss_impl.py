@@ -10,9 +10,10 @@ from dataclasses import dataclass
 
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.utils import (
-    logger,
-    compute_mdhash_id,
     commit_in_storage_io,
+    compute_mdhash_id,
+    log_without_raising,
+    logger,
     validate_workspace,
 )
 from lightrag.base import BaseVectorStorage
@@ -1798,12 +1799,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 self._index_dirty = False
                 snapshot_reset = True
             except Exception as snapshot_error:
-                logger.error(
+                log_without_raising(
+                    logger.error,
                     f"[{self.workspace}] Dropped FAISS index {self.namespace}, but "
                     "failed to reset the in-memory index; it still holds the "
                     "dropped vectors. The writer reload flag is left set below so "
                     "the next read rebuilds it from the removed files: "
-                    f"{snapshot_error}"
+                    f"{snapshot_error}",
                 )
 
             # Keep publication under the storage lock. Once deletion starts,
@@ -1817,12 +1819,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 # stale index over the deleted files, resurrecting dropped
                 # vectors. A notification from that writer would spread the
                 # stale state, not repair it.
-                logger.error(
+                log_without_raising(
+                    logger.error,
                     f"[{self.workspace}] Dropped FAISS index {self.namespace}, but "
                     "failed while notifying all processes; some processes may not "
                     "reload and may restore deleted data if they later write. Stop "
                     "workspace writes and restart all affected workers before "
-                    f"resuming: {notification_error}"
+                    f"resuming: {notification_error}",
                 )
             # Point the writer's own flag at the snapshot we actually hold: no
             # self-reload when the reset above installed the post-drop index, a
@@ -1835,32 +1838,30 @@ class FaissVectorDBStorage(BaseVectorStorage):
             try:
                 self.storage_updated.value = not snapshot_reset
             except Exception as reset_error:
-                logger.error(
+                log_without_raising(
+                    logger.error,
                     f"[{self.workspace}] Dropped FAISS index {self.namespace}, but "
                     "failed to set the writer reload flag; a redundant reload of "
-                    f"the now-empty index may follow: {reset_error}"
+                    f"the now-empty index may follow: {reset_error}",
                 )
             # Log inside the cancellation-protected hook: the caller may receive
             # CancelledError after it completes instead of a success response.
-            # Guarded like every other step past the deletion: a broken log
-            # sink (handler, formatter, or output target) cannot unmake the
-            # removal, so it must not surface as a failed drop. There is
-            # nowhere left to report the failure — the report would travel the
-            # same broken sink — so it is deliberately swallowed rather than
-            # escalated into a wrong status.
-            try:
-                logger.info(
-                    f"[{self.workspace}] Process {os.getpid()} drop FAISS index {self.namespace}"
-                )
-            except Exception:
-                pass
+            # Routed through log_without_raising like every other log call in
+            # this hook: a broken log sink cannot unmake the removal, so it
+            # must not surface as a failed drop. See that helper for why the
+            # failure is swallowed rather than re-reported.
+            log_without_raising(
+                logger.info,
+                f"[{self.workspace}] Process {os.getpid()} drop FAISS index {self.namespace}",
+            )
 
         try:
             async with self._storage_lock:
                 await commit_in_storage_io(_delete_files, _committed)
         except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error dropping FAISS index {self.namespace}: {e}"
+            log_without_raising(
+                logger.error,
+                f"[{self.workspace}] Error dropping FAISS index {self.namespace}: {e}",
             )
             return {"status": "error", "message": str(e)}
 

@@ -255,3 +255,68 @@ async def test_drop_stays_successful_when_the_success_log_fails(tmp_path, monkey
         assert storage.storage_updated.value is False
     finally:
         await storage.finalize()
+
+
+@pytest.mark.asyncio
+async def test_drop_survives_a_broken_sink_reached_through_an_error_path(
+    tmp_path, monkeypatch
+):
+    """Guarding only the success log leaves the error paths through the sink.
+
+    A broken sink and a failing notification together reach ``logger.error``
+    inside the notification handler. Unguarded, that raises through
+    ``commit_in_storage_io`` and past the outer handler's own ``logger.error``,
+    so ``drop`` does not even return its dict — the caller sees an exception
+    for a deletion that already landed.
+    """
+    storage = _make_storage(tmp_path)
+    await storage.initialize()
+    try:
+        await storage.upsert_node("n1", {"entity_id": "n1"})
+        await storage.index_done_callback()
+
+        def log_boom(msg):
+            raise RuntimeError("log sink boom")
+
+        async def notification_boom(namespace, workspace=None):
+            raise RuntimeError("notification boom")
+
+        monkeypatch.setattr(networkx_impl, "set_all_update_flags", notification_boom)
+        monkeypatch.setattr(networkx_impl.logger, "info", log_boom)
+        monkeypatch.setattr(networkx_impl.logger, "error", log_boom)
+
+        result = await storage.drop()
+
+        assert result == {"status": "success", "message": "data dropped"}
+        assert not Path(storage._graphml_xml_file).exists()
+        assert storage._graph.number_of_nodes() == 0
+    finally:
+        await storage.finalize()
+
+
+@pytest.mark.asyncio
+async def test_destructive_failure_still_reports_error_with_a_broken_sink(
+    tmp_path, monkeypatch
+):
+    """The mirror case: a sink failure must not swallow a real ``"error"``."""
+    storage = _make_storage(tmp_path)
+    await storage.initialize()
+    try:
+        await storage.upsert_node("n1", {"entity_id": "n1"})
+        await storage.index_done_callback()
+
+        def remove_boom(path):
+            raise OSError("delete boom")
+
+        def log_boom(msg):
+            raise RuntimeError("log sink boom")
+
+        monkeypatch.setattr(networkx_impl.os, "remove", remove_boom)
+        monkeypatch.setattr(networkx_impl.logger, "error", log_boom)
+
+        result = await storage.drop()
+
+        assert result == {"status": "error", "message": "delete boom"}
+        assert Path(storage._graphml_xml_file).exists()
+    finally:
+        await storage.finalize()

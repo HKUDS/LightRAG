@@ -3144,6 +3144,32 @@ async def run_in_storage_io(fn: Callable[..., Any], *args: Any, **kwargs: Any) -
     )
 
 
+def log_without_raising(emit: Callable[[str], Any], message: str) -> None:
+    """Emit a log line that must never propagate a sink failure to its caller.
+
+    For code past a point of no return, where the caller's status no longer has
+    the right to change. The file backends' ``drop`` commit hooks are the
+    motivating case: once the file is gone the destruction happened, and a
+    broken handler, formatter or output target must not turn it into
+    ``{"status": "error"}`` — the exact misreport those hooks exist to prevent.
+    Their outer ``except`` needs it for the mirror reason: a sink failure there
+    must not swallow the ``"error"`` a real destructive failure has to report.
+
+    Pass the log method itself (``log_without_raising(logger.info, msg)``)
+    rather than wrapping the call in a lambda: an ``except X as e`` name is
+    unbound at the end of its block, so a closure over it reads as undefined to
+    static analysis even though it resolves at call time.
+
+    The failure is deliberately **swallowed, not re-reported**: any report would
+    travel the same broken sink. This is the narrow exception to *fail loud* —
+    it applies to logging alone, never to the work being logged about.
+    """
+    try:
+        emit(message)
+    except Exception:
+        pass
+
+
 async def commit_in_storage_io(
     fn: Callable[[], Any],
     on_committed: Callable[[], Awaitable[Any]],
