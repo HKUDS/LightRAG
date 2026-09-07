@@ -1,6 +1,6 @@
-"""llama_index_complete() and llama_index_embed(): the two documented entry
-points must actually work with the calling convention their own docstrings
-and the repo's example scripts describe.
+"""llama_index_complete() and llama_index_embed(): the two entry points
+LightRAG wires up as llm_model_func / embedding_func must actually work
+with the kwargs the role LLM wrapper forwards into them.
 """
 
 from __future__ import annotations
@@ -35,11 +35,13 @@ class _FakeLLM:
 
 @pytest.mark.asyncio
 async def test_llama_index_complete_accepts_llm_instance_kwarg():
-    """This is the documented calling convention (see the repo's own
-    unofficial-sample llama_index demo scripts): llm_instance is passed as a
-    keyword argument. Before the fix, kwargs.get() left it in kwargs, so it
-    was forwarded a second time into llama_index_complete_if_cache, which
-    has no such parameter -- always raising TypeError."""
+    """llm_instance as a kwarg is the pattern the repo's own
+    unofficial-sample llama_index demo scripts use, though they pass it to
+    llama_index_complete_if_cache directly via their own llm_model_func
+    wrapper, not through llama_index_complete. Before the fix, kwargs.get()
+    left it in kwargs here too, so it was forwarded a second time into
+    llama_index_complete_if_cache, which has no such parameter -- always
+    raising TypeError."""
     llm = _FakeLLM(content="hello back")
 
     result = await llama_index_complete("hi", llm_instance=llm)
