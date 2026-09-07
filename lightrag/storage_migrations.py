@@ -560,9 +560,7 @@ class _StorageMigrationMixin:
             self.relation_chunks, relation_rows, "relation_chunks"
         )
 
-        self._warn_on_degraded_repair(
-            report, len(graph_entities), len(graph_relations)
-        )
+        self._warn_on_degraded_repair(report, len(graph_entities), len(graph_relations))
 
         logger.info(
             "Chunk tracking repair completed: "

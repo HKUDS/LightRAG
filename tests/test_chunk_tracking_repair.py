@@ -151,9 +151,7 @@ class _Repairer(_StorageMigrationMixin):
         self.llm_response_cache = _KV(cache)
         self.chunk_entity_relation_graph = graph
         self.entity_chunks = entity_chunks if entity_chunks is not None else _KV()
-        self.relation_chunks = (
-            relation_chunks if relation_chunks is not None else _KV()
-        )
+        self.relation_chunks = relation_chunks if relation_chunks is not None else _KV()
         self.full_entities = _KV()
         self.full_relations = _KV()
         self._chunk_tracking_migration_checked = False
@@ -202,7 +200,12 @@ async def test_repair_runs_on_a_non_empty_store_and_evicts_the_orphan_row():
         }
     )
     relation_chunks = _KV(
-        {make_relation_chunk_key("GHOST", "ALICE"): {"chunk_ids": ["c-gone"], "count": 1}}
+        {
+            make_relation_chunk_key("GHOST", "ALICE"): {
+                "chunk_ids": ["c-gone"],
+                "count": 1,
+            }
+        }
     )
     repairer = _Repairer(
         docs=docs,
@@ -242,9 +245,7 @@ async def test_no_row_is_written_for_an_object_without_cached_extraction():
     """
     docs, chunks, cache, _ = _two_chunk_corpus()
     # CAROL and CAROL--ALICE exist in the graph but no cached chunk names them.
-    graph = _Graph(
-        ["ALICE", "BOB", "CAROL"], [("ALICE", "BOB"), ("CAROL", "ALICE")]
-    )
+    graph = _Graph(["ALICE", "BOB", "CAROL"], [("ALICE", "BOB"), ("CAROL", "ALICE")])
     # A third chunk whose extraction cache was cleared.
     chunks["c3"] = {"content": "three", "llm_cache_list": ["cache-3"]}
     docs["doc-1"].chunks_list.append("c3")

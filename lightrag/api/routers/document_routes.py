@@ -1053,7 +1053,9 @@ class RepairChunkTrackingResponse(BaseModel):
             "nothing, so objects supported only by them get no row"
         ),
     )
-    entity_rows_written: int = Field(default=0, description="entity_chunks rows rebuilt")
+    entity_rows_written: int = Field(
+        default=0, description="entity_chunks rows rebuilt"
+    )
     relation_rows_written: int = Field(
         default=0, description="relation_chunks rows rebuilt"
     )

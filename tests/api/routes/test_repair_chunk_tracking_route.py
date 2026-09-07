@@ -167,7 +167,5 @@ async def test_warnings_reach_the_operator(tmp_path):
     response = await endpoint(RepairChunkTrackingRequest(confirm=True))
 
     assert response.status == "success"
-    assert response.warnings == [
-        "nothing could be recovered from the extraction cache"
-    ]
+    assert response.warnings == ["nothing could be recovered from the extraction cache"]
     assert response.entities_without_evidence == 2
