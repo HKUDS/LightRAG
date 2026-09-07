@@ -323,3 +323,49 @@ async def test_destructive_failure_still_reports_error_with_a_broken_sink(
         assert Path(storage._client_file_name).exists()
     finally:
         await storage.finalize()
+
+
+@pytest.mark.asyncio
+async def test_drop_survives_a_broken_sink_on_the_snapshot_reset_path(
+    tmp_path, monkeypatch
+):
+    """The snapshot-reset diagnostic is a sink call like any other.
+
+    Unguarded, a failing reset plus a broken sink exits ``_committed`` before
+    the reload flag is set: the file is gone, the stale client is still held,
+    its flag is still False, and reads keep serving dropped rows while ``drop``
+    raises instead of reporting the completed deletion.
+    """
+    storage = await _seeded_storage(tmp_path)
+    try:
+        original_client_cls = nano_impl.NanoVectorDB
+        original_info = nano_impl.logger.info
+        original_error = nano_impl.logger.error
+
+        def client_boom(*args, **kwargs):
+            raise RuntimeError("client reset boom")
+
+        def log_boom(msg):
+            raise RuntimeError("log sink boom")
+
+        monkeypatch.setattr(nano_impl, "NanoVectorDB", client_boom)
+        monkeypatch.setattr(nano_impl.logger, "info", log_boom)
+        monkeypatch.setattr(nano_impl.logger, "error", log_boom)
+
+        try:
+            result = await storage.drop()
+        finally:
+            # Restore all three: the read below must exercise the reload path
+            # normally, not re-trip this test's broken sink from inside it.
+            monkeypatch.setattr(nano_impl, "NanoVectorDB", original_client_cls)
+            monkeypatch.setattr(nano_impl.logger, "info", original_info)
+            monkeypatch.setattr(nano_impl.logger, "error", original_error)
+
+        assert result == {"status": "success", "message": "data dropped"}
+        assert not Path(storage._client_file_name).exists()
+        # The reload flag still had to be reached, or the stale client is served.
+        assert storage.storage_updated.value is True
+        client = await storage._get_client()
+        assert len(client.get(["v1"])) == 0
+    finally:
+        await storage.finalize()

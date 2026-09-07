@@ -381,3 +381,50 @@ async def test_destructive_failure_still_reports_error_with_a_broken_sink(
         assert Path(storage._meta_file).exists()
     finally:
         await storage.finalize()
+
+
+@pytest.mark.asyncio
+async def test_drop_survives_a_broken_sink_on_the_snapshot_reset_path(
+    tmp_path, monkeypatch
+):
+    """The snapshot-reset diagnostic is a sink call like any other.
+
+    Unguarded, a failing reset plus a broken sink exits ``_committed`` before
+    the reload flag is set: the files are gone, the stale index is still held,
+    its flag is still False, and reads keep serving dropped vectors while
+    ``drop`` raises instead of reporting the completed deletion.
+    """
+    storage = await _seeded_storage(tmp_path)
+    try:
+        original_index_cls = faiss_impl.faiss.IndexFlatIP
+        original_info = faiss_impl.logger.info
+        original_error = faiss_impl.logger.error
+
+        def index_boom(*args, **kwargs):
+            raise RuntimeError("index reset boom")
+
+        def log_boom(msg):
+            raise RuntimeError("log sink boom")
+
+        monkeypatch.setattr(faiss_impl.faiss, "IndexFlatIP", index_boom)
+        monkeypatch.setattr(faiss_impl.logger, "info", log_boom)
+        monkeypatch.setattr(faiss_impl.logger, "error", log_boom)
+
+        try:
+            result = await storage.drop()
+        finally:
+            # Restore all three: the read below must exercise the reload path
+            # normally, not re-trip this test's broken sink from inside it.
+            monkeypatch.setattr(faiss_impl.faiss, "IndexFlatIP", original_index_cls)
+            monkeypatch.setattr(faiss_impl.logger, "info", original_info)
+            monkeypatch.setattr(faiss_impl.logger, "error", original_error)
+
+        assert result == {"status": "success", "message": "data dropped"}
+        assert not Path(storage._faiss_index_file).exists()
+        assert not Path(storage._meta_file).exists()
+        # The reload flag still had to be reached, or the stale index is served.
+        assert storage.storage_updated.value is True
+        index = await storage._get_index()
+        assert index.ntotal == 0
+    finally:
+        await storage.finalize()
