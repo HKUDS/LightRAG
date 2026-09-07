@@ -20,8 +20,10 @@ boundary required by rename, merge, and explicit creation:
 """
 
 import argparse
-from types import SimpleNamespace
+import configparser
 import json
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -821,6 +823,64 @@ async def test_resume_rejects_a_changed_effective_namespace_before_drop(tmp_path
     resumed.close(remove=True)
 
 
+async def test_resume_rejects_a_changed_configured_connection_before_drop(
+    tmp_path, monkeypatch
+):
+    """Config-file fallback changes must identify a different backend target."""
+    monkeypatch.delenv("MONGO_URI", raising=False)
+    monkeypatch.delenv("MONGO_DATABASE", raising=False)
+    module_name = "test_backends.mongo_impl"
+    backend_config = configparser.ConfigParser()
+    backend_config.add_section("mongodb")
+    backend_config.set("mongodb", "uri", "mongodb://old.example/")
+    backend_config.set("mongodb", "database", "tracking")
+    monkeypatch.setitem(
+        sys.modules, module_name, SimpleNamespace(config=backend_config)
+    )
+
+    class _MongoKV(_KV):
+        pass
+
+    _MongoKV.__module__ = module_name
+    docs, chunks, cache, graph = _two_chunk_corpus()
+    original = _Repairer(
+        docs=docs,
+        chunks=chunks,
+        cache=cache,
+        graph=graph,
+        entity_chunks=_MongoKV(),
+        relation_chunks=_MongoKV(),
+    )
+    plan_path = tmp_path / "wrong-connection.sqlite3"
+    plan = await build_chunk_tracking_repair_plan(
+        original, plan_path=plan_path, durable=True
+    )
+    plan.prepare_apply(
+        {"entity_chunks"},
+        allow_empty_graph=False,
+        allow_missing_rows=False,
+    )
+    plan.close(remove=False)
+
+    backend_config.set("mongodb", "uri", "mongodb://new.example/")
+    redirected = _Repairer(
+        docs=docs,
+        chunks=chunks,
+        cache=cache,
+        graph=graph,
+        entity_chunks=_MongoKV(),
+        relation_chunks=_MongoKV(),
+    )
+    with pytest.raises(ValueError, match="storage identity"):
+        load_chunk_tracking_repair_plan(redirected, plan_path)
+
+    assert redirected.entity_chunks.drops == 0
+    assert redirected.relation_chunks.drops == 0
+    backend_config.set("mongodb", "uri", "mongodb://old.example/")
+    resumed = load_chunk_tracking_repair_plan(original, plan_path)
+    resumed.close(remove=True)
+
+
 async def test_repair_requires_chunk_tracking_to_be_configured():
     docs, chunks, cache, graph = _two_chunk_corpus()
     repairer = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
@@ -989,6 +1049,40 @@ async def test_cli_keeps_failed_plan_and_resumes_it_without_rescanning(
         "SOURCELESS_MANUAL": {"chunk_ids": [], "count": 0},
     }
     assert not plan_path.exists()
+
+
+async def test_cli_preserves_committed_success_when_finalization_fails(
+    tmp_path, monkeypatch, capsys
+):
+    docs, chunks, cache, graph = _two_chunk_corpus()
+    repairer = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
+
+    async def _build():
+        return repairer
+
+    async def _fail_finalize():
+        raise RuntimeError("finalization failed")
+
+    monkeypatch.setattr(chunk_tracking_repair, "_build_rag", _build)
+    monkeypatch.setattr(repairer, "finalize_storages", _fail_finalize)
+    plan_path = tmp_path / "completed-plan.sqlite3"
+    result = await chunk_tracking_repair.run(
+        argparse.Namespace(
+            apply=True,
+            yes=True,
+            namespace="both",
+            plan_file=str(plan_path),
+            resume_plan=None,
+            allow_empty_graph=False,
+            allow_missing_rows=False,
+        )
+    )
+
+    assert result is True
+    assert repairer.entity_chunks.drops == 1
+    assert repairer.relation_chunks.drops == 1
+    assert not plan_path.exists()
+    assert "storage writes completed" in capsys.readouterr().out
 
 
 async def test_cli_unsafe_dry_run_returns_failure(monkeypatch):

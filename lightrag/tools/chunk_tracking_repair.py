@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import sys
 import tempfile
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -430,6 +431,94 @@ class ChunkTrackingRepairPlan:
 
 
 def _repair_storage_identity(rag) -> dict[str, Any]:
+    def configured_value(
+        module: Any,
+        env_key: str,
+        section: str,
+        option: str,
+        fallback: str | None,
+    ) -> str | None:
+        env_value = os.environ.get(env_key)
+        if env_value is not None:
+            return env_value
+        backend_config = getattr(module, "config", None)
+        if backend_config is None:
+            return fallback
+        return backend_config.get(section, option, fallback=fallback)
+
+    def connection_target(storage) -> str | None:
+        """Hash the initialized backend's effective non-secret target."""
+        module_name = type(storage).__module__
+        module = sys.modules.get(module_name)
+        values: dict[str, Any] | None = None
+        if module_name.endswith(".redis_impl"):
+            values = {"uri": getattr(storage, "_redis_url", None)}
+        elif module_name.endswith(".mongo_impl") and module is not None:
+            database = getattr(getattr(storage, "db", None), "name", None)
+            values = {
+                "uri": configured_value(
+                    module,
+                    "MONGO_URI",
+                    "mongodb",
+                    "uri",
+                    "mongodb://root:root@localhost:27017/",
+                ),
+                "database": database
+                or configured_value(
+                    module,
+                    "MONGO_DATABASE",
+                    "mongodb",
+                    "database",
+                    "LightRAG",
+                ),
+            }
+        elif module_name.endswith(".neo4j_impl") and module is not None:
+            values = {
+                "uri": configured_value(module, "NEO4J_URI", "neo4j", "uri", None),
+                "database": getattr(storage, "_DATABASE", None),
+            }
+        elif module_name.endswith(".memgraph_impl") and module is not None:
+            values = {
+                "uri": configured_value(
+                    module,
+                    "MEMGRAPH_URI",
+                    "memgraph",
+                    "uri",
+                    "bolt://localhost:7687",
+                ),
+                "database": getattr(storage, "_DATABASE", None),
+            }
+        elif module_name.endswith(".opensearch_impl") and module is not None:
+            values = {
+                "hosts": configured_value(
+                    module,
+                    "OPENSEARCH_HOSTS",
+                    "opensearch",
+                    "hosts",
+                    "localhost:9200",
+                ),
+                "use_ssl": configured_value(
+                    module,
+                    "OPENSEARCH_USE_SSL",
+                    "opensearch",
+                    "use_ssl",
+                    "true",
+                ),
+            }
+        elif module_name.endswith(".postgres_impl"):
+            database = getattr(storage, "db", None)
+            if database is not None:
+                values = {
+                    "host": getattr(database, "host", None),
+                    "port": getattr(database, "port", None),
+                    "database": getattr(database, "database", None),
+                }
+        if values is None:
+            return None
+        return hashlib.sha256(
+            json.dumps(values, sort_keys=True, default=str).encode()
+        ).hexdigest()
+
     def identify(storage) -> dict[str, str]:
         identity = {
             "class": f"{type(storage).__module__}.{type(storage).__qualname__}",
@@ -443,6 +532,9 @@ def _repair_storage_identity(rag) -> dict[str, Any]:
         # changed override cannot redirect resume into another workspace.
         if hasattr(storage, "final_namespace"):
             identity["final_namespace"] = str(storage.final_namespace)
+        target_fingerprint = connection_target(storage)
+        if target_fingerprint is not None:
+            identity["connection_target_fingerprint"] = target_fingerprint
         return identity
 
     connection_values = {key: os.environ.get(key) for key in _CONNECTION_ID_ENV_KEYS}
@@ -1056,7 +1148,18 @@ async def run(args: argparse.Namespace) -> bool:
     finally:
         if plan is not None:
             plan.close(remove=plan.state != "applying")
-        await rag.finalize_storages()
+        try:
+            await rag.finalize_storages()
+        except Exception as exc:
+            if plan is None or not plan.completed:
+                raise
+            logger.exception(
+                "Chunk tracking repair committed but storage finalization failed"
+            )
+            print(
+                "Repair storage writes completed, but storage finalization failed: "
+                f"{exc}"
+            )
 
 
 def _parse_args() -> argparse.Namespace:
