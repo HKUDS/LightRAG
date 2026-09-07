@@ -22,6 +22,8 @@ from lightrag.utils import (
     performance_timing_log,
     safe_log_value,
     validate_workspace,
+    _consume_future_exception,
+    _wait_deferring_cancellation,
 )
 import aiofiles
 import traceback
@@ -6041,18 +6043,41 @@ def create_document_routes(
             parsed_dir = doc_manager.input_dir / PARSED_DIR_NAME
             if delete_parsed_files:
                 if parsed_dir.exists():
-                    try:
-                        # __parsed__ can hold many files; run the recursive
-                        # delete off the event loop thread so a large
-                        # directory doesn't block every other request.
-                        await asyncio.to_thread(shutil.rmtree, parsed_dir)
-                        parsed_dir_message = " Deleted __parsed__ directory."
-                        append_pipeline_history(
-                            pipeline_status, "Deleted __parsed__ directory"
-                        )
-                    except Exception as e:
-                        logger.error(f"Error deleting {parsed_dir}: {str(e)}")
-                        errors.append(f"Failed to delete __parsed__ directory: {e}")
+                    # __parsed__ can hold many files; run the recursive
+                    # delete off the event loop thread so a large directory
+                    # doesn't block every other request. A bare cancel (e.g.
+                    # the client disconnecting) would only cancel this
+                    # await -- the rmtree keeps running in the background --
+                    # while the `finally` below releases destructive_busy
+                    # immediately, letting a new request race an in-flight
+                    # delete. Defer the cancellation until rmtree actually
+                    # finishes, same idiom as milvus_impl.py's flush.
+                    rmtree_future = asyncio.ensure_future(
+                        asyncio.to_thread(shutil.rmtree, parsed_dir)
+                    )
+                    rmtree_future.add_done_callback(_consume_future_exception)
+                    pending_cancel = await _wait_deferring_cancellation(
+                        rmtree_future, None
+                    )
+                    if pending_cancel is not None and not rmtree_future.cancelled():
+                        rmtree_exc = rmtree_future.exception()
+                        if rmtree_exc is not None:
+                            logger.error(
+                                f"Error deleting {parsed_dir} while cancelled: "
+                                f"{rmtree_exc}"
+                            )
+                    elif pending_cancel is None:
+                        try:
+                            rmtree_future.result()
+                            parsed_dir_message = " Deleted __parsed__ directory."
+                            append_pipeline_history(
+                                pipeline_status, "Deleted __parsed__ directory"
+                            )
+                        except Exception as e:
+                            logger.error(f"Error deleting {parsed_dir}: {str(e)}")
+                            errors.append(f"Failed to delete __parsed__ directory: {e}")
+                    if pending_cancel is not None:
+                        raise pending_cancel
             elif parsed_dir.exists():
                 parsed_dir_message = (
                     " __parsed__ preserved (pass delete_parsed_files=true to "

@@ -6,6 +6,7 @@ re-parsing and keeps a deleted document's raw upload recoverable -- the
 same reasoning already documented for the per-document delete_file flag.
 """
 
+import asyncio
 import importlib
 import shutil
 import sys
@@ -148,6 +149,64 @@ async def test_clear_documents_deletes_parsed_dir_off_the_event_loop_thread(tmp_
     assert response.status in ("success", "partial_success")
     assert not parsed_dir.exists()
     assert call_thread_id["id"] != main_thread_id
+
+
+async def test_clear_documents_cancel_defers_until_rmtree_finishes_before_releasing_lock(
+    tmp_path,
+):
+    """A bare cancel (e.g. the client disconnecting) during the rmtree
+    await must not let the finally block release destructive_busy while
+    the delete is still running in the background -- that would let a new
+    request race an in-flight __parsed__ deletion."""
+    workspace = f"clear-parsed-cancel-{uuid4().hex[:8]}"
+    await _init_workspace(workspace)
+
+    parsed_dir = tmp_path / PARSED_DIR_NAME
+    parsed_dir.mkdir()
+    (parsed_dir / "a.parsed.json").write_text("{}")
+
+    call_started = threading.Event()
+    release_call = threading.Event()
+    real_rmtree = shutil.rmtree
+
+    def fake_rmtree(path, *args, **kwargs):
+        call_started.set()
+        release_call.wait(timeout=5)
+        return real_rmtree(path, *args, **kwargs)
+
+    rag = _ClearRag(workspace)
+    endpoint = _clear_endpoint(rag, tmp_path)
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+
+    with patch.object(shutil, "rmtree", side_effect=fake_rmtree):
+        task = asyncio.ensure_future(endpoint(delete_parsed_files=True))
+        for _ in range(500):
+            if call_started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert call_started.is_set()
+
+        task.cancel()
+        # Give the cancelled task a chance to re-suspend on the deferred
+        # wait before checking the lock state.
+        for _ in range(10):
+            await asyncio.sleep(0.01)
+
+        pipeline_status = await shared_storage.get_namespace_data(
+            "pipeline_status", workspace=workspace
+        )
+        assert pipeline_status["destructive_busy"] is True
+
+        release_call.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert not parsed_dir.exists()
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=workspace
+    )
+    assert pipeline_status["destructive_busy"] is False
 
 
 async def test_clear_documents_default_message_silent_without_parsed_dir(tmp_path):
