@@ -424,13 +424,20 @@ class FaissVectorDBStorage(BaseVectorStorage):
         )
 
     def _fingerprint_paths(self) -> tuple[str, str]:
-        """Both files this storage's state spans.
+        """Both files this storage's state spans, **in publication order**.
 
-        Sampled together: either one changing means a peer wrote, and a
-        partially readable pair is "cannot tell" rather than a change (see
-        ``kg.file_fingerprint``). That matters here more than for the
-        single-file backends — cross-file atomicity is best-effort, so a
-        mismatched pair is a state this fence must not read as "unchanged".
+        Index first, metadata last, matching ``_save_faiss_index``'s write
+        order. ``file_fingerprint`` treats the last path as the commit
+        marker: a complete publication leaves it no older than the files it
+        commits, so a torn pair (the index newer than the metadata that is
+        supposed to describe it) is recognisable from the files alone, by any
+        process, without having seen the previous generation.
+
+        Watching the marker ALONE would not do: a peer several generations
+        behind sees the marker changed even when a later publication has
+        already laid down a new index beside it. Reordering this pair, or
+        reordering the writes, silently breaks the test — see
+        ``file_fingerprint.publication_complete``.
         """
         return (self._faiss_index_file, self._meta_file)
 
@@ -1442,6 +1449,15 @@ class FaissVectorDBStorage(BaseVectorStorage):
         def _write_both() -> None:
             # One submission for both files: two would take two permits and
             # could interleave another namespace's commit between the halves.
+            #
+            # ORDER IS PART OF THE CONTRACT: index first, metadata LAST.
+            # The metadata rename is this storage's commit point, which is
+            # what lets ANY process recognise a complete publication from the
+            # files alone -- a complete pair has the metadata no older than
+            # the index it describes, an interrupted one leaves the index
+            # newer. See ``_fingerprint_paths`` and
+            # ``file_fingerprint.publication_complete``. Reversing this makes
+            # a torn pair indistinguishable from a committed one.
             atomic_write(
                 index_file,
                 lambda tmp: faiss.write_index(index, tmp),

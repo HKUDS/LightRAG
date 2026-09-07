@@ -14,6 +14,7 @@ reloads the peer snapshot and replays this process's pending buffer and
 from __future__ import annotations
 
 import json
+import os
 
 import numpy as np
 import pytest
@@ -134,19 +135,18 @@ async def test_reader_picks_up_a_peer_commit_it_was_never_told_about(
         await worker_b.finalize()
 
 
-@pytest.mark.parametrize("moved", ["index", "meta"])
 @pytest.mark.asyncio
-async def test_a_half_published_pair_is_not_a_peer_commit(
-    tmp_path, multiprocess, moved
+async def test_an_index_newer_than_its_metadata_is_an_interrupted_publication(
+    tmp_path, multiprocess
 ):
-    """Both files are sampled, and BOTH must have moved to count.
+    """The completeness test, judged from the files alone.
 
-    A publication renames the two files one at a time, so a pair where only
-    one moved does not describe a single state. Reloading it is the corruption
-    vector — ``_load_faiss_index`` binds in-range metadata rows to whatever
-    vectors the other file now holds. Keeping the older self-consistent
-    snapshot is the safe direction, and it is what this process did before the
-    fence existed.
+    ``_save_faiss_index`` writes the index first and renames the metadata
+    LAST, so the metadata is this storage's commit marker: a completed
+    publication leaves it no older than the index it describes. An index
+    newer than its metadata therefore means a publication that did not
+    finish, and reloading it is the corruption vector — ``_load_faiss_index``
+    binds in-range metadata rows to whatever vectors the index now holds.
     """
     worker = await _worker(tmp_path)
     try:
@@ -154,15 +154,64 @@ async def test_a_half_published_pair_is_not_a_peer_commit(
         assert await worker.index_done_callback() is True
         assert worker._peer_commit_detected() is False
 
-        target = worker._meta_file if moved == "meta" else worker._faiss_index_file
-        with open(target, "rb") as fh:
-            payload = fh.read()
-        with open(target, "wb") as fh:
-            fh.write(payload + b" ")  # one file of the pair moves, not both
+        # The index moves past the commit marker: an unfinished publication.
+        meta_mtime = os.stat(worker._meta_file).st_mtime_ns
+        os.utime(worker._faiss_index_file, ns=(meta_mtime + 1000, meta_mtime + 1000))
 
         assert worker._peer_commit_detected() is False
     finally:
         await worker.finalize()
+
+
+@pytest.mark.asyncio
+async def test_a_peer_generations_behind_still_rejects_a_torn_pair(
+    tmp_path, multiprocess, lost_notification, monkeypatch
+):
+    """The case a per-file "did it change" comparison cannot catch.
+
+    Codex review on #3867: a peer that recorded pair A, missed the
+    notification for a COMPLETE pair B, and then meets a half-landed C sees
+    every file changed relative to A — so comparing per-file changes against
+    its own recorded fingerprint takes the torn pair for a commit. The
+    completeness test does not depend on what the reader recorded: the marker
+    being older than the file it commits is a property of the files.
+    """
+    worker_a = await _worker(tmp_path)
+    worker_b = await _worker(tmp_path)
+    try:
+        # Generation A, which B records.
+        await worker_a.upsert({"A": {"content": "a"}})
+        assert await worker_a.index_done_callback() is True
+        assert await worker_b.get_by_id("A") is not None
+        recorded_a = worker_b._loaded_fingerprint
+
+        # Generation B lands completely; B is never told.
+        await worker_a.upsert({"B": {"content": "b"}})
+        assert await worker_a.index_done_callback() is True
+
+        # Generation C tears: its index lands, its metadata does not.
+        await worker_a.upsert({"C": {"content": "c"}})
+        real_atomic_write = faiss_impl.atomic_write
+
+        def fail_on_meta(file_name, write_fn, workspace="_", *args, **kwargs):
+            if file_name == worker_a._meta_file:
+                raise OSError("meta write boom")
+            return real_atomic_write(file_name, write_fn, workspace, *args, **kwargs)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(faiss_impl, "atomic_write", fail_on_meta)
+            with pytest.raises(OSError, match="meta write boom"):
+                await worker_a.index_done_callback()
+
+        # Both of B's recorded entries differ from what is on disk now...
+        current = worker_b._stat_fingerprint()
+        assert all(new != old for new, old in zip(current, recorded_a))
+        # ...and it must still refuse, because the pair is torn.
+        assert worker_b._peer_commit_detected() is False
+        assert await worker_b.get_by_id("C") is None
+    finally:
+        await worker_a.finalize()
+        await worker_b.finalize()
 
 
 @pytest.mark.asyncio
@@ -189,7 +238,8 @@ async def test_a_peer_does_not_reload_another_workers_half_published_pair(
         assert await worker_b.get_by_id("B") is not None
         recoveries = worker_b._missed_notification_reloads
 
-        # A deletes A and fails the metadata half of its save.
+        # A deletes A and fails the metadata half of its save — the commit
+        # marker never lands, so the publication is visibly unfinished.
         await worker_a.delete(["A"])
         real_atomic_write = faiss_impl.atomic_write
 

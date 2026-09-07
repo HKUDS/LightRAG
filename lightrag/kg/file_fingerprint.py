@@ -41,10 +41,12 @@ than the shape, and three copies of them is how it rots:
 * **Single-process mode has no peer that could have committed**, so the test is
   skipped there: a divergent file means an external edit, and reloading for it
   would discard the process's own uncommitted mutations.
-* **A multi-file storage must have moved ALL of its files** for the change to
-  count. A subset is an interrupted publication whose files do not describe one
-  state, and reloading that is the corruption vector -- see
-  :func:`peer_commit_detected`.
+* **A multi-file storage must look completely published**, judged from the
+  files themselves: it publishes them in a fixed order and renames the last one
+  -- the commit marker -- LAST, so a completed publication leaves the marker no
+  older than the files it commits. Reloading a torn set is the corruption
+  vector. ``paths`` is therefore given in PUBLICATION ORDER. See
+  :func:`publication_complete`.
 
 Each storage keeps its own recorded value and wires these into its reload,
 commit and drop paths; see ``NetworkXStorage``'s *Cross-process sync protocol*
@@ -130,21 +132,21 @@ def peer_commit_detected(
     The fence's authoritative test -- the one a failed notification cannot
     disable. ``False`` in single-process mode and on an unreadable ``stat``.
 
-    **A multi-file storage must have moved ALL of its files.** A publication
-    that renames its files one at a time is only complete once every rename
-    has landed; a subset having moved means the files on disk do not describe
-    one state, and reloading THAT is what corrupts -- FAISS pairs a new
-    ``.index`` with the previous ``.meta.json`` and binds one row's metadata
-    to another's vector. So a partial change reports "no change": keeping an
-    older self-consistent snapshot is always better than adopting an
-    inconsistent one, and it is what this process did before the fence
-    existed. The writer completes or retries the publication (its in-memory
-    state plus its redo logs are the authority), and the next check sees both
-    files moved.
+    **A multi-file storage must look completely published**, judged by
+    :func:`publication_complete` from the files themselves. A publication
+    renames its files one at a time, so there is a window in which they do not
+    describe one state, and reloading THAT is what corrupts -- FAISS would pair
+    one generation's ``.index`` with another's ``.meta.json`` and bind one
+    row's metadata to another's vector. A pair that does not look complete
+    reports "no change": keeping an older self-consistent snapshot is always
+    better than adopting an inconsistent one, and it is what this process did
+    before the fence existed. The writer completes or retries the publication
+    (its in-memory state plus its redo logs are the authority), and the next
+    check sees a complete set.
 
     ``recorded is None`` means "nothing recorded, or deliberately
-    invalidated" and always reports a change -- it is how a storage arms the
-    fence after a failure it must reload out of.
+    invalidated" and reports a change for any complete state -- it is how a
+    storage arms the fence after a failure it must reload out of.
     """
     if not fence_enabled():
         return False
@@ -153,18 +155,43 @@ def peer_commit_detected(
         return False
     if sampled == recorded:
         return False
-    if (
-        len(paths) > 1
-        and isinstance(recorded, tuple)
-        and len(recorded) == len(sampled)
-        and any(new == old for new, old in zip(sampled, recorded))
-    ):
+    if len(paths) > 1 and not publication_complete(sampled):
         log_without_raising(
             logger.warning,
-            f"[{workspace}] Only part of {len(paths)} storage files changed "
-            f"({', '.join(paths)}) — an incomplete publication, not a peer "
-            "commit. Keeping the snapshot this process already holds; the "
-            "writer's retry completes the file set.",
+            f"[{workspace}] The storage files ({', '.join(paths)}) do not look "
+            "completely published — the commit marker is older than the files "
+            "it commits, or the set is partial. Treating this as an "
+            "interrupted publication, not a peer commit, and keeping the "
+            "snapshot this process already holds; the writer's retry "
+            "completes the set.",
         )
         return False
     return True
+
+
+def publication_complete(sampled: Fingerprint) -> bool:
+    """Whether a multi-file sample looks like one completed publication.
+
+    **The last path is the commit marker.** A storage whose state spans
+    several files publishes them in a fixed order and renames the marker
+    LAST, so a completed publication leaves the marker no older than every
+    file it commits, and an interrupted one leaves some file NEWER than the
+    marker. That test is what makes completeness judgeable from the files
+    alone -- by any process, at any generation of staleness.
+
+    Comparing per-file changes against what a reader last recorded cannot do
+    that: a reader several generations behind sees every file changed even
+    when the newest publication is half-landed, so it would take a torn pair
+    for a commit. Ordering is a property of the files; a recorded fingerprint
+    is a property of one reader.
+
+    Everything absent is complete (the post-``drop`` state, which peers must
+    be able to converge on). A present marker with any file missing is not.
+    """
+    *committed, marker = sampled
+    if marker is None:
+        return all(entry is None for entry in committed)
+    if any(entry is None for entry in committed):
+        return False
+    marker_mtime = marker[0]
+    return all(entry[0] <= marker_mtime for entry in committed)
