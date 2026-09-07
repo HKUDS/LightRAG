@@ -82,12 +82,14 @@ Planning is memory-bounded. Document status and graph objects are read through
 bounded pages, and the distinct chunk set, graph membership indexes, and final
 replacement rows are held in a disk-backed SQLite database. Dry-run plans are
 temporary; apply plans remain available for recovery until success. Apply reads
-the database in bounded upsert batches. Python memory therefore grows with the
-configured batch size and the largest single tracking row, not with total
-document, graph-object, or attribution counts. The temporary database requires
-local disk space proportional to the plan. A backend's own baseline still
-applies—for example, `NetworkXStorage` keeps its graph in memory by design—but
-the repair no longer creates another full graph-sized copy.
+the database in bounded upsert batches. Process-buffered KV backends are flushed
+after every batch, and any operation left pending fails the apply while retaining
+the durable plan. Python memory therefore grows with the configured batch size
+and the largest single tracking row, not with total document, graph-object, or
+attribution counts. The temporary database requires local disk space proportional
+to the plan. A backend's own baseline still applies—for example,
+`NetworkXStorage` keeps its graph in memory by design—but the repair no longer
+creates another full graph-sized copy.
 
 If the graph contains entities or relations but retained rows plus cached
 evidence would produce an empty corresponding namespace, apply is refused

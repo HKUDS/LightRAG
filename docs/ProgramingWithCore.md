@@ -1632,8 +1632,10 @@ lightrag-repair-chunk-tracking --apply --resume-plan /path/from/failed/run.sqlit
 The repair scans document status and graph objects in bounded batches. Its
 deduplication and replacement plan live in a disk-backed SQLite database, so
 client memory is bounded by a batch plus the largest individual tracking row;
-local disk usage grows with the complete plan. Dry-run plans are temporary,
-while apply plans remain available for recovery until success.
+local disk usage grows with the complete plan. Process-buffered KV backends are
+flushed after each repair batch; pending operations fail the apply instead of
+being counted as completed. Dry-run plans are temporary, while apply plans remain
+available for recovery until success.
 
 An apply durably seals that SQLite plan before the first namespace drop. If the
 apply fails or the process is interrupted, keep the workspace offline and use

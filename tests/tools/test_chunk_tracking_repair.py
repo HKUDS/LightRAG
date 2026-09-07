@@ -135,6 +135,36 @@ class _KV:
         self.index_done_calls += 1
 
 
+class _BufferedKV(_KV):
+    """OpenSearch-like KV whose public upsert only fills a local buffer."""
+
+    def __init__(self, data=None, *, retain_on_flush: bool = False):
+        super().__init__(data)
+        self._pending_upserts = {}
+        self._pending_kv_deletes = set()
+        self.retain_on_flush = retain_on_flush
+        self.max_pending = 0
+        self.flush_calls = 0
+
+    async def upsert(self, payload):
+        self._pending_upserts.update(payload)
+        self.max_pending = max(self.max_pending, len(self._pending_upserts))
+
+    async def _flush_pending_kv_ops(self):
+        self.flush_calls += 1
+        if self.retain_on_flush:
+            return
+        self.data.update(self._pending_upserts)
+        self._pending_upserts.clear()
+        self._pending_kv_deletes.clear()
+
+    async def drop(self):
+        result = await super().drop()
+        self._pending_upserts.clear()
+        self._pending_kv_deletes.clear()
+        return result
+
+
 class _Graph:
     """Existence oracle. ``source_id`` is present exactly so the repair can be
     caught reading it: every value here is absent from the cached attribution."""
@@ -766,6 +796,56 @@ async def test_durable_plan_restores_unreconstructable_rows_after_process_loss(
     assert resumed.state == "complete"
     resumed.close(remove=True)
     assert not plan_path.exists()
+
+
+async def test_buffered_tracking_writes_flush_each_bounded_batch(monkeypatch):
+    monkeypatch.setattr(chunk_tracking_repair, "_UPSERT_BATCH", 1)
+    entity_chunks = _BufferedKV()
+    repairer = _Repairer(
+        docs={},
+        chunks={},
+        cache={},
+        graph=_Graph(["A", "B", "C"], []),
+        entity_chunks=entity_chunks,
+    )
+    entity_chunks.data = {
+        name: {"chunk_ids": [], "count": 0} for name in ("A", "B", "C")
+    }
+
+    report = await _repair(repairer)
+
+    assert report.entity_rows_written == 3
+    assert entity_chunks.max_pending == 1
+    assert entity_chunks.flush_calls == 3
+    assert entity_chunks._pending_upserts == {}
+
+
+async def test_buffered_retryable_failure_retains_durable_plan(tmp_path):
+    entity_chunks = _BufferedKV(
+        {"A": {"chunk_ids": [], "count": 0}}, retain_on_flush=True
+    )
+    repairer = _Repairer(
+        docs={},
+        chunks={},
+        cache={},
+        graph=_Graph(["A"], []),
+        entity_chunks=entity_chunks,
+    )
+    plan_path = tmp_path / "pending-write.sqlite3"
+    plan = await build_chunk_tracking_repair_plan(
+        repairer, plan_path=plan_path, durable=True
+    )
+
+    with pytest.raises(RuntimeError, match="left buffered operations"):
+        await apply_chunk_tracking_repair_plan(
+            repairer, plan, namespaces={"entity_chunks"}
+        )
+
+    assert plan.state == "applying"
+    assert plan.completed is False
+    assert entity_chunks._pending_upserts == {"A": {"chunk_ids": [], "count": 0}}
+    plan.close(remove=False)
+    assert plan_path.exists()
 
 
 async def test_resume_rejects_a_different_workspace_before_drop(tmp_path):

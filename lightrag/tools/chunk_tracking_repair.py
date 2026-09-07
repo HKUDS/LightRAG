@@ -928,13 +928,36 @@ async def _drop_tracking_namespace(storage, label: str) -> None:
         raise RuntimeError(f"Failed to drop {label} during repair: {result}")
 
 
+def _require_no_pending_tracking_writes(storage, label: str) -> None:
+    pending = {
+        attr: len(value)
+        for attr in ("_pending_upserts", "_pending_kv_deletes")
+        if (value := getattr(storage, attr, None))
+    }
+    if pending:
+        details = ", ".join(f"{name}={count}" for name, count in pending.items())
+        raise RuntimeError(
+            f"{label} flush left buffered operations ({details}); "
+            "the durable repair plan was retained for resume"
+        )
+
+
 async def _write_tracking_rows(storage, disk: _DiskPlan, label: str) -> int:
     written = 0
+    flush_buffer = getattr(storage, "_flush_pending_kv_ops", None)
     for keys in disk.iter_keys("rows", label, _UPSERT_BATCH):
         payload = disk.row_payload(label, keys)
         await storage.upsert(payload)
+        # OpenSearch KV upsert is process-buffered. Flush its private buffer per
+        # repair batch so backend memory stays bounded without forcing an index
+        # refresh after every batch. A retryable bulk failure is retained in the
+        # buffer and must fail this apply before the plan can be marked complete.
+        if flush_buffer is not None:
+            await flush_buffer()
+            _require_no_pending_tracking_writes(storage, label)
         written += len(payload)
     await storage.index_done_callback()
+    _require_no_pending_tracking_writes(storage, label)
     logger.info(f"Chunk tracking repair: rebuilt {written} {label} row(s)")
     return written
 
