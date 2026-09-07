@@ -661,6 +661,24 @@ class EmbeddingFunc:
             embeddings = await embed_func(texts, context="document")  # For indexing
             embeddings = await embed_func([query], context="query")   # For search
 
+    Return shape contract:
+        The wrapped function MUST return a 2D numpy array of shape
+        ``(len(texts), embedding_dim)`` -- exactly one row per input text, in
+        input order. Every storage backend consumes the result positionally
+        (``embeddings[i]`` belongs to ``texts[i]``), so any other shape is
+        rejected with a ValueError; the wrapper never reshapes, slices or pads
+        the result, because the row-to-input mapping cannot be recovered once
+        it is wrong. In particular:
+
+        - A single input still returns ``(1, embedding_dim)``, not
+          ``(embedding_dim,)``.
+        - A provider that returns more vectors than inputs (e.g. one vector
+          per internally split segment of an over-long text) needs its token
+          limit declared via ``max_token_size``, or a dedicated adapter that
+          normalizes the output to one vector per input.
+        - An empty input list may return any empty array, including a bare
+          ``np.array([])``.
+
     Args:
         embedding_dim: Expected dimension of the embeddings(For dimension checking and workspace data isolation in vector DB)
         func: The actual embedding function to wrap
@@ -751,30 +769,78 @@ class EmbeddingFunc:
         # (N, 2D) -- both divide out to the same "actual vectors" number, so
         # the wrong one of the two gets reported. Checking ndim/shape[0]/
         # shape[1] directly identifies which one actually happened.
+        #
+        # Every mismatch is fatal: the wrapper never reshapes, slices or pads
+        # the result. Each raise is preceded by a logger.error carrying the
+        # likely cause and the fix, so the short exception message stays
+        # readable while the diagnosis is still available in the logs.
         expected_dim = self.embedding_dim
+        # None means "the caller did not pass the texts positionally", so the
+        # input count is unknown and the vector count cannot be checked.
+        expected_vectors = (
+            len(args[0]) if args and isinstance(args[0], (list, tuple)) else None
+        )
+
+        # An empty batch carries no vectors and no dimension to validate. A
+        # provider that short-circuits with `if not texts: return np.array([])`
+        # yields a 1D (0,) array, which is a correct answer to a zero-input
+        # request and must not be rejected by the 2D check below. An empty
+        # input paired with a non-empty result still falls through and fails.
+        if expected_vectors == 0 and result.size == 0:
+            return result
+
         if result.ndim != 2:
+            logger.error(
+                f"Embedding result has unexpected shape {result.shape}: this "
+                f"wrapper requires a 2D array of exactly one row per input "
+                f"text, i.e. (len(texts), {expected_dim}). A single input "
+                f"must still come back as (1, {expected_dim}), not "
+                f"({expected_dim},); a flattened or nested array is rejected "
+                f"rather than reshaped, because the row-to-input mapping "
+                f"cannot be recovered from it."
+            )
             raise ValueError(
                 f"Embedding result has unexpected shape: expected a 2D "
                 f"array (vectors, dimension) but got ndim={result.ndim} "
                 f"(shape={result.shape})."
             )
 
-        if args and isinstance(args[0], (list, tuple)):
-            expected_vectors = len(args[0])
-            if result.shape[0] != expected_vectors:
-                raise ValueError(
-                    f"Vector count mismatch: expected {expected_vectors} "
-                    f"vectors (one per input text) but got {result.shape[0]} "
-                    f"(shape={result.shape}). If this embedding provider "
-                    f"legitimately returns multiple vectors per input, "
-                    f"normalize its output to one vector per input in a "
-                    f"dedicated provider adapter before it reaches this "
-                    f"wrapper -- do not silently reshape or truncate here, "
-                    f"since there is no general contract for which rows "
-                    f"correspond to which inputs."
-                )
+        if expected_vectors is not None and result.shape[0] != expected_vectors:
+            logger.error(
+                f"Embedding vector count mismatch: {expected_vectors} text(s) "
+                f"in, {result.shape[0]} vector(s) out (shape={result.shape}). "
+                f"The usual cause is an embedding service that splits an "
+                f"over-long input internally and returns one vector per "
+                f"segment: declare the model's real token limit so texts are "
+                f"truncated before the call -- EMBEDDING_TOKEN_LIMIT on the "
+                f"API server, or max_token_size on "
+                f"@wrap_embedding_func_with_attrs for a custom embedding "
+                f"function. A provider that legitimately returns multiple "
+                f"vectors per input needs a dedicated adapter that normalizes "
+                f"its output to one vector per input before it reaches this "
+                f"wrapper; nothing is reshaped or truncated here, since there "
+                f"is no general contract for which rows correspond to which "
+                f"inputs."
+            )
+            raise ValueError(
+                f"Vector count mismatch: expected {expected_vectors} vectors "
+                f"(one per input text) but got {result.shape[0]} "
+                f"(shape={result.shape})."
+            )
 
         if result.shape[1] != expected_dim:
+            logger.error(
+                f"Embedding dimension mismatch: the model returned "
+                f"{result.shape[1]}-dimensional vectors but this embedding "
+                f"function declares {expected_dim} (shape={result.shape}). "
+                f"Check that EMBEDDING_DIM (or the embedding_dim passed to "
+                f"@wrap_embedding_func_with_attrs / EmbeddingFunc) matches "
+                f"the model actually being called, and that the endpoint "
+                f"honours the requested output dimension. Vectors already "
+                f"stored under the previously declared dimension do not match "
+                f"the corrected one, so clear the data directory too unless "
+                f"nothing has been indexed yet."
+            )
             raise ValueError(
                 f"Embedding dimension mismatch: expected dimension "
                 f"{expected_dim} but got {result.shape[1]} (shape={result.shape})."
