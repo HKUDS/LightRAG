@@ -128,6 +128,88 @@ async def test_hf_model_if_cache_runs_generate_off_the_event_loop_thread(
 
 
 @pytest.mark.asyncio
+async def test_hf_model_if_cache_serializes_concurrent_generate_calls(
+    hf_module, monkeypatch
+):
+    """initialize_hf_model caches a single model instance shared by every
+    concurrent hf_model_if_cache call (e.g. extract_entities() fanning out
+    up to llm_model_max_async chunks). generate() is not safe to call
+    concurrently against one model from multiple threads -- blocking the
+    event loop used to serialize this by accident; asyncio.to_thread does
+    not, so only one generate() call must ever be in flight at a time."""
+    in_generate = threading.Event()
+    release_generate = threading.Event()
+    concurrent_calls = {"count": 0, "max": 0}
+    lock = threading.Lock()
+
+    class FakeModel:
+        def __init__(self):
+            self.device = FakeDevice("cpu")
+            self.generation_config = types.SimpleNamespace(eos_token_id=0)
+
+        def generate(self, **kwargs):
+            with lock:
+                concurrent_calls["count"] += 1
+                concurrent_calls["max"] = max(
+                    concurrent_calls["max"], concurrent_calls["count"]
+                )
+            in_generate.set()
+            release_generate.wait(timeout=5)
+            with lock:
+                concurrent_calls["count"] -= 1
+            input_ids = kwargs["input_ids"]
+            return FakeTensor([input_ids.data[0] + [901, 902]], "cpu")
+
+    class FakeTokenizer:
+        eos_token_id = 0
+
+        def apply_chat_template(
+            self, messages, tokenize=False, add_generation_prompt=True
+        ):
+            return "<prompt>"
+
+        def __call__(self, text, return_tensors="pt", padding=True, truncation=True):
+            return {
+                "input_ids": FakeTensor([[1, 2, 3]]),
+                "attention_mask": FakeTensor([[1, 1, 1]]),
+            }
+
+        def decode(self, tensor, skip_special_tokens=True):
+            return f"decoded:{tensor.data}"
+
+    monkeypatch.setattr(
+        hf_module, "initialize_hf_model", lambda name: (FakeModel(), FakeTokenizer())
+    )
+
+    task1 = asyncio.ensure_future(
+        hf_module.hf_model_if_cache("fake-model", "hello world")
+    )
+    for _ in range(500):
+        if in_generate.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert in_generate.is_set()
+
+    # A second call must queue behind the lock instead of starting a
+    # second concurrent generate().
+    task2 = asyncio.ensure_future(
+        hf_module.hf_model_if_cache("fake-model", "hello again")
+    )
+    await asyncio.sleep(0.05)
+    assert concurrent_calls["count"] == 1
+
+    # release_generate is a one-shot latch: once set it stays set, so
+    # task2's own generate() call (once it gets the lock) will not block
+    # on it either -- that's fine, the queueing behavior was already
+    # proven by the count==1 check above.
+    release_generate.set()
+    await task1
+    await task2
+
+    assert concurrent_calls["max"] == 1
+
+
+@pytest.mark.asyncio
 async def test_hf_model_if_cache_logs_and_repropagates_cancellation(
     hf_module, monkeypatch
 ):

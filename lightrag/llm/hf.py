@@ -47,6 +47,17 @@ def initialize_hf_model(model_name):
     return hf_model, hf_tokenizer
 
 
+# initialize_hf_model caches a single model instance (maxsize=1), and the
+# same instance backs every concurrent hf_model_if_cache call. PyTorch's
+# generate() is not safe to call concurrently against one model from
+# multiple threads (shared KV-cache/internal buffers can corrupt output),
+# and concurrent generations multiply GPU memory usage per call. Blocking
+# the event loop used to serialize this by accident -- asyncio.to_thread
+# does not, so this lock keeps only one generate() call in flight at a
+# time without blocking unrelated async work.
+_generate_lock = asyncio.Lock()
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -127,13 +138,14 @@ async def hf_model_if_cache(
     # of bridging synchronous PyTorch inference through asyncio.to_thread,
     # not something fixable at this call site.
     try:
-        output = await asyncio.to_thread(
-            hf_model.generate,
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            num_return_sequences=1,
-            early_stopping=True,
-        )
+        async with _generate_lock:
+            output = await asyncio.to_thread(
+                hf_model.generate,
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                num_return_sequences=1,
+                early_stopping=True,
+            )
     except asyncio.CancelledError:
         logger.warning(
             "hf_model_if_cache: cancelled while awaiting generate(); "
