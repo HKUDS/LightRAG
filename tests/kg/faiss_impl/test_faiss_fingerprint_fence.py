@@ -73,7 +73,9 @@ async def _worker(tmp_path) -> FaissVectorDBStorage:
             "embedding_batch_num": 32,
             "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.2},
         },
-        embedding_func=EmbeddingFunc(embedding_dim=DIM, max_token_size=512, func=_embed),
+        embedding_func=EmbeddingFunc(
+            embedding_dim=DIM, max_token_size=512, func=_embed
+        ),
         meta_fields={"content"},
     )
     await storage.initialize()
@@ -133,9 +135,7 @@ async def test_reader_picks_up_a_peer_commit_it_was_never_told_about(
 
 
 @pytest.mark.asyncio
-async def test_a_change_to_the_meta_file_alone_is_a_peer_commit(
-    tmp_path, multiprocess
-):
+async def test_a_change_to_the_meta_file_alone_is_a_peer_commit(tmp_path, multiprocess):
     """The pair is sampled, not just the index file. Cross-file atomicity is
     best-effort, so a pair where only the metadata moved is a real state — and
     reading it as "unchanged" would serve rows the metadata no longer has."""

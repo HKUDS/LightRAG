@@ -1441,6 +1441,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             atomic_write(meta_file, _write_meta, workspace)
 
         try:
+
             async def _committed() -> None:
                 # Adopt the pair this process just wrote BEFORE the caller's
                 # bookkeeping, which publishes through the manager and can

@@ -74,7 +74,9 @@ async def _worker(tmp_path) -> NanoVectorDBStorage:
             "embedding_batch_num": 32,
             "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.2},
         },
-        embedding_func=EmbeddingFunc(embedding_dim=DIM, max_token_size=512, func=_embed),
+        embedding_func=EmbeddingFunc(
+            embedding_dim=DIM, max_token_size=512, func=_embed
+        ),
         meta_fields={"content"},
     )
     await storage.initialize()
