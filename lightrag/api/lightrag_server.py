@@ -1662,19 +1662,20 @@ def create_app(args):
     # create_app working for callers that build args programmatically.
     ai_content_notice_enabled = bool(getattr(args, "enable_ai_content_notice", False))
 
+    # The WebUI mount path is fixed at "/webui" — see
+    # docs/MultiSiteDeployment.md for the rationale. Computed before
+    # swagger_description below, which embeds it in the ReDoc link.
+    api_prefix = normalize_api_prefix(getattr(args, "api_prefix", None))
+    webui_path = WEBUI_PATH
+
     base_description = (
         "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
     )
     swagger_description = (
         base_description
         + (" (API-Key Enabled)" if api_key else "")
-        + "\n\n[View ReDoc documentation](/redoc)"
+        + f"\n\n[View ReDoc documentation]({api_prefix}/redoc)"
     )
-
-    # The WebUI mount path is fixed at "/webui" — see
-    # docs/MultiSiteDeployment.md for the rationale.
-    api_prefix = normalize_api_prefix(getattr(args, "api_prefix", None))
-    webui_path = WEBUI_PATH
 
     app_kwargs = {
         "title": "LightRAG Server API",

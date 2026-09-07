@@ -722,6 +722,44 @@ class TestSwaggerUIAssetURLs:
             assert "'/docs/oauth2-redirect'" in html
             assert "'/openapi.json'" in html
 
+    def test_redoc_link_in_description_prefixed_with_api_prefix(
+        self, mock_args_api_prefix
+    ):
+        """The [View ReDoc documentation](...) link in the OpenAPI info
+        description (rendered in the Swagger UI info panel) must also carry
+        root_path -- raised in review on PR #3864: this link was still
+        hardcoded to /redoc even after the asset-URL fix, so it 404s behind
+        a proxy the same way the assets did."""
+        with patch("lightrag.api.lightrag_server.LightRAG") as mock_rag:
+            mock_rag.return_value = MagicMock()
+            from lightrag.api.lightrag_server import create_app
+
+            app = create_app(mock_args_api_prefix)
+            client = TestClient(app)
+
+            response = client.get("/test-api/openapi.json")
+            assert response.status_code == 200
+            description = response.json()["info"]["description"]
+
+            assert "[View ReDoc documentation](/test-api/redoc)" in description
+            assert "(/redoc)" not in description
+
+    def test_redoc_link_in_description_unprefixed_without_api_prefix(
+        self, mock_args_no_prefix
+    ):
+        with patch("lightrag.api.lightrag_server.LightRAG") as mock_rag:
+            mock_rag.return_value = MagicMock()
+            from lightrag.api.lightrag_server import create_app
+
+            app = create_app(mock_args_no_prefix)
+            client = TestClient(app)
+
+            response = client.get("/openapi.json")
+            assert response.status_code == 200
+            description = response.json()["info"]["description"]
+
+            assert "[View ReDoc documentation](/redoc)" in description
+
 
 class TestWhitelistUnderApiPrefix:
     """WHITELIST_PATHS is matched against route paths, on the real application.
