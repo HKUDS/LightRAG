@@ -297,6 +297,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                 # -- `data_dict` is snapshotted above, on the loop, under the
                 # lock, so the worker thread touches nothing shared.
                 write_outcome: dict[str, bool] = {}
+                reconcile_failure: list[Exception] = []
 
                 def _write() -> None:
                     write_outcome["needs_reload"] = write_json(
@@ -321,8 +322,23 @@ class JsonDocStatusStorage(DocStatusStorage):
                         )
                         cleaned_data = load_json(self._file_name)
                         if cleaned_data is not None:
-                            self._data.clear()
-                            self._data.update(cleaned_data)
+                            try:
+                                self._data.clear()
+                                self._data.update(cleaned_data)
+                            except Exception as exc:
+                                # NOT publication, and not absorbable. On a
+                                # shared ``Manager().dict()`` these are two
+                                # separate RPCs, so a failure between them
+                                # leaves the shared dict EMPTY while the file on
+                                # disk holds the correct sanitized snapshot —
+                                # and the dirty flags are still set, so the next
+                                # flush would write that empty dict straight
+                                # over it, losing every row in the namespace.
+                                # Recorded so the handler below re-raises
+                                # instead of reporting a healthy deferred
+                                # publication.
+                                reconcile_failure.append(exc)
+                                raise
 
                     await clear_all_update_flags(
                         self.namespace, workspace=self.workspace
@@ -331,12 +347,22 @@ class JsonDocStatusStorage(DocStatusStorage):
                 try:
                     await commit_in_storage_io(_write, _committed)
                 except CommitBookkeepingError as e:
-                    # The file is already published; what failed is the
-                    # post-write reconciliation — reloading the sanitized data
-                    # and clearing every process's dirty flag. Neither is a lost
-                    # write, and both heal on the next flush: the flags stay set,
-                    # so the next index_done_callback rewrites this same snapshot
-                    # (sanitizing it again) and retries the clear.
+                    if reconcile_failure:
+                        # Fail loud. What is unreliable now is the shared
+                        # in-memory view, and no later flush heals it — a later
+                        # flush is what would PUBLISH it. The file on disk is
+                        # the correct snapshot, so the recovery is to stop
+                        # writing to this workspace and restart the workers,
+                        # which reload it. Re-raised as the original failure
+                        # rather than as CommitBookkeepingError: callers read
+                        # that type as "committed, only publication deferred"
+                        # and some deliberately absorb it.
+                        raise reconcile_failure[0]
+                    # Past the guard above, the only thing that can have
+                    # failed is the dirty-flag clear — the file is published and
+                    # the shared dict matches it. That heals on the next flush:
+                    # the flags stay set, so the next index_done_callback
+                    # rewrites this same snapshot and retries the clear.
                     #
                     # Not re-raising matters more here than anywhere else:
                     # `upsert` flushes synchronously precisely so the doc-status
