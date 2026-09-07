@@ -48,6 +48,26 @@ async def test_llama_index_complete_accepts_llm_instance_kwarg():
 
 
 @pytest.mark.asyncio
+async def test_llama_index_complete_accepts_role_wrapper_kwargs():
+    """The role LLM wrapper (lightrag/llm_roles.py) injects hashing_kv on
+    every call unconditionally, and use_llm_func_with_cache can add
+    max_tokens and stream. llama_index_complete_if_cache has no **kwargs
+    catch-all, so any of these left in kwargs raises TypeError -- this is
+    the actual calling convention, not just the isolated llm_instance case."""
+    llm = _FakeLLM(content="hello back")
+
+    result = await llama_index_complete(
+        "hi",
+        llm_instance=llm,
+        hashing_kv=object(),
+        max_tokens=256,
+        stream=False,
+    )
+
+    assert result == "hello back"
+
+
+@pytest.mark.asyncio
 async def test_llama_index_complete_forwards_chat_kwargs():
     llm = _FakeLLM()
 

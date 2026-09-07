@@ -190,6 +190,14 @@ async def llama_index_complete(
             stacklevel=2,
         )
     kwargs.pop("response_format", None)
+    # hashing_kv is injected unconditionally by the role LLM wrapper;
+    # max_tokens is injected by use_llm_func_with_cache when configured.
+    # Neither is a llama_index_complete_if_cache parameter, and streaming
+    # is not supported by this adapter -- all three are dropped, matching
+    # the explicit-pop pattern in openai.py / ollama.py / anthropic.py.
+    kwargs.pop("hashing_kv", None)
+    kwargs.pop("max_tokens", None)
+    kwargs.pop("stream", None)
     result = await llama_index_complete_if_cache(
         kwargs.pop("llm_instance", None),
         prompt,
