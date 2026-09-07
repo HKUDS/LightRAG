@@ -11,17 +11,21 @@ server, worker, or SDK writer is active can silently lose concurrent updates.
 Run without ``--apply`` to build and print a read-only repair plan. Before an
 apply, stop every writer that uses the same backing storages and workspace.
 The complete plan is computed before the first drop, so a source read failure
-leaves tracking untouched. An interrupted apply is not atomic across the two
-namespaces; keep the server stopped and re-run the tool until it succeeds.
+leaves tracking untouched. Before apply, the plan is durably sealed on local
+disk. An interrupted apply is resumed from that pre-drop snapshot instead of
+re-reading a partially rebuilt namespace.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import json
 import os
 import sqlite3
 import tempfile
+import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -40,27 +44,59 @@ from lightrag.utils import (
 
 _CHUNK_SCAN_BATCH = 200
 _UPSERT_BATCH = 500
+_PLAN_SCHEMA_VERSION = 1
+_CONNECTION_ID_ENV_KEYS = (
+    "MEMGRAPH_URI",
+    "MONGO_DATABASE",
+    "MONGO_URI",
+    "NEO4J_DATABASE",
+    "NEO4J_URI",
+    "OPENSEARCH_HOSTS",
+    "POSTGRES_DATABASE",
+    "POSTGRES_HOST",
+    "POSTGRES_PORT",
+    "POSTGRES_USER",
+    "REDIS_URI",
+)
 
 
 class _DiskPlan:
     """SQLite-backed object universe and replacement rows.
 
-    The database is deliberately local to the repair process. SQLite performs
-    uniqueness and joins on disk, so Python retains at most one scan/upsert
-    batch plus the largest individual tracking row.
+    SQLite performs uniqueness and joins on disk, so Python retains at most one
+    scan/upsert batch plus the largest individual tracking row. Apply plans can
+    outlive the process and are removed only after successful replay.
     """
 
-    def __init__(self):
-        fd, generated = tempfile.mkstemp(
-            prefix="lightrag-chunk-tracking-", suffix=".sqlite3"
-        )
-        os.close(fd)
-        self.path = Path(generated)
+    def __init__(
+        self,
+        path: str | os.PathLike[str] | None = None,
+        *,
+        create: bool = True,
+        remove_on_close: bool = True,
+    ):
+        if path is None:
+            fd, generated = tempfile.mkstemp(
+                prefix="lightrag-chunk-tracking-", suffix=".sqlite3"
+            )
+            os.close(fd)
+            self.path = Path(generated)
+        else:
+            self.path = Path(path).expanduser().resolve()
+            if create:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                os.close(fd)
+            elif not self.path.is_file():
+                raise FileNotFoundError(f"Repair plan does not exist: {self.path}")
+        self._remove_on_close = remove_on_close
         self.connection = sqlite3.connect(self.path)
         self._closed = False
-        self.connection.executescript(
-            """
-            PRAGMA journal_mode=WAL;
+        self.connection.execute("PRAGMA synchronous=FULL")
+        if create:
+            self.connection.executescript(
+                """
+            PRAGMA journal_mode=DELETE;
             CREATE TABLE objects (
                 namespace TEXT NOT NULL,
                 object_key TEXT NOT NULL,
@@ -83,23 +119,72 @@ class _DiskPlan:
             CREATE TABLE chunks (
                 chunk_id TEXT PRIMARY KEY
             ) WITHOUT ROWID;
+            CREATE TABLE metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            ) WITHOUT ROWID;
             """
-        )
+            )
+        else:
+            integrity = self.connection.execute("PRAGMA integrity_check").fetchone()
+            if integrity != ("ok",):
+                raise ValueError(f"Repair plan failed integrity check: {integrity}")
 
-    def close(self) -> None:
+    def close(self, *, remove: bool | None = None) -> None:
         if self._closed:
             return
         self.connection.close()
         self._closed = True
-        self.path.unlink(missing_ok=True)
-        Path(f"{self.path}-wal").unlink(missing_ok=True)
-        Path(f"{self.path}-shm").unlink(missing_ok=True)
+        should_remove = self._remove_on_close if remove is None else remove
+        if should_remove:
+            for candidate in (self.path, Path(f"{self.path}-journal")):
+                try:
+                    candidate.unlink(missing_ok=True)
+                except OSError as exc:
+                    # Cleanup is not part of the tracking commit. A completed
+                    # repair must not be reported as failed merely because its
+                    # already-unneeded local recovery file could not be removed.
+                    logger.warning(
+                        f"Unable to remove chunk-tracking repair plan {candidate}: {exc}"
+                    )
 
     def __del__(self):
         try:
             self.close()
         except (AttributeError, sqlite3.Error):
             pass
+
+    def set_metadata(self, **values: str) -> None:
+        self.connection.executemany(
+            "INSERT OR REPLACE INTO metadata VALUES (?, ?)", values.items()
+        )
+
+    def get_metadata(self, key: str) -> str | None:
+        row = self.connection.execute(
+            "SELECT value FROM metadata WHERE key = ?", (key,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def sync(self) -> None:
+        """Commit the plan and force its file and directory entry to disk."""
+        self.connection.commit()
+        file_fd = os.open(self.path, os.O_RDONLY)
+        try:
+            os.fsync(file_fd)
+        finally:
+            os.close(file_fd)
+        if os.name != "nt":
+            directory_fd = os.open(self.path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+
+    def retain_after_close(self) -> None:
+        self._remove_on_close = False
+
+    def remove_after_close(self) -> None:
+        self._remove_on_close = True
 
     def add_objects(self, namespace: str, keys) -> None:
         self.connection.executemany(
@@ -220,6 +305,7 @@ class ChunkTrackingRepairPlan:
 
     report: ChunkTrackingRepairReport
     disk: _DiskPlan = field(repr=False)
+    completed: bool = field(default=False, repr=False)
 
     @property
     def unsafe_empty_namespaces(self) -> list[str]:
@@ -269,11 +355,141 @@ class ChunkTrackingRepairPlan:
                 )
         return blockers
 
-    def close(self) -> None:
-        self.disk.close()
+    def close(self, *, remove: bool | None = None) -> None:
+        self.disk.close(remove=remove)
+
+    @property
+    def path(self) -> Path:
+        return self.disk.path
+
+    @property
+    def state(self) -> str:
+        if self.completed:
+            return "complete"
+        return self.disk.get_metadata("state") or "building"
+
+    def seal(self, rag) -> None:
+        """Persist a complete pre-drop snapshot and its storage identity."""
+        self.disk.set_metadata(
+            schema_version=str(_PLAN_SCHEMA_VERSION),
+            state="ready",
+            storage_identity=json.dumps(
+                _repair_storage_identity(rag), sort_keys=True, separators=(",", ":")
+            ),
+            report=json.dumps(
+                self.report.as_dict(), sort_keys=True, separators=(",", ":")
+            ),
+        )
+        self.disk.sync()
+
+    def prepare_apply(
+        self,
+        namespaces: set[str],
+        *,
+        allow_empty_graph: bool,
+        allow_missing_rows: bool,
+    ) -> None:
+        """Durably record the exact destructive operation before its drop."""
+        options = {
+            "namespaces": sorted(namespaces),
+            "allow_empty_graph": allow_empty_graph,
+            "allow_missing_rows": allow_missing_rows,
+        }
+        encoded = json.dumps(options, sort_keys=True, separators=(",", ":"))
+        prior = self.disk.get_metadata("apply_options")
+        if self.state == "applying" and prior != encoded:
+            raise ValueError("Resume options do not match the sealed repair plan")
+        # From this point forward a failure may leave tracking partial, so the
+        # sealed snapshot must survive normal cleanup and object destruction.
+        self.disk.retain_after_close()
+        self.disk.set_metadata(state="applying", apply_options=encoded)
+        self.disk.sync()
+        logger.info(f"Durable chunk-tracking recovery plan: {self.path}")
+
+    def resume_options(self) -> tuple[set[str], bool, bool]:
+        if self.state != "applying":
+            raise ValueError(
+                "Repair plan has no interrupted apply to resume; build a new plan"
+            )
+        raw = self.disk.get_metadata("apply_options")
+        if raw is None:
+            raise ValueError("Repair plan is missing its apply options")
+        options = json.loads(raw)
+        return (
+            set(options["namespaces"]),
+            bool(options["allow_empty_graph"]),
+            bool(options["allow_missing_rows"]),
+        )
+
+    def mark_complete(self) -> None:
+        # The tracking namespaces are already committed at this point. This is
+        # local cleanup state only and must not turn a successful repair into a
+        # reported failure because of an unrelated plan-file metadata write.
+        self.completed = True
+        self.disk.remove_after_close()
 
 
-async def build_chunk_tracking_repair_plan(rag) -> ChunkTrackingRepairPlan:
+def _repair_storage_identity(rag) -> dict[str, Any]:
+    def identify(storage) -> dict[str, str]:
+        return {
+            "class": f"{type(storage).__module__}.{type(storage).__qualname__}",
+            "workspace": str(getattr(storage, "workspace", "")),
+            "namespace": str(getattr(storage, "namespace", "")),
+        }
+
+    connection_values = {key: os.environ.get(key) for key in _CONNECTION_ID_ENV_KEYS}
+    connection_fingerprint = hashlib.sha256(
+        json.dumps(connection_values, sort_keys=True).encode()
+    ).hexdigest()
+    return {
+        "working_dir": str(Path(rag.working_dir).expanduser().resolve()),
+        "workspace": str(rag.workspace or ""),
+        "graph": identify(rag.chunk_entity_relation_graph),
+        "entity_chunks": identify(rag.entity_chunks),
+        "relation_chunks": identify(rag.relation_chunks),
+        "connection_fingerprint": connection_fingerprint,
+    }
+
+
+def load_chunk_tracking_repair_plan(
+    rag, path: str | os.PathLike[str]
+) -> ChunkTrackingRepairPlan:
+    """Open and validate a durable plan without reading damaged tracking."""
+    _require_storages(rag)
+    disk = _DiskPlan(path, create=False, remove_on_close=False)
+    try:
+        version = disk.get_metadata("schema_version")
+        if version != str(_PLAN_SCHEMA_VERSION):
+            raise ValueError(
+                f"Unsupported repair plan schema version: {version or 'missing'}"
+            )
+        identity = disk.get_metadata("storage_identity")
+        expected = json.dumps(
+            _repair_storage_identity(rag), sort_keys=True, separators=(",", ":")
+        )
+        if identity != expected:
+            raise ValueError(
+                "Repair plan storage identity does not match the configured "
+                "working directory, workspace, or storage namespaces"
+            )
+        raw_report = disk.get_metadata("report")
+        if raw_report is None:
+            raise ValueError("Repair plan is incomplete and has no sealed report")
+        report = ChunkTrackingRepairReport(**json.loads(raw_report))
+        plan = ChunkTrackingRepairPlan(report, disk)
+        plan.resume_options()
+        return plan
+    except BaseException:
+        disk.close(remove=False)
+        raise
+
+
+async def build_chunk_tracking_repair_plan(
+    rag,
+    *,
+    plan_path: str | os.PathLike[str] | None = None,
+    durable: bool = False,
+) -> ChunkTrackingRepairPlan:
     """Build a complete, read-only replacement plan for one workspace.
 
     The graph is an existence oracle only. Existing authoritative rows are
@@ -284,7 +500,10 @@ async def build_chunk_tracking_repair_plan(rag) -> ChunkTrackingRepairPlan:
     """
     _require_storages(rag)
     report = ChunkTrackingRepairReport()
-    disk = _DiskPlan()
+    disk = _DiskPlan(
+        plan_path,
+        remove_on_close=not durable,
+    )
     try:
         (
             report.scanned_documents,
@@ -336,9 +555,8 @@ async def build_chunk_tracking_repair_plan(rag) -> ChunkTrackingRepairPlan:
         report.relations_without_tracking_row = (
             report.graph_relations - report.relation_rows_planned
         )
-        disk.connection.commit()
     except BaseException:
-        disk.close()
+        disk.close(remove=True)
         raise
 
     _add_plan_warnings(report)
@@ -359,6 +577,9 @@ async def build_chunk_tracking_repair_plan(rag) -> ChunkTrackingRepairPlan:
 
     for warning in report.warnings:
         logger.warning(f"Chunk tracking repair plan: {warning}")
+    # Seal only after the complete report is final, but still before apply can
+    # record its options or drop a namespace.
+    plan.seal(rag)
     return plan
 
 
@@ -388,6 +609,12 @@ async def apply_chunk_tracking_repair_plan(
             "an explicit allow override only after reviewing the reported loss."
         )
 
+    plan.prepare_apply(
+        namespaces,
+        allow_empty_graph=allow_empty_graph,
+        allow_missing_rows=allow_missing_rows,
+    )
+
     if "entity_chunks" in namespaces:
         await _drop_tracking_namespace(rag.entity_chunks, "entity_chunks")
         plan.report.entity_rows_written = await _write_tracking_rows(
@@ -398,6 +625,7 @@ async def apply_chunk_tracking_repair_plan(
         plan.report.relation_rows_written = await _write_tracking_rows(
             rag.relation_chunks, plan.disk, "relation_chunks"
         )
+    plan.mark_complete()
     logger.info(
         "Chunk tracking repair completed: "
         f"{plan.report.entity_rows_written} entity row(s), "
@@ -705,6 +933,13 @@ async def _build_rag():
     )
 
 
+def _new_recovery_plan_path(rag) -> Path:
+    directory = (
+        Path(rag.working_dir).expanduser().resolve() / ".chunk_tracking_repair_plans"
+    )
+    return directory / f"plan-{uuid.uuid4().hex}.sqlite3"
+
+
 async def run(args: argparse.Namespace) -> bool:
     """Run the offline tool; return False for any unsafe or failed apply."""
     print("LightRAG Offline Chunk-Tracking Repair Tool")
@@ -723,17 +958,51 @@ async def run(args: argparse.Namespace) -> bool:
         print(f"Tracking KV storage: {_storage_description(rag.entity_chunks)}")
         print(f"Doc-status storage: {_storage_description(rag.doc_status)}")
 
-        plan = await build_chunk_tracking_repair_plan(rag)
+        resume_path = getattr(args, "resume_plan", None)
+        requested_namespace = getattr(args, "namespace", None)
+        if resume_path:
+            if not args.apply:
+                raise ValueError("--resume-plan requires --apply")
+            plan = load_chunk_tracking_repair_plan(rag, resume_path)
+            namespaces, allow_empty_graph, allow_missing_rows = plan.resume_options()
+            if requested_namespace is not None:
+                requested_namespaces = (
+                    {"entity_chunks", "relation_chunks"}
+                    if requested_namespace == "both"
+                    else {f"{requested_namespace}_chunks"}
+                )
+                if requested_namespaces != namespaces:
+                    raise ValueError(
+                        "--namespace does not match the interrupted repair plan"
+                    )
+            print(f"Resuming durable repair plan: {plan.path}")
+        else:
+            namespaces = (
+                {"entity_chunks", "relation_chunks"}
+                if requested_namespace in (None, "both")
+                else {f"{requested_namespace}_chunks"}
+            )
+            allow_empty_graph = args.allow_empty_graph
+            allow_missing_rows = args.allow_missing_rows
+            requested_plan_path = getattr(args, "plan_file", None)
+            durable = bool(args.apply)
+            plan_path = (
+                Path(requested_plan_path)
+                if requested_plan_path
+                else _new_recovery_plan_path(rag)
+                if durable
+                else None
+            )
+            plan = await build_chunk_tracking_repair_plan(
+                rag,
+                plan_path=plan_path,
+                durable=durable,
+            )
         _print_report(plan.report, applied=False)
-        namespaces = (
-            {"entity_chunks", "relation_chunks"}
-            if args.namespace == "both"
-            else {f"{args.namespace}_chunks"}
-        )
         blockers = plan.blockers(
             namespaces,
-            allow_empty_graph=args.allow_empty_graph,
-            allow_missing_rows=args.allow_missing_rows,
+            allow_empty_graph=allow_empty_graph,
+            allow_missing_rows=allow_missing_rows,
         )
         if blockers:
             print(f"Unsafe plan: {', '.join(blockers)}.")
@@ -742,6 +1011,8 @@ async def run(args: argparse.Namespace) -> bool:
         if not args.apply:
             print("Dry run only. Re-run with --apply to rebuild tracking.")
             return True
+        if not resume_path:
+            print(f"Durable recovery plan: {plan.path}")
         if not _confirm_apply(args.yes):
             print("Apply cancelled; tracking was not modified.")
             return True
@@ -750,24 +1021,33 @@ async def run(args: argparse.Namespace) -> bool:
             rag,
             plan,
             namespaces=namespaces,
-            allow_empty_graph=args.allow_empty_graph,
-            allow_missing_rows=args.allow_missing_rows,
+            allow_empty_graph=allow_empty_graph,
+            allow_missing_rows=allow_missing_rows,
         )
         _print_report(report, applied=True)
         print("Repair completed successfully. It is now safe to restart LightRAG.")
         return True
     except Exception as exc:
+        if plan is not None and plan.completed:
+            logger.exception(
+                "Chunk tracking repair committed but final reporting failed"
+            )
+            print(f"Repair storage writes completed, but final reporting failed: {exc}")
+            return True
         logger.exception("Chunk tracking repair failed")
         print(f"Repair failed: {exc}")
         if args.apply:
-            print(
-                "Keep every LightRAG writer stopped. The tracking namespaces may "
-                "be partially rebuilt; fix the cause and re-run until successful."
-            )
+            if plan is not None and plan.state == "applying":
+                print(
+                    "Keep every LightRAG writer stopped. Resume the sealed plan "
+                    f"with: lightrag-repair-chunk-tracking --apply --resume-plan {plan.path}"
+                )
+            else:
+                print("No tracking namespace was modified.")
         return False
     finally:
         if plan is not None:
-            plan.close()
+            plan.close(remove=plan.state != "applying")
         await rag.finalize_storages()
 
 
@@ -788,8 +1068,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--namespace",
         choices=("both", "entity", "relation"),
-        default="both",
+        default=None,
         help="Tracking namespace to rebuild (default: both).",
+    )
+    plan_group = parser.add_mutually_exclusive_group()
+    plan_group.add_argument(
+        "--plan-file",
+        help="Path for the new durable recovery plan used by --apply.",
+    )
+    plan_group.add_argument(
+        "--resume-plan",
+        help="Resume an interrupted --apply from this sealed plan file.",
     )
     parser.add_argument(
         "--allow-empty-graph",

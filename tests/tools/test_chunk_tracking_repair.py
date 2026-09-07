@@ -30,6 +30,7 @@ from lightrag.tools import chunk_tracking_repair
 from lightrag.tools.chunk_tracking_repair import (
     apply_chunk_tracking_repair_plan,
     build_chunk_tracking_repair_plan,
+    load_chunk_tracking_repair_plan,
 )
 from lightrag.utils import make_relation_chunk_key
 
@@ -197,9 +198,14 @@ class _Repairer:
 
 async def _repair(repairer, *, allow_missing_rows: bool = False):
     plan = await build_chunk_tracking_repair_plan(repairer)
-    return await apply_chunk_tracking_repair_plan(
-        repairer, plan, allow_missing_rows=allow_missing_rows
-    )
+    try:
+        return await apply_chunk_tracking_repair_plan(
+            repairer, plan, allow_missing_rows=allow_missing_rows
+        )
+    finally:
+        # Unit tests that intentionally inject apply failures do not need to
+        # leave operator recovery artifacts in the system temp directory.
+        plan.close(remove=True)
 
 
 def _two_chunk_corpus():
@@ -683,6 +689,108 @@ async def test_entity_write_failure_leaves_relation_namespace_untouched():
     assert relation_chunks.data == {"OLD": {"chunk_ids": ["old"], "count": 1}}
 
 
+async def test_durable_plan_restores_unreconstructable_rows_after_process_loss(
+    tmp_path, monkeypatch
+):
+    """A new process must replay the pre-drop snapshot, not rescan partial KV."""
+    monkeypatch.setattr(chunk_tracking_repair, "_UPSERT_BATCH", 1)
+    docs, chunks, cache, _ = _two_chunk_corpus()
+    graph = _Graph(["ALICIA", "BOB", "MANUAL"], [])
+
+    class _FailSecondBatchKV(_KV):
+        def __init__(self, data):
+            super().__init__(data)
+            self.upsert_calls = 0
+            self.fail = True
+
+        async def upsert(self, payload):
+            self.upsert_calls += 1
+            if self.fail and self.upsert_calls == 2:
+                raise RuntimeError("second batch failed")
+            await super().upsert(payload)
+
+    entity_chunks = _FailSecondBatchKV(
+        {
+            "ALICIA": {"chunk_ids": ["c1", "c2"], "count": 2},
+            "BOB": {"chunk_ids": ["c2"], "count": 1},
+            "MANUAL": {"chunk_ids": [], "count": 0},
+        }
+    )
+    first_process = _Repairer(
+        docs=docs,
+        chunks=chunks,
+        cache=cache,
+        graph=graph,
+        entity_chunks=entity_chunks,
+    )
+    plan_path = tmp_path / "durable-plan.sqlite3"
+    plan = await build_chunk_tracking_repair_plan(
+        first_process, plan_path=plan_path, durable=True
+    )
+
+    with pytest.raises(RuntimeError, match="second batch failed"):
+        await apply_chunk_tracking_repair_plan(
+            first_process, plan, namespaces={"entity_chunks"}
+        )
+
+    assert plan.state == "applying"
+    assert entity_chunks.data == {"ALICIA": {"chunk_ids": ["c1", "c2"], "count": 2}}
+    plan.close(remove=False)  # Simulate process exit after the failed apply.
+    assert plan_path.exists()
+
+    entity_chunks.fail = False
+    second_process = _Repairer(
+        docs=docs,
+        chunks=chunks,
+        cache=cache,
+        graph=graph,
+        entity_chunks=entity_chunks,
+    )
+    resumed = load_chunk_tracking_repair_plan(second_process, plan_path)
+    namespaces, allow_empty_graph, allow_missing_rows = resumed.resume_options()
+    await apply_chunk_tracking_repair_plan(
+        second_process,
+        resumed,
+        namespaces=namespaces,
+        allow_empty_graph=allow_empty_graph,
+        allow_missing_rows=allow_missing_rows,
+    )
+
+    assert entity_chunks.data == {
+        "ALICIA": {"chunk_ids": ["c1", "c2"], "count": 2},
+        "BOB": {"chunk_ids": ["c2"], "count": 1},
+        "MANUAL": {"chunk_ids": [], "count": 0},
+    }
+    assert resumed.state == "complete"
+    resumed.close(remove=True)
+    assert not plan_path.exists()
+
+
+async def test_resume_rejects_a_different_workspace_before_drop(tmp_path):
+    docs, chunks, cache, graph = _two_chunk_corpus()
+    original = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
+    plan_path = tmp_path / "wrong-workspace.sqlite3"
+    plan = await build_chunk_tracking_repair_plan(
+        original, plan_path=plan_path, durable=True
+    )
+    plan.prepare_apply(
+        {"entity_chunks"},
+        allow_empty_graph=False,
+        allow_missing_rows=False,
+    )
+    plan.close(remove=False)
+
+    wrong_workspace = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
+    wrong_workspace.workspace = "another-workspace"
+    with pytest.raises(ValueError, match="storage identity"):
+        load_chunk_tracking_repair_plan(wrong_workspace, plan_path)
+
+    assert wrong_workspace.entity_chunks.drops == 0
+    assert plan_path.exists()
+    resumed = load_chunk_tracking_repair_plan(original, plan_path)
+    resumed.close(remove=True)
+
+
 async def test_repair_requires_chunk_tracking_to_be_configured():
     docs, chunks, cache, graph = _two_chunk_corpus()
     repairer = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
@@ -778,6 +886,79 @@ async def test_cli_returns_failure_for_an_unsafe_apply_without_dropping(monkeypa
     assert repairer.entity_chunks.drops == 0
     assert repairer.relation_chunks.drops == 0
     assert repairer.finalized is True
+
+
+async def test_cli_keeps_failed_plan_and_resumes_it_without_rescanning(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(chunk_tracking_repair, "_UPSERT_BATCH", 1)
+
+    class _FailSecondBatchKV(_KV):
+        def __init__(self, data):
+            super().__init__(data)
+            self.calls = 0
+            self.fail = True
+
+        async def upsert(self, payload):
+            self.calls += 1
+            if self.fail and self.calls == 2:
+                raise RuntimeError("injected later-batch failure")
+            await super().upsert(payload)
+
+    entity_chunks = _FailSecondBatchKV(
+        {
+            "RENAMED": {"chunk_ids": ["c1"], "count": 1},
+            "SOURCELESS_MANUAL": {"chunk_ids": [], "count": 0},
+        }
+    )
+    repairer = _Repairer(
+        docs={},
+        chunks={},
+        cache={},
+        graph=_Graph(["RENAMED", "SOURCELESS_MANUAL"], []),
+        entity_chunks=entity_chunks,
+    )
+
+    async def _build():
+        return repairer
+
+    monkeypatch.setattr(chunk_tracking_repair, "_build_rag", _build)
+    plan_path = tmp_path / "cli-recovery.sqlite3"
+    first_result = await chunk_tracking_repair.run(
+        argparse.Namespace(
+            apply=True,
+            yes=True,
+            namespace="entity",
+            plan_file=str(plan_path),
+            resume_plan=None,
+            allow_empty_graph=False,
+            allow_missing_rows=False,
+        )
+    )
+
+    assert first_result is False
+    assert plan_path.exists()
+    assert list(entity_chunks.data) == ["RENAMED"]
+
+    entity_chunks.fail = False
+    second_result = await chunk_tracking_repair.run(
+        argparse.Namespace(
+            apply=True,
+            yes=True,
+            namespace=None,
+            plan_file=None,
+            resume_plan=str(plan_path),
+            allow_empty_graph=False,
+            allow_missing_rows=False,
+        )
+    )
+
+    assert second_result is True
+    assert entity_chunks.data == {
+        "RENAMED": {"chunk_ids": ["c1"], "count": 1},
+        "SOURCELESS_MANUAL": {"chunk_ids": [], "count": 0},
+    }
+    assert not plan_path.exists()
 
 
 async def test_cli_unsafe_dry_run_returns_failure(monkeypatch):

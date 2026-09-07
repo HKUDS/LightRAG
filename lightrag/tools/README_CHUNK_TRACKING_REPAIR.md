@@ -48,6 +48,14 @@ After reviewing the plan, apply it:
 lightrag-repair-chunk-tracking --apply
 ```
 
+Before the first namespace is dropped, `--apply` prints and durably seals a
+recovery-plan path under `WORKING_DIR/.chunk_tracking_repair_plans/`. To choose
+the location explicitly:
+
+```bash
+lightrag-repair-chunk-tracking --apply --plan-file /secure/path/repair.sqlite3
+```
+
 To repair only one namespace when the other cannot be reconstructed safely:
 
 ```bash
@@ -72,8 +80,9 @@ evidence.
 
 Planning is memory-bounded. Document status and graph objects are read through
 bounded pages, and the distinct chunk set, graph membership indexes, and final
-replacement rows are held in a temporary SQLite database. Apply also reads that
-database in bounded upsert batches. Python memory therefore grows with the
+replacement rows are held in a disk-backed SQLite database. Dry-run plans are
+temporary; apply plans remain available for recovery until success. Apply reads
+the database in bounded upsert batches. Python memory therefore grows with the
 configured batch size and the largest single tracking row, not with total
 document, graph-object, or attribution counts. The temporary database requires
 local disk space proportional to the plan. A backend's own baseline still
@@ -101,7 +110,21 @@ provenance loss this tool is intended to avoid.
 
 There is no transaction spanning the two namespaces. Each selected namespace is
 dropped and fully written before the next is touched, limiting a failure to the
-current namespace. If an apply fails or is interrupted, keep all writers
-stopped, correct the reported backend or cache problem, and run `--apply` again
-until it exits successfully. The replacement is idempotent for unchanged graph,
-tracking, and extraction-cache state. A failed apply exits with status 1.
+current namespace. The complete pre-drop replacement is committed and synced in
+the durable SQLite plan before apply records its exact namespaces and overrides
+and performs the first drop.
+
+If an apply fails or is interrupted, keep all writers stopped and use the path
+printed by the failed run:
+
+```bash
+lightrag-repair-chunk-tracking --apply --resume-plan /path/from/failed/run.sqlite3
+```
+
+Resume validates the plan format and its working-directory, workspace, storage
+classes, and storage namespaces. It then re-drops and rewrites the originally
+selected namespaces directly from the sealed snapshot; it does **not** scan the
+now-partial tracking store. This preserves authoritative rename, merge, and
+manual-creation rows that extraction cache cannot reproduce. The plan is kept
+after every failed/interrupted apply and removed only after the complete apply
+succeeds. A failed apply exits with status 1.

@@ -1625,13 +1625,22 @@ only scans and prints the complete replacement plan:
 lightrag-repair-chunk-tracking
 lightrag-repair-chunk-tracking --apply
 lightrag-repair-chunk-tracking --apply --namespace entity  # or relation
+lightrag-repair-chunk-tracking --apply --resume-plan /path/from/failed/run.sqlite3
 # equivalent: python -m lightrag.tools.chunk_tracking_repair [--apply]
 ```
 
 The repair scans document status and graph objects in bounded batches. Its
-deduplication and replacement plan live in a temporary SQLite database, so
+deduplication and replacement plan live in a disk-backed SQLite database, so
 client memory is bounded by a batch plus the largest individual tracking row;
-local temporary disk usage grows with the complete plan.
+local disk usage grows with the complete plan. Dry-run plans are temporary,
+while apply plans remain available for recovery until success.
+
+An apply durably seals that SQLite plan before the first namespace drop. If the
+apply fails or the process is interrupted, keep the workspace offline and use
+the printed `--resume-plan` path. Resume validates the configured storage
+identity and rewrites from the pre-drop snapshot without reading the partial
+tracking namespace. The plan is deleted only after all selected namespaces have
+been rebuilt successfully.
 
 The tool asks for an offline confirmation before initializing storage and asks
 again before the destructive apply. `--yes` is intended for an already-isolated
