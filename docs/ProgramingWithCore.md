@@ -563,6 +563,49 @@ rag = LightRAG(
 )
 ```
 
+### Custom Embedding Functions
+
+Use the `@wrap_embedding_func_with_attrs` decorator, and call `.func` when building on an already-decorated function — a decorated function cannot be wrapped again, so the underlying callable must be reached through `.func`:
+
+```python
+from lightrag.utils import wrap_embedding_func_with_attrs
+
+@wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)
+async def custom_embed(texts: list[str]) -> np.ndarray:
+    # Call the underlying function, not the wrapped version
+    return await openai_embed.func(texts, model="text-embedding-3-large")
+
+# Wrong: EmbeddingFunc(func=openai_embed)
+# Right: EmbeddingFunc(func=openai_embed.func)
+```
+
+`max_token_size` declares the model's real input limit. It is what keeps an over-long text from reaching a service that would split it internally and return one vector per segment — which the return contract below rejects as a vector count mismatch.
+
+> **Pitfall — switching embedding models**: when changing the embedding model you MUST clear the data directory (optionally keeping `kv_store_llm_response_cache.json` for the LLM cache). Existing vectors will not match the new model's space.
+
+### Embedding Function Return Contract
+
+Every embedding function — built-in or custom — MUST return a 2D numpy array of shape `(len(texts), embedding_dim)`: exactly one row per input text, in input order. Every vector storage backend consumes the result positionally (`embeddings[i]` is stored for `texts[i]`), so `EmbeddingFunc` validates the result on every call and raises `ValueError` on any mismatch. It never reshapes, slices or pads the result — once the row-to-input mapping is wrong it cannot be recovered, and a silent repair would store vectors under the wrong records.
+
+The array rank and the dimension are always checked. The row count is checked against the input batch, which is read from the first positional argument, or — for a keyword call — from the kwarg matching the wrapped function's first parameter name. If the batch cannot be resolved that way (a callable whose first parameter is positional-only or `*args`, or one exposing no signature), the row count alone is left unverified rather than guessed at.
+
+| Returned shape | Result |
+| --- | --- |
+| `(len(texts), embedding_dim)` | Accepted |
+| Empty array for an empty input list | Accepted (including a bare `np.array([])`) |
+| `(embedding_dim,)` for a single input | `ValueError` — a single input still returns `(1, embedding_dim)` |
+| More rows than inputs | `ValueError: Vector count mismatch` |
+| Fewer rows than inputs | `ValueError: Vector count mismatch` |
+| Wrong number of columns | `ValueError: Embedding dimension mismatch` |
+| Flattened (1D) or nested (3D) array | `ValueError: unexpected shape` |
+
+The two mismatches that look alike are distinguished deliberately, because their fixes differ:
+
+- **Vector count mismatch** (more rows than inputs) usually means the embedding service split an over-long input internally and returned one vector per segment. Declare the model's real token limit so texts are truncated before the call — `EMBEDDING_TOKEN_LIMIT` on the API server, or `max_token_size` on `@wrap_embedding_func_with_attrs` for a custom function. A provider that legitimately emits several vectors per input needs a dedicated adapter that normalizes its output to one vector per input, with an explicit mapping, before it reaches `EmbeddingFunc`.
+- **Embedding dimension mismatch** (wrong number of columns) means the declared `embedding_dim` does not match the model actually being called, or the endpoint ignored the requested output dimension. Reconcile `EMBEDDING_DIM` / `embedding_dim` with the model. Vectors already stored under the previously declared dimension do not match the corrected one, so clear the data directory as well unless nothing has been indexed yet.
+
+Each `ValueError` is accompanied by a `logger.error` carrying the likely cause and the remedy, so the diagnosis stays in the server log even when only the short exception message surfaces.
+
 ### Rerank Function Injection
 
 To enhance retrieval quality, documents can be re-ranked based on a more effective relevance scoring model. The `rerank.py` file provides three Reranker provider driver functions:
