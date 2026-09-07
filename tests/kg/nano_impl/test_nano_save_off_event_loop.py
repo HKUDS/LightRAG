@@ -18,6 +18,7 @@ could not be cancelled at all.
 import asyncio
 import json
 import logging
+import os
 import threading
 import time
 
@@ -255,11 +256,56 @@ async def test_a_failed_notification_is_not_reported_as_a_failed_save(
     with open(storage._client_file_name, encoding="utf-8") as f:
         persisted = json.load(f)
     assert persisted["data"], "the save did not land, so this proves nothing"
-    # The rows are durable, so the redo log must not keep replaying them...
-    assert storage._unsaved_upserts == {}
-    # ...while the dirty bit stays set, which is what retries the publication.
+    # The dirty bit stays set, which is what retries the publication...
     assert storage._client_dirty is True
+    # ...and the redo log is NOT retired, because an unnotified peer can still
+    # save its older snapshot over these rows. See the recovery test below.
+    assert set(storage._unsaved_upserts) == {"id1"}
     assert any(
         "publishing that write failed" in record.getMessage()
         for record in caplog.records
     ), f"the deferred publication was not logged: {caplog.text}"
+
+
+async def test_rows_lost_to_an_unnotified_peer_are_replayed_back(tmp_path, monkeypatch):
+    """The recovery the retained redo log buys, end to end.
+
+    A publication that fails partway leaves a peer holding an older whole-file
+    snapshot, and that peer can legitimately become the next writer and save it
+    over these rows -- the fence gap tracked in #3854, which no commit-status
+    change can close. What this pins is that the loss is RECOVERABLE rather than
+    silent and permanent: the redo log survives the failed publication, so this
+    process's next flush reloads the foreign snapshot and replays its rows on
+    top (the path issue #3688 built for a failed save).
+
+    Fix-proof: retire the redo logs before ``set_all_update_flags`` instead, and
+    ``id1`` never comes back. ``FaissVectorDBStorage`` has the same shape.
+    """
+    storage = await _make_storage(tmp_path)
+    await storage.upsert({"id1": {"content": "alpha"}})
+
+    async def failing_set_all_update_flags(namespace, workspace=None):
+        raise RuntimeError("shared-storage manager is down")
+
+    monkeypatch.setattr(nano_impl, "set_all_update_flags", failing_set_all_update_flags)
+    await storage.index_done_callback()
+
+    # A peer that never learned of the commit above writes its own snapshot --
+    # one that has never seen `id1` -- over the file.
+    os.remove(storage._client_file_name)
+    peer = nano_vectordb.NanoVectorDB(DIM, storage_file=storage._client_file_name)
+    peer.upsert(datas=[{"__id__": "peer-row", "__vector__": np.full(DIM, 3.0)}])
+    peer.save()
+
+    # The peer's own commit notifies us, so the next flush reloads its snapshot.
+    monkeypatch.undo()
+    storage.storage_updated.value = True
+    await storage.index_done_callback()
+
+    with open(storage._client_file_name, encoding="utf-8") as f:
+        persisted = json.load(f)
+    ids = {row["__id__"] for row in persisted["data"]}
+    assert ids == {"id1", "peer-row"}, (
+        "the rows the peer overwrote were not replayed back; the loss would be "
+        f"permanent and silent (persisted={ids})"
+    )

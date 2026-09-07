@@ -306,10 +306,14 @@ async def test_a_failed_notification_is_not_reported_as_a_failed_save(
             "the save did not land, so this proves nothing"
         )
         assert os.path.exists(storage._meta_file)
-        # The rows are durable, so the redo log must not keep replaying them...
-        assert storage._unsaved_upserts == {}
-        # ...while the dirty bit stays set, which is what retries the publication.
+        # The dirty bit stays set, which is what retries the publication...
         assert storage._index_dirty is True
+        # ...and the redo log is NOT retired, because an unnotified peer can
+        # still save its older snapshot over these rows; keeping it lets the
+        # next flush replay them back on top of that snapshot instead of losing
+        # them silently. `tests/kg/nano_impl/` proves the recovery end to end on
+        # the backend this sandbox can run.
+        assert set(storage._unsaved_upserts) == {"v1"}
         assert any(
             "publishing that write failed" in record.getMessage()
             for record in caplog.records
