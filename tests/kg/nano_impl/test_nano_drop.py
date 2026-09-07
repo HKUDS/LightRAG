@@ -197,3 +197,44 @@ async def test_cancelled_drop_finishes_notification_and_logs(
         release.set()
         await asyncio.gather(task, return_exceptions=True)
         await storage.finalize()
+
+
+@pytest.mark.asyncio
+async def test_drop_stays_successful_when_the_in_memory_reset_fails(
+    tmp_path, monkeypatch
+):
+    """Nothing past the removal may report the completed destruction as failed.
+
+    ``NanoVectorDB`` re-reads its storage file on construction, so the snapshot
+    reset is the one genuinely fallible statement in the commit hook. When it
+    fails the drop still succeeded, and the writer reload flag is left SET so
+    the stale client is rebuilt from the removed file instead of being served.
+    """
+    storage = await _seeded_storage(tmp_path)
+    try:
+        original_client_cls = nano_impl.NanoVectorDB
+
+        def client_boom(*args, **kwargs):
+            raise RuntimeError("client reset boom")
+
+        monkeypatch.setattr(nano_impl, "NanoVectorDB", client_boom)
+        logged_errors: list[str] = []
+        monkeypatch.setattr(nano_impl.logger, "error", logged_errors.append)
+
+        try:
+            result = await storage.drop()
+        finally:
+            monkeypatch.setattr(nano_impl, "NanoVectorDB", original_client_cls)
+
+        assert result == {"status": "success", "message": "data dropped"}
+        assert not Path(storage._client_file_name).exists()
+        assert any("client reset boom" in msg for msg in logged_errors)
+        # The stale snapshot survived the failed reset...
+        assert len(storage._client.get(["v1"])) == 1
+        # ...and the flag left set is what retires it on the next read.
+        assert storage.storage_updated.value is True
+        client = await storage._get_client()
+        assert len(client.get(["v1"])) == 0
+        assert storage.storage_updated.value is False
+    finally:
+        await storage.finalize()

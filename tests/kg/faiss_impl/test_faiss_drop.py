@@ -230,3 +230,66 @@ async def test_cancelled_drop_finishes_notification_and_logs(
         release.set()
         await asyncio.gather(task, return_exceptions=True)
         await storage.finalize()
+
+
+@pytest.mark.asyncio
+async def test_successful_drop_logs_no_missing_index_warning(tmp_path, monkeypatch):
+    """The commit hook does not re-parse the files it just removed.
+
+    ``_storage_lock`` spans processes and both removals happen inside it, so a
+    ``_load_faiss_index`` call here could only take its absent-index early
+    return — pure noise on every ``/documents/clear``.
+    """
+    storage = await _seeded_storage(tmp_path)
+    try:
+        warnings: list[str] = []
+        monkeypatch.setattr(faiss_impl.logger, "warning", warnings.append)
+
+        result = await storage.drop()
+
+        assert result == {"status": "success", "message": "data dropped"}
+        assert storage._index.ntotal == 0
+        assert not any("No existing Faiss index file found" in msg for msg in warnings)
+    finally:
+        await storage.finalize()
+
+
+@pytest.mark.asyncio
+async def test_drop_stays_successful_when_the_in_memory_reset_fails(
+    tmp_path, monkeypatch
+):
+    """Nothing past the removal may report the completed destruction as failed.
+
+    When the snapshot reset fails the drop still succeeded, and the writer
+    reload flag is left SET so the stale index is rebuilt from the removed
+    files instead of being served.
+    """
+    storage = await _seeded_storage(tmp_path)
+    try:
+        original_index_cls = faiss_impl.faiss.IndexFlatIP
+
+        def index_boom(*args, **kwargs):
+            raise RuntimeError("index reset boom")
+
+        monkeypatch.setattr(faiss_impl.faiss, "IndexFlatIP", index_boom)
+        logged_errors: list[str] = []
+        monkeypatch.setattr(faiss_impl.logger, "error", logged_errors.append)
+
+        try:
+            result = await storage.drop()
+        finally:
+            monkeypatch.setattr(faiss_impl.faiss, "IndexFlatIP", original_index_cls)
+
+        assert result == {"status": "success", "message": "data dropped"}
+        assert not Path(storage._faiss_index_file).exists()
+        assert not Path(storage._meta_file).exists()
+        assert any("index reset boom" in msg for msg in logged_errors)
+        # The stale snapshot survived the failed reset...
+        assert storage._index.ntotal == 1
+        # ...and the flag left set is what retires it on the next read.
+        assert storage.storage_updated.value is True
+        index = await storage._get_index()
+        assert index.ntotal == 0
+        assert storage.storage_updated.value is False
+    finally:
+        await storage.finalize()

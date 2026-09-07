@@ -1710,7 +1710,8 @@ class FaissVectorDBStorage(BaseVectorStorage):
             2. Reset ``self._index`` to a fresh ``IndexFlatIP`` and clear
                ``self._id_to_meta``.
             3. Notify other processes via ``set_all_update_flags`` and
-               reset the writer's own flag.
+               point the writer's own flag at the snapshot step 2 left
+               behind.
 
         Caller contract:
             ``drop`` is destructive and **not** serialized by this storage
@@ -1735,12 +1736,19 @@ class FaissVectorDBStorage(BaseVectorStorage):
             ``/documents/clear`` uses this status to decide whether the input
             files are safe to delete, so reporting a drop that already happened
             as failed leaves those files ready to be re-ingested against
-            storage that no longer matches.
+            storage that no longer matches. The same holds for every other step
+            that follows the removal: each is guarded on its own, so no step
+            past the point of no return can return ``"error"``.
             Success confirms durable deletion, not convergence of all worker
             snapshots. A worker that missed the notification may later write its
             stale index back. Stop workspace writes and restart affected workers
             before resuming; if stale data has already been written, clear
             again.
+            Accepted residue: if the in-memory reset itself fails, this process
+            keeps the dropped vectors in ``self._index``. The writer reload flag
+            is then left SET rather than cleared, so the next ``_get_index``
+            rebuilds the snapshot from the removed files — the stale index is
+            never served.
 
         Cancellation:
             Before submission, cancellation leaves storage unchanged — the
@@ -1768,15 +1776,32 @@ class FaissVectorDBStorage(BaseVectorStorage):
             self._unsaved_deletes.clear()
             self._unsaved_upserts.clear()
 
-            # Reset the index. Kept on the event loop: mutating ``self._index``
-            # / ``self._id_to_meta`` off the loop would break concurrency
-            # invariant (3) in the class docstring. ``_load_faiss_index`` runs
-            # against the just-removed files, so it observes an absent index
-            # and returns without touching either structure.
-            self._index = faiss.IndexFlatIP(self._dim)
-            self._id_to_meta = {}
-            self._load_faiss_index()
-            self._index_dirty = False
+            # Reset the in-memory snapshot to the post-drop state directly.
+            # No ``_load_faiss_index`` re-parse: ``_storage_lock`` spans
+            # processes and both files were removed inside it, so that call
+            # could only take its absent-index early return — one spurious
+            # "No existing Faiss index file found" warning per successful
+            # clear, and nothing else. Kept on the event loop: mutating
+            # ``self._index`` / ``self._id_to_meta`` off the loop would break
+            # concurrency invariant (3) in the class docstring.
+            #
+            # Guarded like every other post-removal step: the files are already
+            # gone, so nothing here may report the completed destruction as
+            # failed.
+            snapshot_reset = False
+            try:
+                self._index = faiss.IndexFlatIP(self._dim)
+                self._id_to_meta = {}
+                self._index_dirty = False
+                snapshot_reset = True
+            except Exception as snapshot_error:
+                logger.error(
+                    f"[{self.workspace}] Dropped FAISS index {self.namespace}, but "
+                    "failed to reset the in-memory index; it still holds the "
+                    "dropped vectors. The writer reload flag is left set below so "
+                    "the next read rebuilds it from the removed files: "
+                    f"{snapshot_error}"
+                )
 
             # Keep publication under the storage lock. Once deletion starts,
             # commit_in_storage_io defers caller cancellation through this hook
@@ -1796,18 +1821,20 @@ class FaissVectorDBStorage(BaseVectorStorage):
                     "workspace writes and restart all affected workers before "
                     f"resuming: {notification_error}"
                 )
-            # Reset own update flag to avoid self-reloading. Unlike the
-            # notification above, a failure here is harmless: both files are
-            # gone and both redo logs are empty, so the self-reload this flag
-            # would trigger just re-reads absent files into the empty index we
-            # already hold. Report it, and never let it misclassify the durable
-            # deletion as failed.
+            # Point the writer's own flag at the snapshot we actually hold: no
+            # self-reload when the reset above installed the post-drop index, a
+            # self-reload when it did not, so a stale index is rebuilt from the
+            # removed files instead of being served. Unlike the notification, a
+            # failure here is harmless in the common case: both files are gone
+            # and both redo logs are empty, so the reload it would trigger just
+            # re-reads absent files into the empty index we already hold. Report
+            # it, and never let it misclassify the durable deletion as failed.
             try:
-                self.storage_updated.value = False
+                self.storage_updated.value = not snapshot_reset
             except Exception as reset_error:
                 logger.error(
                     f"[{self.workspace}] Dropped FAISS index {self.namespace}, but "
-                    "failed to reset the writer reload flag; a redundant reload of "
+                    "failed to set the writer reload flag; a redundant reload of "
                     f"the now-empty index may follow: {reset_error}"
                 )
             # Log inside the cancellation-protected hook: the caller may receive

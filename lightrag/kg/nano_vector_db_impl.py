@@ -1391,12 +1391,19 @@ class NanoVectorDBStorage(BaseVectorStorage):
             error — ``/documents/clear`` uses this status to decide whether the
             input files are safe to delete, so reporting a drop that already
             happened as failed leaves those files ready to be re-ingested
-            against storage that no longer matches.
+            against storage that no longer matches. The same holds for every
+            other step that follows the removal: each is guarded on its own, so
+            no step past the point of no return can return ``"error"``.
             Success confirms durable deletion, not convergence of all worker
             snapshots. A worker that missed the notification may later write its
             stale vectors back. Stop workspace writes and restart affected
             workers before resuming; if stale data has already been written,
             clear again.
+            Accepted residue: if the in-memory reset itself fails, this process
+            keeps the dropped rows in ``self._client``. The writer reload flag
+            is then left SET rather than cleared, so the next ``_get_client``
+            rebuilds the snapshot from the removed file — the stale client is
+            never served.
 
         Cancellation:
             Before submission, cancellation leaves storage unchanged — the
@@ -1420,11 +1427,27 @@ class NanoVectorDBStorage(BaseVectorStorage):
             self._unsaved_deletes.clear()
             self._unsaved_upserts.clear()
 
-            self._client = NanoVectorDB(
-                self.embedding_func.embedding_dim,
-                storage_file=self._client_file_name,
-            )
-            self._client_dirty = False
+            # Reset the in-memory snapshot to the post-drop state. Guarded like
+            # every other post-removal step — the file is already gone, so
+            # nothing here may report the completed destruction as failed.
+            # ``NanoVectorDB`` re-reads ``storage_file`` on construction, which
+            # is why this one is not merely a rebind.
+            snapshot_reset = False
+            try:
+                self._client = NanoVectorDB(
+                    self.embedding_func.embedding_dim,
+                    storage_file=self._client_file_name,
+                )
+                self._client_dirty = False
+                snapshot_reset = True
+            except Exception as snapshot_error:
+                logger.error(
+                    f"[{self.workspace}] Dropped {self.namespace}"
+                    f"(file:{self._client_file_name}), but failed to reset the "
+                    "in-memory client; it still holds the dropped rows. The "
+                    "writer reload flag is left set below so the next read "
+                    f"rebuilds it from the removed file: {snapshot_error}"
+                )
 
             # Keep publication under the storage lock. Once deletion starts,
             # commit_in_storage_io defers caller cancellation through this hook
@@ -1445,18 +1468,21 @@ class NanoVectorDBStorage(BaseVectorStorage):
                     f"restart all affected workers before resuming: "
                     f"{notification_error}"
                 )
-            # Reset own update flag to avoid self-reloading. Unlike the
-            # notification above, a failure here is harmless: the file is gone
-            # and both redo logs are empty, so the self-reload this flag would
-            # trigger just re-reads an absent file into the empty client we
-            # already hold. Report it, and never let it misclassify the durable
-            # deletion as failed.
+            # Point the writer's own flag at the snapshot we actually hold: no
+            # self-reload when the reset above installed the post-drop client, a
+            # self-reload when it did not, so a stale client is rebuilt from the
+            # removed file instead of being served. Unlike the notification, a
+            # failure here is harmless in the common case: the file is gone and
+            # both redo logs are empty, so the reload it would trigger just
+            # re-reads an absent file into the empty client we already hold.
+            # Report it, and never let it misclassify the durable deletion as
+            # failed.
             try:
-                self.storage_updated.value = False
+                self.storage_updated.value = not snapshot_reset
             except Exception as reset_error:
                 logger.error(
                     f"[{self.workspace}] Dropped {self.namespace}"
-                    f"(file:{self._client_file_name}), but failed to reset the "
+                    f"(file:{self._client_file_name}), but failed to set the "
                     f"writer reload flag; a redundant reload of the now-empty "
                     f"client may follow: {reset_error}"
                 )
