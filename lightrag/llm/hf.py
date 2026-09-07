@@ -28,7 +28,7 @@ from lightrag.exceptions import (
 )
 import torch
 import numpy as np
-from lightrag.utils import TruncatedResponse, wrap_embedding_func_with_attrs
+from lightrag.utils import TruncatedResponse, logger, wrap_embedding_func_with_attrs
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -63,8 +63,6 @@ async def hf_model_if_cache(
     **kwargs,
 ) -> str:
     if enable_cot:
-        from lightrag.utils import logger
-
         logger.debug(
             "enable_cot=True is not supported for Hugging Face local models and will be ignored."
         )
@@ -121,13 +119,28 @@ async def hf_model_if_cache(
     # generate() runs the actual model inference synchronously and can take
     # seconds to minutes -- calling it directly here would block the whole
     # event loop for that duration, stalling every other concurrent task.
-    output = await asyncio.to_thread(
-        hf_model.generate,
-        **inputs,
-        max_new_tokens=max_new_tokens,
-        num_return_sequences=1,
-        early_stopping=True,
-    )
+    #
+    # Cancelling this await (e.g. an outer execution timeout) only cancels
+    # the asyncio wrapper: CPython cannot forcibly stop a running thread, so
+    # generate() keeps running -- and keeps holding whatever GPU memory it
+    # allocated -- until it finishes on its own. This is an inherent limit
+    # of bridging synchronous PyTorch inference through asyncio.to_thread,
+    # not something fixable at this call site.
+    try:
+        output = await asyncio.to_thread(
+            hf_model.generate,
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            num_return_sequences=1,
+            early_stopping=True,
+        )
+    except asyncio.CancelledError:
+        logger.warning(
+            "hf_model_if_cache: cancelled while awaiting generate(); "
+            "the model keeps running in the background thread, still "
+            "holding its allocated memory, until it completes on its own"
+        )
+        raise
     generated_ids = output[0][len(inputs["input_ids"][0]) :]
     response_text = hf_tokenizer.decode(generated_ids, skip_special_tokens=True)
 
@@ -276,7 +289,18 @@ async def hf_embed(
             counts = mask.sum(dim=1).clamp_min(1)
             return (summed / counts).to(outputs.last_hidden_state.dtype)
 
-    embeddings = await asyncio.to_thread(_run_forward)
+    # Same cancellation caveat as hf_model_if_cache's generate() call: a
+    # timeout here cannot stop the forward pass early, only stop waiting
+    # for it.
+    try:
+        embeddings = await asyncio.to_thread(_run_forward)
+    except asyncio.CancelledError:
+        logger.warning(
+            "hf_embed: cancelled while awaiting the forward pass; the "
+            "model keeps running in the background thread until it "
+            "completes on its own"
+        )
+        raise
 
     # Convert embeddings to NumPy
     if embeddings.dtype == torch.bfloat16:

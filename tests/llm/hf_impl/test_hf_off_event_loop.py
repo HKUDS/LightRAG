@@ -11,6 +11,7 @@ sibling hf tests in this directory.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import threading
 import types
@@ -127,6 +128,71 @@ async def test_hf_model_if_cache_runs_generate_off_the_event_loop_thread(
 
 
 @pytest.mark.asyncio
+async def test_hf_model_if_cache_logs_and_repropagates_cancellation(
+    hf_module, monkeypatch
+):
+    """Cancelling the outer await (e.g. an execution timeout) still has to
+    propagate CancelledError, with a warning noting generate() keeps
+    running -- and keeps holding its allocated memory -- in the background
+    thread until it completes on its own."""
+    call_started = threading.Event()
+    release_call = threading.Event()
+    warnings_logged = []
+
+    class FakeModel:
+        def __init__(self):
+            self.device = FakeDevice("cpu")
+            self.generation_config = types.SimpleNamespace(eos_token_id=0)
+
+        def generate(self, **kwargs):
+            call_started.set()
+            release_call.wait(timeout=5)
+            input_ids = kwargs["input_ids"]
+            return FakeTensor([input_ids.data[0] + [901, 902]], "cpu")
+
+    class FakeTokenizer:
+        eos_token_id = 0
+
+        def apply_chat_template(
+            self, messages, tokenize=False, add_generation_prompt=True
+        ):
+            return "<prompt>"
+
+        def __call__(self, text, return_tensors="pt", padding=True, truncation=True):
+            return {
+                "input_ids": FakeTensor([[1, 2, 3]]),
+                "attention_mask": FakeTensor([[1, 1, 1]]),
+            }
+
+        def decode(self, tensor, skip_special_tokens=True):
+            return f"decoded:{tensor.data}"
+
+    monkeypatch.setattr(
+        hf_module, "initialize_hf_model", lambda name: (FakeModel(), FakeTokenizer())
+    )
+    monkeypatch.setattr(
+        hf_module.logger, "warning", lambda msg: warnings_logged.append(msg)
+    )
+
+    task = asyncio.ensure_future(
+        hf_module.hf_model_if_cache("fake-model", "hello world")
+    )
+    for _ in range(500):
+        if call_started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert call_started.is_set()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    release_call.set()
+    assert len(warnings_logged) == 1
+    assert "cancelled while awaiting generate()" in warnings_logged[0]
+
+
+@pytest.mark.asyncio
 async def test_hf_embed_runs_forward_pass_off_the_event_loop_thread(hf_module):
     main_thread_id = threading.get_ident()
     call_thread_id = {}
@@ -190,3 +256,87 @@ async def test_hf_embed_runs_forward_pass_off_the_event_loop_thread(hf_module):
 
     assert result.shape == (1, 1024)
     assert call_thread_id["id"] != main_thread_id
+
+
+@pytest.mark.asyncio
+async def test_hf_embed_logs_and_repropagates_cancellation(hf_module, monkeypatch):
+    call_started = threading.Event()
+    release_call = threading.Event()
+    warnings_logged = []
+
+    class _FakeModelOutput:
+        def __init__(self, last_hidden_state):
+            self.last_hidden_state = last_hidden_state
+
+    class _FakeHidden:
+        dtype = "float32"
+
+        def unsqueeze(self, dim):
+            return self
+
+        def to(self, target):
+            return self
+
+        def __mul__(self, other):
+            return self
+
+        def sum(self, dim):
+            return self
+
+        def clamp_min(self, value):
+            return self
+
+        def __truediv__(self, other):
+            return self
+
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return np.zeros((1, 1024), dtype=np.float32)
+
+    class _FakeEmbedModel:
+        def to(self, device):
+            return self
+
+        def __call__(self, input_ids, attention_mask):
+            call_started.set()
+            release_call.wait(timeout=5)
+            return _FakeModelOutput(_FakeHidden())
+
+        def parameters(self):
+            yield _FakeHidden()
+
+    class _FakeTokenizerOutput(dict):
+        def to(self, device):
+            return self
+
+    class _FakeTokenizer:
+        def __call__(self, texts, return_tensors="pt", padding=True, truncation=True):
+            return _FakeTokenizerOutput(
+                {"input_ids": _FakeHidden(), "attention_mask": _FakeHidden()}
+            )
+
+    monkeypatch.setattr(
+        hf_module.logger, "warning", lambda msg: warnings_logged.append(msg)
+    )
+
+    task = asyncio.ensure_future(
+        hf_module.hf_embed(["hello"], _FakeTokenizer(), _FakeEmbedModel())
+    )
+    for _ in range(500):
+        if call_started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert call_started.is_set()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    release_call.set()
+    assert len(warnings_logged) == 1
+    assert "cancelled while awaiting the forward pass" in warnings_logged[0]
