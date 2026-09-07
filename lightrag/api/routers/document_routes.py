@@ -6042,7 +6042,10 @@ def create_document_routes(
             if delete_parsed_files:
                 if parsed_dir.exists():
                     try:
-                        shutil.rmtree(parsed_dir)
+                        # __parsed__ can hold many files; run the recursive
+                        # delete off the event loop thread so a large
+                        # directory doesn't block every other request.
+                        await asyncio.to_thread(shutil.rmtree, parsed_dir)
                         parsed_dir_message = " Deleted __parsed__ directory."
                         append_pipeline_history(
                             pipeline_status, "Deleted __parsed__ directory"

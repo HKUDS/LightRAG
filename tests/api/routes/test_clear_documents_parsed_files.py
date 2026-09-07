@@ -7,7 +7,10 @@ same reasoning already documented for the per-document delete_file flag.
 """
 
 import importlib
+import shutil
 import sys
+import threading
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -116,6 +119,35 @@ async def test_clear_documents_opt_in_is_a_noop_without_parsed_dir(tmp_path):
     response = await endpoint(delete_parsed_files=True)
 
     assert response.status in ("success", "partial_success")
+
+
+async def test_clear_documents_deletes_parsed_dir_off_the_event_loop_thread(tmp_path):
+    """__parsed__ can hold many files; shutil.rmtree on it must not block
+    the event loop for the duration of a large recursive delete."""
+    workspace = f"clear-parsed-thread-{uuid4().hex[:8]}"
+    await _init_workspace(workspace)
+
+    parsed_dir = tmp_path / PARSED_DIR_NAME
+    parsed_dir.mkdir()
+    (parsed_dir / "a.parsed.json").write_text("{}")
+
+    main_thread_id = threading.get_ident()
+    call_thread_id = {}
+    real_rmtree = shutil.rmtree
+
+    def fake_rmtree(path, *args, **kwargs):
+        call_thread_id["id"] = threading.get_ident()
+        return real_rmtree(path, *args, **kwargs)
+
+    rag = _ClearRag(workspace)
+    endpoint = _clear_endpoint(rag, tmp_path)
+
+    with patch.object(shutil, "rmtree", side_effect=fake_rmtree):
+        response = await endpoint(delete_parsed_files=True)
+
+    assert response.status in ("success", "partial_success")
+    assert not parsed_dir.exists()
+    assert call_thread_id["id"] != main_thread_id
 
 
 async def test_clear_documents_default_message_silent_without_parsed_dir(tmp_path):
