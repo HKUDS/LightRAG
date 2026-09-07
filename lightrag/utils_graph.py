@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import asyncio
-from typing import Any, cast
+from typing import Any, Awaitable, Callable, cast
 
 from .base import DeletionResult
 from .kg.shared_storage import get_storage_keyed_lock
@@ -10,6 +10,8 @@ from .constants import GRAPH_FIELD_SEP, RELATION_NO_EVIDENCE_SOURCE_IDS
 from .operate import _truncate_vdb_content
 from .utils import (
     VectorStorageConsistencyError,
+    _consume_future_exception,
+    _wait_deferring_cancellation,
     compute_mdhash_id,
     graph_attribute_value_rejection,
     logger,
@@ -309,6 +311,88 @@ async def _persist_graph_updates(
         )
 
 
+async def _finish_deferring_cancellation(coro, description: str) -> None:
+    """Run ``coro`` to completion even if this task is cancelled meanwhile.
+
+    Cancellation can arrive *after* the graph commit has already landed:
+    ``commit_in_storage_io`` deliberately finishes the GraphML write and its
+    commit hook before re-raising ``CancelledError``, and ``CancelledError`` is a
+    ``BaseException``, so the deletion helpers' ``except Exception`` does not see
+    it either. Returning there would leave the object durably gone with its
+    tracking rows intact — and for an entity the incident relation rows are then
+    unreachable by the ``not_found`` sweep, so a recreated relation would read
+    them back as authoritative provenance: exactly the defect this module exists
+    to prevent, and with no audit line, since the code that logs the stranded
+    keys never runs.
+
+    Loop-and-shield rather than a bare ``asyncio.shield``: a second cancel would
+    let the caller escape while the cleanup is still running. Same idiom, and
+    same reason, as ``_bounded_submit_impl``'s own deferred commit hook.
+    """
+    future = asyncio.ensure_future(coro)
+    future.add_done_callback(_consume_future_exception)
+    pending_cancel = await _wait_deferring_cancellation(future, None)
+    error = None if future.cancelled() else future.exception()
+    if pending_cancel is not None:
+        if error is not None:
+            # The caller is about to get CancelledError, so this is the only
+            # place this failure can still be seen.
+            logger.error(
+                f"{description} failed while its caller was cancelled: {error}"
+            )
+        raise pending_cancel
+    if error is not None:
+        raise error
+
+
+async def _commit_graph_or_raise(chunk_entity_relation_graph, context: str) -> None:
+    """Commit the graph, and refuse to continue unless it actually persisted.
+
+    ``NetworkXStorage.index_done_callback`` does not raise when it declines to
+    write: if another process committed since this one last read the graph, it
+    reloads from disk, DISCARDS the in-memory mutation and returns ``False``.
+    Treating a normal return as proof of a commit would let a deletion whose node
+    is still live go on to drop that node's tracking rows and report success —
+    precisely the state the staging in :func:`adelete_by_entity` exists to
+    prevent, reached with no crash and no error surfaced anywhere.
+
+    Only an explicit ``False`` counts as "did not commit". The base signature is
+    ``-> None``, so backends that simply return nothing are unaffected.
+    """
+    committed = await chunk_entity_relation_graph.index_done_callback()
+    if committed is False:
+        raise RuntimeError(
+            f"{context}: the graph commit was skipped because another process "
+            "updated the graph, so the in-memory deletion was discarded"
+        )
+
+
+async def _sweep_orphan_tracking_row(
+    tracking_storage, storage_key: str, description: str
+) -> bool:
+    """Drop a chunk-tracking row whose graph object no longer exists.
+
+    Returns True when a row was found and deleted. The caller must flush
+    regardless of that answer — see the call sites: an in-memory row is not the
+    same question as pending durable state. Presence is tested with a plain
+    ``is not None`` rather than :func:`has_chunk_tracking_row`: a legacy or
+    partial row (``{}``, ``{"count": 0}``) is still stored attribution for an
+    object that is gone, and sweeping it is exactly as correct as sweeping a
+    well-formed one. A backend error is NOT swallowed: it reaches the caller's
+    generic handler, so a missing object whose tracking backend is down reports
+    ``fail``/500 rather than ``not_found``/404. That is deliberate — a 404 over a
+    row this call failed to sweep would be a silent failure, while a 500 tells
+    the caller to retry, which is what makes the ordering converge.
+    """
+    if tracking_storage is None:
+        return False
+    if await tracking_storage.get_by_id(storage_key) is None:
+        return False
+    await tracking_storage.delete([storage_key])
+    logger.info(f"Delete: swept orphan chunk tracking row for {description}")
+    return True
+
+
 async def adelete_by_entity(
     chunk_entity_relation_graph,
     entities_vdb,
@@ -320,6 +404,31 @@ async def adelete_by_entity(
     """Asynchronously delete an entity and all its relationships.
 
     Also cleans up entity_chunks_storage and relation_chunks_storage to remove chunk tracking.
+
+    Tracking rows are removed only AFTER the graph node is gone, matching the
+    ordering of the document purge path. The reverse order is forbidden by the
+    purge recovery contract: a tracking row is the authoritative attribution
+    carrier, so dropping it while the object survives (a transient vector or
+    graph failure below) leaves a live entity whose provenance has silently
+    degraded to the truncated graph ``source_id`` — from which a later purge can
+    conclude "no remaining sources" and delete an entity other documents still
+    reference. The residual window of the ordering used here is the inverse and
+    strictly milder: an orphan tracking row whose object is already gone, which
+    the ``not_found`` sweep below converges on retry.
+
+    The ordering is enforced at the DURABLE level, not just the call level, and
+    holds for any mix of backends. Storage families differ in when a mutation
+    becomes durable — a deferred graph (NetworkX/JSON) commits only in
+    ``index_done_callback``, an immediate-write tracking store (Redis/PG) commits
+    inside ``delete()`` — so neither ordering the calls nor ordering the flushes
+    is sufficient alone. The work is therefore staged: (1) commit the graph
+    object's removal by itself and verify it actually happened — a graph backend
+    may decline to write and report that by return value rather than by raising
+    (see :func:`_commit_graph_or_raise`), (2) only then delete and commit the tracking
+    rows, (3) flush the vector storages last, so a vector failure cannot abort a
+    deletion whose node is already durably gone and strand rows the sweep cannot
+    reach. A stale vector record is the recoverable, rebuildable residue this
+    codebase already accepts elsewhere.
 
     Args:
         chunk_entity_relation_graph: Graph storage instance
@@ -343,6 +452,29 @@ async def adelete_by_entity(
             # Check if the entity exists
             if not await chunk_entity_relation_graph.has_node(entity_name):
                 logger.warning(f"Entity '{entity_name}' not found.")
+                # An absent node with a surviving tracking row is by definition
+                # an orphan: a previous deletion removed the node but failed
+                # before its tracking row, or an older release never cleaned up
+                # at all. Sweeping it here is what makes the staging documented
+                # in the docstring converge on retry. Only this entity's own row
+                # can be reached — the node is gone, so its incident edges are
+                # unknowable.
+                await _sweep_orphan_tracking_row(
+                    entity_chunks_storage, entity_name, f"entity `{entity_name}`"
+                )
+                # Flush whether or not a row was visible. A deferred backend
+                # whose commit failed during an earlier attempt still holds that
+                # delete in memory while the stale row sits on disk, so keying
+                # the flush off in-memory presence would make the failure
+                # permanent: the retry would see nothing and skip the commit
+                # that is exactly what is owed. Both stores are flushed because
+                # the failed attempt may have been an entity deletion that got
+                # as far as its incident relation rows. These callbacks are
+                # dirty-gated, so with nothing pending this costs nothing.
+                await _persist_graph_updates(
+                    entity_chunks_storage=entity_chunks_storage,
+                    relation_chunks_storage=relation_chunks_storage,
+                )
                 return DeletionResult(
                     status="not_found",
                     doc_id=entity_name,
@@ -353,46 +485,104 @@ async def adelete_by_entity(
             edges = await chunk_entity_relation_graph.get_node_edges(entity_name)
             related_relations_count = len(edges) if edges else 0
 
-            # Clean up chunk tracking storages before deletion
-            if entity_chunks_storage is not None:
-                # Delete entity's entry from entity_chunks_storage
-                await entity_chunks_storage.delete([entity_name])
-                logger.info(
-                    f"Entity Delete: removed chunk tracking for `{entity_name}`"
-                )
-
+            # Resolve the incident relation keys while the edges are still
+            # readable; the rows themselves are deleted after the node below.
+            relation_keys_to_delete: list[str] = []
             if relation_chunks_storage is not None and edges:
-                # Delete all related relationships from relation_chunks_storage
                 from .utils import make_relation_chunk_key
 
-                relation_keys_to_delete = []
                 for src, tgt in edges:
                     # Normalize entity order for consistent key generation
                     normalized_src, normalized_tgt = sorted([src, tgt])
-                    storage_key = make_relation_chunk_key(
-                        normalized_src, normalized_tgt
-                    )
-                    relation_keys_to_delete.append(storage_key)
-
-                if relation_keys_to_delete:
-                    await relation_chunks_storage.delete(relation_keys_to_delete)
-                    logger.info(
-                        f"Entity Delete: removed chunk tracking for {len(relation_keys_to_delete)} relations"
+                    relation_keys_to_delete.append(
+                        make_relation_chunk_key(normalized_src, normalized_tgt)
                     )
 
             await entities_vdb.delete_entity(entity_name)
             await relationships_vdb.delete_entity_relation(entity_name)
-            await chunk_entity_relation_graph.delete_node(entity_name)
 
-            message = f"Entity Delete: remove '{entity_name}' and its {related_relations_count} relations"
-            logger.info(message)
+            # PHASE 2 — the node is gone for good; drop its tracking rows.
+            # Relation rows first: an entity row left behind is reachable by the
+            # not_found sweep, while an orphaned relation row is not once the
+            # node is deleted, so the unrecoverable step takes the earliest slot
+            # and names its keys in the log if it fails.
+            async def _commit_graph_and_drop_entity_tracking() -> None:
+                await chunk_entity_relation_graph.delete_node(entity_name)
+
+                # PHASE 1 — make the node's removal durable, and nothing else.
+                # Only a confirmed graph commit is a safe point to touch the
+                # authoritative tracking rows.
+                # A `CancelledError` out of this await is NOT caught, and must
+                # not be. It carries no information about what landed, and the
+                # two cases it covers want opposite handling:
+                #
+                #   * cancelled before the write was submitted (waiting for a
+                #     storage-IO permit, e.g. at loop shutdown) -- nothing is
+                #     durable, so deleting the tracking rows would put an
+                #     immediate-write store's row in the grave while the node
+                #     survives on disk: the one state the purge recovery
+                #     contract forbids;
+                #   * cancelled while the write was in flight -- durable, so the
+                #     cleanup is owed.
+                #
+                # Reaching the line below is the only reliable evidence that the
+                # commit landed, so that is what the cleanup is predicated on.
+                # The caller's own cancellation never surfaces here -- it is
+                # deferred by the shield in `_finish_deferring_cancellation` and
+                # re-raised after this whole region returns -- so the case being
+                # given up is a DIRECT cancellation of this task mid-write. Its
+                # residue (node gone, relation rows stale) is the documented,
+                # recoverable one; the alternative is the forbidden one.
+                await _commit_graph_or_raise(
+                    chunk_entity_relation_graph, f"Entity Delete: '{entity_name}'"
+                )
+
+                if relation_keys_to_delete:
+                    try:
+                        await relation_chunks_storage.delete(relation_keys_to_delete)
+                    except Exception:
+                        logger.error(
+                            "Entity Delete: failed to remove relation chunk tracking; "
+                            f"these rows are now orphaned: {relation_keys_to_delete}"
+                        )
+                        raise
+                    logger.info(
+                        f"Entity Delete: removed chunk tracking for {len(relation_keys_to_delete)} relations"
+                    )
+
+                if entity_chunks_storage is not None:
+                    # Delete entity's entry from entity_chunks_storage
+                    await entity_chunks_storage.delete([entity_name])
+                    logger.info(
+                        f"Entity Delete: removed chunk tracking for `{entity_name}`"
+                    )
+
+                await _persist_graph_updates(
+                    entity_chunks_storage=entity_chunks_storage,
+                    relation_chunks_storage=relation_chunks_storage,
+                )
+
+            # The graph mutation, its durable commit and the tracking cleanup
+            # are one cancellation-deferring region. commit_in_storage_io can
+            # raise a deferred CancelledError from the commit await itself; if
+            # only phase 2 were protected, execution would never reach it.
+            await _finish_deferring_cancellation(
+                _commit_graph_and_drop_entity_tracking(),
+                f"Entity Delete: '{entity_name}' graph and tracking cleanup",
+            )
+
+            # PHASE 3 — vector stores last. Bundling their flush with the graph
+            # would let a vector failure abort a deletion whose node is already
+            # durably gone, stranding tracking rows the sweep cannot reach.
+            # Their own residue is the window this codebase already accepts
+            # elsewhere: graph updated, vector storage stale and rebuildable.
             await _persist_graph_updates(
                 entities_vdb=entities_vdb,
                 relationships_vdb=relationships_vdb,
-                chunk_entity_relation_graph=chunk_entity_relation_graph,
-                entity_chunks_storage=entity_chunks_storage,
-                relation_chunks_storage=relation_chunks_storage,
             )
+
+            message = f"Entity Delete: remove '{entity_name}' and its {related_relations_count} relations"
+            logger.info(message)
             return DeletionResult(
                 status="success",
                 doc_id=entity_name,
@@ -421,6 +611,11 @@ async def adelete_by_relation(
 
     Also cleans up relation_chunks_storage to remove chunk tracking.
 
+    As in :func:`adelete_by_entity`, the tracking row is removed only after the
+    edge itself is gone, so a failure can never strand a live relation without
+    its authoritative provenance; the inverse residue (an orphan row) is swept
+    by the ``not_found`` branch on the next attempt.
+
     Args:
         chunk_entity_relation_graph: Graph storage instance
         relationships_vdb: Vector database storage for relationships
@@ -445,27 +640,31 @@ async def adelete_by_relation(
             edge_exists = await chunk_entity_relation_graph.has_edge(
                 source_entity, target_entity
             )
+            from .utils import make_relation_chunk_key
+
+            # Normalize entity order for consistent key generation
+            normalized_src, normalized_tgt = sorted([source_entity, target_entity])
+            storage_key = make_relation_chunk_key(normalized_src, normalized_tgt)
+
             if not edge_exists:
                 message = f"Relation from '{source_entity}' to '{target_entity}' does not exist"
                 logger.warning(message)
+                await _sweep_orphan_tracking_row(
+                    relation_chunks_storage,
+                    storage_key,
+                    f"relation `{normalized_src}`~`{normalized_tgt}`",
+                )
+                # Unconditional for the same reason as in adelete_by_entity: a
+                # retry must be able to commit a delete an earlier attempt left
+                # pending in memory.
+                await _persist_graph_updates(
+                    relation_chunks_storage=relation_chunks_storage
+                )
                 return DeletionResult(
                     status="not_found",
                     doc_id=relation_str,
                     message=message,
                     status_code=404,
-                )
-
-            # Clean up chunk tracking storage before deletion
-            if relation_chunks_storage is not None:
-                from .utils import make_relation_chunk_key
-
-                # Normalize entity order for consistent key generation
-                normalized_src, normalized_tgt = sorted([source_entity, target_entity])
-                storage_key = make_relation_chunk_key(normalized_src, normalized_tgt)
-
-                await relation_chunks_storage.delete([storage_key])
-                logger.info(
-                    f"Relation Delete: removed chunk tracking for `{source_entity}`~`{target_entity}`"
                 )
 
             # Delete relation from vector database
@@ -476,18 +675,41 @@ async def adelete_by_relation(
 
             await relationships_vdb.delete(rel_ids_to_delete)
 
-            # Delete relation from knowledge graph
-            await chunk_entity_relation_graph.remove_edges(
-                [(source_entity, target_entity)]
+            async def _commit_graph_and_drop_relation_tracking() -> None:
+                await chunk_entity_relation_graph.remove_edges(
+                    [(source_entity, target_entity)]
+                )
+
+                # Same ordered phases as adelete_by_entity — see there for why
+                # the graph commit must be confirmed before tracking is touched.
+                # Not wrapped in a cancellation catch -- see the entity path
+                # for why reaching the next line is the only sound evidence that
+                # the commit landed.
+                await _commit_graph_or_raise(
+                    chunk_entity_relation_graph,
+                    f"Relation Delete: `{source_entity}`~`{target_entity}`",
+                )
+
+                if relation_chunks_storage is not None:
+                    await relation_chunks_storage.delete([storage_key])
+                    logger.info(
+                        f"Relation Delete: removed chunk tracking for `{source_entity}`~`{target_entity}`"
+                    )
+                await _persist_graph_updates(
+                    relation_chunks_storage=relation_chunks_storage,
+                )
+
+            # Protect the graph mutation and commit as well as the owed cleanup;
+            # the commit await itself is where deferred cancellation reappears.
+            await _finish_deferring_cancellation(
+                _commit_graph_and_drop_relation_tracking(),
+                f"Relation Delete: `{source_entity}`~`{target_entity}` graph and tracking cleanup",
             )
+
+            await _persist_graph_updates(relationships_vdb=relationships_vdb)
 
             message = f"Relation Delete: `{source_entity}`~`{target_entity}` deleted successfully"
             logger.info(message)
-            await _persist_graph_updates(
-                relationships_vdb=relationships_vdb,
-                chunk_entity_relation_graph=chunk_entity_relation_graph,
-                relation_chunks_storage=relation_chunks_storage,
-            )
             return DeletionResult(
                 status="success",
                 doc_id=relation_str,
@@ -602,8 +824,13 @@ async def _edit_entity_impl(
                         (renamed_source, renamed_target, edge_data)
                     )
 
-        await chunk_entity_relation_graph.delete_node(entity_name)
-
+        # The old node is removed inside the cancellation-deferring region
+        # below, not here. On an immediate-write graph backend (Neo4j, Memgraph,
+        # MongoDB, PostgreSQL -- their graph `index_done_callback` is a no-op)
+        # `delete_node` is durable the moment it returns, so removing it at this
+        # point would leave every await between here and the retirement able to
+        # exit with the old node gone and its tracking rows still on disk.
+        # adelete_by_entity stages its own `delete_node` the same way.
         old_entity_id = compute_mdhash_id(entity_name, prefix="ent-")
         await entities_vdb.delete([old_entity_id])
 
@@ -689,6 +916,10 @@ async def _edit_entity_impl(
             "(lightrag-rebuild-vdb) to restore consistency."
         ) from e
 
+    # Old keys whose rows may only be retired once the graph state that
+    # replaced them is durable -- see the retirement block below.
+    tracking_keys_to_retire: list[tuple[Any, str]] = []
+
     if entity_chunks_storage is not None or relation_chunks_storage is not None:
         from .utils import (
             make_relation_chunk_key,
@@ -743,7 +974,12 @@ async def _edit_entity_impl(
                     }
                 )
                 if is_renaming:
-                    await entity_chunks_storage.delete([original_entity_name])
+                    # Retired below, after the graph commit that actually
+                    # removes the old node. Deleting it here would strip the
+                    # provenance of an entity still on disk.
+                    tracking_keys_to_retire.append(
+                        (entity_chunks_storage, original_entity_name)
+                    )
 
                 logger.info(
                     f"Entity Edit: find {len(updated_chunk_ids)} chunks related to `{entity_name}`"
@@ -808,17 +1044,101 @@ async def _edit_entity_impl(
                             }
                         )
 
-                    await relation_chunks_storage.delete([old_storage_key])
+                    tracking_keys_to_retire.append(
+                        (relation_chunks_storage, old_storage_key)
+                    )
             logger.info(
                 f"Entity Edit: migrate {len(relations_to_update)} relations after rename"
             )
 
+    # Commit the graph on its own, and confirm it, before retiring any old
+    # tracking key. A rename removes the old node and republishes its edges
+    # under new keys; until that is durable the OLD objects are what is on disk,
+    # and their rows are the only authoritative provenance those objects have.
+    # A declined commit discards the rename entirely, so it must not be read as
+    # success either -- same staging, and same reason, as adelete_by_entity.
+    #
+    # The migrated rows are written before this point on purpose: that ordering
+    # is the fix for the opposite failure (#3609), where a crash left the row
+    # under neither key. An orphaned new-key row is dead bookkeeping a retry
+    # overwrites; a live object with no row is the bug.
+    # Same staging as the merge: the migrated rows have to be on disk before the
+    # commit that removes the objects the old rows describe. A deferred KV
+    # backend keeps them in shared memory until this flush, so a process exit
+    # between the commit and it would restart with the renamed graph and only
+    # the old keys' rows -- the surviving node and its relations with no
+    # authoritative tracking at all.
+    if is_renaming:
+        try:
+            await _persist_graph_updates(
+                entity_chunks_storage=entity_chunks_storage,
+                relation_chunks_storage=relation_chunks_storage,
+            )
+        except Exception as e:
+            raise VectorStorageConsistencyError(
+                f"Persisting the migrated chunk tracking failed while renaming "
+                f"`{original_entity_name}` to `{new_entity_name}`: {e}. The old "
+                "node was NOT removed and still carries its chunk tracking, so "
+                "nothing has lost its provenance. Retry the rename."
+            ) from e
+
+    async def _commit_rename_and_retire_tracking() -> None:
+        # `entity_name` has been rebound to the new name by now, so the removal
+        # names the original explicitly.
+        if is_renaming:
+            await chunk_entity_relation_graph.delete_node(original_entity_name)
+
+        await _commit_graph_or_raise(
+            chunk_entity_relation_graph, f"Entity Edit: `{original_entity_name}`"
+        )
+
+        for storage, key in tracking_keys_to_retire:
+            try:
+                await storage.delete([key])
+            except Exception as e:
+                orphaned = [k for _, k in tracking_keys_to_retire]
+                logger.error(
+                    "Entity Edit: failed to retire chunk tracking after renaming "
+                    f"`{original_entity_name}`; these rows are now orphaned: "
+                    f"{orphaned}"
+                )
+                # Typed for the same reason as the merge path: the rename is
+                # already durable here, so a failure that reads as "the rename
+                # did not happen" would be a lie about the graph.
+                raise VectorStorageConsistencyError(
+                    f"Retiring the chunk tracking of `{original_entity_name}` failed "
+                    f"after renaming it to `{new_entity_name}`: {e}. The rename "
+                    "itself is durable -- the old node is gone and its relations "
+                    f"were republished -- but these rows survive as orphans: "
+                    f"{orphaned}. They describe objects that no longer exist and are "
+                    "dead bookkeeping unless the same keys reappear later, at which "
+                    "point extraction would read them back as authoritative "
+                    "provenance."
+                ) from e
+
+        # Flushed inside the region: on a deferred KV backend the deletes above
+        # only touch memory, so a cancellation delivered before this flush would
+        # leave the retired rows on disk -- the orphan the region prevents.
+        await _persist_graph_updates(
+            entity_chunks_storage=entity_chunks_storage,
+            relation_chunks_storage=relation_chunks_storage,
+        )
+
+    # One cancellation-deferring region, as in adelete_by_entity: after the
+    # commit the old node is gone for good, so its rows describe nothing and the
+    # cleanup is owed; a cancellation delivered mid-cleanup would strand them.
+    # The region starts before the commit because that await is itself where a
+    # deferred cancellation reappears.
+    await _finish_deferring_cancellation(
+        _commit_rename_and_retire_tracking(),
+        f"Entity Edit: `{original_entity_name}` graph and tracking cleanup",
+    )
+    # Vector stores last: their residue is the rebuildable window this codebase
+    # accepts elsewhere, and bundling them earlier would let a vector failure
+    # abort an edit whose graph state is already durable.
     await _persist_graph_updates(
         entities_vdb=entities_vdb,
         relationships_vdb=relationships_vdb,
-        chunk_entity_relation_graph=chunk_entity_relation_graph,
-        entity_chunks_storage=entity_chunks_storage,
-        relation_chunks_storage=relation_chunks_storage,
     )
 
     logger.info(f"Entity Edit: `{entity_name}` successfully updated")
@@ -1058,14 +1378,17 @@ async def aedit_entity(
                         return {**merge_result, "operation_summary": operation_summary}
 
                     except VectorStorageConsistencyError:
-                        # Fail-loud: the graph was updated but the vector storage
-                        # could not be persisted. This must reach the caller (mapped
-                        # to a 500 with rebuild guidance by the route), NOT be folded
-                        # into a partial-success summary that returns HTTP 200.
+                        # Fail-loud: the merge is durably applied to the graph and
+                        # a step after it -- the vector storage write, or the
+                        # chunk-tracking retirement -- did not complete. This must
+                        # reach the caller (mapped to a 500 by the route), NOT be
+                        # folded into the partial-success summary below, which
+                        # answers HTTP 200 and names `entity_name` as the surviving
+                        # entity: the very source this merge has just removed.
                         logger.error(
                             f"Entity Edit: merge of '{entity_name}' into "
-                            f"'{new_entity_name}' left graph and vector storage "
-                            "inconsistent; re-raising VectorStorageConsistencyError"
+                            f"'{new_entity_name}' is durable but a following step "
+                            "failed; re-raising VectorStorageConsistencyError"
                         )
                         raise
 
@@ -1362,11 +1685,17 @@ async def acreate_entity(
     entity_data: dict[str, Any],
     entity_chunks_storage=None,
     relation_chunks_storage=None,
+    *,
+    before_create: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Asynchronously create a new entity.
 
     Creates a new entity in the knowledge graph and adds it to the vector database.
-    Also synchronizes entity_chunks_storage to track chunk references.
+    Replaces entity chunk tracking with the distinct real source IDs supplied
+    for this creation, or an explicit empty row when there are none. Historical
+    no-source placeholders do not count as evidence.
+    Manual creation does not protect the entity or its description from deletion:
+    once documents mention it, purging its last real source may delete it entirely.
 
     Args:
         chunk_entity_relation_graph: Graph storage instance
@@ -1376,6 +1705,7 @@ async def acreate_entity(
         entity_data: Dictionary containing entity attributes, e.g. {"description": "description", "entity_type": "type"}
         entity_chunks_storage: Optional KV storage for tracking chunks that reference this entity
         relation_chunks_storage: Optional KV storage for tracking chunks that reference relations
+        before_create: Optional migration hook, awaited after validation and before writes
 
     Returns:
         Dictionary containing created entity information
@@ -1463,6 +1793,9 @@ async def acreate_entity(
                 }
             }
 
+            if before_create is not None:
+                await before_create()
+
             # Add entity to knowledge graph
             await chunk_entity_relation_graph.upsert_node(entity_name, node_data)
 
@@ -1472,20 +1805,27 @@ async def acreate_entity(
             # Update entity_chunks_storage to track chunk references
             if entity_chunks_storage is not None:
                 source_id = node_data.get("source_id", "")
-                chunk_ids = [cid for cid in source_id.split(GRAPH_FIELD_SEP) if cid]
+                chunk_ids = list(
+                    dict.fromkeys(
+                        cid
+                        for cid in source_id.split(GRAPH_FIELD_SEP)
+                        if cid and cid not in RELATION_NO_EVIDENCE_SOURCE_IDS
+                    )
+                )
 
-                if chunk_ids:
-                    await entity_chunks_storage.upsert(
-                        {
-                            entity_name: {
-                                "chunk_ids": chunk_ids,
-                                "count": len(chunk_ids),
-                            }
+                # Explicit creation starts new attribution, never inherits an
+                # orphan row from a previously deleted object (issue #3838).
+                await entity_chunks_storage.upsert(
+                    {
+                        entity_name: {
+                            "chunk_ids": chunk_ids,
+                            "count": len(chunk_ids),
                         }
-                    )
-                    logger.info(
-                        f"Entity Create: tracked {len(chunk_ids)} chunks for `{entity_name}`"
-                    )
+                    }
+                )
+                logger.info(
+                    f"Entity Create: tracked {len(chunk_ids)} chunks for `{entity_name}`"
+                )
 
             # Save changes
             await _persist_graph_updates(
@@ -1516,11 +1856,17 @@ async def acreate_relation(
     target_entity: str,
     relation_data: dict[str, Any],
     relation_chunks_storage=None,
+    *,
+    before_create: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Asynchronously create a new relation between entities.
 
     Creates a new relation (edge) in the knowledge graph and adds it to the vector database.
-    Also synchronizes relation_chunks_storage to track chunk references.
+    Replaces relation chunk tracking with the distinct real source IDs supplied
+    for this creation, or an explicit empty row when there are none. Orphan rows
+    from a previous relation are never inherited.
+    Manual creation does not protect the relation or its description from deletion:
+    once documents mention it, purging its last real source may delete it entirely.
 
     Args:
         chunk_entity_relation_graph: Graph storage instance
@@ -1533,6 +1879,7 @@ async def acreate_relation(
             values in ``source_id``. An omitted ``source_id`` is stored as an
             empty string and permits a non-negative fractional weight.
         relation_chunks_storage: Optional KV storage for tracking chunks that reference this relation
+        before_create: Optional migration hook, awaited after validation and before writes
 
     Returns:
         Dictionary containing created relation information
@@ -1641,6 +1988,9 @@ async def acreate_relation(
                 }
             }
 
+            if before_create is not None:
+                await before_create()
+
             # Add relation to knowledge graph
             await chunk_entity_relation_graph.upsert_edge(
                 source_entity, target_entity, edge_data
@@ -1658,18 +2008,19 @@ async def acreate_relation(
                 source_id = edge_data.get("source_id", "")
                 chunk_ids = relation_evidence_source_ids(source_id)
 
-                if chunk_ids:
-                    await relation_chunks_storage.upsert(
-                        {
-                            storage_key: {
-                                "chunk_ids": chunk_ids,
-                                "count": len(chunk_ids),
-                            }
+                # Explicit creation starts new attribution, never inherits an
+                # orphan row from a previously deleted object (issue #3838).
+                await relation_chunks_storage.upsert(
+                    {
+                        storage_key: {
+                            "chunk_ids": chunk_ids,
+                            "count": len(chunk_ids),
                         }
-                    )
-                    logger.info(
-                        f"Relation Create: tracked {len(chunk_ids)} chunks for `{vdb_src}`~`{vdb_tgt}`"
-                    )
+                    }
+                )
+                logger.info(
+                    f"Relation Create: tracked {len(chunk_ids)} chunks for `{vdb_src}`~`{vdb_tgt}`"
+                )
 
             # Save changes
             await _persist_graph_updates(
@@ -1737,7 +2088,7 @@ async def _merge_entities_impl(
         storage upsert fails after retries (steps 7/8), this function raises
         VectorStorageConsistencyError instead of attempting any rollback: the
         graph already holds the merged state, no data is lost, and the source
-        entities have NOT been deleted yet (step 10 is never reached). The
+        entities have NOT been deleted yet (step 11 is never reached). The
         vector storage may then lag behind the graph; running the offline
         rebuild tool (``lightrag-rebuild-vdb``) restores full consistency.
     """
@@ -1933,6 +2284,14 @@ async def _merge_entities_impl(
     # new (relations already attached to an existing target keep their key),
     # so only keys outside the new key set are deleted; deleting them after
     # the upsert would drop the rows just written.
+    #
+    # Bound before the guard, not inside it: step 11b reads this list
+    # unconditionally, and merging entities that carry no incident edges
+    # leaves `all_relations` empty. Assigning only in the branch below made
+    # that case raise UnboundLocalError AFTER the graph commit had already
+    # removed the source entities -- reporting failure for a merge that had
+    # in fact landed.
+    stale_relation_keys: list[str] = []
     if relation_chunks_storage is not None and all_relations:
         if relation_chunk_tracking:
             updates = {}
@@ -1947,13 +2306,16 @@ async def _merge_entities_impl(
                 f"Entity Merge: {len(updates)} relation chunk tracking records updated"
             )
 
+        # Deleted only in step 11b, once the graph state that replaced these
+        # keys is durable. Deleting here would retire the authoritative rows of
+        # relations that are still on disk -- either because the redirected
+        # edges have not been committed yet, or because the source node whose
+        # removal takes the old edges with it has not been either.
         stale_relation_keys = [
             key
             for key in dict.fromkeys(old_relation_keys_to_delete)
             if key not in relation_chunk_tracking
         ]
-        if stale_relation_keys:
-            await relation_chunks_storage.delete(stale_relation_keys)
 
     # 7. Update relationship vector representations
     logger.debug(
@@ -2080,40 +2442,13 @@ async def _merge_entities_impl(
         ) from e
     logger.info(f"Entity Merge: updating vdb `{target_entity}`")
 
-    # 8b. Persist the graph and vector storages now — before any source-entity
-    # deletion (step 10). Deferred-embedding backends (e.g. nano/faiss) do NOT
-    # call the embedder inside upsert(); they embed and persist in
-    # index_done_callback, so an embedder outage surfaces only at flush time,
-    # outside the upsert try/except above. Flushing here, while the source
-    # entities are still intact, keeps the fail-loud guarantee true for those
-    # backends: on failure we raise VectorStorageConsistencyError before
-    # deleting anything, and the error message ("source entities not deleted")
-    # remains accurate. The graph is flushed first so it is the authoritative
-    # on-disk source the offline rebuild tool can recover from.
-    await chunk_entity_relation_graph.index_done_callback()
-    try:
-        await safe_vdb_operation_with_exception(
-            operation=relationships_vdb.index_done_callback,
-            operation_name="merge_relation_flush",
-            entity_name=target_entity,
-            max_retries=3,
-            retry_delay=0.2,
-        )
-        await safe_vdb_operation_with_exception(
-            operation=entities_vdb.index_done_callback,
-            operation_name="merge_entity_flush",
-            entity_name=target_entity,
-            max_retries=3,
-            retry_delay=0.2,
-        )
-    except Exception as e:
-        raise VectorStorageConsistencyError(
-            f"Vector storage flush failed after merging entities into '{target_entity}': {e}. "
-            "The knowledge graph was updated but the vector storage embeddings could not be "
-            "persisted, so they may now be inconsistent. No data is lost (the graph is the "
-            "authoritative source and the source entities were not deleted). Stop the LightRAG "
-            "server and run the offline rebuild tool (lightrag-rebuild-vdb) to restore consistency."
-        ) from e
+    # The sources that step 11 actually removes, and whose tracking rows step
+    # 11b retires once that removal is durable -- never before it: a row retired
+    # ahead of the object it describes is the state the purge recovery contract
+    # forbids. Bound here, ahead of every consumer, so the retirement never
+    # depends on a branch having run -- the shape of the `stale_relation_keys`
+    # defect.
+    entities_to_remove = [e for e in source_entities if e != target_entity]
 
     # 9. Merge entity chunk tracking (source entities first, then target entity)
     if entity_chunks_storage is not None:
@@ -2199,27 +2534,95 @@ async def _merge_entities_impl(
                 f"Entity Merge: find {len(merged_chunk_ids)} chunks related to '{target_entity}'"
             )
 
-        # Delete source entities' chunk tracking records
-        entity_keys_to_delete = [e for e in source_entities if e != target_entity]
-        if entity_keys_to_delete:
-            await entity_chunks_storage.delete(entity_keys_to_delete)
+    # 9b. Make every migrated row durable BEFORE the first commit that publishes
+    # the objects they describe. On a deferred KV backend (the default
+    # JsonKVStorage) an upsert only touches shared memory, so a commit ahead of
+    # this flush publishes new graph objects whose authoritative tracking exists
+    # nowhere on disk -- and a process exit in between comes back to a graph
+    # that can only fall back to the KEEP-truncated `source_id` a purge misreads.
+    #
+    # The invariant is stated over EVERY commit in this function, not just the
+    # source removal: a graph commit may only publish objects whose tracking
+    # rows are already on disk. That is why the tracking construction above was
+    # moved ahead of step 8b as well -- covering only the removal commit left
+    # the first publication (the merged target and its redirected relations)
+    # outside it.
+    #
+    # Flushing first leaves the opposite residue: rows on disk for objects that
+    # do not exist yet, which is dead bookkeeping a retry overwrites -- the same
+    # trade f86ef93c settled for the upsert-before-delete ordering.
+    try:
+        await _persist_graph_updates(
+            entity_chunks_storage=entity_chunks_storage,
+            relation_chunks_storage=relation_chunks_storage,
+        )
+    except Exception as e:
+        raise VectorStorageConsistencyError(
+            f"Persisting the migrated chunk tracking failed while merging into "
+            f"'{target_entity}': {e}. Nothing has been published yet -- the "
+            "source entities are intact and still carry their chunk tracking, "
+            "so no provenance is lost. Retry the merge."
+        ) from e
 
-    # 10. Delete source entities
-    for entity_name in source_entities:
-        if entity_name == target_entity:
-            logger.warning(
-                f"Entity Merge: source entity'{entity_name}' is same as target entity"
-            )
-            continue
+    # 10. Persist the graph and vector storages now — before any source-entity
+    # deletion (step 11). Deferred-embedding backends (e.g. nano/faiss) do NOT
+    # call the embedder inside upsert(); they embed and persist in
+    # index_done_callback, so an embedder outage surfaces only at flush time,
+    # outside the upsert try/except above. Flushing here, while the source
+    # entities are still intact, keeps the fail-loud guarantee true for those
+    # backends: on failure we raise VectorStorageConsistencyError before
+    # deleting anything, and the error message ("source entities not deleted")
+    # remains accurate. The graph is flushed first so it is the authoritative
+    # on-disk source the offline rebuild tool can recover from.
+    #
+    # Checked, not bare: a declined commit RELOADS the graph from disk and
+    # discards the in-memory merge (see _commit_graph_or_raise). Continuing past
+    # that would run step 11's node deletions against the reloaded state, so a
+    # later successful commit would publish the source entities' removal without
+    # the relation redirection that is supposed to preserve them.
+    await _commit_graph_or_raise(
+        chunk_entity_relation_graph, f"Entity Merge: into '{target_entity}'"
+    )
+    try:
+        await safe_vdb_operation_with_exception(
+            operation=relationships_vdb.index_done_callback,
+            operation_name="merge_relation_flush",
+            entity_name=target_entity,
+            max_retries=3,
+            retry_delay=0.2,
+        )
+        await safe_vdb_operation_with_exception(
+            operation=entities_vdb.index_done_callback,
+            operation_name="merge_entity_flush",
+            entity_name=target_entity,
+            max_retries=3,
+            retry_delay=0.2,
+        )
+    except Exception as e:
+        raise VectorStorageConsistencyError(
+            f"Vector storage flush failed after merging entities into '{target_entity}': {e}. "
+            "The knowledge graph was updated but the vector storage embeddings could not be "
+            "persisted, so they may now be inconsistent. No data is lost (the graph is the "
+            "authoritative source and the source entities were not deleted). Stop the LightRAG "
+            "server and run the offline rebuild tool (lightrag-rebuild-vdb) to restore consistency."
+        ) from e
 
-        logger.info(f"Entity Merge: deleting '{entity_name}' from KG and vdb")
+    # 11. Delete the source entities' vector records, BEFORE the node removals
+    # below. Same order, and same reason, as adelete_by_entity: on an
+    # immediate-write graph backend (Neo4j, Memgraph, MongoDB, PostgreSQL --
+    # their graph `index_done_callback` is a no-op) `delete_node` is durable the
+    # moment it returns, so a vector failure after it would exit with the source
+    # already gone and its tracking rows unretired. Doing the vector work first
+    # leaves the inverse residue -- a live node whose vector record is missing --
+    # which is the rebuildable window this codebase already accepts.
+    if target_entity in source_entities:
+        logger.warning(
+            f"Entity Merge: source entity'{target_entity}' is same as target entity"
+        )
 
-        # Delete entity node and related edges from knowledge graph
-        await chunk_entity_relation_graph.delete_node(entity_name)
+    for entity_name in entities_to_remove:
+        logger.info(f"Entity Merge: deleting '{entity_name}' from vdb")
 
-        # Delete entity record from vector database. The graph node is already
-        # gone, so on failure the message must NOT claim the source entity still
-        # exists — only that a stale vector record may remain.
         entity_id = compute_mdhash_id(entity_name, prefix="ent-")
         try:
             await safe_vdb_operation_with_exception(
@@ -2233,30 +2636,140 @@ async def _merge_entities_impl(
             raise VectorStorageConsistencyError(
                 f"Vector storage delete of merged-away source entity '{entity_name}' "
                 f"failed while finalizing the merge into '{target_entity}': {e}. "
-                "The source entity was already removed from the knowledge graph (the "
-                "authoritative source); only a stale vector record may remain, so no "
-                "data is lost. Stop the LightRAG server and run the offline rebuild "
-                "tool (lightrag-rebuild-vdb) to clear the stale record and restore "
-                "consistency."
+                "The source entities were NOT removed from the knowledge graph (the "
+                "authoritative source) and still carry their chunk tracking, so no "
+                "data is lost and nothing has lost its provenance; retrying the "
+                "merge is safe. Vector records deleted before this failure leave "
+                "those entities with no embedding until the merge is retried or the "
+                "offline rebuild tool (lightrag-rebuild-vdb) is run."
             ) from e
 
-    # 11. Save changes
+    # 11b. Make the source entities' removal durable, and only then retire the
+    # tracking rows they and their old relation keys owned. Same staging as
+    # adelete_by_entity, and for the same reason: an authoritative row must
+    # never predecease the object it describes, because a later
+    # _purge_kg_contributions then falls back to the KEEP-truncated graph
+    # source_id and can conclude "no remaining sources".
+    #
+    # The upserts above deliberately stay BEFORE this commit -- that ordering is
+    # f86ef93c's fix for the opposite failure (#3609), where the row existed
+    # under neither key. An orphaned new-key row is dead bookkeeping and is
+    # overwritten by a retry; a row that is absent while its object lives is the
+    # bug. Both invariants hold with the upserts before the commit and the
+    # deletes after it.
+    async def _commit_source_removal_and_retire_tracking() -> None:
+        # The node removals belong INSIDE the region, not before it: on an
+        # immediate-write graph backend they are durable as they run, so a
+        # cancellation between them and the commit would strand the tracking
+        # rows of objects that are already gone. adelete_by_entity stages its
+        # own `delete_node` the same way.
+        for entity_name in entities_to_remove:
+            logger.info(f"Entity Merge: deleting '{entity_name}' from KG")
+            await chunk_entity_relation_graph.delete_node(entity_name)
+
+        try:
+            await _commit_graph_or_raise(
+                chunk_entity_relation_graph,
+                f"Entity Merge: removing sources merged into '{target_entity}'",
+            )
+        except Exception as e:
+            raise VectorStorageConsistencyError(
+                f"Persisting the source-entity removal failed while finalizing the merge "
+                f"into '{target_entity}': {e}. The merged relations are already on disk, "
+                "but the source entities were NOT removed and still carry their chunk "
+                "tracking, so nothing has lost its provenance. Retry the merge; it is "
+                "idempotent from this state."
+            ) from e
+
+        # A failure below is raised as VectorStorageConsistencyError, not bare:
+        # the merge is already durable at this point, and only that type is
+        # re-raised by the `allow_merge` handler in `_edit_entity_impl`.
+        # Anything else is folded there into a partial-success summary that
+        # answers HTTP 200 with `final_entity` set to the source entity -- a
+        # source this commit has just removed. Reporting a landed merge as one
+        # that did not happen is worse than the orphan rows themselves.
+        if relation_chunks_storage is not None and stale_relation_keys:
+            try:
+                await relation_chunks_storage.delete(stale_relation_keys)
+            except Exception as e:
+                logger.error(
+                    "Entity Merge: failed to retire relation chunk tracking; "
+                    f"these rows are now orphaned: {stale_relation_keys}"
+                )
+                raise VectorStorageConsistencyError(
+                    f"Retiring the relation chunk tracking failed while finalizing "
+                    f"the merge into '{target_entity}': {e}. The merge itself is "
+                    "durable -- the source entities are removed and their relations "
+                    "redirected -- but the tracking rows of the replaced relation "
+                    f"keys survive as orphans: {stale_relation_keys}. They describe "
+                    "objects that no longer exist and are dead bookkeeping unless "
+                    "the same relation endpoints reappear later, at which point "
+                    "extraction would read them back as authoritative provenance."
+                ) from e
+        if entity_chunks_storage is not None and entities_to_remove:
+            try:
+                await entity_chunks_storage.delete(entities_to_remove)
+            except Exception as e:
+                logger.error(
+                    "Entity Merge: failed to retire entity chunk tracking; "
+                    f"these rows are now orphaned: {entities_to_remove}"
+                )
+                raise VectorStorageConsistencyError(
+                    f"Retiring the entity chunk tracking failed while finalizing the "
+                    f"merge into '{target_entity}': {e}. The merge itself is durable "
+                    "-- the source entities are removed and their relations "
+                    "redirected -- but their tracking rows survive as orphans: "
+                    f"{entities_to_remove}. They describe entities that no longer "
+                    "exist and are dead bookkeeping unless the same names are "
+                    "extracted again, at which point extraction would read them back "
+                    "as authoritative provenance."
+                ) from e
+
+        # Flushed inside the region, not after it: on a deferred KV backend the
+        # deletes above only touch memory, so a cancellation delivered between
+        # them and this flush would leave the retired rows on disk -- exactly
+        # the orphan the region exists to prevent.
+        try:
+            await _persist_graph_updates(
+                entity_chunks_storage=entity_chunks_storage,
+                relation_chunks_storage=relation_chunks_storage,
+            )
+        except Exception as e:
+            raise VectorStorageConsistencyError(
+                f"Persisting the retired chunk tracking failed while finalizing the "
+                f"merge into '{target_entity}': {e}. The merge has been applied to the "
+                "knowledge graph (the authoritative source) and the source entities "
+                "were removed, but their chunk tracking rows may survive as orphans. "
+                "No data is lost; the stale rows are dead bookkeeping."
+            ) from e
+
+    # The source removal, its durable commit and the tracking retirement are one
+    # cancellation-deferring region, for the same reason as adelete_by_entity:
+    # once the commit lands, the tracking rows describe objects that no longer
+    # exist, and a cancellation delivered mid-cleanup would strand them. The
+    # commit await is itself where a deferred cancellation reappears, so the
+    # region has to start before it -- protecting only the deletes would mean
+    # never reaching them.
+    await _finish_deferring_cancellation(
+        _commit_source_removal_and_retire_tracking(),
+        f"Entity Merge: source removal and tracking cleanup for '{target_entity}'",
+    )
+
+    # 12. Save the vector storages. The graph is already committed above, so
+    # flushing it again here would rewrite the whole file for nothing.
     try:
         await _persist_graph_updates(
             entities_vdb=entities_vdb,
             relationships_vdb=relationships_vdb,
-            chunk_entity_relation_graph=chunk_entity_relation_graph,
-            entity_chunks_storage=entity_chunks_storage,
-            relation_chunks_storage=relation_chunks_storage,
         )
     except Exception as e:
         raise VectorStorageConsistencyError(
             f"Persisting the merged state failed while finalizing the merge into "
             f"'{target_entity}': {e}. The merge has been applied to the knowledge graph "
             "(the authoritative source) and the source entities were removed, but the "
-            "vector storage may not be fully persisted, so they may now be inconsistent. "
-            "No data is lost. Stop the LightRAG server and run the offline rebuild tool "
-            "(lightrag-rebuild-vdb) to restore consistency."
+            "vector storage may not be fully persisted, so they may now be "
+            "inconsistent. No data is lost. Stop the LightRAG server and run the "
+            "offline rebuild tool (lightrag-rebuild-vdb) to restore consistency."
         ) from e
 
     logger.info(

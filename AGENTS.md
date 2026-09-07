@@ -55,6 +55,15 @@ Each `LightRAG` instance can pass a `workspace` parameter for data isolation. Im
 - **Relational DB**: workspace column filtering.
 - **Qdrant**: payload-based partitioning.
 
+### Consistency without transactions
+
+LightRAG writes to independent stores — graph, KV, vector, doc-status — with **no transaction across them**. Every multi-store operation therefore has intermediate states, and no ordering removes them; an ordering only chooses which one it keeps.
+
+- **The rule:** an inconsistency is acceptable when it **heals itself later** (a retry, a rebuild, or the next run rewrites it) or is **harmless in direction**. Losing data is never acceptable; retaining an object that could have been deleted, or surfacing a chunk a query did not need, is.
+- A change must **improve on an accepted residue**, not swap it for its mirror. "An inconsistent state exists" is not by itself a defect report — the questions are which state, how it heals, and whether the alternative is better.
+- Every accepted residue is **written down** with its reason and recovery path, next to the code or in the relevant contract. An undocumented residue is a defect; a documented one is a decision.
+- This licenses nothing for **silent failure**. A durable write must never be reported as one that did not happen, and a failure must never be swallowed: fail loud, then let the documented residue heal.
+
 ### Pipeline concurrency contract
 
 **Full contract: [docs/design/PipelineConcurrencyContract.md](docs/design/PipelineConcurrencyContract.md) — read it before touching `lightrag/pipeline.py`, `lightrag/kg/pipeline_ingress.py`, `pipeline_status` fields, or any `/documents/*` endpoint.**
@@ -71,9 +80,10 @@ Each `LightRAG` instance can pass a `workspace` parameter for data isolation. Im
 
 - "What did this document contribute?" is answerable only from the per-document write-ahead anchors (`full_entities` / `full_relations`). The reverse lookup through `text_chunks` is not a fallback — purge deletes those chunks.
 - Governing invariant: **a purge must never delete something that CARRIES attribution — a chunk row or an anchor row that names objects — and leave those objects behind.** `_purge_kg_contributions` **fails closed** (`RecoveryAnchorMissingError` → HTTP 409, nothing deleted) unless one of four proofs holds: `anchors`, `pre_graph`, `journal`, `empty_scope`.
-- **`kg_write_state` must never be inferred or backfilled** — it is written once at enqueue and is monotonic. A backfill reproduces issue #3400.
+- **`kg_write_state` must never be inferred or backfilled** — it is written once at enqueue and is monotonic. A backfill reproduces the original silent-skip defect.
 - `kg_write_state` and `kg_purge` must stay in both `_DOC_STATUS_METADATA_CARRY_OVER_KEYS` and `_DOC_STATUS_METADATA_DIRECTIVE_KEYS` (`lightrag/utils_pipeline.py`); dropping either turns a resumable purge into a permanent refusal.
 - Chunk tracking (`entity_chunks` / `relation_chunks`) outranks graph `source_id`; code folding a `source_id` delta back into tracking must append genuine additions only.
+- Merge and rename apply *Consistency without transactions* above: [the failure model](docs/design/PurgeRecoveryContract.md#merge-and-rename-failure-model) lists their ordering invariants, accepted residues and already-rejected remedies. Read it before reordering `_merge_entities_impl` or the rename branch of `_edit_entity_impl`.
 
 ### Relation weight contract
 
@@ -242,21 +252,7 @@ asyncio.run(main())
 
 ### Custom Embedding Functions
 
-Use `@wrap_embedding_func_with_attrs` decorator and call `.func` when wrapping (already-decorated functions cannot be wrapped again — access the underlying via `.func`):
-
-```python
-from lightrag.utils import wrap_embedding_func_with_attrs
-
-@wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)
-async def custom_embed(texts: list[str]) -> np.ndarray:
-    # Call underlying function, not wrapped version
-    return await openai_embed.func(texts, model="text-embedding-3-large")
-
-# Wrong: EmbeddingFunc(func=openai_embed)
-# Right: EmbeddingFunc(func=openai_embed.func)
-```
-
-> **Pitfall — switching embedding models**: when changing the embedding model you MUST clear the data directory (optionally keeping `kv_store_llm_response_cache.json` for LLM cache). Existing vectors will not match the new model's space.
+**Full guide: [docs/ProgramingWithCore.md](docs/ProgramingWithCore.md#custom-embedding-functions)** — the `.func` unwrapping rule, `max_token_size`, the `(len(texts), embedding_dim)` return contract that `EmbeddingFunc.__call__` enforces on every call, and the clear-the-data-directory pitfall when switching models. Read it before writing or wrapping an embedding function.
 
 ### Storage Configuration
 

@@ -8,10 +8,11 @@ from typing import final
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from lightrag.utils import (
-    logger,
-    validate_xml_attributes,
-    validate_workspace,
     commit_in_storage_io,
+    log_without_raising,
+    logger,
+    validate_workspace,
+    validate_xml_attributes,
 )
 from lightrag.base import BaseGraphStorage
 import networkx as nx
@@ -972,15 +973,41 @@ class NetworkXStorage(BaseGraphStorage):
                 # call time on purpose: test_networkx_index_done.py monkeypatches
                 # write_nx_graph, and hoisting the reference would leave that
                 # test green while testing nothing.
+                publish_error: list[Exception] = []
+
                 async def _committed() -> None:
                     # Runs inside the same uncancellable region as the write,
                     # and only if the write landed. Inlined after the offload it
                     # would be skippable by a cancel, leaving the new GraphML
                     # published while every other process keeps reading the
                     # previous one until some later commit happens to notify it.
-                    await set_all_update_flags(self.namespace, workspace=self.workspace)
-                    # Reset own update flag to avoid self-reloading
-                    self.storage_updated.value = False
+                    try:
+                        await set_all_update_flags(
+                            self.namespace, workspace=self.workspace
+                        )
+                        # Reset own update flag to avoid self-reloading. Inside
+                        # the same guard on purpose: in multiprocess mode this
+                        # flag is a `Manager().Value` proxy, so the assignment
+                        # is another RPC to the very process whose outage makes
+                        # the call above fail. Guarding only the first one lets
+                        # the identical failure escape one line later.
+                        self.storage_updated.value = False
+                    except Exception as e:
+                        # Recorded, never raised. Reaching this line means the
+                        # write already landed (`on_committed` runs only after
+                        # `fn` succeeded), so what failed is the publication of
+                        # that write, not the write: other workers keep reading
+                        # the previous snapshot until the next commit anywhere
+                        # flips their flags, and this process may redundantly
+                        # reload the file it just wrote. Both are visibility
+                        # effects, not a lost write. Raising them would report a
+                        # durable mutation as a failed one, and every caller
+                        # inherits that lie -- the deletion paths in utils_graph
+                        # skip the tracking retirement they still owe (leaving a
+                        # vanished object's authoritative rows behind), and
+                        # _insert_done marks a document FAILED whose graph
+                        # writes are on disk.
+                        publish_error.append(e)
 
                 await commit_in_storage_io(
                     lambda: NetworkXStorage.write_nx_graph(
@@ -988,14 +1015,69 @@ class NetworkXStorage(BaseGraphStorage):
                     ),
                     _committed,
                 )
+                if publish_error:
+                    logger.error(
+                        f"[{self.workspace}] Graph saved to "
+                        f"{self._graphml_xml_file}, but publishing that write "
+                        f"failed: {publish_error[0]}. The notification flips "
+                        "one flag per process, so an unknown remainder of them "
+                        "keeps reading the previous snapshot until the next "
+                        "commit notifies them; this process may also reload "
+                        "the file it just wrote."
+                    )
                 return True  # Return success
             except Exception as e:
+                # Only a genuine write failure reaches here. A failure of the
+                # publication hook is recorded above and does not raise: the
+                # file is already on disk by the time that hook runs, so the
+                # recovery reload below -- and the "the write did not land"
+                # reasoning it rests on -- would both be wrong for it.
+                #
                 # Raise (do NOT swallow + return False): _insert_done's
                 # _flush_one only detects failures via exceptions, so a
                 # swallowed graph-save error would let the document be marked
                 # PROCESSED with the graph changes unpersisted. Surfacing it
                 # aligns this backend with the others (faiss/nano raise too).
                 logger.error(f"[{self.workspace}] Error saving graph: {e}")
+                # Restore the process view from the file before re-raising,
+                # symmetrically with the declined-commit branch above. The write
+                # did not land, so self._graph now claims a state the file does
+                # not have -- and nothing would ever repair it: a failed write
+                # never reaches _committed, so storage_updated stays False and
+                # _get_graph's reload branch never fires again. A caller must
+                # not be told an object is absent while it is still on disk:
+                # utils_graph's deletion retry reads that as a durable removal
+                # and sweeps the object's authoritative tracking row, leaving a
+                # live node on disk with no provenance. It also stops the next
+                # successful commit from publishing mutations that belong to
+                # the failed batch, whose documents are marked FAILED and
+                # reprocessed from scratch.
+                #
+                # Safe here: _storage_lock is held and the commit gate is still
+                # closed (the finally below reopens it), so no other coroutine
+                # can be reading or mutating self._graph.
+                try:
+                    self._graph = (
+                        NetworkXStorage.load_nx_graph(self._graphml_xml_file)
+                        or nx.Graph()
+                    )
+                    self.storage_updated.value = False
+                except Exception as reload_error:
+                    # Report, never mask: the save error is what the caller
+                    # must see, and a failed reload leaves the divergence in
+                    # place, so it has to be visible in the log on its own.
+                    # Keep the reload flag armed as a recovery fence: every
+                    # later public graph operation enters through _get_graph,
+                    # which will retry the disk reload before trusting this
+                    # process-local view. Without the flag, a deletion retry
+                    # could mistake the unpersisted mutation for durable state
+                    # and sweep the live object's tracking row.
+                    self.storage_updated.value = True
+                    logger.error(
+                        f"[{self.workspace}] Failed to restore the in-memory "
+                        f"graph after a failed save; it may not match "
+                        f"{self._graphml_xml_file}: {reload_error}"
+                    )
                 raise
             finally:
                 # Every path, including CancelledError. Leaking a cleared gate
@@ -1025,24 +1107,78 @@ class NetworkXStorage(BaseGraphStorage):
         Returns:
             dict[str, str]: Operation status and message
             - On success: {"status": "success", "message": "data dropped"}
-            - On failure: {"status": "error", "message": "<error details>"}
+            - On destructive failure: {"status": "error", "message": "<error details>"}
+
+            A peer notification failure after the file deletion is logged but
+            does not change the successful status of the completed drop. No
+            step after the deletion — notification, writer-flag reset, or the
+            success log — can turn it into an error response.
+            This status confirms durable deletion, not convergence of all worker
+            snapshots. A worker that missed the notification may later write its
+            stale graph back. Stop workspace writes and restart affected workers
+            before resuming; if stale data has already been written, clear again.
+
+        Cancellation:
+            Before submission, cancellation leaves storage unchanged. Once file
+            deletion is submitted, the storage lock stays held until deletion
+            and its notification/reset/logging hook finish, then caller
+            cancellation propagates. Notification errors are still logged.
         """
+
+        def _delete_file() -> None:
+            if os.path.exists(self._graphml_xml_file):
+                os.remove(self._graphml_xml_file)
+
+        async def _committed() -> None:
+            self._graph = nx.Graph()
+            # Keep publication under the storage lock. Once deletion starts,
+            # commit_in_storage_io defers caller cancellation through this hook
+            # so it cannot release readers before the notification attempt.
+            try:
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
+            except Exception as notification_error:
+                # Notification can fail partway through the registered flags.
+                # A missed worker may later become the writer and persist its
+                # stale graph, resurrecting deleted data. A notification from
+                # that writer would spread the stale state, not repair it.
+                log_without_raising(
+                    logger.error,
+                    f"[{self.workspace}] Dropped graph file:{self._graphml_xml_file}, "
+                    "but failed while notifying all processes; some processes may "
+                    "not reload and may restore deleted data if they later write. "
+                    "Stop workspace writes and restart all affected workers before "
+                    f"resuming: {notification_error}",
+                )
+            # The local graph is already empty, even after partial notification.
+            # A broken shared-state manager can fail this reset independently;
+            # report it without misclassifying the durable deletion as failed.
+            try:
+                self.storage_updated.value = False
+            except Exception as reset_error:
+                log_without_raising(
+                    logger.error,
+                    f"[{self.workspace}] Dropped graph file:{self._graphml_xml_file}, "
+                    f"but failed to reset the writer reload flag: {reset_error}",
+                )
+            # Log inside the cancellation-protected hook: the caller may receive
+            # CancelledError after it completes instead of a success response.
+            # Routed through log_without_raising like every other log call in
+            # this hook: a broken log sink cannot unmake the removal, so it
+            # must not surface as a failed drop. See that helper for why the
+            # failure is swallowed rather than re-reported.
+            log_without_raising(
+                logger.info,
+                f"[{self.workspace}] Process {os.getpid()} drop graph file:{self._graphml_xml_file}",
+            )
+
         try:
             async with self._storage_lock:
-                # delete _client_file_name
-                if os.path.exists(self._graphml_xml_file):
-                    os.remove(self._graphml_xml_file)
-                self._graph = nx.Graph()
-                # Notify other processes that data has been updated
-                await set_all_update_flags(self.namespace, workspace=self.workspace)
-                # Reset own update flag to avoid self-reloading
-                self.storage_updated.value = False
-                logger.info(
-                    f"[{self.workspace}] Process {os.getpid()} drop graph file:{self._graphml_xml_file}"
-                )
-            return {"status": "success", "message": "data dropped"}
+                await commit_in_storage_io(_delete_file, _committed)
         except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error dropping graph file:{self._graphml_xml_file}: {e}"
+            log_without_raising(
+                logger.error,
+                f"[{self.workspace}] Error dropping graph file:{self._graphml_xml_file}: {e}",
             )
             return {"status": "error", "message": str(e)}
+
+        return {"status": "success", "message": "data dropped"}

@@ -992,6 +992,32 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     `QueryParam.disable_user_prompt_prefix`, but can never read or replace it.
     """
 
+    # Declared last for the same reason as `user_prompt_prefix` above: new
+    # fields go at the END of this dataclass, never mid-class. See
+    # tests/test_dataclass_positional_compatibility.py.
+    kg_extraction_validator: Callable | None = field(default=None)
+    """
+    Optional per-chunk extraction-quality hook, run BEFORE merge.
+
+    Called once per chunk with ``(chunk_key, chunk_text, maybe_nodes,
+    maybe_edges)`` and must return a ``(maybe_nodes, maybe_edges)`` pair of
+    dicts of the same shapes, possibly filtered. Sync or async. ``None`` (the
+    default) leaves the pipeline unchanged.
+
+    Anything the hook drops never reaches the graph, the vector stores, or a
+    ``source_id`` chain. Three rules a validator gets wrong at its own cost:
+    filter relation ENDPOINTS as well as entity names (a bare endpoint is
+    materialized as an ``UNKNOWN`` node); make the rule a function of the name,
+    since chunks are judged concurrently and independently and core aggregates
+    nothing across them; and canonicalize both sides of any grounding check,
+    because ``maybe_nodes`` keys have been through
+    :func:`lightrag.utils.normalize_entity_name`. Failures are not swallowed —
+    a raising or malformed hook fails the chunk and the ingest.
+
+    Full contract, worked example and the exact definition of ``chunk_text``:
+    see "Extraction Quality Hook" in ``docs/ProgramingWithCore.md``.
+    """
+
     def _mark_addon_params_dirty(self) -> None:
         self._addon_params_dirty = True
 
@@ -1008,20 +1034,30 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         ``recursive_character`` dict stays the object that is read later, and so
         it cannot recursively re-enter this callback through
         ``ObservableAddonParams.__setitem__``.
-        """
-        chunker_config = self._addon_params.get("chunker")
-        if isinstance(chunker_config, Mapping):
-            from lightrag.parser.routing import normalize_chunker_r_separators
 
-            normalized, corrected = normalize_chunker_r_separators(
-                chunker_config, context="addon_params['chunker']", in_place=True
-            )
-            if corrected and normalized is not chunker_config:
-                # ``in_place`` could not apply (an immutable mapping was
-                # supplied). Store the corrected copy without re-entering this
-                # callback; the dirty mark below already covers it.
-                dict.__setitem__(self._addon_params, "chunker", dict(normalized))
-        self._mark_addon_params_dirty()
+        The dirty mark is in a ``finally`` on purpose. By the time this callback
+        runs the live mapping has ALREADY changed, so the derived cache is
+        already stale — normalization raising (a malformed replacement chunker
+        config such as ``{"separators": [1, 2]}`` reaches ``len()`` on a
+        non-string) must not be able to leave the mapping ahead of a cache that
+        still looks clean. The caller still sees the error; it just cannot cost
+        us the invalidation.
+        """
+        try:
+            chunker_config = self._addon_params.get("chunker")
+            if isinstance(chunker_config, Mapping):
+                from lightrag.parser.routing import normalize_chunker_r_separators
+
+                normalized, corrected = normalize_chunker_r_separators(
+                    chunker_config, context="addon_params['chunker']", in_place=True
+                )
+                if corrected and normalized is not chunker_config:
+                    # ``in_place`` could not apply (an immutable mapping was
+                    # supplied). Store the corrected copy without re-entering
+                    # this callback; the dirty mark below already covers it.
+                    dict.__setitem__(self._addon_params, "chunker", dict(normalized))
+        finally:
+            self._mark_addon_params_dirty()
 
     def _replace_addon_params(
         self, addon_params: Mapping[str, Any] | None, *, mark_dirty: bool
@@ -1213,6 +1249,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # instance's, so every "independent" copy already shared one CoreBPE. Now
         # that the injection contract is thread safety, sharing is what it asks for.
         global_config["tokenizer"] = self.tokenizer
+        # Same identity restoration for the extraction-quality hook, for a
+        # different reason: a validator is allowed to be STATEFUL (an audit log
+        # of reject reasons, say). asdict deep-copies a bound method's __self__,
+        # a callable object, and a functools.partial, so without this line every
+        # document would filter against a fresh throwaway copy and the collected
+        # state would be lost silently. A plain function is deep-copied
+        # atomically and was never affected, which is why this is easy to miss.
+        global_config["kg_extraction_validator"] = self.kg_extraction_validator
         global_config.pop("_addon_params", None)
         global_config.pop("_addon_params_dirty", None)
         global_config.pop("_cached_entity_extraction_use_json", None)
@@ -1513,6 +1557,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         self._llm_role_builder = None
         self._retired_llm_queue_cleanup_tasks: set[asyncio.Task] = set()
+        self._chunk_tracking_migration_checked = False
 
         # The event loop this instance's storages bind to (set in
         # initialize_storages). Kept off the dataclass fields so asdict() in
@@ -3941,7 +3986,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Args:
             query (str): The query to be executed.
             param (QueryParam): Configuration parameters for query execution.
-            prompt (Optional[str]): Custom prompts for fine-tuned control over the system's behavior. Defaults to None, which uses PROMPTS["rag_response"].
+            system_prompt (Optional[str]): Custom prompts for fine-tuned control over the system's behavior. Defaults to None, which uses PROMPTS["rag_response"].
 
         Returns:
             str: The result of the query execution.
@@ -6535,6 +6580,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             self.entities_vdb,
             self.relationships_vdb,
             entity_name,
+            entity_chunks_storage=self.entity_chunks,
+            relation_chunks_storage=self.relation_chunks,
         )
 
     def delete_by_entity(self, entity_name: str) -> DeletionResult:
@@ -6574,6 +6621,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             self.relationships_vdb,
             source_entity,
             target_entity,
+            relation_chunks_storage=self.relation_chunks,
         )
 
     def delete_by_relation(
@@ -6798,6 +6846,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             self.relationships_vdb,
             entity_name,
             entity_data,
+            before_create=self._migrate_chunk_tracking_before_creation,
+            entity_chunks_storage=self.entity_chunks,
+            relation_chunks_storage=self.relation_chunks,
         )
 
     def create_entity(
@@ -6839,6 +6890,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             source_entity,
             target_entity,
             relation_data,
+            before_create=self._migrate_chunk_tracking_before_creation,
+            relation_chunks_storage=self.relation_chunks,
         )
 
     def create_relation(

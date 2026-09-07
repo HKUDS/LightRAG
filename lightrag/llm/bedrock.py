@@ -198,6 +198,7 @@ async def bedrock_complete_if_cache(
     endpoint_url: str | None = None,
     image_inputs: list[Any] | None = None,
     timeout: int | None = None,
+    token_tracker: Any | None = None,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     """Call Amazon Bedrock Converse API with LightRAG-compatible shims.
@@ -377,9 +378,18 @@ async def bedrock_complete_if_cache(
                             text = delta.get("text")
                             if text:
                                 yield text
-                        # Handle other event types that might indicate stream end
-                        elif "messageStop" in event:
-                            break
+                        elif "metadata" in event and token_tracker is not None:
+                            usage = event["metadata"].get("usage") or {}
+                            if usage:
+                                token_tracker.add_usage(
+                                    {
+                                        "prompt_tokens": usage.get("inputTokens", 0),
+                                        "completion_tokens": usage.get(
+                                            "outputTokens", 0
+                                        ),
+                                        "total_tokens": usage.get("totalTokens", 0),
+                                    }
+                                )
 
                 except Exception as e:
                     # Convert to appropriate exception type
@@ -447,6 +457,16 @@ async def bedrock_complete_if_cache(
             )
 
             stop_reason = response.get("stopReason")
+
+            usage = response.get("usage") or {}
+            if token_tracker is not None and usage:
+                token_tracker.add_usage(
+                    {
+                        "prompt_tokens": usage.get("inputTokens", 0),
+                        "completion_tokens": usage.get("outputTokens", 0),
+                        "total_tokens": usage.get("totalTokens", 0),
+                    }
+                )
 
             if not content or content.strip() == "":
                 # Already a failure before this change; what was missing is the

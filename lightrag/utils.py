@@ -662,6 +662,30 @@ class EmbeddingFunc:
             embeddings = await embed_func(texts, context="document")  # For indexing
             embeddings = await embed_func([query], context="query")   # For search
 
+    Return shape contract:
+        The wrapped function MUST return a 2D numpy array of shape
+        ``(len(texts), embedding_dim)`` -- exactly one row per input text, in
+        input order. Every storage backend consumes the result positionally
+        (``embeddings[i]`` belongs to ``texts[i]``), so any other shape is
+        rejected with a ValueError; the wrapper never reshapes, slices or pads
+        the result, because the row-to-input mapping cannot be recovered once
+        it is wrong.
+
+        Rank and dimension are always checked. The row count is checked
+        against the input batch, resolved from the first positional argument
+        or from the kwarg named after the wrapped function's first parameter;
+        when neither applies the row count is left unverified rather than
+        guessed at. In particular:
+
+        - A single input still returns ``(1, embedding_dim)``, not
+          ``(embedding_dim,)``.
+        - A provider that returns more vectors than inputs (e.g. one vector
+          per internally split segment of an over-long text) needs its token
+          limit declared via ``max_token_size``, or a dedicated adapter that
+          normalizes the output to one vector per input.
+        - An empty input list may return any empty array, including a bare
+          ``np.array([])``.
+
     Args:
         embedding_dim: Expected dimension of the embeddings(For dimension checking and workspace data isolation in vector DB)
         func: The actual embedding function to wrap
@@ -710,6 +734,40 @@ class EmbeddingFunc:
                 "Consider using .func to access the unwrapped function directly."
             )
 
+    def _resolve_input_batch(self, args: tuple, kwargs: dict) -> Any:
+        """Return the sequence of texts the caller passed, or None if unknown.
+
+        The vector count can only be checked against something. Positional is
+        the overwhelmingly common path and costs nothing to read. A keyword
+        call needs the wrapped function's first parameter name to know which
+        kwarg holds the texts, so the signature is inspected only on that
+        path -- and only the parameter name is read, never a full bind(),
+        which would raise on the extra kwargs this wrapper and its priority
+        decorator pass through (``_priority``, ``context``, ...).
+
+        Returning None means "not resolvable", which downgrades the vector
+        count check to unverifiable rather than guessing at a mapping.
+        """
+        if args:
+            return args[0]
+        if not kwargs:
+            return None
+        try:
+            params = inspect.signature(self.func).parameters
+        except (TypeError, ValueError):
+            # Builtins and C-implemented callables expose no signature.
+            return None
+        for param in params.values():
+            if param.kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            ):
+                return kwargs.get(param.name)
+            # A positional-only or *args first parameter cannot be addressed
+            # by keyword at all, so the batch stays unknown.
+            return None
+        return None
+
     async def __call__(self, *args, **kwargs) -> np.ndarray:
         # Only inject embedding_dim when send_dimensions is True
         if self.send_dimensions:
@@ -746,27 +804,89 @@ class EmbeddingFunc:
         # Call the actual embedding function
         result = await self.func(*args, **kwargs)
 
-        # Validate embedding dimensions using total element count
-        total_elements = result.size  # Total number of elements in the numpy array
+        # Validate the result shape directly rather than inferring it from a
+        # total-element count. A total-element check cannot tell a genuine
+        # vector-count mismatch (2N, D) apart from a dimension mismatch
+        # (N, 2D) -- both divide out to the same "actual vectors" number, so
+        # the wrong one of the two gets reported. Checking ndim/shape[0]/
+        # shape[1] directly identifies which one actually happened.
+        #
+        # Every mismatch is fatal: the wrapper never reshapes, slices or pads
+        # the result. Each raise is preceded by a logger.error carrying the
+        # likely cause and the fix, so the short exception message stays
+        # readable while the diagnosis is still available in the logs.
         expected_dim = self.embedding_dim
+        # None means the input batch could not be resolved from the call, so
+        # the vector count is unverifiable -- see _resolve_input_batch.
+        input_batch = self._resolve_input_batch(args, kwargs)
+        expected_vectors = (
+            len(input_batch) if isinstance(input_batch, (list, tuple)) else None
+        )
 
-        # Check if total elements can be evenly divided by embedding_dim
-        if total_elements % expected_dim != 0:
+        # An empty batch carries no vectors and no dimension to validate. A
+        # provider that short-circuits with `if not texts: return np.array([])`
+        # yields a 1D (0,) array, which is a correct answer to a zero-input
+        # request and must not be rejected by the 2D check below. An empty
+        # input paired with a non-empty result still falls through and fails.
+        if expected_vectors == 0 and result.size == 0:
+            return result
+
+        if result.ndim != 2:
+            logger.error(
+                f"Embedding result has unexpected shape {result.shape}: this "
+                f"wrapper requires a 2D array of exactly one row per input "
+                f"text, i.e. (len(texts), {expected_dim}). A single input "
+                f"must still come back as (1, {expected_dim}), not "
+                f"({expected_dim},); a flattened or nested array is rejected "
+                f"rather than reshaped, because the row-to-input mapping "
+                f"cannot be recovered from it."
+            )
             raise ValueError(
-                f"Embedding dimension mismatch detected: "
-                f"total elements ({total_elements}) cannot be evenly divided by "
-                f"expected dimension ({expected_dim}). "
+                f"Embedding result has unexpected shape: expected a 2D "
+                f"array (vectors, dimension) but got ndim={result.ndim} "
+                f"(shape={result.shape})."
             )
 
-        # Optional: Verify vector count matches input text count
-        actual_vectors = total_elements // expected_dim
-        if args and isinstance(args[0], (list, tuple)):
-            expected_vectors = len(args[0])
-            if actual_vectors != expected_vectors:
-                raise ValueError(
-                    f"Vector count mismatch: "
-                    f"expected {expected_vectors} vectors but got {actual_vectors} vectors (from embedding result)."
-                )
+        if expected_vectors is not None and result.shape[0] != expected_vectors:
+            logger.error(
+                f"Embedding vector count mismatch: {expected_vectors} text(s) "
+                f"in, {result.shape[0]} vector(s) out (shape={result.shape}). "
+                f"The usual cause is an embedding service that splits an "
+                f"over-long input internally and returns one vector per "
+                f"segment: declare the model's real token limit so texts are "
+                f"truncated before the call -- EMBEDDING_TOKEN_LIMIT on the "
+                f"API server, or max_token_size on "
+                f"@wrap_embedding_func_with_attrs for a custom embedding "
+                f"function. A provider that legitimately returns multiple "
+                f"vectors per input needs a dedicated adapter that normalizes "
+                f"its output to one vector per input before it reaches this "
+                f"wrapper; nothing is reshaped or truncated here, since there "
+                f"is no general contract for which rows correspond to which "
+                f"inputs."
+            )
+            raise ValueError(
+                f"Vector count mismatch: expected {expected_vectors} vectors "
+                f"(one per input text) but got {result.shape[0]} "
+                f"(shape={result.shape})."
+            )
+
+        if result.shape[1] != expected_dim:
+            logger.error(
+                f"Embedding dimension mismatch: the model returned "
+                f"{result.shape[1]}-dimensional vectors but this embedding "
+                f"function declares {expected_dim} (shape={result.shape}). "
+                f"Check that EMBEDDING_DIM (or the embedding_dim passed to "
+                f"@wrap_embedding_func_with_attrs / EmbeddingFunc) matches "
+                f"the model actually being called, and that the endpoint "
+                f"honours the requested output dimension. Vectors already "
+                f"stored under the previously declared dimension do not match "
+                f"the corrected one, so clear the data directory too unless "
+                f"nothing has been indexed yet."
+            )
+            raise ValueError(
+                f"Embedding dimension mismatch: expected dimension "
+                f"{expected_dim} but got {result.shape[1]} (shape={result.shape})."
+            )
 
         return result
 
@@ -997,13 +1117,26 @@ class QueueFullError(Exception):
 
 
 class VectorStorageConsistencyError(Exception):
-    """Raised when a vector storage write fails after the graph has already been updated.
+    """Raised when a step AFTER a durable graph update fails.
 
     The knowledge graph (plus the text_chunks KV store) is the authoritative data
-    source, so no data is lost — but the vector storage no longer mirrors the graph
-    and query results may be incomplete until it is rebuilt. Stop the LightRAG
-    server and run the offline rebuild tool (``lightrag-rebuild-vdb``) to restore
-    consistency.
+    source, so no data is lost — but something that mirrors or annotates it did
+    not complete:
+
+    * a **vector storage** write, so the vector records no longer mirror the
+      graph and query results may be incomplete until they are rebuilt. Stop the
+      LightRAG server and run the offline rebuild tool (``lightrag-rebuild-vdb``)
+      to restore consistency.
+    * a **chunk-tracking** retirement, so rows survive for graph objects a merge
+      or rename has removed. Those are dead bookkeeping until the same key
+      recurs; the message names the keys.
+
+    What every case shares is the reason this type exists at all: the graph
+    mutation IS durable, so the failure must not be reported as one that did not
+    happen. ``_edit_entity_impl``'s ``allow_merge`` handler re-raises exactly
+    this type and folds every other exception into a partial-success summary
+    answering HTTP 200 — which for a landed merge would name the source entity
+    it just deleted as the surviving one.
     """
 
     pass
@@ -3132,6 +3265,32 @@ async def run_in_storage_io(fn: Callable[..., Any], *args: Any, **kwargs: Any) -
     )
 
 
+def log_without_raising(emit: Callable[[str], Any], message: str) -> None:
+    """Emit a log line that must never propagate a sink failure to its caller.
+
+    For code past a point of no return, where the caller's status no longer has
+    the right to change. The file backends' ``drop`` commit hooks are the
+    motivating case: once the file is gone the destruction happened, and a
+    broken handler, formatter or output target must not turn it into
+    ``{"status": "error"}`` — the exact misreport those hooks exist to prevent.
+    Their outer ``except`` needs it for the mirror reason: a sink failure there
+    must not swallow the ``"error"`` a real destructive failure has to report.
+
+    Pass the log method itself (``log_without_raising(logger.info, msg)``)
+    rather than wrapping the call in a lambda: an ``except X as e`` name is
+    unbound at the end of its block, so a closure over it reads as undefined to
+    static analysis even though it resolves at call time.
+
+    The failure is deliberately **swallowed, not re-reported**: any report would
+    travel the same broken sink. This is the narrow exception to *fail loud* —
+    it applies to logging alone, never to the work being logged about.
+    """
+    try:
+        emit(message)
+    except Exception:
+        pass
+
+
 async def commit_in_storage_io(
     fn: Callable[[], Any],
     on_committed: Callable[[], Awaitable[Any]],
@@ -5175,14 +5334,14 @@ async def use_llm_func_with_cache(
     This function applies text sanitization to prevent UTF-8 encoding errors for all LLM providers.
 
     Args:
-        input_text: Input text to send to LLM
+        user_prompt: Input text to send to LLM
         use_llm_func: LLM function with higher priority
         llm_response_cache: Cache storage instance
         max_tokens: Maximum tokens for generation
         history_messages: History messages list
         cache_type: Type of cache
         chunk_id: Chunk identifier to store in cache
-        text_chunks_storage: Text chunks storage to update llm_cache_list
+        system_prompt: Optional system prompt sent alongside the user prompt
         cache_keys_collector: Optional list to collect cache keys for batch processing
         response_format: Structured output control forwarded to the LLM provider.
             Providers translate this to their native structured-output surface
@@ -5372,13 +5531,18 @@ def get_content_summary(content: str, max_length: int = 250) -> str:
 def sanitize_and_normalize_extracted_text(
     input_text: str, remove_inner_quotes=False
 ) -> str:
-    """Santitize and normalize extracted text
+    """Sanitize and normalize extracted text
+
     Args:
         input_text: text string to be processed
-        is_name: whether the input text is a entity or relation name
+        remove_inner_quotes: whether to remove Chinese quotation marks and
+            English quotation marks adjacent to Chinese characters, and to
+            normalize non-breaking spaces. Matching outer quotation marks are
+            removed independently of this option only when the enclosed text
+            contains no corresponding quote characters.
 
     Returns:
-        Santitized and normalized text string
+        Sanitized and normalized text string
     """
     safe_input_text = sanitize_text_for_encoding(input_text)
     if safe_input_text:
@@ -5403,19 +5567,21 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
     - Preserve spaces within English text and numbers
     - Replace Chinese parentheses with English parentheses
     - Replace Chinese dash with English dash
-    - Remove English quotation marks from the beginning and end of the text
-    - Remove English quotation marks in and around chinese
-    - Remove Chinese quotation marks
+    - Remove a matching outer English/Chinese quote or book title mark pair only
+      when the enclosed text contains no corresponding mark characters
     - Filter out short numeric-only text (length < 3 and only digits/dots)
     - remove_inner_quotes = True
-        remove Chinese quotes
-        remove English quotes in and around chinese
-        Convert non-breaking spaces to regular spaces
-        Convert narrow non-breaking spaces after non-digits to regular spaces
+        - Remove Chinese quotation marks
+        - Remove English quotation marks adjacent to Chinese characters
+        - Convert non-breaking spaces to regular spaces
+        - Convert narrow non-breaking spaces after non-digits to regular spaces
 
     Args:
         name: Entity name to normalize
-        is_entity: Whether this is an entity name (affects quote handling)
+        remove_inner_quotes: whether to apply the optional quote and
+            non-breaking-space rules above. Matching outer quotation marks are
+            removed independently of this option only when the enclosed text
+            contains no corresponding quote characters.
 
     Returns:
         Normalized entity name
@@ -5527,7 +5693,9 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
     return name
 
 
-def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
+def sanitize_text_for_encoding(
+    text: str, replacement_char: str = "", *, strip: bool = True
+) -> str:
     """Sanitize text to ensure safe UTF-8 encoding by removing or replacing problematic characters.
 
     This function handles:
@@ -5536,11 +5704,19 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
     - Control characters that might cause issues
     - Unescape HTML escapes
     - Remove control characters
-    - Whitespace trimming
+    - Whitespace trimming (see ``strip``)
 
     Args:
         text: Input text to sanitize
         replacement_char: Character to use for replacing invalid sequences
+        strip: Trim leading/trailing whitespace. Default ``True``, which is
+            what every caller sanitizing a whole payload wants. Pass ``False``
+            when the text is a FRAGMENT that will sit inside a larger
+            sanitized string: its boundary whitespace is interior to that
+            string and survives there, so trimming the fragment in isolation
+            would produce something the consumer of the larger string never
+            saw. ``kg_extraction_validator`` is the case in point — the chunk
+            sits inside a fenced ``---Input Text---`` section of the prompt.
 
     Returns:
         Sanitized text that can be safely encoded as UTF-8
@@ -5549,7 +5725,8 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
         return text
 
     # First, strip whitespace
-    text = text.strip()
+    if strip:
+        text = text.strip()
 
     # Early return if text is empty after basic cleaning
     if not text:
@@ -5565,7 +5742,7 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
     # 3. Remove control characters but preserve common whitespace (\t, \n, \r)
     text = _CONTROL_CHAR_PATTERN_ALL.sub(replacement_char, text)
 
-    return text.strip()
+    return text.strip() if strip else text
 
 
 def strip_control_characters(text: str, replacement_char: str = "") -> str:
@@ -5996,11 +6173,12 @@ async def pick_by_vector_similarity(
     if not entity_info or num_of_chunks <= 0:
         return []
 
-    # Collect all unique chunk IDs from entity info
-    all_chunk_ids = set()
-    for i, entity in enumerate(entity_info):
-        chunk_ids = entity.get("sorted_chunks", [])
-        all_chunk_ids.update(chunk_ids)
+    # Preserve first occurrence order for similarity ties and fallback selection.
+    all_chunk_ids = dict.fromkeys(
+        chunk_id
+        for entity in entity_info
+        for chunk_id in entity.get("sorted_chunks", [])
+    )
 
     if not all_chunk_ids:
         logger.warning(
@@ -6307,7 +6485,7 @@ async def process_chunks_unified(
 
     Args:
         query: Search query for reranking
-        chunks: List of text chunks to process
+        unique_chunks: List of deduplicated text chunks to process
         query_param: Query parameters containing configuration
         global_config: Global configuration dictionary
         source_type: Source type for logging ("vector", "entity", "relationship", "mixed")

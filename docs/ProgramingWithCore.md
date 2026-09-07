@@ -79,6 +79,7 @@ Notes:
 | **tokenizer** | `Tokenizer` | The function used to convert text into tokens (numbers) and back using .encode() and .decode() functions following `TokenizerInterface` protocol. If you don't specify one, it will use the default Tiktoken tokenizer. An injected tokenizer must be safe to call concurrently from multiple threads and must survive `copy.deepcopy` — see [Injecting a custom tokenizer](#injecting-a-custom-tokenizer). | `TiktokenTokenizer` |
 | **tiktoken_model_name** | `str` | If you're using the default Tiktoken tokenizer, this is the name of the specific Tiktoken model to use. This setting is ignored if you provide your own tokenizer. | `gpt-4o-mini` |
 | **entity_extract_max_gleaning** | `int` | Number of loops in the entity extraction process, appending history messages | `1` |
+| **kg_extraction_validator** | `Callable \| None` | Optional per-chunk hook run after extraction and **before the merge**, so rejected entities/relations never enter the graph, the vector stores, or a `source_id` chain. Signature `(chunk_key, chunk_text, maybe_nodes, maybe_edges)` returning a filtered pair; sync or async. See [Extraction quality hook](#extraction-quality-hook-kg_extraction_validator). | `None` |
 | **node_embedding_algorithm** | `str` | Algorithm for node embedding (currently not used) | `node2vec` |
 | **node2vec_params** | `dict` | Parameters for node embedding | `{"dimensions": 1536,"num_walks": 10,"walk_length": 40,"window_size": 2,"iterations": 3,"random_seed": 3,}` |
 | **embedding_func** | `EmbeddingFunc` | Function to generate embedding vectors from text | `openai_embed` |
@@ -562,6 +563,49 @@ rag = LightRAG(
 )
 ```
 
+### Custom Embedding Functions
+
+Use the `@wrap_embedding_func_with_attrs` decorator, and call `.func` when building on an already-decorated function — a decorated function cannot be wrapped again, so the underlying callable must be reached through `.func`:
+
+```python
+from lightrag.utils import wrap_embedding_func_with_attrs
+
+@wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)
+async def custom_embed(texts: list[str]) -> np.ndarray:
+    # Call the underlying function, not the wrapped version
+    return await openai_embed.func(texts, model="text-embedding-3-large")
+
+# Wrong: EmbeddingFunc(func=openai_embed)
+# Right: EmbeddingFunc(func=openai_embed.func)
+```
+
+`max_token_size` declares the model's real input limit. It is what keeps an over-long text from reaching a service that would split it internally and return one vector per segment — which the return contract below rejects as a vector count mismatch.
+
+> **Pitfall — switching embedding models**: when changing the embedding model you MUST clear the data directory (optionally keeping `kv_store_llm_response_cache.json` for the LLM cache). Existing vectors will not match the new model's space.
+
+### Embedding Function Return Contract
+
+Every embedding function — built-in or custom — MUST return a 2D numpy array of shape `(len(texts), embedding_dim)`: exactly one row per input text, in input order. Every vector storage backend consumes the result positionally (`embeddings[i]` is stored for `texts[i]`), so `EmbeddingFunc` validates the result on every call and raises `ValueError` on any mismatch. It never reshapes, slices or pads the result — once the row-to-input mapping is wrong it cannot be recovered, and a silent repair would store vectors under the wrong records.
+
+The array rank and the dimension are always checked. The row count is checked against the input batch, which is read from the first positional argument, or — for a keyword call — from the kwarg matching the wrapped function's first parameter name. If the batch cannot be resolved that way (a callable whose first parameter is positional-only or `*args`, or one exposing no signature), the row count alone is left unverified rather than guessed at.
+
+| Returned shape | Result |
+| --- | --- |
+| `(len(texts), embedding_dim)` | Accepted |
+| Empty array for an empty input list | Accepted (including a bare `np.array([])`) |
+| `(embedding_dim,)` for a single input | `ValueError` — a single input still returns `(1, embedding_dim)` |
+| More rows than inputs | `ValueError: Vector count mismatch` |
+| Fewer rows than inputs | `ValueError: Vector count mismatch` |
+| Wrong number of columns | `ValueError: Embedding dimension mismatch` |
+| Flattened (1D) or nested (3D) array | `ValueError: unexpected shape` |
+
+The two mismatches that look alike are distinguished deliberately, because their fixes differ:
+
+- **Vector count mismatch** (more rows than inputs) usually means the embedding service split an over-long input internally and returned one vector per segment. Declare the model's real token limit so texts are truncated before the call — `EMBEDDING_TOKEN_LIMIT` on the API server, or `max_token_size` on `@wrap_embedding_func_with_attrs` for a custom function. A provider that legitimately emits several vectors per input needs a dedicated adapter that normalizes its output to one vector per input, with an explicit mapping, before it reaches `EmbeddingFunc`.
+- **Embedding dimension mismatch** (wrong number of columns) means the declared `embedding_dim` does not match the model actually being called, or the endpoint ignored the requested output dimension. Reconcile `EMBEDDING_DIM` / `embedding_dim` with the model. Vectors already stored under the previously declared dimension do not match the corrected one, so clear the data directory as well unless nothing has been indexed yet.
+
+Each `ValueError` is accompanied by a `logger.error` carrying the likely cause and the remedy, so the diagnosis stays in the server log even when only the short exception message surfaces.
+
 ### Rerank Function Injection
 
 To enhance retrieval quality, documents can be re-ranked based on a more effective relevance scoring model. The `rerank.py` file provides three Reranker provider driver functions:
@@ -610,6 +654,123 @@ The built-in `TiktokenTokenizer` satisfies both. Note that copying it is not a
 way to get isolation: `tiktoken` caches encodings in a process-wide registry, so
 every `TiktokenTokenizer` for a given model — copies included — resolves to the
 same underlying BPE engine.
+
+### Extraction Quality Hook (`kg_extraction_validator`)
+
+`kg_extraction_validator` is an optional per-chunk hook that runs after entity /
+relation extraction and **before the merge**, so anything it rejects never
+enters the knowledge graph, the vector stores, or an entity's `source_id`
+chain. Filtering here is cheaper than cleaning up afterwards: deleting an entity
+post-merge leaves its `source_id` contributions behind, and unwinding those
+takes a purge and a re-ingest.
+
+```python
+from lightrag.utils import logger, normalize_entity_name
+
+
+def validate(chunk_key, chunk_text, maybe_nodes, maybe_edges):
+    # maybe_nodes: entity_name -> list[entity_dict]
+    # maybe_edges: (src, tgt)  -> list[edge_dict]
+    # Both carry source_id / file_path already — these are the merge inputs.
+
+    # Canonicalize BOTH sides of the grounding comparison. Extraction runs
+    # every name through normalize_entity_name, which does more than case:
+    # full-width ＡＩ becomes AI, and spaces between Chinese and Latin are
+    # removed, so "北京 AI" in the source arrives as the entity 北京AI. Testing
+    # such a name against raw chunk text finds nothing and silently deletes a
+    # legitimate entity, so run the same normalization over the haystack.
+    # Case-folding on top: the prompt asks the model to title-case
+    # case-insensitive names, so "machine learning" arrives as
+    # "Machine Learning".
+    haystack = normalize_entity_name(chunk_text).casefold()
+
+    # The keys are already normalized by extraction, so only case-fold here.
+    def is_junk(name: str) -> bool:
+        return len(name) < 2 or name.casefold() not in haystack
+
+    # Apply it to entities...
+    for name in [n for n in maybe_nodes if is_junk(n)]:
+        logger.info("rejected entity %s from %s", name, chunk_key)
+        del maybe_nodes[name]
+    # ...and to relation endpoints. A name reaches the graph through either
+    # shape: an endpoint with no entity record is materialized as an UNKNOWN
+    # node, so skipping this loop lets the names you just deleted back in.
+    for key in [k for k in maybe_edges if is_junk(k[0]) or is_junk(k[1])]:
+        logger.info("rejected relation %s from %s", key, chunk_key)
+        del maybe_edges[key]
+    return maybe_nodes, maybe_edges
+
+rag = LightRAG(..., kg_extraction_validator=validate)
+```
+
+Contract:
+
+- **Signature** `(chunk_key, chunk_text, maybe_nodes, maybe_edges)`, returning a
+  `(maybe_nodes, maybe_edges)` pair of dicts with the same shapes. Filtering in
+  place and returning the same objects is fine.
+- **`chunk_text` is the text the model received** as the prompt's
+  `---Input Text---`, not the stored chunk content: parser-internal markup
+  (`<drawing id/path/src>`, `<table id>`, `<equation id>`, `<cite refid>`) is
+  stripped, and the result goes through `sanitize_text_for_encoding` just as
+  the LLM wrapper does before calling the provider — keeping the chunk's own
+  boundary whitespace, which the model sees because the chunk sits inside the
+  prompt's fenced `---Input Text---` section. Grounding against the
+  stored form would accept an entity named after a hidden identifier or file
+  path the model never saw, and reject one it did see wherever removing a
+  `<cite>` wrapper joins two words.
+- **It is the input text, not the whole prompt.** For a chunk with a heading,
+  the prompt also carries a `---Section Context---` block with the heading
+  path. That is deliberately excluded: the extraction prompt tells the model to
+  use the heading path as background only and **not** to extract entities or
+  relationships from the heading text. Folding it into `chunk_text` would make
+  a grounding rule accept precisely the names the prompt forbids, legitimising
+  heading-derived entities instead of catching them. Heading context can
+  legitimately shape a *description*, but descriptions are model-authored prose
+  that no substring check grounds anyway.
+- **Synchronous or async.** An awaitable return value is awaited. A sync hook
+  runs on the event loop, so a CPU-heavy validator should do its own
+  `asyncio.to_thread` — the same guidance as a custom `chunking_func`.
+- **`None` (the default) leaves the pipeline unchanged.**
+- **Coverage.** Every path that extracts goes through it: the document pipeline
+  and `ainsert_custom_chunks` alike. `ainsert_custom_kg` does not extract — the
+  caller supplies the graph directly — so it is not filtered.
+- **Multimodal entities are not shown to the hook.** For a drawing / table /
+  equation chunk, LightRAG synthesizes one entity from the sidecar and links it
+  to the chunk's surviving entities. That injection happens *after* the hook, so
+  a grounding rule like the one above cannot delete it, and an entity the hook
+  rejected cannot reappear as the endpoint of an injected edge.
+- **Filter relation endpoints too — core does not do it for you.** A name
+  reaches the graph through either shape: `_merge_edges_then_upsert`
+  materializes an endpoint that has no entity record as an `UNKNOWN`-typed
+  node, into the graph, the vector store and the `source_id` chain. So
+  deleting an entity while leaving a relation pointing at it undoes the
+  deletion, and a chunk where the name appears *only* as an endpoint stores it
+  even though another chunk rejected it. The example above closes both by
+  running the same `is_junk` over `maybe_edges`.
+- **Make the rule a function of the name**, so every chunk decides the same
+  way. Chunks are extracted concurrently and independently; a rule that is not
+  name-deterministic can reject a name in one chunk and keep it in the next,
+  and the entity survives through whichever chunk kept it. Core deliberately
+  does not aggregate rejections across chunks — a verdict on one chunk is not
+  a verdict on the document, and only your rule knows whether it was meant to
+  be.
+- **Failures are not swallowed.** A hook that raises, or that returns anything
+  other than a two-element sequence of dicts (`TypeError`), fails the chunk and
+  therefore the ingest. A validator that is silently skipped is a validator
+  that is not validating.
+- **What a failed ingest leaves behind depends on the path.** The pipeline
+  marks the document FAILED. `ainsert_custom_chunks` also marks it FAILED but
+  **retains** its journal and any staged data instead of rolling back:
+  repeating the same call resumes the operation (roll-forward belongs to the
+  SDK caller), while `/documents/scan` — through
+  `arollback_failed_custom_chunk_patches` — is what rolls it back. Do not
+  assume a failed custom-chunk call left no recoverable state.
+- **A stateful validator keeps its identity.** A bound method or callable object
+  that accumulates an audit log sees its own instance, not a per-document copy.
+  As with a custom tokenizer, however, `LightRAG` builds its internal config
+  with `dataclasses.asdict`, so a validator holding something `copy.deepcopy`
+  rejects (a bare `threading.Lock`) must declare `__deepcopy__` returning
+  `self` — see *Injecting a Custom Tokenizer* above.
 
 ### User Prompt vs. Query
 
@@ -1335,6 +1496,30 @@ merged weight = max(all input weights, distinct merged real source IDs)
 This preserves a larger manual boost while preventing the merged weight from
 falling below its evidence count.
 
+### Chunk tracking across a rename or merge
+
+A rename and a merge do not drop chunk tracking, they migrate it: the row moves
+to the surviving key. Two orderings have to hold at once for that migration to
+be crash-safe, and satisfying either one alone re-breaks the other:
+
+1. **The new row is written before the old one is deleted.** Otherwise a failure
+   in between leaves the row under neither key, which turns a curated row absent
+   and re-arms the reseed from a possibly stale graph `source_id`.
+2. **The old row is deleted only after a confirmed graph commit** has removed the
+   object it described. Otherwise the old object — which is what is still on disk
+   until that commit — sits there with no authoritative provenance, and a later
+   document purge can read its truncated `source_id` as "no remaining sources".
+
+The commit between them is checked, not assumed: a graph backend may *decline* to
+commit (`NetworkXStorage.index_done_callback` returns `False` when another process
+published a newer file, reloading from disk and discarding the in-memory change).
+A declined commit is treated as a failed operation, because the rename or merge it
+was supposed to persist no longer exists in memory either.
+
+Residue on failure is therefore always the recoverable direction: the old objects
+are live and still carry their rows, plus an orphaned row under the new key that a
+retry overwrites. Retrying the operation is the recovery step.
+
 All operations are available in both synchronous and asynchronous versions. Async versions have the prefix "a" (e.g., `acreate_entity`, `aedit_relation`).
 
 * Insert Custom KG
@@ -1432,7 +1617,44 @@ When deleting an entity:
 - Removes the entity node from the knowledge graph
 - Deletes all associated relationships
 - Removes related embedding vectors from the vector database
+- Deletes and persists the entity and incident-relation chunk-tracking rows, so recreating the entity does not inherit pre-deletion provenance
 - Maintains knowledge graph integrity
+
+A deletion is staged so that no failure can leave a live entity without its
+authoritative provenance — the state from which a later document purge concludes
+"no remaining sources" and removes an entity other documents still reference.
+The graph object's removal is committed first, on its own; only then are the
+tracking rows deleted and committed; the vector storages are flushed last. This
+holds for any mix of backends, including a deferred graph with an immediate-write
+tracking store, which is why the staging is by *durability* rather than by call
+order.
+
+Removing the object and cleaning up its rows is additionally one region a
+cancellation cannot cut in half. It has to begin at the graph mutation: a cancel
+before the commit leaves the removal in the in-memory graph with the backend
+marked dirty, so the pipeline's next commit publishes it while the cleanup never
+runs, and a cancel *during* the commit is deferred by the storage-IO layer until
+the write and its notification hook have landed. Cancelling a deletion therefore
+waits for the object's removal and its tracking cleanup to finish; only the
+vector flush is skipped.
+
+That protection covers the *caller*'s cancellation. Cancelling the deletion task
+itself — which the event loop does to every remaining task at shutdown — is not
+deferred, because the exception says nothing about whether the write had been
+submitted, and assuming it had would delete the tracking rows of a node whose
+removal never left memory. The cleanup therefore runs only once the commit has
+demonstrably returned.
+
+Every remaining failure state is therefore recoverable, and repeating the
+deletion is always the recovery step:
+
+| Failure point | On-disk result | Recovery |
+| --- | --- | --- |
+| Graph commit | Entity live, rows live | Consistent; retry the deletion |
+| Tracking delete or commit | Entity gone, its row stale | Retry: a deletion reporting `not_found` sweeps a stale row for that name and flushes pending tracking state whether or not a row is still visible in memory |
+| A failing tracking delete leaves incident relation rows of an entity deletion | Entity gone, relation rows stale | Not reachable automatically — the node is gone, so its edges are unknowable. Logged with the exact storage keys; delete the relation directly to sweep its row |
+| The cleanup never runs although the graph commit landed — process exit before a **deferred** tracking backend (JSON) flushes, the graph backend's commit notification raising after the write, or a direct cancellation of the deletion task mid-write | Entity gone, its rows and its relations' rows stale | The entity's own row is swept by a repeated deletion; its incident relation rows are not, and their keys are not logged because nothing failed. Delete the relations directly, or rebuild tracking. Not closed by this staging: the file-backed commit layer cannot tell a caller what landed |
+| Vector flush | Entity and rows gone, vector record stale | The rebuildable window this codebase accepts elsewhere; `lightrag-rebuild-vdb` restores it |
 
 ### Delete Relations
 
@@ -1447,7 +1669,12 @@ await rag.adelete_by_relation("Google", "Gmail")
 When deleting a relationship:
 - Removes the specified relationship edge
 - Deletes the relationship's embedding vector
+- Deletes and persists its chunk-tracking row regardless of endpoint order, so recreating the relation starts with new provenance
 - Preserves both entity nodes and their other relationships
+
+Relation deletion is staged exactly as entity deletion is (see the table above),
+and repeating a deletion that reports `not_found` sweeps a stale row and commits
+tracking state an earlier attempt left pending.
 
 ### Delete by Document ID
 
