@@ -791,6 +791,36 @@ async def test_resume_rejects_a_different_workspace_before_drop(tmp_path):
     resumed.close(remove=True)
 
 
+async def test_resume_rejects_a_changed_effective_namespace_before_drop(tmp_path):
+    """Redis overrides must not redirect a saved plan into another workspace."""
+    docs, chunks, cache, graph = _two_chunk_corpus()
+    original = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
+    original.entity_chunks.final_namespace = "redis-old_entity_chunks"
+    original.relation_chunks.final_namespace = "redis-old_relation_chunks"
+    plan_path = tmp_path / "wrong-effective-namespace.sqlite3"
+    plan = await build_chunk_tracking_repair_plan(
+        original, plan_path=plan_path, durable=True
+    )
+    plan.prepare_apply(
+        {"entity_chunks"},
+        allow_empty_graph=False,
+        allow_missing_rows=False,
+    )
+    plan.close(remove=False)
+
+    redirected = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
+    redirected.entity_chunks.final_namespace = "redis-new_entity_chunks"
+    redirected.relation_chunks.final_namespace = "redis-new_relation_chunks"
+    with pytest.raises(ValueError, match="storage identity"):
+        load_chunk_tracking_repair_plan(redirected, plan_path)
+
+    assert redirected.entity_chunks.drops == 0
+    assert redirected.relation_chunks.drops == 0
+    assert plan_path.exists()
+    resumed = load_chunk_tracking_repair_plan(original, plan_path)
+    resumed.close(remove=True)
+
+
 async def test_repair_requires_chunk_tracking_to_be_configured():
     docs, chunks, cache, graph = _two_chunk_corpus()
     repairer = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)

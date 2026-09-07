@@ -431,11 +431,19 @@ class ChunkTrackingRepairPlan:
 
 def _repair_storage_identity(rag) -> dict[str, Any]:
     def identify(storage) -> dict[str, str]:
-        return {
+        identity = {
             "class": f"{type(storage).__module__}.{type(storage).__qualname__}",
             "workspace": str(getattr(storage, "workspace", "")),
             "namespace": str(getattr(storage, "namespace", "")),
         }
+        # Some backends derive the actual storage target without updating the
+        # public workspace/namespace fields. Redis, for example, lets
+        # REDIS_WORKSPACE override workspace and uses final_namespace for every
+        # key operation. Bind a recovery plan to that effective target so a
+        # changed override cannot redirect resume into another workspace.
+        if hasattr(storage, "final_namespace"):
+            identity["final_namespace"] = str(storage.final_namespace)
+        return identity
 
     connection_values = {key: os.environ.get(key) for key in _CONNECTION_ID_ENV_KEYS}
     connection_fingerprint = hashlib.sha256(
