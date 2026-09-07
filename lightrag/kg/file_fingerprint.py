@@ -43,10 +43,11 @@ than the shape, and three copies of them is how it rots:
   would discard the process's own uncommitted mutations.
 * **A multi-file storage must look completely published**, judged from the
   files themselves: it publishes them in a fixed order and renames the last one
-  -- the commit marker -- LAST, so a completed publication leaves the marker no
-  older than the files it commits. Reloading a torn set is the corruption
-  vector. ``paths`` is therefore given in PUBLICATION ORDER. See
-  :func:`publication_complete`.
+  -- the commit marker -- LAST, so a completed publication leaves the marker
+  STRICTLY newer than the files it commits. Reloading a torn set is the
+  corruption vector, and strictness is what keeps a coarse filesystem clock
+  from passing one off as complete. ``paths`` is therefore given in PUBLICATION
+  ORDER. See :func:`publication_complete`.
 
 Each storage keeps its own recorded value and wires these into its reload,
 commit and drop paths; see ``NetworkXStorage``'s *Cross-process sync protocol*
@@ -174,10 +175,25 @@ def publication_complete(sampled: Fingerprint) -> bool:
 
     **The last path is the commit marker.** A storage whose state spans
     several files publishes them in a fixed order and renames the marker
-    LAST, so a completed publication leaves the marker no older than every
-    file it commits, and an interrupted one leaves some file NEWER than the
-    marker. That test is what makes completeness judgeable from the files
-    alone -- by any process, at any generation of staleness.
+    LAST, so a completed publication leaves the marker STRICTLY newer than
+    every file it commits, and an interrupted one leaves some file at or
+    after the marker. That test is what makes completeness judgeable from the
+    files alone -- by any process, at any generation of staleness.
+
+    **Strictly**, not "no older", and that is the whole guard against coarse
+    filesystem timestamps. A torn set can land its next file inside the same
+    timestamp tick as the previous publication's marker, making the two
+    mtimes equal; ``<=`` would call that complete and hand back a set whose
+    files describe different generations. ``<`` refuses it.
+
+    The cost is in the safe direction: a COMPLETE publication whose writes all
+    land inside one tick is also refused, so its commit goes unnoticed by this
+    channel. That is a missed reload, not a torn one -- the process keeps a
+    self-consistent snapshot, the flag channel carries that commit (a
+    same-tick publication means a healthy, fast-committing writer, which is
+    exactly when the flag works), and the next publication that spans a tick
+    is seen. Compare the mirror residue on the change-detection side, where
+    the same tick collision also costs a detection rather than correctness.
 
     Comparing per-file changes against what a reader last recorded cannot do
     that: a reader several generations behind sees every file changed even
@@ -194,4 +210,4 @@ def publication_complete(sampled: Fingerprint) -> bool:
     if any(entry is None for entry in committed):
         return False
     marker_mtime = marker[0]
-    return all(entry[0] <= marker_mtime for entry in committed)
+    return all(entry[0] < marker_mtime for entry in committed)

@@ -352,3 +352,57 @@ async def test_a_partial_two_file_save_is_not_read_as_a_peer_commit(
         assert await worker.get_by_id("B") is not None
     finally:
         await worker.finalize()
+
+
+@pytest.mark.asyncio
+async def test_a_torn_pair_inside_one_timestamp_tick_is_still_refused(
+    tmp_path, multiprocess, lost_notification, monkeypatch
+):
+    """The completeness test must not depend on the clock's resolution.
+
+    Codex review on #3867: on a coarse-granularity filesystem the next
+    publication's index can land in the same timestamp tick as the previous
+    one's metadata, making the two mtimes equal. A "no older than" test calls
+    that complete and hands back a pair whose files describe different
+    generations. The comparison is therefore STRICT.
+
+    The tick is forced with ``os.utime`` rather than hoped for, so this holds
+    on the fine-grained filesystems CI runs on too.
+    """
+    worker_a = await _worker(tmp_path)
+    worker_b = await _worker(tmp_path)
+    try:
+        await worker_a.upsert({"A": {"content": "a"}, "B": {"content": "b"}})
+        assert await worker_a.index_done_callback() is True
+        assert await worker_b.get_by_id("B") is not None
+
+        # Tear the pair: the index lands, the metadata does not.
+        await worker_a.delete(["A"])
+        real_atomic_write = faiss_impl.atomic_write
+
+        def fail_on_meta(file_name, write_fn, workspace="_", *args, **kwargs):
+            if file_name == worker_a._meta_file:
+                raise OSError("meta write boom")
+            return real_atomic_write(file_name, write_fn, workspace, *args, **kwargs)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(faiss_impl, "atomic_write", fail_on_meta)
+            with pytest.raises(OSError, match="meta write boom"):
+                await worker_a.index_done_callback()
+
+        # Collapse the two writes into one tick, as a coarse clock would.
+        meta_mtime = os.stat(worker_b._meta_file).st_mtime_ns
+        os.utime(worker_b._faiss_index_file, ns=(meta_mtime, meta_mtime))
+        assert (
+            os.stat(worker_b._faiss_index_file).st_mtime_ns
+            == os.stat(worker_b._meta_file).st_mtime_ns
+        )
+
+        # The pair still differs from what the peer recorded (the index's size
+        # moved), so only the completeness test can refuse it.
+        assert worker_b._stat_fingerprint() != worker_b._loaded_fingerprint
+        assert worker_b._peer_commit_detected() is False
+        assert await worker_b.get_by_id("B") is not None
+    finally:
+        await worker_a.finalize()
+        await worker_b.finalize()
