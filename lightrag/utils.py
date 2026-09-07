@@ -1075,13 +1075,26 @@ class QueueFullError(Exception):
 
 
 class VectorStorageConsistencyError(Exception):
-    """Raised when a vector storage write fails after the graph has already been updated.
+    """Raised when a step AFTER a durable graph update fails.
 
     The knowledge graph (plus the text_chunks KV store) is the authoritative data
-    source, so no data is lost — but the vector storage no longer mirrors the graph
-    and query results may be incomplete until it is rebuilt. Stop the LightRAG
-    server and run the offline rebuild tool (``lightrag-rebuild-vdb``) to restore
-    consistency.
+    source, so no data is lost — but something that mirrors or annotates it did
+    not complete:
+
+    * a **vector storage** write, so the vector records no longer mirror the
+      graph and query results may be incomplete until they are rebuilt. Stop the
+      LightRAG server and run the offline rebuild tool (``lightrag-rebuild-vdb``)
+      to restore consistency.
+    * a **chunk-tracking** retirement, so rows survive for graph objects a merge
+      or rename has removed. Those are dead bookkeeping until the same key
+      recurs; the message names the keys.
+
+    What every case shares is the reason this type exists at all: the graph
+    mutation IS durable, so the failure must not be reported as one that did not
+    happen. ``_edit_entity_impl``'s ``allow_merge`` handler re-raises exactly
+    this type and folds every other exception into a partial-success summary
+    answering HTTP 200 — which for a landed merge would name the source entity
+    it just deleted as the surviving one.
     """
 
     pass
@@ -3208,6 +3221,32 @@ async def run_in_storage_io(fn: Callable[..., Any], *args: Any, **kwargs: Any) -
         kwargs,
         wait_for_completion=True,
     )
+
+
+def log_without_raising(emit: Callable[[str], Any], message: str) -> None:
+    """Emit a log line that must never propagate a sink failure to its caller.
+
+    For code past a point of no return, where the caller's status no longer has
+    the right to change. The file backends' ``drop`` commit hooks are the
+    motivating case: once the file is gone the destruction happened, and a
+    broken handler, formatter or output target must not turn it into
+    ``{"status": "error"}`` — the exact misreport those hooks exist to prevent.
+    Their outer ``except`` needs it for the mirror reason: a sink failure there
+    must not swallow the ``"error"`` a real destructive failure has to report.
+
+    Pass the log method itself (``log_without_raising(logger.info, msg)``)
+    rather than wrapping the call in a lambda: an ``except X as e`` name is
+    unbound at the end of its block, so a closure over it reads as undefined to
+    static analysis even though it resolves at call time.
+
+    The failure is deliberately **swallowed, not re-reported**: any report would
+    travel the same broken sink. This is the narrow exception to *fail loud* —
+    it applies to logging alone, never to the work being logged about.
+    """
+    try:
+        emit(message)
+    except Exception:
+        pass
 
 
 async def commit_in_storage_io(
@@ -6092,11 +6131,12 @@ async def pick_by_vector_similarity(
     if not entity_info or num_of_chunks <= 0:
         return []
 
-    # Collect all unique chunk IDs from entity info
-    all_chunk_ids = set()
-    for i, entity in enumerate(entity_info):
-        chunk_ids = entity.get("sorted_chunks", [])
-        all_chunk_ids.update(chunk_ids)
+    # Preserve first occurrence order for similarity ties and fallback selection.
+    all_chunk_ids = dict.fromkeys(
+        chunk_id
+        for entity in entity_info
+        for chunk_id in entity.get("sorted_chunks", [])
+    )
 
     if not all_chunk_ids:
         logger.warning(
@@ -6403,7 +6443,7 @@ async def process_chunks_unified(
 
     Args:
         query: Search query for reranking
-        chunks: List of text chunks to process
+        unique_chunks: List of deduplicated text chunks to process
         query_param: Query parameters containing configuration
         global_config: Global configuration dictionary
         source_type: Source type for logging ("vector", "entity", "relationship", "mixed")

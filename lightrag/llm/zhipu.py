@@ -30,7 +30,7 @@ from lightrag.utils import (
 )
 
 import numpy as np
-from typing import Union, List, Optional, Dict
+from typing import Any, Union, List, Optional, Dict
 
 
 @retry(
@@ -50,6 +50,7 @@ async def zhipu_complete_if_cache(
     thinking: Optional[
         Dict[str, object]
     ] = None,  # Zhipu request param: use {"type": "enabled"} to enable thinking
+    token_tracker: Any | None = None,
     **kwargs,
 ) -> str:
     """Call Zhipu chat completions with optional official thinking support.
@@ -62,6 +63,8 @@ async def zhipu_complete_if_cache(
       `<think>...</think>`.
     - `response_format`: forwarded as Zhipu's OpenAI-compatible structured
       output parameter when supplied by callers.
+    - `token_tracker`: optional token usage tracker, recorded from the
+      response's `usage` field.
     - Deprecated `keyword_extraction` and `entity_extraction` booleans are
       compatibility shims; when no explicit `response_format` is supplied,
       they are mapped to `{"type": "json_object"}`.
@@ -138,6 +141,19 @@ async def zhipu_complete_if_cache(
         kwargs["thinking"] = thinking
 
     response = client.chat.completions.create(model=model, messages=messages, **kwargs)
+
+    # Record usage before extracting content: the API call is already billed
+    # and response.usage is already populated at this point, regardless of
+    # whether the response has a usable choice below.
+    if token_tracker and getattr(response, "usage", None):
+        token_tracker.add_usage(
+            {
+                "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
+                "completion_tokens": getattr(response.usage, "completion_tokens", 0),
+                "total_tokens": getattr(response.usage, "total_tokens", 0),
+            }
+        )
+
     if not response.choices or response.choices[0].message is None:
         return ""
     message = response.choices[0].message

@@ -1445,6 +1445,30 @@ merged weight = max(all input weights, distinct merged real source IDs)
 This preserves a larger manual boost while preventing the merged weight from
 falling below its evidence count.
 
+### Chunk tracking across a rename or merge
+
+A rename and a merge do not drop chunk tracking, they migrate it: the row moves
+to the surviving key. Two orderings have to hold at once for that migration to
+be crash-safe, and satisfying either one alone re-breaks the other:
+
+1. **The new row is written before the old one is deleted.** Otherwise a failure
+   in between leaves the row under neither key, which turns a curated row absent
+   and re-arms the reseed from a possibly stale graph `source_id`.
+2. **The old row is deleted only after a confirmed graph commit** has removed the
+   object it described. Otherwise the old object — which is what is still on disk
+   until that commit — sits there with no authoritative provenance, and a later
+   document purge can read its truncated `source_id` as "no remaining sources".
+
+The commit between them is checked, not assumed: a graph backend may *decline* to
+commit (`NetworkXStorage.index_done_callback` returns `False` when another process
+published a newer file, reloading from disk and discarding the in-memory change).
+A declined commit is treated as a failed operation, because the rename or merge it
+was supposed to persist no longer exists in memory either.
+
+Residue on failure is therefore always the recoverable direction: the old objects
+are live and still carry their rows, plus an orphaned row under the new key that a
+retry overwrites. Retrying the operation is the recovery step.
+
 All operations are available in both synchronous and asynchronous versions. Async versions have the prefix "a" (e.g., `acreate_entity`, `aedit_relation`).
 
 * Insert Custom KG
@@ -1542,7 +1566,44 @@ When deleting an entity:
 - Removes the entity node from the knowledge graph
 - Deletes all associated relationships
 - Removes related embedding vectors from the vector database
+- Deletes and persists the entity and incident-relation chunk-tracking rows, so recreating the entity does not inherit pre-deletion provenance
 - Maintains knowledge graph integrity
+
+A deletion is staged so that no failure can leave a live entity without its
+authoritative provenance — the state from which a later document purge concludes
+"no remaining sources" and removes an entity other documents still reference.
+The graph object's removal is committed first, on its own; only then are the
+tracking rows deleted and committed; the vector storages are flushed last. This
+holds for any mix of backends, including a deferred graph with an immediate-write
+tracking store, which is why the staging is by *durability* rather than by call
+order.
+
+Removing the object and cleaning up its rows is additionally one region a
+cancellation cannot cut in half. It has to begin at the graph mutation: a cancel
+before the commit leaves the removal in the in-memory graph with the backend
+marked dirty, so the pipeline's next commit publishes it while the cleanup never
+runs, and a cancel *during* the commit is deferred by the storage-IO layer until
+the write and its notification hook have landed. Cancelling a deletion therefore
+waits for the object's removal and its tracking cleanup to finish; only the
+vector flush is skipped.
+
+That protection covers the *caller*'s cancellation. Cancelling the deletion task
+itself — which the event loop does to every remaining task at shutdown — is not
+deferred, because the exception says nothing about whether the write had been
+submitted, and assuming it had would delete the tracking rows of a node whose
+removal never left memory. The cleanup therefore runs only once the commit has
+demonstrably returned.
+
+Every remaining failure state is therefore recoverable, and repeating the
+deletion is always the recovery step:
+
+| Failure point | On-disk result | Recovery |
+| --- | --- | --- |
+| Graph commit | Entity live, rows live | Consistent; retry the deletion |
+| Tracking delete or commit | Entity gone, its row stale | Retry: a deletion reporting `not_found` sweeps a stale row for that name and flushes pending tracking state whether or not a row is still visible in memory |
+| A failing tracking delete leaves incident relation rows of an entity deletion | Entity gone, relation rows stale | Not reachable automatically — the node is gone, so its edges are unknowable. Logged with the exact storage keys; delete the relation directly to sweep its row |
+| The cleanup never runs although the graph commit landed — process exit before a **deferred** tracking backend (JSON) flushes, the graph backend's commit notification raising after the write, or a direct cancellation of the deletion task mid-write | Entity gone, its rows and its relations' rows stale | The entity's own row is swept by a repeated deletion; its incident relation rows are not, and their keys are not logged because nothing failed. Delete the relations directly, or rebuild tracking. Not closed by this staging: the file-backed commit layer cannot tell a caller what landed |
+| Vector flush | Entity and rows gone, vector record stale | The rebuildable window this codebase accepts elsewhere; `lightrag-rebuild-vdb` restores it |
 
 ### Delete Relations
 
@@ -1557,7 +1618,12 @@ await rag.adelete_by_relation("Google", "Gmail")
 When deleting a relationship:
 - Removes the specified relationship edge
 - Deletes the relationship's embedding vector
+- Deletes and persists its chunk-tracking row regardless of endpoint order, so recreating the relation starts with new provenance
 - Preserves both entity nodes and their other relationships
+
+Relation deletion is staged exactly as entity deletion is (see the table above),
+and repeating a deletion that reports `not_found` sweeps a stale row and commits
+tracking state an earlier attempt left pending.
 
 ### Delete by Document ID
 

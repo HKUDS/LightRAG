@@ -10,9 +10,10 @@ from dataclasses import dataclass
 
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.utils import (
-    logger,
-    compute_mdhash_id,
     commit_in_storage_io,
+    compute_mdhash_id,
+    log_without_raising,
+    logger,
     validate_workspace,
 )
 from lightrag.base import BaseVectorStorage
@@ -1705,12 +1706,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
         """Drop all vector data from storage and reinitialize the index.
 
         This method will:
-            1. Reset ``self._index`` to a fresh ``IndexFlatIP`` and clear
-               ``self._id_to_meta``.
-            2. Remove both on-disk files (``.index`` and ``.meta.json``)
+            1. Remove both on-disk files (``.index`` and ``.meta.json``)
                if they exist.
+            2. Reset ``self._index`` to a fresh ``IndexFlatIP`` and clear
+               ``self._id_to_meta``.
             3. Notify other processes via ``set_all_update_flags`` and
-               reset the writer's own flag.
+               point the writer's own flag at the snapshot step 2 left
+               behind.
 
         Caller contract:
             ``drop`` is destructive and **not** serialized by this storage
@@ -1724,44 +1726,161 @@ class FaissVectorDBStorage(BaseVectorStorage):
         Returns:
             dict[str, str]: Operation status and message
             - On success: {"status": "success", "message": "data dropped"}
-            - On failure: {"status": "error", "message": "<error details>"}
+            - On destructive failure: {"status": "error", "message": "<error details>"}
+
+            The status reports the durable file removal only. Both removals are
+            part of it: this backend keeps two independent files, so a failure
+            between them leaves one behind — a genuinely partial destruction
+            that must keep reporting ``"error"``. No step after both removals
+            — notification, writer-flag reset, or the success log — can turn
+            the completed destruction into an error response. A peer
+            reload-notification failure after BOTH files are gone is logged as
+            partial propagation and does not turn the completed destruction
+            into an error —
+            ``/documents/clear`` uses this status to decide whether the input
+            files are safe to delete, so reporting a drop that already happened
+            as failed leaves those files ready to be re-ingested against
+            storage that no longer matches. The same holds for every other step
+            that follows the removal: each is guarded on its own, so no step
+            past the point of no return can return ``"error"``.
+            Success confirms durable deletion, not convergence of all worker
+            snapshots. A worker that missed the notification may later write its
+            stale index back. Stop workspace writes and restart affected workers
+            before resuming; if stale data has already been written, clear
+            again.
+            Accepted residue: if the empty-index allocation itself fails, this
+            process keeps the previous ``self._index``. Its ``_id_to_meta`` is
+            cleared first, unconditionally, so no read path reports the dropped
+            rows — including the synchronous ``client_storage``, which bypasses
+            ``_get_index`` and so is not covered by the flag. The writer reload
+            flag is then left SET rather than cleared, so the next
+            ``_get_index`` rebuilds the snapshot from the removed files.
+
+        Cancellation:
+            Before submission, cancellation leaves storage unchanged — the
+            buffers and both redo logs are discarded only after both files are
+            gone. Once deletion is submitted, the storage lock stays held until
+            deletion and its notification/reset/logging hook finish, then caller
+            cancellation propagates. Notification errors are still logged.
         """
+
+        def _delete_files() -> None:
+            # Remove storage files if they exist. Both removals stay in the
+            # destructive phase: the pair is what a drop destroys, and a
+            # failure on the second one must not be reported as a completed
+            # drop just because the first one landed.
+            if os.path.exists(self._faiss_index_file):
+                os.remove(self._faiss_index_file)
+            if os.path.exists(self._meta_file):
+                os.remove(self._meta_file)
+
+        async def _committed() -> None:
+            # Discard buffered (unflushed) upserts, queued deletes and
+            # both redo logs along with the data.
+            self._pending_upserts.clear()
+            self._pending_deletes.clear()
+            self._unsaved_deletes.clear()
+            self._unsaved_upserts.clear()
+
+            # Reset the in-memory snapshot to the post-drop state directly.
+            # No ``_load_faiss_index`` re-parse: ``_storage_lock`` spans
+            # processes and both files were removed inside it, so that call
+            # could only take its absent-index early return — one spurious
+            # "No existing Faiss index file found" warning per successful
+            # clear, and nothing else. Kept on the event loop: mutating
+            # ``self._index`` / ``self._id_to_meta`` off the loop would break
+            # concurrency invariant (3) in the class docstring.
+            #
+            # Guarded like every other post-removal step: the files are already
+            # gone, so nothing here may report the completed destruction as
+            # failed.
+            #
+            # Order matters. The metadata clear goes FIRST, ahead of the
+            # fallible index allocation, because the reload flag set below
+            # cannot protect it: ``client_storage`` reads ``_id_to_meta``
+            # synchronously and deliberately does NOT go through
+            # ``_get_index``, and ``aexport_data`` reads that property. Were
+            # the allocation to raise with the clear behind it, an export
+            # taken before some other async read triggered the reload would
+            # still list rows this drop reported as deleted. Clearing first
+            # cannot fail, so no read path can expose them.
+            self._id_to_meta = {}
+            # No unsaved changes to protect either: the files are gone and the
+            # redo logs are empty, so a stale index must never be saved back.
+            self._index_dirty = False
+            snapshot_reset = False
+            try:
+                self._index = faiss.IndexFlatIP(self._dim)
+                snapshot_reset = True
+            except Exception as snapshot_error:
+                log_without_raising(
+                    logger.error,
+                    f"[{self.workspace}] Dropped FAISS index {self.namespace}, but "
+                    "failed to allocate the empty index; the previous one is "
+                    "still held. Its metadata is already cleared, so no read "
+                    "path reports the dropped rows, and the writer reload flag "
+                    "is left set below so the next read rebuilds it from the "
+                    f"removed files: {snapshot_error}",
+                )
+
+            # Keep publication under the storage lock. Once deletion starts,
+            # commit_in_storage_io defers caller cancellation through this hook
+            # so it cannot release readers before the notification attempt.
+            try:
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
+            except Exception as notification_error:
+                # Notification can fail partway through the registered flags.
+                # A missed worker may later become the writer and save its
+                # stale index over the deleted files, resurrecting dropped
+                # vectors. A notification from that writer would spread the
+                # stale state, not repair it.
+                log_without_raising(
+                    logger.error,
+                    f"[{self.workspace}] Dropped FAISS index {self.namespace}, but "
+                    "failed while notifying all processes; some processes may not "
+                    "reload and may restore deleted data if they later write. Stop "
+                    "workspace writes and restart all affected workers before "
+                    f"resuming: {notification_error}",
+                )
+            # Point the writer's own flag at the snapshot we actually hold: no
+            # self-reload when the reset above installed the post-drop index, a
+            # self-reload when it did not, so a stale index is rebuilt from the
+            # removed files instead of being served. Unlike the notification, a
+            # failure here is harmless in the common case: both files are gone
+            # and both redo logs are empty, so the reload it would trigger just
+            # re-reads absent files into the empty index we already hold. Report
+            # it, and never let it misclassify the durable deletion as failed.
+            try:
+                self.storage_updated.value = not snapshot_reset
+            except Exception as reset_error:
+                log_without_raising(
+                    logger.error,
+                    f"[{self.workspace}] Dropped FAISS index {self.namespace}, but "
+                    "failed to set the writer reload flag; a redundant reload of "
+                    f"the now-empty index may follow: {reset_error}",
+                )
+            # Log inside the cancellation-protected hook: the caller may receive
+            # CancelledError after it completes instead of a success response.
+            # Routed through log_without_raising like every other log call in
+            # this hook: a broken log sink cannot unmake the removal, so it
+            # must not surface as a failed drop. See that helper for why the
+            # failure is swallowed rather than re-reported.
+            log_without_raising(
+                logger.info,
+                f"[{self.workspace}] Process {os.getpid()} drop FAISS index {self.namespace}",
+            )
+
         try:
             async with self._storage_lock:
-                # Discard buffered (unflushed) upserts, queued deletes and
-                # both redo logs along with the data.
-                self._pending_upserts.clear()
-                self._pending_deletes.clear()
-                self._unsaved_deletes.clear()
-                self._unsaved_upserts.clear()
-
-                # Reset the index
-                self._index = faiss.IndexFlatIP(self._dim)
-                self._id_to_meta = {}
-
-                # Remove storage files if they exist
-                if os.path.exists(self._faiss_index_file):
-                    os.remove(self._faiss_index_file)
-                if os.path.exists(self._meta_file):
-                    os.remove(self._meta_file)
-
-                self._id_to_meta = {}
-                self._load_faiss_index()
-                self._index_dirty = False
-
-                # Notify other processes
-                await set_all_update_flags(self.namespace, workspace=self.workspace)
-                self.storage_updated.value = False
-
-                logger.info(
-                    f"[{self.workspace}] Process {os.getpid()} drop FAISS index {self.namespace}"
-                )
-            return {"status": "success", "message": "data dropped"}
+                await commit_in_storage_io(_delete_files, _committed)
         except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error dropping FAISS index {self.namespace}: {e}"
+            log_without_raising(
+                logger.error,
+                f"[{self.workspace}] Error dropping FAISS index {self.namespace}: {e}",
             )
             return {"status": "error", "message": str(e)}
+
+        return {"status": "success", "message": "data dropped"}
 
     async def finalize(self):
         """Flush buffered upserts/deletes and persist before shutdown (safety net).

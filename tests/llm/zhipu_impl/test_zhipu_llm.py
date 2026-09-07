@@ -10,12 +10,12 @@ def _fake_embedding_vector(dim=1024):
     return [0.1] * dim
 
 
-def _fake_chat_response(content="", reasoning_content=""):
+def _fake_chat_response(content="", reasoning_content="", usage=None):
     message = SimpleNamespace(
         content=content,
         reasoning_content=reasoning_content,
     )
-    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=usage)
 
 
 def _load_zhipu_module(monkeypatch, client_factory):
@@ -120,6 +120,71 @@ async def test_zhipu_complete_forwards_official_thinking(monkeypatch):
 
     assert result == "final answer"
     assert captured_calls[0]["thinking"] == {"type": "enabled"}
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_zhipu_complete_records_token_usage(monkeypatch):
+    usage = SimpleNamespace(prompt_tokens=10, completion_tokens=4, total_tokens=14)
+
+    class FakeClient:
+        def __init__(self, api_key=None):
+            self.api_key = api_key
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, **kwargs):
+            return _fake_chat_response(content="answer", usage=usage)
+
+    zhipu_module = _load_zhipu_module(monkeypatch, FakeClient)
+
+    class FakeTracker:
+        def __init__(self):
+            self.calls = []
+
+        def add_usage(self, token_counts):
+            self.calls.append(token_counts)
+
+    tracker = FakeTracker()
+    result = await zhipu_module.zhipu_complete_if_cache(
+        prompt="hello", api_key="test-key", token_tracker=tracker
+    )
+
+    assert result == "answer"
+    assert tracker.calls == [
+        {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14}
+    ]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_zhipu_complete_token_tracker_never_reaches_the_raw_client_call(
+    monkeypatch,
+):
+    """token_tracker is a LightRAG-only concept, not a real Zhipu API field --
+    it must be consumed as a named parameter, never forwarded through
+    **kwargs into the raw client call."""
+    captured_calls = []
+
+    class FakeClient:
+        def __init__(self, api_key=None):
+            self.api_key = api_key
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, **kwargs):
+            captured_calls.append(kwargs)
+            return _fake_chat_response(content="answer")
+
+    zhipu_module = _load_zhipu_module(monkeypatch, FakeClient)
+
+    class FakeTracker:
+        def add_usage(self, token_counts):
+            pass
+
+    await zhipu_module.zhipu_complete_if_cache(
+        prompt="hello", api_key="test-key", token_tracker=FakeTracker()
+    )
+
+    assert "token_tracker" not in captured_calls[0]
 
 
 @pytest.mark.offline
