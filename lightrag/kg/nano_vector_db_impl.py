@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import numpy as np
 import time
 
+from lightrag.exceptions import CommitBookkeepingError
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.utils import (
     commit_in_storage_io,
@@ -723,7 +724,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
         delivered in between would leave the file published with the other
         processes never told to reload it, and would strand the redo logs. It
         runs only if the write succeeded — running it without a write would
-        retire redo entries for rows that were never persisted.
+        retire redo entries for rows that were never persisted. Its own failure
+        is caught here as ``CommitBookkeepingError`` and logged: the file is
+        renamed into place by then, so raising would tell the caller the vectors
+        were never written.
 
         Only PART of the stall goes away. ``NanoVectorDB.save()`` base64-encodes
         the entire matrix through ``tobytes()`` and ``b64encode()``, two single C
@@ -741,15 +745,40 @@ class NanoVectorDBStorage(BaseVectorStorage):
             finally:
                 self._client.storage_file = original
 
-        await commit_in_storage_io(
-            partial(
-                atomic_write,
-                self._client_file_name,
-                _save_atomic,
-                self.workspace or "_",
-            ),
-            on_committed,
-        )
+        try:
+            await commit_in_storage_io(
+                partial(
+                    atomic_write,
+                    self._client_file_name,
+                    _save_atomic,
+                    self.workspace or "_",
+                ),
+                on_committed,
+            )
+        except CommitBookkeepingError as e:
+            # The file is already renamed into place, so the rows ARE durable
+            # and the caller must not hear otherwise: `index_done_callback`'s
+            # contract is that a raise means the vectors were not written, which
+            # aborts the document batch in `_insert_done`.
+            #
+            # What did not complete is the publication — flagging the other
+            # processes and clearing this writer's dirty bit. The residue is a
+            # visibility lag that heals: `_client_dirty` stays True, so the next
+            # commit rewrites this snapshot and notifies again; an unreset
+            # `storage_updated` only makes this process reload the file it just
+            # wrote. The hook also keeps its redo logs when it fails here, so if
+            # an unnotified peer saves its older snapshot over these rows first,
+            # the next flush replays them back rather than losing them (#3854 is
+            # the fence gap itself; this only makes it recoverable).
+            log_without_raising(
+                logger.error,
+                f"[{self.workspace}] Vector data for {self.namespace} was saved "
+                f"to {self._client_file_name}, but publishing that write failed: "
+                f"{e.__cause__}. An unknown remainder of the other processes "
+                "keeps reading the previous snapshot until the next commit "
+                "notifies them; this process may also reload the file it just "
+                "wrote.",
+            )
 
     async def query(
         self, query: str, top_k: int, query_embedding: list[float] = None
@@ -1080,7 +1109,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
             4. ``set_all_update_flags`` flips every registered process's
                ``storage_updated`` flag, then we immediately reset our own
                flag to ``False`` so the writer does not self-reload on the
-               next call to ``_get_client``.
+               next call to ``_get_client``. A failure here does **not**
+               raise: step 3 already made the rows durable, so this is a
+               visibility lag, logged and healed by the next commit —
+               ``_save_to_disk_locked`` catches it. The redo logs are retired only
+               past this step, so rows an unnotified peer overwrites are
+               replayed back by the next flush.
 
         Either failure surfaces loudly through ``_insert_done`` so the caller
         can abort the document batch instead of silently losing vectors. The
@@ -1097,10 +1131,21 @@ class NanoVectorDBStorage(BaseVectorStorage):
             await self._flush_pending_locked()
 
             async def _committed() -> None:
-                self._unsaved_deletes.clear()  # the removals are durable now
-                self._unsaved_upserts.clear()  # the rows are durable now
                 await set_all_update_flags(self.namespace, workspace=self.workspace)
                 self.storage_updated.value = False
+                # Retired only PAST the publication, never before it. The rows
+                # are durable either way, but a publication that failed leaves
+                # an unnotified peer holding an older whole-file snapshot, and
+                # that peer can become the next writer and save it over these
+                # rows. Keeping the redo logs makes that recoverable: this
+                # process's next flush reloads the foreign snapshot and replays
+                # them on top (the same path issue #3688 built), so the rows
+                # come back instead of being lost silently. Retiring them first
+                # threw away the only copy. Replay is idempotent -- an
+                # unchanged file matches by fingerprint and writes nothing, and
+                # a genuinely newer row under the same id supersedes ours.
+                self._unsaved_deletes.clear()  # the removals are durable now
+                self._unsaved_upserts.clear()  # the rows are durable now
                 self._client_dirty = False
 
             await self._save_to_disk_locked(_committed)
@@ -1506,6 +1551,18 @@ class NanoVectorDBStorage(BaseVectorStorage):
         try:
             async with self._storage_lock:
                 await commit_in_storage_io(_delete_file, _committed)
+        except CommitBookkeepingError as e:
+            # The file is already gone; only the post-removal bookkeeping failed.
+            # Every step of `_committed` guards itself, so nothing raises this
+            # today -- it is the standing answer for a future step that forgets
+            # to, because "error" for a completed destruction is precisely the
+            # misreport those guards exist to prevent.
+            log_without_raising(
+                logger.error,
+                f"[{self.workspace}] Dropped {self.namespace}(file:"
+                f"{self._client_file_name}), but its post-removal bookkeeping "
+                f"failed: {e.__cause__}",
+            )
         except Exception as e:
             log_without_raising(
                 logger.error, f"[{self.workspace}] Error dropping {self.namespace}: {e}"
@@ -1585,10 +1642,21 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 return
 
             async def _committed() -> None:
-                self._unsaved_deletes.clear()  # the removals are durable now
-                self._unsaved_upserts.clear()  # the rows are durable now
                 await set_all_update_flags(self.namespace, workspace=self.workspace)
                 self.storage_updated.value = False
+                # Retired only PAST the publication, never before it. The rows
+                # are durable either way, but a publication that failed leaves
+                # an unnotified peer holding an older whole-file snapshot, and
+                # that peer can become the next writer and save it over these
+                # rows. Keeping the redo logs makes that recoverable: this
+                # process's next flush reloads the foreign snapshot and replays
+                # them on top (the same path issue #3688 built), so the rows
+                # come back instead of being lost silently. Retiring them first
+                # threw away the only copy. Replay is idempotent -- an
+                # unchanged file matches by fingerprint and writes nothing, and
+                # a genuinely newer row under the same id supersedes ours.
+                self._unsaved_deletes.clear()  # the removals are durable now
+                self._unsaved_upserts.clear()  # the rows are durable now
                 self._client_dirty = False
 
             await self._save_to_disk_locked(_committed)
