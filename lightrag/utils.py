@@ -665,6 +665,30 @@ class EmbeddingFunc:
             embeddings = await embed_func(texts, context="document")  # For indexing
             embeddings = await embed_func([query], context="query")   # For search
 
+    Return shape contract:
+        The wrapped function MUST return a 2D numpy array of shape
+        ``(len(texts), embedding_dim)`` -- exactly one row per input text, in
+        input order. Every storage backend consumes the result positionally
+        (``embeddings[i]`` belongs to ``texts[i]``), so any other shape is
+        rejected with a ValueError; the wrapper never reshapes, slices or pads
+        the result, because the row-to-input mapping cannot be recovered once
+        it is wrong.
+
+        Rank and dimension are always checked. The row count is checked
+        against the input batch, resolved from the first positional argument
+        or from the kwarg named after the wrapped function's first parameter;
+        when neither applies the row count is left unverified rather than
+        guessed at. In particular:
+
+        - A single input still returns ``(1, embedding_dim)``, not
+          ``(embedding_dim,)``.
+        - A provider that returns more vectors than inputs (e.g. one vector
+          per internally split segment of an over-long text) needs its token
+          limit declared via ``max_token_size``, or a dedicated adapter that
+          normalizes the output to one vector per input.
+        - An empty input list may return any empty array, including a bare
+          ``np.array([])``.
+
     Args:
         embedding_dim: Expected dimension of the embeddings(For dimension checking and workspace data isolation in vector DB)
         func: The actual embedding function to wrap
@@ -713,6 +737,40 @@ class EmbeddingFunc:
                 "Consider using .func to access the unwrapped function directly."
             )
 
+    def _resolve_input_batch(self, args: tuple, kwargs: dict) -> Any:
+        """Return the sequence of texts the caller passed, or None if unknown.
+
+        The vector count can only be checked against something. Positional is
+        the overwhelmingly common path and costs nothing to read. A keyword
+        call needs the wrapped function's first parameter name to know which
+        kwarg holds the texts, so the signature is inspected only on that
+        path -- and only the parameter name is read, never a full bind(),
+        which would raise on the extra kwargs this wrapper and its priority
+        decorator pass through (``_priority``, ``context``, ...).
+
+        Returning None means "not resolvable", which downgrades the vector
+        count check to unverifiable rather than guessing at a mapping.
+        """
+        if args:
+            return args[0]
+        if not kwargs:
+            return None
+        try:
+            params = inspect.signature(self.func).parameters
+        except (TypeError, ValueError):
+            # Builtins and C-implemented callables expose no signature.
+            return None
+        for param in params.values():
+            if param.kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            ):
+                return kwargs.get(param.name)
+            # A positional-only or *args first parameter cannot be addressed
+            # by keyword at all, so the batch stays unknown.
+            return None
+        return None
+
     async def __call__(self, *args, **kwargs) -> np.ndarray:
         # Only inject embedding_dim when send_dimensions is True
         if self.send_dimensions:
@@ -749,27 +807,89 @@ class EmbeddingFunc:
         # Call the actual embedding function
         result = await self.func(*args, **kwargs)
 
-        # Validate embedding dimensions using total element count
-        total_elements = result.size  # Total number of elements in the numpy array
+        # Validate the result shape directly rather than inferring it from a
+        # total-element count. A total-element check cannot tell a genuine
+        # vector-count mismatch (2N, D) apart from a dimension mismatch
+        # (N, 2D) -- both divide out to the same "actual vectors" number, so
+        # the wrong one of the two gets reported. Checking ndim/shape[0]/
+        # shape[1] directly identifies which one actually happened.
+        #
+        # Every mismatch is fatal: the wrapper never reshapes, slices or pads
+        # the result. Each raise is preceded by a logger.error carrying the
+        # likely cause and the fix, so the short exception message stays
+        # readable while the diagnosis is still available in the logs.
         expected_dim = self.embedding_dim
+        # None means the input batch could not be resolved from the call, so
+        # the vector count is unverifiable -- see _resolve_input_batch.
+        input_batch = self._resolve_input_batch(args, kwargs)
+        expected_vectors = (
+            len(input_batch) if isinstance(input_batch, (list, tuple)) else None
+        )
 
-        # Check if total elements can be evenly divided by embedding_dim
-        if total_elements % expected_dim != 0:
+        # An empty batch carries no vectors and no dimension to validate. A
+        # provider that short-circuits with `if not texts: return np.array([])`
+        # yields a 1D (0,) array, which is a correct answer to a zero-input
+        # request and must not be rejected by the 2D check below. An empty
+        # input paired with a non-empty result still falls through and fails.
+        if expected_vectors == 0 and result.size == 0:
+            return result
+
+        if result.ndim != 2:
+            logger.error(
+                f"Embedding result has unexpected shape {result.shape}: this "
+                f"wrapper requires a 2D array of exactly one row per input "
+                f"text, i.e. (len(texts), {expected_dim}). A single input "
+                f"must still come back as (1, {expected_dim}), not "
+                f"({expected_dim},); a flattened or nested array is rejected "
+                f"rather than reshaped, because the row-to-input mapping "
+                f"cannot be recovered from it."
+            )
             raise ValueError(
-                f"Embedding dimension mismatch detected: "
-                f"total elements ({total_elements}) cannot be evenly divided by "
-                f"expected dimension ({expected_dim}). "
+                f"Embedding result has unexpected shape: expected a 2D "
+                f"array (vectors, dimension) but got ndim={result.ndim} "
+                f"(shape={result.shape})."
             )
 
-        # Optional: Verify vector count matches input text count
-        actual_vectors = total_elements // expected_dim
-        if args and isinstance(args[0], (list, tuple)):
-            expected_vectors = len(args[0])
-            if actual_vectors != expected_vectors:
-                raise ValueError(
-                    f"Vector count mismatch: "
-                    f"expected {expected_vectors} vectors but got {actual_vectors} vectors (from embedding result)."
-                )
+        if expected_vectors is not None and result.shape[0] != expected_vectors:
+            logger.error(
+                f"Embedding vector count mismatch: {expected_vectors} text(s) "
+                f"in, {result.shape[0]} vector(s) out (shape={result.shape}). "
+                f"The usual cause is an embedding service that splits an "
+                f"over-long input internally and returns one vector per "
+                f"segment: declare the model's real token limit so texts are "
+                f"truncated before the call -- EMBEDDING_TOKEN_LIMIT on the "
+                f"API server, or max_token_size on "
+                f"@wrap_embedding_func_with_attrs for a custom embedding "
+                f"function. A provider that legitimately returns multiple "
+                f"vectors per input needs a dedicated adapter that normalizes "
+                f"its output to one vector per input before it reaches this "
+                f"wrapper; nothing is reshaped or truncated here, since there "
+                f"is no general contract for which rows correspond to which "
+                f"inputs."
+            )
+            raise ValueError(
+                f"Vector count mismatch: expected {expected_vectors} vectors "
+                f"(one per input text) but got {result.shape[0]} "
+                f"(shape={result.shape})."
+            )
+
+        if result.shape[1] != expected_dim:
+            logger.error(
+                f"Embedding dimension mismatch: the model returned "
+                f"{result.shape[1]}-dimensional vectors but this embedding "
+                f"function declares {expected_dim} (shape={result.shape}). "
+                f"Check that EMBEDDING_DIM (or the embedding_dim passed to "
+                f"@wrap_embedding_func_with_attrs / EmbeddingFunc) matches "
+                f"the model actually being called, and that the endpoint "
+                f"honours the requested output dimension. Vectors already "
+                f"stored under the previously declared dimension do not match "
+                f"the corrected one, so clear the data directory too unless "
+                f"nothing has been indexed yet."
+            )
+            raise ValueError(
+                f"Embedding dimension mismatch: expected dimension "
+                f"{expected_dim} but got {result.shape[1]} (shape={result.shape})."
+            )
 
         return result
 
@@ -6087,11 +6207,12 @@ async def pick_by_vector_similarity(
     if not entity_info or num_of_chunks <= 0:
         return []
 
-    # Collect all unique chunk IDs from entity info
-    all_chunk_ids = set()
-    for i, entity in enumerate(entity_info):
-        chunk_ids = entity.get("sorted_chunks", [])
-        all_chunk_ids.update(chunk_ids)
+    # Preserve first occurrence order for similarity ties and fallback selection.
+    all_chunk_ids = dict.fromkeys(
+        chunk_id
+        for entity in entity_info
+        for chunk_id in entity.get("sorted_chunks", [])
+    )
 
     if not all_chunk_ids:
         logger.warning(
