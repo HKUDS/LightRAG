@@ -436,3 +436,45 @@ async def test_drop_survives_a_broken_sink_on_the_snapshot_reset_path(
         assert index.ntotal == 0
     finally:
         await storage.finalize()
+
+
+@pytest.mark.asyncio
+async def test_failed_index_allocation_still_empties_client_storage(
+    tmp_path, monkeypatch
+):
+    """The reload flag does not cover every read path, so the clear must.
+
+    ``client_storage`` reads ``_id_to_meta`` synchronously and deliberately
+    skips ``_get_index``, and ``aexport_data`` goes through that property. With
+    the metadata clear behind the fallible allocation, an export taken before
+    some other async read triggered the reload would still list rows this drop
+    reported as deleted.
+    """
+    storage = await _seeded_storage(tmp_path)
+    try:
+        original_index_cls = faiss_impl.faiss.IndexFlatIP
+
+        def index_boom(*args, **kwargs):
+            raise RuntimeError("index reset boom")
+
+        monkeypatch.setattr(faiss_impl.faiss, "IndexFlatIP", index_boom)
+        logged_errors: list[str] = []
+        monkeypatch.setattr(faiss_impl.logger, "error", logged_errors.append)
+
+        try:
+            result = await storage.drop()
+        finally:
+            monkeypatch.setattr(faiss_impl.faiss, "IndexFlatIP", original_index_cls)
+
+        assert result == {"status": "success", "message": "data dropped"}
+        assert not Path(storage._faiss_index_file).exists()
+        assert not Path(storage._meta_file).exists()
+        # The allocation did fail, so the previous index object is still held.
+        assert storage._index.ntotal == 1
+        # ...but nothing reachable reports the dropped rows, on the path the
+        # reload flag cannot reach.
+        assert storage.client_storage == {"data": []}
+        assert storage.storage_updated.value is True
+        assert any("index reset boom" in msg for msg in logged_errors)
+    finally:
+        await storage.finalize()

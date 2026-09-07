@@ -1748,11 +1748,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
             stale index back. Stop workspace writes and restart affected workers
             before resuming; if stale data has already been written, clear
             again.
-            Accepted residue: if the in-memory reset itself fails, this process
-            keeps the dropped vectors in ``self._index``. The writer reload flag
-            is then left SET rather than cleared, so the next ``_get_index``
-            rebuilds the snapshot from the removed files — the stale index is
-            never served.
+            Accepted residue: if the empty-index allocation itself fails, this
+            process keeps the previous ``self._index``. Its ``_id_to_meta`` is
+            cleared first, unconditionally, so no read path reports the dropped
+            rows — including the synchronous ``client_storage``, which bypasses
+            ``_get_index`` and so is not covered by the flag. The writer reload
+            flag is then left SET rather than cleared, so the next
+            ``_get_index`` rebuilds the snapshot from the removed files.
 
         Cancellation:
             Before submission, cancellation leaves storage unchanged — the
@@ -1792,20 +1794,33 @@ class FaissVectorDBStorage(BaseVectorStorage):
             # Guarded like every other post-removal step: the files are already
             # gone, so nothing here may report the completed destruction as
             # failed.
+            #
+            # Order matters. The metadata clear goes FIRST, ahead of the
+            # fallible index allocation, because the reload flag set below
+            # cannot protect it: ``client_storage`` reads ``_id_to_meta``
+            # synchronously and deliberately does NOT go through
+            # ``_get_index``, and ``aexport_data`` reads that property. Were
+            # the allocation to raise with the clear behind it, an export
+            # taken before some other async read triggered the reload would
+            # still list rows this drop reported as deleted. Clearing first
+            # cannot fail, so no read path can expose them.
+            self._id_to_meta = {}
+            # No unsaved changes to protect either: the files are gone and the
+            # redo logs are empty, so a stale index must never be saved back.
+            self._index_dirty = False
             snapshot_reset = False
             try:
                 self._index = faiss.IndexFlatIP(self._dim)
-                self._id_to_meta = {}
-                self._index_dirty = False
                 snapshot_reset = True
             except Exception as snapshot_error:
                 log_without_raising(
                     logger.error,
                     f"[{self.workspace}] Dropped FAISS index {self.namespace}, but "
-                    "failed to reset the in-memory index; it still holds the "
-                    "dropped vectors. The writer reload flag is left set below so "
-                    "the next read rebuilds it from the removed files: "
-                    f"{snapshot_error}",
+                    "failed to allocate the empty index; the previous one is "
+                    "still held. Its metadata is already cleared, so no read "
+                    "path reports the dropped rows, and the writer reload flag "
+                    "is left set below so the next read rebuilds it from the "
+                    f"removed files: {snapshot_error}",
                 )
 
             # Keep publication under the storage lock. Once deletion starts,
