@@ -102,6 +102,52 @@ async def test_flush_runs_upsert_off_the_event_loop_thread():
 
 
 @pytest.mark.asyncio
+async def test_cancelling_flush_defers_until_write_completes_then_clears_buffer():
+    """asyncio.to_thread only cancels the awaiting future -- an in-flight
+    Milvus upsert keeps running in the background thread. A bare cancel
+    here would release _flush_lock and return to the caller while that
+    write (and its buffer bookkeeping) is still pending, letting a
+    concurrent flush interleave with the orphaned write. Cancellation must
+    instead be deferred until the write, and the buffer pop that follows
+    it, have actually finished."""
+    call_started = threading.Event()
+    release_call = threading.Event()
+
+    def fake_upsert(**kwargs):
+        call_started.set()
+        release_call.wait(timeout=5)
+        return {"upsert_count": 1}
+
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.upsert = MagicMock(side_effect=fake_upsert)
+    s._client.delete = MagicMock(return_value={"delete_count": 0})
+
+    await s.upsert({"v1": {"content": "hello"}})
+
+    task = asyncio.ensure_future(s.index_done_callback())
+    for _ in range(500):
+        if call_started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert call_started.is_set()
+
+    task.cancel()
+    # Let the background write finish so the deferred cancellation can
+    # resolve -- release_call must be set before awaiting the cancelled
+    # task, since the cancellation is held back until the write completes.
+    release_call.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    s._client.upsert.assert_called_once()
+    # The write actually landed, so the buffer must reflect that outcome
+    # -- not the stale "still pending" state a bare cancel would leave.
+    assert s._pending_vector_docs == {}
+    assert not s._flush_lock.locked()
+
+
+@pytest.mark.asyncio
 async def test_flush_runs_delete_off_the_event_loop_thread():
     main_thread_id = threading.get_ident()
     call_thread_id = {}

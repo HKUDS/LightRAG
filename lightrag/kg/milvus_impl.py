@@ -9,6 +9,8 @@ from lightrag.utils import (
     logger,
     compute_mdhash_id,
     _cooperative_yield,
+    _consume_future_exception,
+    _wait_deferring_cancellation,
     validate_workspace,
 )
 from ..base import BaseVectorStorage
@@ -2568,72 +2570,95 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 for doc_id in committed_ids
             ]
 
-            try:
-                if list_data:
-                    # Split the upsert into batches that stay under the server-side
-                    # 64MB gRPC message limit. Fail-fast: any batch failure raises
-                    # immediately and the full buffer is retained for the next flush.
-                    upsert_batches = self._build_upsert_batches(
-                        list_data,
-                        max_payload_bytes=self._max_upsert_payload_bytes,
-                        max_records_per_batch=self._max_upsert_records_per_batch,
-                    )
-                    if len(upsert_batches) > 1:
-                        logger.info(
-                            f"[{self.workspace}] {self.namespace} flush: upsert split into "
-                            f"{len(upsert_batches)} batches for {len(list_data)} records "
-                            f"(max_payload={self._max_upsert_payload_bytes} batch={self._max_upsert_records_per_batch})"
+            async def _write_and_clear_buffers() -> None:
+                try:
+                    if list_data:
+                        # Split the upsert into batches that stay under the server-side
+                        # 64MB gRPC message limit. Fail-fast: any batch failure raises
+                        # immediately and the full buffer is retained for the next flush.
+                        upsert_batches = self._build_upsert_batches(
+                            list_data,
+                            max_payload_bytes=self._max_upsert_payload_bytes,
+                            max_records_per_batch=self._max_upsert_records_per_batch,
                         )
-                    for batch_index, (records_batch, estimated_bytes) in enumerate(
-                        upsert_batches, 1
-                    ):
-                        if (
-                            len(records_batch) == 1
-                            and self._max_upsert_payload_bytes > 0
-                            and estimated_bytes > self._max_upsert_payload_bytes
-                        ):
-                            logger.warning(
-                                f"[{self.workspace}] {self.namespace} flush: single record "
-                                f"id={records_batch[0].get('id')} estimated {estimated_bytes} bytes "
-                                f"exceeds {self._max_upsert_payload_bytes}"
+                        if len(upsert_batches) > 1:
+                            logger.info(
+                                f"[{self.workspace}] {self.namespace} flush: upsert split into "
+                                f"{len(upsert_batches)} batches for {len(list_data)} records "
+                                f"(max_payload={self._max_upsert_payload_bytes} batch={self._max_upsert_records_per_batch})"
                             )
-                        logger.debug(
-                            f"[{self.workspace}] Milvus upsert batch {batch_index}/{len(upsert_batches)}: "
-                            f"records={len(records_batch)}, estimated_payload_bytes={estimated_bytes}"
+                        for batch_index, (records_batch, estimated_bytes) in enumerate(
+                            upsert_batches, 1
+                        ):
+                            if (
+                                len(records_batch) == 1
+                                and self._max_upsert_payload_bytes > 0
+                                and estimated_bytes > self._max_upsert_payload_bytes
+                            ):
+                                logger.warning(
+                                    f"[{self.workspace}] {self.namespace} flush: single record "
+                                    f"id={records_batch[0].get('id')} estimated {estimated_bytes} bytes "
+                                    f"exceeds {self._max_upsert_payload_bytes}"
+                                )
+                            logger.debug(
+                                f"[{self.workspace}] Milvus upsert batch {batch_index}/{len(upsert_batches)}: "
+                                f"records={len(records_batch)}, estimated_payload_bytes={estimated_bytes}"
+                            )
+                            await asyncio.to_thread(
+                                self._client.upsert,
+                                collection_name=self.final_namespace,
+                                data=records_batch,
+                            )
+                    if pending_deletes:
+                        # Chunk deletes by record count; pks are short strings so a
+                        # count cap is enough to stay under the gRPC message limit.
+                        delete_ids = list(pending_deletes)
+                        delete_chunk = (
+                            self._max_delete_records_per_batch
+                            if self._max_delete_records_per_batch > 0
+                            else len(delete_ids)
                         )
-                        await asyncio.to_thread(
-                            self._client.upsert,
-                            collection_name=self.final_namespace,
-                            data=records_batch,
-                        )
-                if pending_deletes:
-                    # Chunk deletes by record count; pks are short strings so a
-                    # count cap is enough to stay under the gRPC message limit.
-                    delete_ids = list(pending_deletes)
-                    delete_chunk = (
-                        self._max_delete_records_per_batch
-                        if self._max_delete_records_per_batch > 0
-                        else len(delete_ids)
+                        for i in range(0, len(delete_ids), delete_chunk):
+                            await asyncio.to_thread(
+                                self._client.delete,
+                                collection_name=self.final_namespace,
+                                pks=delete_ids[i : i + delete_chunk],
+                            )
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] Error flushing vector ops "
+                        f"(upserts={len(pending_docs)}, "
+                        f"deletes={len(pending_deletes)}): {e}"
                     )
-                    for i in range(0, len(delete_ids), delete_chunk):
-                        await asyncio.to_thread(
-                            self._client.delete,
-                            collection_name=self.final_namespace,
-                            pks=delete_ids[i : i + delete_chunk],
-                        )
-            except Exception as e:
-                logger.error(
-                    f"[{self.workspace}] Error flushing vector ops "
-                    f"(upserts={len(pending_docs)}, "
-                    f"deletes={len(pending_deletes)}): {e}"
-                )
-                raise
+                    raise
 
-            # On success, clear the buffers in-place so external references
-            # (e.g. drop()) see the cleared state.
-            for doc_id in committed_ids:
-                pending_docs.pop(doc_id, None)
-            pending_deletes.clear()
+                # On success, clear the buffers in-place so external references
+                # (e.g. drop()) see the cleared state.
+                for doc_id in committed_ids:
+                    pending_docs.pop(doc_id, None)
+                pending_deletes.clear()
+
+            # asyncio.to_thread only cancels the awaiting future, not the
+            # in-flight Milvus call: a bare cancellation here would release
+            # _flush_lock and return to the caller while the write (and the
+            # buffer pop that must follow it) is still running in the
+            # background, letting a concurrent flush interleave with it and
+            # possibly land a stale write. Defer the cancellation until the
+            # write -- and its buffer bookkeeping -- has actually finished,
+            # same idiom as commit_in_storage_io / _finish_deferring_cancellation.
+            write_future = asyncio.ensure_future(_write_and_clear_buffers())
+            write_future.add_done_callback(_consume_future_exception)
+            pending_cancel = await _wait_deferring_cancellation(write_future, None)
+            if pending_cancel is not None:
+                if not write_future.cancelled():
+                    write_exc = write_future.exception()
+                    if write_exc is not None:
+                        logger.error(
+                            f"[{self.workspace}] {self.namespace} flush write "
+                            f"completed while its caller was cancelled: {write_exc}"
+                        )
+                raise pending_cancel
+            write_future.result()
 
     async def delete_entity(self, entity_name: str) -> None:
         """Buffer an entity vector delete by computing its hash ID."""
