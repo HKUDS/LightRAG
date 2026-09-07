@@ -91,6 +91,7 @@ class _SpyStorage:
         namespace: str = "ns",
         final_namespace=_UNSET,
         flush_error: BaseException | None = None,
+        flush_result=None,
         drop_error: BaseException | None = None,
         recorder: list | None = None,
     ):
@@ -99,6 +100,7 @@ class _SpyStorage:
         if final_namespace is not _UNSET:
             self.final_namespace = final_namespace
         self._flush_error = flush_error
+        self._flush_result = flush_result
         self._drop_error = drop_error
         self._recorder = recorder if recorder is not None else []
         self.index_done_calls = 0
@@ -109,6 +111,7 @@ class _SpyStorage:
         self._recorder.append((self.label, "flush"))
         if self._flush_error is not None:
             raise self._flush_error
+        return self._flush_result
 
     async def drop_pending_index_ops(self):
         self.drop_calls += 1
@@ -503,5 +506,50 @@ async def test_insert_done_with_cleanup_cancelled_propagates_no_discard(
         with pytest.raises(asyncio.CancelledError):
             await rag._insert_done_with_cleanup()
         assert discard_calls == 0
+    finally:
+        await rag.finalize_storages()
+
+
+# ---------------------------------------------------------------------------
+# A DECLINED commit is not a successful flush (issue #3854)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_insert_done_rejects_a_declined_commit(tmp_path, monkeypatch):
+    """``False`` means the backend refused to write and DISCARDED the pending
+    mutation to converge on a newer file (``NetworkXStorage``'s decline
+    branch). The flush used to ignore the return value, so the document was
+    marked PROCESSED with its graph writes dropped and nothing left to recover
+    them from. It has to fail, so the FAILED path's reprocessing re-extracts
+    and re-writes the work."""
+    rag = await _make_rag(tmp_path)
+    try:
+        spies = [_SpyStorage("ok"), _SpyStorage("declined", flush_result=False)]
+        monkeypatch.setattr(rag, "_index_storages", lambda: spies)
+
+        with pytest.raises(IndexFlushError) as ei:
+            await rag._insert_done()
+        assert "declined the commit" in str(ei.value)
+        # Every flush still ran to completion before the raise.
+        assert spies[0].index_done_calls == 1
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.parametrize("flush_result", [None, True])
+@pytest.mark.asyncio
+async def test_insert_done_accepts_none_and_true(tmp_path, monkeypatch, flush_result):
+    """Identity, not truthiness: ``BaseGraphStorage.index_done_callback`` is
+    declared ``-> None`` and most backends return nothing, so only an explicit
+    ``False`` is an answer. Testing ``None`` for falsiness would fail every
+    flush in the project."""
+    rag = await _make_rag(tmp_path)
+    try:
+        spies = [_SpyStorage("plain", flush_result=flush_result)]
+        monkeypatch.setattr(rag, "_index_storages", lambda: spies)
+
+        await rag._insert_done()
+        assert spies[0].index_done_calls == 1
     finally:
         await rag.finalize_storages()

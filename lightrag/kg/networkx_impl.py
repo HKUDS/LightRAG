@@ -168,9 +168,18 @@ class NetworkXStorage(BaseGraphStorage):
             The same two tests. A writer holding a snapshot the file has
             moved past **declines** (returns ``False``) instead of writing:
             its save serializes the whole graph, so proceeding would
-            overwrite the peer commit it never saw. Losing this mutation
-            with an error — ``_commit_graph_or_raise`` turns the ``False``
-            into one — beats losing the peer's silently.
+            overwrite the peer commit it never saw.
+
+            A declined commit must reach its caller as a failure, because
+            declining DISCARDS this process's pending mutation. Both callers
+            do that: ``utils_graph._commit_graph_or_raise`` raises on the
+            ``False`` (admin paths), and ``LightRAG._flush_storages``'s
+            ``_flush_one`` turns it into ``IndexFlushError`` (pipeline paths).
+            Without the second one the fence would only swap which side loses
+            data — the peer's commit preserved, this document marked
+            PROCESSED with its graph writes dropped and nothing to recover
+            them from. As a failure it heals instead: the document goes
+            FAILED and its reprocessing re-extracts and re-writes the work.
 
         Ordering rule that keeps the fingerprint honest: it is sampled
         **before** the file is read, never after. A fingerprint sampled after
