@@ -226,3 +226,105 @@ async def test_cancelled_drop_finishes_notification_and_logs(
         await asyncio.gather(task, return_exceptions=True)
         await peer.finalize()
         await writer.finalize()
+
+
+@pytest.mark.asyncio
+async def test_drop_stays_successful_when_the_success_log_fails(tmp_path, monkeypatch):
+    """A broken log sink is not a failed deletion.
+
+    The success log is the last step of the commit hook, so an exception there
+    propagates out of ``commit_in_storage_io`` and would be reported as an
+    error for a drop that already happened.
+    """
+    storage = _make_storage(tmp_path)
+    await storage.initialize()
+    try:
+        await storage.upsert_node("n1", {"entity_id": "n1"})
+        await storage.index_done_callback()
+
+        def log_boom(msg):
+            raise RuntimeError("log sink boom")
+
+        monkeypatch.setattr(networkx_impl.logger, "info", log_boom)
+
+        result = await storage.drop()
+
+        assert result == {"status": "success", "message": "data dropped"}
+        assert not Path(storage._graphml_xml_file).exists()
+        assert storage._graph.number_of_nodes() == 0
+        assert storage.storage_updated.value is False
+    finally:
+        await storage.finalize()
+
+
+@pytest.mark.asyncio
+async def test_drop_survives_a_broken_sink_reached_through_an_error_path(
+    tmp_path, monkeypatch
+):
+    """Guarding only the success log leaves the error paths through the sink.
+
+    A broken sink and a failing notification together reach ``logger.error``
+    inside the notification handler. Unguarded, that raises through
+    ``commit_in_storage_io`` and past the outer handler's own ``logger.error``,
+    so ``drop`` does not even return its dict — the caller sees an exception
+    for a deletion that already landed.
+    """
+    storage = _make_storage(tmp_path)
+    await storage.initialize()
+    try:
+        await storage.upsert_node("n1", {"entity_id": "n1"})
+        await storage.index_done_callback()
+
+        def log_boom(msg):
+            raise RuntimeError("log sink boom")
+
+        async def notification_boom(namespace, workspace=None):
+            # Model partial publication before the failure, so the reload-flag
+            # assignment below is an observable step and not a no-op.
+            storage.storage_updated.value = True
+            raise RuntimeError("notification boom")
+
+        monkeypatch.setattr(networkx_impl, "set_all_update_flags", notification_boom)
+        monkeypatch.setattr(networkx_impl.logger, "info", log_boom)
+        monkeypatch.setattr(networkx_impl.logger, "error", log_boom)
+
+        result = await storage.drop()
+
+        assert result == {"status": "success", "message": "data dropped"}
+        assert not Path(storage._graphml_xml_file).exists()
+        assert storage._graph.number_of_nodes() == 0
+        # The step past the unreportable diagnostic still runs. Skipping it
+        # would leave the flag set and self-reload a snapshot that is
+        # already correct — harmless here, and the same skip on the
+        # snapshot-reset path is what serves dropped rows.
+        assert storage.storage_updated.value is False
+    finally:
+        await storage.finalize()
+
+
+@pytest.mark.asyncio
+async def test_destructive_failure_still_reports_error_with_a_broken_sink(
+    tmp_path, monkeypatch
+):
+    """The mirror case: a sink failure must not swallow a real ``"error"``."""
+    storage = _make_storage(tmp_path)
+    await storage.initialize()
+    try:
+        await storage.upsert_node("n1", {"entity_id": "n1"})
+        await storage.index_done_callback()
+
+        def remove_boom(path):
+            raise OSError("delete boom")
+
+        def log_boom(msg):
+            raise RuntimeError("log sink boom")
+
+        monkeypatch.setattr(networkx_impl.os, "remove", remove_boom)
+        monkeypatch.setattr(networkx_impl.logger, "error", log_boom)
+
+        result = await storage.drop()
+
+        assert result == {"status": "error", "message": "delete boom"}
+        assert Path(storage._graphml_xml_file).exists()
+    finally:
+        await storage.finalize()

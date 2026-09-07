@@ -8,10 +8,11 @@ from typing import final
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from lightrag.utils import (
-    logger,
-    validate_xml_attributes,
-    validate_workspace,
     commit_in_storage_io,
+    log_without_raising,
+    logger,
+    validate_workspace,
+    validate_xml_attributes,
 )
 from lightrag.base import BaseGraphStorage
 import networkx as nx
@@ -1109,7 +1110,9 @@ class NetworkXStorage(BaseGraphStorage):
             - On destructive failure: {"status": "error", "message": "<error details>"}
 
             A peer notification failure after the file deletion is logged but
-            does not change the successful status of the completed drop.
+            does not change the successful status of the completed drop. No
+            step after the deletion — notification, writer-flag reset, or the
+            success log — can turn it into an error response.
             This status confirms durable deletion, not convergence of all worker
             snapshots. A worker that missed the notification may later write its
             stale graph back. Stop workspace writes and restart affected workers
@@ -1138,12 +1141,13 @@ class NetworkXStorage(BaseGraphStorage):
                 # A missed worker may later become the writer and persist its
                 # stale graph, resurrecting deleted data. A notification from
                 # that writer would spread the stale state, not repair it.
-                logger.error(
+                log_without_raising(
+                    logger.error,
                     f"[{self.workspace}] Dropped graph file:{self._graphml_xml_file}, "
                     "but failed while notifying all processes; some processes may "
                     "not reload and may restore deleted data if they later write. "
                     "Stop workspace writes and restart all affected workers before "
-                    f"resuming: {notification_error}"
+                    f"resuming: {notification_error}",
                 )
             # The local graph is already empty, even after partial notification.
             # A broken shared-state manager can fail this reset independently;
@@ -1151,22 +1155,29 @@ class NetworkXStorage(BaseGraphStorage):
             try:
                 self.storage_updated.value = False
             except Exception as reset_error:
-                logger.error(
+                log_without_raising(
+                    logger.error,
                     f"[{self.workspace}] Dropped graph file:{self._graphml_xml_file}, "
-                    f"but failed to reset the writer reload flag: {reset_error}"
+                    f"but failed to reset the writer reload flag: {reset_error}",
                 )
             # Log inside the cancellation-protected hook: the caller may receive
             # CancelledError after it completes instead of a success response.
-            logger.info(
-                f"[{self.workspace}] Process {os.getpid()} drop graph file:{self._graphml_xml_file}"
+            # Routed through log_without_raising like every other log call in
+            # this hook: a broken log sink cannot unmake the removal, so it
+            # must not surface as a failed drop. See that helper for why the
+            # failure is swallowed rather than re-reported.
+            log_without_raising(
+                logger.info,
+                f"[{self.workspace}] Process {os.getpid()} drop graph file:{self._graphml_xml_file}",
             )
 
         try:
             async with self._storage_lock:
                 await commit_in_storage_io(_delete_file, _committed)
         except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error dropping graph file:{self._graphml_xml_file}: {e}"
+            log_without_raising(
+                logger.error,
+                f"[{self.workspace}] Error dropping graph file:{self._graphml_xml_file}: {e}",
             )
             return {"status": "error", "message": str(e)}
 
