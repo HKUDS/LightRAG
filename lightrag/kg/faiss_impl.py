@@ -20,6 +20,7 @@ from lightrag.utils import (
 from lightrag.base import BaseVectorStorage
 from lightrag.constants import DEFAULT_QUERY_PRIORITY
 
+from . import file_fingerprint
 from .shared_storage import (
     get_namespace_lock,
     get_update_flag,
@@ -116,33 +117,77 @@ class FaissVectorDBStorage(BaseVectorStorage):
            unsnapshotted dict iteration) into the pool would break the
            invariant and would require widening the lock scope instead.
 
-    Cross-process sync protocol (flag-only — see #3854):
-        This protocol has ONE channel, and it can fail: the
-        ``storage_updated`` flag is published with one Manager RPC per
-        process, so a partial publication leaves a peer unnotified. That
-        peer does not reload here and, on the ``for_write=True`` path,
-        saves its stale snapshot over the durable rows. ``NetworkXStorage``
-        already pairs the flag with a file fingerprint that cannot be lost
-        with the manager (see its *Cross-process sync protocol*); phase 2
-        of #3854 brings the same fence here. Until then the redo logs
-        retained past the publication (#3858) downgrade a peer overwrite
-        from lost to recovered-on-the-next-commit; they do not close it.
-        Writer side (``index_done_callback``):
+    Cross-process sync protocol (two channels — see #3854):
+        Two independent tests decide whether this process holds a current
+        snapshot, OR-ed at the one place that asks
+        (``_reload_index_from_disk_locked``). They are not redundant — their
+        blind spots do not overlap. The mechanism lives in
+        ``lightrag.kg.file_fingerprint``; the canonical prose contract is
+        ``NetworkXStorage``'s section of the same name.
+
+        * **Authoritative channel — the file fingerprint.**
+          ``(st_mtime_ns, st_size)`` of **both** files against what this
+          process recorded when it last loaded or wrote them
+          (``_loaded_fingerprint``). State, not an event: nothing consumes
+          it and a failed notification cannot lose it. Sampling the pair
+          together matters more here than for the single-file backends —
+          cross-file atomicity is best-effort (see above), so a pair where
+          only one file moved is a real state this fence must not read as
+          "unchanged". Blind spot: two commits inside one filesystem
+          timestamp tick with identical sizes.
+        * **Accelerator channel — the ``storage_updated`` flag.** Read
+          first, because a ``True`` value already answers the question.
+          ``set_all_update_flags`` publishes it with one Manager RPC per
+          process, so a partial publication leaves a peer unnotified —
+          that loss is its blind spot, and it is what the file channel
+          exists for. In exchange it covers the fingerprint's tick
+          collision, which needs a healthy, fast-committing system.
+
+        Writer side (``index_done_callback`` / ``finalize``):
             1. ``_save_faiss_index`` writes both files atomically (per
                file; cross-file atomicity is best-effort, see above).
-            2. ``set_all_update_flags`` flips every process's
-               ``storage_updated`` flag (including the writer's own).
-            3. Reset the writer's own flag to ``False`` so the next
-               ``_get_index`` does not trigger a self-reload of what we
-               just wrote.
-        Reader side (any method that goes through ``_get_index``):
-            1. Inside ``_storage_lock``, observe
-               ``storage_updated.value is True``.
-            2. **Fully reload**: re-init ``self._index`` from
+            2. Record the fingerprint of the pair just written, so this
+               process does not later read its own save as a peer's. Done
+               inside ``_save_faiss_index`` — before the caller's
+               bookkeeping, because that publishes through the manager and
+               can fail, while this is a local ``stat``.
+            3. ``set_all_update_flags`` flips every process's
+               ``storage_updated`` flag (including the writer's own), then
+               reset the writer's own flag to ``False``.
+        Reader and writer side (everything through
+        ``_reload_index_from_disk_locked``):
+            1. Inside ``_storage_lock``, test the flag; if it is ``False``,
+               test the fingerprint.
+            2. On either, **fully reload**: re-init ``self._index`` from
                ``IndexFlatIP``, clear ``self._id_to_meta``, then call
                ``_load_faiss_index`` to re-parse both files. Faiss has no
                incremental sync API.
-            3. Reset the reader's own flag.
+            3. Record the new fingerprint **and** reset the flag, whichever
+               channel fired.
+
+        **This backend does not decline a stale write, and must not.**
+        ``NetworkXStorage`` refuses to save when the file has moved past its
+        snapshot, because it has no way to keep the mutation. Here the write
+        path is *reload-then-replay*: ``index_done_callback`` reloads the
+        peer's snapshot and ``_flush_pending_locked`` replays the pending
+        buffer and the ``_unsaved_upserts`` / ``_unsaved_deletes`` redo logs
+        on top of it (issue #3688), so both sides survive and there is
+        nothing to report as a failure. Consequently the flush-failure
+        propagation NetworkX needs (a declined commit must not be
+        acknowledged as durable, see ``LightRAG._flush_storages``) has no
+        counterpart here.
+
+        Accepted residues (see *Consistency without transactions* in
+        ``AGENTS.md``):
+            * The tick collision above, **and** the notification lost for
+              this process: the peer commit is not observed. Recovery: the
+              next commit by any process flips the flag and changes the
+              fingerprint; the redo logs mean this process's own rows are
+              replayed rather than lost either way.
+            * A ``stat`` this process cannot perform on either file: the
+              file channel reports "no change" and the fence degrades to
+              the flag alone, i.e. to the behaviour that predates it. See
+              ``kg.file_fingerprint`` for why the other direction is worse.
 
     Lock scope:
         ``_storage_lock`` is a per-``(namespace, workspace)`` keyed lock
@@ -286,6 +331,15 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # Keep a local store for metadata, IDs, etc.
         # Maps <int faiss_id> → metadata (including your original ID).
         self._id_to_meta = {}
+        # ``(st_mtime_ns, st_size)`` per file -- BOTH files, since either one
+        # changing means a peer wrote. The authoritative half of the
+        # cross-process fence; see *Cross-process sync protocol*. Adopted
+        # after the load below, sampled before it (``kg.file_fingerprint``).
+        self._loaded_fingerprint = None
+        # How many times the file channel caught a commit the flag channel
+        # never announced, so a deployment can tell whether the
+        # lost-notification window in #3854 actually occurs.
+        self._missed_notification_reloads = 0
 
         # Minimal pending area for deferred embedding: custom-id -> _PendingFaissDoc.
         # Holds only records not yet embedded+materialized into self._index;
@@ -333,7 +387,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
             extra_patterns=(glob.escape(self._meta_file) + ".tmp",),
         )
 
+        # Sampled BEFORE the load, never after -- see ``kg.file_fingerprint``.
+        fingerprint = self._stat_fingerprint()
         self._load_faiss_index()
+        self._adopt_fingerprint(fingerprint)
 
     async def initialize(self):
         """Initialize storage data"""
@@ -346,6 +403,49 @@ class FaissVectorDBStorage(BaseVectorStorage):
             self.namespace, workspace=self.workspace
         )
 
+    def _fingerprint_paths(self) -> tuple[str, str]:
+        """Both files this storage's state spans.
+
+        Sampled together: either one changing means a peer wrote, and a
+        partially readable pair is "cannot tell" rather than a change (see
+        ``kg.file_fingerprint``). That matters here more than for the
+        single-file backends — cross-file atomicity is best-effort, so a
+        mismatched pair is a state this fence must not read as "unchanged".
+        """
+        return (self._faiss_index_file, self._meta_file)
+
+    def _stat_fingerprint(self) -> file_fingerprint.Fingerprint | object:
+        """Sample both files' identity. See ``kg.file_fingerprint``."""
+        return file_fingerprint.sample(
+            self._fingerprint_paths(), workspace=self.workspace
+        )
+
+    def _adopt_fingerprint(
+        self, fingerprint: file_fingerprint.Fingerprint | object
+    ) -> None:
+        """Record ``fingerprint`` as the file pair this process now holds."""
+        self._loaded_fingerprint = file_fingerprint.adopted(fingerprint)
+
+    def _record_fingerprint(self) -> None:
+        """Adopt the files currently on disk without reloading from them.
+
+        For the writer: after its own save the in-memory index already *is*
+        their content.
+        """
+        self._adopt_fingerprint(self._stat_fingerprint())
+
+    def _peer_commit_detected(self) -> bool:
+        """Whether the files on disk differ from the ones this process loaded.
+
+        The fence's authoritative test — the one a failed notification cannot
+        disable. See ``kg.file_fingerprint``.
+        """
+        return file_fingerprint.peer_commit_detected(
+            self._fingerprint_paths(),
+            self._loaded_fingerprint,
+            workspace=self.workspace,
+        )
+
     def _reload_index_from_disk_locked(self, *, for_write: bool = False) -> bool:
         """Reload ``self._index`` + ``self._id_to_meta`` if another process committed newer data.
 
@@ -356,22 +456,45 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
         Returns True if a reload happened, False if the local snapshot was
         already current.
+
+        Two tests, per *Cross-process sync protocol*: this process's
+        ``storage_updated`` flag, read first, and the files' fingerprint
+        against what this process recorded. The second is what survives a lost
+        notification.
         """
-        if not self.storage_updated.value:
+        notified = bool(self.storage_updated.value)
+        if not notified and not self._peer_commit_detected():
             return False
 
-        log_message = (
-            f"[{self.workspace}] Process {os.getpid()} FAISS reloading {self.namespace} "
-            "due to update by another process"
-        )
-        if for_write:
-            logger.warning(log_message)
+        if notified:
+            log_message = (
+                f"[{self.workspace}] Process {os.getpid()} FAISS reloading {self.namespace} "
+                "due to update by another process"
+            )
+            if for_write:
+                logger.warning(log_message)
+            else:
+                logger.info(log_message)
         else:
-            logger.info(log_message)
+            # The lost-notification case the file channel exists for. Always a
+            # warning, on the read path too: unlike a notified reload this one
+            # says a publication failed somewhere.
+            self._missed_notification_reloads += 1
+            logger.warning(
+                f"[{self.workspace}] Process {os.getpid()} FAISS reloading "
+                f"{self.namespace}: {self._faiss_index_file} is not the file "
+                "pair this process loaded and no reload notification arrived "
+                "for it, so a notification was lost. Recovering through the "
+                f"file channel (occurrence #{self._missed_notification_reloads} "
+                "in this process)."
+            )
 
+        # Sampled BEFORE the read, never after -- see ``kg.file_fingerprint``.
+        fingerprint = self._stat_fingerprint()
         self._index = faiss.IndexFlatIP(self._dim)
         self._id_to_meta = {}
         self._load_faiss_index()
+        self._adopt_fingerprint(fingerprint)
         self.storage_updated.value = False
         return True
 
@@ -1307,7 +1430,21 @@ class FaissVectorDBStorage(BaseVectorStorage):
             atomic_write(meta_file, _write_meta, workspace)
 
         try:
-            await commit_in_storage_io(_write_both, on_committed)
+            async def _committed() -> None:
+                # Adopt the pair this process just wrote BEFORE the caller's
+                # bookkeeping, which publishes through the manager and can
+                # fail. A local stat, so it cannot fail with it -- and doing it
+                # first means a failed publication does not additionally leave
+                # this process treating its own save as a peer's, which would
+                # cost a full reload of both files on the next call for
+                # nothing.
+                #
+                # Here rather than in each caller's hook so no save path can
+                # forget it: ``finalize`` reuses this same method.
+                self._record_fingerprint()
+                await on_committed()
+
+            await commit_in_storage_io(_write_both, _committed)
         except CommitBookkeepingError as e:
             # Both files are already renamed into place, so the rows ARE durable
             # and the caller must not hear otherwise: `index_done_callback`'s
@@ -1876,6 +2013,19 @@ class FaissVectorDBStorage(BaseVectorStorage):
                     "is left set below so the next read rebuilds it from the "
                     f"removed files: {snapshot_error}",
                 )
+
+            # Mirror that decision on the file channel, and BEFORE the
+            # fallible manager writes below: a plain attribute assignment
+            # cannot fail with the manager, so the fence holds even when the
+            # flag write does not. Adopting the files' absence when the
+            # allocation installed the post-drop index; invalidating (``None``
+            # differs from any real pair, present or absent) when it did not,
+            # so the next read rebuilds the stale index through this channel
+            # too.
+            if snapshot_reset:
+                self._record_fingerprint()
+            else:
+                self._loaded_fingerprint = None
 
             # Keep publication under the storage lock. Once deletion starts,
             # commit_in_storage_io defers caller cancellation through this hook
