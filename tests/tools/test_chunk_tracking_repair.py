@@ -6,10 +6,13 @@ whole install, and it seeds from the graph ``source_id`` — a KEEP-truncated vi
 that chunk tracking is supposed to OUTRANK. Repairing a polluted row through it
 therefore costs a provenance downgrade across every object.
 
-The repair pins four properties, one per acceptance bullet on the issue:
+The repair pins the issue's acceptance properties plus the conservative safety
+boundary required by rename, merge, and explicit creation:
 
 * it runs regardless of ``is_empty()``;
-* it writes NO row for an object whose chunks are not in the extraction cache;
+* it writes no invented row for an object with neither an existing authoritative
+  row nor cached attribution;
+* it retains current-object rows the cache cannot reproduce;
 * nothing it writes originates from the graph ``source_id``;
 * the attribution is chunk-granular (from the cache), never document-granular —
   attributing an object to every chunk of every document naming it is the same
@@ -162,9 +165,11 @@ class _Repairer:
         self.finalized = True
 
 
-async def _repair(repairer):
+async def _repair(repairer, *, allow_missing_rows: bool = False):
     plan = await build_chunk_tracking_repair_plan(repairer)
-    return await apply_chunk_tracking_repair_plan(repairer, plan)
+    return await apply_chunk_tracking_repair_plan(
+        repairer, plan, allow_missing_rows=allow_missing_rows
+    )
 
 
 def _two_chunk_corpus():
@@ -206,7 +211,7 @@ async def test_repair_runs_on_a_non_empty_store_and_evicts_the_orphan_row():
     entity_chunks = _KV(
         {
             "GHOST": {"chunk_ids": ["c-gone"], "count": 1},
-            "ALICE": {"chunk_ids": ["c1", "c-phantom"], "count": 2},
+            "ALICE": {"chunk_ids": ["c1", "c2"], "count": 2},
         }
     )
     relation_chunks = _KV(
@@ -284,14 +289,18 @@ async def test_no_row_is_written_for_an_object_without_cached_extraction():
     docs["doc-1"].chunks_list.append("c3")
 
     repairer = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
-    report = await _repair(repairer)
+    plan = await build_chunk_tracking_repair_plan(repairer)
+    assert any("graph entity" in reason for reason in plan.blockers({"entity_chunks"}))
+    report = await apply_chunk_tracking_repair_plan(
+        repairer, plan, allow_missing_rows=True
+    )
 
     assert "CAROL" not in repairer.entity_chunks.data
     assert (
         make_relation_chunk_key("CAROL", "ALICE") not in repairer.relation_chunks.data
     )
-    assert report.entities_without_evidence == 1
-    assert report.relations_without_evidence == 1
+    assert report.entities_without_tracking_row == 1
+    assert report.relations_without_tracking_row == 1
     assert report.chunks_without_cache == 1
     assert any("no usable cached extraction" in w for w in report.warnings)
 
@@ -323,6 +332,61 @@ async def test_nothing_written_originates_from_the_graph_source_id():
     assert written, "the repair wrote nothing, so the assertion below is vacuous"
     assert "chunk-truncated-by-KEEP" not in written
     assert set(written) <= {"c1", "c2"}
+
+
+async def test_existing_current_key_rows_survive_cache_name_mismatch():
+    """Rename/merge/manual-create attribution cannot be reconstructed from the
+    extraction cache because the cache still carries the original object name."""
+    docs, chunks, cache, _ = _two_chunk_corpus()
+    graph = _Graph(["ALICIA", "BOB"], [("ALICIA", "BOB")])
+    entity_chunks = _KV(
+        {
+            "ALICIA": {"chunk_ids": ["c1", "c2"], "count": 2},
+            "BOB": {"chunk_ids": ["c2"], "count": 1},
+        }
+    )
+    relation_key = make_relation_chunk_key("ALICIA", "BOB")
+    relation_chunks = _KV({relation_key: {"chunk_ids": ["c2"], "count": 1}})
+    repairer = _Repairer(
+        docs=docs,
+        chunks=chunks,
+        cache=cache,
+        graph=graph,
+        entity_chunks=entity_chunks,
+        relation_chunks=relation_chunks,
+    )
+
+    report = await _repair(repairer)
+
+    assert entity_chunks.data["ALICIA"]["chunk_ids"] == ["c1", "c2"]
+    assert relation_chunks.data[relation_key]["chunk_ids"] == ["c2"]
+    assert report.existing_entity_rows == 2
+    assert report.existing_relation_rows == 1
+
+
+async def test_authoritative_empty_rows_from_manual_creation_survive():
+    graph = _Graph(["MANUAL_A", "MANUAL_B"], [("MANUAL_A", "MANUAL_B")])
+    relation_key = make_relation_chunk_key("MANUAL_A", "MANUAL_B")
+    entity_chunks = _KV(
+        {
+            "MANUAL_A": {"chunk_ids": [], "count": 0},
+            "MANUAL_B": {"chunk_ids": [], "count": 0},
+        }
+    )
+    relation_chunks = _KV({relation_key: {"chunk_ids": [], "count": 0}})
+    repairer = _Repairer(
+        docs={},
+        chunks={},
+        cache={},
+        graph=graph,
+        entity_chunks=entity_chunks,
+        relation_chunks=relation_chunks,
+    )
+
+    await _repair(repairer)
+
+    assert entity_chunks.data["MANUAL_A"] == {"chunk_ids": [], "count": 0}
+    assert relation_chunks.data[relation_key] == {"chunk_ids": [], "count": 0}
 
 
 async def test_attribution_is_chunk_granular_not_document_granular():
@@ -404,6 +468,29 @@ async def test_every_doc_status_state_contributes_its_chunks():
     assert set(captured[0]) == set(DocStatus)
 
 
+async def test_report_distinguishes_total_documents_and_documents_with_chunks():
+    docs, chunks, cache, graph = _two_chunk_corpus()
+    docs["doc-without-chunks"] = _Doc([])
+    repairer = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
+
+    plan = await build_chunk_tracking_repair_plan(repairer)
+
+    assert plan.report.scanned_documents == 2
+    assert plan.report.documents_with_chunks == 1
+
+
+async def test_report_distinguishes_cached_results_from_extracted_attribution():
+    docs, chunks, cache, graph = _two_chunk_corpus()
+    cache["cache-1"]["return"] = _extraction_payload()
+    repairer = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
+
+    plan = await build_chunk_tracking_repair_plan(repairer)
+
+    assert plan.report.chunks_with_cache == 2
+    assert plan.report.chunks_with_attribution == 1
+    assert plan.report.chunks_without_cache == 0
+
+
 async def test_chunks_missing_from_text_chunks_are_skipped():
     """``chunks_list`` can name chunks a failed ingestion never wrote."""
     docs, chunks, cache, graph = _two_chunk_corpus()
@@ -422,10 +509,8 @@ async def test_empty_result_is_refused_before_the_first_drop():
     """An empty replacement for a non-empty graph would be re-seeded from
     ``source_id`` at startup, so apply must fail closed before mutation."""
     docs, chunks, _, graph = _two_chunk_corpus()
-    entity_chunks = _KV({"ALICE": {"chunk_ids": ["c1"], "count": 1}})
-    relation_chunks = _KV(
-        {make_relation_chunk_key("ALICE", "BOB"): {"chunk_ids": ["c2"], "count": 1}}
-    )
+    entity_chunks = _KV({"GHOST": {"chunk_ids": ["c1"], "count": 1}})
+    relation_chunks = _KV({"OLD": {"chunk_ids": ["c2"], "count": 1}})
     repairer = _Repairer(
         docs=docs,
         chunks=chunks,
@@ -442,7 +527,7 @@ async def test_empty_result_is_refused_before_the_first_drop():
         await apply_chunk_tracking_repair_plan(repairer, plan)
     assert entity_chunks.drops == 0
     assert relation_chunks.drops == 0
-    assert entity_chunks.data["ALICE"]["chunk_ids"] == ["c1"]
+    assert entity_chunks.data["GHOST"]["chunk_ids"] == ["c1"]
 
 
 async def test_a_failed_drop_aborts_instead_of_reporting_success():
@@ -467,6 +552,32 @@ async def test_a_failed_drop_aborts_instead_of_reporting_success():
     with pytest.raises(RuntimeError, match="Failed to drop entity_chunks"):
         await _repair(repairer)
     assert entity_chunks.data == {"GHOST": {"chunk_ids": ["c-gone"], "count": 1}}
+
+
+async def test_entity_write_failure_leaves_relation_namespace_untouched():
+    docs, chunks, cache, graph = _two_chunk_corpus()
+
+    class _FailingUpsertKV(_KV):
+        async def upsert(self, payload):
+            raise RuntimeError("write failed")
+
+    entity_chunks = _FailingUpsertKV()
+    relation_chunks = _KV({"OLD": {"chunk_ids": ["old"], "count": 1}})
+    repairer = _Repairer(
+        docs=docs,
+        chunks=chunks,
+        cache=cache,
+        graph=graph,
+        entity_chunks=entity_chunks,
+        relation_chunks=relation_chunks,
+    )
+
+    with pytest.raises(RuntimeError, match="write failed"):
+        await _repair(repairer)
+
+    assert entity_chunks.drops == 1
+    assert relation_chunks.drops == 0
+    assert relation_chunks.data == {"OLD": {"chunk_ids": ["old"], "count": 1}}
 
 
 async def test_repair_requires_chunk_tracking_to_be_configured():
@@ -502,7 +613,15 @@ async def test_cli_requires_offline_confirmation_before_storage_initialization(
     monkeypatch.setattr(chunk_tracking_repair, "_confirm_offline", lambda _yes: False)
     monkeypatch.setattr(chunk_tracking_repair, "_build_rag", _must_not_build)
 
-    result = await chunk_tracking_repair.run(argparse.Namespace(apply=False, yes=False))
+    result = await chunk_tracking_repair.run(
+        argparse.Namespace(
+            apply=False,
+            yes=False,
+            namespace="both",
+            allow_empty_graph=False,
+            allow_missing_rows=False,
+        )
+    )
 
     assert result is True
 
@@ -516,7 +635,15 @@ async def test_cli_defaults_to_a_read_only_plan(monkeypatch):
 
     monkeypatch.setattr(chunk_tracking_repair, "_build_rag", _build)
 
-    result = await chunk_tracking_repair.run(argparse.Namespace(apply=False, yes=True))
+    result = await chunk_tracking_repair.run(
+        argparse.Namespace(
+            apply=False,
+            yes=True,
+            namespace="both",
+            allow_empty_graph=False,
+            allow_missing_rows=False,
+        )
+    )
 
     assert result is True
     assert repairer.initialized is True
@@ -534,9 +661,82 @@ async def test_cli_returns_failure_for_an_unsafe_apply_without_dropping(monkeypa
 
     monkeypatch.setattr(chunk_tracking_repair, "_build_rag", _build)
 
-    result = await chunk_tracking_repair.run(argparse.Namespace(apply=True, yes=True))
+    result = await chunk_tracking_repair.run(
+        argparse.Namespace(
+            apply=True,
+            yes=True,
+            namespace="both",
+            allow_empty_graph=False,
+            allow_missing_rows=False,
+        )
+    )
 
     assert result is False
     assert repairer.entity_chunks.drops == 0
     assert repairer.relation_chunks.drops == 0
     assert repairer.finalized is True
+
+
+async def test_cli_unsafe_dry_run_returns_failure(monkeypatch):
+    docs, chunks, _, graph = _two_chunk_corpus()
+    repairer = _Repairer(docs=docs, chunks=chunks, cache={}, graph=graph)
+
+    async def _build():
+        return repairer
+
+    monkeypatch.setattr(chunk_tracking_repair, "_build_rag", _build)
+
+    result = await chunk_tracking_repair.run(
+        argparse.Namespace(
+            apply=False,
+            yes=True,
+            namespace="both",
+            allow_empty_graph=False,
+            allow_missing_rows=False,
+        )
+    )
+
+    assert result is False
+    assert repairer.entity_chunks.drops == 0
+    assert repairer.relation_chunks.drops == 0
+
+
+async def test_empty_graph_requires_explicit_override_before_apply():
+    entity_chunks = _KV({"ORPHAN": {"chunk_ids": ["c1"], "count": 1}})
+    repairer = _Repairer(
+        docs={},
+        chunks={},
+        cache={},
+        graph=_Graph([], []),
+        entity_chunks=entity_chunks,
+    )
+    plan = await build_chunk_tracking_repair_plan(repairer)
+
+    assert plan.blockers({"entity_chunks"}) == ["graph is empty or unavailable"]
+    with pytest.raises(ValueError, match="graph is empty or unavailable"):
+        await apply_chunk_tracking_repair_plan(
+            repairer, plan, namespaces={"entity_chunks"}
+        )
+    assert entity_chunks.drops == 0
+
+    await apply_chunk_tracking_repair_plan(
+        repairer,
+        plan,
+        namespaces={"entity_chunks"},
+        allow_empty_graph=True,
+    )
+    assert entity_chunks.drops == 1
+    assert entity_chunks.data == {}
+
+
+async def test_namespace_scope_does_not_let_relation_block_entity_repair():
+    docs, chunks, cache, _ = _two_chunk_corpus()
+    graph = _Graph(["ALICE", "BOB"], [("CAROL", "DAVE")])
+    repairer = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
+    plan = await build_chunk_tracking_repair_plan(repairer)
+
+    assert plan.unsafe_empty_namespaces == ["relation_chunks"]
+    await apply_chunk_tracking_repair_plan(repairer, plan, namespaces={"entity_chunks"})
+
+    assert repairer.entity_chunks.drops == 1
+    assert repairer.relation_chunks.drops == 0

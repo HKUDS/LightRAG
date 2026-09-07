@@ -1611,9 +1611,10 @@ deletion is always the recovery step:
 
 A stale or orphaned `entity_chunks` / `relation_chunks` row cannot be found, let
 alone pruned, one row at a time: `BaseKVStorage` has no enumeration API, so
-nothing can sweep for it. The repair is therefore whole-namespace — it drops
-both namespaces and rebuilds them from the cached extraction results. Because
-that replacement cannot be coordinated with writers in other processes, it is
+nothing can sweep for it. The repair is therefore whole-namespace — it replaces
+one or both namespaces from current graph keys, retaining authoritative rows for
+live objects and supplementing them from cached extraction results. Because that
+replacement cannot be coordinated with writers in other processes, it is
 available only as an offline tool.
 
 Before every run, stop **all** LightRAG API servers, pipeline workers, and SDK
@@ -1623,6 +1624,7 @@ only scans and prints the complete replacement plan:
 ```bash
 lightrag-repair-chunk-tracking
 lightrag-repair-chunk-tracking --apply
+lightrag-repair-chunk-tracking --apply --namespace entity  # or relation
 # equivalent: python -m lightrag.tools.chunk_tracking_repair [--apply]
 ```
 
@@ -1639,36 +1641,39 @@ It is deliberately **not** the startup migration:
 | --- | --- | --- |
 | When           | startup / first explicit creation | operator, on demand |
 | Gate           | only when the namespace `is_empty()` | never gated |
-| Seed           | graph `source_id` | cached extraction results |
-| Existing rows  | left untouched | dropped and rebuilt |
+| Seed           | graph `source_id` | live-object tracking rows + cached extraction results |
+| Existing rows  | left untouched | current graph keys retained; orphan keys removed |
 
 The seed is the point. Graph `source_id` is KEEP-truncated and chunk tracking
 outranks it, so re-seeding from it downgrades provenance across the whole
-install. The repair never reads it; the graph is consulted only for which
-objects exist, so an object deleted by an admin call is not resurrected. The
-attribution itself is chunk-granular and comes from the extraction cache
-(`text_chunks.llm_cache_list` → `llm_response_cache`), the same source the
-deletion rebuild reads — `text_chunks` carries the text, not the attribution,
-and the `full_entities` / `full_relations` anchors are document-granular, one
-level too coarse to write a row from.
+install. The repair never reads it; the graph is consulted only for current
+object keys, so rows for deleted objects are not copied into the replacement.
+Rows for live objects remain authoritative: rename, merge, and manual creation
+can produce keys or attribution the extraction cache cannot reproduce. Cached
+extraction (`text_chunks.llm_cache_list` → `llm_response_cache`) supplements
+those rows at chunk granularity. The `full_entities` / `full_relations` anchors
+remain too coarse to write a tracking row from.
 
 Two consequences an operator has to plan for, both reported in the plan:
 
-- An object whose chunks are **not in the cache** (cache cleared, or extraction
-  caching disabled) gets **no row**. That restores the purge classifier's
-  `source_id` fallback for it — a bounded degradation, and strictly better than
-  a row claiming evidence nobody can substantiate.
-- If cached evidence would leave a namespace **empty while the graph contains
-  corresponding objects**, apply fails before the first drop. This prevents the
-  next startup's `is_empty()`-gated migration from silently re-seeding the
-  namespace from `source_id`. Restore the cache or re-ingest before retrying.
+- An object with neither an existing authoritative row nor matching cached
+  extraction remains without a row and is reported. An existing row—including
+  an authoritative empty row—is never discarded merely because cache evidence
+  is absent.
+- If retained rows plus cached evidence would leave a namespace **empty while
+  the graph contains corresponding objects**, apply fails before the first drop.
+- Any plan that leaves a current graph object without a row is blocked by
+  default. `--allow-missing-rows` accepts that explicitly after review of the
+  existing/planned row denominators printed by the dry run.
+- A completely empty graph also blocks apply by default: it may mean the wrong
+  backend/workspace or an unavailable graph index. `--allow-empty-graph` is an
+  explicit override after the operator independently verifies the empty graph.
 
 The tool computes the whole mapping before the first `drop()`, so a read failure
-leaves every existing row untouched. The two namespaces still have no shared
-transaction: if an apply fails or the process exits after a drop, keep every
-writer stopped, fix the cause, and re-run the tool until it completes. The
-operation is idempotent because its output is derived from the current graph and
-extraction cache.
+leaves every existing row untouched. Each selected namespace is dropped and
+fully rewritten before the next namespace is touched, reducing the partial
+failure window. If an apply still fails after a drop, keep every writer stopped,
+fix the cause, and re-run the tool until it completes.
 
 ### Delete Relations
 

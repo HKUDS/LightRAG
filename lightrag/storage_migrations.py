@@ -9,7 +9,6 @@ also checks chunk tracking before writing its first new row:
 - Rebuild ``entity_chunks`` / ``relation_chunks`` indexes by walking nodes/
   edges in the graph storage when they are empty
   (chunk-tracking migration).
-
 """
 
 from __future__ import annotations

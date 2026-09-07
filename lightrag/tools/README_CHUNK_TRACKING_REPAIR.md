@@ -1,10 +1,11 @@
 # Offline Chunk-Tracking Repair
 
 `entity_chunks` and `relation_chunks` are the authoritative chunk-level
-provenance for graph objects. A crash can leave an orphan row or a row that
-still names deleted chunks. Since `BaseKVStorage` does not provide complete key
+provenance for graph objects. A crash can leave an orphan row whose graph object
+no longer exists. Since `BaseKVStorage` does not provide complete key
 enumeration, those rows cannot be found and repaired individually. This tool
-replaces both namespaces from evidence in the extraction cache.
+removes them by replacing one or both namespaces from the set of current graph
+keys.
 
 ## Safety requirement
 
@@ -47,28 +48,50 @@ After reviewing the plan, apply it:
 lightrag-repair-chunk-tracking --apply
 ```
 
+To repair only one namespace when the other cannot be reconstructed safely:
+
+```bash
+lightrag-repair-chunk-tracking --apply --namespace entity
+lightrag-repair-chunk-tracking --apply --namespace relation
+```
+
 For an already-isolated automated maintenance environment:
 
 ```bash
 lightrag-repair-chunk-tracking --apply --yes
 ```
 
-The plan is built completely before the first drop. Source reads are
-complete-or-raise, and graph data is used only to decide which entities and
-relations currently exist. Attribution comes only from
-`text_chunks.llm_cache_list` and `llm_response_cache`; graph `source_id` and
-document-level recovery anchors are never used as tracking evidence.
+The plan is built completely before the first drop. Graph data is used only to
+decide which entities and relations currently exist. Existing authoritative
+rows for those current graph keys are retained, including empty rows created by
+manual operations, and cached extraction results add any recoverable
+chunk-level attribution. This preserves rows re-keyed by rename or merge—the
+cache still carries the old names and cannot reconstruct those transformations.
+Graph `source_id` and document-level recovery anchors are never used as tracking
+evidence.
 
-If the graph contains entities or relations but cached evidence would produce
-an empty corresponding namespace, apply is refused before any drop. Otherwise,
-objects without usable cached evidence remain without a row and are reported as
-warnings; inventing attribution would be worse than falling back to the graph's
-bounded `source_id` view for those objects.
+If the graph contains entities or relations but retained rows plus cached
+evidence would produce an empty corresponding namespace, apply is refused
+before any drop. More generally, a plan leaving **any** current graph object
+without a tracking row is blocked by default; `--allow-missing-rows` accepts
+that reported degradation after the operator reviews the existing/planned row
+denominators. An entirely empty graph is also refused by default because the
+tool cannot distinguish a legitimate empty graph from a wrong backend/workspace
+or an unavailable graph index. After independently verifying that the selected
+graph is intentionally empty, `--allow-empty-graph` permits clearing its orphan
+tracking rows. Unsafe dry runs exit with status 1.
+
+This conservative repair removes orphan **keys** but does not claim to validate
+every chunk id in a row belonging to a live graph object. Such rows are the
+authority, and a rename, merge, or manual source id can legitimately have no
+matching extraction-cache record. Discarding them would manufacture the very
+provenance loss this tool is intended to avoid.
 
 ## Failure recovery
 
-There is no transaction spanning the two namespaces. If an apply fails or is
-interrupted after a drop, tracking may be partially rebuilt. Keep all writers
+There is no transaction spanning the two namespaces. Each selected namespace is
+dropped and fully written before the next is touched, limiting a failure to the
+current namespace. If an apply fails or is interrupted, keep all writers
 stopped, correct the reported backend or cache problem, and run `--apply` again
-until it exits successfully. The replacement is idempotent for an unchanged
-graph and extraction cache. A failed apply exits with status 1.
+until it exits successfully. The replacement is idempotent for unchanged graph,
+tracking, and extraction-cache state. A failed apply exits with status 1.

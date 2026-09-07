@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Offline chunk-tracking repair tool (issue #3838, R4).
 
-The tool rebuilds ``entity_chunks`` and ``relation_chunks`` from cached
-extraction results. It is deliberately offline-only: a standalone process
-cannot share the API server's in-memory pipeline reservations, and dropping a
-whole namespace while any server, worker, or SDK writer is active can silently
-lose concurrent updates.
+The tool removes orphan tracking keys by replacing ``entity_chunks`` and/or
+``relation_chunks``. It retains authoritative rows for objects that still exist
+in the graph and supplements them from cached extraction results. This is
+deliberately offline-only: a standalone process cannot share the API server's
+in-memory pipeline reservations, and dropping a whole namespace while any
+server, worker, or SDK writer is active can silently lose concurrent updates.
 
 Run without ``--apply`` to build and print a read-only repair plan. Before an
 apply, stop every writer that uses the same backing storages and workspace.
@@ -25,7 +26,14 @@ from typing import Any
 from dotenv import load_dotenv
 
 from lightrag.base import DocStatus
-from lightrag.utils import EmbeddingFunc, logger, make_relation_chunk_key, setup_logger
+from lightrag.constants import RELATION_NO_EVIDENCE_SOURCE_IDS
+from lightrag.utils import (
+    EmbeddingFunc,
+    has_chunk_tracking_row,
+    logger,
+    make_relation_chunk_key,
+    setup_logger,
+)
 
 _CHUNK_SCAN_BATCH = 200
 _UPSERT_BATCH = 500
@@ -36,17 +44,23 @@ class ChunkTrackingRepairReport:
     """Counts and warnings for a repair plan or completed apply."""
 
     scanned_documents: int = 0
+    documents_with_chunks: int = 0
     scanned_chunks: int = 0
     chunks_with_cache: int = 0
+    chunks_with_attribution: int = 0
     chunks_without_cache: int = 0
     graph_entities: int = 0
     graph_relations: int = 0
+    existing_entity_rows: int = 0
+    existing_relation_rows: int = 0
+    malformed_entity_rows: int = 0
+    malformed_relation_rows: int = 0
     entity_rows_planned: int = 0
     relation_rows_planned: int = 0
     entity_rows_written: int = 0
     relation_rows_written: int = 0
-    entities_without_evidence: int = 0
-    relations_without_evidence: int = 0
+    entities_without_tracking_row: int = 0
+    relations_without_tracking_row: int = 0
     warnings: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -71,18 +85,62 @@ class ChunkTrackingRepairPlan:
             unsafe.append("relation_chunks")
         return unsafe
 
+    def blockers(
+        self,
+        namespaces: set[str],
+        *,
+        allow_empty_graph: bool = False,
+        allow_missing_rows: bool = False,
+    ) -> list[str]:
+        """Return reasons an apply must be refused before its first drop."""
+        blockers = [
+            namespace
+            for namespace in self.unsafe_empty_namespaces
+            if namespace in namespaces
+        ]
+        if (
+            not allow_empty_graph
+            and not self.report.graph_entities
+            and not self.report.graph_relations
+        ):
+            blockers.append("graph is empty or unavailable")
+        if not allow_missing_rows:
+            if (
+                "entity_chunks" in namespaces
+                and self.report.entities_without_tracking_row
+            ):
+                blockers.append(
+                    f"{self.report.entities_without_tracking_row} graph entity/entities "
+                    "have no planned tracking row"
+                )
+            if (
+                "relation_chunks" in namespaces
+                and self.report.relations_without_tracking_row
+            ):
+                blockers.append(
+                    f"{self.report.relations_without_tracking_row} graph relation(s) "
+                    "have no planned tracking row"
+                )
+        return blockers
+
 
 async def build_chunk_tracking_repair_plan(rag) -> ChunkTrackingRepairPlan:
     """Build a complete, read-only replacement plan for one workspace.
 
-    The graph is an existence oracle only. Attribution is reconstructed at
-    chunk granularity from ``text_chunks.llm_cache_list`` and the extraction
-    cache; graph ``source_id`` and document-level anchors are never seeds.
+    The graph is an existence oracle only. Existing authoritative rows are
+    retained because rename, merge, and explicit creation may produce keys or
+    attribution the extraction cache cannot reproduce. Cached extraction adds
+    chunk-granular attribution; graph ``source_id`` and document-level anchors
+    are never seeds.
     """
     _require_storages(rag)
     report = ChunkTrackingRepairReport()
 
-    chunk_ids, report.scanned_documents = await _collect_corpus_chunk_ids(rag)
+    (
+        chunk_ids,
+        report.scanned_documents,
+        report.documents_with_chunks,
+    ) = await _collect_corpus_chunk_ids(rag)
     report.scanned_chunks = len(chunk_ids)
 
     graph_entities = set(await rag.chunk_entity_relation_graph.get_all_labels())
@@ -90,11 +148,22 @@ async def build_chunk_tracking_repair_plan(rag) -> ChunkTrackingRepairPlan:
     report.graph_entities = len(graph_entities)
     report.graph_relations = len(graph_relations)
 
-    entity_rows: dict[str, list[str]] = {}
-    relation_rows: dict[str, list[str]] = {}
+    entity_rows, report.malformed_entity_rows = await _collect_existing_rows(
+        rag.entity_chunks,
+        graph_entities,
+        excluded_ids=RELATION_NO_EVIDENCE_SOURCE_IDS,
+    )
+    relation_rows, report.malformed_relation_rows = await _collect_existing_rows(
+        rag.relation_chunks,
+        graph_relations,
+        excluded_ids=RELATION_NO_EVIDENCE_SOURCE_IDS,
+    )
+    report.existing_entity_rows = len(entity_rows)
+    report.existing_relation_rows = len(relation_rows)
     if chunk_ids and rag.llm_response_cache is not None:
         (
             report.chunks_with_cache,
+            report.chunks_with_attribution,
             report.chunks_without_cache,
         ) = await _accumulate_cached_attribution(
             rag,
@@ -114,8 +183,8 @@ async def build_chunk_tracking_repair_plan(rag) -> ChunkTrackingRepairPlan:
 
     report.entity_rows_planned = len(entity_rows)
     report.relation_rows_planned = len(relation_rows)
-    report.entities_without_evidence = len(graph_entities - set(entity_rows))
-    report.relations_without_evidence = len(graph_relations - set(relation_rows))
+    report.entities_without_tracking_row = len(graph_entities - set(entity_rows))
+    report.relations_without_tracking_row = len(graph_relations - set(relation_rows))
     _add_plan_warnings(report)
 
     plan = ChunkTrackingRepairPlan(report, entity_rows, relation_rows)
@@ -126,6 +195,12 @@ async def build_chunk_tracking_repair_plan(rag) -> ChunkTrackingRepairPlan:
             "restart would re-seed the empty namespace from KEEP-truncated graph "
             "source_id; restore the extraction cache or re-ingest first."
         )
+    if not report.graph_entities and not report.graph_relations:
+        report.warnings.append(
+            "The graph is empty or unavailable. Apply is blocked by default because "
+            "the tool cannot distinguish a legitimately empty graph from a wrong "
+            "backend/workspace or a backend whose graph index is unavailable."
+        )
 
     for warning in report.warnings:
         logger.warning(f"Chunk tracking repair plan: {warning}")
@@ -133,32 +208,47 @@ async def build_chunk_tracking_repair_plan(rag) -> ChunkTrackingRepairPlan:
 
 
 async def apply_chunk_tracking_repair_plan(
-    rag, plan: ChunkTrackingRepairPlan
+    rag,
+    plan: ChunkTrackingRepairPlan,
+    *,
+    namespaces: set[str] | None = None,
+    allow_empty_graph: bool = False,
+    allow_missing_rows: bool = False,
 ) -> ChunkTrackingRepairReport:
     """Apply a precomputed plan, failing before drop for unsafe empty output."""
     _require_storages(rag)
-    if plan.unsafe_empty_namespaces:
+    namespaces = namespaces or {"entity_chunks", "relation_chunks"}
+    invalid = namespaces - {"entity_chunks", "relation_chunks"}
+    if invalid:
+        raise ValueError(f"Unknown tracking namespace(s): {', '.join(sorted(invalid))}")
+    blockers = plan.blockers(
+        namespaces,
+        allow_empty_graph=allow_empty_graph,
+        allow_missing_rows=allow_missing_rows,
+    )
+    if blockers:
         raise ValueError(
-            "Refusing to drop tracking: "
-            f"{', '.join(plan.unsafe_empty_namespaces)} would be empty while the "
-            "graph still contains corresponding objects. Restore the extraction "
-            "cache or re-ingest, then build a new repair plan."
+            f"Refusing to drop tracking: {', '.join(blockers)}. Review the plan, "
+            "correct the backend/cache configuration, narrow --namespace, or use "
+            "an explicit allow override only after reviewing the reported loss."
         )
 
-    await _drop_tracking_namespace(rag.entity_chunks, "entity_chunks")
-    await _drop_tracking_namespace(rag.relation_chunks, "relation_chunks")
-
-    plan.report.entity_rows_written = await _write_tracking_rows(
-        rag.entity_chunks, plan.entity_rows, "entity_chunks"
-    )
-    plan.report.relation_rows_written = await _write_tracking_rows(
-        rag.relation_chunks, plan.relation_rows, "relation_chunks"
-    )
+    if "entity_chunks" in namespaces:
+        await _drop_tracking_namespace(rag.entity_chunks, "entity_chunks")
+        plan.report.entity_rows_written = await _write_tracking_rows(
+            rag.entity_chunks, plan.entity_rows, "entity_chunks"
+        )
+    if "relation_chunks" in namespaces:
+        await _drop_tracking_namespace(rag.relation_chunks, "relation_chunks")
+        plan.report.relation_rows_written = await _write_tracking_rows(
+            rag.relation_chunks, plan.relation_rows, "relation_chunks"
+        )
     logger.info(
         "Chunk tracking repair completed: "
         f"{plan.report.entity_rows_written} entity row(s), "
-        f"{plan.report.relation_rows_written} relation row(s) rebuilt from "
-        f"{plan.report.chunks_with_cache}/{plan.report.scanned_chunks} cached chunk(s)"
+        f"{plan.report.relation_rows_written} relation row(s) retained/rebuilt; "
+        f"cache available for {plan.report.chunks_with_cache}/"
+        f"{plan.report.scanned_chunks} chunk(s)"
     )
     return plan.report
 
@@ -178,7 +268,7 @@ def _require_storages(rag) -> None:
         )
 
 
-async def _collect_corpus_chunk_ids(rag) -> tuple[list[str], int]:
+async def _collect_corpus_chunk_ids(rag) -> tuple[list[str], int, int]:
     docs = await rag.doc_status.get_docs_by_statuses(list(DocStatus), strict=True)
     ordered: dict[str, None] = {}
     contributing_docs = 0
@@ -190,7 +280,47 @@ async def _collect_corpus_chunk_ids(rag) -> tuple[list[str], int]:
         for chunk_id in chunks_list:
             if chunk_id:
                 ordered.setdefault(chunk_id, None)
-    return list(ordered), contributing_docs
+    return list(ordered), len(docs), contributing_docs
+
+
+async def _collect_existing_rows(
+    storage,
+    keys: set[str],
+    *,
+    excluded_ids: frozenset[str] = frozenset(),
+) -> tuple[dict[str, list[str]], int]:
+    """Retain authoritative rows for objects that still exist in the graph.
+
+    Rename, merge, and explicit creation can intentionally produce tracking keys
+    or attribution that the extraction cache cannot reproduce. Existing rows are
+    therefore the authority for current graph objects; rebuilding from cache only
+    would turn an orphan sweep into provenance loss.
+    """
+    rows: dict[str, list[str]] = {}
+    malformed = 0
+    ordered = sorted(keys)
+    for start in range(0, len(ordered), _CHUNK_SCAN_BATCH):
+        batch = ordered[start : start + _CHUNK_SCAN_BATCH]
+        stored_rows = await storage.get_by_ids(batch)
+        if len(stored_rows) != len(batch):
+            raise RuntimeError(
+                f"{type(storage).__name__}.get_by_ids returned {len(stored_rows)} "
+                f"row(s) for {len(batch)} requested tracking key(s)"
+            )
+        for key, stored in zip(batch, stored_rows):
+            if stored is None:
+                continue
+            if not has_chunk_tracking_row(stored):
+                malformed += 1
+                continue
+            rows[key] = list(
+                dict.fromkeys(
+                    chunk_id
+                    for chunk_id in stored["chunk_ids"]
+                    if chunk_id and chunk_id not in excluded_ids
+                )
+            )
+    return rows, malformed
 
 
 async def _collect_graph_relation_keys(rag) -> set[str]:
@@ -210,13 +340,14 @@ async def _accumulate_cached_attribution(
     graph_relations: set[str],
     entity_rows: dict[str, list[str]],
     relation_rows: dict[str, list[str]],
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     from lightrag.operate import (
         _get_cached_extraction_results,
         _rebuild_from_extraction_result,
     )
 
     with_cache = 0
+    with_attribution = 0
     for start in range(0, len(chunk_ids), _CHUNK_SCAN_BATCH):
         batch = chunk_ids[start : start + _CHUNK_SCAN_BATCH]
         missing = await rag.text_chunks.filter_keys(set(batch))
@@ -230,6 +361,7 @@ async def _accumulate_cached_attribution(
         )
         for chunk_id, results in cached_results.items():
             parsed_any = False
+            attributed_any = False
             for extraction_result, timestamp in results:
                 try:
                     entities, relationships = await _rebuild_from_extraction_result(
@@ -246,6 +378,8 @@ async def _accumulate_cached_attribution(
                     )
                     continue
                 parsed_any = True
+                if entities or relationships:
+                    attributed_any = True
                 for entity_name in entities:
                     if entity_name in graph_entities:
                         _append_chunk_id(entity_rows, entity_name, chunk_id)
@@ -255,21 +389,38 @@ async def _accumulate_cached_attribution(
                         _append_chunk_id(relation_rows, storage_key, chunk_id)
             if parsed_any:
                 with_cache += 1
-    return with_cache, len(chunk_ids) - with_cache
+            if attributed_any:
+                with_attribution += 1
+    return with_cache, with_attribution, len(chunk_ids) - with_cache
 
 
 def _add_plan_warnings(report: ChunkTrackingRepairReport) -> None:
     if report.chunks_without_cache:
         report.warnings.append(
             f"{report.chunks_without_cache} of {report.scanned_chunks} chunk(s) "
-            "had no usable cached extraction result; objects supported only by "
-            "them will have no tracking row."
+            "had no usable cached extraction result; those chunks cannot add "
+            "attribution beyond any authoritative row already retained."
         )
-    if report.entities_without_evidence or report.relations_without_evidence:
+    cached_without_attribution = (
+        report.chunks_with_cache - report.chunks_with_attribution
+    )
+    if cached_without_attribution:
         report.warnings.append(
-            f"{report.entities_without_evidence} entity/entities and "
-            f"{report.relations_without_evidence} relation(s) present in the "
-            "graph have no cached chunk-level evidence."
+            f"{cached_without_attribution} cached chunk(s) parsed successfully but "
+            "contained no entity or relation extraction records."
+        )
+    if report.entities_without_tracking_row or report.relations_without_tracking_row:
+        report.warnings.append(
+            f"{report.entities_without_tracking_row} entity/entities and "
+            f"{report.relations_without_tracking_row} relation(s) present in the "
+            "graph have neither a usable existing tracking row nor matching "
+            "cached chunk-level attribution."
+        )
+    if report.malformed_entity_rows or report.malformed_relation_rows:
+        report.warnings.append(
+            f"Ignored {report.malformed_entity_rows} malformed entity tracking "
+            f"row(s) and {report.malformed_relation_rows} malformed relation "
+            "tracking row(s); only rows carrying a chunk_ids list are authoritative."
         )
 
 
@@ -304,20 +455,27 @@ def _print_report(report: ChunkTrackingRepairReport, *, applied: bool) -> None:
     phase = "Apply result" if applied else "Repair plan"
     print(f"\n{phase}:")
     print(
-        f"  Corpus: {report.scanned_documents} document(s), "
-        f"{report.scanned_chunks} chunk(s)"
+        f"  Corpus: {report.scanned_documents} total document(s), "
+        f"{report.documents_with_chunks} with chunks, "
+        f"{report.scanned_chunks} distinct chunk(s)"
     )
     print(
         f"  Cache: {report.chunks_with_cache} usable chunk(s), "
-        f"{report.chunks_without_cache} unavailable"
+        f"{report.chunks_with_attribution} with extracted objects, "
+        f"{report.chunks_without_cache} unavailable or unusable"
     )
     print(
         f"  Graph: {report.graph_entities} entity/entities, "
         f"{report.graph_relations} relation(s)"
     )
     print(
-        f"  Planned rows: {report.entity_rows_planned} entity, "
-        f"{report.relation_rows_planned} relation"
+        f"  Existing current-object rows: {report.existing_entity_rows}/"
+        f"{report.graph_entities} entity, {report.existing_relation_rows}/"
+        f"{report.graph_relations} relation"
+    )
+    print(
+        f"  Planned rows: {report.entity_rows_planned}/{report.graph_entities} "
+        f"entity, {report.relation_rows_planned}/{report.graph_relations} relation"
     )
     if applied:
         print(
@@ -406,17 +564,34 @@ async def run(args: argparse.Namespace) -> bool:
 
         plan = await build_chunk_tracking_repair_plan(rag)
         _print_report(plan.report, applied=False)
+        namespaces = (
+            {"entity_chunks", "relation_chunks"}
+            if args.namespace == "both"
+            else {f"{args.namespace}_chunks"}
+        )
+        blockers = plan.blockers(
+            namespaces,
+            allow_empty_graph=args.allow_empty_graph,
+            allow_missing_rows=args.allow_missing_rows,
+        )
+        if blockers:
+            print(f"Unsafe plan: {', '.join(blockers)}.")
+            print("No tracking namespace was modified.")
+            return False
         if not args.apply:
             print("Dry run only. Re-run with --apply to rebuild tracking.")
             return True
-        if plan.unsafe_empty_namespaces:
-            print("Apply refused before drop; tracking was not modified.")
-            return False
         if not _confirm_apply(args.yes):
             print("Apply cancelled; tracking was not modified.")
             return True
 
-        report = await apply_chunk_tracking_repair_plan(rag, plan)
+        report = await apply_chunk_tracking_repair_plan(
+            rag,
+            plan,
+            namespaces=namespaces,
+            allow_empty_graph=args.allow_empty_graph,
+            allow_missing_rows=args.allow_missing_rows,
+        )
         _print_report(report, applied=True)
         print("Repair completed successfully. It is now safe to restart LightRAG.")
         return True
@@ -446,6 +621,28 @@ def _parse_args() -> argparse.Namespace:
         "--yes",
         action="store_true",
         help="Confirm all writers are stopped and accept the destructive apply.",
+    )
+    parser.add_argument(
+        "--namespace",
+        choices=("both", "entity", "relation"),
+        default="both",
+        help="Tracking namespace to rebuild (default: both).",
+    )
+    parser.add_argument(
+        "--allow-empty-graph",
+        action="store_true",
+        help=(
+            "Allow clearing the selected tracking namespace when the graph is "
+            "empty; use only after independently verifying backend/workspace."
+        ),
+    )
+    parser.add_argument(
+        "--allow-missing-rows",
+        action="store_true",
+        help=(
+            "Allow a plan that leaves current graph objects without tracking "
+            "rows; review the reported denominator first."
+        ),
     )
     return parser.parse_args()
 

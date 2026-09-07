@@ -2178,9 +2178,8 @@ _INTERNAL_PIPELINE_STATUS_FIELDS = (
 
 # Owner ``kind`` values whose work is safely RE-RUNNABLE after a dead-owner
 # reclaim (in-flight docs sit in doc_status and are reset to PENDING / retried).
-# Every other kind (custom_chunks / delete / clear) may
-# have half-committed and is fenced with ``recovery_required`` instead of being
-# cleared for re-run.
+# Every other kind (custom_chunks / delete / clear) may have half-committed and
+# is fenced with ``recovery_required`` instead of being cleared for re-run.
 _RERUNNABLE_RESERVATION_KINDS = frozenset({"processing", "scan"})
 
 
@@ -2306,8 +2305,7 @@ def _dead_reservation_updates(
     """Reclaim a single-holder reservation whose owner is confirmed dead.
 
     processing / scan → clear flags + owner (the work is re-runnable). Everything
-    else (custom_chunks / delete / clear) may have
-    half-committed, so clear the
+    else (custom_chunks / delete / clear) may have half-committed, so clear the
     flags + owner but raise ``recovery_required`` to fence the workspace against
     all further mutations until an explicit recovery / force-reset. All writes go
     in a SINGLE ``status.update`` so a crash mid-recovery cannot tear them apart.
