@@ -84,7 +84,8 @@ async def test_clear_documents_preserves_parsed_dir_by_default(tmp_path):
     assert response.status in ("success", "partial_success")
     assert parsed_dir.exists()
     assert (parsed_dir / "a.parsed.json").exists()
-    assert "__parsed__" not in response.message
+    assert "__parsed__ preserved" in response.message
+    assert "delete_parsed_files=true" in response.message
 
 
 async def test_clear_documents_deletes_parsed_dir_when_opted_in(tmp_path):
@@ -115,3 +116,16 @@ async def test_clear_documents_opt_in_is_a_noop_without_parsed_dir(tmp_path):
     response = await endpoint(delete_parsed_files=True)
 
     assert response.status in ("success", "partial_success")
+
+
+async def test_clear_documents_default_message_silent_without_parsed_dir(tmp_path):
+    workspace = f"clear-parsed-silent-{uuid4().hex[:8]}"
+    await _init_workspace(workspace)
+
+    rag = _ClearRag(workspace)
+    endpoint = _clear_endpoint(rag, tmp_path)
+
+    response = await endpoint()
+
+    assert response.status in ("success", "partial_success")
+    assert "__parsed__" not in response.message

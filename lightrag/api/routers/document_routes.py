@@ -5769,6 +5769,13 @@ def create_document_routes(
         from the input directory. The __parsed__ directory is preserved unless
         delete_parsed_files=True is passed.
 
+        Top-level input files are always deleted unconditionally: a later
+        /documents/scan would otherwise re-enqueue them. The __parsed__
+        directory is opt-in only, since it holds pre-parsed cache artifacts
+        that let a re-added file skip re-parsing. A partial shutil.rmtree
+        failure (e.g. a locked file) can leave __parsed__ incomplete; re-run
+        with delete_parsed_files=True to retry.
+
         **Concurrency Constraint:**
         - Atomically reserves the destructive slot (sets ``busy=True``
           and ``destructive_busy=True``) before dropping anything.
@@ -6031,8 +6038,8 @@ def create_document_routes(
             # upload can still be recovered from there. Only remove it when
             # the caller explicitly opts in.
             parsed_dir_message = ""
+            parsed_dir = doc_manager.input_dir / PARSED_DIR_NAME
             if delete_parsed_files:
-                parsed_dir = doc_manager.input_dir / PARSED_DIR_NAME
                 if parsed_dir.exists():
                     try:
                         shutil.rmtree(parsed_dir)
@@ -6043,6 +6050,11 @@ def create_document_routes(
                     except Exception as e:
                         logger.error(f"Error deleting {parsed_dir}: {str(e)}")
                         errors.append(f"Failed to delete __parsed__ directory: {e}")
+            elif parsed_dir.exists():
+                parsed_dir_message = (
+                    " __parsed__ preserved (pass delete_parsed_files=true to "
+                    "remove it)."
+                )
 
             # Prepare final result message
             final_message = ""

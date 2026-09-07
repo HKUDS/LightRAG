@@ -832,9 +832,10 @@ Lifecycle, identical for all three bundles:
 | First parse | Fetch the artifacts, then atomically write `_manifest.json`. For docling that is `POST /v1/convert/file/async` → long-poll `/v1/status/poll/{task_id}?wait=N` → `GET /v1/result/{task_id}` → safe extraction of the zip, rejecting absolute paths and `..`. |
 | Re-parse (cache hit) | Do not call the external service; do not rewrite artifacts; rerun adapter + writer to regenerate the sidecar (this is what makes an adapter upgrade cheap). |
 | Re-parse (cache miss) | Clear the directory, then fetch and write the manifest again. |
-| `DELETE /documents` with `delete_file=True` | `*.parsed/`, the raw bundle, and the original file are all removed together. |
-| `DELETE /documents` with `delete_file=False` | All artifacts are preserved; only doc_status and KG data are deleted. |
-| `clear_documents` / a full sweep of `__parsed__` | Naturally cleared together. |
+| `DELETE /documents/delete_document` with `delete_file=True` | `*.parsed/`, the raw bundle, and the original file are all removed together. |
+| `DELETE /documents/delete_document` with `delete_file=False` | All artifacts are preserved; only doc_status and KG data are deleted. |
+| `DELETE /documents` (`clear_documents`) with `delete_parsed_files=true` | `__parsed__` is removed as a whole; top-level input files are always deleted regardless of this flag. |
+| `DELETE /documents` (`clear_documents`) with `delete_parsed_files=false` (default) | `__parsed__` is preserved; top-level input files are still deleted. |
 | scan cycle | Does **not** GC orphaned bundles — they are removed only on an explicit user deletion, so a debugging site is never swept away by accident. |
 
 Force re-parse (bypass the cache entirely): `LIGHTRAG_FORCE_REPARSE_NATIVE` / `LIGHTRAG_FORCE_REPARSE_MINERU` / `LIGHTRAG_FORCE_REPARSE_DOCLING` (§3.7).
