@@ -1313,13 +1313,14 @@ class FaissVectorDBStorage(BaseVectorStorage):
             # an unnotified peer saves its older snapshot over these rows first,
             # the next flush replays them back rather than losing them (#3854 is
             # the fence gap itself; this only makes it recoverable).
-            logger.error(
+            log_without_raising(
+                logger.error,
                 f"[{self.workspace}] FAISS index {self.namespace} was saved to "
                 f"{self._faiss_index_file}, but publishing that write failed: "
                 f"{e.__cause__}. An unknown remainder of the other processes "
                 "keeps reading the previous snapshot until the next commit "
                 "notifies them; this process may also reload the files it just "
-                "wrote."
+                "wrote.",
             )
 
     def _load_faiss_index(self):

@@ -989,3 +989,62 @@ class TestPublishedCommitIsNotAFailure:
         assert result.status == "success"
         assert not rag.persisted_graph().has_edge(ENTITY, OTHER)
         assert RELATION_KEY not in rag.relation_chunks.records
+
+
+class TestPublishedCommitSurvivesABrokenSink:
+    """The published-commit handler is past the point of no return.
+
+    ``_commit_graph_or_raise`` answers a ``CommitBookkeepingError`` with a log
+    line and continues, because the removal is durable. If that log call can
+    raise, the exception lands in ``adelete_by_entity``'s generic handler and
+    the deletion answers ``fail``/500 with its tracking rows stranded -- exactly
+    the misreport the handler exists to prevent, reached through the diagnostic
+    about it. ``_persist_graph_updates`` carries the same handler for the
+    tracking flush that follows.
+
+    Fix-proof: call ``logger.error`` directly in either handler and both cases
+    below report ``fail``.
+    """
+
+    @staticmethod
+    def _break_the_sink(monkeypatch):
+        def log_boom(msg):
+            raise RuntimeError("log sink boom")
+
+        monkeypatch.setattr(utils_graph.logger, "error", log_boom)
+
+    @pytest.mark.asyncio
+    async def test_entity_delete_still_succeeds_and_cleans_up(self, rag, monkeypatch):
+        original = rag.graph.index_done_callback
+
+        async def _commit():
+            await original()
+            raise CommitBookkeepingError("published, not notified", result=True)
+
+        monkeypatch.setattr(rag.graph, "index_done_callback", _commit)
+        self._break_the_sink(monkeypatch)
+
+        result = await rag.delete_entity()
+
+        assert result.status == "success"
+        assert not rag.persisted_graph().has_node(ENTITY)
+        assert ENTITY not in rag.entity_chunks.records
+        assert RELATION_KEY not in rag.relation_chunks.records
+
+    @pytest.mark.asyncio
+    async def test_a_tracking_flush_that_only_failed_to_publish_still_succeeds(
+        self, rag, monkeypatch
+    ):
+        original = rag.entity_chunks.index_done_callback
+
+        async def _flush():
+            await original()
+            raise CommitBookkeepingError("published, not notified", result=None)
+
+        monkeypatch.setattr(rag.entity_chunks, "index_done_callback", _flush)
+        self._break_the_sink(monkeypatch)
+
+        result = await rag.delete_entity()
+
+        assert result.status == "success"
+        assert ENTITY not in rag.entity_chunks.records

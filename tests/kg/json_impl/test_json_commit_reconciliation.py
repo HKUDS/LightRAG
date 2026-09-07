@@ -211,3 +211,48 @@ async def test_a_failed_flag_clear_is_not_reported_as_a_failed_write(
         "post-write bookkeeping failed" in record.getMessage()
         for record in caplog.records
     ), f"the deferred publication was not logged: {caplog.text}"
+
+
+@pytest.mark.parametrize(
+    "factory, row",
+    [
+        (_make_kv, {"content": "alpha"}),
+        (_make_doc_status, {"status": "processed", "file_path": "a.pdf"}),
+    ],
+    ids=["kv", "doc_status"],
+)
+async def test_a_broken_sink_cannot_turn_a_landed_write_into_a_failure(
+    tmp_path, monkeypatch, factory, row
+):
+    """The bookkeeping-failure diagnostic is past the point of no return.
+
+    The file is published by the time that handler runs, so a broken logging
+    handler, formatter or output target must not escape it — the caller would
+    then hear that a durable write never happened. For ``JsonDocStatusStorage``
+    that caller is ``upsert``, which flushes synchronously precisely to make the
+    recovery anchor durable before it returns.
+
+    Fix-proof: call ``logger.error`` directly in the handler and this raises.
+    """
+    storage = await factory(tmp_path)
+    await storage.upsert({"id1": row})
+
+    module = type(storage).__module__
+
+    async def failing_clear_all_update_flags(namespace, workspace=None):
+        raise RuntimeError("shared-storage manager is down")
+
+    def log_boom(msg):
+        raise RuntimeError("log sink boom")
+
+    monkeypatch.setattr(
+        f"{module}.clear_all_update_flags", failing_clear_all_update_flags
+    )
+    monkeypatch.setattr(f"{module}.logger.error", log_boom)
+    storage.storage_updated.value = True
+
+    await storage.index_done_callback()
+
+    with open(storage._file_name, encoding="utf-8") as f:
+        persisted = json.load(f)
+    assert "id1" in persisted, "the write did not land, so this proves nothing"

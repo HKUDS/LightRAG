@@ -15,6 +15,7 @@ from .utils import (
     _wait_deferring_cancellation,
     compute_mdhash_id,
     graph_attribute_value_rejection,
+    log_without_raising,
     logger,
     make_relation_vdb_ids,
     normalize_entity_name,
@@ -313,11 +314,12 @@ async def _persist_graph_updates(
         try:
             await cast(StorageNameSpace, storage_inst).index_done_callback()
         except CommitBookkeepingError as e:
-            logger.error(
+            log_without_raising(
+                logger.error,
                 f"Persisting {getattr(storage_inst, 'namespace', storage_inst)} "
                 f"landed, but publishing it failed: {e.__cause__}. The data is "
                 "durable; cross-process visibility is deferred to the next "
-                "commit."
+                "commit.",
             )
 
     # Persist all storage instances in parallel
@@ -387,10 +389,11 @@ async def _commit_graph_or_raise(chunk_entity_relation_graph, context: str) -> N
     try:
         committed = await chunk_entity_relation_graph.index_done_callback()
     except CommitBookkeepingError as e:
-        logger.error(
+        log_without_raising(
+            logger.error,
             f"{context}: the graph write is durable, but publishing it failed: "
             f"{e.__cause__}. Continuing with the tracking cleanup this removal "
-            "owes; cross-process visibility is deferred to the next commit."
+            "owes; cross-process visibility is deferred to the next commit.",
         )
         return
     if committed is False:

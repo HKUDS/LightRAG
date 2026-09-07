@@ -29,6 +29,7 @@ from lightrag.file_atomic import reap_orphan_tmp_files
 from lightrag.utils import (
     _cooperative_yield,
     load_json,
+    log_without_raising,
     logger,
     validate_workspace,
     commit_in_storage_io,
@@ -342,12 +343,13 @@ class JsonDocStatusStorage(DocStatusStorage):
                     # row is durable before it returns, so reporting that landed
                     # write as a failure would abort an ingest whose recovery
                     # anchor is already on disk.
-                    logger.error(
+                    log_without_raising(
+                        logger.error,
                         f"[{self.workspace}] Doc status for {self.namespace} was "
                         f"written to {self._file_name}, but its post-write "
                         f"bookkeeping failed: {e.__cause__}. The dirty flags stay "
                         "set, so the next commit rewrites this snapshot and "
-                        "retries them."
+                        "retries them.",
                     )
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:

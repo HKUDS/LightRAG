@@ -473,3 +473,43 @@ async def test_a_failed_writer_flag_reset_is_not_reported_as_a_failed_write(
         "publishing that write failed" in record.getMessage()
         for record in caplog.records
     ), f"the publication failure was not logged: {caplog.text}"
+
+
+async def test_a_broken_sink_cannot_turn_a_landed_commit_into_a_failure(
+    tmp_path, monkeypatch
+):
+    """The publication-failure diagnostic is past the point of no return.
+
+    The GraphML file is on disk by the time that handler runs, so a logging
+    handler, formatter or output target that raises must not escape it: the
+    exception would land in the outer "the write did not land" handler, which
+    restores ``self._graph`` from the file and re-raises. Every caller then
+    inherits the misreport this handler exists to prevent -- ``utils_graph``'s
+    deletion paths skip the tracking retirement they owe, and ``_insert_done``
+    marks a document FAILED whose graph writes are durable.
+
+    Fix-proof: call ``logger.error`` directly in the handler and this raises.
+    """
+    storage = await _make_storage(tmp_path)
+    await storage.upsert_node("A", {"entity_id": "A"})
+
+    async def failing_set_all_update_flags(namespace, workspace=None):
+        raise RuntimeError("shared-storage manager is down")
+
+    def log_boom(msg):
+        raise RuntimeError("log sink boom")
+
+    monkeypatch.setattr(
+        "lightrag.kg.networkx_impl.set_all_update_flags",
+        failing_set_all_update_flags,
+    )
+    monkeypatch.setattr("lightrag.kg.networkx_impl.logger.error", log_boom)
+
+    assert await storage.index_done_callback() is True
+
+    persisted = NetworkXStorage.load_nx_graph(storage._graphml_xml_file)
+    assert persisted is not None and persisted.has_node("A")
+    # The recovery reload of the "write failed" branch must not have run: the
+    # file has the node, so a reload would be a no-op here either way, which is
+    # exactly why the assertion above cannot stand alone.
+    assert await storage.has_node("A")

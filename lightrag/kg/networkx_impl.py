@@ -1010,14 +1010,15 @@ class NetworkXStorage(BaseGraphStorage):
                     # tracking retirement they still owe (leaving a vanished
                     # object's authoritative rows behind), and _insert_done marks
                     # a document FAILED whose graph writes are on disk.
-                    logger.error(
+                    log_without_raising(
+                        logger.error,
                         f"[{self.workspace}] Graph saved to "
                         f"{self._graphml_xml_file}, but publishing that write "
                         f"failed: {e.__cause__}. The notification flips "
                         "one flag per process, so an unknown remainder of them "
                         "keeps reading the previous snapshot until the next "
                         "commit notifies them; this process may also reload "
-                        "the file it just wrote."
+                        "the file it just wrote.",
                     )
                 return True  # Return success
             except Exception as e:

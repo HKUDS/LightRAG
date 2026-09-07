@@ -770,13 +770,14 @@ class NanoVectorDBStorage(BaseVectorStorage):
             # an unnotified peer saves its older snapshot over these rows first,
             # the next flush replays them back rather than losing them (#3854 is
             # the fence gap itself; this only makes it recoverable).
-            logger.error(
+            log_without_raising(
+                logger.error,
                 f"[{self.workspace}] Vector data for {self.namespace} was saved "
                 f"to {self._client_file_name}, but publishing that write failed: "
                 f"{e.__cause__}. An unknown remainder of the other processes "
                 "keeps reading the previous snapshot until the next commit "
                 "notifies them; this process may also reload the file it just "
-                "wrote."
+                "wrote.",
             )
 
     async def query(

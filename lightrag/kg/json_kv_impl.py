@@ -10,6 +10,7 @@ from lightrag.file_atomic import reap_orphan_tmp_files
 from lightrag.utils import (
     _cooperative_yield,
     load_json,
+    log_without_raising,
     logger,
     validate_workspace,
     commit_in_storage_io,
@@ -296,12 +297,13 @@ class JsonKVStorage(BaseKVStorage):
                     # marks a document FAILED whose rows are on disk, and
                     # utils_graph's deletion paths turn a chunk-tracking cleanup
                     # they have already completed into fail/500.
-                    logger.error(
+                    log_without_raising(
+                        logger.error,
                         f"[{self.workspace}] KV data for {self.namespace} was "
                         f"written to {self._file_name}, but its post-write "
                         f"bookkeeping failed: {e.__cause__}. The dirty flags stay "
                         "set, so the next commit rewrites this snapshot and "
-                        "retries them."
+                        "retries them.",
                     )
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:

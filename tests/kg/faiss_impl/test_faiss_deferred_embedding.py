@@ -1854,3 +1854,41 @@ async def test_rows_lost_to_an_unnotified_peer_are_replayed_back(tmp_path, monke
     )
     assert (await reader.get_by_id("idB"))["content"] == "theirs"
     _assert_consistent(reader)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_a_broken_sink_cannot_turn_a_landed_save_into_a_failure(
+    tmp_path, monkeypatch
+):
+    """The publication-failure diagnostic is past the point of no return.
+
+    Both files are renamed into place by the time that handler runs, so a
+    logging handler, formatter or output target that raises must not escape it:
+    ``index_done_callback`` would report a durable write as one that never
+    happened, and ``_insert_done`` marks the document FAILED and re-runs
+    mutations that already landed. Same reasoning, and same remedy
+    (``log_without_raising``), as the post-removal ``drop`` diagnostics.
+
+    Fix-proof: call ``logger.error`` directly in the handler and this raises.
+    """
+    storage = _make_storage(tmp_path, _CountingEmbed())
+    await storage.initialize()
+    await storage.upsert({"idA": {"content": "alpha"}})
+
+    async def failing_set_all_update_flags(namespace, workspace=None):
+        raise RuntimeError("shared-storage manager is down")
+
+    def log_boom(msg):
+        raise RuntimeError("log sink boom")
+
+    monkeypatch.setattr(
+        "lightrag.kg.faiss_impl.set_all_update_flags", failing_set_all_update_flags
+    )
+    monkeypatch.setattr("lightrag.kg.faiss_impl.logger.error", log_boom)
+
+    assert await storage.index_done_callback() is True
+    assert os.path.exists(storage._faiss_index_file)
+    assert os.path.exists(storage._meta_file)
+    assert "idA" in storage._unsaved_upserts
+    _assert_consistent(storage)

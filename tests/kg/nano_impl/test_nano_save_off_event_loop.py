@@ -310,3 +310,37 @@ async def test_rows_lost_to_an_unnotified_peer_are_replayed_back(tmp_path, monke
         "the row the peer overwrote was not replayed back; the loss would be "
         f"permanent and silent (persisted={ids})"
     )
+
+
+async def test_a_broken_sink_cannot_turn_a_landed_save_into_a_failure(
+    tmp_path, monkeypatch
+):
+    """The publication-failure diagnostic is past the point of no return.
+
+    The rows are on disk by the time that handler runs, so a logging handler,
+    formatter or output target that raises must not escape it: `index_done_callback`
+    would then report a durable write as one that never happened, and
+    `_insert_done` marks the document FAILED and re-runs mutations that already
+    landed. Same reasoning, and same remedy (`log_without_raising`), as the
+    post-removal `drop` diagnostics.
+
+    Fix-proof: call `logger.error` directly in the handler and this raises.
+    """
+    storage = await _make_storage(tmp_path)
+    await storage.upsert({"id1": {"content": "alpha"}})
+
+    async def failing_set_all_update_flags(namespace, workspace=None):
+        raise RuntimeError("shared-storage manager is down")
+
+    def log_boom(msg):
+        raise RuntimeError("log sink boom")
+
+    monkeypatch.setattr(nano_impl, "set_all_update_flags", failing_set_all_update_flags)
+    monkeypatch.setattr(nano_impl.logger, "error", log_boom)
+
+    assert await storage.index_done_callback() is True
+
+    with open(storage._client_file_name, encoding="utf-8") as f:
+        persisted = json.load(f)
+    assert persisted["data"], "the save did not land, so this proves nothing"
+    assert set(storage._unsaved_upserts) == {"id1"}
