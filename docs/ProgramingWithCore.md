@@ -1404,6 +1404,30 @@ merged weight = max(all input weights, distinct merged real source IDs)
 This preserves a larger manual boost while preventing the merged weight from
 falling below its evidence count.
 
+### Chunk tracking across a rename or merge
+
+A rename and a merge do not drop chunk tracking, they migrate it: the row moves
+to the surviving key. Two orderings have to hold at once for that migration to
+be crash-safe, and satisfying either one alone re-breaks the other:
+
+1. **The new row is written before the old one is deleted.** Otherwise a failure
+   in between leaves the row under neither key, which turns a curated row absent
+   and re-arms the reseed from a possibly stale graph `source_id`.
+2. **The old row is deleted only after a confirmed graph commit** has removed the
+   object it described. Otherwise the old object — which is what is still on disk
+   until that commit — sits there with no authoritative provenance, and a later
+   document purge can read its truncated `source_id` as "no remaining sources".
+
+The commit between them is checked, not assumed: a graph backend may *decline* to
+commit (`NetworkXStorage.index_done_callback` returns `False` when another process
+published a newer file, reloading from disk and discarding the in-memory change).
+A declined commit is treated as a failed operation, because the rename or merge it
+was supposed to persist no longer exists in memory either.
+
+Residue on failure is therefore always the recoverable direction: the old objects
+are live and still carry their rows, plus an orphaned row under the new key that a
+retry overwrites. Retrying the operation is the recovery step.
+
 All operations are available in both synchronous and asynchronous versions. Async versions have the prefix "a" (e.g., `acreate_entity`, `aedit_relation`).
 
 * Insert Custom KG
