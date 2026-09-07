@@ -17,7 +17,11 @@ Pinned here:
   contract: it still declares no keyword arguments of its own;
 * ``commit_in_storage_io`` keeps a landed write and its bookkeeping together:
   the hook runs inside the same uncancellable region, and only if the write
-  actually happened.
+  actually happened;
+* the three outcomes stay distinguishable: ``fn`` raising propagates as itself
+  (nothing persisted), a failing hook becomes ``CommitBookkeepingError`` (the
+  write is durable, only its publication failed), and a cancelled caller still
+  gets ``CancelledError``.
 """
 
 import asyncio
@@ -29,6 +33,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from lightrag import utils as lr_utils
+from lightrag.exceptions import CommitBookkeepingError
 from lightrag.utils import (
     _bounded_submit_impl,
     bounded_submit,
@@ -426,17 +431,76 @@ async def test_commit_hook_failure_surfaces_when_not_cancelled():
     """Bookkeeping that fails must be reported, not swallowed.
 
     The write landed but the namespace was never flagged, so the caller has to
-    hear about it — ``_insert_done`` only detects failures via exceptions.
+    hear about it. It hears about it as ``CommitBookkeepingError``, never as the
+    hook's own exception: re-raising that made "the write is on disk and its
+    publication failed" indistinguishable from "nothing was persisted", and
+    every call site's ``except Exception`` then handled it as the latter —
+    rolling in-memory state back to a file that already has the mutation, and
+    reporting a durable write as one that never happened.
+    """
+
+    cause = RuntimeError("flag update failed")
+
+    async def on_committed():
+        raise cause
+
+    work = _BlockingWork(result="written")
+    work.release.set()
+
+    with pytest.raises(CommitBookkeepingError) as excinfo:
+        await commit_in_storage_io(work, on_committed)
+
+    assert excinfo.value.__cause__ is cause
+    assert "flag update failed" in str(excinfo.value)
+    # The write's own answer travels with it, so a handler that needs it does
+    # not have to re-run the write to find out.
+    assert excinfo.value.result == "written"
+
+
+async def test_a_failed_write_is_not_reported_as_a_landed_one():
+    """The contrast that gives the typed error its meaning.
+
+    ``fn`` raising means nothing was persisted, and that must keep arriving as
+    the backend's own exception — a handler that treats it as
+    ``CommitBookkeepingError`` would skip the rollback the failure needs.
+    """
+    hook_ran = []
+
+    async def on_committed():  # pragma: no cover — must not run
+        hook_ran.append(1)
+
+    work = _BlockingWork(exc=OSError("disk full"))
+    work.release.set()
+
+    with pytest.raises(OSError) as excinfo:
+        await commit_in_storage_io(work, on_committed)
+
+    assert not isinstance(excinfo.value, CommitBookkeepingError)
+    assert hook_ran == []
+
+
+async def test_a_cancelled_caller_still_gets_cancelled_not_the_typed_error():
+    """R2 covers the hook-failure path only; cancellation is unchanged.
+
+    A deferred cancellation outranks the hook's failure, because a caller that
+    was cancelled must not be told a storage error happened instead. The
+    deletion paths in ``utils_graph`` depend on this: they give up their
+    tracking cleanup on ``CancelledError`` (it carries no evidence about what
+    landed) and proceed on ``CommitBookkeepingError`` (which does).
     """
 
     async def on_committed():
         raise RuntimeError("flag update failed")
 
     work = _BlockingWork()
+    task = asyncio.create_task(commit_in_storage_io(work, on_committed))
+
+    await _wait_for(work.started.is_set)
+    task.cancel()
     work.release.set()
 
-    with pytest.raises(RuntimeError, match="flag update failed"):
-        await commit_in_storage_io(work, on_committed)
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
 
 async def test_on_committed_requires_wait_for_completion():

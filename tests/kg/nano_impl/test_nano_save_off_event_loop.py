@@ -16,6 +16,8 @@ could not be cancelled at all.
 """
 
 import asyncio
+import json
+import logging
 import threading
 import time
 
@@ -217,3 +219,47 @@ async def test_cancelled_commit_still_notifies_and_retires_the_redo_logs(
     )
     assert storage._client_dirty is False, "the dirty bit survived a durable save"
     assert storage._unsaved_upserts == {}, "redo log kept rows that are on disk"
+
+
+async def test_a_failed_notification_is_not_reported_as_a_failed_save(
+    tmp_path, monkeypatch, caplog
+):
+    """A publication failure must not be raised as a save failure.
+
+    ``index_done_callback``'s contract is that a raise means the vectors were
+    NOT written, and ``_insert_done`` aborts the document batch on it. But the
+    hook runs only after ``atomic_write`` renamed the file into place, so an
+    exception out of ``set_all_update_flags`` reports a durable write as a lost
+    one.
+
+    What failed is the cross-process reload notification. The residue heals:
+    ``_client_dirty`` stays True, so the next commit rewrites this snapshot and
+    notifies again.
+    """
+    storage = await _make_storage(tmp_path)
+    await storage.upsert({"id1": {"content": "alpha"}})
+
+    async def failing_set_all_update_flags(namespace, workspace=None):
+        raise RuntimeError("shared-storage manager is down")
+
+    monkeypatch.setattr(nano_impl, "set_all_update_flags", failing_set_all_update_flags)
+
+    # lightrag's logger does not propagate, so caplog cannot see it otherwise.
+    logger = logging.getLogger("lightrag")
+    monkeypatch.setattr(logger, "propagate", True)
+
+    with caplog.at_level(logging.ERROR, logger="lightrag"):
+        committed = await storage.index_done_callback()
+
+    assert committed is True
+    with open(storage._client_file_name, encoding="utf-8") as f:
+        persisted = json.load(f)
+    assert persisted["data"], "the save did not land, so this proves nothing"
+    # The rows are durable, so the redo log must not keep replaying them...
+    assert storage._unsaved_upserts == {}
+    # ...while the dirty bit stays set, which is what retries the publication.
+    assert storage._client_dirty is True
+    assert any(
+        "publishing that write failed" in record.getMessage()
+        for record in caplog.records
+    ), f"the deferred publication was not logged: {caplog.text}"

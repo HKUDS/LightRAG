@@ -36,6 +36,7 @@ from lightrag.utils import (
     get_pinyin_sort_key,
 )
 from lightrag.exceptions import (
+    CommitBookkeepingError,
     SourceConflictRepairCASError,
     StorageControlPlaneError,
     StorageNotInitializedError,
@@ -326,7 +327,28 @@ class JsonDocStatusStorage(DocStatusStorage):
                         self.namespace, workspace=self.workspace
                     )
 
-                await commit_in_storage_io(_write, _committed)
+                try:
+                    await commit_in_storage_io(_write, _committed)
+                except CommitBookkeepingError as e:
+                    # The file is already published; what failed is the
+                    # post-write reconciliation — reloading the sanitized data
+                    # and clearing every process's dirty flag. Neither is a lost
+                    # write, and both heal on the next flush: the flags stay set,
+                    # so the next index_done_callback rewrites this same snapshot
+                    # (sanitizing it again) and retries the clear.
+                    #
+                    # Not re-raising matters more here than anywhere else:
+                    # `upsert` flushes synchronously precisely so the doc-status
+                    # row is durable before it returns, so reporting that landed
+                    # write as a failure would abort an ingest whose recovery
+                    # anchor is already on disk.
+                    logger.error(
+                        f"[{self.workspace}] Doc status for {self.namespace} was "
+                        f"written to {self._file_name}, but its post-write "
+                        f"bookkeeping failed: {e.__cause__}. The dirty flags stay "
+                        "set, so the next commit rewrites this snapshot and "
+                        "retries them."
+                    )
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Insert/update doc-status records and **persist immediately**.

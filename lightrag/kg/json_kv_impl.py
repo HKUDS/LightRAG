@@ -15,7 +15,7 @@ from lightrag.utils import (
     commit_in_storage_io,
     write_json,
 )
-from lightrag.exceptions import StorageNotInitializedError
+from lightrag.exceptions import CommitBookkeepingError, StorageNotInitializedError
 from .shared_storage import (
     get_namespace_data,
     get_namespace_lock,
@@ -281,7 +281,28 @@ class JsonKVStorage(BaseKVStorage):
                         self.namespace, workspace=self.workspace
                     )
 
-                await commit_in_storage_io(_write, _committed)
+                try:
+                    await commit_in_storage_io(_write, _committed)
+                except CommitBookkeepingError as e:
+                    # The file is already published; what failed is the
+                    # post-write reconciliation — reloading the sanitized data
+                    # and clearing every process's dirty flag. Neither is a lost
+                    # write, and both heal on the next flush: the flags stay set,
+                    # so the next index_done_callback rewrites this same snapshot
+                    # (sanitizing it again) and retries the clear.
+                    #
+                    # Re-raising instead would report a durable write as one that
+                    # never happened, and every caller inherits that: _insert_done
+                    # marks a document FAILED whose rows are on disk, and
+                    # utils_graph's deletion paths turn a chunk-tracking cleanup
+                    # they have already completed into fail/500.
+                    logger.error(
+                        f"[{self.workspace}] KV data for {self.namespace} was "
+                        f"written to {self._file_name}, but its post-write "
+                        f"bookkeeping failed: {e.__cause__}. The dirty flags stay "
+                        "set, so the next commit rewrites this snapshot and "
+                        "retries them."
+                    )
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         async with self._storage_lock:
