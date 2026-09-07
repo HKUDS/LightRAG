@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import sys
 import threading
@@ -11,12 +12,12 @@ def _fake_embedding_vector(dim=1024):
     return [0.1] * dim
 
 
-def _fake_chat_response(content="", reasoning_content=""):
+def _fake_chat_response(content="", reasoning_content="", usage=None):
     message = SimpleNamespace(
         content=content,
         reasoning_content=reasoning_content,
     )
-    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=usage)
 
 
 def _load_zhipu_module(monkeypatch, client_factory):
@@ -121,6 +122,71 @@ async def test_zhipu_complete_forwards_official_thinking(monkeypatch):
 
     assert result == "final answer"
     assert captured_calls[0]["thinking"] == {"type": "enabled"}
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_zhipu_complete_records_token_usage(monkeypatch):
+    usage = SimpleNamespace(prompt_tokens=10, completion_tokens=4, total_tokens=14)
+
+    class FakeClient:
+        def __init__(self, api_key=None):
+            self.api_key = api_key
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, **kwargs):
+            return _fake_chat_response(content="answer", usage=usage)
+
+    zhipu_module = _load_zhipu_module(monkeypatch, FakeClient)
+
+    class FakeTracker:
+        def __init__(self):
+            self.calls = []
+
+        def add_usage(self, token_counts):
+            self.calls.append(token_counts)
+
+    tracker = FakeTracker()
+    result = await zhipu_module.zhipu_complete_if_cache(
+        prompt="hello", api_key="test-key", token_tracker=tracker
+    )
+
+    assert result == "answer"
+    assert tracker.calls == [
+        {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14}
+    ]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_zhipu_complete_token_tracker_never_reaches_the_raw_client_call(
+    monkeypatch,
+):
+    """token_tracker is a LightRAG-only concept, not a real Zhipu API field --
+    it must be consumed as a named parameter, never forwarded through
+    **kwargs into the raw client call."""
+    captured_calls = []
+
+    class FakeClient:
+        def __init__(self, api_key=None):
+            self.api_key = api_key
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, **kwargs):
+            captured_calls.append(kwargs)
+            return _fake_chat_response(content="answer")
+
+    zhipu_module = _load_zhipu_module(monkeypatch, FakeClient)
+
+    class FakeTracker:
+        def add_usage(self, token_counts):
+            pass
+
+    await zhipu_module.zhipu_complete_if_cache(
+        prompt="hello", api_key="test-key", token_tracker=FakeTracker()
+    )
+
+    assert "token_tracker" not in captured_calls[0]
 
 
 @pytest.mark.offline
@@ -282,6 +348,49 @@ async def test_zhipu_embedding_runs_client_call_off_the_event_loop_thread(monkey
     await zhipu_module.zhipu_embedding.func(["hello"], api_key="test-key")
 
     assert call_thread_id["id"] != main_thread_id
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_zhipu_complete_logs_and_repropagates_cancellation(monkeypatch):
+    """Cancelling the outer await (e.g. an execution timeout) still has to
+    propagate CancelledError, with a warning noting the SDK call keeps
+    running in the background thread until it finishes on its own."""
+    call_started = threading.Event()
+    release_call = threading.Event()
+    warnings_logged = []
+
+    class FakeClient:
+        def __init__(self, api_key=None):
+            self.api_key = api_key
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, **kwargs):
+            call_started.set()
+            release_call.wait(timeout=5)
+            return _fake_chat_response(content="answer")
+
+    zhipu_module = _load_zhipu_module(monkeypatch, FakeClient)
+    monkeypatch.setattr(
+        zhipu_module.logger, "warning", lambda msg: warnings_logged.append(msg)
+    )
+
+    task = asyncio.ensure_future(
+        zhipu_module.zhipu_complete_if_cache(prompt="hello", api_key="test-key")
+    )
+    for _ in range(500):
+        if call_started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert call_started.is_set()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    release_call.set()
+    assert len(warnings_logged) == 1
+    assert "cancelled while awaiting the SDK call" in warnings_logged[0]
 
 
 @pytest.mark.offline

@@ -31,7 +31,7 @@ from lightrag.utils import (
 )
 
 import numpy as np
-from typing import Union, List, Optional, Dict
+from typing import Any, Union, List, Optional, Dict
 
 
 @retry(
@@ -51,6 +51,7 @@ async def zhipu_complete_if_cache(
     thinking: Optional[
         Dict[str, object]
     ] = None,  # Zhipu request param: use {"type": "enabled"} to enable thinking
+    token_tracker: Any | None = None,
     **kwargs,
 ) -> str:
     """Call Zhipu chat completions with optional official thinking support.
@@ -63,6 +64,8 @@ async def zhipu_complete_if_cache(
       `<think>...</think>`.
     - `response_format`: forwarded as Zhipu's OpenAI-compatible structured
       output parameter when supplied by callers.
+    - `token_tracker`: optional token usage tracker, recorded from the
+      response's `usage` field.
     - Deprecated `keyword_extraction` and `entity_extraction` booleans are
       compatibility shims; when no explicit `response_format` is supplied,
       they are mapped to `{"type": "json_object"}`.
@@ -142,9 +145,36 @@ async def zhipu_complete_if_cache(
     # calling it directly here would block the whole event loop for the
     # duration of the HTTP request, stalling every other concurrent task
     # (other LLM calls, embeddings, storage I/O) sharing the loop.
-    response = await asyncio.to_thread(
-        client.chat.completions.create, model=model, messages=messages, **kwargs
-    )
+    #
+    # Cancelling this await (e.g. an outer execution timeout) only cancels
+    # the asyncio wrapper: CPython cannot forcibly stop a running thread, so
+    # the HTTP call keeps running in the background until it finishes on its
+    # own. This is an inherent limit of bridging a synchronous SDK through
+    # asyncio.to_thread, not something fixable at this call site.
+    try:
+        response = await asyncio.to_thread(
+            client.chat.completions.create, model=model, messages=messages, **kwargs
+        )
+    except asyncio.CancelledError:
+        logger.warning(
+            "zhipu_complete_if_cache: cancelled while awaiting the SDK call; "
+            "the request keeps running in the background thread until it "
+            "completes on its own"
+        )
+        raise
+
+    # Record usage before extracting content: the API call is already billed
+    # and response.usage is already populated at this point, regardless of
+    # whether the response has a usable choice below.
+    if token_tracker and getattr(response, "usage", None):
+        token_tracker.add_usage(
+            {
+                "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
+                "completion_tokens": getattr(response.usage, "completion_tokens", 0),
+                "total_tokens": getattr(response.usage, "total_tokens", 0),
+            }
+        )
+
     if not response.choices or response.choices[0].message is None:
         return ""
     message = response.choices[0].message
@@ -253,8 +283,9 @@ async def zhipu_embedding(
             request_kwargs = dict(kwargs)
             if embedding_dim is not None:
                 request_kwargs["dimensions"] = embedding_dim
-            # Same blocking-client concern as zhipu_complete_if_cache: run
-            # each synchronous HTTP call off the event loop thread.
+            # Same blocking-client concern as zhipu_complete_if_cache, same
+            # cancellation caveat: run each synchronous HTTP call off the
+            # event loop thread, but a timeout here cannot stop it early.
             response = await asyncio.to_thread(
                 client.embeddings.create,
                 model=model,

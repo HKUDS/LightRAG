@@ -563,6 +563,49 @@ rag = LightRAG(
 )
 ```
 
+### Custom Embedding Functions
+
+Use the `@wrap_embedding_func_with_attrs` decorator, and call `.func` when building on an already-decorated function — a decorated function cannot be wrapped again, so the underlying callable must be reached through `.func`:
+
+```python
+from lightrag.utils import wrap_embedding_func_with_attrs
+
+@wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)
+async def custom_embed(texts: list[str]) -> np.ndarray:
+    # Call the underlying function, not the wrapped version
+    return await openai_embed.func(texts, model="text-embedding-3-large")
+
+# Wrong: EmbeddingFunc(func=openai_embed)
+# Right: EmbeddingFunc(func=openai_embed.func)
+```
+
+`max_token_size` declares the model's real input limit. It is what keeps an over-long text from reaching a service that would split it internally and return one vector per segment — which the return contract below rejects as a vector count mismatch.
+
+> **Pitfall — switching embedding models**: when changing the embedding model you MUST clear the data directory (optionally keeping `kv_store_llm_response_cache.json` for the LLM cache). Existing vectors will not match the new model's space.
+
+### Embedding Function Return Contract
+
+Every embedding function — built-in or custom — MUST return a 2D numpy array of shape `(len(texts), embedding_dim)`: exactly one row per input text, in input order. Every vector storage backend consumes the result positionally (`embeddings[i]` is stored for `texts[i]`), so `EmbeddingFunc` validates the result on every call and raises `ValueError` on any mismatch. It never reshapes, slices or pads the result — once the row-to-input mapping is wrong it cannot be recovered, and a silent repair would store vectors under the wrong records.
+
+The array rank and the dimension are always checked. The row count is checked against the input batch, which is read from the first positional argument, or — for a keyword call — from the kwarg matching the wrapped function's first parameter name. If the batch cannot be resolved that way (a callable whose first parameter is positional-only or `*args`, or one exposing no signature), the row count alone is left unverified rather than guessed at.
+
+| Returned shape | Result |
+| --- | --- |
+| `(len(texts), embedding_dim)` | Accepted |
+| Empty array for an empty input list | Accepted (including a bare `np.array([])`) |
+| `(embedding_dim,)` for a single input | `ValueError` — a single input still returns `(1, embedding_dim)` |
+| More rows than inputs | `ValueError: Vector count mismatch` |
+| Fewer rows than inputs | `ValueError: Vector count mismatch` |
+| Wrong number of columns | `ValueError: Embedding dimension mismatch` |
+| Flattened (1D) or nested (3D) array | `ValueError: unexpected shape` |
+
+The two mismatches that look alike are distinguished deliberately, because their fixes differ:
+
+- **Vector count mismatch** (more rows than inputs) usually means the embedding service split an over-long input internally and returned one vector per segment. Declare the model's real token limit so texts are truncated before the call — `EMBEDDING_TOKEN_LIMIT` on the API server, or `max_token_size` on `@wrap_embedding_func_with_attrs` for a custom function. A provider that legitimately emits several vectors per input needs a dedicated adapter that normalizes its output to one vector per input, with an explicit mapping, before it reaches `EmbeddingFunc`.
+- **Embedding dimension mismatch** (wrong number of columns) means the declared `embedding_dim` does not match the model actually being called, or the endpoint ignored the requested output dimension. Reconcile `EMBEDDING_DIM` / `embedding_dim` with the model. Vectors already stored under the previously declared dimension do not match the corrected one, so clear the data directory as well unless nothing has been indexed yet.
+
+Each `ValueError` is accompanied by a `logger.error` carrying the likely cause and the remedy, so the diagnosis stays in the server log even when only the short exception message surfaces.
+
 ### Rerank Function Injection
 
 To enhance retrieval quality, documents can be re-ranked based on a more effective relevance scoring model. The `rerank.py` file provides three Reranker provider driver functions:
@@ -1404,6 +1447,30 @@ merged weight = max(all input weights, distinct merged real source IDs)
 This preserves a larger manual boost while preventing the merged weight from
 falling below its evidence count.
 
+### Chunk tracking across a rename or merge
+
+A rename and a merge do not drop chunk tracking, they migrate it: the row moves
+to the surviving key. Two orderings have to hold at once for that migration to
+be crash-safe, and satisfying either one alone re-breaks the other:
+
+1. **The new row is written before the old one is deleted.** Otherwise a failure
+   in between leaves the row under neither key, which turns a curated row absent
+   and re-arms the reseed from a possibly stale graph `source_id`.
+2. **The old row is deleted only after a confirmed graph commit** has removed the
+   object it described. Otherwise the old object — which is what is still on disk
+   until that commit — sits there with no authoritative provenance, and a later
+   document purge can read its truncated `source_id` as "no remaining sources".
+
+The commit between them is checked, not assumed: a graph backend may *decline* to
+commit (`NetworkXStorage.index_done_callback` returns `False` when another process
+published a newer file, reloading from disk and discarding the in-memory change).
+A declined commit is treated as a failed operation, because the rename or merge it
+was supposed to persist no longer exists in memory either.
+
+Residue on failure is therefore always the recoverable direction: the old objects
+are live and still carry their rows, plus an orphaned row under the new key that a
+retry overwrites. Retrying the operation is the recovery step.
+
 All operations are available in both synchronous and asynchronous versions. Async versions have the prefix "a" (e.g., `acreate_entity`, `aedit_relation`).
 
 * Insert Custom KG
@@ -1501,7 +1568,44 @@ When deleting an entity:
 - Removes the entity node from the knowledge graph
 - Deletes all associated relationships
 - Removes related embedding vectors from the vector database
+- Deletes and persists the entity and incident-relation chunk-tracking rows, so recreating the entity does not inherit pre-deletion provenance
 - Maintains knowledge graph integrity
+
+A deletion is staged so that no failure can leave a live entity without its
+authoritative provenance — the state from which a later document purge concludes
+"no remaining sources" and removes an entity other documents still reference.
+The graph object's removal is committed first, on its own; only then are the
+tracking rows deleted and committed; the vector storages are flushed last. This
+holds for any mix of backends, including a deferred graph with an immediate-write
+tracking store, which is why the staging is by *durability* rather than by call
+order.
+
+Removing the object and cleaning up its rows is additionally one region a
+cancellation cannot cut in half. It has to begin at the graph mutation: a cancel
+before the commit leaves the removal in the in-memory graph with the backend
+marked dirty, so the pipeline's next commit publishes it while the cleanup never
+runs, and a cancel *during* the commit is deferred by the storage-IO layer until
+the write and its notification hook have landed. Cancelling a deletion therefore
+waits for the object's removal and its tracking cleanup to finish; only the
+vector flush is skipped.
+
+That protection covers the *caller*'s cancellation. Cancelling the deletion task
+itself — which the event loop does to every remaining task at shutdown — is not
+deferred, because the exception says nothing about whether the write had been
+submitted, and assuming it had would delete the tracking rows of a node whose
+removal never left memory. The cleanup therefore runs only once the commit has
+demonstrably returned.
+
+Every remaining failure state is therefore recoverable, and repeating the
+deletion is always the recovery step:
+
+| Failure point | On-disk result | Recovery |
+| --- | --- | --- |
+| Graph commit | Entity live, rows live | Consistent; retry the deletion |
+| Tracking delete or commit | Entity gone, its row stale | Retry: a deletion reporting `not_found` sweeps a stale row for that name and flushes pending tracking state whether or not a row is still visible in memory |
+| A failing tracking delete leaves incident relation rows of an entity deletion | Entity gone, relation rows stale | Not reachable automatically — the node is gone, so its edges are unknowable. Logged with the exact storage keys; delete the relation directly to sweep its row |
+| The cleanup never runs although the graph commit landed — process exit before a **deferred** tracking backend (JSON) flushes, the graph backend's commit notification raising after the write, or a direct cancellation of the deletion task mid-write | Entity gone, its rows and its relations' rows stale | The entity's own row is swept by a repeated deletion; its incident relation rows are not, and their keys are not logged because nothing failed. Delete the relations directly, or rebuild tracking. Not closed by this staging: the file-backed commit layer cannot tell a caller what landed |
+| Vector flush | Entity and rows gone, vector record stale | The rebuildable window this codebase accepts elsewhere; `lightrag-rebuild-vdb` restores it |
 
 ### Delete Relations
 
@@ -1516,7 +1620,12 @@ await rag.adelete_by_relation("Google", "Gmail")
 When deleting a relationship:
 - Removes the specified relationship edge
 - Deletes the relationship's embedding vector
+- Deletes and persists its chunk-tracking row regardless of endpoint order, so recreating the relation starts with new provenance
 - Preserves both entity nodes and their other relationships
+
+Relation deletion is staged exactly as entity deletion is (see the table above),
+and repeating a deletion that reports `not_found` sweeps a stale row and commits
+tracking state an earlier attempt left pending.
 
 ### Delete by Document ID
 
