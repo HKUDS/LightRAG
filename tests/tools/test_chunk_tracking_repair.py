@@ -1,4 +1,4 @@
-"""``arepair_chunk_tracking`` is the operator repair for chunk tracking (#3838, R4).
+"""Offline operator repair for chunk tracking (#3838, R4).
 
 WHY it cannot be the startup migration: ``_migrate_chunk_tracking_storage`` is
 gated on ``is_empty()``, so a single leftover row silently suppresses it for the
@@ -16,22 +16,20 @@ The repair pins four properties, one per acceptance bullet on the issue:
   phantom evidence the issue exists to remove.
 """
 
+import argparse
 import json
 
 import pytest
 
 from lightrag.base import DocStatus
-from lightrag.kg.shared_storage import initialize_share_data
-from lightrag.storage_migrations import _StorageMigrationMixin
+from lightrag.tools import chunk_tracking_repair
+from lightrag.tools.chunk_tracking_repair import (
+    apply_chunk_tracking_repair_plan,
+    build_chunk_tracking_repair_plan,
+)
 from lightrag.utils import make_relation_chunk_key
 
 pytestmark = pytest.mark.offline
-
-
-@pytest.fixture(autouse=True)
-def _shared_data():
-    """``arepair_chunk_tracking`` takes the shared data-init lock."""
-    initialize_share_data()
 
 
 def _extraction_payload(entities=(), relationships=()):
@@ -134,7 +132,7 @@ class _Graph:
         ]
 
 
-class _Repairer(_StorageMigrationMixin):
+class _Repairer:
     def __init__(
         self,
         *,
@@ -152,9 +150,21 @@ class _Repairer(_StorageMigrationMixin):
         self.chunk_entity_relation_graph = graph
         self.entity_chunks = entity_chunks if entity_chunks is not None else _KV()
         self.relation_chunks = relation_chunks if relation_chunks is not None else _KV()
-        self.full_entities = _KV()
-        self.full_relations = _KV()
-        self._chunk_tracking_migration_checked = False
+        self.working_dir = "/tmp/test-rag"
+        self.workspace = "test-workspace"
+        self.initialized = False
+        self.finalized = False
+
+    async def initialize_storages(self):
+        self.initialized = True
+
+    async def finalize_storages(self):
+        self.finalized = True
+
+
+async def _repair(repairer):
+    plan = await build_chunk_tracking_repair_plan(repairer)
+    return await apply_chunk_tracking_repair_plan(repairer, plan)
 
 
 def _two_chunk_corpus():
@@ -216,7 +226,7 @@ async def test_repair_runs_on_a_non_empty_store_and_evicts_the_orphan_row():
         relation_chunks=relation_chunks,
     )
 
-    report = await repairer.arepair_chunk_tracking()
+    report = await _repair(repairer)
 
     assert entity_chunks.drops == 1
     assert relation_chunks.drops == 1
@@ -237,6 +247,29 @@ async def test_repair_runs_on_a_non_empty_store_and_evicts_the_orphan_row():
     assert report.chunks_without_cache == 0
 
 
+async def test_plan_is_complete_and_read_only_before_apply():
+    docs, chunks, cache, graph = _two_chunk_corpus()
+    entity_chunks = _KV({"GHOST": {"chunk_ids": ["old"], "count": 1}})
+    relation_chunks = _KV({"OLD": {"chunk_ids": ["old"], "count": 1}})
+    repairer = _Repairer(
+        docs=docs,
+        chunks=chunks,
+        cache=cache,
+        graph=graph,
+        entity_chunks=entity_chunks,
+        relation_chunks=relation_chunks,
+    )
+
+    plan = await build_chunk_tracking_repair_plan(repairer)
+
+    assert plan.report.entity_rows_planned == 2
+    assert plan.report.relation_rows_planned == 1
+    assert entity_chunks.data == {"GHOST": {"chunk_ids": ["old"], "count": 1}}
+    assert relation_chunks.data == {"OLD": {"chunk_ids": ["old"], "count": 1}}
+    assert entity_chunks.drops == 0
+    assert relation_chunks.drops == 0
+
+
 async def test_no_row_is_written_for_an_object_without_cached_extraction():
     """Cache-less objects get NO row — not a row seeded from somewhere else.
 
@@ -251,7 +284,7 @@ async def test_no_row_is_written_for_an_object_without_cached_extraction():
     docs["doc-1"].chunks_list.append("c3")
 
     repairer = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
-    report = await repairer.arepair_chunk_tracking()
+    report = await _repair(repairer)
 
     assert "CAROL" not in repairer.entity_chunks.data
     assert (
@@ -279,7 +312,7 @@ async def test_nothing_written_originates_from_the_graph_source_id():
     graph = _SourceIdGraph(["ALICE", "BOB"], [("ALICE", "BOB")])
     repairer = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
 
-    await repairer.arepair_chunk_tracking()
+    await _repair(repairer)
 
     written = [
         chunk_id
@@ -302,7 +335,7 @@ async def test_attribution_is_chunk_granular_not_document_granular():
     docs, chunks, cache, graph = _two_chunk_corpus()
     repairer = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
 
-    await repairer.arepair_chunk_tracking()
+    await _repair(repairer)
 
     assert repairer.entity_chunks.data["BOB"]["chunk_ids"] == ["c2"]
     assert repairer.relation_chunks.data[make_relation_chunk_key("ALICE", "BOB")][
@@ -317,7 +350,7 @@ async def test_objects_absent_from_the_graph_are_not_resurrected():
     graph = _Graph(["ALICE"], [])  # BOB and ALICE--BOB were deleted by an admin call
 
     repairer = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
-    report = await repairer.arepair_chunk_tracking()
+    report = await _repair(repairer)
 
     assert list(repairer.entity_chunks.data) == ["ALICE"]
     assert repairer.relation_chunks.data == {}
@@ -341,7 +374,7 @@ async def test_doc_status_is_read_complete_or_raise_and_nothing_is_dropped():
     )
 
     with pytest.raises(KeyError):
-        await repairer.arepair_chunk_tracking()
+        await _repair(repairer)
 
     assert repairer.doc_status.strict_calls == [True]
     assert entity_chunks.drops == 0
@@ -366,7 +399,7 @@ async def test_every_doc_status_state_contributes_its_chunks():
         return await original(statuses, strict=strict)
 
     doc_status.get_docs_by_statuses = _spy
-    await repairer.arepair_chunk_tracking()
+    await _repair(repairer)
 
     assert set(captured[0]) == set(DocStatus)
 
@@ -377,7 +410,7 @@ async def test_chunks_missing_from_text_chunks_are_skipped():
     docs["doc-2"] = _Doc(["c-never-written"])
 
     repairer = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
-    report = await repairer.arepair_chunk_tracking()
+    report = await _repair(repairer)
 
     assert report.scanned_chunks == 3
     assert report.chunks_with_cache == 2
@@ -385,22 +418,31 @@ async def test_chunks_missing_from_text_chunks_are_skipped():
     assert repairer.entity_chunks.data["ALICE"]["chunk_ids"] == ["c1", "c2"]
 
 
-async def test_empty_result_warns_about_the_startup_migration_reseed():
-    """With no cache at all both namespaces end up empty, and the next startup's
-    ``is_empty()``-gated migration would re-seed them from ``source_id``. The
-    operator has to be told, because that undoes the repair's central promise."""
+async def test_empty_result_is_refused_before_the_first_drop():
+    """An empty replacement for a non-empty graph would be re-seeded from
+    ``source_id`` at startup, so apply must fail closed before mutation."""
     docs, chunks, _, graph = _two_chunk_corpus()
-    repairer = _Repairer(docs=docs, chunks=chunks, cache={}, graph=graph)
+    entity_chunks = _KV({"ALICE": {"chunk_ids": ["c1"], "count": 1}})
+    relation_chunks = _KV(
+        {make_relation_chunk_key("ALICE", "BOB"): {"chunk_ids": ["c2"], "count": 1}}
+    )
+    repairer = _Repairer(
+        docs=docs,
+        chunks=chunks,
+        cache={},
+        graph=graph,
+        entity_chunks=entity_chunks,
+        relation_chunks=relation_chunks,
+    )
 
-    report = await repairer.arepair_chunk_tracking()
+    plan = await build_chunk_tracking_repair_plan(repairer)
 
-    assert report.entity_rows_written == 0
-    assert report.relation_rows_written == 0
-    assert repairer.entity_chunks.data == {}
-    assert any("re-seed it from the graph source_id" in w for w in report.warnings)
-    # Dropped-and-left-empty is a completed write, not an abandoned one.
-    assert repairer.entity_chunks.index_done_calls == 1
-    assert repairer.relation_chunks.index_done_calls == 1
+    assert plan.unsafe_empty_namespaces == ["entity_chunks", "relation_chunks"]
+    with pytest.raises(ValueError, match="Refusing to drop tracking"):
+        await apply_chunk_tracking_repair_plan(repairer, plan)
+    assert entity_chunks.drops == 0
+    assert relation_chunks.drops == 0
+    assert entity_chunks.data["ALICE"]["chunk_ids"] == ["c1"]
 
 
 async def test_a_failed_drop_aborts_instead_of_reporting_success():
@@ -423,7 +465,7 @@ async def test_a_failed_drop_aborts_instead_of_reporting_success():
     )
 
     with pytest.raises(RuntimeError, match="Failed to drop entity_chunks"):
-        await repairer.arepair_chunk_tracking()
+        await _repair(repairer)
     assert entity_chunks.data == {"GHOST": {"chunk_ids": ["c-gone"], "count": 1}}
 
 
@@ -432,19 +474,8 @@ async def test_repair_requires_chunk_tracking_to_be_configured():
     repairer = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
     repairer.entity_chunks = None
 
-    with pytest.raises(ValueError, match="not configured"):
-        await repairer.arepair_chunk_tracking()
-
-
-async def test_repair_supersedes_the_empty_store_migration_for_this_instance():
-    """After a repair, re-running the ``is_empty()``-gated migration in-process
-    could only re-seed from ``source_id``; the instance flag prevents it."""
-    docs, chunks, cache, graph = _two_chunk_corpus()
-    repairer = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
-
-    await repairer.arepair_chunk_tracking()
-
-    assert repairer._chunk_tracking_migration_checked is True
+    with pytest.raises(ValueError, match="requires configured storages"):
+        await _repair(repairer)
 
 
 async def test_a_legitimately_relation_free_corpus_does_not_warn_about_a_reseed():
@@ -455,8 +486,57 @@ async def test_a_legitimately_relation_free_corpus_does_not_warn_about_a_reseed(
     graph = _Graph(["ALICE", "BOB"], [])
 
     repairer = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
-    report = await repairer.arepair_chunk_tracking()
+    report = await _repair(repairer)
 
     assert report.entity_rows_written == 2
     assert report.relation_rows_written == 0
     assert not any("re-seed" in w for w in report.warnings)
+
+
+async def test_cli_requires_offline_confirmation_before_storage_initialization(
+    monkeypatch,
+):
+    async def _must_not_build():  # pragma: no cover - assertion is the test
+        raise AssertionError("storage must not initialize before confirmation")
+
+    monkeypatch.setattr(chunk_tracking_repair, "_confirm_offline", lambda _yes: False)
+    monkeypatch.setattr(chunk_tracking_repair, "_build_rag", _must_not_build)
+
+    result = await chunk_tracking_repair.run(argparse.Namespace(apply=False, yes=False))
+
+    assert result is True
+
+
+async def test_cli_defaults_to_a_read_only_plan(monkeypatch):
+    docs, chunks, cache, graph = _two_chunk_corpus()
+    repairer = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
+
+    async def _build():
+        return repairer
+
+    monkeypatch.setattr(chunk_tracking_repair, "_build_rag", _build)
+
+    result = await chunk_tracking_repair.run(argparse.Namespace(apply=False, yes=True))
+
+    assert result is True
+    assert repairer.initialized is True
+    assert repairer.finalized is True
+    assert repairer.entity_chunks.drops == 0
+    assert repairer.relation_chunks.drops == 0
+
+
+async def test_cli_returns_failure_for_an_unsafe_apply_without_dropping(monkeypatch):
+    docs, chunks, _, graph = _two_chunk_corpus()
+    repairer = _Repairer(docs=docs, chunks=chunks, cache={}, graph=graph)
+
+    async def _build():
+        return repairer
+
+    monkeypatch.setattr(chunk_tracking_repair, "_build_rag", _build)
+
+    result = await chunk_tracking_repair.run(argparse.Namespace(apply=True, yes=True))
+
+    assert result is False
+    assert repairer.entity_chunks.drops == 0
+    assert repairer.relation_chunks.drops == 0
+    assert repairer.finalized is True

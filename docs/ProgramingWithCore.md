@@ -1612,21 +1612,30 @@ deletion is always the recovery step:
 A stale or orphaned `entity_chunks` / `relation_chunks` row cannot be found, let
 alone pruned, one row at a time: `BaseKVStorage` has no enumeration API, so
 nothing can sweep for it. The repair is therefore whole-namespace — it drops
-both namespaces and rebuilds them from the cached extraction results:
+both namespaces and rebuilds them from the cached extraction results. Because
+that replacement cannot be coordinated with writers in other processes, it is
+available only as an offline tool.
 
-```python
-report = await rag.arepair_chunk_tracking()
-print(report.as_dict())
-```
+Before every run, stop **all** LightRAG API servers, pipeline workers, and SDK
+writers that use the same backing stores and workspace. The default invocation
+only scans and prints the complete replacement plan:
 
 ```bash
-curl -X POST "$LIGHTRAG_URL/documents/recovery/repair_chunk_tracking" \
-     -H 'Content-Type: application/json' -d '{"confirm": true}'
+lightrag-repair-chunk-tracking
+lightrag-repair-chunk-tracking --apply
+# equivalent: python -m lightrag.tools.chunk_tracking_repair [--apply]
 ```
 
-It is deliberately **not** the startup migration, which cannot repair anything:
+The tool asks for an offline confirmation before initializing storage and asks
+again before the destructive apply. `--yes` is intended for an already-isolated
+maintenance environment. It prints the configured working directory, workspace,
+and concrete storage classes before planning. See
+[`README_CHUNK_TRACKING_REPAIR.md`](../lightrag/tools/README_CHUNK_TRACKING_REPAIR.md)
+for configuration and recovery instructions.
 
-|                | startup chunk-tracking migration | `arepair_chunk_tracking` |
+It is deliberately **not** the startup migration:
+
+|                | startup chunk-tracking migration | offline repair tool |
 | --- | --- | --- |
 | When           | startup / first explicit creation | operator, on demand |
 | Gate           | only when the namespace `is_empty()` | never gated |
@@ -1643,22 +1652,23 @@ deletion rebuild reads — `text_chunks` carries the text, not the attribution,
 and the `full_entities` / `full_relations` anchors are document-granular, one
 level too coarse to write a row from.
 
-Two consequences an operator has to plan for, both reported in the response:
+Two consequences an operator has to plan for, both reported in the plan:
 
 - An object whose chunks are **not in the cache** (cache cleared, or extraction
   caching disabled) gets **no row**. That restores the purge classifier's
   `source_id` fallback for it — a bounded degradation, and strictly better than
   a row claiming evidence nobody can substantiate.
-- If a namespace ends up **empty**, the next startup's `is_empty()`-gated
-  migration will re-seed it from `source_id`. Restore the extraction cache (or
-  re-ingest) before restarting if that matters.
+- If cached evidence would leave a namespace **empty while the graph contains
+  corresponding objects**, apply fails before the first drop. This prevents the
+  next startup's `is_empty()`-gated migration from silently re-seeding the
+  namespace from `source_id`. Restore the cache or re-ingest before retrying.
 
-The repair holds the destructive reservation (`busy` + `destructive_busy`) for
-its duration and answers `status="busy"` when another writer holds the
-workspace. It computes the whole mapping before the first `drop()`, so a read
-failure leaves every existing row untouched; a crash between the drops and the
-writes leaves tracking half-rebuilt, which re-running the repair fully heals —
-its output is a pure function of the extraction cache.
+The tool computes the whole mapping before the first `drop()`, so a read failure
+leaves every existing row untouched. The two namespaces still have no shared
+transaction: if an apply fails or the process exits after a drop, keep every
+writer stopped, fix the cause, and re-run the tool until it completes. The
+operation is idempotent because its output is derived from the current graph and
+extraction cache.
 
 ### Delete Relations
 
