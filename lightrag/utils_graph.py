@@ -5,6 +5,7 @@ import asyncio
 from typing import Any, Awaitable, Callable, cast
 
 from .base import DeletionResult
+from .exceptions import CommitBookkeepingError
 from .kg.shared_storage import get_storage_keyed_lock
 from .constants import GRAPH_FIELD_SEP, RELATION_NO_EVIDENCE_SOURCE_IDS
 from .operate import _truncate_vdb_content
@@ -14,6 +15,7 @@ from .utils import (
     _wait_deferring_cancellation,
     compute_mdhash_id,
     graph_attribute_value_rejection,
+    log_without_raising,
     logger,
     make_relation_vdb_ids,
     normalize_entity_name,
@@ -280,6 +282,13 @@ async def _persist_graph_updates(
     Ensures all relevant storage instances are properly persisted after
     operations like delete, edit, create, or merge.
 
+    A ``CommitBookkeepingError`` from any of them is logged, not propagated: it
+    says that store's write is durable and only its publication failed, so
+    raising it would fold a flush that DID land into the caller's failure
+    handling — reporting a completed deletion as ``fail``/500, and stranding the
+    tracking rows the retry would then believe it still owed. Every other
+    exception still propagates: those mean the flush did not happen.
+
     Args:
         entities_vdb: Entity vector database storage (optional)
         relationships_vdb: Relationship vector database storage (optional)
@@ -301,14 +310,21 @@ async def _persist_graph_updates(
     if relation_chunks_storage is not None:
         storages.append(relation_chunks_storage)
 
+    async def _flush(storage_inst) -> None:
+        try:
+            await cast(StorageNameSpace, storage_inst).index_done_callback()
+        except CommitBookkeepingError as e:
+            log_without_raising(
+                logger.error,
+                f"Persisting {getattr(storage_inst, 'namespace', storage_inst)} "
+                f"landed, but publishing it failed: {e.__cause__}. The data is "
+                "durable; cross-process visibility is deferred to the next "
+                "commit.",
+            )
+
     # Persist all storage instances in parallel
     if storages:
-        await asyncio.gather(
-            *[
-                cast(StorageNameSpace, storage_inst).index_done_callback()
-                for storage_inst in storages  # type: ignore
-            ]
-        )
+        await asyncio.gather(*[_flush(storage_inst) for storage_inst in storages])
 
 
 async def _finish_deferring_cancellation(coro, description: str) -> None:
@@ -358,8 +374,28 @@ async def _commit_graph_or_raise(chunk_entity_relation_graph, context: str) -> N
 
     Only an explicit ``False`` counts as "did not commit". The base signature is
     ``-> None``, so backends that simply return nothing are unaffected.
+
+    ``CommitBookkeepingError`` is the opposite answer and is caught here: it
+    means the write DID land and only its publication failed. Letting it out
+    would reach the caller's generic ``except Exception`` and be reported as a
+    deletion that did not happen, so the tracking rows of an object that is
+    durably gone would be left behind — and for an entity the incident relation
+    rows are then unreachable, since the edges that named them are gone with the
+    node. ``NetworkXStorage`` already absorbs its own publication failure, so no
+    shipped backend raises this today; this is the standing answer for any graph
+    backend that hands the decision to its caller instead, because the default
+    (treat it as a declined commit) is the one that loses data.
     """
-    committed = await chunk_entity_relation_graph.index_done_callback()
+    try:
+        committed = await chunk_entity_relation_graph.index_done_callback()
+    except CommitBookkeepingError as e:
+        log_without_raising(
+            logger.error,
+            f"{context}: the graph write is durable, but publishing it failed: "
+            f"{e.__cause__}. Continuing with the tracking cleanup this removal "
+            "owes; cross-process visibility is deferred to the next commit.",
+        )
+        return
     if committed is False:
         raise RuntimeError(
             f"{context}: the graph commit was skipped because another process "
@@ -429,6 +465,17 @@ async def adelete_by_entity(
     deletion whose node is already durably gone and strand rows the sweep cannot
     reach. A stale vector record is the recoverable, rebuildable residue this
     codebase already accepts elsewhere.
+
+    A commit whose WRITE landed and whose PUBLICATION failed is not a failed
+    commit, and this function does not treat it as one: the file backends absorb
+    it themselves, and :func:`_commit_graph_or_raise` /
+    :func:`_persist_graph_updates` absorb a ``CommitBookkeepingError`` from any
+    backend that hands it up instead. The cleanup is attempted either way. If it
+    then fails for a real reason, the handling is unchanged — the orphaned
+    relation keys are named in the log and the call answers ``fail``/500. If it
+    succeeds, the deletion answers ``success``; what the publication failure cost
+    is cross-process visibility, deferred to the next commit and logged there,
+    not the removal itself.
 
     Args:
         chunk_entity_relation_graph: Graph storage instance

@@ -8,6 +8,7 @@ import json
 import numpy as np
 from dataclasses import dataclass
 
+from lightrag.exceptions import CommitBookkeepingError
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.utils import (
     commit_in_storage_io,
@@ -1265,7 +1266,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
         call: a cancel delivered in between would leave both files published
         with the other processes never told to reload them. It runs only if the
         write succeeded — running it without a write would retire redo entries
-        for rows that were never persisted.
+        for rows that were never persisted. Its own failure is caught here as
+        ``CommitBookkeepingError`` and logged: both files are renamed into place
+        by then, so raising would tell the caller the vectors were never written.
         """
         # Save metadata dict to JSON, excluding __vector__ since vectors are
         # already stored in the Faiss index file and can be reconstructed on load.
@@ -1293,7 +1296,32 @@ class FaissVectorDBStorage(BaseVectorStorage):
             )
             atomic_write(meta_file, _write_meta, workspace)
 
-        await commit_in_storage_io(_write_both, on_committed)
+        try:
+            await commit_in_storage_io(_write_both, on_committed)
+        except CommitBookkeepingError as e:
+            # Both files are already renamed into place, so the rows ARE durable
+            # and the caller must not hear otherwise: `index_done_callback`'s
+            # contract is that a raise means the vectors were not written, which
+            # aborts the document batch in `_insert_done`.
+            #
+            # What did not complete is the publication — flagging the other
+            # processes and clearing this writer's dirty bit. The residue is a
+            # visibility lag that heals: `_index_dirty` stays True, so the next
+            # commit rewrites this snapshot and notifies again; an unreset
+            # `storage_updated` only makes this process reload the files it just
+            # wrote. The hook also keeps its redo logs when it fails here, so if
+            # an unnotified peer saves its older snapshot over these rows first,
+            # the next flush replays them back rather than losing them (#3854 is
+            # the fence gap itself; this only makes it recoverable).
+            log_without_raising(
+                logger.error,
+                f"[{self.workspace}] FAISS index {self.namespace} was saved to "
+                f"{self._faiss_index_file}, but publishing that write failed: "
+                f"{e.__cause__}. An unknown remainder of the other processes "
+                "keeps reading the previous snapshot until the next commit "
+                "notifies them; this process may also reload the files it just "
+                "wrote.",
+            )
 
     def _load_faiss_index(self):
         """
@@ -1430,7 +1458,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
             4. ``set_all_update_flags`` flips every registered process's
                ``storage_updated`` flag, then we immediately reset our own
                flag to ``False`` so the writer does not self-reload on the
-               next call to ``_get_index``.
+               next call to ``_get_index``. A failure here does **not**
+               raise: step 3 already made the rows durable, so this is a
+               visibility lag, logged and healed by the next commit —
+               ``_save_faiss_index`` catches it. The redo logs are retired only
+               past this step, so rows an unnotified peer overwrites are
+               replayed back by the next flush.
 
         Either failure surfaces loudly through ``_insert_done`` so the
         caller can abort the document batch instead of silently losing
@@ -1447,10 +1480,21 @@ class FaissVectorDBStorage(BaseVectorStorage):
             await self._flush_pending_locked()
 
             async def _committed() -> None:
-                self._unsaved_deletes.clear()  # the removals are durable now
-                self._unsaved_upserts.clear()  # the rows are durable now
                 await set_all_update_flags(self.namespace, workspace=self.workspace)
                 self.storage_updated.value = False
+                # Retired only PAST the publication, never before it. The rows
+                # are durable either way, but a publication that failed leaves
+                # an unnotified peer holding an older whole-file snapshot, and
+                # that peer can become the next writer and save it over these
+                # rows. Keeping the redo logs makes that recoverable: this
+                # process's next flush reloads the foreign snapshot and replays
+                # them on top (the same path issue #3688 built), so the rows
+                # come back instead of being lost silently. Retiring them first
+                # threw away the only copy. Replay is idempotent -- an
+                # unchanged file matches by fingerprint and writes nothing, and
+                # a genuinely newer row under the same id supersedes ours.
+                self._unsaved_deletes.clear()  # the removals are durable now
+                self._unsaved_upserts.clear()  # the rows are durable now
                 self._index_dirty = False
 
             await self._save_faiss_index(_committed)
@@ -1873,6 +1917,17 @@ class FaissVectorDBStorage(BaseVectorStorage):
         try:
             async with self._storage_lock:
                 await commit_in_storage_io(_delete_files, _committed)
+        except CommitBookkeepingError as e:
+            # The files are already gone; only the post-removal bookkeeping
+            # failed. Every step of `_committed` guards itself, so nothing raises
+            # this today -- it is the standing answer for a future step that
+            # forgets to, because "error" for a completed destruction is
+            # precisely the misreport those guards exist to prevent.
+            log_without_raising(
+                logger.error,
+                f"[{self.workspace}] Dropped FAISS index {self.namespace}, but "
+                f"its post-removal bookkeeping failed: {e.__cause__}",
+            )
         except Exception as e:
             log_without_raising(
                 logger.error,
@@ -1953,10 +2008,21 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 return
 
             async def _committed() -> None:
-                self._unsaved_deletes.clear()  # the removals are durable now
-                self._unsaved_upserts.clear()  # the rows are durable now
                 await set_all_update_flags(self.namespace, workspace=self.workspace)
                 self.storage_updated.value = False
+                # Retired only PAST the publication, never before it. The rows
+                # are durable either way, but a publication that failed leaves
+                # an unnotified peer holding an older whole-file snapshot, and
+                # that peer can become the next writer and save it over these
+                # rows. Keeping the redo logs makes that recoverable: this
+                # process's next flush reloads the foreign snapshot and replays
+                # them on top (the same path issue #3688 built), so the rows
+                # come back instead of being lost silently. Retiring them first
+                # threw away the only copy. Replay is idempotent -- an
+                # unchanged file matches by fingerprint and writes nothing, and
+                # a genuinely newer row under the same id supersedes ours.
+                self._unsaved_deletes.clear()  # the removals are durable now
+                self._unsaved_upserts.clear()  # the rows are durable now
                 self._index_dirty = False
 
             await self._save_faiss_index(_committed)

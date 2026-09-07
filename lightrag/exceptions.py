@@ -426,6 +426,41 @@ class IndexFlushError(Exception):
         super().__init__(f"{storage_name}[{namespace}] index flush failed: {cause}")
 
 
+class CommitBookkeepingError(RuntimeError):
+    """The offloaded write LANDED; the bookkeeping that had to follow it did not.
+
+    Raised by ``_bounded_submit_impl`` (``lightrag/utils.py``) when the callable
+    handed to ``commit_in_storage_io`` succeeded and its ``on_committed`` hook
+    then failed. The hook is publication, not persistence — flipping the other
+    processes' ``storage_updated`` flags, clearing the dirty bit, reloading a
+    sanitized file — so what it reports is a **visibility lag**, never a lost
+    write.
+
+    It exists because those two outcomes used to be indistinguishable: the hook's
+    own exception was re-raised as-is, landed in the call site's ``except
+    Exception``, and was handled by reasoning that only holds for a write that
+    never happened (roll the in-memory state back to the file, report failure).
+    Every caller inherited that lie — the deletion paths in ``utils_graph``
+    skipped the chunk-tracking retirement they still owed for an object that is
+    durably gone, and ``_insert_done`` marked a document FAILED whose writes were
+    on disk.
+
+    Contract for a handler: **treat the write as committed.** Log the deferred
+    visibility (an unknown remainder of the other workers keeps serving the
+    previous snapshot until the next commit anywhere notifies them, and this
+    process may redundantly reload the file it just wrote), then continue.
+    Reporting it as a failed write is forbidden; so is swallowing it silently.
+
+    ``result`` carries whatever the write callable returned, so a handler that
+    needs the write's own answer does not have to re-run it. The hook's failure
+    is preserved as ``__cause__`` (set via ``raise ... from``).
+    """
+
+    def __init__(self, message: str, *, result: Any = None) -> None:
+        super().__init__(message)
+        self.result = result
+
+
 class ChunkTokenLimitExceededError(ValueError):
     """Raised when a chunk exceeds the configured token limit."""
 

@@ -1764,3 +1764,131 @@ async def test_a_backward_clock_step_does_not_revert_a_newer_commit(
         "the replay reverted a commit the clock step made look older"
     )
     _assert_consistent(reader)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_a_failed_publication_keeps_the_redo_log(tmp_path, monkeypatch):
+    """The rows are durable, but the peers were not told — keep the redo log.
+
+    ``set_all_update_flags`` can fail partway, leaving a peer holding an older
+    whole-file snapshot that it may later save over these rows (the fence gap
+    tracked in #3854). Retiring the redo entries as the hook's first step threw
+    away the only remaining copy, making that loss permanent and silent.
+
+    Fix-proof: clear ``_unsaved_upserts`` before the notification instead, and
+    the entry is gone here.
+    """
+    storage = _make_storage(tmp_path, _CountingEmbed())
+    await storage.initialize()
+    await storage.upsert({"idA": {"content": "alpha"}})
+
+    async def failing_set_all_update_flags(namespace, workspace=None):
+        raise RuntimeError("shared-storage manager is down")
+
+    monkeypatch.setattr(
+        "lightrag.kg.faiss_impl.set_all_update_flags", failing_set_all_update_flags
+    )
+    assert await storage.index_done_callback() is True, (
+        "a durable write must not be reported as a failed one"
+    )
+
+    assert "idA" in storage._unsaved_upserts
+    assert storage._index_dirty is True, "the dirty bit is what retries the publish"
+
+    # A publication that succeeds still retires it — the retention above is the
+    # failure branch, not a leak.
+    monkeypatch.undo()
+    assert await storage.index_done_callback() is True
+    assert storage._unsaved_upserts == {}
+    _assert_consistent(storage)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_rows_lost_to_an_unnotified_peer_are_replayed_back(tmp_path, monkeypatch):
+    """The recovery the retained redo log buys, end to end.
+
+    ``other`` never learns of ``writer``'s commit, so its own commit saves a
+    snapshot that has never seen ``idA`` over both files. That overwrite is
+    #3854's fence gap and no commit-status choice prevents it; what the retained
+    redo log decides is whether the rows come back. ``writer``'s next flush
+    reloads the foreign snapshot and replays them on top — the path #3688 built
+    for a failed save.
+
+    Fix-proof: retire the redo logs before ``set_all_update_flags`` and ``idA``
+    is gone from disk for good.
+    """
+    writer = _make_storage(tmp_path, _CountingEmbed())
+    other = _make_storage(tmp_path, _CountingEmbed())
+    await writer.initialize()
+    await other.initialize()
+
+    await writer.upsert({"idA": {"content": "ours"}})
+
+    async def failing_set_all_update_flags(namespace, workspace=None):
+        raise RuntimeError("shared-storage manager is down")
+
+    monkeypatch.setattr(
+        "lightrag.kg.faiss_impl.set_all_update_flags", failing_set_all_update_flags
+    )
+    assert await writer.index_done_callback() is True
+    monkeypatch.undo()
+
+    # `other` was never flagged, so it does not reload: its commit publishes a
+    # whole-file snapshot in which `idA` has never existed.
+    await other.upsert({"idB": {"content": "theirs"}})
+    assert await other.index_done_callback() is True
+    assert await other.get_by_id("idA") is None, (
+        "the peer was supposed to be unaware of idA; the scenario did not set up"
+    )
+
+    # `other`'s own commit notifies `writer`, so this flush reloads its snapshot.
+    assert await writer.index_done_callback() is True
+
+    reader = _make_storage(tmp_path, _CountingEmbed())
+    await reader.initialize()
+    assert (await reader.get_by_id("idA"))["content"] == "ours", (
+        "the row the peer overwrote was not replayed back; the loss would be "
+        "permanent and silent"
+    )
+    assert (await reader.get_by_id("idB"))["content"] == "theirs"
+    _assert_consistent(reader)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_a_broken_sink_cannot_turn_a_landed_save_into_a_failure(
+    tmp_path, monkeypatch
+):
+    """The publication-failure diagnostic is past the point of no return.
+
+    Both files are renamed into place by the time that handler runs, so a
+    logging handler, formatter or output target that raises must not escape it:
+    ``index_done_callback`` would report a durable write as one that never
+    happened, and ``_insert_done`` marks the document FAILED and re-runs
+    mutations that already landed. Same reasoning, and same remedy
+    (``log_without_raising``), as the post-removal ``drop`` diagnostics.
+
+    Fix-proof: call ``logger.error`` directly in the handler and this raises.
+    """
+    storage = _make_storage(tmp_path, _CountingEmbed())
+    await storage.initialize()
+    await storage.upsert({"idA": {"content": "alpha"}})
+
+    async def failing_set_all_update_flags(namespace, workspace=None):
+        raise RuntimeError("shared-storage manager is down")
+
+    def log_boom(msg):
+        raise RuntimeError("log sink boom")
+
+    monkeypatch.setattr(
+        "lightrag.kg.faiss_impl.set_all_update_flags", failing_set_all_update_flags
+    )
+    monkeypatch.setattr("lightrag.kg.faiss_impl.logger.error", log_boom)
+
+    assert await storage.index_done_callback() is True
+    assert os.path.exists(storage._faiss_index_file)
+    assert os.path.exists(storage._meta_file)
+    assert "idA" in storage._unsaved_upserts
+    _assert_consistent(storage)
