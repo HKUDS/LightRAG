@@ -353,6 +353,12 @@ def parse_args() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(description="LightRAG API Server")
 
+    parser.add_argument(
+        "--custom-chunker",
+        default=get_env_value("CUSTOM_CHUNKER", ""),
+        help="Registered third-party chunker name (CUSTOM_CHUNKER); not a Python import path",
+    )
+
     # Server configuration
     parser.add_argument(
         "--host",

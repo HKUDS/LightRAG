@@ -780,12 +780,16 @@ class TextChunkingConfig(BaseModel):
     ``custom`` explicitly invokes ``LightRAG.chunking_func`` and reuses the
     fixed-token parameter contract (split character, split-only flag, overlap,
     and size). It is rejected unless the application injected a non-default
-    callback.
+    callback (Server: ``CUSTOM_CHUNKER`` / ``--custom-chunker`` selects an
+    installed ``lightrag.chunkers`` registration, never an HTTP import path).
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    strategy: TextChunkingStrategy = "fixed_token"
+    strategy: TextChunkingStrategy = Field(
+        default="fixed_token",
+        description="custom invokes the constructor callback selected at Server startup by CUSTOM_CHUNKER; it accepts fixed-token parameters, never an implementation name or import path",
+    )
     params: Dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -2583,8 +2587,13 @@ def _validate_custom_chunking_available(process_options: str, rag: LightRAG) -> 
     from lightrag.chunker import chunking_by_token_size
 
     if getattr(rag, "chunking_func", chunking_by_token_size) is chunking_by_token_size:
+        from lightrag.chunker.registry import registered_chunker_names
+
         raise ValueError(
-            "custom chunking requires a non-default LightRAG.chunking_func"
+            "custom chunking requires a non-default LightRAG.chunking_func; "
+            "configure CUSTOM_CHUNKER / --custom-chunker with an installed "
+            "lightrag.chunkers registration. Registered names: "
+            + (", ".join(registered_chunker_names()) or "(none)")
         )
 
 

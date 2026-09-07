@@ -249,6 +249,10 @@ LIGHTRAG_PARSER=pdf:legacy-R(chunk_ts=800,chunk_ol=80);*:legacy-R  # 规则
 
 文本 API 以 `chunking.strategy="custom"` 暴露同一路径；`params` 使用完整的 fixed-token/legacy 参数契约（`chunk_token_size`、`chunk_overlap_token_size`、`split_by_character`、`split_by_character_only`）。如果没有替换 `LightRAG.chunking_func`，`/documents/text` 与 `/documents/texts` 会返回 422。
 
+Server 部署可以通过 `CUSTOM_CHUNKER=<注册名>`（或 `--custom-chunker`）在启动时选择已安装的 `lightrag.chunkers` 插件，见 [ThirdPartyChunker-zh.md](./ThirdPartyChunker-zh.md)。注入作用于**整个实例**：不带分块 selector 的插入也调用它，不限于 `C`。显式 F/R/V/P 仍调用内置策略。未配置时保持现有准入和回退行为；配置错误则启动失败，不会悄悄换回默认回调。
+
+`doc_status.metadata.custom_chunker` 独立记录最近一次尝试的注册名/版本及 `authoritative: false`，不改变 `chunk_method` 与 `chunk_opts`。该观察值跨重试/重置保留，仅供诊断，不是执行指令。持久化 C 文档在配置身份变化或移除后重处理，每次尝试告警一次并按**当前配置**继续。已有的逐次 fallback 告警独立保留；作者提供的版本号无法检测同名同版本背后的实现变化。
+
 > `drop_references` 检测调参 `CHUNK_P_REFERENCES_TAIL_N`（默认 `0`：扫描全部内容块；正数表示只扫描文末最后 N 块）/ `CHUNK_P_REFERENCES_HEADINGS`（竖线分隔，默认 `References\|Bibliography\|参考文献`）仅经环境变量、运行时实时读取。drop_references可以通过环境变量 `CHUNK_P_DROP_REFERENCES` 设置为全局默认值.
 
 ### 2.7 校验、优先级与回退
@@ -1117,7 +1121,7 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 4. **task 上限与请求上限不同**：`MAX_ASYNC_LLM` 设置 N5 单文档 chunk 抽取的 task 上限，以及其两倍的合并 task 上限。实际抽取和合并摘要请求使用 Extract 角色的上限：设置了 `EXTRACT_MAX_ASYNC_LLM` 时使用它，否则使用 `MAX_ASYNC_LLM`。缓存、图的 keyed lock 和角色上限都会让观测到的实际请求并发低于 task 并发。
 5. **queue size 与背压**：`QUEUE_SIZE_INSERT=4` 这个偏小的默认值是有意为之——process 阶段慢且占内存，让 analyze 阶段在队列写满时阻塞、再反压到 parse 阶段，避免一次性把成千上万份解析结果堆在内存里。
 6. **改后生效方式**：所有参数通过 `.env`（或环境变量）传入，仅在 `LightRAG` 实例构造时读取一次；改完需要重启服务。
-7. **分块不随并发增长**：分块在一个专用的单 worker 线程池里执行，目的是不阻塞事件循环，并发度不随 `MAX_PARALLEL_INSERT` 提高，调大并发不会让分块更快。自定义 `chunking_func` 仍在事件循环上执行（它的契约允许触碰运行中的事件循环），CPU 密集的实现应自行 `asyncio.to_thread`。
+7. **分块不随并发增长**：分块在一个专用的单 worker 线程池里执行，目的是不阻塞事件循环，并发度不随 `MAX_PARALLEL_INSERT` 提高，调大并发不会让分块更快。自定义 `chunking_func` 默认仍在事件循环上执行（它的契约允许触碰运行中的事件循环）。CPU 密集的实现应自行 offload，或由同步注册插件声明 `executor_safe=True` 复用有界分块线程池；异步插件不能启用此选项。
 
 **典型调优场景：**
 

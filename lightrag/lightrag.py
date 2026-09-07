@@ -556,6 +556,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     """
     Legacy chunking-function customization point. Synchronous or async.
 
+    Server deployments can select an installed ``lightrag.chunkers`` entry-point
+    registration with ``CUSTOM_CHUNKER`` / ``--custom-chunker``. Startup resolves
+    and validates it before injection here. This is instance-wide: both ``C``
+    and no-selector inserts invoke it; explicit F/R/V/P still use built-ins.
+    See ``docs/ThirdPartyChunker.md``. Recorded plugin name/version is only a
+    diagnostic observation and never controls dispatch or blocks reprocessing.
+
     **Where it runs.** A custom ``chunking_func`` is called on the event loop,
     exactly as before. The built-in default is dispatched to a worker thread
     instead, because chunking is CPU-bound and holding the loop for its duration
@@ -565,7 +572,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     — a synchronous factory returning a Task, say — is supported and would fail
     outright in a worker thread, while an ``async def`` would gain nothing from
     the hop since its body runs on the loop regardless. A CPU-bound custom
-    chunker should therefore do its own ``asyncio.to_thread``.
+    chunker should therefore do its own offload, or an installed synchronous
+    plugin may declare ``ChunkerSpec.executor_safe=True`` to use LightRAG's
+    bounded chunking executor. Async plugins cannot request executor offload.
 
     **When this function is actually invoked.** The chunker dispatch in
     ``_PipelineMixin.process_single_document`` is driven by the
