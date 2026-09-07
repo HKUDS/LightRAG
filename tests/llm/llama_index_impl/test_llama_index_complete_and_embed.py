@@ -78,6 +78,33 @@ async def test_llama_index_complete_forwards_chat_kwargs():
     assert llm.received_kwargs == {"temperature": 0.1}
 
 
+@pytest.mark.asyncio
+async def test_llama_index_complete_folds_max_tokens_into_chat_kwargs():
+    """max_tokens is injected by use_llm_func_with_cache when configured.
+    llama_index_complete_if_cache has no top-level parameter for it, but
+    forwards chat_kwargs straight into achat() -- so it must be folded in
+    there instead of silently discarded."""
+    llm = _FakeLLM()
+
+    await llama_index_complete("hi", llm_instance=llm, max_tokens=256)
+
+    assert llm.received_kwargs == {"max_tokens": 256}
+
+
+@pytest.mark.asyncio
+async def test_llama_index_complete_max_tokens_does_not_override_explicit_chat_kwargs():
+    llm = _FakeLLM()
+
+    await llama_index_complete(
+        "hi",
+        llm_instance=llm,
+        max_tokens=256,
+        chat_kwargs={"max_tokens": 64, "temperature": 0.1},
+    )
+
+    assert llm.received_kwargs == {"max_tokens": 64, "temperature": 0.1}
+
+
 class _FakeEmbedModel:
     def __init__(self, vectors) -> None:
         self._vectors = vectors
