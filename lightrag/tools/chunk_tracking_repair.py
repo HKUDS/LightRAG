@@ -505,7 +505,7 @@ def _repair_storage_identity(rag) -> dict[str, Any]:
                     "true",
                 ),
             }
-        elif module_name.endswith(".postgres_impl"):
+        elif module_name.endswith((".postgres_impl", ".pgtable_impl")):
             database = getattr(storage, "db", None)
             if database is not None:
                 values = {

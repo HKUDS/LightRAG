@@ -961,6 +961,55 @@ async def test_resume_rejects_a_changed_configured_connection_before_drop(
     resumed.close(remove=True)
 
 
+async def test_resume_rejects_a_changed_pgtable_connection_before_drop(tmp_path):
+    """PGTable graph identity must include its shared PostgreSQLDB target."""
+    module_name = "test_backends.pgtable_impl"
+
+    class _PGTableGraph(_Graph):
+        pass
+
+    _PGTableGraph.__module__ = module_name
+    docs, chunks, cache, _ = _two_chunk_corpus()
+    original_graph = _PGTableGraph(["ALICE", "BOB"], [("ALICE", "BOB")])
+    original_graph.db = SimpleNamespace(
+        host="old.example", port=5432, database="tracking"
+    )
+    original = _Repairer(
+        docs=docs,
+        chunks=chunks,
+        cache=cache,
+        graph=original_graph,
+    )
+    plan_path = tmp_path / "wrong-pgtable-connection.sqlite3"
+    plan = await build_chunk_tracking_repair_plan(
+        original, plan_path=plan_path, durable=True
+    )
+    plan.prepare_apply(
+        {"entity_chunks"},
+        allow_empty_graph=False,
+        allow_missing_rows=False,
+    )
+    plan.close(remove=False)
+
+    redirected_graph = _PGTableGraph(["ALICE", "BOB"], [("ALICE", "BOB")])
+    redirected_graph.db = SimpleNamespace(
+        host="new.example", port=5432, database="tracking"
+    )
+    redirected = _Repairer(
+        docs=docs,
+        chunks=chunks,
+        cache=cache,
+        graph=redirected_graph,
+    )
+    with pytest.raises(ValueError, match="storage identity"):
+        load_chunk_tracking_repair_plan(redirected, plan_path)
+
+    assert redirected.entity_chunks.drops == 0
+    assert redirected.relation_chunks.drops == 0
+    resumed = load_chunk_tracking_repair_plan(original, plan_path)
+    resumed.close(remove=True)
+
+
 async def test_repair_requires_chunk_tracking_to_be_configured():
     docs, chunks, cache, graph = _two_chunk_corpus()
     repairer = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
