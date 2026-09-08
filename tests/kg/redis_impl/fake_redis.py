@@ -238,6 +238,12 @@ class FakeRedis:
                 end = len(value) + end
             return value[start : end + 1]
         if kind == "set":
+            # NX mirrors real Redis: refuse (and answer nil) when the key
+            # already exists. RedisKVStorage.upsert relies on that to make a
+            # first creation atomic.
+            nx = op[3] if len(op) > 3 else False
+            if nx and op[1] in self.store:
+                return None
             self.store[op[1]] = op[2]
             self._bump(op[1])
             return True
@@ -406,8 +412,8 @@ class FakePipeline:
             )
         return self._fake.scan(cursor, match=match, count=count)
 
-    def set(self, key: str, value: str):
-        return self._command(("set", key, value))
+    def set(self, key: str, value: str, nx: bool = False):
+        return self._command(("set", key, value, nx))
 
     def delete(self, key: str):
         return self._command(("delete", key))

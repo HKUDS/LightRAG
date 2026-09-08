@@ -430,6 +430,12 @@ def normalize_kv_create_time(value: Any) -> int:
     """
     if value is None:
         return 0
+    if isinstance(value, bool):
+        # bool is an int subclass, so int(True) would record 1. A boolean
+        # timestamp is corruption, not a legacy shape -- and OpenSearch's
+        # server-side equivalent cannot coerce it either, so both answer 0.
+        logger.warning(f"KV create_time is a boolean ({value!r}); recording 0")
+        return 0
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -503,7 +509,11 @@ class BaseKVStorage(StorageNameSpace, ABC):
 
         Storage-managed timestamps (binding on every backend):
             1. A key that does not exist yet is stamped with both
-               ``create_time`` and ``update_time``.
+               ``create_time`` and ``update_time``. Under concurrency the
+               FIRST creation defines ``create_time``: a backend whose insert
+               is not naturally atomic must make it so (Mongo's
+               ``$setOnInsert``, PG's ``ON CONFLICT``, Redis's ``SET ... NX``)
+               instead of letting the last writer's clock win.
             2. A key that already exists keeps its stored ``create_time`` and
                only advances ``update_time`` -- including when ``data``
                replaces the whole value with business fields only, which is

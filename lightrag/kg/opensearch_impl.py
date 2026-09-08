@@ -331,13 +331,30 @@ async def _run_chunked_async_bulk(
 #     field. A caller-supplied value can never win.
 # The sentinel decides "new", not ``ctx.op``, so the branch does not depend on
 # how the server happens to label a scripted upsert.
+# The restored value is also NORMALIZED to a long, mirroring
+# ``normalize_kv_create_time``: a row stored by an older release can carry a
+# float or a numeric string, and preserving that shape verbatim would leave
+# ``create_time`` mixed-typed across rows -- enough to make the LLM-cache
+# ordering in ``operate.py`` raise ``TypeError: '<' not supported between
+# instances of 'str' and 'int'``. Repairing it on the row's next write is the
+# same "fix the shape while you are here" rule the other backends follow.
+# ``tests/kg/opensearch_impl/test_opensearch_kv_create_time_integration.py``
+# pins the two normalizations to the same answers.
 _KV_CREATE_TIME_SENTINEL = "__lightrag_kv_new"
 _KV_UPSERT_SCRIPT_SOURCE = (
     "def prev = ctx._source.create_time;"
     f" boolean isNew = ctx._source.{_KV_CREATE_TIME_SENTINEL} == true;"
     " ctx._source.clear();"
     " ctx._source.putAll(params.doc);"
-    " if (!isNew) { ctx._source.create_time = prev == null ? 0 : prev; }"
+    " if (!isNew) {"
+    "   long ct = 0;"
+    "   if (prev instanceof Number) { ct = ((Number) prev).longValue(); }"
+    "   else if (prev instanceof String) {"
+    "     try { ct = Long.parseLong(((String) prev).trim()); }"
+    "     catch (Exception e) { ct = 0; }"
+    "   }"
+    "   ctx._source.create_time = ct;"
+    " }"
 )
 _KV_UPSERT_ACTION_UPSERT = {_KV_CREATE_TIME_SENTINEL: True}
 # Concurrent updates of the same id are resolved by the server instead of

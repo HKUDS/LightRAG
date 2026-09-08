@@ -301,3 +301,127 @@ async def test_row_deleted_between_the_two_reads_is_an_insert(fake, monkeypatch)
     stored = _stored(fake, storage, "gone")
     assert stored["create_time"] == 1_700_000_500
     assert stored["update_time"] == 1_700_000_500
+
+
+# ---------------------------------------------------------------------------
+# Concurrency: the insert race (issue #3870 follow-up)
+# ---------------------------------------------------------------------------
+#
+# Resolving the stored timestamp and writing the value are two round trips, so
+# a second writer can slip in between them. Only the INSERT outcome is
+# contended -- two writers that both see the key absent would each stamp their
+# own clock -- which is why a presumed-insert goes out as ``SET NX``.
+#
+# The interleaving is forced by giving the second storage a stale "absent"
+# resolution, which is exactly what it would have read a moment before the
+# first writer's SET landed.
+
+
+def _hide_key_from_the_next_prefix_read(fake: FakeRedis, full_key: str):
+    """Model the interleaving at the SERVER, not through storage internals.
+
+    The classification read lands before the other writer's ``SET`` (so it
+    reports "absent") and the repair read lands after it (so it sees the
+    winner). Driving that through the fake keeps the test independent of how
+    the storage happens to structure its reads.
+    """
+    real_apply = fake._apply
+    state = {"hidden": False}
+
+    def apply(op):
+        if not state["hidden"] and op[0] == "getrange" and op[1] == full_key:
+            state["hidden"] = True
+            fake.command_counts["getrange"] += 1  # it did reach the server
+            return ""
+        return real_apply(op)
+
+    fake._apply = apply
+    return state
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_insert_keeps_the_earliest_create_time(fake):
+    """A later writer must not move create_time off the real first creation."""
+    worker_a = _kv_storage()
+    worker_b = _kv_storage()
+    await worker_a.initialize()
+    await worker_b.initialize()
+
+    with patch("time.time", return_value=100):
+        await worker_a.upsert({"K": {"chunk_ids": ["c1"], "count": 1}})
+
+    # Worker B's classification read lands before A's SET became visible.
+    _hide_key_from_the_next_prefix_read(fake, f"{worker_b.final_namespace}:K")
+    with patch("time.time", return_value=200):
+        await worker_b.upsert({"K": {"chunk_ids": ["c2"], "count": 2}})
+
+    row = _stored(fake, worker_a, "K")
+    assert row["create_time"] == 100, "the first creation must win"
+    assert row["update_time"] == 200
+    # B's business value still lands -- only the timestamp is adopted.
+    assert row["chunk_ids"] == ["c2"]
+    assert row["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_insert_race_repair_stays_bounded(fake):
+    """Losing the NX race costs one prefix read and one SET, never a full GET."""
+    worker_a = _kv_storage()
+    worker_b = _kv_storage()
+    await worker_a.initialize()
+    await worker_b.initialize()
+
+    with patch("time.time", return_value=100):
+        await worker_a.upsert({"K": {"x": 1}})
+
+    _hide_key_from_the_next_prefix_read(fake, f"{worker_b.final_namespace}:K")
+    fake.command_counts.clear()
+    with patch("time.time", return_value=200):
+        await worker_b.upsert({"K": {"x": 2}})
+
+    assert fake.command_counts["getrange"] == 2  # classify + repair
+    assert fake.command_counts["get"] == 0
+    assert fake.command_counts["set"] == 2  # refused NX + repairing SET
+    assert _stored(fake, worker_b, "K")["create_time"] == 100
+
+
+@pytest.mark.asyncio
+async def test_uncontended_insert_does_no_repair_round(fake):
+    """The race handling must not cost anything when there is no race."""
+    storage = _kv_storage()
+    await storage.initialize()
+
+    fake.command_counts.clear()
+    with patch("time.time", return_value=300):
+        await storage.upsert({"fresh": {"x": 1}})
+
+    assert fake.command_counts["getrange"] == 1
+    assert fake.command_counts["set"] == 1
+    row = _stored(fake, storage, "fresh")
+    assert row["create_time"] == 300
+    assert row["update_time"] == 300
+
+
+@pytest.mark.asyncio
+async def test_concurrent_updates_agree_without_coordination(fake):
+    """An existing row needs no NX: every writer derives the same timestamp.
+
+    This is why only the insert is made atomic -- pinning it keeps a future
+    change from "fixing" the update path with coordination it does not need.
+    """
+    worker_a = _kv_storage()
+    worker_b = _kv_storage()
+    await worker_a.initialize()
+    await worker_b.initialize()
+
+    with patch("time.time", return_value=100):
+        await worker_a.upsert({"K": {"x": 1}})
+
+    # Both workers resolve the same stored row, then write in either order.
+    with patch("time.time", return_value=200):
+        await worker_a.upsert({"K": {"x": 2}})
+        await worker_b.upsert({"K": {"x": 3}})
+
+    row = _stored(fake, worker_b, "K")
+    assert row["create_time"] == 100
+    assert row["x"] == 3

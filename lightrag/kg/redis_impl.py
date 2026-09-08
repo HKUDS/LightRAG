@@ -565,8 +565,104 @@ class RedisKVStorage(BaseKVStorage):
             existing_ids = {keys_list[i] for i, exists in enumerate(results) if exists}
             return set(keys) - existing_ids
 
+    async def _resolve_stored_create_times(
+        self, redis, keys: list[str]
+    ) -> dict[str, int]:
+        """Return the stored ``create_time`` of ``keys`` that already exist.
+
+        Redis cannot read a single JSON field, but it can read a byte range,
+        and ``_dumps_create_time_first`` puts the field first — so 64 bytes
+        per key is enough and a ``full_docs`` row does not have to travel the
+        wire to yield one integer.
+
+        A key missing from the returned mapping is CONFIRMED absent (empty
+        ``GETRANGE``); an existing row is never written empty by this class.
+        A row whose prefix does not match (older layout, hand-edited) costs
+        one full read here and is rewritten in the prefix layout by the
+        caller, so the fallback is a one-time cost per row.
+        """
+        resolved: dict[str, int] = {}
+        if not keys:
+            return resolved
+
+        pipe = redis.pipeline()
+        for i, k in enumerate(keys, start=1):
+            pipe.getrange(
+                f"{self.final_namespace}:{k}", 0, _CREATE_TIME_PREFIX_BYTES - 1
+            )
+            await _cooperative_yield(i)
+        prefixes = await pipe.execute()
+
+        needs_full_read: list[str] = []
+        for i, k in enumerate(keys):
+            prefix = prefixes[i]
+            if not prefix:
+                continue  # absent
+            match = _CREATE_TIME_PREFIX_RE.match(prefix)
+            if match is not None:
+                resolved[k] = int(match.group(1))
+            else:
+                needs_full_read.append(k)
+            await _cooperative_yield(i + 1)
+
+        if not needs_full_read:
+            return resolved
+
+        logger.debug(
+            f"[{self.workspace}] {self.namespace}: full read for "
+            f"{len(needs_full_read)} row(s) whose create_time is not in the "
+            f"value prefix"
+        )
+        pipe = redis.pipeline()
+        for i, k in enumerate(needs_full_read, start=1):
+            pipe.get(f"{self.final_namespace}:{k}")
+            await _cooperative_yield(i)
+        legacy_values = await pipe.execute()
+        for k, raw in zip(needs_full_read, legacy_values):
+            if not raw:
+                # Deleted between the two reads: confirmed absent again.
+                continue
+            try:
+                stored = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                # Not a legacy shape but corruption: say so instead of
+                # silently recording an unknown.
+                logger.warning(
+                    f"[{self.workspace}] {self.namespace}: row '{k}' is not "
+                    f"decodable JSON; recording create_time=0 (unknown)"
+                )
+                resolved[k] = 0
+                continue
+            resolved[k] = normalize_kv_create_time(
+                stored.get("create_time") if isinstance(stored, dict) else None
+            )
+        return resolved
+
     @redis_retry
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        """Write KV rows, preserving each row's original ``create_time``.
+
+        Concurrency (issue #3870): resolving the stored timestamp and writing
+        the new value are two round trips, so they cannot be one atomic step.
+        They do not need to be, because only ONE of the two outcomes is
+        contended:
+
+        * **Update** — every writer derives the same ``create_time`` from the
+          same stored row (a preserved value, ``0`` for a legacy row, and the
+          normalization in between is deterministic), so read-modify-write is
+          idempotent. Concurrent updates cannot disagree.
+        * **Insert** — writers that all see the key absent would each stamp
+          their own clock, and the last ``SET`` would win, moving
+          ``create_time`` forward off the real first creation. That one is
+          made atomic by ``SET ... NX``: the first creation wins, and a
+          writer whose ``NX`` is refused re-reads the winner's timestamp and
+          rewrites the row with it.
+
+        Accepted residue: an upsert racing a ``delete`` + re-create of the
+        same key can rewrite the row with the pre-delete timestamp. An upsert
+        concurrent with a delete has no defined winner to begin with, and the
+        next write of that row settles it.
+        """
         if not data:
             return
 
@@ -574,74 +670,10 @@ class RedisKVStorage(BaseKVStorage):
 
         async with self._get_redis_connection() as redis:
             try:
-                # Resolve the stored create_time with a BOUNDED prefix read.
-                # An update must not reset the field (issue #3870), and Redis
-                # cannot read one JSON field, but it can read a byte range:
-                # _dumps_create_time_first() puts create_time first, so 64
-                # bytes per key is enough. An empty answer means the key does
-                # not exist -- an existing row is never written empty by this
-                # class, and it would be replaced wholesale here anyway.
-                pipe = redis.pipeline()
-                for i, k in enumerate(data.keys(), start=1):
-                    pipe.getrange(
-                        f"{self.final_namespace}:{k}",
-                        0,
-                        _CREATE_TIME_PREFIX_BYTES - 1,
-                    )
-                    await _cooperative_yield(i)
-                prefixes = await pipe.execute()
-
-                stored_create_times: dict[str, int] = {}
-                needs_full_read: list[str] = []
-                for i, k in enumerate(data.keys()):
-                    prefix = prefixes[i]
-                    if not prefix:
-                        continue  # absent -> insert
-                    match = _CREATE_TIME_PREFIX_RE.match(prefix)
-                    if match is not None:
-                        stored_create_times[k] = int(match.group(1))
-                    else:
-                        # Row written before this layout existed (or by hand):
-                        # the field may be anywhere in the value, or missing.
-                        needs_full_read.append(k)
-                    await _cooperative_yield(i + 1)
-
-                if needs_full_read:
-                    # Rare and self-healing: the rewrite below stores these
-                    # rows create_time-first, so they take the prefix path
-                    # from now on.
-                    logger.debug(
-                        f"[{self.workspace}] {self.namespace}: full read for "
-                        f"{len(needs_full_read)} row(s) whose create_time is "
-                        f"not in the value prefix"
-                    )
-                    pipe = redis.pipeline()
-                    for i, k in enumerate(needs_full_read, start=1):
-                        pipe.get(f"{self.final_namespace}:{k}")
-                        await _cooperative_yield(i)
-                    legacy_values = await pipe.execute()
-                    for k, raw in zip(needs_full_read, legacy_values):
-                        if not raw:
-                            # Deleted between the two reads: it is an insert
-                            # again, so leave it out of stored_create_times.
-                            continue
-                        try:
-                            stored = json.loads(raw)
-                        except (json.JSONDecodeError, TypeError):
-                            # Not a legacy shape but corruption: say so
-                            # instead of silently recording an unknown.
-                            logger.warning(
-                                f"[{self.workspace}] {self.namespace}: row "
-                                f"'{k}' is not decodable JSON; recording "
-                                f"create_time=0 (unknown)"
-                            )
-                            stored_create_times[k] = 0
-                            continue
-                        stored_create_times[k] = normalize_kv_create_time(
-                            stored.get("create_time")
-                            if isinstance(stored, dict)
-                            else None
-                        )
+                keys = list(data.keys())
+                stored_create_times = await self._resolve_stored_create_times(
+                    redis, keys
+                )
 
                 # Add timestamps to data
                 for i, (k, v) in enumerate(data.items(), start=1):
@@ -665,12 +697,48 @@ class RedisKVStorage(BaseKVStorage):
                     v["_id"] = k
                     await _cooperative_yield(i)
 
-                # Store the data
+                # Store the data. Rows we believe to be new go out as SET NX
+                # so a concurrent first creation cannot be overwritten; rows
+                # that already exist are a plain SET (see the docstring: every
+                # writer computes the same create_time for them).
                 pipe = redis.pipeline()
-                for i, (k, v) in enumerate(data.items(), start=1):
+                for i, k in enumerate(keys, start=1):
                     pipe.set(
                         f"{self.final_namespace}:{k}",
-                        _dumps_create_time_first(v),
+                        _dumps_create_time_first(data[k]),
+                        nx=k not in stored_create_times,
+                    )
+                    await _cooperative_yield(i)
+                results = await pipe.execute()
+
+                # SET NX refused: somebody else created the key first, so
+                # THEIR create_time is the row's real one. One bounded repair
+                # round, then a plain SET -- by now the timestamp is settled,
+                # so this cannot loop.
+                # A falsy pipeline result belongs to a key sent with NX (an
+                # existing row's plain SET always answers True).
+                refused = [
+                    k
+                    for k, result in zip(keys, results)
+                    if k not in stored_create_times and not result
+                ]
+                if not refused:
+                    return
+                logger.debug(
+                    f"[{self.workspace}] {self.namespace}: {len(refused)} "
+                    f"row(s) lost the create_time insert race; adopting the "
+                    f"stored timestamp"
+                )
+                winner_create_times = await self._resolve_stored_create_times(
+                    redis, refused
+                )
+                pipe = redis.pipeline()
+                for i, k in enumerate(refused, start=1):
+                    if k in winner_create_times:
+                        data[k]["create_time"] = winner_create_times[k]
+                    pipe.set(
+                        f"{self.final_namespace}:{k}",
+                        _dumps_create_time_first(data[k]),
                     )
                     await _cooperative_yield(i)
                 await pipe.execute()

@@ -22,11 +22,13 @@ Validated on OpenSearch 3.6.0.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 
 import pytest
 
+from lightrag.base import normalize_kv_create_time
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
 
 pytestmark = [pytest.mark.integration, pytest.mark.requires_db]
@@ -204,3 +206,106 @@ async def test_many_small_upserts_share_one_flush(storage):
     rows = await storage.get_by_ids(ids)
     assert [row["create_time"] for row in rows] == [created] * len(ids)
     assert all(row["update_time"] > created for row in rows)
+
+
+# Shapes a LightRAG release (or external tooling) could have left in a stored
+# row. ``True`` is deliberately absent: a document with a boolean
+# ``create_time`` makes dynamic mapping type the field BOOLEAN, and the mapper
+# then refuses the long the repair writes -- loudly, as a failed bulk item. No
+# release ever wrote a boolean there, so the equivalence claim is scoped to
+# shapes that can actually occur.
+_NORMALIZATION_CASES = [
+    1650000000,
+    1650000000.75,
+    -1.5,
+    "1650000000",
+    " 1650000000 ",
+    "1.5",
+    "broken",
+    None,
+    [],
+    0,
+]
+
+
+@pytest.mark.parametrize("stored_value", _NORMALIZATION_CASES, ids=repr)
+@pytest.mark.asyncio
+async def test_script_normalization_matches_the_python_helper(storage, stored_value):
+    """The painless script must answer exactly ``normalize_kv_create_time``.
+
+    Two implementations of one rule drift unless something pins them
+    together; a row whose ``create_time`` stays a float or a string is enough
+    to make the LLM-cache ordering in ``operate.py`` compare ``str`` with
+    ``int`` and raise. Each case gets a virgin index (the fixture drops and
+    recreates it) because dynamic mapping types the field from the first
+    document it sees and would otherwise reject the later shapes.
+    """
+    await storage.client.index(
+        index=storage._index_name,
+        id="N",
+        body={"x": 1, "create_time": stored_value, "__mirrored_id": "N"},
+        refresh=True,
+    )
+
+    await _write(storage, {"N": {"x": 2}})
+
+    row = await storage.get_by_id("N")
+    assert row["create_time"] == normalize_kv_create_time(stored_value)
+    assert isinstance(row["create_time"], int)
+
+
+@pytest.mark.asyncio
+async def test_legacy_float_row_is_repaired_to_an_int(storage):
+    """The shape is fixed on the row's next write, not only on read."""
+    await storage.client.index(
+        index=storage._index_name,
+        id="F",
+        body={"x": 1, "create_time": 1_650_000_000.75, "__mirrored_id": "F"},
+        refresh=True,
+    )
+
+    await _write(storage, {"F": {"x": 2}})
+
+    persisted = await storage.client.get(index=storage._index_name, id="F")
+    assert persisted["_source"]["create_time"] == 1_650_000_000
+    assert isinstance(persisted["_source"]["create_time"], int)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_insert_keeps_the_earliest_create_time(storage):
+    """The first creation wins even when two writers flush the same new id.
+
+    The script needs no extra coordination for this: the server applies the
+    two update actions one after another, and the second one finds the
+    document already there (no sentinel) and restores the timestamp the first
+    one wrote.
+    """
+    from lightrag.kg.opensearch_impl import OpenSearchKVStorage
+
+    other = OpenSearchKVStorage(
+        namespace="entity_chunks",
+        global_config={
+            "embedding_batch_num": 1,
+            "max_graph_nodes": 10,
+            "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.2},
+        },
+        embedding_func=_DummyEmbeddingFunc(),
+        workspace=_WORKSPACE,
+    )
+    await other.initialize()
+    try:
+        await storage.upsert({"R": {"writer": "a"}})
+        time.sleep(1.1)  # the second writer's estimate is strictly later
+        await other.upsert({"R": {"writer": "b"}})
+
+        await asyncio.gather(storage.index_done_callback(), other.index_done_callback())
+        settled = (await storage.get_by_id("R"))["create_time"]
+
+        # Whoever landed first owns the timestamp, and it must not move.
+        time.sleep(1.1)
+        await _write(storage, {"R": {"writer": "a", "round": 2}})
+        row = await storage.get_by_id("R")
+        assert row["create_time"] == settled
+        assert row["update_time"] > settled
+    finally:
+        await other.finalize()
