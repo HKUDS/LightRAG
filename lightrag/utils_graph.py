@@ -525,6 +525,13 @@ async def adelete_by_entity(
         entity_name: Name of the entity to delete
         entity_chunks_storage: Optional KV storage for tracking chunks that reference this entity
         relation_chunks_storage: Optional KV storage for tracking chunks that reference relations
+
+    Concurrency (issue #3838): admin writes are serialized against the document
+    pipeline (HTTP 409 while it is busy) but **not against each other**. On a
+    file-backed workspace a commit publishes the whole namespace, so two admin
+    calls running at once can publish each other's unfinished state. Call the
+    admin API one operation at a time there, or use a server-backed graph and KV
+    store. See ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     # Use keyed lock for entity to ensure atomic graph and vector db operations.
     # The doc-ingest pipeline locks edges under sorted([src, tgt]) in this same
@@ -710,6 +717,13 @@ async def adelete_by_relation(
         source_entity: Name of the source entity
         target_entity: Name of the target entity
         relation_chunks_storage: Optional KV storage for tracking chunks that reference this relation
+
+    Concurrency (issue #3838): admin writes are serialized against the document
+    pipeline (HTTP 409 while it is busy) but **not against each other**. On a
+    file-backed workspace a commit publishes the whole namespace, so two admin
+    calls running at once can publish each other's unfinished state. Call the
+    admin API one operation at a time there, or use a server-backed graph and KV
+    store. See ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     relation_str = f"{source_entity} -> {target_entity}"
     # Normalize entity order for undirected graph (ensures consistent key generation)
@@ -1297,6 +1311,13 @@ async def aedit_entity(
             - "success": Entity successfully merged into target
             - "failed": Merge operation failed
             - "not_attempted": No merge was attempted (normal update/rename)
+
+    Concurrency (issue #3838): admin writes are serialized against the document
+    pipeline (HTTP 409 while it is busy) but **not against each other**. On a
+    file-backed workspace a commit publishes the whole namespace, so two admin
+    calls running at once can publish each other's unfinished state. Call the
+    admin API one operation at a time there, or use a server-backed graph and KV
+    store. See ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     # Order matters: the empty-description check runs first so a `None`
     # description keeps reporting itself as empty (which is what it means to a
@@ -1557,6 +1578,13 @@ async def aedit_relation(
 
     Returns:
         Dictionary containing updated relation information
+
+    Concurrency (issue #3838): admin writes are serialized against the document
+    pipeline (HTTP 409 while it is busy) but **not against each other**. On a
+    file-backed workspace a commit publishes the whole namespace, so two admin
+    calls running at once can publish each other's unfinished state. Call the
+    admin API one operation at a time there, or use a server-backed graph and KV
+    store. See ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     # See `aedit_entity` for the ordering rationale.
     if "description" in updated_data:
@@ -1797,6 +1825,13 @@ async def acreate_entity(
 
     Returns:
         Dictionary containing created entity information
+
+    Concurrency (issue #3838): admin writes are serialized against the document
+    pipeline (HTTP 409 while it is busy) but **not against each other**. On a
+    file-backed workspace a commit publishes the whole namespace, so two admin
+    calls running at once can publish each other's unfinished state. Call the
+    admin API one operation at a time there, or use a server-backed graph and KV
+    store. See ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     _require_non_empty_description(
         entity_data.get("description"), operation="create", object_type="entity"
@@ -1971,6 +2006,13 @@ async def acreate_relation(
 
     Returns:
         Dictionary containing created relation information
+
+    Concurrency (issue #3838): admin writes are serialized against the document
+    pipeline (HTTP 409 while it is busy) but **not against each other**. On a
+    file-backed workspace a commit publishes the whole namespace, so two admin
+    calls running at once can publish each other's unfinished state. Call the
+    admin API one operation at a time there, or use a server-backed graph and KV
+    store. See ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     _require_non_empty_description(
         relation_data.get("description"), operation="create", object_type="relation"
@@ -2903,6 +2945,13 @@ async def amerge_entities(
 
     Returns:
         Dictionary containing the merged entity information
+
+    Concurrency (issue #3838): admin writes are serialized against the document
+    pipeline (HTTP 409 while it is busy) but **not against each other**. On a
+    file-backed workspace a commit publishes the whole namespace, so two admin
+    calls running at once can publish each other's unfinished state. Call the
+    admin API one operation at a time there, or use a server-backed graph and KV
+    store. See ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     if not source_entities:
         raise ValueError("At least one source entity is required for merge")

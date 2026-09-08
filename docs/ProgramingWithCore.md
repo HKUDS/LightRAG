@@ -1580,6 +1580,22 @@ holds for any mix of backends, including a deferred graph with an immediate-writ
 tracking store, which is why the staging is by *durability* rather than by call
 order.
 
+That one-directional rule — **a graph object must never be durable while the
+tracking row carrying its attribution is not** — governs the other admin paths
+too, and it makes their commit order the mirror of the deletion order. On a
+create or an edit the row is the half that starts out absent, so
+`_persist_graph_updates` commits the tracking rows first and the graph and
+vector stores second. A failure in the first phase skips the second entirely: a
+tracking commit that did not land is never followed by publishing the object it
+describes. Both directions therefore converge on the same tolerated residue, a
+row whose object is not (or no longer) in the graph.
+
+Callers writing directly against `lightrag.utils_graph` inherit that contract.
+A helper that *removes* a tracking row must commit the graph itself first via
+`_commit_graph_or_raise` and only then flush the tracking stores; passing a
+graph store and a tracking store to `_persist_graph_updates` together is
+correct only in the add/update direction.
+
 Removing the object and cleaning up its rows is additionally one region a
 cancellation cannot cut in half. It has to begin at the graph mutation: a cancel
 before the commit leaves the removal in the in-memory graph with the backend
@@ -1606,6 +1622,42 @@ deletion is always the recovery step:
 | A failing tracking delete leaves incident relation rows of an entity deletion | Entity gone, relation rows stale | Not reachable automatically — the node is gone, so its edges are unknowable. Logged with the exact storage keys; delete the relation directly to sweep its row, or run the [chunk-tracking repair](#repairing-chunk-tracking) |
 | The cleanup never runs although the graph commit landed — process exit before a **deferred** tracking backend (JSON) flushes, or a direct cancellation of the deletion task mid-write | Entity gone, its rows and its relations' rows stale | The entity's own row is swept by a repeated deletion; its incident relation rows are not, and their keys are not logged because nothing failed — so there is nothing to delete directly *by*. The recovery is the [chunk-tracking repair](#repairing-chunk-tracking). Not closed by this staging: neither a hard process exit nor a cancellation carries evidence about what landed. A commit notification that raises *after* the write does, and no longer reaches this row — it arrives as `CommitBookkeepingError` and `_commit_graph_or_raise` continues with the cleanup |
 | Vector flush | Entity and rows gone, vector record stale | The rebuildable window this codebase accepts elsewhere; `lightrag-rebuild-vdb` restores it |
+
+#### Concurrent admin writes
+
+The graph mutation endpoints (`/graph/entity/*`, `/graph/relation/*`) refuse a
+request with HTTP 409 while the document pipeline is busy, so an admin write
+never overlaps ingestion except in the narrow window between that snapshot check
+and the underlying write. Holding the pipeline's `busy` flag across a UI edit
+would close that window and is deliberately not done — it would serialize every
+edit against ingestion.
+
+Two admin writes are **not** serialized against each other. Each takes only a
+per-entity or per-edge keyed lock, so two calls for different keys run
+concurrently. On a file-backed workspace this matters because a commit there
+publishes the whole namespace: one caller's flush makes another caller's
+unfinished in-memory state durable.
+
+What that can leave behind, and why it is tolerated:
+
+- Two admin writes overlapping *in time* on different workers are caught by the
+  reload fence: the losing writer declines its commit, the caller gets a 500,
+  and retrying re-applies the edit against the peer's snapshot. Loud, and
+  recoverable by the operator.
+- A hard process exit can leave a tracking row whose graph object never became
+  durable. That row is harmless to queries, cannot be inherited as evidence by a
+  later object (the explicit creation paths reset attribution), and is removed by
+  the [chunk-tracking repair](#repairing-chunk-tracking).
+- The forbidden mirror — an object durable without its row — is not produced by
+  a single-writer crash, because of the commit order above.
+
+A workspace-wide admin lock was specified and dropped: it would not have changed
+what a crash can leave behind, since the same residue is reachable with no
+concurrency at all. If you drive the public Python admin API yourself
+(`acreate_entity`, `aedit_entity`, `amerge_entities`, `adelete_by_entity` and
+their relation counterparts) **do not call them concurrently on a file-backed
+workspace** — one at a time, or use a server-backed graph and KV store.
+`ainsert_custom_kg` is subject to the same rule.
 
 #### Repairing chunk tracking
 

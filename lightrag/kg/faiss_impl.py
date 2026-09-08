@@ -305,9 +305,16 @@ class FaissVectorDBStorage(BaseVectorStorage):
         and must be guarded externally:
             * ``drop`` — gated by the API layer (``/documents/clear``
               takes the pipeline busy reservation before invoking it).
-            * ``delete_entity`` / ``delete_entity_relation`` — currently
-              not exposed in the WebUI. Any future caller must arrange
-              single-writer serialization the same way the pipeline does.
+            * ``delete_entity`` / ``delete_entity_relation`` — reached
+              from the ``utils_graph.py`` admin flows, which the WebUI does
+              exercise (the ``/graph/*`` endpoints). Admin-vs-pipeline is
+              guarded by ``check_pipeline_busy_or_raise``; admin-vs-admin is
+              not, and deliberately stays that way — see the *Non-pipeline
+              write paths* section of ``NetworkXStorage`` for the accepted
+              residue and issue #3838 for the reasoning.
+
+        As in ``NanoVectorDBStorage``, a flush publishes every pending
+        upsert buffered in this instance, not only the caller's.
     """
 
     def __post_init__(self):
