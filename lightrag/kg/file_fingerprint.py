@@ -162,7 +162,12 @@ def counts_as_a_new_lost_notification(
 
     ``UNREADABLE`` counts nothing: it cannot say WHICH state it would be
     counting, so the count could neither be deduplicated nor trusted. The next
-    call counts it if the ``stat`` works by then.
+    call counts it if the ``stat`` works by then -- but ONLY because the
+    caller feeds this same sample to its reload, so an unreadable one adopts
+    no fingerprint and leaves the divergence standing. A caller that sampled
+    here and let its reload sample independently would lose the event for
+    good: this would skip the count while that sample succeeded and adopted
+    the peer state. Count and adopt from one observation.
 
     Counting at detection rather than after a successful reload is deliberate:
     the window occurred whether or not this process could reload out of it,

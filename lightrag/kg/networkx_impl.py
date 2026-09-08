@@ -535,7 +535,9 @@ class NetworkXStorage(BaseGraphStorage):
             workspace=self.workspace,
         )
 
-    def _count_unannounced_peer_commit_locked(self) -> bool:
+    def _count_unannounced_peer_commit_locked(
+        self, sampled: file_fingerprint.Fingerprint | object
+    ) -> bool:
         """Count a peer commit no notification announced. True if it counted.
 
         Precondition: the caller holds ``_storage_lock``, and has NOT reloaded
@@ -563,17 +565,27 @@ class NetworkXStorage(BaseGraphStorage):
           defect) makes the count once-per-state instead of once-per-attempt.
           See that function for what it does and does not distinguish.
 
-        Self-contained on purpose: it re-tests the flag and the file even
-        where the caller's branch condition already established them. The
-        redundant reads cost a Manager RPC and a stat on a path that only runs
-        when a peer commit was detected, and in exchange no site can count by
-        satisfying only half the condition.
+        ``sampled`` is the caller's own sample, and the caller MUST hand the
+        same one to ``_reload_locked``. Sampling independently here would make
+        the count and the adoption describe two different observations, and a
+        transient ``UNREADABLE`` on this one alone would then be uncountable
+        forever: this helper would skip the increment while the reload's own
+        successful stat adopted the peer state, erasing the divergence that
+        would have let a later call count it. Sharing one sample keeps the two
+        outcomes tied -- either the event is counted, or no fingerprint is
+        adopted that could suppress counting it next time. The vector backends
+        share their pre-read sample for exactly this reason.
+
+        Self-contained otherwise: it re-tests the flag and the file even where
+        the caller's branch condition already established them. Those reads
+        cost a Manager RPC and a stat on a path that only runs when a peer
+        commit was detected, and in exchange no site can count by satisfying
+        only half the condition.
         """
         if self.storage_updated.value:
             return False
         if not self._peer_commit_detected():
             return False
-        sampled = self._stat_fingerprint()
         if not file_fingerprint.counts_as_a_new_lost_notification(
             sampled, self._counted_peer_fingerprint
         ):
@@ -588,10 +600,19 @@ class NetworkXStorage(BaseGraphStorage):
         self._missed_notification_reloads += 1
         return True
 
-    def _reload_locked(self) -> None:
+    def _reload_locked(
+        self, fingerprint: file_fingerprint.Fingerprint | object | None = None
+    ) -> None:
         """Reload ``self._graph`` from disk and satisfy BOTH fence channels.
 
         Precondition: the caller holds ``_storage_lock``.
+
+        ``fingerprint`` is for the callers that already sampled in order to
+        count -- they pass theirs in so the count and the adoption describe
+        one observation; see ``_count_unannounced_peer_commit_locked``.
+        Omitted, this samples for itself. ``None`` is unambiguous as "not
+        given": ``_stat_fingerprint`` returns a tuple or ``UNREADABLE``, never
+        ``None``.
 
         One reload, one post-condition, whichever condition fired: record the
         new fingerprint, clear the flag, **and** clear the pending recovery
@@ -606,7 +627,8 @@ class NetworkXStorage(BaseGraphStorage):
         """
         # Sampled before the read, never after. See the ordering rule in
         # *Cross-process sync protocol*.
-        fingerprint = self._stat_fingerprint()
+        if fingerprint is None:
+            fingerprint = self._stat_fingerprint()
         self._graph = (
             NetworkXStorage.load_nx_graph(self._graphml_xml_file) or nx.Graph()
         )
@@ -670,7 +692,11 @@ class NetworkXStorage(BaseGraphStorage):
                 # file, so afterwards nothing can tell that a peer commit had
                 # also arrived unannounced -- and that is a number this fence
                 # is measured by.
-                if self._count_unannounced_peer_commit_locked():
+                # One sample, shared by the counting and the reload -- see
+                # _count_unannounced_peer_commit_locked for why they must not
+                # be two independent observations.
+                sampled = self._stat_fingerprint()
+                if self._count_unannounced_peer_commit_locked(sampled):
                     logger.warning(
                         f"[{self.workspace}] Process {os.getpid()}: the file on "
                         f"disk ({self._graphml_xml_file}) is not the one this "
@@ -687,7 +713,7 @@ class NetworkXStorage(BaseGraphStorage):
                     "mutation failed too, so this process's graph does not "
                     "match the file. Discarding it now."
                 )
-                self._reload_locked()
+                self._reload_locked(sampled)
             # Flag next -- it is the accelerator channel and a True value
             # already answers the question. The fingerprint test in the elif is
             # the authoritative one: it is what makes a lost notification
@@ -714,7 +740,11 @@ class NetworkXStorage(BaseGraphStorage):
                     )
                 self._reload_locked()
             elif self._peer_commit_detected():
-                if self._count_unannounced_peer_commit_locked():
+                # One sample, shared by the counting and the reload -- see
+                # _count_unannounced_peer_commit_locked for why they must not
+                # be two independent observations.
+                sampled = self._stat_fingerprint()
+                if self._count_unannounced_peer_commit_locked(sampled):
                     logger.warning(
                         f"[{self.workspace}] Process {os.getpid()} reloading graph "
                         f"{self._graphml_xml_file}: the file on disk is not the one "
@@ -723,7 +753,7 @@ class NetworkXStorage(BaseGraphStorage):
                         f"channel (occurrence #{self._missed_notification_reloads} "
                         "in this process)."
                     )
-                self._reload_locked()
+                self._reload_locked(sampled)
 
             graph = self._graph
 
@@ -1355,7 +1385,11 @@ class NetworkXStorage(BaseGraphStorage):
             # what the failed batch's reprocessing expects.
             if self._recovery_reload_pending:
                 # Same precedence, same blind spot, same fix as in _get_graph.
-                if self._count_unannounced_peer_commit_locked():
+                # One sample, shared by the counting and the reload -- see
+                # _count_unannounced_peer_commit_locked for why they must not
+                # be two independent observations.
+                sampled = self._stat_fingerprint()
+                if self._count_unannounced_peer_commit_locked(sampled):
                     logger.warning(
                         f"[{self.workspace}] Declining to save graph "
                         f"{self._graphml_xml_file}: the file on disk is also not "
@@ -1370,7 +1404,7 @@ class NetworkXStorage(BaseGraphStorage):
                     "mutations from a batch already reported as failed. "
                     "Discarding them and reporting the commit as declined."
                 )
-                self._reload_locked()
+                self._reload_locked(sampled)
                 return False
             # Then both fence channels. A writer holding a snapshot the file
             # has moved past must DECLINE: write_nx_graph serializes the WHOLE
@@ -1389,7 +1423,11 @@ class NetworkXStorage(BaseGraphStorage):
                 # process's stale snapshot. Declining loses THIS mutation
                 # instead, and loudly: _commit_graph_or_raise turns the False
                 # into an error for the caller.
-                if self._count_unannounced_peer_commit_locked():
+                # One sample, shared by the counting and the reload -- see
+                # _count_unannounced_peer_commit_locked for why they must not
+                # be two independent observations.
+                sampled = self._stat_fingerprint()
+                if self._count_unannounced_peer_commit_locked(sampled):
                     logger.warning(
                         f"[{self.workspace}] Declining to save graph "
                         f"{self._graphml_xml_file}: the file on disk is not the one "
@@ -1398,7 +1436,7 @@ class NetworkXStorage(BaseGraphStorage):
                         "Reloading and reporting the commit as declined (occurrence "
                         f"#{self._missed_notification_reloads} in this process)."
                     )
-                self._reload_locked()
+                self._reload_locked(sampled)
                 return False
 
         # Acquire lock and perform persistence

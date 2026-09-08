@@ -781,3 +781,52 @@ async def test_a_recurring_state_is_counted_again_after_a_notified_reload(
     finally:
         await worker_b.finalize()
         await worker_a.finalize()
+
+
+@pytest.mark.asyncio
+async def test_a_stat_that_fails_only_while_counting_does_not_lose_the_event(
+    tmp_path, multiprocess, lost_notification, monkeypatch
+):
+    """The count and the adoption must come from ONE observation.
+
+    Sampling separately for each, a transient failure on the counting sample
+    alone loses the event for good: the count is skipped, and the reload's own
+    successful sample adopts the peer state, so there is no divergence left
+    for a later call to count. Sharing the sample ties the two outcomes —
+    either it counts, or it adopts nothing that could suppress counting next
+    time.
+    """
+    worker_a = await _worker(tmp_path)
+    worker_b = await _worker(tmp_path)
+    try:
+        # B is constructed BEFORE the commit, so it is genuinely stale.
+        await worker_a.upsert_node("from_a", {"entity_id": "from_a"})
+        assert await worker_a.index_done_callback() is True
+        assert worker_b.storage_updated.value is False
+        assert worker_b._missed_notification_reloads == 0
+
+        # Fail the COUNTING sample and nothing else: `_peer_commit_detected`
+        # reaches `file_fingerprint.sample` directly, so shadowing
+        # `_stat_fingerprint` hits only the hoisted sample. Self-restoring, so
+        # the reload that follows within the same call would succeed if it
+        # sampled for itself — which is the defect.
+        original = worker_b._stat_fingerprint
+
+        def unreadable_once():
+            worker_b._stat_fingerprint = original
+            return file_fingerprint.UNREADABLE
+
+        worker_b._stat_fingerprint = unreadable_once
+        assert await worker_b.has_node("from_a") is True
+
+        # Not counted on that call — an unreadable sample cannot say what it
+        # would be counting. What matters is that it is not LOST: no
+        # fingerprint was adopted, so the divergence still stands.
+        assert worker_b._missed_notification_reloads == 0
+        assert worker_b._loaded_fingerprint is None
+
+        assert await worker_b.has_node("from_a") is True
+        assert worker_b._missed_notification_reloads == 1
+    finally:
+        await worker_b.finalize()
+        await worker_a.finalize()
