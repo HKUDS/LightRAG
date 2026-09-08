@@ -17,10 +17,10 @@ from lightrag.utils import (
 )
 from lightrag.base import BaseGraphStorage
 import networkx as nx
+from . import file_fingerprint
 from .shared_storage import (
     get_namespace_lock,
     get_update_flag,
-    is_multiprocess_mode,
     set_all_update_flags,
 )
 
@@ -30,21 +30,6 @@ from dotenv import load_dotenv
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
-
-
-# Returned by ``NetworkXStorage._stat_fingerprint`` when this process could
-# not read the GraphML file's metadata at all. Deliberately distinct from
-# ``None`` ("the file does not exist"): absence is a real state to converge on,
-# an unreadable ``stat`` is a fence outage to ride out on the flag channel
-# alone. Conflating them would let a failed ``stat`` order a reload, and a
-# reload that cannot read the file installs an EMPTY graph -- which the next
-# commit would then serialize over a perfectly good file.
-_FINGERPRINT_UNREADABLE = object()
-
-# What a readable ``stat`` yields: ``(st_mtime_ns, st_size)``, or ``None`` for
-# a file that does not exist. ``| object`` in a signature below admits
-# ``_FINGERPRINT_UNREADABLE`` alongside it.
-_Fingerprint = tuple[int, int] | None
 
 
 @final
@@ -189,7 +174,7 @@ class NetworkXStorage(BaseGraphStorage):
         only cost a redundant reload, which is harmless.
 
         Single-process mode skips the fingerprint test entirely
-        (``is_multiprocess_mode()``): there is no peer that could have
+        (``file_fingerprint.fence_enabled()``): there is no peer that could have
         committed, so a divergent file means an external edit, and reloading
         for it would discard this process's own uncommitted mutations.
 
@@ -228,13 +213,16 @@ class NetworkXStorage(BaseGraphStorage):
 
     Implementation differences from ``NanoVectorDBStorage`` (same design,
     different surface):
-        * **The fence is no longer the same.** This class tests the file
-          fingerprint as well as the flag (above); ``NanoVectorDBStorage``
-          and ``FaissVectorDBStorage`` still open their reload with
-          ``if not self.storage_updated.value: return False`` and are exposed
-          to the lost notification in the same shape — including on their
-          ``for_write=True`` path, which is where a stale snapshot gets saved
-          over durable rows. Phase 2 of #3854 brings them the same fence.
+        * **The fence is shared, its verdict is not.** All three test the
+          file fingerprint as well as the flag, through the same
+          ``lightrag.kg.file_fingerprint`` helpers. What differs is what
+          happens once a peer commit is detected on a WRITE path: this class
+          **declines** the save (it has no way to keep the mutation), while
+          the vector backends reload the peer snapshot and replay their
+          pending buffer and redo logs on top (issue #3688) — so they lose
+          nothing and report nothing. The flush-failure propagation a decline
+          requires (``LightRAG._flush_storages``) is therefore this class's
+          concern alone.
         * No ``client_storage`` property — there is no equivalent live
           reference being exposed to callers, so NanoVectorDB's
           "do-not-retain-across-await" caveat does not apply here.
@@ -433,65 +421,30 @@ class NetworkXStorage(BaseGraphStorage):
             self._commit_gate_loop = loop
         return self._commit_gate
 
-    def _stat_fingerprint(self) -> _Fingerprint | object:
-        """Identity of the GraphML file on disk, for the fence's file channel.
-
-        Returns ``(st_mtime_ns, st_size)``, ``None`` when the file does not
-        exist, or ``_FINGERPRINT_UNREADABLE`` when the ``stat`` itself failed
-        (see that constant for why the last two must stay distinct).
-
-        ``st_ino`` is deliberately NOT part of it. ``atomic_write`` renames a
-        tmp file over the target, which frees the previous inode, and the
-        allocator hands that same inode straight back to the next tmp file in
-        the directory -- measured at 28 reuses across 30 consecutive commits.
-        The inode number is therefore near-constant across commits and
-        discriminates nothing; ``mtime`` carries the signal, with ``size`` as a
-        helper that catches nothing on its own (an equal-length attribute
-        rewrite -- renaming a node to a same-length name -- keeps the size).
-        """
-        try:
-            st = os.stat(self._graphml_xml_file)
-        except FileNotFoundError:
-            return None
-        except OSError as exc:
-            # Routed through log_without_raising because ``drop``'s _committed
-            # hook reaches here (via _record_fingerprint) AFTER the file is
-            # already gone, and every step of that hook has to be unable to
-            # report a completed destruction as an error -- a broken log sink
-            # included.
-            log_without_raising(
-                logger.warning,
-                f"[{self.workspace}] Could not stat {self._graphml_xml_file} "
-                "to check for peer commits; the reload fence falls back to the "
-                f"notification flag alone: {exc}",
-            )
-            return _FINGERPRINT_UNREADABLE
-        return (st.st_mtime_ns, st.st_size)
-
-    def _adopt_fingerprint(self, fingerprint: _Fingerprint | object) -> None:
-        """Record ``fingerprint`` as the file this process now holds.
-
-        An unreadable ``stat`` is recorded as ``None``, which differs from any
-        real file: the next check therefore re-samples and, if the ``stat``
-        works by then, reloads once. That is the harmless direction.
-        """
-        self._loaded_fingerprint = (
-            None if fingerprint is _FINGERPRINT_UNREADABLE else fingerprint
+    def _stat_fingerprint(self) -> file_fingerprint.Fingerprint | object:
+        """Sample the GraphML file's identity. See ``kg.file_fingerprint``."""
+        return file_fingerprint.sample(
+            (self._graphml_xml_file,), workspace=self.workspace
         )
+
+    def _adopt_fingerprint(
+        self, fingerprint: file_fingerprint.Fingerprint | object
+    ) -> None:
+        """Record ``fingerprint`` as the file this process now holds."""
+        self._loaded_fingerprint = file_fingerprint.adopted(fingerprint)
 
     def _peer_commit_detected(self) -> bool:
         """Whether the file on disk differs from the one this process loaded.
 
         The fence's authoritative test — the one a failed notification cannot
         disable. ``False`` in single-process mode and on an unreadable
-        ``stat``; see *Cross-process sync protocol* for both.
+        ``stat``; see ``kg.file_fingerprint`` for both.
         """
-        if not is_multiprocess_mode():
-            return False
-        fingerprint = self._stat_fingerprint()
-        if fingerprint is _FINGERPRINT_UNREADABLE:
-            return False
-        return fingerprint != self._loaded_fingerprint
+        return file_fingerprint.peer_commit_detected(
+            (self._graphml_xml_file,),
+            self._loaded_fingerprint,
+            workspace=self.workspace,
+        )
 
     def _reload_locked(self) -> None:
         """Reload ``self._graph`` from disk and satisfy BOTH fence channels.
@@ -563,7 +516,10 @@ class NetworkXStorage(BaseGraphStorage):
                 logger.info(
                     f"[{self.workspace}] Process {os.getpid()} reloading graph {self._graphml_xml_file} due to modifications by another process"
                 )
-                if is_multiprocess_mode() and not self._peer_commit_detected():
+                if (
+                    file_fingerprint.fence_enabled()
+                    and not self._peer_commit_detected()
+                ):
                     # Notified about the file this process already holds: a
                     # self-notification, or a peer commit that a sibling
                     # coroutine reloaded before this call got the lock. The

@@ -832,9 +832,10 @@ __parsed__/<base>.docling_raw/
 | 首次解析 | 取回产物，然后原子写入 `_manifest.json`。docling 的取回过程是 `POST /v1/convert/file/async` → 长轮询 `/v1/status/poll/{task_id}?wait=N` → `GET /v1/result/{task_id}` → 安全解压 zip（拒绝绝对路径与 `..`）。 |
 | 重新解析（缓存命中） | 不调用外部服务，不重写产物；仅重跑 adapter + writer 重新生成 sidecar（这正是 adapter 升级代价很低的原因）。 |
 | 重新解析（缓存未命中） | 清空目录，重新取回并写 manifest。 |
-| `DELETE /documents` 且 `delete_file=True` | `*.parsed/`、原始产物包、源文件一并删除。 |
-| `DELETE /documents` 且 `delete_file=False` | 保留全部产物，仅删除 doc_status 与 KG 数据。 |
-| `clear_documents` / 整体清空 `__parsed__` | 随之一并清除。 |
+| `DELETE /documents/delete_document` 且 `delete_file=True` | `*.parsed/`、原始产物包、源文件一并删除。 |
+| `DELETE /documents/delete_document` 且 `delete_file=False` | 保留全部产物，仅删除 doc_status 与 KG 数据。 |
+| `DELETE /documents`（`clear_documents`）且 `delete_parsed_files=true` | 整体删除 `__parsed__`；顶层输入文件始终会被删除，与此参数无关。 |
+| `DELETE /documents`（`clear_documents`）且 `delete_parsed_files=false`（默认） | 保留 `__parsed__`；顶层输入文件仍会被删除。 |
 | scan 周期 | **不会**回收孤立的产物包——只有用户显式删除时才移除，避免误扫掉调试现场。 |
 
 强制重解析（完全绕过缓存）：`LIGHTRAG_FORCE_REPARSE_NATIVE` / `LIGHTRAG_FORCE_REPARSE_MINERU` / `LIGHTRAG_FORCE_REPARSE_DOCLING`（§3.7）。

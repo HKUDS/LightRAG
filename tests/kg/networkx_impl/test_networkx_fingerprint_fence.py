@@ -29,7 +29,7 @@ import os
 import numpy as np
 import pytest
 
-from lightrag.kg import networkx_impl
+from lightrag.kg import file_fingerprint, networkx_impl
 from lightrag.kg.networkx_impl import NetworkXStorage
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
 from lightrag.utils import EmbeddingFunc
@@ -49,12 +49,12 @@ def _shared_data():
 def multiprocess(monkeypatch):
     """Pretend peer processes exist, so the file channel is armed.
 
-    The fence is gated on ``is_multiprocess_mode()`` — in single-process mode a
-    divergent file cannot be a peer commit. Tests that want the fence must say
-    so; ``test_single_process_mode_ignores_a_divergent_file`` asserts the
-    other side of that gate.
+    The fence is gated on ``file_fingerprint.fence_enabled()`` — in
+    single-process mode a divergent file cannot be a peer commit. Tests that
+    want the fence must say so; the gate's other side is asserted by
+    ``test_single_process_mode_ignores_a_divergent_file``.
     """
-    monkeypatch.setattr(networkx_impl, "is_multiprocess_mode", lambda: True)
+    monkeypatch.setattr(file_fingerprint, "is_multiprocess_mode", lambda: True)
 
 
 @pytest.fixture
@@ -238,6 +238,8 @@ async def test_a_timestamp_tick_collision_is_the_documented_residue(
         assert await worker_b.has_node("aa") is True
         recorded = worker_b._loaded_fingerprint
         assert recorded is not None
+        # One entry per path; this storage has a single file.
+        recorded_mtime, recorded_size = recorded[0]
 
         # A second commit whose GraphML is the same length as the first.
         await worker_a.delete_node("aa")
@@ -246,8 +248,8 @@ async def test_a_timestamp_tick_collision_is_the_documented_residue(
 
         # Force the tick collision. The size must already match, or this test
         # would be pinning nothing.
-        os.utime(worker_b._graphml_xml_file, ns=(recorded[0], recorded[0]))
-        assert os.stat(worker_b._graphml_xml_file).st_size == recorded[1]
+        os.utime(worker_b._graphml_xml_file, ns=(recorded_mtime, recorded_mtime))
+        assert os.stat(worker_b._graphml_xml_file).st_size == recorded_size
 
         # The residue: the file channel cannot see it.
         assert worker_b._peer_commit_detected() is False
@@ -322,7 +324,9 @@ async def test_drop_adopts_the_files_absence(tmp_path, multiprocess, monkeypatch
         assert worker._loaded_fingerprint is not None
 
         assert (await worker.drop())["status"] == "success"
-        assert worker._loaded_fingerprint is None
+        # The file's ABSENCE, adopted — not ``None``, which means "nothing
+        # recorded" and would order a reload on the next call.
+        assert worker._loaded_fingerprint == (None,)
 
         loads = _count_loads(monkeypatch)
         assert await worker.has_node("n1") is False

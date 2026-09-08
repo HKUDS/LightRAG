@@ -22,6 +22,8 @@ from lightrag.utils import (
     performance_timing_log,
     safe_log_value,
     validate_workspace,
+    _consume_future_exception,
+    _wait_deferring_cancellation,
 )
 import aiofiles
 import traceback
@@ -5749,13 +5751,32 @@ def create_document_routes(
     @router.delete(
         "", response_model=ClearDocumentsResponse, dependencies=[Depends(combined_auth)]
     )
-    async def clear_documents():
+    async def clear_documents(
+        delete_parsed_files: Annotated[
+            bool,
+            Query(
+                description=(
+                    "Also delete the __parsed__ directory contents. Preserved "
+                    "by default so parsed artifacts survive re-adding the "
+                    "same files."
+                )
+            ),
+        ] = False,
+    ):
         """
         Clear all documents from the RAG system.
 
         This endpoint deletes all documents, entities, relationships, and files from the system.
         It uses the storage drop methods to properly clean up all data and removes all files
-        from the input directory.
+        from the input directory. The __parsed__ directory is preserved unless
+        delete_parsed_files=True is passed.
+
+        Top-level input files are always deleted unconditionally: a later
+        /documents/scan would otherwise re-enqueue them. The __parsed__
+        directory is opt-in only, since it holds pre-parsed cache artifacts
+        that let a re-added file skip re-parsing. A partial shutil.rmtree
+        failure (e.g. a locked file) can leave __parsed__ incomplete; re-run
+        with delete_parsed_files=True to retry.
 
         **Concurrency Constraint:**
         - Atomically reserves the destructive slot (sets ``busy=True``
@@ -6014,13 +6035,68 @@ def create_document_routes(
                     pipeline_status, f"Successfully deleted {deleted_files_count} files"
                 )
 
+            # __parsed__ is preserved by default so re-adding the same file
+            # does not require re-parsing, and so a deleted document's raw
+            # upload can still be recovered from there. Only remove it when
+            # the caller explicitly opts in.
+            parsed_dir_message = ""
+            parsed_dir = doc_manager.input_dir / PARSED_DIR_NAME
+            if delete_parsed_files:
+                if parsed_dir.exists():
+                    # __parsed__ can hold many files; run the recursive
+                    # delete off the event loop thread so a large directory
+                    # doesn't block every other request. A bare cancel (e.g.
+                    # the client disconnecting) would only cancel this
+                    # await -- the rmtree keeps running in the background --
+                    # while the `finally` below releases destructive_busy
+                    # immediately, letting a new request race an in-flight
+                    # delete. Defer the cancellation until rmtree actually
+                    # finishes, same idiom as milvus_impl.py's flush.
+                    rmtree_future = asyncio.ensure_future(
+                        asyncio.to_thread(shutil.rmtree, parsed_dir)
+                    )
+                    rmtree_future.add_done_callback(_consume_future_exception)
+                    pending_cancel = await _wait_deferring_cancellation(
+                        rmtree_future, None
+                    )
+                    if pending_cancel is not None and not rmtree_future.cancelled():
+                        rmtree_exc = rmtree_future.exception()
+                        if rmtree_exc is not None:
+                            logger.error(
+                                f"Error deleting {parsed_dir} while cancelled: "
+                                f"{rmtree_exc}"
+                            )
+                    elif pending_cancel is None:
+                        try:
+                            rmtree_future.result()
+                            parsed_dir_message = " Deleted __parsed__ directory."
+                            append_pipeline_history(
+                                pipeline_status, "Deleted __parsed__ directory"
+                            )
+                        except Exception as e:
+                            logger.error(f"Error deleting {parsed_dir}: {str(e)}")
+                            errors.append(f"Failed to delete __parsed__ directory: {e}")
+                    if pending_cancel is not None:
+                        raise pending_cancel
+            elif parsed_dir.exists():
+                parsed_dir_message = (
+                    " __parsed__ preserved (pass delete_parsed_files=true to "
+                    "remove it)."
+                )
+
             # Prepare final result message
             final_message = ""
             if errors:
-                final_message = f"Cleared documents with some errors. Deleted {deleted_files_count} files."
+                final_message = (
+                    f"Cleared documents with some errors. Deleted "
+                    f"{deleted_files_count} files.{parsed_dir_message}"
+                )
                 status = "partial_success"
             else:
-                final_message = f"All documents cleared successfully. Deleted {deleted_files_count} files."
+                final_message = (
+                    f"All documents cleared successfully. Deleted "
+                    f"{deleted_files_count} files.{parsed_dir_message}"
+                )
                 status = "success"
 
             # Log final result
