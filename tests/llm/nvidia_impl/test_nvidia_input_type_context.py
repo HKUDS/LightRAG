@@ -53,7 +53,9 @@ async def test_query_context_uses_nvidias_query_input_type():
 
     fake = _FakeAsyncOpenAI(create=create)
     with patch("lightrag.llm.nvidia_openai.AsyncOpenAI", return_value=fake):
-        await nvidia_openai_embed(["what is retrieval augmented generation?"], context="query")
+        await nvidia_openai_embed(
+            ["what is retrieval augmented generation?"], context="query"
+        )
 
     assert captured["extra_body"]["input_type"] == "query"
 
@@ -69,7 +71,9 @@ async def test_document_context_uses_nvidias_passage_input_type():
 
     fake = _FakeAsyncOpenAI(create=create)
     with patch("lightrag.llm.nvidia_openai.AsyncOpenAI", return_value=fake):
-        await nvidia_openai_embed(["some chunk of document content"], context="document")
+        await nvidia_openai_embed(
+            ["some chunk of document content"], context="document"
+        )
 
     assert captured["extra_body"]["input_type"] == "passage"
 
@@ -106,8 +110,6 @@ async def test_explicit_input_type_overrides_context():
 
     fake = _FakeAsyncOpenAI(create=create)
     with patch("lightrag.llm.nvidia_openai.AsyncOpenAI", return_value=fake):
-        await nvidia_openai_embed(
-            ["hello"], context="query", input_type="passage"
-        )
+        await nvidia_openai_embed(["hello"], context="query", input_type="passage")
 
     assert captured["extra_body"]["input_type"] == "passage"
