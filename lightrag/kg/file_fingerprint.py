@@ -69,12 +69,19 @@ fragment:
    Cleared in each storage's ``_adopt_fingerprint``, the single point a new
    state is recorded and one reached only after a load or commit landed.
    (Undercount.)
-5. **Count and adopt from ONE observation.** Sampling separately for each lets
-   a transient ``UNREADABLE`` on the counting sample lose the event for good:
-   the count is skipped while the reload's own successful sample adopts the
-   peer state, erasing the divergence a later call would have counted. Every
-   counting caller hands its sample to its reload. (Loss, not merely
-   undercount.)
+5. **Once a call is committed to adopting, it must not observe the file
+   again.** Every step from there -- deciding there is a divergence, counting
+   it, adopting the new state -- runs on ONE sample. A second observation can
+   come back ``UNREADABLE`` while the first succeeded, and then its step is
+   skipped while the adoption still happens on the good sample, erasing the
+   divergence a later call would have counted. So the counting callers pass
+   their sample to :func:`divergence_detected`, to
+   :func:`counts_as_a_new_lost_notification` and to their reload alike.
+   An observation *before* that point is fine and the vector backends use one:
+   theirs gates the whole function and returns early, adopting nothing, so a
+   failure there costs a retry rather than the event. Found twice, both after
+   the commit point: first the count-vs-adopt pair, then the divergence test
+   that was still re-observing. (Loss, not merely undercount.)
 
 What the counter still cannot see is the tick collision itself -- two commits
 sharing one ``(st_mtime_ns, st_size)`` -- which is the residue the remedy above
@@ -253,7 +260,33 @@ def peer_commit_detected(
     """
     if not fence_enabled():
         return False
-    sampled = sample(paths, workspace=workspace)
+    return divergence_detected(
+        sample(paths, workspace=workspace), recorded, paths=paths, workspace=workspace
+    )
+
+
+def divergence_detected(
+    sampled: Fingerprint | object,
+    recorded: Fingerprint | None,
+    *,
+    paths: Sequence[str],
+    workspace: str,
+) -> bool:
+    """:func:`peer_commit_detected`'s decision, from a sample already taken.
+
+    For the caller that will DECIDE, COUNT and ADOPT within one call: all
+    three must come from **one observation**. Taking a fresh ``stat`` for the
+    decision lets it fail while the caller's sample succeeded, and then the
+    count is skipped while the reload adopts that good sample -- erasing the
+    divergence that would have let a later call count the event. The
+    one-observation rule in :func:`counts_as_a_new_lost_notification` covers
+    counting and adoption; this covers the third participant.
+
+    A caller with nothing else to do with the sample should use
+    :func:`peer_commit_detected`, which takes one for itself.
+    """
+    if not fence_enabled():
+        return False
     if sampled is UNREADABLE:
         return False
     if sampled == recorded:

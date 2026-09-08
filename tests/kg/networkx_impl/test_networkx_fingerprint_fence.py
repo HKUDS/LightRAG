@@ -830,3 +830,49 @@ async def test_a_stat_that_fails_only_while_counting_does_not_lose_the_event(
     finally:
         await worker_b.finalize()
         await worker_a.finalize()
+
+
+@pytest.mark.asyncio
+async def test_the_divergence_test_reuses_the_caller_s_sample(
+    tmp_path, multiprocess, lost_notification, monkeypatch
+):
+    """DECIDING is the third participant in the one-observation rule.
+
+    The counting helper re-applies the full divergence decision, but it must
+    apply it to the sample it was handed. Taking a fresh `stat` there lets it
+    fail while the caller's succeeded — the count is skipped, and
+    `_reload_locked(sampled)` then adopts that good sample, erasing the
+    divergence a later call would have counted. The event is lost, not merely
+    deferred, which is what makes this worse than a missed count.
+    """
+    worker_a = await _worker(tmp_path)
+    worker_b = await _worker(tmp_path)
+    try:
+        await worker_a.upsert_node("from_a", {"entity_id": "from_a"})
+        assert await worker_a.index_done_callback() is True
+        assert worker_b.storage_updated.value is False
+
+        # Let the branch condition and the hoisted sample through, then make
+        # every FURTHER fence observation unreadable. With the decision reusing
+        # the caller's sample there is no further observation; taking its own,
+        # it lands here. Targeting `sample` rather than `os.stat` keeps the
+        # load's own `os.path.exists` out of it.
+        real_sample = file_fingerprint.sample
+        taken = [0]
+
+        def budgeted(paths, *, workspace):
+            taken[0] += 1
+            if taken[0] > 2:
+                return file_fingerprint.UNREADABLE
+            return real_sample(paths, workspace=workspace)
+
+        monkeypatch.setattr(file_fingerprint, "sample", budgeted)
+        assert await worker_b.has_node("from_a") is True
+        monkeypatch.undo()
+
+        assert taken[0] == 2, "the counting path observed the file a third time"
+        assert worker_b._missed_notification_reloads == 1
+        assert worker_b._loaded_fingerprint is not None
+    finally:
+        await worker_b.finalize()
+        await worker_a.finalize()

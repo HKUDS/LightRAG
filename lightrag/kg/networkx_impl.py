@@ -522,16 +522,30 @@ class NetworkXStorage(BaseGraphStorage):
         # not the same-tick collision residue.
         self._counted_peer_fingerprint = None
 
-    def _peer_commit_detected(self) -> bool:
+    def _peer_commit_detected(
+        self, sampled: file_fingerprint.Fingerprint | object | None = None
+    ) -> bool:
         """Whether the file on disk differs from the one this process loaded.
 
         The fence's authoritative test — the one a failed notification cannot
         disable. ``False`` in single-process mode and on an unreadable
         ``stat``; see ``kg.file_fingerprint`` for both.
+
+        ``sampled`` is for the caller that will also count and reload from one
+        observation -- it decides from that same sample rather than taking a
+        third ``stat`` that could fail on its own. See
+        ``file_fingerprint.divergence_detected``.
         """
-        return file_fingerprint.peer_commit_detected(
-            (self._graphml_xml_file,),
+        if sampled is None:
+            return file_fingerprint.peer_commit_detected(
+                (self._graphml_xml_file,),
+                self._loaded_fingerprint,
+                workspace=self.workspace,
+            )
+        return file_fingerprint.divergence_detected(
+            sampled,
             self._loaded_fingerprint,
+            paths=(self._graphml_xml_file,),
             workspace=self.workspace,
         )
 
@@ -576,15 +590,18 @@ class NetworkXStorage(BaseGraphStorage):
         adopted that could suppress counting it next time. The vector backends
         share their pre-read sample for exactly this reason.
 
-        Self-contained otherwise: it re-tests the flag and the file even where
-        the caller's branch condition already established them. Those reads
-        cost a Manager RPC and a stat on a path that only runs when a peer
-        commit was detected, and in exchange no site can count by satisfying
-        only half the condition.
+        Self-contained otherwise: it re-tests the flag and re-applies the full
+        divergence decision even where the caller's branch condition already
+        established them, so no site can count by satisfying only half the
+        condition. It re-*observes* nothing, though -- the divergence test runs
+        against ``sampled`` too. The flag re-read is safe to repeat because it
+        is not an observation of the file: a flag that turned True in between
+        means the notification arrived after all, and declining to count that
+        is correct.
         """
         if self.storage_updated.value:
             return False
-        if not self._peer_commit_detected():
+        if not self._peer_commit_detected(sampled):
             return False
         if not file_fingerprint.counts_as_a_new_lost_notification(
             sampled, self._counted_peer_fingerprint
