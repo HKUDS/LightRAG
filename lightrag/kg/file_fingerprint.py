@@ -28,9 +28,57 @@ a coarse filesystem: ``+1 ns`` is truncated away on a 1 s (ext3, HFS+) or 2 s
 timestamps. It costs one extra ``stat`` per commit plus a rare ``utime``, so
 cost is not the objection. Do it only if the ``_missed_notification_reloads``
 counters that each storage logs ever show this window occurring in a real
-deployment -- those counters are the evidence this decision waits on, and
-all three deduplicate (see :func:`counts_as_a_new_lost_notification`) so a
-single commit cannot inflate them.
+deployment -- those counters are the evidence this decision waits on, which is
+why the next section exists.
+
+``_missed_notification_reloads``: one increment per peer commit
+---------------------------------------------------------------
+
+Each storage keeps this counter, and its contract is exactly:
+
+    **it increments once per peer commit that no notification announced --
+    not per detection of one, and not per attempt to reload out of one.**
+
+It reads like a log line and is not one. It is the instrument the ``os.utime``
+decision above waits on, so a bias in it is not cosmetic: it silently decides
+whether that work is ever judged necessary. Both directions are defects, and
+review found this counter wrong in five distinct ways, each fixed in a
+different place. They are indexed here because no single site shows the whole
+contract, and the next person to touch any one of them will be looking at a
+fragment:
+
+1. **Do not arm a cross-process channel for a process-local fact.**
+   ``NetworkXStorage`` recovers from a failed save by discarding its
+   unpersisted graph. Arming that through ``_loaded_fingerprint`` made the
+   file channel report a peer commit that never happened. It uses a
+   process-local ``_recovery_reload_pending`` bool instead -- see that class's
+   *Recovery reload*. (Overcount.)
+2. **Classify before a reload that discharges several conditions at once.**
+   That same recovery flag outranks both channels, and one reload satisfies
+   all of them, so a peer commit arriving while recovery is pending would be
+   handled and never counted. Both recovery branches count first, then
+   reload. (Undercount.)
+3. **Count states, not attempts.** A reload that raises leaves the reader's
+   recorded fingerprint untouched, so the same commit is re-detected by every
+   later call. :func:`counts_as_a_new_lost_notification` plus each storage's
+   ``_counted_peer_fingerprint`` makes it once-per-state. (Overcount, and it
+   was unbounded.)
+4. **End that marker at the reload it was protecting.** Kept longer, it
+   suppresses a state that RECURS -- a drop, a notified recreation, a second
+   drop -- which is a real second loss and not the tick-collision residue.
+   Cleared in each storage's ``_adopt_fingerprint``, the single point a new
+   state is recorded and one reached only after a load or commit landed.
+   (Undercount.)
+5. **Count and adopt from ONE observation.** Sampling separately for each lets
+   a transient ``UNREADABLE`` on the counting sample lose the event for good:
+   the count is skipped while the reload's own successful sample adopts the
+   peer state, erasing the divergence a later call would have counted. Every
+   counting caller hands its sample to its reload. (Loss, not merely
+   undercount.)
+
+What the counter still cannot see is the tick collision itself -- two commits
+sharing one ``(st_mtime_ns, st_size)`` -- which is the residue the remedy above
+would remove. That is the one blind spot by design; the five above were not.
 
 The mechanism lives here, once, because its hazards are in the details rather
 than the shape, and three copies of them is how it rots:
