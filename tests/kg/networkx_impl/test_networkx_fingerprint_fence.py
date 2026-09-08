@@ -551,3 +551,61 @@ async def test_drop_clears_a_pending_recovery_reload(tmp_path, multiprocess):
             await reader.finalize()
     finally:
         await worker.finalize()
+
+
+@pytest.mark.asyncio
+async def test_a_peer_commit_behind_a_recovery_reload_is_still_counted(
+    tmp_path, multiprocess, lost_notification
+):
+    """The recovery flag's precedence must not hide a lost notification.
+
+    Recovery is tested ahead of both channels and one reload discharges all
+    of them, so a peer commit that arrives unannounced WHILE recovery is
+    pending is handled correctly -- and, without classifying first, never
+    counted. `_missed_notification_reloads` is what the `os.utime` decision
+    waits on, so undercounting it is as much a defect as overcounting.
+    """
+    worker_a = await _worker_with_a_failed_save(tmp_path)
+    try:
+        assert file_fingerprint.fence_enabled() is True
+
+        worker_b = await _worker(tmp_path)
+        try:
+            await worker_b.upsert_node("from_peer", {"entity_id": "from_peer"})
+            assert await worker_b.index_done_callback() is True
+        finally:
+            await worker_b.finalize()
+
+        assert worker_a._missed_notification_reloads == 0
+        assert worker_a.storage_updated.value is False
+
+        # One reload discharges both: the peer's commit is picked up and the
+        # unpersisted mutation is discarded.
+        assert await worker_a.has_node("from_peer") is True
+        assert await worker_a.has_node("never_saved") is False
+        assert worker_a._missed_notification_reloads == 1
+    finally:
+        await worker_a.finalize()
+
+
+@pytest.mark.asyncio
+async def test_a_peer_commit_behind_a_recovery_decline_is_still_counted(
+    tmp_path, multiprocess, lost_notification
+):
+    """Same precedence, same blind spot, at `index_done_callback`."""
+    worker_a = await _worker_with_a_failed_save(tmp_path)
+    try:
+        worker_b = await _worker(tmp_path)
+        try:
+            await worker_b.upsert_node("from_peer", {"entity_id": "from_peer"})
+            assert await worker_b.index_done_callback() is True
+        finally:
+            await worker_b.finalize()
+
+        assert worker_a._missed_notification_reloads == 0
+        assert await worker_a.index_done_callback() is False
+        assert worker_a._missed_notification_reloads == 1
+        # The decline preserved the peer's commit, which is the point.
+        assert await worker_a.has_node("from_peer") is True
+    finally:
+        await worker_a.finalize()

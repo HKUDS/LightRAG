@@ -230,8 +230,16 @@ class NetworkXStorage(BaseGraphStorage):
               is ever needed. Arming the *file* channel for recovery — which
               the previous code did, by invalidating ``_loaded_fingerprint`` —
               made a failed flag write show up as a lost notification that
-              never happened. A process-local test in front of both channels
-              cannot do that.
+              never happened. A process-local test cannot overcount that way.
+
+              It can *under*count, though, and that is what
+              ``_count_unannounced_peer_commit_locked`` exists for: this test
+              wins over both channels, and one reload discharges all of them,
+              so a peer commit that arrived unannounced *while* recovery was
+              pending would be handled correctly and never counted. Both
+              recovery branches therefore classify the peer channel before
+              they reload. Overcounting and undercounting are both defects in
+              an instrument a later decision rests on.
             * **It cannot fail.** In multiprocess mode ``storage_updated`` is
               a ``Manager().Value`` proxy, so arming it was an RPC to the very
               process whose outage may be why the reload just failed. That
@@ -506,6 +514,40 @@ class NetworkXStorage(BaseGraphStorage):
             workspace=self.workspace,
         )
 
+    def _count_unannounced_peer_commit_locked(self) -> None:
+        """Count a peer commit the flag never announced, before a reload hides it.
+
+        Precondition: the caller holds ``_storage_lock``, and has NOT reloaded
+        yet.
+
+        Called only from the two recovery branches. They win over both channel
+        tests, and their ``_reload_locked`` adopts whatever is on disk -- so
+        without this, a peer commit that arrived unannounced while recovery
+        was pending is discharged correctly but never counted, and nothing
+        afterwards can tell it happened. ``_missed_notification_reloads`` is
+        the evidence the writer-side ``os.utime`` decision waits on (see
+        ``kg.file_fingerprint``), so a silent undercount there is the one
+        observability bug this flag's precedence could introduce.
+
+        The two conditions are exactly the ones the channel branches use: the
+        flag never fired, and the file is not the one this process recorded.
+        In the ordinary recovery case -- a failed save, no peer -- the file is
+        untouched, so this counts nothing.
+        """
+        if self.storage_updated.value:
+            return
+        if not self._peer_commit_detected():
+            return
+        self._missed_notification_reloads += 1
+        logger.warning(
+            f"[{self.workspace}] Process {os.getpid()}: the file on disk "
+            f"({self._graphml_xml_file}) is not the one this process loaded "
+            "and no reload notification arrived for it, so a notification was "
+            "lost. Recovered through the file channel, folded into the "
+            "recovery reload below (occurrence "
+            f"#{self._missed_notification_reloads} in this process)."
+        )
+
     def _reload_locked(self) -> None:
         """Reload ``self._graph`` from disk and satisfy BOTH fence channels.
 
@@ -578,10 +620,17 @@ class NetworkXStorage(BaseGraphStorage):
             # cross-process channel. It is free, it cannot be wrong, and it
             # answers a different question than they do: not "did a peer
             # commit?" but "is my own memory unpersisted?". Testing it here
-            # also keeps the two channels' log lines and the
-            # _missed_notification_reloads counter describing only what they
-            # name -- see *Recovery reload* in the class docstring.
+            # also keeps the two channels' log lines describing only what they
+            # name -- see *Recovery reload* in the class docstring. What that
+            # precedence must NOT do is hide a peer commit from the counter,
+            # which is why the branch below classifies before it reloads.
             if self._recovery_reload_pending:
+                # Classify the peer channel BEFORE reloading. One reload
+                # discharges both conditions, but _reload_locked adopts the
+                # file, so afterwards nothing can tell that a peer commit had
+                # also arrived unannounced -- and that is a number this fence
+                # is measured by.
+                self._count_unannounced_peer_commit_locked()
                 logger.warning(
                     f"[{self.workspace}] Process {os.getpid()} reloading graph "
                     f"{self._graphml_xml_file}: an earlier save failed and the "
@@ -1256,6 +1305,8 @@ class NetworkXStorage(BaseGraphStorage):
             # duplicating the work at best. Declining discards them, which is
             # what the failed batch's reprocessing expects.
             if self._recovery_reload_pending:
+                # Same precedence, same blind spot, same fix as in _get_graph.
+                self._count_unannounced_peer_commit_locked()
                 logger.warning(
                     f"[{self.workspace}] Declining to save graph "
                     f"{self._graphml_xml_file}: an earlier save failed and its "
