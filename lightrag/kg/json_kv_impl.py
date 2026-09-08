@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, final
 
 from lightrag.base import (
+    normalize_kv_create_time,
     BaseKVStorage,
 )
 from lightrag.file_atomic import reap_orphan_tmp_files
@@ -386,7 +387,14 @@ class JsonKVStorage(BaseKVStorage):
 
         Two side effects under ``_storage_lock``:
             1. Stamp ``create_time`` / ``update_time`` / ``_id`` on each
-               value, then ``self._data.update(data)``. Because
+               value, then ``self._data.update(data)``. Timestamping
+               follows the ``BaseKVStorage.upsert`` contract: a new key
+               gets both stamps, an existing key keeps its stored
+               ``create_time`` (``0`` when the row never had one) and only
+               advances ``update_time``, and a caller-supplied
+               ``create_time`` is ignored. No I/O is needed for that --
+               unlike the remote backends, the previous value is already in
+               shared memory. Because
                ``self._data`` is the shared ``Manager.dict()`` proxy, the
                update is visible to all processes immediately — no
                reload needed.
@@ -429,9 +437,24 @@ class JsonKVStorage(BaseKVStorage):
                     if "llm_cache_list" not in v:
                         v["llm_cache_list"] = []
 
-                # Add timestamps based on whether key exists
-                if k in self._data:  # Key exists, only update update_time
+                # Timestamps per the BaseKVStorage.upsert contract. A single
+                # ``get`` -- not ``__contains__`` + ``__getitem__`` -- because
+                # on a multi-worker deployment ``self._data`` is a
+                # ``Manager().dict()`` proxy and each subscript is a separate
+                # RPC; ``get`` is what this file's read paths already use.
+                # Values are always dicts, so ``None`` means absent.
+                existing = self._data.get(k)
+                if existing is not None:
+                    # Update: the business value is replaced wholesale, but the
+                    # storage-managed create_time survives it. A legacy row
+                    # without the field records 0 (unknown) -- never a
+                    # fabricated original timestamp.
                     v["update_time"] = current_time
+                    v["create_time"] = normalize_kv_create_time(
+                        existing.get("create_time")
+                        if isinstance(existing, dict)
+                        else None
+                    )
                 else:  # New key, set both create_time and update_time
                     v["create_time"] = current_time
                     v["update_time"] = current_time
