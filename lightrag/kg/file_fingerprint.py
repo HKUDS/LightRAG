@@ -63,12 +63,18 @@ fragment:
    later call. :func:`counts_as_a_new_lost_notification` plus each storage's
    ``_counted_peer_fingerprint`` makes it once-per-state. (Overcount, and it
    was unbounded.)
-4. **End that marker at the reload it was protecting.** Kept longer, it
-   suppresses a state that RECURS -- a drop, a notified recreation, a second
-   drop -- which is a real second loss and not the tick-collision residue.
-   Cleared in each storage's ``_adopt_fingerprint``, the single point a new
-   state is recorded and one reached only after a load or commit landed.
-   (Undercount.)
+4. **End that marker at the reload it was protecting -- and not before.**
+   Kept longer, it suppresses a state that RECURS -- a drop, a notified
+   recreation, a second drop -- which is a real second loss and not the
+   tick-collision residue. Cleared in each storage's ``_adopt_fingerprint``,
+   the single point a new state is recorded and one reached only after a load
+   or commit landed. **Only when that adoption records a CONCRETE state**,
+   though: ``adopted(UNREADABLE)`` is ``None``, which means "nothing
+   recorded" and against which any state reads as a change, so clearing there
+   forgets which commit was counted and counts it again. The post-drop
+   fingerprint is ``(None,)``, a real state, so a drop still clears. (Both
+   directions: undercount if kept too long, double-count if dropped too
+   early.)
 5. **Once a call is committed to adopting, it must not observe the file
    again.** Every step from there -- deciding there is a divergence, counting
    it, adopting the new state -- runs on ONE sample. A second observation can

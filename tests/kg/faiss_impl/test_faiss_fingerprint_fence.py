@@ -495,3 +495,53 @@ async def test_a_recurring_state_is_counted_again_after_a_notified_reload(
     finally:
         await worker_b.finalize()
         await worker_a.finalize()
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_adoption_keeps_the_dedupe_marker(
+    tmp_path, multiprocess, lost_notification, monkeypatch
+):
+    """Clearing the marker is only safe once a CONCRETE state is recorded.
+
+    `adopted(UNREADABLE)` is `None`, which means "nothing recorded" — and
+    `peer_commit_detected` reports a change against `None` for any state. So a
+    clear on that adoption forgets which commit was already counted, and the
+    next call counts the same one again. The post-drop state is `(None,)`, a
+    real fingerprint, so it still clears. Issue #3854.
+    """
+    worker_a = await _worker(tmp_path)
+    worker_b = await _worker(tmp_path)
+    try:
+        await worker_a.upsert({"from_a": {"content": "a"}})
+        assert await worker_a.index_done_callback() is True
+        assert worker_b.storage_updated.value is False
+
+        # Counted once, and the load fails, so the marker must survive.
+        with pytest.MonkeyPatch.context() as broken:
+            broken.setattr(
+                FaissVectorDBStorage,
+                "_load_faiss_index",
+                lambda self: (_ for _ in ()).throw(OSError("unreadable")),
+            )
+            with pytest.raises(OSError, match="unreadable"):
+                await worker_b.get_by_id("from_a")
+        assert worker_b._missed_notification_reloads == 1
+
+        # The retry's pre-read sample fails while the load itself succeeds, so
+        # the adoption records `None` rather than a state.
+        original = worker_b._stat_fingerprint
+
+        def unreadable_once():
+            worker_b._stat_fingerprint = original
+            return file_fingerprint.UNREADABLE
+
+        worker_b._stat_fingerprint = unreadable_once
+        assert await worker_b.get_by_id("from_a") is not None
+        assert worker_b._loaded_fingerprint is None
+
+        # Same peer commit, still one event.
+        assert await worker_b.get_by_id("from_a") is not None
+        assert worker_b._missed_notification_reloads == 1
+    finally:
+        await worker_b.finalize()
+        await worker_a.finalize()
