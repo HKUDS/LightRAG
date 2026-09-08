@@ -9,9 +9,9 @@ This test suite validates:
 import asyncio
 import pytest
 from unittest.mock import MagicMock, patch
-from pymilvus import MilvusException
 from lightrag.kg.milvus_impl import (
     MILVUS_MAX_VARCHAR_BYTES,
+    MilvusException,
     MilvusIndexConfig,
     MilvusVectorDBStorage,
 )
