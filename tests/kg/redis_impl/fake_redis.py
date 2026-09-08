@@ -245,12 +245,16 @@ class FakeRedis:
                 str(args[2]),
                 int(args[3]),
             )
-            stored = self.store.get(key)
             # The script's own GETRANGE, counted so a test can assert that the
             # fast path reads a prefix and never a whole value.
             self.command_counts["getrange"] += 1
-            prefix = "" if stored is None else stored[:prefix_bytes]
+            exists = key in self.store
+            prefix = self.store[key][:prefix_bytes] if exists else ""
             if prefix == "":
+                # GETRANGE cannot tell a missing key from an empty value, so
+                # the script disambiguates with EXISTS on this branch only.
+                self.command_counts["exists"] += 1
+            if prefix == "" and not exists:
                 create_time, outcome = now, "created"
             else:
                 match = _CREATE_TIME_PREFIX_RE.match(prefix)
@@ -383,7 +387,9 @@ class FakeScript:
     ``kept`` when the stored prefix carries the timestamp, ``needs_hint``
     (writing nothing) when it does not and no hint was supplied, ``hinted``
     when one was -- and the atomic read-decide-write step that makes the
-    decision safe against a concurrent delete.
+    decision safe against a concurrent delete. A key holding an empty string
+    is a stored row, not an absent one, exactly as the script's ``EXISTS``
+    check decides.
 
     It reuses the production prefix regex, so a divergence between that regex
     and the Lua pattern is invisible here by construction; the integration

@@ -96,7 +96,12 @@ _CREATE_TIME_PREFIX_LUA_PATTERN = '^{%s*"create_time"%s*:%s*(%-?%d+)%s*[,}]'
 #
 #   * key absent            -> stamp ARGV[3] (the write's own clock). Two
 #     writers racing a first insert therefore cannot disagree: the second one
-#     to run finds the row and keeps the first one's timestamp.
+#     to run finds the row and keeps the first one's timestamp. ``GETRANGE``
+#     answers ``''`` for a missing key AND for a key holding an empty string,
+#     so an ``EXISTS`` disambiguates them -- only on that branch, so the
+#     steady state still reads once. An empty row is a stored row with no
+#     usable timestamp, and the contract says such a row records ``0``; it
+#     must never be mistaken for a first creation and given this clock.
 #   * prefix carries an int -> keep it. This is the steady state, and it needs
 #     nothing from the caller: one round trip, no read amplification.
 #   * prefix does not match -> a row written before this layout existed, or by
@@ -114,7 +119,7 @@ _CREATE_TIME_UPSERT_LUA = f"""
 local prefix = redis.call('GETRANGE', KEYS[1], 0, tonumber(ARGV[4]) - 1)
 local outcome
 local create_time
-if prefix == '' then
+if prefix == '' and redis.call('EXISTS', KEYS[1]) == 0 then
     create_time = ARGV[3]
     outcome = 'created'
 else
@@ -624,10 +629,10 @@ class RedisKVStorage(BaseKVStorage):
         come back to find it. The upsert rewrites them ``create_time``-first,
         which makes this a one-time cost per row.
 
-        A key absent from the result is either genuinely gone or holds
-        something that is not a JSON object; the caller passes its own clock
-        for those, and a decodable object with no ``create_time`` yields the
-        documented ``0``.
+        A key absent from the result is genuinely gone -- only ``None``
+        counts, because a key holding an empty string is a stored row and
+        must record the documented ``0`` rather than borrow the caller's
+        clock. A decodable object with no ``create_time`` yields ``0`` too.
         """
         resolved: dict[str, int] = {}
         if not keys:
@@ -644,8 +649,10 @@ class RedisKVStorage(BaseKVStorage):
         values = await pipe.execute()
 
         for k, raw in zip(keys, values):
-            if not raw:
-                # Deleted between the script's read and this one.
+            if raw is None:
+                # Deleted between the script's read and this one. An empty
+                # string is NOT this case -- it falls through to the decode
+                # below, which records 0 like any other unusable value.
                 continue
             try:
                 stored = json.loads(raw)

@@ -246,6 +246,38 @@ async def test_legacy_float_create_time_is_normalized(fake):
 
 
 @pytest.mark.asyncio
+async def test_empty_value_row_records_zero_not_a_new_timestamp(fake, caplog):
+    """An empty value is a stored row with no usable timestamp, not an insert.
+
+    ``GETRANGE`` answers ``''`` for a missing key and for a key holding an
+    empty string alike, so classifying on the prefix alone would fabricate a
+    ``create_time`` for a row that already existed -- the very direction issue
+    #3870 is about, and inconsistent with the corrupt-value row next door.
+    """
+    storage = _kv_storage()
+    await storage.initialize()
+
+    fake.store[f"{storage.final_namespace}:empty"] = ""
+
+    logger = logging.getLogger("lightrag")
+    previous = logger.propagate
+    logger.propagate = True  # lightrag's logger does not propagate by default
+    try:
+        with caplog.at_level(logging.WARNING, logger="lightrag"):
+            with patch("time.time", return_value=1_700_000_700):
+                await storage.upsert({"empty": {"x": 1}})
+    finally:
+        logger.propagate = previous
+
+    stored = _stored(fake, storage, "empty")
+    assert stored["create_time"] == 0
+    assert stored["update_time"] == 1_700_000_700
+    assert any("not decodable JSON" in record.message for record in caplog.records)
+    # It took the hint round, like every other unusable value.
+    assert fake.command_counts["get"] == 1
+
+
+@pytest.mark.asyncio
 async def test_corrupt_row_records_zero_and_warns(fake, caplog):
     """Undecodable storage is corruption, not a legacy shape: say so."""
     storage = _kv_storage()

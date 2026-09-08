@@ -208,6 +208,27 @@ async def test_legacy_float_create_time_is_normalized(storage):
 
 
 @pytest.mark.asyncio
+async def test_empty_value_row_records_zero(storage):
+    """Redis answers GETRANGE with "" for a missing key AND an empty value.
+
+    Only a server-side EXISTS separates them, so this pins that an existing
+    empty row is treated as a stored row with an unknown timestamp instead of
+    a first creation.
+    """
+    async with storage._get_redis_connection() as redis:
+        await redis.set(f"{storage.final_namespace}:empty", "")
+        assert await redis.exists(f"{storage.final_namespace}:empty") == 1
+        assert await redis.getrange(f"{storage.final_namespace}:empty", 0, 63) == ""
+
+    with patch("time.time", return_value=1_700_000_700):
+        await storage.upsert({"empty": {"x": 1}})
+
+    row = await storage.get_by_id("empty")
+    assert row["create_time"] == 0
+    assert row["update_time"] == 1_700_000_700
+
+
+@pytest.mark.asyncio
 async def test_corrupt_row_records_zero(storage):
     async with storage._get_redis_connection() as redis:
         await redis.set(f"{storage.final_namespace}:C", "}} not json {{")
