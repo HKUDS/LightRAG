@@ -239,7 +239,12 @@ class NetworkXStorage(BaseGraphStorage):
               pending would be handled correctly and never counted. Both
               recovery branches therefore classify the peer channel before
               they reload. Overcounting and undercounting are both defects in
-              an instrument a later decision rests on.
+              an instrument a later decision rests on, which is why that one
+              helper is now the single increment site for every branch that
+              counts — and why it deduplicates by ``(st_mtime_ns, st_size)``:
+              a reload that raises leaves the fingerprint and this flag
+              untouched, so without that the same peer commit is re-counted
+              by every later call, without bound.
             * **It cannot fail.** In multiprocess mode ``storage_updated`` is
               a ``Manager().Value`` proxy, so arming it was an RPC to the very
               process whose outage may be why the reload just failed. That
@@ -422,6 +427,12 @@ class NetworkXStorage(BaseGraphStorage):
         # from the file", which no peer can observe and none needs to. See
         # *Recovery reload* in the class docstring.
         self._recovery_reload_pending = False
+        # The on-disk state the file channel has already counted as a lost
+        # notification. A reload that fails leaves the fingerprint and the
+        # recovery flag untouched, so the same peer commit is re-detected by
+        # every later call; without this it would also be re-counted, without
+        # bound. See _count_unannounced_peer_commit_locked.
+        self._counted_peer_fingerprint = None
         # How many times the file channel caught a commit the flag channel
         # never announced. Reported in the warning that records each one, so a
         # deployment can tell whether the lost-notification window in #3854
@@ -514,39 +525,68 @@ class NetworkXStorage(BaseGraphStorage):
             workspace=self.workspace,
         )
 
-    def _count_unannounced_peer_commit_locked(self) -> None:
-        """Count a peer commit the flag never announced, before a reload hides it.
+    def _count_unannounced_peer_commit_locked(self) -> bool:
+        """Count a peer commit no notification announced. True if it counted.
 
         Precondition: the caller holds ``_storage_lock``, and has NOT reloaded
-        yet.
+        yet -- a reload adopts the file, after which the question cannot be
+        asked any more. The caller logs; this decides and counts, so
+        ``_missed_notification_reloads`` has exactly one increment site.
 
-        Called only from the two recovery branches. They win over both channel
-        tests, and their ``_reload_locked`` adopts whatever is on disk -- so
-        without this, a peer commit that arrived unannounced while recovery
-        was pending is discharged correctly but never counted, and nothing
-        afterwards can tell it happened. ``_missed_notification_reloads`` is
-        the evidence the writer-side ``os.utime`` decision waits on (see
-        ``kg.file_fingerprint``), so a silent undercount there is the one
-        observability bug this flag's precedence could introduce.
+        ``_missed_notification_reloads`` is the evidence the writer-side
+        ``os.utime`` decision waits on (see ``kg.file_fingerprint``), so it has
+        to count *peer commits*, not detections of them. The two are not the
+        same thing, in both directions:
 
-        The two conditions are exactly the ones the channel branches use: the
-        flag never fired, and the file is not the one this process recorded.
-        In the ordinary recovery case -- a failed save, no peer -- the file is
-        untouched, so this counts nothing.
+        * **Undercount.** The recovery flag wins over both channel tests and
+          one reload discharges all of them, so a peer commit that arrives
+          while recovery is pending would be handled and never counted. That
+          is why the recovery branches call this at all.
+        * **Overcount.** A reload that raises leaves ``_loaded_fingerprint``
+          and ``_recovery_reload_pending`` exactly as they were, so the same
+          peer commit is re-detected by every later call -- and, counted at
+          detection, re-counted every time, without bound. Persistent
+          unreadability is not exotic here: a failed reload is what arms
+          recovery in the first place. ``_counted_peer_fingerprint`` is what
+          makes the count once-per-state instead of once-per-attempt.
+
+        Counting at detection rather than after a successful reload is
+        deliberate: the window occurred whether or not this process could
+        reload out of it, and a file that never becomes readable would
+        otherwise erase the evidence entirely.
+
+        A genuinely *second* peer commit landing while reloads keep failing
+        has a different fingerprint and is counted. Two commits sharing one
+        ``(st_mtime_ns, st_size)`` are not distinguished -- the tick-collision
+        residue the class docstring already documents, inherited here rather
+        than newly introduced.
+
+        Self-contained on purpose: it re-tests the flag and the file even
+        where the caller's branch condition already established them. The
+        redundant reads cost a Manager RPC and a stat on a path that only runs
+        when a peer commit was detected, and in exchange no site can count by
+        satisfying only half the condition.
         """
         if self.storage_updated.value:
-            return
+            return False
         if not self._peer_commit_detected():
-            return
+            return False
+        sampled = self._stat_fingerprint()
+        if sampled is file_fingerprint.UNREADABLE:
+            # Cannot say WHICH state this would be counting, so counting it
+            # could neither be deduplicated nor trusted. The next call counts
+            # it if the stat works by then.
+            return False
+        if sampled == self._counted_peer_fingerprint:
+            logger.debug(
+                f"[{self.workspace}] The peer commit to {self._graphml_xml_file} "
+                "is the one already counted; this is a retry of a reload that "
+                "did not land, not a second lost notification."
+            )
+            return False
+        self._counted_peer_fingerprint = file_fingerprint.adopted(sampled)
         self._missed_notification_reloads += 1
-        logger.warning(
-            f"[{self.workspace}] Process {os.getpid()}: the file on disk "
-            f"({self._graphml_xml_file}) is not the one this process loaded "
-            "and no reload notification arrived for it, so a notification was "
-            "lost. Recovered through the file channel, folded into the "
-            "recovery reload below (occurrence "
-            f"#{self._missed_notification_reloads} in this process)."
-        )
+        return True
 
     def _reload_locked(self) -> None:
         """Reload ``self._graph`` from disk and satisfy BOTH fence channels.
@@ -630,7 +670,16 @@ class NetworkXStorage(BaseGraphStorage):
                 # file, so afterwards nothing can tell that a peer commit had
                 # also arrived unannounced -- and that is a number this fence
                 # is measured by.
-                self._count_unannounced_peer_commit_locked()
+                if self._count_unannounced_peer_commit_locked():
+                    logger.warning(
+                        f"[{self.workspace}] Process {os.getpid()}: the file on "
+                        f"disk ({self._graphml_xml_file}) is not the one this "
+                        "process loaded and no reload notification arrived for "
+                        "it, so a notification was lost. Recovered through the "
+                        "file channel, folded into the recovery reload below "
+                        f"(occurrence #{self._missed_notification_reloads} in "
+                        "this process)."
+                    )
                 logger.warning(
                     f"[{self.workspace}] Process {os.getpid()} reloading graph "
                     f"{self._graphml_xml_file}: an earlier save failed and the "
@@ -665,15 +714,15 @@ class NetworkXStorage(BaseGraphStorage):
                     )
                 self._reload_locked()
             elif self._peer_commit_detected():
-                self._missed_notification_reloads += 1
-                logger.warning(
-                    f"[{self.workspace}] Process {os.getpid()} reloading graph "
-                    f"{self._graphml_xml_file}: the file on disk is not the one "
-                    "this process loaded and no reload notification arrived for "
-                    "it, so a notification was lost. Recovered through the file "
-                    f"channel (occurrence #{self._missed_notification_reloads} "
-                    "in this process)."
-                )
+                if self._count_unannounced_peer_commit_locked():
+                    logger.warning(
+                        f"[{self.workspace}] Process {os.getpid()} reloading graph "
+                        f"{self._graphml_xml_file}: the file on disk is not the one "
+                        "this process loaded and no reload notification arrived for "
+                        "it, so a notification was lost. Recovered through the file "
+                        f"channel (occurrence #{self._missed_notification_reloads} "
+                        "in this process)."
+                    )
                 self._reload_locked()
 
             graph = self._graph
@@ -1306,7 +1355,14 @@ class NetworkXStorage(BaseGraphStorage):
             # what the failed batch's reprocessing expects.
             if self._recovery_reload_pending:
                 # Same precedence, same blind spot, same fix as in _get_graph.
-                self._count_unannounced_peer_commit_locked()
+                if self._count_unannounced_peer_commit_locked():
+                    logger.warning(
+                        f"[{self.workspace}] Declining to save graph "
+                        f"{self._graphml_xml_file}: the file on disk is also not "
+                        "the one this process loaded and no reload notification "
+                        "arrived for it, so a notification was lost (occurrence "
+                        f"#{self._missed_notification_reloads} in this process)."
+                    )
                 logger.warning(
                     f"[{self.workspace}] Declining to save graph "
                     f"{self._graphml_xml_file}: an earlier save failed and its "
@@ -1333,15 +1389,15 @@ class NetworkXStorage(BaseGraphStorage):
                 # process's stale snapshot. Declining loses THIS mutation
                 # instead, and loudly: _commit_graph_or_raise turns the False
                 # into an error for the caller.
-                self._missed_notification_reloads += 1
-                logger.warning(
-                    f"[{self.workspace}] Declining to save graph "
-                    f"{self._graphml_xml_file}: the file on disk is not the one "
-                    "this process loaded and no reload notification arrived for "
-                    "it, so saving would overwrite another process's commit. "
-                    "Reloading and reporting the commit as declined (occurrence "
-                    f"#{self._missed_notification_reloads} in this process)."
-                )
+                if self._count_unannounced_peer_commit_locked():
+                    logger.warning(
+                        f"[{self.workspace}] Declining to save graph "
+                        f"{self._graphml_xml_file}: the file on disk is not the one "
+                        "this process loaded and no reload notification arrived for "
+                        "it, so saving would overwrite another process's commit. "
+                        "Reloading and reporting the commit as declined (occurrence "
+                        f"#{self._missed_notification_reloads} in this process)."
+                    )
                 self._reload_locked()
                 return False
 

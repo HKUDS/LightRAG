@@ -609,3 +609,133 @@ async def test_a_peer_commit_behind_a_recovery_decline_is_still_counted(
         assert await worker_a.has_node("from_peer") is True
     finally:
         await worker_a.finalize()
+
+
+def _break_reloads(monkeypatch) -> list[bool]:
+    """Make `_reload_locked`'s file read fail until the returned flag is cleared.
+
+    Toggleable rather than permanent so a test can let a later reload land.
+    Note that a worker only reaches `load_nx_graph` when something tells it to
+    reload, so a peer that only ever writes is unaffected by this — but it must
+    be CONSTRUCTED before this is installed, since `__post_init__` loads.
+    """
+    broken = [True]
+    original = NetworkXStorage.load_nx_graph
+
+    def maybe_boom(file_name):
+        if broken[0]:
+            raise OSError("unreadable")
+        return original(file_name)
+
+    monkeypatch.setattr(NetworkXStorage, "load_nx_graph", staticmethod(maybe_boom))
+    return broken
+
+
+@pytest.mark.asyncio
+async def test_a_failing_reload_does_not_recount_the_same_peer_commit(
+    tmp_path, multiprocess, lost_notification, monkeypatch
+):
+    """The counter must count peer commits, not attempts to reload out of them.
+
+    A reload that raises leaves `_loaded_fingerprint` untouched, so the same
+    peer commit is re-detected by every later call. Counted at detection
+    without deduplication, one commit inflates the counter without bound —
+    and `_missed_notification_reloads` is what the `os.utime` decision rests
+    on, so an inflated value is as useless as a suppressed one.
+    """
+    worker_a = await _worker(tmp_path)
+    worker_b = await _worker(tmp_path)
+    try:
+        await worker_b.upsert_node("from_peer", {"entity_id": "from_peer"})
+        assert await worker_b.index_done_callback() is True
+
+        broken = _break_reloads(monkeypatch)
+        for _ in range(5):
+            with pytest.raises(OSError, match="unreadable"):
+                await worker_a.has_node("from_peer")
+        assert worker_a._missed_notification_reloads == 1
+
+        # Once the file is readable the same commit still does not re-count,
+        # and the reload finally lands.
+        broken[0] = False
+        assert await worker_a.has_node("from_peer") is True
+        assert worker_a._missed_notification_reloads == 1
+    finally:
+        await worker_b.finalize()
+        await worker_a.finalize()
+
+
+@pytest.mark.asyncio
+async def test_a_second_peer_commit_during_failing_reloads_is_counted(
+    tmp_path, multiprocess, lost_notification, monkeypatch
+):
+    """Deduplication must not suppress a genuinely different lost notification.
+
+    Two commits sharing one `(st_mtime_ns, st_size)` are still indistinguishable
+    — the documented tick-collision residue, inherited here, not introduced.
+    """
+    worker_a = await _worker(tmp_path)
+    worker_b = await _worker(tmp_path)
+    try:
+        await worker_b.upsert_node("peer_one", {"entity_id": "peer_one"})
+        assert await worker_b.index_done_callback() is True
+
+        broken = _break_reloads(monkeypatch)
+        with pytest.raises(OSError, match="unreadable"):
+            await worker_a.has_node("peer_one")
+        assert worker_a._missed_notification_reloads == 1
+
+        # A second, distinct commit lands while worker A still cannot reload.
+        await worker_b.upsert_node("peer_two_longer_name", {"entity_id": "x"})
+        assert await worker_b.index_done_callback() is True
+
+        with pytest.raises(OSError, match="unreadable"):
+            await worker_a.has_node("peer_one")
+        assert worker_a._missed_notification_reloads == 2
+
+        broken[0] = False
+        assert await worker_a.has_node("peer_two_longer_name") is True
+        assert worker_a._missed_notification_reloads == 2
+    finally:
+        await worker_b.finalize()
+        await worker_a.finalize()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_recovery_reload_does_not_recount_either(
+    tmp_path, multiprocess, lost_notification
+):
+    """The same, at the recovery branch — where a failing reload is the norm.
+
+    Recovery is armed precisely because a reload already failed, so this is
+    the site where a persistently unreadable file is least exotic.
+    """
+    worker_a = await _worker_with_a_failed_save(tmp_path)
+    try:
+        worker_b = await _worker(tmp_path)
+        try:
+            await worker_b.upsert_node("from_peer", {"entity_id": "from_peer"})
+            assert await worker_b.index_done_callback() is True
+        finally:
+            await worker_b.finalize()
+
+        with pytest.MonkeyPatch.context() as broken_reads:
+            broken_reads.setattr(
+                NetworkXStorage,
+                "load_nx_graph",
+                staticmethod(_raise_unreadable),
+            )
+            for _ in range(4):
+                with pytest.raises(OSError, match="unreadable"):
+                    await worker_a.has_node("from_peer")
+                assert worker_a._recovery_reload_pending is True
+
+        assert worker_a._missed_notification_reloads == 1
+        assert await worker_a.has_node("from_peer") is True
+        assert worker_a._missed_notification_reloads == 1
+    finally:
+        await worker_a.finalize()
+
+
+def _raise_unreadable(file_name):
+    raise OSError("unreadable")
