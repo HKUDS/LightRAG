@@ -10,11 +10,13 @@ fixture setup in test_milvus_deferred_embedding.py.
 
 import asyncio
 import threading
+import time
 
 import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch
 
+from lightrag.constants import MILVUS_SUBMIT_LIMIT
 from lightrag.kg.milvus_impl import MilvusVectorDBStorage
 
 pytestmark = pytest.mark.offline
@@ -103,7 +105,7 @@ async def test_flush_runs_upsert_off_the_event_loop_thread():
 
 @pytest.mark.asyncio
 async def test_cancelling_flush_defers_until_write_completes_then_clears_buffer():
-    """asyncio.to_thread only cancels the awaiting future -- an in-flight
+    """run_in_milvus_executor only cancels the awaiting future -- an in-flight
     Milvus upsert keeps running in the background thread. A bare cancel
     here would release _flush_lock and return to the caller while that
     write (and its buffer bookkeeping) is still pending, letting a
@@ -164,3 +166,80 @@ async def test_flush_runs_delete_off_the_event_loop_thread():
     await s.index_done_callback()
 
     assert call_thread_id["id"] != main_thread_id
+
+
+@pytest.mark.asyncio
+async def test_blocking_calls_use_the_dedicated_milvus_pool():
+    """Off the loop is not enough: the calls must also stay off the process
+    DEFAULT executor. That pool is shared with
+    UnifiedLock._acquire_mp_lock_in_executor, login password hashing and the
+    document routes' stat() calls, and its wait queue is unbounded -- parking
+    multi-second Milvus round trips there makes namespace-lock acquisition and
+    /login queue behind Milvus. Threads from the dedicated pool are named
+    'lightrag-milvus*'; asyncio's default pool names them 'asyncio_*'."""
+    thread_names: dict[str, str] = {}
+
+    def record(op):
+        def _fake(**kwargs):
+            thread_names[op] = threading.current_thread().name
+            return {"upsert_count": 1} if op == "upsert" else {"delete_count": 1}
+
+        return _fake
+
+    def fake_load(*args, **kwargs):
+        thread_names["load_collection"] = threading.current_thread().name
+
+    def fake_search(**kwargs):
+        thread_names["search"] = threading.current_thread().name
+        return [[]]
+
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.load_collection = MagicMock(side_effect=fake_load)
+    s._client.search = MagicMock(side_effect=fake_search)
+    s._client.upsert = MagicMock(side_effect=record("upsert"))
+    s._client.delete = MagicMock(side_effect=record("delete"))
+
+    await s.query("hello", top_k=5, query_embedding=[0.1] * 8)
+    await s.upsert({"v1": {"content": "hello"}})
+    await s.delete(["v2"])
+    await s.index_done_callback()
+
+    assert set(thread_names) == {"load_collection", "search", "upsert", "delete"}
+    offenders = {
+        op: name
+        for op, name in thread_names.items()
+        if not name.startswith("lightrag-milvus")
+    }
+    assert offenders == {}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_searches_are_capped_by_the_submit_limit():
+    """The dedicated pool's wait queue is unbounded like any other
+    ThreadPoolExecutor's, so submissions are ceilinged by a semaphore
+    (MILVUS_SUBMIT_LIMIT) rather than by the pool itself. Without that ceiling
+    every concurrent search gets its own thread up to the pool's width."""
+    state = {"live": 0, "peak": 0}
+    guard = threading.Lock()
+
+    def fake_search(**kwargs):
+        with guard:
+            state["live"] += 1
+            state["peak"] = max(state["peak"], state["live"])
+        time.sleep(0.1)
+        with guard:
+            state["live"] -= 1
+        return [[]]
+
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.search = MagicMock(side_effect=fake_search)
+
+    await asyncio.gather(
+        *(
+            s.query("hello", top_k=5, query_embedding=[0.1] * 8)
+            for _ in range(MILVUS_SUBMIT_LIMIT + 4)
+        )
+    )
+
+    assert s._client.search.call_count == MILVUS_SUBMIT_LIMIT + 4
+    assert state["peak"] <= MILVUS_SUBMIT_LIMIT

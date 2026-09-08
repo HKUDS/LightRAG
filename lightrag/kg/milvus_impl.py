@@ -1,13 +1,17 @@
 import asyncio
 import json
 import os
+import threading
 import time
-from typing import Any, final, Optional, Dict
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, final, Optional, Dict
 from dataclasses import dataclass, fields
 import numpy as np
 from lightrag.utils import (
     logger,
+    bounded_submit,
     compute_mdhash_id,
+    get_loop_semaphore,
     _cooperative_yield,
     _consume_future_exception,
     _wait_deferring_cancellation,
@@ -18,6 +22,7 @@ from ..constants import (
     DEFAULT_MAX_FILE_PATH_LENGTH,
     DEFAULT_QUERY_PRIORITY,
     GRAPH_FIELD_SEP,
+    MILVUS_SUBMIT_LIMIT,
 )
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 import pipmaster as pm
@@ -38,6 +43,67 @@ from packaging import version
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Blocking gRPC off the event loop
+# ---------------------------------------------------------------------------
+#
+# MilvusClient is a synchronous SDK: `search`, `upsert`, `delete` and
+# `load_collection` all block until the server answers. Awaited inline from an
+# `async def`, they hold the only thread serving HTTP for the whole round trip,
+# and these round trips are not uniformly short -- a 64MB upsert batch, or a
+# cold `load_collection` (pymilvus polls until the collection is loaded), is
+# seconds rather than milliseconds.
+#
+# Not the default executor (`asyncio.to_thread`): that pool is
+# `min(32, cpu + 4)` workers with an unbounded wait queue, and it is shared with
+# `UnifiedLock._acquire_mp_lock_in_executor`, login password hashing and the
+# document routes' `stat()` calls. Parking Milvus round trips there makes every
+# `pipeline_status` / namespace lock acquisition under gunicorn -- and every
+# login -- queue behind them, which is why `get_storage_io_executor` and
+# `get_chunking_executor` carry the same warning.
+#
+# Not `run_in_storage_io` either: that pool has a single worker, which would
+# serialize every search in the process behind one flush.
+#
+# Invariants for anything submitted here:
+#   * no nested submission -- a submitted callable must not submit again;
+#   * synchronous SDK calls only: awaiting a coroutine from the worker would
+#     park it on the loop while the loop waits for the worker;
+#   * no re-entry into the storage layer, which takes `NamespaceLock` -- the
+#     caller already holds it and it is not reentrant. The pool therefore holds
+#     no locks and cannot take part in a cycle.
+
+_MILVUS_EXECUTOR: Optional[ThreadPoolExecutor] = None
+_MILVUS_EXECUTOR_GUARD = threading.Lock()
+
+
+def get_milvus_executor() -> ThreadPoolExecutor:
+    """The process-wide pool used for blocking MilvusClient calls."""
+    global _MILVUS_EXECUTOR
+    if _MILVUS_EXECUTOR is None:
+        with _MILVUS_EXECUTOR_GUARD:
+            if _MILVUS_EXECUTOR is None:
+                _MILVUS_EXECUTOR = ThreadPoolExecutor(
+                    max_workers=MILVUS_SUBMIT_LIMIT,
+                    thread_name_prefix="lightrag-milvus",
+                )
+    return _MILVUS_EXECUTOR
+
+
+async def run_in_milvus_executor(
+    fn: Callable[..., Any], *args: Any, **kwargs: Any
+) -> Any:
+    """Run one blocking MilvusClient call off the event loop thread.
+
+    Cancellation behaves exactly as `asyncio.to_thread` does: cancelling the
+    caller releases the awaiter while the call itself runs to completion in the
+    pool. Callers that must not return before the call has landed keep their own
+    deferral (see `_flush_pending_vector_ops`).
+    """
+    semaphore = get_loop_semaphore("milvus", MILVUS_SUBMIT_LIMIT)
+    return await bounded_submit(get_milvus_executor(), semaphore, fn, *args, **kwargs)
 
 
 @dataclass
@@ -2358,8 +2424,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         """
         # Ensure collection is loaded before querying. MilvusClient is a
         # synchronous SDK (blocking gRPC calls) -- run it off the event loop
-        # thread so a search doesn't stall every other concurrent task.
-        await asyncio.to_thread(self._ensure_collection_loaded)
+        # thread so a search doesn't stall every other concurrent task, and off
+        # the SHARED default pool (see get_milvus_executor).
+        await run_in_milvus_executor(self._ensure_collection_loaded)
 
         # Use provided embedding or compute it
         if query_embedding is not None:
@@ -2384,7 +2451,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             },
         }
 
-        results = await asyncio.to_thread(
+        results = await run_in_milvus_executor(
             self._client.search,
             collection_name=self.final_namespace,
             data=embedding,
@@ -2501,9 +2568,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 return
 
             # Milvus requires the collection to be loaded before upsert/delete.
-            # MilvusClient is synchronous (blocking gRPC) -- run it off the
-            # event loop thread, same reasoning as query()'s search() call.
-            await asyncio.to_thread(self._ensure_collection_loaded)
+            # MilvusClient is synchronous (blocking gRPC) -- run it in the Milvus
+            # pool, same reasoning as query()'s search() call.
+            await run_in_milvus_executor(self._ensure_collection_loaded)
 
             pending_docs = self._pending_vector_docs
             pending_deletes = self._pending_vector_deletes
@@ -2604,7 +2671,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                                 f"[{self.workspace}] Milvus upsert batch {batch_index}/{len(upsert_batches)}: "
                                 f"records={len(records_batch)}, estimated_payload_bytes={estimated_bytes}"
                             )
-                            await asyncio.to_thread(
+                            await run_in_milvus_executor(
                                 self._client.upsert,
                                 collection_name=self.final_namespace,
                                 data=records_batch,
@@ -2619,7 +2686,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                             else len(delete_ids)
                         )
                         for i in range(0, len(delete_ids), delete_chunk):
-                            await asyncio.to_thread(
+                            await run_in_milvus_executor(
                                 self._client.delete,
                                 collection_name=self.final_namespace,
                                 pks=delete_ids[i : i + delete_chunk],
@@ -2638,7 +2705,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     pending_docs.pop(doc_id, None)
                 pending_deletes.clear()
 
-            # asyncio.to_thread only cancels the awaiting future, not the
+            # run_in_milvus_executor only cancels the awaiting future, not the
             # in-flight Milvus call: a bare cancellation here would release
             # _flush_lock and return to the caller while the write (and the
             # buffer pop that must follow it) is still running in the
