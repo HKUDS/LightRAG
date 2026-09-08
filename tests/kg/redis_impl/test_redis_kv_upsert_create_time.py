@@ -1,12 +1,21 @@
 """Regression tests: RedisKVStorage replacement upserts preserve create_time.
 
-Mirrors the JsonKVStorage invariant from issue #3870 against the in-memory
-FakeRedis stand-in (no live Redis required).
+Issue #3870: an update whose payload carries business fields only used to drop
+the storage-managed ``create_time``. Redis cannot read one JSON field, so the
+value is serialized ``create_time``-first and the previous timestamp is
+recovered with a bounded ``GETRANGE`` prefix read -- see
+``BaseKVStorage.upsert`` for the contract these tests pin, and
+``_dumps_create_time_first`` for why the ordering is only an optimization.
+
+Runs against the in-memory FakeRedis stand-in (no live Redis required);
+``tests/kg/redis_impl/test_redis_kv_create_time_integration.py`` re-checks the
+same invariants against a real server.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -70,6 +79,10 @@ def _kv_storage(workspace: str = "ct-ws"):
     )
 
 
+def _stored(fake: FakeRedis, storage, key: str) -> dict:
+    return json.loads(fake.store[f"{storage.final_namespace}:{key}"])
+
+
 @pytest.mark.asyncio
 async def test_replacement_upsert_preserves_create_time(fake):
     storage = _kv_storage()
@@ -93,10 +106,96 @@ async def test_replacement_upsert_preserves_create_time(fake):
     assert updated["chunk_ids"] == ["c1", "c2"]
     assert updated["count"] == 2
 
-    raw = fake.store[f"{storage.final_namespace}:E"]
-    persisted = json.loads(raw)
+    persisted = _stored(fake, storage, "E")
     assert persisted["create_time"] == 1_700_000_000
     assert persisted["update_time"] == 1_700_000_100
+
+
+@pytest.mark.asyncio
+async def test_value_is_serialized_create_time_first(fake):
+    """The prefix read only works while create_time leads the value."""
+    storage = _kv_storage()
+    await storage.initialize()
+
+    with patch("time.time", return_value=1_700_000_000):
+        await storage.upsert({"E": {"chunk_ids": ["c1"], "count": 1}})
+
+    raw = fake.store[f"{storage.final_namespace}:E"]
+    assert next(iter(json.loads(raw))) == "create_time"
+    assert raw.startswith('{"create_time"')
+
+
+@pytest.mark.asyncio
+async def test_update_reads_prefix_and_never_pulls_whole_value(fake):
+    """The optimization itself: GETRANGE only, no full GET.
+
+    Without this the fix still behaves correctly -- the fallback full read
+    produces the same timestamps -- so only a command-level assertion can tell
+    the fast path apart from a silently dead one.
+    """
+    storage = _kv_storage()
+    await storage.initialize()
+
+    with patch("time.time", return_value=1_700_000_000):
+        await storage.upsert({"E": {"chunk_ids": ["c1"], "count": 1}})
+
+    fake.command_counts.clear()
+    with patch("time.time", return_value=1_700_000_100):
+        await storage.upsert({"E": {"chunk_ids": ["c1", "c2"], "count": 2}})
+
+    assert fake.command_counts["getrange"] == 1
+    assert fake.command_counts["get"] == 0
+
+
+@pytest.mark.asyncio
+async def test_insert_reads_prefix_only(fake):
+    """A brand-new key must not trigger the legacy full-read fallback."""
+    storage = _kv_storage()
+    await storage.initialize()
+
+    fake.command_counts.clear()
+    with patch("time.time", return_value=1_700_000_300):
+        await storage.upsert({"new": {"chunk_ids": ["c9"], "count": 1}})
+
+    assert fake.command_counts["getrange"] == 1
+    assert fake.command_counts["get"] == 0
+    row = await storage.get_by_id("new")
+    assert row["create_time"] == 1_700_000_300
+    assert row["update_time"] == 1_700_000_300
+
+
+@pytest.mark.asyncio
+async def test_legacy_row_with_trailing_create_time_falls_back_to_full_read(fake):
+    """A row written before the ordering existed keeps its real create_time."""
+    storage = _kv_storage()
+    await storage.initialize()
+
+    key = f"{storage.final_namespace}:legacy"
+    fake.store[key] = json.dumps(
+        {
+            "chunk_ids": ["c1"],
+            "count": 1,
+            "create_time": 1_650_000_000,
+            "update_time": 1_650_000_000,
+        }
+    )
+
+    fake.command_counts.clear()
+    with patch("time.time", return_value=1_700_000_200):
+        await storage.upsert({"legacy": {"chunk_ids": ["c1", "c2"], "count": 2}})
+
+    assert fake.command_counts["get"] == 1  # the fallback ran
+    row = await storage.get_by_id("legacy")
+    assert row["create_time"] == 1_650_000_000
+    assert row["update_time"] == 1_700_000_200
+
+    # ...and the row is rewritten in the prefix layout, so the next update
+    # takes the fast path.
+    fake.command_counts.clear()
+    with patch("time.time", return_value=1_700_000_400):
+        await storage.upsert({"legacy": {"chunk_ids": ["c3"], "count": 1}})
+    assert fake.command_counts["get"] == 0
+    assert _stored(fake, storage, "legacy")["create_time"] == 1_650_000_000
 
 
 @pytest.mark.asyncio
@@ -121,18 +220,84 @@ async def test_legacy_row_missing_create_time_keeps_zero(fake):
     assert row is not None
     assert row["create_time"] == 0
     assert row["update_time"] == 1_700_000_200
-    assert json.loads(fake.store[key])["create_time"] == 0
+    assert _stored(fake, storage, "legacy")["create_time"] == 0
 
 
 @pytest.mark.asyncio
-async def test_insert_stamps_both_timestamps(fake):
+async def test_legacy_float_create_time_is_normalized(fake):
+    """An older release could store time.time() unrounded."""
     storage = _kv_storage()
     await storage.initialize()
 
-    with patch("time.time", return_value=1_700_000_300):
-        await storage.upsert({"new": {"chunk_ids": ["c9"], "count": 1}})
+    key = f"{storage.final_namespace}:f"
+    fake.store[key] = json.dumps({"chunk_ids": ["c1"], "create_time": 1_650_000_000.75})
 
-    row = await storage.get_by_id("new")
-    assert row is not None
-    assert row["create_time"] == 1_700_000_300
-    assert row["update_time"] == 1_700_000_300
+    with patch("time.time", return_value=1_700_000_200):
+        await storage.upsert({"f": {"chunk_ids": ["c2"]}})
+
+    stored = _stored(fake, storage, "f")
+    assert stored["create_time"] == 1_650_000_000
+    assert isinstance(stored["create_time"], int)
+
+
+@pytest.mark.asyncio
+async def test_corrupt_row_records_zero_and_warns(fake, caplog):
+    """Undecodable storage is corruption, not a legacy shape: say so."""
+    storage = _kv_storage()
+    await storage.initialize()
+
+    fake.store[f"{storage.final_namespace}:c"] = "}} not json {{"
+
+    logger = logging.getLogger("lightrag")
+    previous = logger.propagate
+    logger.propagate = True  # lightrag's logger does not propagate by default
+    try:
+        with caplog.at_level(logging.WARNING, logger="lightrag"):
+            with patch("time.time", return_value=1_700_000_200):
+                await storage.upsert({"c": {"chunk_ids": ["c1"]}})
+    finally:
+        logger.propagate = previous
+
+    assert _stored(fake, storage, "c")["create_time"] == 0
+    assert any("not decodable JSON" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_caller_supplied_create_time_ignored_on_update(fake):
+    storage = _kv_storage()
+    await storage.initialize()
+
+    with patch("time.time", return_value=1_700_000_000):
+        await storage.upsert({"E": {"chunk_ids": ["c1"]}})
+    with patch("time.time", return_value=1_700_000_100):
+        await storage.upsert({"E": {"chunk_ids": ["c2"], "create_time": 1}})
+
+    assert _stored(fake, storage, "E")["create_time"] == 1_700_000_000
+
+
+@pytest.mark.asyncio
+async def test_row_deleted_between_the_two_reads_is_an_insert(fake, monkeypatch):
+    """The fallback's second read can find the key already gone."""
+    storage = _kv_storage()
+    await storage.initialize()
+
+    key = f"{storage.final_namespace}:gone"
+    # Trailing create_time forces the two-phase path.
+    fake.store[key] = json.dumps({"x": 1, "create_time": 1_650_000_000})
+
+    original_apply = fake._apply
+
+    def apply_and_vanish(op):
+        result = original_apply(op)
+        if op[0] == "getrange" and op[1] == key:
+            fake.store.pop(key, None)
+        return result
+
+    monkeypatch.setattr(fake, "_apply", apply_and_vanish)
+
+    with patch("time.time", return_value=1_700_000_500):
+        await storage.upsert({"gone": {"x": 2}})
+
+    stored = _stored(fake, storage, "gone")
+    assert stored["create_time"] == 1_700_000_500
+    assert stored["update_time"] == 1_700_000_500

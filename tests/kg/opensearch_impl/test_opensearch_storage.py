@@ -215,15 +215,14 @@ def _make_client():
             "_source": {"content": "hello", "create_time": 0, "update_time": 0},
         }
     )
-
-    async def _default_mget(index=None, body=None, **kwargs):
-        # Echo one entry per requested id. Upsert resolves create_time via mget
-        # and rejects length mismatches; a canned multi-doc return_value breaks
-        # single-id upserts under the strict contract.
-        ids = (body or {}).get("ids") or []
-        return {"docs": [{"_id": doc_id, "found": False} for doc_id in ids]}
-
-    client.mget = AsyncMock(side_effect=_default_mget)
+    client.mget = AsyncMock(
+        return_value={
+            "docs": [
+                {"_id": "id1", "found": True, "_source": {"content": "c1"}},
+                {"_id": "id2", "found": True, "_source": {"content": "c2"}},
+            ]
+        }
+    )
     client.count = AsyncMock(return_value={"count": 5})
     client.search = AsyncMock(
         return_value={
@@ -606,20 +605,6 @@ class TestKVStorage:
     async def test_get_by_ids_preserves_order(
         self, global_config, embed_func, mock_client
     ):
-        async def mget_side_effect(index=None, body=None, **kwargs):
-            sources = {"id1": {"content": "c1"}, "id2": {"content": "c2"}}
-            return {
-                "docs": [
-                    {
-                        "_id": doc_id,
-                        "found": True,
-                        "_source": dict(sources[doc_id]),
-                    }
-                    for doc_id in body["ids"]
-                ]
-            }
-
-        mock_client.mget = AsyncMock(side_effect=mget_side_effect)
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
@@ -682,9 +667,11 @@ class TestKVStorage:
                 assert "update_time" in s._pending_upserts["k1"]
                 await s.index_done_callback()
                 actions = mock_bulk.call_args[0][1]
-                src = actions[0]["_source"]
-                assert "create_time" in src
-                assert "update_time" in src
+                # The replacement value travels as scripted-upsert params so
+                # the flush can restore a stored create_time server-side.
+                doc = actions[0]["script"]["params"]["doc"]
+                assert "create_time" in doc
+                assert "update_time" in doc
 
     @pytest.mark.asyncio
     async def test_is_empty(self, global_config, embed_func, mock_client):
@@ -920,7 +907,7 @@ class TestKVStorageBatching:
                 await s.index_done_callback()
                 actions = mock_bulk.call_args[0][1]
                 assert len(actions) == 1
-                assert actions[0]["_source"]["content"] == "second"
+                assert actions[0]["script"]["params"]["doc"]["content"] == "second"
 
     @pytest.mark.asyncio
     async def test_kv_delete_cancels_pending_upsert(
@@ -966,7 +953,8 @@ class TestKVStorageBatching:
                 await s.index_done_callback()
                 actions = mock_bulk.call_args[0][1]
                 assert len(actions) == 1
-                assert actions[0]["_op_type"] == "index"
+                # KV upserts flush as scripted updates (see issue #3870).
+                assert actions[0]["_op_type"] == "update"
 
     @pytest.mark.asyncio
     async def test_kv_delete_works_when_index_not_ready(
@@ -999,8 +987,6 @@ class TestKVStorageBatching:
             s = self._make(global_config, embed_func)
             await s.initialize()
             await s.upsert({"k1": {"content": "buffered"}})
-            # Upsert may mget for create_time; the read path must not.
-            mock_client.mget.reset_mock()
             doc = await s.get_by_id("k1")
             assert doc is not None
             assert doc["_id"] == "k1"
@@ -1042,30 +1028,21 @@ class TestKVStorageBatching:
         self, global_config, embed_func, mock_client
     ):
         """get_by_ids returns buffered docs and falls back to mget for the rest."""
-
-        async def mget_side_effect(index=None, body=None, **kwargs):
-            # Echo one entry per requested id so upsert create_time lookup and
-            # get_by_ids share a strict-length-safe mock.
-            docs = []
-            for doc_id in (body or {}).get("ids") or []:
-                if doc_id == "k2":
-                    docs.append(
-                        {
-                            "_id": "k2",
-                            "found": True,
-                            "_source": {"content": "from_index"},
-                        }
-                    )
-                else:
-                    docs.append({"_id": doc_id, "found": False})
-            return {"docs": docs}
-
-        mock_client.mget = AsyncMock(side_effect=mget_side_effect)
+        mock_client.mget = AsyncMock(
+            return_value={
+                "docs": [
+                    {
+                        "_id": "k2",
+                        "found": True,
+                        "_source": {"content": "from_index"},
+                    },
+                ]
+            }
+        )
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
             await s.upsert({"k1": {"content": "buffered"}})
-            mock_client.mget.reset_mock()
             docs = await s.get_by_ids(["k1", "k2"])
             assert docs[0]["content"] == "buffered"
             assert "__mirrored_id" not in docs[0]
@@ -1080,19 +1057,13 @@ class TestKVStorageBatching:
     ):
         """Buffered upserts shadow OpenSearch: filter_keys treats them as
         existing and never queries them via mget."""
-
-        async def mget_side_effect(index=None, body=None, **kwargs):
-            docs = []
-            for doc_id in (body or {}).get("ids") or []:
-                docs.append({"_id": doc_id, "found": False})
-            return {"docs": docs}
-
-        mock_client.mget = AsyncMock(side_effect=mget_side_effect)
+        mock_client.mget = AsyncMock(
+            return_value={"docs": [{"_id": "k2", "found": False}]}
+        )
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
             await s.upsert({"k1": {"content": "x"}})
-            mock_client.mget.reset_mock()
             missing = await s.filter_keys({"k1", "k2"})
             assert missing == {"k2"}
             # Only the unbuffered id is queried server-side.
@@ -1414,7 +1385,7 @@ class TestKVStorageBatching:
                 for call in mock_bulk.call_args_list:
                     actions = call.args[1]
                     by_op[actions[0]["_op_type"]] = call.kwargs["chunk_size"]
-                assert by_op == {"delete": 22, "index": 11}
+                assert by_op == {"delete": 22, "update": 11}
 
 
 # ---------------------------------------------------------------------------

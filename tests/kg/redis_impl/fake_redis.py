@@ -12,7 +12,7 @@ storage class calls; unknown commands fail loudly.
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Any
 
 from redis.exceptions import ResponseError, WatchError
@@ -27,6 +27,10 @@ class FakeRedis:
         self.versions: dict[str, int] = defaultdict(int)
         # Test hook: raise this exception on the next matching command.
         self.fail_next: dict[str, Exception] = {}
+        # Per-command call counts, so a test can assert WHICH command a code
+        # path used (e.g. RedisKVStorage.upsert must read create_time with
+        # GETRANGE and never pull whole values back with GET).
+        self.command_counts: Counter[str] = Counter()
         # CONFIG GET response; the default is an eviction-safe server.
         self.config_values: dict[str, str] = {
             "maxmemory": "0",
@@ -58,7 +62,23 @@ class FakeRedis:
 
     async def get(self, key: str):
         self._maybe_fail("get")
+        self.command_counts["get"] += 1
         return self.store.get(key)
+
+    async def getrange(self, key: str, start: int, end: int) -> str:
+        """Real GETRANGE semantics: inclusive range, empty string when absent.
+
+        Redis returns an empty string (not nil) for a missing key, which is
+        what RedisKVStorage.upsert reads as "this is an insert".
+        """
+        self._maybe_fail("getrange")
+        self.command_counts["getrange"] += 1
+        value = self.store.get(key)
+        if value is None:
+            return ""
+        if end < 0:
+            end = len(value) + end
+        return value[start : end + 1]
 
     async def set(self, key: str, value: str, nx: bool = False, ex: int | None = None):
         self._maybe_fail("set")
@@ -206,8 +226,17 @@ class FakeRedis:
 
     def _apply(self, op: tuple) -> Any:
         kind = op[0]
+        self.command_counts[kind] += 1
         if kind == "get":
             return self.store.get(op[1])
+        if kind == "getrange":
+            key, start, end = op[1], op[2], op[3]
+            value = self.store.get(key)
+            if value is None:
+                return ""
+            if end < 0:
+                end = len(value) + end
+            return value[start : end + 1]
         if kind == "set":
             self.store[op[1]] = op[2]
             self._bump(op[1])
@@ -349,6 +378,9 @@ class FakePipeline:
             return _run()
         self._ops.append(op)
         return self
+
+    def getrange(self, key: str, start: int, end: int):
+        return self._command(("getrange", key, start, end))
 
     def get(self, key: str):
         if self._immediate:

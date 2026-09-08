@@ -317,6 +317,35 @@ async def _run_chunked_async_bulk(
     )
 
 
+# Painless script behind every KV upsert. It reproduces MongoDB's
+# ``$setOnInsert`` semantics for ``create_time`` ON THE SERVER, so a
+# replacement upsert never has to read the stored row back first (issue
+# #3870 -- a client-side read-modify-write cost one extra HTTP round trip per
+# ``upsert()`` call, and this backend is deliberately called with many small
+# batches):
+#   * document missing -> ``_KV_UPSERT_ACTION_UPSERT`` becomes the starting
+#     ``_source``, the sentinel is therefore present, and the ``create_time``
+#     carried in ``params.doc`` (the moment the write was buffered) stands;
+#   * document present  -> the business value is replaced wholesale and the
+#     STORED ``create_time`` is put back, or ``0`` when the row predates the
+#     field. A caller-supplied value can never win.
+# The sentinel decides "new", not ``ctx.op``, so the branch does not depend on
+# how the server happens to label a scripted upsert.
+_KV_CREATE_TIME_SENTINEL = "__lightrag_kv_new"
+_KV_UPSERT_SCRIPT_SOURCE = (
+    "def prev = ctx._source.create_time;"
+    f" boolean isNew = ctx._source.{_KV_CREATE_TIME_SENTINEL} == true;"
+    " ctx._source.clear();"
+    " ctx._source.putAll(params.doc);"
+    " if (!isNew) { ctx._source.create_time = prev == null ? 0 : prev; }"
+)
+_KV_UPSERT_ACTION_UPSERT = {_KV_CREATE_TIME_SENTINEL: True}
+# Concurrent updates of the same id are resolved by the server instead of
+# failing the bulk item with a 409 (which _extract_bulk_failed_ids would
+# classify as permanent).
+_KV_UPSERT_RETRY_ON_CONFLICT = 3
+
+
 # Index _meta flag marking that an edges index has been migrated to canonical
 # (sorted-pair) document ids. Guards the one-time reindex in
 # PGGraphStorage-style startup so it runs at most once per index.
@@ -1300,6 +1329,12 @@ class OpenSearchKVStorage(BaseKVStorage):
         call is deferred to ``_flush_pending_kv_ops()`` invoked from
         ``index_done_callback`` / ``finalize``.
 
+        No IO happens here. ``create_time`` preservation (the
+        ``BaseKVStorage.upsert`` contract) is delegated to the flush's
+        ``scripted_upsert`` action, so this method never reads the stored row
+        back; the ``create_time`` it buffers is an optimistic estimate that
+        the server overwrites for an already-existing row.
+
         Multi-worker note: the buffer is process-local. Other workers will
         not see these writes until ``index_done_callback()`` flushes them.
         """
@@ -1311,101 +1346,33 @@ class OpenSearchKVStorage(BaseKVStorage):
         )
         current_time = int(time.time())
 
-        # Resolve existing create_time for updates from the local buffer first,
-        # then from OpenSearch for keys not already buffered. Pending deletes
-        # count as "missing" so a delete-then-upsert stamps a fresh create_time.
-        #
-        # The create_time mget runs under `_flush_lock` so a concurrent
-        # delete()/flush cannot race the lookup and leave a replacement with
-        # the deleted incarnation's create_time. Dict shuffling stays outside
-        # the lock; the final buffer swap revalidates against any delete or
-        # buffered upsert that landed while we prepared.
-        existing_create_times: dict[str, int] = {}
-        async with self._flush_lock:
-            pending_deletes = set(self._pending_kv_deletes)
-            for doc_id in data:
-                if doc_id in pending_deletes:
-                    continue
-                pending = self._pending_upserts.get(doc_id)
-                if pending is not None:
-                    ct = pending.get("create_time", 0)
-                    existing_create_times[doc_id] = 0 if ct is None else int(ct)
-
-            to_fetch = [
-                doc_id
-                for doc_id in data
-                if doc_id not in existing_create_times and doc_id not in pending_deletes
-            ]
-            if to_fetch and self._index_ready:
-                try:
-                    response = await self.client.mget(
-                        index=self._index_name,
-                        body={"ids": to_fetch},
-                        _source_includes=["create_time"],
-                    )
-                    docs = response.get("docs")
-                    if not isinstance(docs, list) or len(docs) != len(to_fetch):
-                        raise RuntimeError(
-                            f"[{self.workspace}] OpenSearch mget returned "
-                            f"{len(docs) if isinstance(docs, list) else 'no'} items "
-                            f"for {len(to_fetch)} requested ids during upsert"
-                        )
-                    for requested_id, item in zip(to_fetch, docs):
-                        interpreted = _interpret_mget_item(
-                            item, requested_id, require_source=False
-                        )
-                        if interpreted is None:
-                            continue
-                        source = interpreted.get("_source") or {}
-                        if isinstance(source, dict) and "create_time" in source:
-                            ct = source["create_time"]
-                            existing_create_times[requested_id] = (
-                                0 if ct is None else int(ct)
-                            )
-                        else:
-                            # Legacy persisted row without create_time: keep 0.
-                            existing_create_times[requested_id] = 0
-                except OpenSearchException as e:
-                    if _is_missing_index_error(e):
-                        self._mark_index_missing()
-                    else:
-                        logger.error(
-                            f"[{self.workspace}] Error resolving create_time "
-                            f"during upsert: {e}"
-                        )
-                        raise
-
-        # Construct sources outside the lock (dict shuffling + resolved
-        # timestamps); the buffer-swap step revalidates create_time.
+        # Construct sources outside the lock (no IO; just dict shuffling)
+        # so we hold the lock only for the buffer-swap step.
         prepared: list[tuple[str, dict[str, Any]]] = []
         for i, (doc_id, doc_data) in enumerate(data.items(), start=1):
             doc_data["update_time"] = current_time
-            if doc_id in existing_create_times:
-                # Update path: preserve storage-managed create_time; ignore
-                # any caller-supplied value so replacement payloads without
-                # timestamps cannot reset it.
-                doc_data["create_time"] = existing_create_times[doc_id]
-            else:
-                # Insert (or delete-then-upsert): stamp a fresh create_time.
-                doc_data["create_time"] = current_time
+            # An OPTIMISTIC create_time: right for an insert, and overwritten
+            # by the flush script with the stored value when the row already
+            # exists (see _KV_UPSERT_SCRIPT_SOURCE). Resolving it here would
+            # cost a read per upsert() call, so the buffered value is an
+            # estimate and the persisted one is authoritative. A caller-
+            # supplied create_time is overwritten either way, as the
+            # BaseKVStorage.upsert contract requires.
+            #
+            # Residue: a read served from the buffer (get_by_id / get_by_ids)
+            # reports this estimate, so an update of a row that already exists
+            # on the server shows the write time until the next flush, when the
+            # stored value wins. Same shape as before issue #3870's fix; it
+            # heals at flush and never reaches storage.
+            doc_data["create_time"] = current_time
             source = {k: v for k, v in doc_data.items() if k != "_id"}
             source["__mirrored_id"] = doc_id
             prepared.append((doc_id, source))
             await _cooperative_yield(i)
 
         # Buffer: an upsert cancels any pending delete on the same id.
-        # Revalidate create_time against concurrent buffer mutations that may
-        # have landed after the locked lookup above.
         async with self._flush_lock:
             for doc_id, source in prepared:
-                if doc_id in self._pending_kv_deletes:
-                    # delete-then-upsert: always stamp a fresh create_time.
-                    source["create_time"] = current_time
-                else:
-                    pending = self._pending_upserts.get(doc_id)
-                    if pending is not None:
-                        ct = pending.get("create_time", 0)
-                        source["create_time"] = 0 if ct is None else int(ct)
                 self._pending_kv_deletes.discard(doc_id)
                 self._pending_upserts[doc_id] = source
 
@@ -1435,6 +1402,13 @@ class OpenSearchKVStorage(BaseKVStorage):
 
     async def _flush_pending_kv_ops(self) -> None:
         """Flush buffered upserts + deletes via a single async_bulk call.
+
+        Upserts are ``scripted_upsert`` update actions, not index actions: the
+        script preserves the stored ``create_time`` while replacing the
+        business value, which is how this backend meets the
+        ``BaseKVStorage.upsert`` contract without reading rows back
+        client-side (issue #3870). ``retry_on_conflict`` lets the server
+        resolve concurrent updates of one id instead of failing the item.
 
         Concurrency contract: the entire flush runs under ``_flush_lock``;
         ``upsert`` / ``delete`` / reads / ``drop`` all acquire the same lock
@@ -1474,12 +1448,22 @@ class OpenSearchKVStorage(BaseKVStorage):
                 }
                 for doc_id in pending_deletes
             ]
+            # A scripted upsert rather than a plain index: the script keeps the
+            # stored create_time while replacing the business value, which is
+            # what lets upsert() stay read-free. See _KV_UPSERT_SCRIPT_SOURCE.
             index_actions: list[dict[str, Any]] = [
                 {
-                    "_op_type": "index",
+                    "_op_type": "update",
                     "_index": self._index_name,
                     "_id": doc_id,
-                    "_source": source,
+                    "retry_on_conflict": _KV_UPSERT_RETRY_ON_CONFLICT,
+                    "scripted_upsert": True,
+                    "upsert": dict(_KV_UPSERT_ACTION_UPSERT),
+                    "script": {
+                        "lang": "painless",
+                        "source": _KV_UPSERT_SCRIPT_SOURCE,
+                        "params": {"doc": source},
+                    },
                 }
                 for doc_id, source in pending_upserts.items()
             ]

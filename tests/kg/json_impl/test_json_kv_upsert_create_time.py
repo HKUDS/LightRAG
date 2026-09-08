@@ -3,7 +3,13 @@
 Fixes https://github.com/HKUDS/LightRAG/issues/3870 — callers that replace a
 KV value with business fields only must not discard the storage-managed
 create_time. update_time advances; legacy rows missing create_time keep the
-0/unknown convention rather than inventing an original timestamp.
+0/unknown convention rather than inventing an original timestamp. See
+``BaseKVStorage.upsert`` for the contract these tests pin.
+
+Unlike the remote backends this one needs no I/O to preserve the field -- the
+previous value is already in shared memory -- but on a multi-worker
+deployment that memory is a ``Manager().dict()`` proxy, so the number of
+subscripts is the cost that matters and is asserted here too.
 """
 
 from __future__ import annotations
@@ -111,3 +117,91 @@ async def test_insert_stamps_both_timestamps(tmp_path):
     assert row is not None
     assert row["create_time"] == 1_700_000_300
     assert row["update_time"] == 1_700_000_300
+
+
+class _CountingDict(dict):
+    """Stand-in for the multiprocess ``Manager().dict()`` proxy.
+
+    Every subscript on the real proxy is a separate IPC round trip, and
+    ``__getitem__`` ships the whole value back. Counting them is the only way
+    to pin "one lookup per key" -- the timestamps are identical either way.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.calls = {"get": 0, "getitem": 0, "contains": 0}
+
+    def get(self, key, default=None):
+        self.calls["get"] += 1
+        return super().get(key, default)
+
+    def __getitem__(self, key):
+        self.calls["getitem"] += 1
+        return super().__getitem__(key)
+
+    def __contains__(self, key):
+        self.calls["contains"] += 1
+        return super().__contains__(key)
+
+
+@pytest.mark.asyncio
+async def test_update_uses_one_lookup_per_key(tmp_path):
+    storage = _make_storage(tmp_path)
+    await storage.initialize()
+
+    counting = _CountingDict()
+    storage._data = counting
+
+    with patch("time.time", return_value=1_700_000_000):
+        await storage.upsert({"A": {"x": 1}, "B": {"x": 1}})
+    with patch("time.time", return_value=1_700_000_100):
+        counting.calls.update({"get": 0, "getitem": 0, "contains": 0})
+        await storage.upsert({"A": {"x": 2}, "B": {"x": 2}})
+
+    assert counting.calls["get"] == 2
+    assert counting.calls["getitem"] == 0
+    assert counting.calls["contains"] == 0
+    assert counting["A"]["create_time"] == 1_700_000_000
+    assert counting["A"]["update_time"] == 1_700_000_100
+
+
+@pytest.mark.asyncio
+async def test_null_create_time_normalized_to_zero(tmp_path):
+    """A hand-edited JSON file can carry an explicit null."""
+    storage = _make_storage(tmp_path)
+    await storage.initialize()
+
+    storage._data["legacy"] = {"x": 1, "create_time": None}
+    with patch("time.time", return_value=1_700_000_200):
+        await storage.upsert({"legacy": {"x": 2}})
+
+    assert storage._data["legacy"]["create_time"] == 0
+    assert storage._data["legacy"]["update_time"] == 1_700_000_200
+
+
+@pytest.mark.asyncio
+async def test_legacy_float_create_time_is_normalized(tmp_path):
+    """An older release could store time.time() unrounded."""
+    storage = _make_storage(tmp_path)
+    await storage.initialize()
+
+    storage._data["f"] = {"x": 1, "create_time": 1_650_000_000.75}
+    with patch("time.time", return_value=1_700_000_200):
+        await storage.upsert({"f": {"x": 2}})
+
+    stored = storage._data["f"]
+    assert stored["create_time"] == 1_650_000_000
+    assert isinstance(stored["create_time"], int)
+
+
+@pytest.mark.asyncio
+async def test_caller_supplied_create_time_ignored_on_update(tmp_path):
+    storage = _make_storage(tmp_path)
+    await storage.initialize()
+
+    with patch("time.time", return_value=1_700_000_000):
+        await storage.upsert({"E": {"x": 1}})
+    with patch("time.time", return_value=1_700_000_100):
+        await storage.upsert({"E": {"x": 2, "create_time": 1}})
+
+    assert storage._data["E"]["create_time"] == 1_700_000_000

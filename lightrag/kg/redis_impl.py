@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+import re
 import time
 import hashlib
 from typing import Any, ClassVar, final, Sequence, Union
@@ -30,6 +31,7 @@ from lightrag.utils import (
 )
 
 from lightrag.base import (
+    normalize_kv_create_time,
     CURSOR_END,
     CURSOR_START,
     CursorAfter,
@@ -65,6 +67,42 @@ from tenacity import (
     retry_if_exception_type,
     before_sleep_log,
 )
+
+# Storage-managed ``create_time`` is serialized as the FIRST key of every KV
+# value so an update can recover the previous timestamp with a bounded prefix
+# read instead of pulling the whole row back over the wire -- a ``full_docs``
+# row is an entire document, and Redis has no way to read one JSON field.
+# 64 bytes covers ``{"create_time":`` plus a 19-digit integer and its comma.
+#
+# The separator is matched loosely on purpose: ``json.dumps`` writes
+# ``{"create_time": 1700000000,`` (a space after the colon) while a compact
+# dump or a hand-edited row writes it without one. A prefix that does not
+# match is not a failure -- it falls back to a full read -- but a needlessly
+# strict pattern would silently send EVERY update down that fallback and
+# quietly undo the optimization.
+_CREATE_TIME_PREFIX_BYTES = 64
+_CREATE_TIME_PREFIX_RE = re.compile(r'^\{\s*"create_time"\s*:\s*(-?\d+)\s*[,}]')
+
+
+def _dumps_create_time_first(value: dict[str, Any]) -> str:
+    """Serialize a KV row with ``create_time`` as its first key.
+
+    ``RedisKVStorage.upsert`` recovers the stored ``create_time`` with a
+    ``GETRANGE`` prefix read, which only works while the field leads the
+    serialized object. Python dicts preserve insertion order and
+    ``json.dumps`` follows it, so the ordering is established here -- the one
+    place a KV row is serialized. Seeding the key first and then ``update``-ing
+    keeps that position, because ``dict.update`` replaces an existing key's
+    value without moving it.
+
+    The ordering is an optimization, not a correctness fence: a row that does
+    not match the prefix (written by an older release, or by hand) falls back
+    to a full read in ``upsert`` and is rewritten in this layout afterwards.
+    """
+    ordered: dict[str, Any] = {"create_time": value.get("create_time", 0)}
+    ordered.update(value)
+    return json.dumps(ordered)
+
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
@@ -536,13 +574,74 @@ class RedisKVStorage(BaseKVStorage):
 
         async with self._get_redis_connection() as redis:
             try:
-                # Fetch existing values so updates can preserve create_time
-                # without merging stale business fields from storage.
+                # Resolve the stored create_time with a BOUNDED prefix read.
+                # An update must not reset the field (issue #3870), and Redis
+                # cannot read one JSON field, but it can read a byte range:
+                # _dumps_create_time_first() puts create_time first, so 64
+                # bytes per key is enough. An empty answer means the key does
+                # not exist -- an existing row is never written empty by this
+                # class, and it would be replaced wholesale here anyway.
                 pipe = redis.pipeline()
                 for i, k in enumerate(data.keys(), start=1):
-                    pipe.get(f"{self.final_namespace}:{k}")
+                    pipe.getrange(
+                        f"{self.final_namespace}:{k}",
+                        0,
+                        _CREATE_TIME_PREFIX_BYTES - 1,
+                    )
                     await _cooperative_yield(i)
-                existing_values = await pipe.execute()
+                prefixes = await pipe.execute()
+
+                stored_create_times: dict[str, int] = {}
+                needs_full_read: list[str] = []
+                for i, k in enumerate(data.keys()):
+                    prefix = prefixes[i]
+                    if not prefix:
+                        continue  # absent -> insert
+                    match = _CREATE_TIME_PREFIX_RE.match(prefix)
+                    if match is not None:
+                        stored_create_times[k] = int(match.group(1))
+                    else:
+                        # Row written before this layout existed (or by hand):
+                        # the field may be anywhere in the value, or missing.
+                        needs_full_read.append(k)
+                    await _cooperative_yield(i + 1)
+
+                if needs_full_read:
+                    # Rare and self-healing: the rewrite below stores these
+                    # rows create_time-first, so they take the prefix path
+                    # from now on.
+                    logger.debug(
+                        f"[{self.workspace}] {self.namespace}: full read for "
+                        f"{len(needs_full_read)} row(s) whose create_time is "
+                        f"not in the value prefix"
+                    )
+                    pipe = redis.pipeline()
+                    for i, k in enumerate(needs_full_read, start=1):
+                        pipe.get(f"{self.final_namespace}:{k}")
+                        await _cooperative_yield(i)
+                    legacy_values = await pipe.execute()
+                    for k, raw in zip(needs_full_read, legacy_values):
+                        if not raw:
+                            # Deleted between the two reads: it is an insert
+                            # again, so leave it out of stored_create_times.
+                            continue
+                        try:
+                            stored = json.loads(raw)
+                        except (json.JSONDecodeError, TypeError):
+                            # Not a legacy shape but corruption: say so
+                            # instead of silently recording an unknown.
+                            logger.warning(
+                                f"[{self.workspace}] {self.namespace}: row "
+                                f"'{k}' is not decodable JSON; recording "
+                                f"create_time=0 (unknown)"
+                            )
+                            stored_create_times[k] = 0
+                            continue
+                        stored_create_times[k] = normalize_kv_create_time(
+                            stored.get("create_time")
+                            if isinstance(stored, dict)
+                            else None
+                        )
 
                 # Add timestamps to data
                 for i, (k, v) in enumerate(data.items(), start=1):
@@ -551,20 +650,14 @@ class RedisKVStorage(BaseKVStorage):
                         if "llm_cache_list" not in v:
                             v["llm_cache_list"] = []
 
-                    # On update, replace the business value but preserve the
-                    # storage-managed create_time. Legacy rows missing the
-                    # field keep the 0/unknown convention.
-                    existing_raw = existing_values[i - 1]
-                    if existing_raw:
+                    # Update: the business value is replaced wholesale, but the
+                    # storage-managed create_time survives it; a legacy row
+                    # without the field records 0 (unknown). A caller-supplied
+                    # create_time is ignored on this path -- see the
+                    # BaseKVStorage.upsert contract.
+                    if k in stored_create_times:
                         v["update_time"] = current_time
-                        try:
-                            existing = json.loads(existing_raw)
-                        except (json.JSONDecodeError, TypeError):
-                            existing = None
-                        if isinstance(existing, dict) and "create_time" in existing:
-                            v["create_time"] = existing["create_time"]
-                        else:
-                            v["create_time"] = 0
+                        v["create_time"] = stored_create_times[k]
                     else:  # New key, set both create_time and update_time
                         v["create_time"] = current_time
                         v["update_time"] = current_time
@@ -575,7 +668,10 @@ class RedisKVStorage(BaseKVStorage):
                 # Store the data
                 pipe = redis.pipeline()
                 for i, (k, v) in enumerate(data.items(), start=1):
-                    pipe.set(f"{self.final_namespace}:{k}", json.dumps(v))
+                    pipe.set(
+                        f"{self.final_namespace}:{k}",
+                        _dumps_create_time_first(v),
+                    )
                     await _cooperative_yield(i)
                 await pipe.execute()
 
