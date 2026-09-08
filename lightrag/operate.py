@@ -6203,6 +6203,12 @@ async def _find_most_related_edges_from_entities(
     return all_edges_data
 
 
+def _vector_chunk_quota(max_related_chunks: int, group_count: int) -> int:
+    if max_related_chunks <= 0 or group_count <= 0:
+        return 0
+    return max(1, int(max_related_chunks * group_count / 2))
+
+
 async def _find_related_text_unit_from_entities(
     node_datas: list[dict],
     query_param: QueryParam,
@@ -6287,7 +6293,9 @@ async def _find_related_text_unit_from_entities(
     #     The order of text chunks aligns with the naive retrieval's destination.
     #     When reranking is disabled, the text chunks delivered to the LLM tend to favor naive retrieval.
     if kg_chunk_pick_method == "VECTOR" and query and chunks_vdb:
-        num_of_chunks = int(max_related_chunks * len(entities_with_chunks) / 2)
+        num_of_chunks = _vector_chunk_quota(
+            max_related_chunks, len(entities_with_chunks)
+        )
 
         # Get embedding function from global config
         actual_embedding_func = text_chunks_db.embedding_func
@@ -6579,7 +6587,9 @@ async def _find_related_text_unit_from_relations(
     selected_chunk_ids = []  # Initialize to avoid UnboundLocalError
 
     if kg_chunk_pick_method == "VECTOR" and query and chunks_vdb:
-        num_of_chunks = int(max_related_chunks * len(relations_with_chunks) / 2)
+        num_of_chunks = _vector_chunk_quota(
+            max_related_chunks, len(relations_with_chunks)
+        )
 
         # Get embedding function from global config
         actual_embedding_func = text_chunks_db.embedding_func
