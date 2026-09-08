@@ -148,6 +148,14 @@ def _make_client() -> AsyncMock:
     # query_params wraps the client methods in a SYNC wrapper, so spec'd
     # children default to MagicMock — async ones must be set explicitly.
     client.update_by_query = AsyncMock(return_value={"updated": 0, "failures": []})
+
+    async def _default_mget(index=None, body=None, **kwargs):
+        # Echo one entry per requested id. KV upsert resolves create_time via
+        # mget and rejects length mismatches / bare MagicMock responses.
+        ids = (body or {}).get("ids") or []
+        return {"docs": [{"_id": doc_id, "found": False} for doc_id in ids]}
+
+    client.mget = AsyncMock(side_effect=_default_mget)
     return client
 
 
@@ -1067,9 +1075,10 @@ async def test_repair_index_not_ready_raises(global_config):
 async def test_kv_strict_pending_delete_is_confirmed_absent(global_config):
     client = _make_client()
     storage = await _make_kv(global_config, client)
-    client.mget = AsyncMock()
     await storage.upsert({"doc-1": {"content": "x"}})
     await storage.delete(["doc-1"])
+    # Upsert may mget for create_time; the strict read must not.
+    client.mget.reset_mock()
     assert await storage.get_by_id_strict("doc-1") is None
     client.mget.assert_not_awaited()
 
@@ -1077,8 +1086,9 @@ async def test_kv_strict_pending_delete_is_confirmed_absent(global_config):
 async def test_kv_strict_pending_upsert_is_present(global_config):
     client = _make_client()
     storage = await _make_kv(global_config, client)
-    client.mget = AsyncMock()
     await storage.upsert({"doc-1": {"content": "x"}})
+    # Upsert may mget for create_time; the strict read must not.
+    client.mget.reset_mock()
     doc = await storage.get_by_id_strict("doc-1")
     assert doc["content"] == "x"
     assert doc["_id"] == "doc-1"

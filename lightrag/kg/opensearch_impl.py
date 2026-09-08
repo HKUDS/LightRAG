@@ -1314,6 +1314,12 @@ class OpenSearchKVStorage(BaseKVStorage):
         # Resolve existing create_time for updates from the local buffer first,
         # then from OpenSearch for keys not already buffered. Pending deletes
         # count as "missing" so a delete-then-upsert stamps a fresh create_time.
+        #
+        # The create_time mget runs under `_flush_lock` so a concurrent
+        # delete()/flush cannot race the lookup and leave a replacement with
+        # the deleted incarnation's create_time. Dict shuffling stays outside
+        # the lock; the final buffer swap revalidates against any delete or
+        # buffered upsert that landed while we prepared.
         existing_create_times: dict[str, int] = {}
         async with self._flush_lock:
             pending_deletes = set(self._pending_kv_deletes)
@@ -1325,52 +1331,52 @@ class OpenSearchKVStorage(BaseKVStorage):
                     ct = pending.get("create_time", 0)
                     existing_create_times[doc_id] = 0 if ct is None else int(ct)
 
-        to_fetch = [
-            doc_id
-            for doc_id in data
-            if doc_id not in existing_create_times and doc_id not in pending_deletes
-        ]
-        if to_fetch and self._index_ready:
-            try:
-                response = await self.client.mget(
-                    index=self._index_name,
-                    body={"ids": to_fetch},
-                    _source_includes=["create_time"],
-                )
-                docs = response.get("docs")
-                if not isinstance(docs, list) or len(docs) != len(to_fetch):
-                    raise RuntimeError(
-                        f"[{self.workspace}] OpenSearch mget returned "
-                        f"{len(docs) if isinstance(docs, list) else 'no'} items "
-                        f"for {len(to_fetch)} requested ids during upsert"
+            to_fetch = [
+                doc_id
+                for doc_id in data
+                if doc_id not in existing_create_times and doc_id not in pending_deletes
+            ]
+            if to_fetch and self._index_ready:
+                try:
+                    response = await self.client.mget(
+                        index=self._index_name,
+                        body={"ids": to_fetch},
+                        _source_includes=["create_time"],
                     )
-                for requested_id, item in zip(to_fetch, docs):
-                    interpreted = _interpret_mget_item(
-                        item, requested_id, require_source=False
-                    )
-                    if interpreted is None:
-                        continue
-                    source = interpreted.get("_source") or {}
-                    if isinstance(source, dict) and "create_time" in source:
-                        ct = source["create_time"]
-                        existing_create_times[requested_id] = (
-                            0 if ct is None else int(ct)
+                    docs = response.get("docs")
+                    if not isinstance(docs, list) or len(docs) != len(to_fetch):
+                        raise RuntimeError(
+                            f"[{self.workspace}] OpenSearch mget returned "
+                            f"{len(docs) if isinstance(docs, list) else 'no'} items "
+                            f"for {len(to_fetch)} requested ids during upsert"
                         )
+                    for requested_id, item in zip(to_fetch, docs):
+                        interpreted = _interpret_mget_item(
+                            item, requested_id, require_source=False
+                        )
+                        if interpreted is None:
+                            continue
+                        source = interpreted.get("_source") or {}
+                        if isinstance(source, dict) and "create_time" in source:
+                            ct = source["create_time"]
+                            existing_create_times[requested_id] = (
+                                0 if ct is None else int(ct)
+                            )
+                        else:
+                            # Legacy persisted row without create_time: keep 0.
+                            existing_create_times[requested_id] = 0
+                except OpenSearchException as e:
+                    if _is_missing_index_error(e):
+                        self._mark_index_missing()
                     else:
-                        # Legacy persisted row without create_time: keep 0.
-                        existing_create_times[requested_id] = 0
-            except OpenSearchException as e:
-                if _is_missing_index_error(e):
-                    self._mark_index_missing()
-                else:
-                    logger.error(
-                        f"[{self.workspace}] Error resolving create_time "
-                        f"during upsert: {e}"
-                    )
-                    raise
+                        logger.error(
+                            f"[{self.workspace}] Error resolving create_time "
+                            f"during upsert: {e}"
+                        )
+                        raise
 
         # Construct sources outside the lock (dict shuffling + resolved
-        # timestamps) so we hold the lock only for the buffer-swap step.
+        # timestamps); the buffer-swap step revalidates create_time.
         prepared: list[tuple[str, dict[str, Any]]] = []
         for i, (doc_id, doc_data) in enumerate(data.items(), start=1):
             doc_data["update_time"] = current_time
@@ -1388,8 +1394,18 @@ class OpenSearchKVStorage(BaseKVStorage):
             await _cooperative_yield(i)
 
         # Buffer: an upsert cancels any pending delete on the same id.
+        # Revalidate create_time against concurrent buffer mutations that may
+        # have landed after the locked lookup above.
         async with self._flush_lock:
             for doc_id, source in prepared:
+                if doc_id in self._pending_kv_deletes:
+                    # delete-then-upsert: always stamp a fresh create_time.
+                    source["create_time"] = current_time
+                else:
+                    pending = self._pending_upserts.get(doc_id)
+                    if pending is not None:
+                        ct = pending.get("create_time", 0)
+                        source["create_time"] = 0 if ct is None else int(ct)
                 self._pending_kv_deletes.discard(doc_id)
                 self._pending_upserts[doc_id] = source
 
