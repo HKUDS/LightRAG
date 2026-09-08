@@ -46,6 +46,8 @@ from lightrag.utils import (
 _CHUNK_SCAN_BATCH = 200
 _UPSERT_BATCH = 500
 _PLAN_SCHEMA_VERSION = 1
+_BOLD_YELLOW = "\033[1;33m"
+_RESET = "\033[0m"
 _CONNECTION_ID_ENV_KEYS = (
     "MEMGRAPH_URI",
     "MONGO_DATABASE",
@@ -1028,6 +1030,18 @@ def _storage_description(storage) -> str:
     return f"{type(storage).__name__}{suffix}"
 
 
+def _run_mode(args: argparse.Namespace) -> str:
+    if not args.apply:
+        return "DRY RUN ONLY"
+    if getattr(args, "resume_plan", None):
+        return "APPLY (RESUME)"
+    return "APPLY"
+
+
+def _print_run_status(message: str) -> None:
+    print(f"{_BOLD_YELLOW}{message}{_RESET}")
+
+
 async def _build_rag():
     from lightrag import LightRAG
 
@@ -1066,6 +1080,7 @@ def _new_recovery_plan_path(rag) -> Path:
 async def run(args: argparse.Namespace) -> bool:
     """Run the offline tool; return False for any unsafe or failed apply."""
     print("LightRAG Offline Chunk-Tracking Repair Tool")
+    _print_run_status(f"Run mode: {_run_mode(args)}")
     print("STOP every server, worker, and SDK writer for the target workspace.")
     if not _confirm_offline(args.yes):
         print("Operation cancelled. Stop all writers before running this tool.")
@@ -1132,7 +1147,7 @@ async def run(args: argparse.Namespace) -> bool:
             print("No tracking namespace was modified.")
             return False
         if not args.apply:
-            print("Dry run only. Re-run with --apply to rebuild tracking.")
+            _print_run_status("Dry run only. Re-run with --apply to rebuild tracking.")
             return True
         if not resume_path:
             print(f"Durable recovery plan: {plan.path}")

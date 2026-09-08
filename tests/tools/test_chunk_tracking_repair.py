@@ -1056,7 +1056,7 @@ async def test_cli_requires_offline_confirmation_before_storage_initialization(
     assert result is True
 
 
-async def test_cli_defaults_to_a_read_only_plan(monkeypatch):
+async def test_cli_defaults_to_a_read_only_plan(monkeypatch, capsys):
     docs, chunks, cache, graph = _two_chunk_corpus()
     repairer = _Repairer(docs=docs, chunks=chunks, cache=cache, graph=graph)
 
@@ -1080,6 +1080,11 @@ async def test_cli_defaults_to_a_read_only_plan(monkeypatch):
     assert repairer.finalized is True
     assert repairer.entity_chunks.drops == 0
     assert repairer.relation_chunks.drops == 0
+    output_lines = capsys.readouterr().out.strip().splitlines()
+    assert output_lines[1] == "\033[1;33mRun mode: DRY RUN ONLY\033[0m"
+    assert output_lines[-1] == (
+        "\033[1;33mDry run only. Re-run with --apply to rebuild tracking.\033[0m"
+    )
 
 
 async def test_cli_returns_failure_for_an_unsafe_apply_without_dropping(monkeypatch):
