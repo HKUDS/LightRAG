@@ -41,6 +41,7 @@ from .client import (
 
 LEDGER_TABLE_NAME = "lightrag_hologres_schema_ledger"
 KV_TABLE_NAME = "lightrag_hologres_kv"
+DOC_STATUS_TABLE_NAME = "lightrag_hologres_doc_status"
 
 _MAX_ERROR_SUMMARY = 200
 _NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -446,6 +447,105 @@ def kv_schema_descriptors(schema: str) -> tuple[SchemaDescriptor]:
         postcondition_args=(
             validated,
             KV_TABLE_NAME,
+            expected_columns,
+            expected_primary_key,
+        ),
+        replay_safe=True,
+    )
+    return (descriptor,)
+
+
+def doc_status_schema_descriptors(schema: str) -> tuple[SchemaDescriptor]:
+    """Return the fixed shared-table descriptor for document status records."""
+
+    validated = _validated_schema(schema)
+    qualified_table = quote_qualified_identifier(validated, DOC_STATUS_TABLE_NAME)
+    expected_columns = json.dumps(
+        [
+            ["workspace", "text", True],
+            ["id", "text", True],
+            ["status", "text", True],
+            ["created_at", "timestamptz", True],
+            ["updated_at", "timestamptz", True],
+            ["file_path", "text", True],
+            ["track_id", "text", False],
+            ["content_hash", "text", False],
+            ["content_summary", "text", True],
+            ["content_length", "int8", True],
+            ["chunks_count", "int4", False],
+            ["chunks_list", "jsonb", True],
+            ["error_msg", "text", False],
+            ["metadata", "jsonb", True],
+            ["multimodal_processed", "bool", False],
+            ["extra", "jsonb", True],
+        ],
+        separators=(",", ":"),
+    )
+    expected_primary_key = json.dumps(["workspace", "id"], separators=(",", ":"))
+    postcondition_sql = (
+        "SELECT "
+        "(SELECT count(*) = 1 FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r') "
+        "AND COALESCE(("
+        "SELECT jsonb_agg(jsonb_build_array(a.attname, t.typname, a.attnotnull) "
+        "ORDER BY a.attnum) FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid "
+        "JOIN pg_catalog.pg_type t ON t.oid = a.atttypid "
+        "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r' "
+        "AND a.attnum > 0 AND NOT a.attisdropped"
+        "), '[]'::jsonb) = $3::jsonb "
+        "AND (SELECT count(*) = 1 FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "JOIN pg_catalog.pg_constraint p ON p.conrelid = c.oid "
+        "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r' "
+        "AND p.contype = 'p') "
+        "AND COALESCE(("
+        "SELECT jsonb_agg(a.attname ORDER BY key.ordinality) "
+        "FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "JOIN pg_catalog.pg_constraint p ON p.conrelid = c.oid "
+        "CROSS JOIN LATERAL unnest(p.conkey) WITH ORDINALITY "
+        "AS key(attnum, ordinality) "
+        "JOIN pg_catalog.pg_attribute a "
+        "ON a.attrelid = c.oid AND a.attnum = key.attnum "
+        "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r' "
+        "AND p.contype = 'p' AND NOT a.attisdropped"
+        "), '[]'::jsonb) = $4::jsonb"
+    )
+    descriptor = SchemaDescriptor(
+        name="shared_table",
+        component="doc_status",
+        version=1,
+        step=1,
+        sql=(
+            f"CREATE TABLE IF NOT EXISTS {qualified_table} ("
+            "workspace text NOT NULL, "
+            "id text NOT NULL, "
+            "status text NOT NULL, "
+            "created_at timestamptz NOT NULL, "
+            "updated_at timestamptz NOT NULL, "
+            "file_path text NOT NULL, "
+            "track_id text, "
+            "content_hash text, "
+            "content_summary text NOT NULL, "
+            "content_length bigint NOT NULL, "
+            "chunks_count integer, "
+            "chunks_list jsonb NOT NULL DEFAULT '[]'::jsonb, "
+            "error_msg text, "
+            "metadata jsonb NOT NULL DEFAULT '{}'::jsonb, "
+            "multimodal_processed boolean, "
+            "extra jsonb NOT NULL DEFAULT '{}'::jsonb, "
+            "PRIMARY KEY (workspace, id)"
+            ") LOGICAL PARTITION BY LIST (workspace) "
+            "WITH (orientation = 'row', distribution_key = 'id', "
+            "clustering_key = 'status,created_at,id,content_hash,file_path')"
+        ),
+        postcondition_sql=postcondition_sql,
+        postcondition_args=(
+            validated,
+            DOC_STATUS_TABLE_NAME,
             expected_columns,
             expected_primary_key,
         ),
