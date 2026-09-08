@@ -28,7 +28,9 @@ a coarse filesystem: ``+1 ns`` is truncated away on a 1 s (ext3, HFS+) or 2 s
 timestamps. It costs one extra ``stat`` per commit plus a rare ``utime``, so
 cost is not the objection. Do it only if the ``_missed_notification_reloads``
 counters that each storage logs ever show this window occurring in a real
-deployment -- that counter is the evidence this decision waits on.
+deployment -- those counters are the evidence this decision waits on, and
+all three deduplicate (see :func:`counts_as_a_new_lost_notification`) so a
+single commit cannot inflate them.
 
 The mechanism lives here, once, because its hazards are in the details rather
 than the shape, and three copies of them is how it rots:
@@ -135,6 +137,41 @@ def adopted(sampled: Fingerprint | object) -> Fingerprint | None:
     once. That is the harmless direction.
     """
     return None if sampled is UNREADABLE else sampled  # type: ignore[return-value]
+
+
+def counts_as_a_new_lost_notification(
+    sampled: Fingerprint | object, already_counted: Fingerprint | None
+) -> bool:
+    """Whether this detection is a NEW lost notification, not a re-detection.
+
+    Every storage here keeps a ``_missed_notification_reloads`` counter, and
+    the module docstring designates those counters as the evidence the
+    writer-side ``os.utime`` remedy waits on. That only holds if they count
+    **peer commits**, and detection alone does not: a reload that raises
+    leaves the reader's recorded fingerprint untouched, so the same peer
+    commit is re-detected by every later call. Counted at each detection, one
+    commit inflates the counter without bound -- and a file that stays
+    unreadable for a while is not exotic, since that is what a sick storage
+    looks like.
+
+    So each storage remembers the state it last counted and passes it here.
+    A genuinely later commit has a different fingerprint and counts again;
+    two commits inside one timestamp tick with an identical size do not, which
+    is the collision residue this fence already documents, inherited rather
+    than newly introduced.
+
+    ``UNREADABLE`` counts nothing: it cannot say WHICH state it would be
+    counting, so the count could neither be deduplicated nor trusted. The next
+    call counts it if the ``stat`` works by then.
+
+    Counting at detection rather than after a successful reload is deliberate:
+    the window occurred whether or not this process could reload out of it,
+    and a file that never becomes readable would otherwise erase the evidence
+    entirely.
+    """
+    if sampled is UNREADABLE:
+        return False
+    return sampled != already_counted
 
 
 def peer_commit_detected(

@@ -202,3 +202,54 @@ async def test_drop_adopts_the_files_absence(tmp_path, multiprocess, monkeypatch
         assert worker._peer_commit_detected() is False
     finally:
         await worker.finalize()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_reload_does_not_recount_the_same_peer_commit(
+    tmp_path, multiprocess, lost_notification, monkeypatch
+):
+    """The counter must count peer commits, not attempts to reload out of them.
+
+    A load that raises leaves `_loaded_fingerprint` untouched, so the same peer
+    commit is re-detected by every later call. Counted at each detection, one
+    commit inflates the counter without bound — and `file_fingerprint`'s module
+    docstring designates these counters as the evidence the writer-side
+    `os.utime` remedy waits on, so an inflated one is as useless as a
+    suppressed one. Issue #3854.
+    """
+    worker_a = await _worker(tmp_path)
+    worker_b = await _worker(tmp_path)
+    try:
+        await worker_a.upsert({"from_a": {"content": "a"}})
+        assert await worker_a.index_done_callback() is True
+        assert worker_b.storage_updated.value is False
+
+        broken = [True]
+
+        def maybe_boom(*args, **kwargs):
+            if broken[0]:
+                raise OSError("unreadable")
+            return real_client(*args, **kwargs)
+
+        real_client = nano_vector_db_impl.NanoVectorDB
+        monkeypatch.setattr(nano_vector_db_impl, "NanoVectorDB", maybe_boom)
+
+        for _ in range(5):
+            with pytest.raises(OSError, match="unreadable"):
+                await worker_b.get_by_id("from_a")
+        assert worker_b._missed_notification_reloads == 1
+
+        # A genuinely second commit during the outage IS counted: deduplication
+        # must not turn into suppression.
+        await worker_a.upsert({"from_a_again": {"content": "a2"}})
+        assert await worker_a.index_done_callback() is True
+        with pytest.raises(OSError, match="unreadable"):
+            await worker_b.get_by_id("from_a")
+        assert worker_b._missed_notification_reloads == 2
+
+        broken[0] = False
+        assert await worker_b.get_by_id("from_a_again") is not None
+        assert worker_b._missed_notification_reloads == 2
+    finally:
+        await worker_a.finalize()
+        await worker_b.finalize()

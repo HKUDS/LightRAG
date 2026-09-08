@@ -359,6 +359,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # How many times the file channel caught a commit the flag channel
         # never announced, so a deployment can tell whether the
         # lost-notification window in #3854 actually occurs.
+        # The on-disk state already counted as a lost notification. A load
+        # that raises leaves _loaded_fingerprint in place, so the same peer
+        # commit is re-detected by every later call; without this it would
+        # also be re-counted, without bound. See
+        # file_fingerprint.counts_as_a_new_lost_notification.
+        self._counted_peer_fingerprint = None
         self._missed_notification_reloads = 0
 
         # Minimal pending area for deferred embedding: custom-id -> _PendingFaissDoc.
@@ -502,22 +508,40 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 logger.warning(log_message)
             else:
                 logger.info(log_message)
-        else:
+        # Sampled BEFORE the read, never after -- see ``kg.file_fingerprint``.
+        # Hoisted above the logging so the counting below can deduplicate on
+        # the very sample this reload will adopt, at no extra stat.
+        fingerprint = self._stat_fingerprint()
+
+        if not notified:
             # The lost-notification case the file channel exists for. Always a
             # warning, on the read path too: unlike a notified reload this one
             # says a publication failed somewhere.
-            self._missed_notification_reloads += 1
-            logger.warning(
-                f"[{self.workspace}] Process {os.getpid()} FAISS reloading "
-                f"{self.namespace}: {self._faiss_index_file} is not the file "
-                "pair this process loaded and no reload notification arrived "
-                "for it, so a notification was lost. Recovering through the "
-                f"file channel (occurrence #{self._missed_notification_reloads} "
-                "in this process)."
-            )
-
-        # Sampled BEFORE the read, never after -- see ``kg.file_fingerprint``.
-        fingerprint = self._stat_fingerprint()
+            #
+            # Counted once per on-disk state, not once per detection: a load
+            # that raises below leaves _loaded_fingerprint in place, so this
+            # same commit is re-detected by every later call. See
+            # ``file_fingerprint.counts_as_a_new_lost_notification``.
+            if file_fingerprint.counts_as_a_new_lost_notification(
+                fingerprint, self._counted_peer_fingerprint
+            ):
+                self._counted_peer_fingerprint = file_fingerprint.adopted(fingerprint)
+                self._missed_notification_reloads += 1
+                logger.warning(
+                    f"[{self.workspace}] Process {os.getpid()} FAISS reloading "
+                    f"{self.namespace}: {self._faiss_index_file} is not the file "
+                    "pair this process loaded and no reload notification arrived "
+                    "for it, so a notification was lost. Recovering through the "
+                    f"file channel (occurrence #{self._missed_notification_reloads} "
+                    "in this process)."
+                )
+            else:
+                logger.debug(
+                    f"[{self.workspace}] The peer commit to "
+                    f"{self._faiss_index_file} is the pair already counted, or "
+                    "its stat failed; this is a retry of a reload that did not "
+                    "land, not a second lost notification."
+                )
         self._index = faiss.IndexFlatIP(self._dim)
         self._id_to_meta = {}
         self._load_faiss_index()

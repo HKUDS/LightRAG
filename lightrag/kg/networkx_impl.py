@@ -547,19 +547,11 @@ class NetworkXStorage(BaseGraphStorage):
           peer commit is re-detected by every later call -- and, counted at
           detection, re-counted every time, without bound. Persistent
           unreadability is not exotic here: a failed reload is what arms
-          recovery in the first place. ``_counted_peer_fingerprint`` is what
-          makes the count once-per-state instead of once-per-attempt.
-
-        Counting at detection rather than after a successful reload is
-        deliberate: the window occurred whether or not this process could
-        reload out of it, and a file that never becomes readable would
-        otherwise erase the evidence entirely.
-
-        A genuinely *second* peer commit landing while reloads keep failing
-        has a different fingerprint and is counted. Two commits sharing one
-        ``(st_mtime_ns, st_size)`` are not distinguished -- the tick-collision
-        residue the class docstring already documents, inherited here rather
-        than newly introduced.
+          recovery in the first place. ``_counted_peer_fingerprint`` plus
+          ``file_fingerprint.counts_as_a_new_lost_notification`` (shared with
+          the vector backends, which have the same counter and had the same
+          defect) makes the count once-per-state instead of once-per-attempt.
+          See that function for what it does and does not distinguish.
 
         Self-contained on purpose: it re-tests the flag and the file even
         where the caller's branch condition already established them. The
@@ -572,16 +564,14 @@ class NetworkXStorage(BaseGraphStorage):
         if not self._peer_commit_detected():
             return False
         sampled = self._stat_fingerprint()
-        if sampled is file_fingerprint.UNREADABLE:
-            # Cannot say WHICH state this would be counting, so counting it
-            # could neither be deduplicated nor trusted. The next call counts
-            # it if the stat works by then.
-            return False
-        if sampled == self._counted_peer_fingerprint:
+        if not file_fingerprint.counts_as_a_new_lost_notification(
+            sampled, self._counted_peer_fingerprint
+        ):
             logger.debug(
                 f"[{self.workspace}] The peer commit to {self._graphml_xml_file} "
-                "is the one already counted; this is a retry of a reload that "
-                "did not land, not a second lost notification."
+                "is the one already counted, or its stat failed; this is a "
+                "retry of a reload that did not land, not a second lost "
+                "notification."
             )
             return False
         self._counted_peer_fingerprint = file_fingerprint.adopted(sampled)
