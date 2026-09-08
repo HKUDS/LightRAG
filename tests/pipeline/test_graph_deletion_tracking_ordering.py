@@ -111,6 +111,11 @@ class _VectorStorage:
     async def delete(self, ids):
         self._check()
 
+    async def upsert(self, data):
+        # Creation paths write through the vector store before the commit; the
+        # deletion cases never reach this, so it stays a bare success stub.
+        self._check()
+
     async def delete_entity(self, entity_name):
         self._check()
 
@@ -1048,3 +1053,213 @@ class TestPublishedCommitSurvivesABrokenSink:
 
         assert result.status == "success"
         assert ENTITY not in rag.entity_chunks.records
+
+
+NEW_ENTITY = "CASSIOPEIA"
+NEW_RELATION_KEY = make_relation_chunk_key(*sorted([NEW_ENTITY, OTHER]))
+
+
+@pytest.fixture
+async def creating(tmp_path):
+    """Real NetworkX graph plus deferred-commit tracking doubles, for creation.
+
+    Same shape as the ``deferred`` fixture, but the object under test does not
+    exist yet: creation is the only direction in which a tracking row goes from
+    absent to present, which is what makes its commit order load-bearing.
+    """
+    fixture = _Fixture(tmp_path)
+    fixture.commit_log: list[str] = []
+    fixture.entity_chunks = _DeferredKVStorage("entity_chunks", fixture.commit_log)
+    fixture.relation_chunks = _DeferredKVStorage("relation_chunks", fixture.commit_log)
+    await fixture.start()
+    await fixture.entity_chunks.index_done_callback()
+    await fixture.relation_chunks.index_done_callback()
+    fixture.commit_log.clear()
+    yield fixture
+    await fixture.graph.finalize()
+
+
+async def _create_entity(fixture, name=NEW_ENTITY):
+    return await utils_graph.acreate_entity(
+        fixture.graph,
+        fixture.entities_vdb,
+        fixture.relationships_vdb,
+        name,
+        {"description": "d", "entity_type": "thing", "source_id": "chunk-9"},
+        entity_chunks_storage=fixture.entity_chunks,
+        relation_chunks_storage=fixture.relation_chunks,
+    )
+
+
+async def _create_relation(fixture, source=NEW_ENTITY, target=OTHER):
+    return await utils_graph.acreate_relation(
+        fixture.graph,
+        fixture.entities_vdb,
+        fixture.relationships_vdb,
+        source,
+        target,
+        {"description": "d", "weight": 1.0, "source_id": "chunk-9"},
+        relation_chunks_storage=fixture.relation_chunks,
+    )
+
+
+class TestCreationCommitsTrackingBeforeTheObject:
+    """The mirror of `TestDurableCommitOrdering`, for the creation direction.
+
+    Deletion commits the graph first because that is the order which leaves the
+    benign residue (a row whose object is gone). Creation must commit the row
+    first for exactly the same reason: the forbidden state is an object durable
+    without the row that carries its attribution, and on creation the row is the
+    half that starts out absent.
+
+    The two order tests and the two "never starts" tests are fix proofs: they go
+    red on the previous single `asyncio.gather`, which started every commit at
+    once and so left it to the interpreter whether the node or its row reached
+    disk first. No concurrency and no co-tenant flush were needed to lose that
+    race -- one uncontended `acreate_entity` and a hard exit was enough.
+
+    `test_accepted_residue_is_the_row_without_the_object` is not a fix proof;
+    the unordered flush produced that residue too. It pins the state the chosen
+    order deliberately keeps, so a later reshuffle cannot quietly trade it for
+    its forbidden mirror.
+    """
+
+    @pytest.mark.asyncio
+    async def test_entity_creation_commits_the_row_first(self, creating, monkeypatch):
+        _log_graph_commit(creating, monkeypatch, fail=False)
+
+        await _create_entity(creating)
+
+        assert creating.commit_log[0] == "entity_chunks"
+        assert creating.commit_log.index("entity_chunks") < creating.commit_log.index(
+            "graph"
+        )
+        assert NEW_ENTITY in creating.entity_chunks.disk
+
+    @pytest.mark.asyncio
+    async def test_relation_creation_commits_the_row_first(self, creating, monkeypatch):
+        _log_graph_commit(creating, monkeypatch, fail=False)
+        await creating.graph.upsert_node(
+            NEW_ENTITY, {"entity_id": NEW_ENTITY, "description": "d", "source_id": "s"}
+        )
+
+        await _create_relation(creating)
+
+        assert creating.commit_log.index("relation_chunks") < creating.commit_log.index(
+            "graph"
+        )
+        assert NEW_RELATION_KEY in creating.relation_chunks.disk
+
+    @pytest.mark.asyncio
+    async def test_tracking_commit_failure_never_publishes_the_entity(
+        self, creating, monkeypatch
+    ):
+        # Asserting only "the node is not in GraphML" would pass on the pre-fix
+        # gather too, for the wrong reason: the tracking commit raises out of
+        # the gather before the graph task finishes its write. What actually
+        # separates the two is whether the object commit was ever ENTERED --
+        # in a real process it is offloaded, so once entered it lands.
+        _log_graph_commit(creating, monkeypatch, fail=False)
+        creating.entity_chunks.fail_commit_times = 1
+
+        with pytest.raises(_Boom):
+            await _create_entity(creating)
+
+        assert "graph" not in creating.commit_log
+        assert NEW_ENTITY not in creating.entity_chunks.disk
+        persisted = creating.persisted_graph()
+        assert persisted.has_node(NEW_ENTITY) is False
+
+    @pytest.mark.asyncio
+    async def test_tracking_commit_failure_never_publishes_the_relation(
+        self, creating, monkeypatch
+    ):
+        _log_graph_commit(creating, monkeypatch, fail=False)
+        await creating.graph.upsert_node(
+            NEW_ENTITY, {"entity_id": NEW_ENTITY, "description": "d", "source_id": "s"}
+        )
+        creating.relation_chunks.fail_commit_times = 1
+
+        with pytest.raises(_Boom):
+            await _create_relation(creating)
+
+        assert "graph" not in creating.commit_log
+        assert NEW_RELATION_KEY not in creating.relation_chunks.disk
+        persisted = creating.persisted_graph()
+        assert persisted.has_edge(NEW_ENTITY, OTHER) is False
+
+    @pytest.mark.asyncio
+    async def test_accepted_residue_is_the_row_without_the_object(
+        self, creating, monkeypatch
+    ):
+        # The mirror residue the order deliberately keeps: the row is durable
+        # while the object never became so. Harmless to queries, not inheritable
+        # (R1 resets evidence on explicit creation), repairable offline.
+        _log_graph_commit(creating, monkeypatch, fail=True)
+
+        with pytest.raises(_Boom):
+            await _create_entity(creating)
+
+        assert NEW_ENTITY in creating.entity_chunks.disk
+        persisted = creating.persisted_graph()
+        assert persisted.has_node(NEW_ENTITY) is False
+
+
+class TestDeletionOrderIsUnchanged:
+    """The deletion direction must keep committing the graph first.
+
+    `TestDurableCommitOrdering` already pins this, but the two-phase split is
+    only correct because every deletion path commits the graph itself and then
+    calls `_persist_graph_updates` with the tracking storages alone. This pins
+    that call-shape contract directly, so a future caller that hands the helper
+    a graph and a tracking store together in the removal direction is caught
+    here rather than in production.
+    """
+
+    @pytest.mark.asyncio
+    async def test_persist_helper_orders_tracking_before_graph(self):
+        log: list[str] = []
+
+        class _Store:
+            def __init__(self, name):
+                self.name = name
+                self.namespace = name
+
+            async def index_done_callback(self):
+                await asyncio.sleep(0)
+                log.append(self.name)
+
+        await utils_graph._persist_graph_updates(
+            entities_vdb=_Store("entities_vdb"),
+            chunk_entity_relation_graph=_Store("graph"),
+            entity_chunks_storage=_Store("entity_chunks"),
+            relation_chunks_storage=_Store("relation_chunks"),
+        )
+
+        assert set(log[:2]) == {"entity_chunks", "relation_chunks"}
+        assert set(log[2:]) == {"entities_vdb", "graph"}
+
+    @pytest.mark.asyncio
+    async def test_no_deletion_path_passes_graph_and_tracking_together(self, deferred):
+        # `adelete_by_entity` commits the graph through `_commit_graph_or_raise`
+        # and only then flushes tracking, so the helper never sees both.
+        seen: list[dict] = []
+        original = utils_graph._persist_graph_updates
+
+        async def _record(**kwargs):
+            seen.append({k: v is not None for k, v in kwargs.items()})
+            return await original(**kwargs)
+
+        utils_graph._persist_graph_updates = _record
+        try:
+            await deferred.delete_entity()
+        finally:
+            utils_graph._persist_graph_updates = original
+
+        assert seen
+        for call in seen:
+            graph_passed = call.get("chunk_entity_relation_graph", False)
+            tracking_passed = call.get("entity_chunks_storage", False) or call.get(
+                "relation_chunks_storage", False
+            )
+            assert not (graph_passed and tracking_passed)
