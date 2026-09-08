@@ -33,7 +33,10 @@ import numpy as np
 
 
 @wrap_embedding_func_with_attrs(
-    embedding_dim=2048, max_token_size=8192, model_name="nvidia_embedding_model"
+    embedding_dim=2048,
+    max_token_size=8192,
+    model_name="nvidia_embedding_model",
+    supports_asymmetric=True,
 )
 @retry(
     stop=stop_after_attempt(3),
@@ -48,10 +51,14 @@ async def nvidia_openai_embed(
     # refer to https://build.nvidia.com/nim?filters=usecase%3Ausecase_text_to_embedding
     base_url: str = "https://integrate.api.nvidia.com/v1",
     api_key: str = None,
-    input_type: str = "passage",  # query for retrieval, passage for embedding
+    input_type: str | None = None,
     trunc: str = "NONE",  # NONE or START or END
     encode: str = "float",  # float or base64
+    context: str = "document",
 ) -> np.ndarray:
+    if input_type is None:
+        input_type = "query" if context == "query" else "passage"
+
     client_kwargs = {}
     if base_url is not None:
         client_kwargs["base_url"] = base_url
