@@ -667,9 +667,11 @@ class TestKVStorage:
                 assert "update_time" in s._pending_upserts["k1"]
                 await s.index_done_callback()
                 actions = mock_bulk.call_args[0][1]
-                src = actions[0]["_source"]
-                assert "create_time" in src
-                assert "update_time" in src
+                # The replacement value travels as scripted-upsert params so
+                # the flush can restore a stored create_time server-side.
+                doc = actions[0]["script"]["params"]["doc"]
+                assert "create_time" in doc
+                assert "update_time" in doc
 
     @pytest.mark.asyncio
     async def test_is_empty(self, global_config, embed_func, mock_client):
@@ -905,7 +907,7 @@ class TestKVStorageBatching:
                 await s.index_done_callback()
                 actions = mock_bulk.call_args[0][1]
                 assert len(actions) == 1
-                assert actions[0]["_source"]["content"] == "second"
+                assert actions[0]["script"]["params"]["doc"]["content"] == "second"
 
     @pytest.mark.asyncio
     async def test_kv_delete_cancels_pending_upsert(
@@ -951,7 +953,8 @@ class TestKVStorageBatching:
                 await s.index_done_callback()
                 actions = mock_bulk.call_args[0][1]
                 assert len(actions) == 1
-                assert actions[0]["_op_type"] == "index"
+                # KV upserts flush as scripted updates (see issue #3870).
+                assert actions[0]["_op_type"] == "update"
 
     @pytest.mark.asyncio
     async def test_kv_delete_works_when_index_not_ready(
@@ -1382,7 +1385,7 @@ class TestKVStorageBatching:
                 for call in mock_bulk.call_args_list:
                     actions = call.args[1]
                     by_op[actions[0]["_op_type"]] = call.kwargs["chunk_size"]
-                assert by_op == {"delete": 22, "index": 11}
+                assert by_op == {"delete": 22, "update": 11}
 
 
 # ---------------------------------------------------------------------------
