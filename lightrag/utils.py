@@ -1151,7 +1151,11 @@ class WorkerTimeoutError(Exception):
     def __init__(self, timeout_value: float, timeout_type: str = "execution"):
         self.timeout_value = timeout_value
         self.timeout_type = timeout_type
-        super().__init__(f"Worker {timeout_type} timeout after {timeout_value}s")
+        super().__init__(
+            f"Worker {timeout_type} timeout after {timeout_value}s; increase the "
+            "configured LLM timeout or reduce provider work if the call is "
+            "expected to take longer"
+        )
 
 
 class HealthCheckTimeoutError(Exception):
