@@ -101,6 +101,19 @@ async def run_in_milvus_executor(
     caller releases the awaiter while the call itself runs to completion in the
     pool. Callers that must not return before the call has landed keep their own
     deferral (see `_flush_pending_vector_ops`).
+
+    Accepted residue: the semaphore is per event loop (it has to be --
+    `asyncio.Semaphore` binds to the first loop that waits on it, see
+    `get_loop_semaphore`) while the executor is per process, so N concurrently
+    active loops in one process could have N * MILVUS_SUBMIT_LIMIT submissions
+    outstanding. That bounds nothing worse than queue depth: concurrent Milvus
+    round trips stay capped at the pool width process-wide, because a blocking
+    SDK call in flight IS an occupied worker and `ThreadPoolExecutor` never
+    starts more than `max_workers` of them; and a queued submission holds only
+    arguments its awaiting caller already keeps alive, so the queue duplicates
+    no memory. The deployment shape has one active loop per process anyway
+    (gunicorn forks a worker per loop, each with its own gRPC channel), and the
+    three sibling pools carry the identical per-loop/per-process split.
     """
     semaphore = get_loop_semaphore("milvus", MILVUS_SUBMIT_LIMIT)
     return await bounded_submit(get_milvus_executor(), semaphore, fn, *args, **kwargs)
