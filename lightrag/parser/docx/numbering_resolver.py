@@ -35,8 +35,8 @@ class NumberingResolver:
     # (not chineseCounting), which is why both are mapped here.
     FORMAT_CONVERTERS = {
         "decimal": lambda n: str(n),
-        "lowerLetter": lambda n: chr(ord("a") + (n - 1) % 26),
-        "upperLetter": lambda n: chr(ord("A") + (n - 1) % 26),
+        "lowerLetter": lambda n: NumberingResolver._to_letter(n),
+        "upperLetter": lambda n: NumberingResolver._to_letter(n, upper=True),
         "lowerRoman": lambda n: NumberingResolver._to_roman(n).lower(),
         "upperRoman": lambda n: NumberingResolver._to_roman(n),
         "chineseCounting": lambda n: NumberingResolver._to_chinese(n),
@@ -557,6 +557,15 @@ class NumberingResolver:
                 result += numeral
                 n -= value
         return result
+
+    @staticmethod
+    def _to_letter(n: int, *, upper: bool = False) -> str:
+        """Convert an integer to the repeated-letter numbering used by Word."""
+        if n <= 0:
+            return str(n)
+        base = ord("A" if upper else "a")
+        letter = chr(base + (n - 1) % 26)
+        return letter * ((n - 1) // 26 + 1)
 
     @staticmethod
     def _to_chinese(n: int) -> str:

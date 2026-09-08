@@ -178,6 +178,21 @@ def _label(r: NumberingResolver, count: int) -> str:
     return r._format_label("100", 0, r.abstract_nums["10"])
 
 
+@pytest.mark.parametrize(
+    ("num_fmt", "count", "expected"),
+    [
+        ("lowerLetter", 1, "a"),
+        ("lowerLetter", 26, "z"),
+        ("lowerLetter", 27, "aa"),
+        ("lowerLetter", 52, "zz"),
+        ("lowerLetter", 53, "aaa"),
+        ("upperLetter", 27, "AA"),
+    ],
+)
+def test_letter_formats_repeat_after_z(num_fmt, count, expected) -> None:
+    assert _label(_fmt_resolver(num_fmt, "%1"), count) == expected
+
+
 # The counting families all render 一/二/十/十一/… — [MS-DOCX] gives
 # japaneseCounting as 一,二,三 and chineseCounting / taiwaneseCounting as
 # 一 (1) / 十 (10). Chinese-locale Word writes 一二三 auto-numbering as
