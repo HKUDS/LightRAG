@@ -91,6 +91,13 @@ On reruns, unchanged wizard-managed service blocks in `docker-compose.final.yml`
 default. To repair or fully regenerate those managed blocks from the bundled templates, rerun the
 matching setup target with `make env-base-rewrite` or `make env-storage-rewrite`.
 
+For a Neo4j instance managed by the setup wizard, the generated Compose file uses
+`bolt://neo4j:7687`. This is a direct connection to the bundled single-node service and avoids
+the routing-table address advertised by `neo4j://`. Keep `neo4j://` for Aura or clustered Neo4j
+deployments that provide reachable routing addresses. When Neo4j runs outside the Compose stack,
+use a host-reachable address from the container; `localhost` refers to the LightRAG container,
+not the WSL2 or Windows host.
+
 If the generated stack includes local Milvus, compose resolves `MINIO_ACCESS_KEY_ID` and
 `MINIO_SECRET_ACCESS_KEY` at startup from the repo `.env` or exported shell environment. The
 generated compose file does not snapshot those values, and `docker compose` exits immediately if
