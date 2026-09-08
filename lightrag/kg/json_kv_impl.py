@@ -429,9 +429,17 @@ class JsonKVStorage(BaseKVStorage):
                     if "llm_cache_list" not in v:
                         v["llm_cache_list"] = []
 
-                # Add timestamps based on whether key exists
-                if k in self._data:  # Key exists, only update update_time
+                # Add timestamps based on whether key exists.
+                # On update, replace the business value but preserve the
+                # storage-managed create_time. Do not invent a timestamp for
+                # legacy rows that never had one (treat missing as 0).
+                if k in self._data:
                     v["update_time"] = current_time
+                    existing = self._data[k]
+                    if isinstance(existing, dict) and "create_time" in existing:
+                        v["create_time"] = existing["create_time"]
+                    else:
+                        v["create_time"] = 0
                 else:  # New key, set both create_time and update_time
                     v["create_time"] = current_time
                     v["update_time"] = current_time

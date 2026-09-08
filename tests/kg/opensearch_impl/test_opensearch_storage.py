@@ -215,14 +215,15 @@ def _make_client():
             "_source": {"content": "hello", "create_time": 0, "update_time": 0},
         }
     )
-    client.mget = AsyncMock(
-        return_value={
-            "docs": [
-                {"_id": "id1", "found": True, "_source": {"content": "c1"}},
-                {"_id": "id2", "found": True, "_source": {"content": "c2"}},
-            ]
-        }
-    )
+
+    async def _default_mget(index=None, body=None, **kwargs):
+        # Echo one entry per requested id. Upsert resolves create_time via mget
+        # and rejects length mismatches; a canned multi-doc return_value breaks
+        # single-id upserts under the strict contract.
+        ids = (body or {}).get("ids") or []
+        return {"docs": [{"_id": doc_id, "found": False} for doc_id in ids]}
+
+    client.mget = AsyncMock(side_effect=_default_mget)
     client.count = AsyncMock(return_value={"count": 5})
     client.search = AsyncMock(
         return_value={
@@ -605,6 +606,20 @@ class TestKVStorage:
     async def test_get_by_ids_preserves_order(
         self, global_config, embed_func, mock_client
     ):
+        async def mget_side_effect(index=None, body=None, **kwargs):
+            sources = {"id1": {"content": "c1"}, "id2": {"content": "c2"}}
+            return {
+                "docs": [
+                    {
+                        "_id": doc_id,
+                        "found": True,
+                        "_source": dict(sources[doc_id]),
+                    }
+                    for doc_id in body["ids"]
+                ]
+            }
+
+        mock_client.mget = AsyncMock(side_effect=mget_side_effect)
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()

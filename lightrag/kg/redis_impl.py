@@ -536,12 +536,13 @@ class RedisKVStorage(BaseKVStorage):
 
         async with self._get_redis_connection() as redis:
             try:
-                # Check which keys already exist to determine create vs update
+                # Fetch existing values so updates can preserve create_time
+                # without merging stale business fields from storage.
                 pipe = redis.pipeline()
                 for i, k in enumerate(data.keys(), start=1):
-                    pipe.exists(f"{self.final_namespace}:{k}")
+                    pipe.get(f"{self.final_namespace}:{k}")
                     await _cooperative_yield(i)
-                exists_results = await pipe.execute()
+                existing_values = await pipe.execute()
 
                 # Add timestamps to data
                 for i, (k, v) in enumerate(data.items(), start=1):
@@ -550,9 +551,20 @@ class RedisKVStorage(BaseKVStorage):
                         if "llm_cache_list" not in v:
                             v["llm_cache_list"] = []
 
-                    # Add timestamps based on whether key exists
-                    if exists_results[i - 1]:  # Key exists, only update update_time
+                    # On update, replace the business value but preserve the
+                    # storage-managed create_time. Legacy rows missing the
+                    # field keep the 0/unknown convention.
+                    existing_raw = existing_values[i - 1]
+                    if existing_raw:
                         v["update_time"] = current_time
+                        try:
+                            existing = json.loads(existing_raw)
+                        except (json.JSONDecodeError, TypeError):
+                            existing = None
+                        if isinstance(existing, dict) and "create_time" in existing:
+                            v["create_time"] = existing["create_time"]
+                        else:
+                            v["create_time"] = 0
                     else:  # New key, set both create_time and update_time
                         v["create_time"] = current_time
                         v["update_time"] = current_time
