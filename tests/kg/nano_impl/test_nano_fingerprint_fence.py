@@ -253,3 +253,41 @@ async def test_a_failing_reload_does_not_recount_the_same_peer_commit(
     finally:
         await worker_a.finalize()
         await worker_b.finalize()
+
+
+@pytest.mark.asyncio
+async def test_a_recurring_state_is_counted_again_after_a_notified_reload(
+    tmp_path, multiprocess, lost_notification
+):
+    """Deduplication must not outlive the reload it was protecting.
+
+    The marker exists only to stop ONE detection being re-counted while the
+    reload keeps failing. Kept past a successful reload it suppresses a state
+    that RECURS — a peer drop, a notified recreation, then a second drop whose
+    notification is lost, all sharing the "absent" fingerprint. That is a
+    genuine second lost notification, and not the same-tick collision residue.
+    """
+    worker_a = await _worker(tmp_path)
+    await worker_a.upsert({"x": {"content": "x"}})
+    assert await worker_a.index_done_callback() is True
+
+    worker_b = await _worker(tmp_path)
+    try:
+        assert worker_b._missed_notification_reloads == 0
+
+        assert (await worker_a.drop())["status"] == "success"
+        assert await worker_b.get_by_id("x") is None
+        assert worker_b._missed_notification_reloads == 1
+
+        await worker_a.upsert({"y": {"content": "y"}})
+        assert await worker_a.index_done_callback() is True
+        worker_b.storage_updated.value = True
+        assert await worker_b.get_by_id("y") is not None
+        assert worker_b._missed_notification_reloads == 1
+
+        assert (await worker_a.drop())["status"] == "success"
+        assert await worker_b.get_by_id("y") is None
+        assert worker_b._missed_notification_reloads == 2
+    finally:
+        await worker_b.finalize()
+        await worker_a.finalize()

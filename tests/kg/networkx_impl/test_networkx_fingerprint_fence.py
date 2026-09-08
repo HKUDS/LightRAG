@@ -739,3 +739,45 @@ async def test_a_failing_recovery_reload_does_not_recount_either(
 
 def _raise_unreadable(file_name):
     raise OSError("unreadable")
+
+
+@pytest.mark.asyncio
+async def test_a_recurring_state_is_counted_again_after_a_notified_reload(
+    tmp_path, multiprocess, lost_notification
+):
+    """Deduplication must not outlive the reload it was protecting.
+
+    The marker exists only to stop ONE detection being re-counted while the
+    reload keeps failing. Kept past a successful reload it suppresses a state
+    that RECURS — a peer drop, a notified recreation, then a second drop whose
+    notification is lost, all sharing the "absent" fingerprint. That is a
+    genuine second lost notification, and not the same-tick collision residue.
+    """
+    worker_a = await _worker(tmp_path)
+    await worker_a.upsert_node("x", {"entity_id": "x"})
+    assert await worker_a.index_done_callback() is True
+
+    worker_b = await _worker(tmp_path)
+    try:
+        assert worker_b._missed_notification_reloads == 0
+
+        # 1. The peer drops. Notification lost; the file channel catches it.
+        assert (await worker_a.drop())["status"] == "success"
+        assert await worker_b.has_node("x") is False
+        assert worker_b._missed_notification_reloads == 1
+
+        # 2. The peer recreates it, and this time the notification arrives.
+        await worker_a.upsert_node("y", {"entity_id": "y"})
+        assert await worker_a.index_done_callback() is True
+        worker_b.storage_updated.value = True
+        assert await worker_b.has_node("y") is True
+        assert worker_b._missed_notification_reloads == 1
+
+        # 3. The peer drops again, notification lost again. Same "absent"
+        #    fingerprint as step 1 — and a second genuine loss.
+        assert (await worker_a.drop())["status"] == "success"
+        assert await worker_b.has_node("y") is False
+        assert worker_b._missed_notification_reloads == 2
+    finally:
+        await worker_b.finalize()
+        await worker_a.finalize()

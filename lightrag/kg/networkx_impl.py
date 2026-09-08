@@ -511,6 +511,16 @@ class NetworkXStorage(BaseGraphStorage):
     ) -> None:
         """Record ``fingerprint`` as the file this process now holds."""
         self._loaded_fingerprint = file_fingerprint.adopted(fingerprint)
+        # The dedupe marker's job ends here. It exists only to stop a
+        # detection being re-counted while the reload that should discharge it
+        # keeps failing, and this line is reached only once one has landed --
+        # from here on ``_loaded_fingerprint`` IS this state, so any later
+        # divergence is genuinely new. Keeping it past this point would
+        # suppress a state that RECURS: a peer drop, a notified recreation,
+        # then a second drop whose notification is lost, all sharing the
+        # "absent" fingerprint. That is a real second lost notification, and
+        # not the same-tick collision residue.
+        self._counted_peer_fingerprint = None
 
     def _peer_commit_detected(self) -> bool:
         """Whether the file on disk differs from the one this process loaded.
