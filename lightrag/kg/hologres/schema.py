@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 import hashlib
+import json
 import re
 from typing import Any
 import uuid
@@ -39,6 +40,7 @@ from .client import (
 
 
 LEDGER_TABLE_NAME = "lightrag_hologres_schema_ledger"
+KV_TABLE_NAME = "lightrag_hologres_kv"
 
 _MAX_ERROR_SUMMARY = 200
 _NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -372,6 +374,84 @@ def bootstrap_descriptors(schema: str) -> tuple[SchemaDescriptor, SchemaDescript
         replay_safe=True,
     )
     return namespace, ledger
+
+
+def kv_schema_descriptors(schema: str) -> tuple[SchemaDescriptor]:
+    """Return the fixed shared-table descriptor for Hologres KV records."""
+
+    validated = _validated_schema(schema)
+    qualified_table = quote_qualified_identifier(validated, KV_TABLE_NAME)
+    expected_columns = json.dumps(
+        [
+            ["workspace", "text", True],
+            ["namespace", "text", True],
+            ["id", "text", True],
+            ["payload", "jsonb", True],
+            ["updated_at", "timestamptz", True],
+        ],
+        separators=(",", ":"),
+    )
+    expected_primary_key = json.dumps(
+        ["workspace", "namespace", "id"], separators=(",", ":")
+    )
+    postcondition_sql = (
+        "SELECT "
+        "(SELECT count(*) = 1 FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r') "
+        "AND COALESCE(("
+        "SELECT jsonb_agg(jsonb_build_array(a.attname, t.typname, a.attnotnull) "
+        "ORDER BY a.attnum) FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid "
+        "JOIN pg_catalog.pg_type t ON t.oid = a.atttypid "
+        "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r' "
+        "AND a.attnum > 0 AND NOT a.attisdropped"
+        "), '[]'::jsonb) = $3::jsonb "
+        "AND (SELECT count(*) = 1 FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "JOIN pg_catalog.pg_constraint p ON p.conrelid = c.oid "
+        "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r' "
+        "AND p.contype = 'p') "
+        "AND COALESCE(("
+        "SELECT jsonb_agg(a.attname ORDER BY key.ordinality) "
+        "FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "JOIN pg_catalog.pg_constraint p ON p.conrelid = c.oid "
+        "CROSS JOIN LATERAL unnest(p.conkey) WITH ORDINALITY "
+        "AS key(attnum, ordinality) "
+        "JOIN pg_catalog.pg_attribute a "
+        "ON a.attrelid = c.oid AND a.attnum = key.attnum "
+        "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r' "
+        "AND p.contype = 'p' AND NOT a.attisdropped"
+        "), '[]'::jsonb) = $4::jsonb"
+    )
+    descriptor = SchemaDescriptor(
+        name="shared_table",
+        component="kv",
+        version=1,
+        step=1,
+        sql=(
+            f"CREATE TABLE IF NOT EXISTS {qualified_table} ("
+            "workspace text NOT NULL, "
+            "namespace text NOT NULL, "
+            "id text NOT NULL, "
+            "payload jsonb NOT NULL, "
+            "updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+            "PRIMARY KEY (workspace, namespace, id)"
+            ") LOGICAL PARTITION BY LIST (workspace) "
+            "WITH (orientation = 'row', distribution_key = 'namespace,id')"
+        ),
+        postcondition_sql=postcondition_sql,
+        postcondition_args=(
+            validated,
+            KV_TABLE_NAME,
+            expected_columns,
+            expected_primary_key,
+        ),
+        replay_safe=True,
+    )
+    return (descriptor,)
 
 
 def claim_statement(schema: str) -> str:

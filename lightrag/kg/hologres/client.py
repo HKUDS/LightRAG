@@ -873,3 +873,96 @@ class HologresClient:
 
         await self.close()
         await self.open()
+
+
+class _SharedClientEntry:
+    """One private shared-client entry without a credential-bearing repr."""
+
+    __slots__ = ("client", "references")
+
+    def __init__(self, client: HologresClient) -> None:
+        self.client = client
+        self.references = 1
+
+
+class HologresClientManager:
+    """Reference-count complete configurations onto restricted clients."""
+
+    def __init__(
+        self,
+        *,
+        client_factory: Callable[[HologresConfig], HologresClient] = HologresClient,
+    ) -> None:
+        self._client_factory = client_factory
+        self._entries: dict[HologresConfig, _SharedClientEntry] = {}
+        self._lock = asyncio.Lock()
+
+    async def acquire(self, config: HologresConfig) -> HologresClient:
+        """Open or reference the one client associated with ``config``."""
+
+        async with self._lock:
+            entry = self._entries.get(config)
+            if entry is not None:
+                entry.references += 1
+                return entry.client
+
+            try:
+                client = self._client_factory(config)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                raise HologresOperationError(
+                    "Hologres shared client creation failed"
+                ) from None
+            try:
+                await client.open()
+            except asyncio.CancelledError:
+                await self._discard_failed_open(client)
+                raise
+            except Exception:
+                await self._discard_failed_open(client)
+                raise HologresOperationError(
+                    "Hologres shared client open failed"
+                ) from None
+
+            self._entries[config] = _SharedClientEntry(client)
+            return client
+
+    async def release(
+        self, config: HologresConfig, client: HologresClient
+    ) -> bool:
+        """Release one identity-matched reference and close the final client."""
+
+        async with self._lock:
+            entry = self._entries.get(config)
+            if entry is None or entry.client is not client:
+                return False
+            entry.references -= 1
+            if entry.references:
+                return False
+            del self._entries[config]
+
+        try:
+            await client.close()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            raise HologresOperationError(
+                "Hologres shared client close failed"
+            ) from None
+        return True
+
+    async def _discard_failed_open(self, client: HologresClient) -> None:
+        try:
+            await client.close()
+        except BaseException:
+            pass
+
+    def snapshot_for_tests(self) -> tuple[int, tuple[int, ...]]:
+        """Return counts only; configuration values are never exposed."""
+
+        references = tuple(sorted(entry.references for entry in self._entries.values()))
+        return len(references), references
+
+    def __repr__(self) -> str:
+        return "HologresClientManager(<redacted>)"
