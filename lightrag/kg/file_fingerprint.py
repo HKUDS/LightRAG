@@ -18,6 +18,18 @@ are far apart in time and the fingerprint sees them; the fingerprint fails when
 two commits land inside one filesystem timestamp tick with an identical size,
 which needs a healthy, fast-committing system -- exactly when the flag works.
 
+**The deferred remedy for the tick collision**, recorded here so it is not
+rediscovered from scratch: make the writer guarantee mtime monotonicity --
+``stat`` the target before the commit and, if ``os.replace`` did not advance
+its mtime, bump it with ``os.utime``. That would make the file channel exact
+on its own. It is deliberately NOT done, because the bump has no good value on
+a coarse filesystem: ``+1 ns`` is truncated away on a 1 s (ext3, HFS+) or 2 s
+(FAT) granularity, and a whole-granule bump produces user-visible future
+timestamps. It costs one extra ``stat`` per commit plus a rare ``utime``, so
+cost is not the objection. Do it only if the ``_missed_notification_reloads``
+counters that each storage logs ever show this window occurring in a real
+deployment -- that counter is the evidence this decision waits on.
+
 The mechanism lives here, once, because its hazards are in the details rather
 than the shape, and three copies of them is how it rots:
 
@@ -203,6 +215,17 @@ def publication_complete(sampled: Fingerprint) -> bool:
 
     Everything absent is complete (the post-``drop`` state, which peers must
     be able to converge on). A present marker with any file missing is not.
+
+    **This test is timestamp-based because the formats give it nothing else.**
+    The deferred remedy, recorded so it is not rediscovered: put an explicit
+    generation counter in the metadata each file carries (FAISS's
+    ``meta.json``), or publish the set atomically -- stage a whole generation
+    in a directory and rename that directory into place -- and completeness
+    becomes a comparison of equal generation numbers, independent of the
+    filesystem clock and of the strictness argument above. It is not done here
+    because it is a storage-format change, and these multi-file backends are
+    development and test storage today. It is the right answer if they ever
+    become production storage.
     """
     *committed, marker = sampled
     if marker is None:

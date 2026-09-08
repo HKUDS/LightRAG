@@ -341,8 +341,8 @@ class _WriteOnlyDeadFlag:
 
     Models the reachable sequence: `index_done_callback` reads the flag while
     the manager is alive, the offloaded save then fails, and by the time the
-    recovery block tries to arm the flag the manager is gone. Reads keep
-    working so the call gets as far as the save.
+    recovery block runs the manager is gone. Reads keep working so the call
+    gets as far as the save.
     """
 
     def __init__(self):
@@ -358,25 +358,138 @@ class _WriteOnlyDeadFlag:
         raise BrokenPipeError("manager gone")
 
 
+async def _worker_with_a_failed_save(tmp_path, monkeypatch) -> NetworkXStorage:
+    """A worker left holding a mutation whose save AND recovery reload failed.
+
+    The state `_recovery_reload_pending` exists for: `self._graph` carries
+    `never_saved`, the file does not, and nothing in either cross-process
+    channel says so -- the file never moved, so the fingerprint still matches,
+    and no peer committed, so no notification was sent.
+    """
+    worker = await _worker(tmp_path)
+    await worker.upsert_node("durable", {"entity_id": "durable"})
+    assert await worker.index_done_callback() is True
+
+    await worker.upsert_node("never_saved", {"entity_id": "never_saved"})
+
+    def save_boom(graph, file_name, workspace):
+        raise OSError("save boom")
+
+    def reload_boom(file_name):
+        raise OSError("reload boom")
+
+    monkeypatch.setattr(NetworkXStorage, "write_nx_graph", staticmethod(save_boom))
+    monkeypatch.setattr(NetworkXStorage, "load_nx_graph", staticmethod(reload_boom))
+    with pytest.raises(OSError, match="save boom"):
+        await worker.index_done_callback()
+
+    assert worker._recovery_reload_pending is True
+    # Undo both breakages: the recovery reload is what the caller does NEXT.
+    monkeypatch.undo()
+    return worker
+
+
 @pytest.mark.asyncio
-async def test_failed_save_arms_the_file_channel_even_if_the_flag_write_fails(
+async def test_a_failed_save_forces_a_reload_in_single_process_mode(
+    tmp_path, monkeypatch
+):
+    """Recovery must not depend on the multiprocess gate.
+
+    Deliberately without the `multiprocess` fixture. The file channel is gated
+    off in single-process mode, so before this change the cross-process flag
+    was the only thing arming recovery here -- a fact easy to lose while
+    reasoning about a fence whose other two tests are both about peers.
+    """
+    worker = await _worker_with_a_failed_save(tmp_path, monkeypatch)
+    try:
+        assert file_fingerprint.fence_enabled() is False
+
+        # The unpersisted mutation is discarded, the durable one survives.
+        assert await worker.has_node("never_saved") is False
+        assert await worker.has_node("durable") is True
+        assert worker._recovery_reload_pending is False
+    finally:
+        await worker.finalize()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_save_makes_the_next_commit_decline(
     tmp_path, multiprocess, monkeypatch
 ):
-    """The recovery fence must survive the manager being gone.
+    """Saving would publish mutations from a batch already reported as failed.
 
-    When a save fails, the in-memory graph holds a mutation the file does not
-    have, and both channels are armed so the next `_get_graph` reloads instead
-    of trusting it. The flag half is a Manager RPC, so it can fail for the very
-    reason the reload just did. Armed after it, a manager outage would leave
-    NEITHER channel armed, and a later flush could persist work already
-    reported as failed.
+    Their documents are marked FAILED and reprocessed from scratch, so the
+    graph must not keep them. The decline reaches the caller as `False`, which
+    `_commit_graph_or_raise` / `_flush_one` turn into a failure (rule 5).
+    """
+    worker = await _worker_with_a_failed_save(tmp_path, monkeypatch)
+    try:
+        assert await worker.index_done_callback() is False
+        assert worker._recovery_reload_pending is False
+
+        # The declined commit reloaded, so the discard is durable, not just
+        # in-memory: a later successful commit cannot resurrect it.
+        assert await worker.has_node("never_saved") is False
+        assert await worker.index_done_callback() is True
+        reader = await _worker(tmp_path)
+        try:
+            assert await reader.has_node("never_saved") is False
+            assert await reader.has_node("durable") is True
+        finally:
+            await reader.finalize()
+    finally:
+        await worker.finalize()
+
+
+@pytest.mark.asyncio
+async def test_a_recovery_reload_is_not_counted_as_a_lost_notification(
+    tmp_path, multiprocess, monkeypatch
+):
+    """The evidence counter must only ever count what it names.
+
+    `_missed_notification_reloads` is what #3854 leaves behind to decide
+    whether the writer-side `os.utime` monotonicity option is ever needed.
+    Arming the FILE channel for recovery -- which invalidating
+    `_loaded_fingerprint` did -- made a failed save show up as a notification
+    that was lost, in exactly the deployment where someone would be reading
+    that counter.
+    """
+    worker = await _worker_with_a_failed_save(tmp_path, monkeypatch)
+    try:
+        # Armed WITHOUT invalidating the fingerprint: the save failed, so the
+        # file is untouched and the recorded value still describes it
+        # correctly. Invalidating it here is the false positive -- it makes
+        # the file channel claim a peer commit that never happened.
+        assert worker._loaded_fingerprint is not None
+        assert worker._peer_commit_detected() is False
+        assert worker._missed_notification_reloads == 0
+
+        await worker.has_node("durable")
+
+        assert worker._recovery_reload_pending is False
+        assert worker._missed_notification_reloads == 0
+        assert worker._peer_commit_detected() is False
+    finally:
+        await worker.finalize()
+
+
+@pytest.mark.asyncio
+async def test_arming_recovery_does_not_touch_the_manager(
+    tmp_path, multiprocess, monkeypatch
+):
+    """The recovery arm must not be an RPC to a possibly-dead manager.
+
+    It used to write `storage_updated`, which in multiprocess mode is a
+    `Manager().Value` proxy -- an RPC to the very process whose outage may be
+    why the reload just failed, needing its own failure path so the manager
+    error did not replace the save error the caller must see. A plain
+    attribute write has no such path to get wrong.
     """
     worker = await _worker(tmp_path)
     real_flag = worker.storage_updated
     try:
         await worker.upsert_node("durable", {"entity_id": "durable"})
         assert await worker.index_done_callback() is True
-        assert worker._loaded_fingerprint is not None
 
         await worker.upsert_node("never_saved", {"entity_id": "never_saved"})
 
@@ -391,15 +504,40 @@ async def test_failed_save_arms_the_file_channel_even_if_the_flag_write_fails(
         dead_flag = _WriteOnlyDeadFlag()
         worker.storage_updated = dead_flag
 
-        # The SAVE error is what the caller must see -- not the manager outage
-        # raised while arming the flag.
+        # The SAVE error reaches the caller, unmasked.
         with pytest.raises(OSError, match="save boom"):
             await worker.index_done_callback()
 
-        # The flag arming was attempted and failed...
-        assert dead_flag.write_attempts >= 1
-        # ...and the file channel is armed regardless, which is the point.
-        assert worker._loaded_fingerprint is None
+        assert dead_flag.write_attempts == 0
+        assert worker._recovery_reload_pending is True
     finally:
         worker.storage_updated = real_flag
+        await worker.finalize()
+
+
+@pytest.mark.asyncio
+async def test_drop_clears_a_pending_recovery_reload(
+    tmp_path, multiprocess, monkeypatch
+):
+    """A sticky flag survives a `drop` and would decline the next real commit.
+
+    The mutation the recovery protects is destroyed along with everything
+    else, so memory matches the file again and there is nothing left to
+    discard.
+    """
+    worker = await _worker_with_a_failed_save(tmp_path, monkeypatch)
+    try:
+        assert (await worker.drop())["status"] == "success"
+        assert worker._recovery_reload_pending is False
+
+        # Fresh work after the clear commits normally instead of declining.
+        await worker.upsert_node("after_drop", {"entity_id": "after_drop"})
+        assert await worker.index_done_callback() is True
+        reader = await _worker(tmp_path)
+        try:
+            assert await reader.has_node("after_drop") is True
+            assert await reader.has_node("durable") is False
+        finally:
+            await reader.finalize()
+    finally:
         await worker.finalize()
