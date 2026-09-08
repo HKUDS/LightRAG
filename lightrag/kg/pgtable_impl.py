@@ -920,6 +920,28 @@ class PGTableGraphStorage(BaseGraphStorage):
         )
         return sorted(r["id"] for r in rows)
 
+    async def iter_labels(self, batch_size: int):
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        after = ""
+        while True:
+            rows = await self._fetch(
+                """
+                SELECT id FROM lightrag_graph_nodes
+                WHERE workspace = $1 AND namespace = $2 AND id COLLATE "C" > $3
+                ORDER BY id COLLATE "C" ASC LIMIT $4
+                """,
+                self.workspace,
+                self.namespace,
+                after,
+                batch_size,
+            )
+            if not rows:
+                break
+            batch = [r["id"] for r in rows]
+            yield batch
+            after = batch[-1]
+
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
         # Rank ALL nodes by degree, including isolated (degree 0) nodes, to
         # match NetworkXStorage.get_popular_labels (dict(graph.degree()) covers
@@ -1070,6 +1092,40 @@ class PGTableGraphStorage(BaseGraphStorage):
             for r in rows
         ]
         return sorted(edges, key=lambda edge: (edge["source"], edge["target"]))
+
+    async def iter_edges(self, batch_size: int):
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        after_source = ""
+        after_target = ""
+        while True:
+            rows = await self._fetch(
+                """
+                SELECT src_id, tgt_id, properties FROM lightrag_graph_edges
+                WHERE workspace = $1 AND namespace = $2
+                  AND (src_id COLLATE "C" > $3 OR
+                       (src_id = $3 AND tgt_id COLLATE "C" > $4))
+                ORDER BY src_id COLLATE "C" ASC, tgt_id COLLATE "C" ASC
+                LIMIT $5
+                """,
+                self.workspace,
+                self.namespace,
+                after_source,
+                after_target,
+                batch_size,
+            )
+            if not rows:
+                break
+            yield [
+                {
+                    **self._json_loads(row["properties"]),
+                    "source": row["src_id"],
+                    "target": row["tgt_id"],
+                }
+                for row in rows
+            ]
+            after_source = rows[-1]["src_id"]
+            after_target = rows[-1]["tgt_id"]
 
     # ------------------------------------------------------------------
     # Knowledge graph — frontier-capped iterative BFS

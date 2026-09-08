@@ -821,6 +821,19 @@ class NetworkXStorage(BaseGraphStorage):
         # Return sorted list
         return sorted(list(labels))
 
+    async def iter_labels(self, batch_size: int):
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        graph = await self._get_graph()
+        batch: list[str] = []
+        for node in graph.nodes():
+            batch.append(str(node))
+            if len(batch) == batch_size:
+                yield batch
+                batch = []
+        if batch:
+            yield batch
+
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
         """
         Get popular labels(entity names) by node degree (most connected entities)
@@ -1149,6 +1162,22 @@ class NetworkXStorage(BaseGraphStorage):
             edge_data_with_nodes["target"] = v
             all_edges.append(edge_data_with_nodes)
         return all_edges
+
+    async def iter_edges(self, batch_size: int):
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        graph = await self._get_graph()
+        batch: list[dict] = []
+        for source, target, edge_data in graph.edges(data=True):
+            edge = edge_data.copy()
+            edge["source"] = source
+            edge["target"] = target
+            batch.append(edge)
+            if len(batch) == batch_size:
+                yield batch
+                batch = []
+        if batch:
+            yield batch
 
     async def index_done_callback(self) -> bool:
         """Commit in-memory graph to disk and notify other processes.
