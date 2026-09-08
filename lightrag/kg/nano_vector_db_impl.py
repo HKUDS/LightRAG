@@ -23,6 +23,7 @@ from lightrag.utils import (
 from lightrag.base import BaseVectorStorage
 from lightrag.constants import DEFAULT_QUERY_PRIORITY
 from nano_vectordb import NanoVectorDB
+from . import file_fingerprint
 from .shared_storage import (
     get_namespace_lock,
     get_update_flag,
@@ -88,33 +89,76 @@ class NanoVectorDBStorage(BaseVectorStorage):
            don't have to hold ``_storage_lock`` while calling into
            ``client``.
 
-    Cross-process sync protocol (flag-only — see #3854):
-        This protocol has ONE channel, and it can fail: the
-        ``storage_updated`` flag is published with one Manager RPC per
-        process, so a partial publication leaves a peer unnotified. That
-        peer does not reload here and, on the ``for_write=True`` path,
-        saves its stale snapshot over the durable rows. ``NetworkXStorage``
-        already pairs the flag with a file fingerprint that cannot be lost
-        with the manager (see its *Cross-process sync protocol*); phase 2
-        of #3854 brings the same fence here. Until then the redo logs
-        retained past the publication (#3858) downgrade a peer overwrite
-        from lost to recovered-on-the-next-commit; they do not close it.
-        Writer side (``index_done_callback``):
+    Cross-process sync protocol (two channels — see #3854):
+        Two independent tests decide whether this process holds a current
+        snapshot, OR-ed at the one place that asks
+        (``_reload_client_from_disk_locked``). They are not redundant — their
+        blind spots do not overlap. The mechanism, and why each detail of it
+        is the way it is, lives in ``lightrag.kg.file_fingerprint``; the
+        canonical prose contract is ``NetworkXStorage``'s section of the same
+        name.
+
+        * **Authoritative channel — the file fingerprint.**
+          ``(st_mtime_ns, st_size)`` of the JSON file against what this
+          process recorded when it last loaded or wrote it
+          (``_loaded_fingerprint``). State, not an event: nothing consumes
+          it and a failed notification cannot lose it. Blind spot: two
+          commits inside one filesystem timestamp tick with an identical
+          file size.
+        * **Accelerator channel — the ``storage_updated`` flag.** Read
+          first, because a ``True`` value already answers the question.
+          ``set_all_update_flags`` publishes it with one Manager RPC per
+          process, so a partial publication leaves a peer unnotified —
+          that loss is its blind spot, and it is what the file channel
+          exists for. In exchange it covers the fingerprint's tick
+          collision, which needs a healthy, fast-committing system.
+
+        Writer side (``index_done_callback`` / ``finalize``):
             1. Atomically write the in-memory state to disk
                (``atomic_write`` swaps a tmp file into place).
-            2. Call ``set_all_update_flags`` to flip every process's
-               ``storage_updated`` flag (including the writer's own).
-            3. Immediately reset the writer's own flag to ``False`` so
-               the next call to ``_get_client`` does not trigger a
-               self-reload of the data this process just wrote.
-        Reader side (any method that goes through ``_get_client``):
-            1. Inside ``_storage_lock``, observe
-               ``storage_updated.value is True``.
-            2. **Fully reload** ``self._client`` from disk — NanoVectorDB
-               has no incremental sync API, so the entire JSON file is
-               re-parsed and a fresh in-memory matrix is rebuilt.
-            3. Reset the reader's own flag to ``False`` so concurrent
-               coroutines in the same process don't double-reload.
+            2. Record the fingerprint of the file just written, so this
+               process does not later read its own save as a peer's. Done
+               inside ``_save_to_disk_locked`` — before the caller's
+               bookkeeping, because that publishes through the manager and
+               can fail, while this is a local ``stat``.
+            3. ``set_all_update_flags`` flips every process's
+               ``storage_updated`` flag (including the writer's own), then
+               reset the writer's own flag to ``False``.
+        Reader and writer side (everything through
+        ``_reload_client_from_disk_locked``):
+            1. Inside ``_storage_lock``, test the flag; if it is ``False``,
+               test the fingerprint.
+            2. On either, **fully reload** ``self._client`` from disk —
+               NanoVectorDB has no incremental sync API, so the entire JSON
+               file is re-parsed and a fresh in-memory matrix is rebuilt.
+            3. Record the new fingerprint **and** reset the flag, whichever
+               channel fired.
+
+        **This backend does not decline a stale write, and must not.**
+        ``NetworkXStorage`` refuses to save when the file has moved past its
+        snapshot, because it has no way to keep the mutation. Here the write
+        path is *reload-then-replay*: ``index_done_callback`` reloads the
+        peer's snapshot and ``_flush_pending_locked`` replays the pending
+        buffer and the ``_unsaved_upserts`` / ``_unsaved_deletes`` redo logs
+        on top of it (issue #3688), so both sides survive and there is
+        nothing to report as a failure. Replay is idempotent: an unchanged
+        file matches by fingerprint and writes nothing, and a genuinely newer
+        row under the same id is declined by ``_resident_supersedes_redo``.
+        Consequently the flush-failure propagation NetworkX needs (a declined
+        commit must not be acknowledged as durable, see
+        ``LightRAG._flush_storages``) has no counterpart here.
+
+        Accepted residues (see *Consistency without transactions* in
+        ``AGENTS.md``):
+            * The tick collision above, **and** the notification lost for
+              this process: the peer commit is not observed. Recovery: the
+              next commit by any process flips the flag and changes the
+              fingerprint; the redo logs mean this process's own rows are
+              replayed rather than lost either way.
+            * A ``stat`` this process cannot perform: the file channel
+              reports "no change" and the fence degrades to the flag alone,
+              i.e. to the behaviour that predates it. See
+              ``kg.file_fingerprint`` for why the other direction is worse.
 
     Lock scope:
         ``_storage_lock`` is a per-``(namespace, workspace)`` keyed lock
@@ -326,10 +370,23 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # NanoVectorDB opens the target file.
         reap_orphan_tmp_files(self._client_file_name, self.workspace or "_")
 
+        # ``(st_mtime_ns, st_size)`` of the JSON file this process last loaded
+        # or wrote -- the authoritative half of the cross-process fence (see
+        # *Cross-process sync protocol*). Sampled BEFORE the construction
+        # below, which reads the file; see ``kg.file_fingerprint`` for why the
+        # order matters.
+        fingerprint = self._stat_fingerprint()
+        self._loaded_fingerprint = None
+        # How many times the file channel caught a commit the flag channel
+        # never announced, so a deployment can tell whether the
+        # lost-notification window in #3854 actually occurs.
+        self._missed_notification_reloads = 0
+
         self._client = NanoVectorDB(
             self.embedding_func.embedding_dim,
             storage_file=self._client_file_name,
         )
+        self._adopt_fingerprint(fingerprint)
 
         # Minimal pending area for deferred embedding: id -> _PendingNanoDoc.
         # Holds only records not yet embedded+materialized into self._client;
@@ -369,6 +426,38 @@ class NanoVectorDBStorage(BaseVectorStorage):
             self.namespace, workspace=self.workspace
         )
 
+    def _stat_fingerprint(self) -> file_fingerprint.Fingerprint | object:
+        """Sample the JSON file's identity. See ``kg.file_fingerprint``."""
+        return file_fingerprint.sample(
+            (self._client_file_name,), workspace=self.workspace
+        )
+
+    def _adopt_fingerprint(
+        self, fingerprint: file_fingerprint.Fingerprint | object
+    ) -> None:
+        """Record ``fingerprint`` as the file this process now holds."""
+        self._loaded_fingerprint = file_fingerprint.adopted(fingerprint)
+
+    def _record_fingerprint(self) -> None:
+        """Adopt the file currently on disk without reloading from it.
+
+        For the writer: after its own save the in-memory client already *is*
+        the file's content.
+        """
+        self._adopt_fingerprint(self._stat_fingerprint())
+
+    def _peer_commit_detected(self) -> bool:
+        """Whether the file on disk differs from the one this process loaded.
+
+        The fence's authoritative test — the one a failed notification cannot
+        disable. See ``kg.file_fingerprint``.
+        """
+        return file_fingerprint.peer_commit_detected(
+            (self._client_file_name,),
+            self._loaded_fingerprint,
+            workspace=self.workspace,
+        )
+
     def _reload_client_from_disk_locked(self, *, for_write: bool = False) -> bool:
         """Reload ``self._client`` if another process committed newer data.
 
@@ -376,23 +465,46 @@ class NanoVectorDBStorage(BaseVectorStorage):
         used by write paths as well as reads because deferred upserts mean a
         stale writer must merge its pending buffer into the latest on-disk
         snapshot, not save over it or return without flushing.
+
+        Two tests, per *Cross-process sync protocol*: this process's
+        ``storage_updated`` flag, read first, and the file's fingerprint
+        against what this process recorded. The second is what survives a lost
+        notification.
         """
-        if not self.storage_updated.value:
+        notified = bool(self.storage_updated.value)
+        if not notified and not self._peer_commit_detected():
             return False
 
-        log_message = (
-            f"[{self.workspace}] Process {os.getpid()} reloading {self.namespace} "
-            "due to update by another process"
-        )
-        if for_write:
-            logger.warning(log_message)
+        if notified:
+            log_message = (
+                f"[{self.workspace}] Process {os.getpid()} reloading {self.namespace} "
+                "due to update by another process"
+            )
+            if for_write:
+                logger.warning(log_message)
+            else:
+                logger.info(log_message)
         else:
-            logger.info(log_message)
+            # The lost-notification case the file channel exists for. Always a
+            # warning, on the read path too: unlike a notified reload this one
+            # says a publication failed somewhere.
+            self._missed_notification_reloads += 1
+            logger.warning(
+                f"[{self.workspace}] Process {os.getpid()} reloading "
+                f"{self.namespace}: {self._client_file_name} is not the file "
+                "this process loaded and no reload notification arrived for "
+                "it, so a notification was lost. Recovering through the file "
+                f"channel (occurrence #{self._missed_notification_reloads} in "
+                "this process)."
+            )
 
+        # Sampled BEFORE the read, never after -- see ``kg.file_fingerprint``.
+        fingerprint = self._stat_fingerprint()
         self._client = NanoVectorDB(
             self.embedding_func.embedding_dim,
             storage_file=self._client_file_name,
         )
+        self._adopt_fingerprint(fingerprint)
         self.storage_updated.value = False
         return True
 
@@ -755,6 +867,33 @@ class NanoVectorDBStorage(BaseVectorStorage):
             finally:
                 self._client.storage_file = original
 
+        async def _committed() -> None:
+            # Adopt the file this process just wrote BEFORE the caller's
+            # bookkeeping, which publishes through the manager and can fail. A
+            # local stat, so it cannot fail with it -- and doing it first means
+            # a failed publication does not additionally leave this process
+            # treating its own save as a peer's, which would cost a full
+            # file reload on the next call for nothing.
+            #
+            # Here rather than in each caller's hook so no save path can forget
+            # it: ``finalize`` reuses this same method.
+            self._record_fingerprint()
+            await on_committed()
+
+        # No fingerprint handling on the FAILURE path, unlike
+        # ``FaissVectorDBStorage._save_faiss_index``: this is ONE
+        # ``atomic_write``, so a failed save leaves the previous file in place
+        # and its fingerprint unchanged, and the fence correctly sees no
+        # change. FAISS writes two files and can publish a mismatched pair, so
+        # it has to adopt them explicitly to keep the fence from reading its
+        # own partial write as a peer commit.
+        #
+        # And note the direction differs from ``NetworkXStorage``, which
+        # INVALIDATES its fingerprint after a failed save to force a reload:
+        # it has no redo log, so its in-memory graph is untrustworthy and the
+        # file is the only authority. Here the in-memory client plus the redo
+        # logs ARE the authority to retry from, so the snapshot must be kept.
+
         try:
             await commit_in_storage_io(
                 partial(
@@ -763,7 +902,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                     _save_atomic,
                     self.workspace or "_",
                 ),
-                on_committed,
+                _committed,
             )
         except CommitBookkeepingError as e:
             # The file is already renamed into place, so the rows ARE durable
@@ -1507,6 +1646,18 @@ class NanoVectorDBStorage(BaseVectorStorage):
                     "writer reload flag is left set below so the next read "
                     f"rebuilds it from the removed file: {snapshot_error}",
                 )
+
+            # Mirror that decision on the file channel, and BEFORE the
+            # fallible manager writes below: a plain attribute assignment
+            # cannot fail with the manager, so the fence holds even when the
+            # flag write does not. Adopting the file's absence when the reset
+            # installed the post-drop client; invalidating (``None`` differs
+            # from any real file, present or absent) when it did not, so the
+            # next read rebuilds the stale client through this channel too.
+            if snapshot_reset:
+                self._record_fingerprint()
+            else:
+                self._loaded_fingerprint = None
 
             # Keep publication under the storage lock. Once deletion starts,
             # commit_in_storage_io defers caller cancellation through this hook
