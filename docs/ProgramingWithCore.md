@@ -1603,9 +1603,93 @@ deletion is always the recovery step:
 | --- | --- | --- |
 | Graph commit | Entity live, rows live | Consistent; retry the deletion |
 | Tracking delete or commit | Entity gone, its row stale | Retry: a deletion reporting `not_found` sweeps a stale row for that name and flushes pending tracking state whether or not a row is still visible in memory |
-| A failing tracking delete leaves incident relation rows of an entity deletion | Entity gone, relation rows stale | Not reachable automatically — the node is gone, so its edges are unknowable. Logged with the exact storage keys; delete the relation directly to sweep its row |
-| The cleanup never runs although the graph commit landed — process exit before a **deferred** tracking backend (JSON) flushes, the graph backend's commit notification raising after the write, or a direct cancellation of the deletion task mid-write | Entity gone, its rows and its relations' rows stale | The entity's own row is swept by a repeated deletion; its incident relation rows are not, and their keys are not logged because nothing failed. Delete the relations directly, or rebuild tracking. Not closed by this staging: the file-backed commit layer cannot tell a caller what landed |
+| A failing tracking delete leaves incident relation rows of an entity deletion | Entity gone, relation rows stale | Not reachable automatically — the node is gone, so its edges are unknowable. Logged with the exact storage keys; delete the relation directly to sweep its row, or run the [chunk-tracking repair](#repairing-chunk-tracking) |
+| The cleanup never runs although the graph commit landed — process exit before a **deferred** tracking backend (JSON) flushes, or a direct cancellation of the deletion task mid-write | Entity gone, its rows and its relations' rows stale | The entity's own row is swept by a repeated deletion; its incident relation rows are not, and their keys are not logged because nothing failed — so there is nothing to delete directly *by*. The recovery is the [chunk-tracking repair](#repairing-chunk-tracking). Not closed by this staging: neither a hard process exit nor a cancellation carries evidence about what landed. A commit notification that raises *after* the write does, and no longer reaches this row — it arrives as `CommitBookkeepingError` and `_commit_graph_or_raise` continues with the cleanup |
 | Vector flush | Entity and rows gone, vector record stale | The rebuildable window this codebase accepts elsewhere; `lightrag-rebuild-vdb` restores it |
+
+#### Repairing chunk tracking
+
+A stale or orphaned `entity_chunks` / `relation_chunks` row cannot be found, let
+alone pruned, one row at a time: `BaseKVStorage` has no enumeration API, so
+nothing can sweep for it. The repair is therefore whole-namespace — it replaces
+one or both namespaces from current graph keys, retaining authoritative rows for
+live objects and supplementing them from cached extraction results. Because that
+replacement cannot be coordinated with writers in other processes, it is
+available only as an offline tool.
+
+Before every run, stop **all** LightRAG API servers, pipeline workers, and SDK
+writers that use the same backing stores and workspace. The default invocation
+only scans and prints the complete replacement plan:
+
+```bash
+lightrag-repair-chunk-tracking
+lightrag-repair-chunk-tracking --apply
+lightrag-repair-chunk-tracking --apply --namespace entity  # or relation
+lightrag-repair-chunk-tracking --apply --resume-plan /path/from/failed/run.sqlite3
+# equivalent: python -m lightrag.tools.chunk_tracking_repair [--apply]
+```
+
+The repair scans document status and graph objects in bounded batches. Its
+deduplication and replacement plan live in a disk-backed SQLite database, so
+client memory is bounded by a batch plus the largest individual tracking row;
+local disk usage grows with the complete plan. Process-buffered KV backends are
+flushed after each repair batch; pending operations fail the apply instead of
+being counted as completed. Dry-run plans are temporary, while apply plans remain
+available for recovery until success.
+
+An apply durably seals that SQLite plan before the first namespace drop. If the
+apply fails or the process is interrupted, keep the workspace offline and use
+the printed `--resume-plan` path. Resume validates the configured storage
+identity and rewrites from the pre-drop snapshot without reading the partial
+tracking namespace. The plan is deleted only after all selected namespaces have
+been rebuilt successfully.
+
+The tool asks for an offline confirmation before initializing storage and asks
+again before the destructive apply. `--yes` is intended for an already-isolated
+maintenance environment. It prints the configured working directory, workspace,
+and concrete storage classes before planning. See
+[`README_CHUNK_TRACKING_REPAIR.md`](../lightrag/tools/README_CHUNK_TRACKING_REPAIR.md)
+for configuration and recovery instructions.
+
+It is deliberately **not** the startup migration:
+
+|                | startup chunk-tracking migration | offline repair tool |
+| --- | --- | --- |
+| When           | startup / first explicit creation | operator, on demand |
+| Gate           | only when the namespace `is_empty()` | never gated |
+| Seed           | graph `source_id` | live-object tracking rows + cached extraction results |
+| Existing rows  | left untouched | current graph keys retained; orphan keys removed |
+
+The seed is the point. Graph `source_id` is KEEP-truncated and chunk tracking
+outranks it, so re-seeding from it downgrades provenance across the whole
+install. The repair never reads it; the graph is consulted only for current
+object keys, so rows for deleted objects are not copied into the replacement.
+Rows for live objects remain authoritative: rename, merge, and manual creation
+can produce keys or attribution the extraction cache cannot reproduce. Cached
+extraction (`text_chunks.llm_cache_list` → `llm_response_cache`) supplements
+those rows at chunk granularity. The `full_entities` / `full_relations` anchors
+remain too coarse to write a tracking row from.
+
+Two consequences an operator has to plan for, both reported in the plan:
+
+- An object with neither an existing authoritative row nor matching cached
+  extraction remains without a row and is reported. An existing row—including
+  an authoritative empty row—is never discarded merely because cache evidence
+  is absent.
+- If retained rows plus cached evidence would leave a namespace **empty while
+  the graph contains corresponding objects**, apply fails before the first drop.
+- Any plan that leaves a current graph object without a row is blocked by
+  default. `--allow-missing-rows` accepts that explicitly after review of the
+  existing/planned row denominators printed by the dry run.
+- A completely empty graph also blocks apply by default: it may mean the wrong
+  backend/workspace or an unavailable graph index. `--allow-empty-graph` is an
+  explicit override after the operator independently verifies the empty graph.
+
+The tool computes the whole mapping before the first `drop()`, so a read failure
+leaves every existing row untouched. Each selected namespace is dropped and
+fully rewritten before the next namespace is touched, reducing the partial
+failure window. If an apply still fails after a drop, keep every writer stopped,
+fix the cause, and re-run the tool until it completes.
 
 ### Delete Relations
 
