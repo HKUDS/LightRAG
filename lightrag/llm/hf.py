@@ -1,7 +1,10 @@
 import asyncio
 import copy
+import contextvars
 import os
+import threading
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
 import pipmaster as pm  # Pipmaster for dynamic library install
@@ -47,15 +50,38 @@ def initialize_hf_model(model_name):
     return hf_model, hf_tokenizer
 
 
-# initialize_hf_model caches a single model instance (maxsize=1), and the
-# same instance backs every concurrent hf_model_if_cache call. PyTorch's
-# generate() is not safe to call concurrently against one model from
-# multiple threads (shared KV-cache/internal buffers can corrupt output),
-# and concurrent generations multiply GPU memory usage per call. Blocking
-# the event loop used to serialize this by accident -- asyncio.to_thread
-# does not, so this lock keeps only one generate() call in flight at a
-# time without blocking unrelated async work.
-_generate_lock = asyncio.Lock()
+_HF_INFERENCE_EXECUTOR = None
+_HF_INFERENCE_EXECUTOR_GUARD = threading.Lock()
+
+
+def _get_hf_inference_executor() -> ThreadPoolExecutor:
+    """Return the process-wide worker used for local HF inference."""
+    global _HF_INFERENCE_EXECUTOR
+    if _HF_INFERENCE_EXECUTOR is None:
+        with _HF_INFERENCE_EXECUTOR_GUARD:
+            if _HF_INFERENCE_EXECUTOR is None:
+                _HF_INFERENCE_EXECUTOR = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="lightrag-hf-inference"
+                )
+    return _HF_INFERENCE_EXECUTOR
+
+
+async def _run_hf_inference(fn, /, *args, **kwargs):
+    """Run one inference job without binding synchronisation to an event loop."""
+    concurrent_future = _get_hf_inference_executor().submit(
+        contextvars.copy_context().run, lambda: fn(*args, **kwargs)
+    )
+    async_future = asyncio.wrap_future(concurrent_future)
+    async_future.add_done_callback(
+        lambda future: None if future.cancelled() else future.exception()
+    )
+    try:
+        return await asyncio.shield(async_future)
+    except asyncio.CancelledError:
+        # This succeeds only while the job is still queued. A running job keeps
+        # occupying the sole worker until the underlying model call returns.
+        concurrent_future.cancel()
+        raise
 
 
 @retry(
@@ -135,22 +161,21 @@ async def hf_model_if_cache(
     # the asyncio wrapper: CPython cannot forcibly stop a running thread, so
     # generate() keeps running -- and keeps holding whatever GPU memory it
     # allocated -- until it finishes on its own. This is an inherent limit
-    # of bridging synchronous PyTorch inference through asyncio.to_thread,
+    # of bridging synchronous PyTorch inference through a worker thread,
     # not something fixable at this call site.
     try:
-        async with _generate_lock:
-            output = await asyncio.to_thread(
-                hf_model.generate,
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                num_return_sequences=1,
-                early_stopping=True,
-            )
+        output = await _run_hf_inference(
+            hf_model.generate,
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            num_return_sequences=1,
+            early_stopping=True,
+        )
     except asyncio.CancelledError:
         logger.warning(
             "hf_model_if_cache: cancelled while awaiting generate(); "
-            "the model keeps running in the background thread, still "
-            "holding its allocated memory, until it completes on its own"
+            "if generation already started, the model keeps running in "
+            "the background thread until it completes"
         )
         raise
     generated_ids = output[0][len(inputs["input_ids"][0]) :]
@@ -314,11 +339,11 @@ async def hf_embed(
     # timeout here cannot stop the forward pass early, only stop waiting
     # for it.
     try:
-        return await asyncio.to_thread(_run_forward)
+        return await _run_hf_inference(_run_forward)
     except asyncio.CancelledError:
         logger.warning(
             "hf_embed: cancelled while awaiting the forward pass; the "
-            "model keeps running in the background thread until it "
-            "completes on its own"
+            "model keeps running in the background thread if inference "
+            "already started"
         )
         raise

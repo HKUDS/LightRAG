@@ -75,6 +75,41 @@ def install_fake_transformers_and_torch(monkeypatch):
     monkeypatch.setattr(pm, "is_installed", lambda name: True)
 
 
+def test_hf_inference_executor_works_across_successive_event_loops(hf_module):
+    async def run_once():
+        return await hf_module._run_hf_inference(lambda: "ok")
+
+    assert asyncio.run(run_once()) == "ok"
+    assert asyncio.run(run_once()) == "ok"
+
+
+def test_cancelled_queued_hf_inference_does_not_run(hf_module):
+    first_started = threading.Event()
+    release_first = threading.Event()
+    calls = []
+
+    def run(marker):
+        calls.append(marker)
+        if marker == "first":
+            first_started.set()
+            release_first.wait(timeout=5)
+        return marker
+
+    async def exercise():
+        first = asyncio.create_task(hf_module._run_hf_inference(run, "first"))
+        assert await asyncio.to_thread(first_started.wait, 5)
+        queued = asyncio.create_task(hf_module._run_hf_inference(run, "queued"))
+        await asyncio.sleep(0)
+        queued.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await queued
+        release_first.set()
+        assert await first == "first"
+
+    asyncio.run(exercise())
+    assert calls == ["first"]
+
+
 @pytest.fixture
 def hf_module(monkeypatch):
     install_fake_transformers_and_torch(monkeypatch)
@@ -272,6 +307,61 @@ async def test_hf_model_if_cache_logs_and_repropagates_cancellation(
     release_call.set()
     assert len(warnings_logged) == 1
     assert "cancelled while awaiting generate()" in warnings_logged[0]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_generate_remains_serialized_until_worker_finishes(
+    hf_module, monkeypatch
+):
+    first_started = threading.Event()
+    second_started = threading.Event()
+    release_first = threading.Event()
+    calls = 0
+
+    class FakeModel:
+        device = FakeDevice("cpu")
+        generation_config = types.SimpleNamespace(eos_token_id=0)
+
+        def generate(self, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                first_started.set()
+                release_first.wait(timeout=5)
+            else:
+                second_started.set()
+            return FakeTensor([kwargs["input_ids"].data[0] + [901]], "cpu")
+
+    class FakeTokenizer:
+        eos_token_id = 0
+
+        def apply_chat_template(self, *args, **kwargs):
+            return "<prompt>"
+
+        def __call__(self, *args, **kwargs):
+            return {"input_ids": FakeTensor([[1]]), "attention_mask": FakeTensor([[1]])}
+
+        def decode(self, tensor, skip_special_tokens=True):
+            return "decoded"
+
+    model = FakeModel()
+    tokenizer = FakeTokenizer()
+    monkeypatch.setattr(
+        hf_module, "initialize_hf_model", lambda name: (model, tokenizer)
+    )
+
+    first = asyncio.create_task(hf_module.hf_model_if_cache("model", "first"))
+    assert await asyncio.to_thread(first_started.wait, 5)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    second = asyncio.create_task(hf_module.hf_model_if_cache("model", "second"))
+    await asyncio.sleep(0.05)
+    assert not second_started.is_set()
+
+    release_first.set()
+    assert await second == "decoded"
 
 
 @pytest.mark.asyncio
@@ -491,3 +581,77 @@ async def test_hf_embed_logs_and_repropagates_cancellation(hf_module, monkeypatc
     release_call.set()
     assert len(warnings_logged) == 1
     assert "cancelled while awaiting the forward pass" in warnings_logged[0]
+
+
+@pytest.mark.asyncio
+async def test_hf_embed_serializes_concurrent_forward_passes(hf_module):
+    first_started = threading.Event()
+    second_started = threading.Event()
+    release_first = threading.Event()
+    calls = 0
+
+    class FakeHidden:
+        dtype = "float32"
+
+        def unsqueeze(self, dim):
+            return self
+
+        def to(self, target):
+            return self
+
+        def __mul__(self, other):
+            return self
+
+        def sum(self, dim):
+            return self
+
+        def clamp_min(self, value):
+            return self
+
+        def __truediv__(self, other):
+            return self
+
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return np.zeros((1, 1024), dtype=np.float32)
+
+    class FakeModel:
+        def to(self, device):
+            return self
+
+        def parameters(self):
+            yield FakeHidden()
+
+        def __call__(self, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                first_started.set()
+                release_first.wait(timeout=5)
+            else:
+                second_started.set()
+            return types.SimpleNamespace(last_hidden_state=FakeHidden())
+
+    class FakeEncoded(dict):
+        def to(self, device):
+            return self
+
+    class FakeTokenizer:
+        def __call__(self, *args, **kwargs):
+            return FakeEncoded(input_ids=FakeHidden(), attention_mask=FakeHidden())
+
+    model = FakeModel()
+    tokenizer = FakeTokenizer()
+    first = asyncio.create_task(hf_module.hf_embed(["first"], tokenizer, model))
+    assert await asyncio.to_thread(first_started.wait, 5)
+    second = asyncio.create_task(hf_module.hf_embed(["second"], tokenizer, model))
+    await asyncio.sleep(0.05)
+    assert not second_started.is_set()
+
+    release_first.set()
+    await asyncio.gather(first, second)
