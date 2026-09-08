@@ -358,13 +358,20 @@ class _WriteOnlyDeadFlag:
         raise BrokenPipeError("manager gone")
 
 
-async def _worker_with_a_failed_save(tmp_path, monkeypatch) -> NetworkXStorage:
+async def _worker_with_a_failed_save(tmp_path) -> NetworkXStorage:
     """A worker left holding a mutation whose save AND recovery reload failed.
 
     The state `_recovery_reload_pending` exists for: `self._graph` carries
     `never_saved`, the file does not, and nothing in either cross-process
     channel says so -- the file never moved, so the fingerprint still matches,
     and no peer committed, so no notification was sent.
+
+    The breakage is applied through a `MonkeyPatch` instance of this helper's
+    OWN, never the caller's fixture. pytest hands the same fixture instance to
+    the test and to every fixture it requested, so undoing it here would also
+    revert the `multiprocess` fixture's patch -- and each caller that asked for
+    the fence would then run its assertions with the fence silently disabled,
+    passing for the wrong reason.
     """
     worker = await _worker(tmp_path)
     await worker.upsert_node("durable", {"entity_id": "durable"})
@@ -378,21 +385,23 @@ async def _worker_with_a_failed_save(tmp_path, monkeypatch) -> NetworkXStorage:
     def reload_boom(file_name):
         raise OSError("reload boom")
 
-    monkeypatch.setattr(NetworkXStorage, "write_nx_graph", staticmethod(save_boom))
-    monkeypatch.setattr(NetworkXStorage, "load_nx_graph", staticmethod(reload_boom))
-    with pytest.raises(OSError, match="save boom"):
-        await worker.index_done_callback()
+    breakage = pytest.MonkeyPatch()
+    breakage.setattr(NetworkXStorage, "write_nx_graph", staticmethod(save_boom))
+    breakage.setattr(NetworkXStorage, "load_nx_graph", staticmethod(reload_boom))
+    try:
+        with pytest.raises(OSError, match="save boom"):
+            await worker.index_done_callback()
+    finally:
+        # Only the two storage methods: the recovery reload is what the caller
+        # does NEXT, so the file has to be readable again by then.
+        breakage.undo()
 
     assert worker._recovery_reload_pending is True
-    # Undo both breakages: the recovery reload is what the caller does NEXT.
-    monkeypatch.undo()
     return worker
 
 
 @pytest.mark.asyncio
-async def test_a_failed_save_forces_a_reload_in_single_process_mode(
-    tmp_path, monkeypatch
-):
+async def test_a_failed_save_forces_a_reload_in_single_process_mode(tmp_path):
     """Recovery must not depend on the multiprocess gate.
 
     Deliberately without the `multiprocess` fixture. The file channel is gated
@@ -400,7 +409,7 @@ async def test_a_failed_save_forces_a_reload_in_single_process_mode(
     was the only thing arming recovery here -- a fact easy to lose while
     reasoning about a fence whose other two tests are both about peers.
     """
-    worker = await _worker_with_a_failed_save(tmp_path, monkeypatch)
+    worker = await _worker_with_a_failed_save(tmp_path)
     try:
         assert file_fingerprint.fence_enabled() is False
 
@@ -413,16 +422,14 @@ async def test_a_failed_save_forces_a_reload_in_single_process_mode(
 
 
 @pytest.mark.asyncio
-async def test_a_failed_save_makes_the_next_commit_decline(
-    tmp_path, multiprocess, monkeypatch
-):
+async def test_a_failed_save_makes_the_next_commit_decline(tmp_path, multiprocess):
     """Saving would publish mutations from a batch already reported as failed.
 
     Their documents are marked FAILED and reprocessed from scratch, so the
     graph must not keep them. The decline reaches the caller as `False`, which
     `_commit_graph_or_raise` / `_flush_one` turn into a failure (rule 5).
     """
-    worker = await _worker_with_a_failed_save(tmp_path, monkeypatch)
+    worker = await _worker_with_a_failed_save(tmp_path)
     try:
         assert await worker.index_done_callback() is False
         assert worker._recovery_reload_pending is False
@@ -443,7 +450,7 @@ async def test_a_failed_save_makes_the_next_commit_decline(
 
 @pytest.mark.asyncio
 async def test_a_recovery_reload_is_not_counted_as_a_lost_notification(
-    tmp_path, multiprocess, monkeypatch
+    tmp_path, multiprocess
 ):
     """The evidence counter must only ever count what it names.
 
@@ -454,8 +461,13 @@ async def test_a_recovery_reload_is_not_counted_as_a_lost_notification(
     that was lost, in exactly the deployment where someone would be reading
     that counter.
     """
-    worker = await _worker_with_a_failed_save(tmp_path, monkeypatch)
+    worker = await _worker_with_a_failed_save(tmp_path)
     try:
+        # The helper must not have undone the `multiprocess` fixture: without
+        # the fence, _peer_commit_detected() below is trivially False and this
+        # test would pass while covering nothing.
+        assert file_fingerprint.fence_enabled() is True
+
         # Armed WITHOUT invalidating the fingerprint: the save failed, so the
         # file is untouched and the recorded value still describes it
         # correctly. Invalidating it here is the false positive -- it makes
@@ -516,16 +528,14 @@ async def test_arming_recovery_does_not_touch_the_manager(
 
 
 @pytest.mark.asyncio
-async def test_drop_clears_a_pending_recovery_reload(
-    tmp_path, multiprocess, monkeypatch
-):
+async def test_drop_clears_a_pending_recovery_reload(tmp_path, multiprocess):
     """A sticky flag survives a `drop` and would decline the next real commit.
 
     The mutation the recovery protects is destroyed along with everything
     else, so memory matches the file again and there is nothing left to
     discard.
     """
-    worker = await _worker_with_a_failed_save(tmp_path, monkeypatch)
+    worker = await _worker_with_a_failed_save(tmp_path)
     try:
         assert (await worker.drop())["status"] == "success"
         assert worker._recovery_reload_pending is False
