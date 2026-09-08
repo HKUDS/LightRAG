@@ -1,5 +1,7 @@
+import asyncio
 import importlib
 import sys
+import threading
 from types import SimpleNamespace
 
 import numpy as np
@@ -294,6 +296,101 @@ async def test_zhipu_if_cache_entity_extraction_maps_to_json_object(monkeypatch)
     assert result == '{"entities":[],"relationships":[]}'
     assert captured_calls[0]["response_format"] == {"type": "json_object"}
     assert "entity_extraction" not in captured_calls[0]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_zhipu_complete_runs_client_call_off_the_event_loop_thread(monkeypatch):
+    """ZhipuAI wraps a synchronous httpx.Client, so calling it directly from
+    this async function would block the event loop for the whole HTTP
+    request. The call must run on a worker thread instead."""
+    call_thread_id = {}
+    main_thread_id = threading.get_ident()
+
+    class FakeClient:
+        def __init__(self, api_key=None):
+            self.api_key = api_key
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, **kwargs):
+            call_thread_id["id"] = threading.get_ident()
+            return _fake_chat_response(content="answer")
+
+    zhipu_module = _load_zhipu_module(monkeypatch, FakeClient)
+
+    result = await zhipu_module.zhipu_complete_if_cache(
+        prompt="hello", api_key="test-key"
+    )
+
+    assert result == "answer"
+    assert call_thread_id["id"] != main_thread_id
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_zhipu_embedding_runs_client_call_off_the_event_loop_thread(monkeypatch):
+    call_thread_id = {}
+    main_thread_id = threading.get_ident()
+
+    class FakeClient:
+        def __init__(self, api_key=None):
+            self.api_key = api_key
+            self.embeddings = SimpleNamespace(create=self.create)
+
+        def create(self, **kwargs):
+            call_thread_id["id"] = threading.get_ident()
+            return SimpleNamespace(
+                data=[SimpleNamespace(embedding=_fake_embedding_vector())]
+            )
+
+    zhipu_module = _load_zhipu_module(monkeypatch, FakeClient)
+
+    await zhipu_module.zhipu_embedding.func(["hello"], api_key="test-key")
+
+    assert call_thread_id["id"] != main_thread_id
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_zhipu_complete_logs_and_repropagates_cancellation(monkeypatch):
+    """Cancelling the outer await (e.g. an execution timeout) still has to
+    propagate CancelledError, with a warning noting the SDK call keeps
+    running in the background thread until it finishes on its own."""
+    call_started = threading.Event()
+    release_call = threading.Event()
+    warnings_logged = []
+
+    class FakeClient:
+        def __init__(self, api_key=None):
+            self.api_key = api_key
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, **kwargs):
+            call_started.set()
+            release_call.wait(timeout=5)
+            return _fake_chat_response(content="answer")
+
+    zhipu_module = _load_zhipu_module(monkeypatch, FakeClient)
+    monkeypatch.setattr(
+        zhipu_module.logger, "warning", lambda msg: warnings_logged.append(msg)
+    )
+
+    task = asyncio.ensure_future(
+        zhipu_module.zhipu_complete_if_cache(prompt="hello", api_key="test-key")
+    )
+    for _ in range(500):
+        if call_started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert call_started.is_set()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    release_call.set()
+    assert len(warnings_logged) == 1
+    assert "cancelled while awaiting the SDK call" in warnings_logged[0]
 
 
 @pytest.mark.offline

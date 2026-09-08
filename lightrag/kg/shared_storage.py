@@ -3527,6 +3527,21 @@ async def drain_reserved_background_tasks(
     return pending_cancel
 
 
+def is_multiprocess_mode() -> bool:
+    """Whether shared state is backed by a ``multiprocessing.Manager``.
+
+    ``False`` in single-process mode (and before :func:`initialize_share_data`
+    has run), where the shared dicts are plain dicts and the update flags are
+    local ``MutableBoolean`` objects.
+
+    Exposed for the storages whose cross-process fences are only meaningful
+    when peer processes exist -- see ``NetworkXStorage``'s *Cross-process sync
+    protocol*, which skips its file-fingerprint check in single-process mode
+    because there is no peer that could have committed.
+    """
+    return bool(_is_multiprocess)
+
+
 async def get_update_flag(namespace: str, workspace: str | None = None):
     """
     Create a namespace's update flag for a workers.

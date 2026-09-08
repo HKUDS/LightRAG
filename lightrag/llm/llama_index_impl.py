@@ -165,6 +165,9 @@ async def llama_index_complete(
         settings: Optional LlamaIndex settings
         **kwargs: Additional arguments. ``response_format`` is not supported by
             this adapter and is stripped before calling LlamaIndex.
+            ``max_tokens`` is folded into ``chat_kwargs`` (without overriding
+            an explicit ``chat_kwargs["max_tokens"]``) since llama_index has
+            no top-level parameter for it.
 
     Structured output note:
     - This adapter does not support OpenAI-style ``response_format`` JSON mode.
@@ -190,8 +193,23 @@ async def llama_index_complete(
             stacklevel=2,
         )
     kwargs.pop("response_format", None)
+    # hashing_kv is injected unconditionally by the role LLM wrapper.
+    # Neither it nor streaming is a llama_index_complete_if_cache
+    # parameter, or supported by this adapter -- both are dropped, matching
+    # the explicit-pop pattern in openai.py / ollama.py / anthropic.py.
+    kwargs.pop("hashing_kv", None)
+    kwargs.pop("stream", None)
+    # max_tokens is injected by use_llm_func_with_cache when configured.
+    # llama_index_complete_if_cache has no top-level max_tokens parameter
+    # of its own, but forwards chat_kwargs straight into the underlying
+    # LLM's achat(), so fold it in there instead of discarding it silently.
+    max_tokens = kwargs.pop("max_tokens", None)
+    if max_tokens is not None:
+        chat_kwargs = dict(kwargs.get("chat_kwargs") or {})
+        chat_kwargs.setdefault("max_tokens", max_tokens)
+        kwargs["chat_kwargs"] = chat_kwargs
     result = await llama_index_complete_if_cache(
-        kwargs.get("llm_instance"),
+        kwargs.pop("llm_instance", None),
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
@@ -230,6 +248,7 @@ async def llama_index_embed(
     if embed_model is None:
         raise ValueError("embed_model must be provided")
 
-    # Use _get_text_embeddings for batch processing
-    embeddings = embed_model._get_text_embeddings(texts)
+    # Use the async batch method -- the sync _get_text_embeddings would
+    # block the event loop for the whole embedding call.
+    embeddings = await embed_model._aget_text_embeddings(texts)
     return np.array(embeddings)
