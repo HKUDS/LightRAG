@@ -250,35 +250,41 @@ async def test_set_nx_refuses_an_existing_key(storage):
 
 
 @pytest.mark.asyncio
-async def test_stale_absent_read_cannot_move_create_time(storage):
-    """Forced interleaving: the second writer adopts the first creation.
+async def test_upsert_racing_a_delete_never_resurrects_the_old_timestamp(storage):
+    """The delete race, which only server-side atomicity can close.
 
-    The classification read is stubbed absent ONCE -- what a writer would
-    have read a moment before the other one's SET landed. Everything after
-    that, including the refused ``SET NX`` and the repair read, is the real
-    server.
+    If the row exists afterwards, the upsert's write was the last one on that
+    key, so the row is a new incarnation and must carry the upsert's own
+    clock. A client-side read-then-write leaves a window where the read sees
+    the pre-delete row, the delete lands, and the write puts the removed
+    incarnation's timestamp back -- and nothing ever repairs it, because every
+    later update preserves what it finds.
+
+    Measured against the read-then-write predecessor of this code, the window
+    was hit in roughly a quarter of the rounds below; the script closes it
+    because its read and write are one step.
     """
-    with patch("time.time", return_value=1_700_000_100):
-        await storage.upsert({"K": {"x": 1}})
+    rounds = 40
+    resurrected = []
+    for index in range(rounds):
+        key = f"race-{index}"
+        with patch("time.time", return_value=1_700_000_000):
+            await storage.upsert({key: {"round": 1}})
+        first = (await storage.get_by_id(key))["create_time"]
 
-    real_resolve = storage._resolve_stored_create_times
-    calls = {"n": 0}
+        with patch("time.time", return_value=1_700_000_500):
+            await asyncio.gather(
+                storage.upsert({key: {"round": 2}}), storage.delete([key])
+            )
 
-    async def stale_once(redis, keys):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return {}
-        return await real_resolve(redis, keys)
+        row = await storage.get_by_id(key)
+        if row is not None and row["create_time"] == first:
+            resurrected.append(key)
 
-    storage._resolve_stored_create_times = stale_once
-    with patch("time.time", return_value=1_700_000_200):
-        await storage.upsert({"K": {"x": 2}})
-
-    assert calls["n"] == 2, "the refused NX must trigger exactly one repair read"
-    row = await storage.get_by_id("K")
-    assert row["create_time"] == 1_700_000_100
-    assert row["update_time"] == 1_700_000_200
-    assert row["x"] == 2
+    assert not resurrected, (
+        f"{len(resurrected)}/{rounds} rows came back carrying the deleted "
+        f"incarnation's create_time"
+    )
 
 
 @pytest.mark.asyncio
@@ -322,3 +328,53 @@ async def test_concurrent_inserts_converge_on_one_create_time(storage):
     finally:
         for other in others:
             await other.finalize()
+
+
+# Raw stored values, chosen so each side of the prefix pattern is exercised:
+# compact and spaced separators, zero, a negative value, and four shapes the
+# pattern must REFUSE (tail position, float, null, quoted) plus non-JSON.
+_PREFIX_SAMPLES = [
+    '{"create_time":1650000000,"x":1}',
+    '{"create_time": 1650000000, "x": 1}',
+    '{"create_time":0}',
+    '{"create_time": -5, "x": 1}',
+    '{"x":1,"create_time":1650000000}',
+    '{"create_time": 1.5, "x": 1}',
+    '{"create_time": null}',
+    '{"create_time": "1650000000"}',
+    "not json at all",
+]
+
+
+@pytest.mark.parametrize("raw", _PREFIX_SAMPLES, ids=range(len(_PREFIX_SAMPLES)))
+@pytest.mark.asyncio
+async def test_lua_prefix_pattern_agrees_with_the_python_regex(storage, raw):
+    """The two patterns are one rule written twice; keep them in step.
+
+    A Lua pattern that refused a prefix the Python regex accepts would send
+    every update down the legacy read; one that accepted more would take a
+    timestamp the caller never normalized.
+    """
+    from lightrag.kg.redis_impl import (
+        _CREATE_TIME_PREFIX_BYTES,
+        _CREATE_TIME_PREFIX_RE,
+        _CREATE_TIME_UPSERT_LUA,
+    )
+
+    key = f"{storage.final_namespace}:pattern"
+    expected = _CREATE_TIME_PREFIX_RE.match(raw[:_CREATE_TIME_PREFIX_BYTES])
+
+    async with storage._get_redis_connection() as redis:
+        await redis.set(key, raw)
+        script = redis.register_script(_CREATE_TIME_UPSERT_LUA)
+        outcome, value = await script(
+            keys=[key],
+            args=['{"x":2}', "", 1_700_000_000, _CREATE_TIME_PREFIX_BYTES],
+        )
+
+    if expected is None:
+        assert outcome == "needs_hint"
+        assert value == ""
+    else:
+        assert outcome == "kept"
+        assert value == expected.group(1)

@@ -14,6 +14,7 @@ subscripts is the cost that matters and is asserted here too.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -205,3 +206,21 @@ async def test_caller_supplied_create_time_ignored_on_update(tmp_path):
         await storage.upsert({"E": {"x": 2, "create_time": 1}})
 
     assert storage._data["E"]["create_time"] == 1_700_000_000
+
+
+@pytest.mark.asyncio
+async def test_infinite_create_time_does_not_abort_the_upsert(tmp_path):
+    """JSON ``1e309`` decodes to float infinity, and ``int(inf)`` overflows.
+
+    The helper's documented fallback is 0; before OverflowError was handled
+    one hand-edited row aborted the whole upsert instead.
+    """
+    storage = _make_storage(tmp_path)
+    await storage.initialize()
+
+    storage._data["inf"] = {"x": 1, "create_time": json.loads("1e309")}
+    with patch("time.time", return_value=1_700_000_600):
+        await storage.upsert({"inf": {"x": 2}})
+
+    assert storage._data["inf"]["create_time"] == 0
+    assert storage._data["inf"]["update_time"] == 1_700_000_600

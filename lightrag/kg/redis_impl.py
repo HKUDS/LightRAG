@@ -69,10 +69,10 @@ from tenacity import (
 )
 
 # Storage-managed ``create_time`` is serialized as the FIRST key of every KV
-# value so an update can recover the previous timestamp with a bounded prefix
-# read instead of pulling the whole row back over the wire -- a ``full_docs``
-# row is an entire document, and Redis has no way to read one JSON field.
-# 64 bytes covers ``{"create_time":`` plus a 19-digit integer and its comma.
+# value so it can be recovered with a bounded prefix read instead of pulling
+# the whole row back over the wire -- a ``full_docs`` row is an entire
+# document, and Redis has no way to read one JSON field. 64 bytes covers
+# ``{"create_time":`` plus a 19-digit integer and its comma.
 #
 # The separator is matched loosely on purpose: ``json.dumps`` writes
 # ``{"create_time": 1700000000,`` (a space after the colon) while a compact
@@ -83,25 +83,76 @@ from tenacity import (
 _CREATE_TIME_PREFIX_BYTES = 64
 _CREATE_TIME_PREFIX_RE = re.compile(r'^\{\s*"create_time"\s*:\s*(-?\d+)\s*[,}]')
 
+# Lua counterpart of _CREATE_TIME_PREFIX_RE. Keep the two in step; the
+# integration suite pins them to the same verdict on the same prefixes.
+_CREATE_TIME_PREFIX_LUA_PATTERN = '^{%s*"create_time"%s*:%s*(%-?%d+)%s*[,}]'
 
-def _dumps_create_time_first(value: dict[str, Any]) -> str:
-    """Serialize a KV row with ``create_time`` as its first key.
+# The script that writes a KV row. Reading the previous ``create_time`` and
+# writing the new value must be ONE atomic step, or a concurrent ``delete()``
+# landing between them lets the row come back carrying the deleted
+# incarnation's timestamp -- and nothing would ever correct it, because every
+# later update preserves what it finds. Redis runs a script atomically, so the
+# decision happens next to the data:
+#
+#   * key absent            -> stamp ARGV[3] (the write's own clock). Two
+#     writers racing a first insert therefore cannot disagree: the second one
+#     to run finds the row and keeps the first one's timestamp.
+#   * prefix carries an int -> keep it. This is the steady state, and it needs
+#     nothing from the caller: one round trip, no read amplification.
+#   * prefix does not match -> a row written before this layout existed, or by
+#     hand. The timestamp may sit anywhere in the value or be malformed, and
+#     normalizing it belongs to ``normalize_kv_create_time`` and not to a
+#     second implementation in Lua -- so the script WRITES NOTHING and answers
+#     ``needs_hint``. The caller reads the value, normalizes it, and calls
+#     again with ARGV[2] set; a non-empty hint always writes, so the exchange
+#     cannot loop.
+#
+# No ``cjson`` and no arithmetic: the timestamp travels as a string and the
+# value is spliced in front of the caller's payload, so a large row is never
+# decoded server-side and Lua's number formatting never enters the picture.
+_CREATE_TIME_UPSERT_LUA = f"""
+local prefix = redis.call('GETRANGE', KEYS[1], 0, tonumber(ARGV[4]) - 1)
+local outcome
+local create_time
+if prefix == '' then
+    create_time = ARGV[3]
+    outcome = 'created'
+else
+    local matched = string.match(prefix, '{_CREATE_TIME_PREFIX_LUA_PATTERN}')
+    if matched then
+        create_time = matched
+        outcome = 'kept'
+    elseif ARGV[2] == '' then
+        return {{'needs_hint', ''}}
+    else
+        create_time = ARGV[2]
+        outcome = 'hinted'
+    end
+end
+local rest = string.sub(ARGV[1], 2)
+if rest == '}}' or rest == '' then
+    redis.call('SET', KEYS[1], '{{"create_time":' .. create_time .. '}}')
+else
+    redis.call('SET', KEYS[1], '{{"create_time":' .. create_time .. ',' .. rest)
+end
+return {{outcome, create_time}}
+"""
 
-    ``RedisKVStorage.upsert`` recovers the stored ``create_time`` with a
-    ``GETRANGE`` prefix read, which only works while the field leads the
-    serialized object. Python dicts preserve insertion order and
-    ``json.dumps`` follows it, so the ordering is established here -- the one
-    place a KV row is serialized. Seeding the key first and then ``update``-ing
-    keeps that position, because ``dict.update`` replaces an existing key's
-    value without moving it.
 
-    The ordering is an optimization, not a correctness fence: a row that does
-    not match the prefix (written by an older release, or by hand) falls back
-    to a full read in ``upsert`` and is rewritten in this layout afterwards.
+def _dumps_kv_payload(value: dict[str, Any]) -> str:
+    """Serialize a KV row WITHOUT ``create_time``, for the upsert script.
+
+    The script prepends the timestamp it decided on, which is what puts the
+    field first (see ``_CREATE_TIME_PREFIX_BYTES``) and what keeps the
+    decision atomic. Dropping the key here also means a caller-supplied
+    ``create_time`` cannot reach storage, as the ``BaseKVStorage.upsert``
+    contract requires.
+
+    The result always starts with ``{`` and normally carries at least
+    ``_id`` and ``update_time``; the script handles the empty-object case
+    anyway so the splice cannot produce invalid JSON.
     """
-    ordered: dict[str, Any] = {"create_time": value.get("create_time", 0)}
-    ordered.update(value)
-    return json.dumps(ordered)
+    return json.dumps({k: v for k, v in value.items() if k != "create_time"})
 
 
 config = configparser.ConfigParser()
@@ -565,62 +616,36 @@ class RedisKVStorage(BaseKVStorage):
             existing_ids = {keys_list[i] for i, exists in enumerate(results) if exists}
             return set(keys) - existing_ids
 
-    async def _resolve_stored_create_times(
-        self, redis, keys: list[str]
-    ) -> dict[str, int]:
-        """Return the stored ``create_time`` of ``keys`` that already exist.
+    async def _read_legacy_create_times(self, redis, keys: list[str]) -> dict[str, int]:
+        """Full-read the ``create_time`` of rows the upsert script could not.
 
-        Redis cannot read a single JSON field, but it can read a byte range,
-        and ``_dumps_create_time_first`` puts the field first — so 64 bytes
-        per key is enough and a ``full_docs`` row does not have to travel the
-        wire to yield one integer.
+        Only rows whose stored prefix does not carry the field reach this --
+        an older layout or a hand-edited value -- so the whole value has to
+        come back to find it. The upsert rewrites them ``create_time``-first,
+        which makes this a one-time cost per row.
 
-        A key missing from the returned mapping is CONFIRMED absent (empty
-        ``GETRANGE``); an existing row is never written empty by this class.
-        A row whose prefix does not match (older layout, hand-edited) costs
-        one full read here and is rewritten in the prefix layout by the
-        caller, so the fallback is a one-time cost per row.
+        A key absent from the result is either genuinely gone or holds
+        something that is not a JSON object; the caller passes its own clock
+        for those, and a decodable object with no ``create_time`` yields the
+        documented ``0``.
         """
         resolved: dict[str, int] = {}
         if not keys:
             return resolved
 
-        pipe = redis.pipeline()
-        for i, k in enumerate(keys, start=1):
-            pipe.getrange(
-                f"{self.final_namespace}:{k}", 0, _CREATE_TIME_PREFIX_BYTES - 1
-            )
-            await _cooperative_yield(i)
-        prefixes = await pipe.execute()
-
-        needs_full_read: list[str] = []
-        for i, k in enumerate(keys):
-            prefix = prefixes[i]
-            if not prefix:
-                continue  # absent
-            match = _CREATE_TIME_PREFIX_RE.match(prefix)
-            if match is not None:
-                resolved[k] = int(match.group(1))
-            else:
-                needs_full_read.append(k)
-            await _cooperative_yield(i + 1)
-
-        if not needs_full_read:
-            return resolved
-
         logger.debug(
-            f"[{self.workspace}] {self.namespace}: full read for "
-            f"{len(needs_full_read)} row(s) whose create_time is not in the "
-            f"value prefix"
+            f"[{self.workspace}] {self.namespace}: full read for {len(keys)} "
+            f"row(s) whose create_time is not in the value prefix"
         )
         pipe = redis.pipeline()
-        for i, k in enumerate(needs_full_read, start=1):
+        for i, k in enumerate(keys, start=1):
             pipe.get(f"{self.final_namespace}:{k}")
             await _cooperative_yield(i)
-        legacy_values = await pipe.execute()
-        for k, raw in zip(needs_full_read, legacy_values):
+        values = await pipe.execute()
+
+        for k, raw in zip(keys, values):
             if not raw:
-                # Deleted between the two reads: confirmed absent again.
+                # Deleted between the script's read and this one.
                 continue
             try:
                 stored = json.loads(raw)
@@ -642,26 +667,29 @@ class RedisKVStorage(BaseKVStorage):
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Write KV rows, preserving each row's original ``create_time``.
 
-        Concurrency (issue #3870): resolving the stored timestamp and writing
-        the new value are two round trips, so they cannot be one atomic step.
-        They do not need to be, because only ONE of the two outcomes is
-        contended:
+        ``create_time`` is the moment the row was FIRST created; only
+        ``update_time`` may move afterwards (issue #3870). Redis cannot read
+        one JSON field, so the value is written ``create_time``-first and the
+        previous timestamp is recovered from a bounded prefix.
 
-        * **Update** — every writer derives the same ``create_time`` from the
-          same stored row (a preserved value, ``0`` for a legacy row, and the
-          normalization in between is deterministic), so read-modify-write is
-          idempotent. Concurrent updates cannot disagree.
-        * **Insert** — writers that all see the key absent would each stamp
-          their own clock, and the last ``SET`` would win, moving
-          ``create_time`` forward off the real first creation. That one is
-          made atomic by ``SET ... NX``: the first creation wins, and a
-          writer whose ``NX`` is refused re-reads the winner's timestamp and
-          rewrites the row with it.
+        The decision is made INSIDE ``_CREATE_TIME_UPSERT_LUA``, atomically
+        with the write. A client-side read-then-write would leave two holes
+        that no later write repairs, because every update preserves the
+        timestamp it finds:
 
-        Accepted residue: an upsert racing a ``delete`` + re-create of the
-        same key can rewrite the row with the pre-delete timestamp. An upsert
-        concurrent with a delete has no defined winner to begin with, and the
-        next write of that row settles it.
+        * two writers that both saw the key absent would each stamp their own
+          clock, and the last ``SET`` would report a creation that never
+          happened;
+        * a ``delete()`` completing between one writer's read and its ``SET``
+          would let the row come back carrying the deleted incarnation's
+          timestamp.
+
+        The steady state is therefore ONE round trip. A second one happens
+        only for rows written before this layout existed: the script answers
+        ``needs_hint`` without writing, and this method reads those values,
+        normalizes them through ``normalize_kv_create_time`` (the single
+        authority for malformed shapes) and calls the script again. Their
+        rewrite puts the field first, so they take the fast path afterwards.
         """
         if not data:
             return
@@ -671,77 +699,72 @@ class RedisKVStorage(BaseKVStorage):
         async with self._get_redis_connection() as redis:
             try:
                 keys = list(data.keys())
-                stored_create_times = await self._resolve_stored_create_times(
-                    redis, keys
-                )
-
-                # Add timestamps to data
                 for i, (k, v) in enumerate(data.items(), start=1):
                     # For text_chunks namespace, ensure llm_cache_list field exists
                     if self.namespace.endswith("text_chunks"):
                         if "llm_cache_list" not in v:
                             v["llm_cache_list"] = []
 
-                    # Update: the business value is replaced wholesale, but the
-                    # storage-managed create_time survives it; a legacy row
-                    # without the field records 0 (unknown). A caller-supplied
-                    # create_time is ignored on this path -- see the
-                    # BaseKVStorage.upsert contract.
-                    if k in stored_create_times:
-                        v["update_time"] = current_time
-                        v["create_time"] = stored_create_times[k]
-                    else:  # New key, set both create_time and update_time
-                        v["create_time"] = current_time
-                        v["update_time"] = current_time
-
+                    v["update_time"] = current_time
+                    # Optimistic: right for an insert, and replaced below by
+                    # whatever the script decided. A caller-supplied value
+                    # never reaches storage -- _dumps_kv_payload drops the key
+                    # and the script writes its own.
+                    v["create_time"] = current_time
                     v["_id"] = k
                     await _cooperative_yield(i)
 
-                # Store the data. Rows we believe to be new go out as SET NX
-                # so a concurrent first creation cannot be overwritten; rows
-                # that already exist are a plain SET (see the docstring: every
-                # writer computes the same create_time for them).
-                pipe = redis.pipeline()
-                for i, k in enumerate(keys, start=1):
-                    pipe.set(
-                        f"{self.final_namespace}:{k}",
-                        _dumps_create_time_first(data[k]),
-                        nx=k not in stored_create_times,
-                    )
-                    await _cooperative_yield(i)
-                results = await pipe.execute()
+                # register_script only hashes the source locally; the pipeline
+                # loads it server-side before executing (redis-py tracks it
+                # via ``pipe.scripts``) and retries on NOSCRIPT.
+                script = redis.register_script(_CREATE_TIME_UPSERT_LUA)
 
-                # SET NX refused: somebody else created the key first, so
-                # THEIR create_time is the row's real one. One bounded repair
-                # round, then a plain SET -- by now the timestamp is settled,
-                # so this cannot loop.
-                # A falsy pipeline result belongs to a key sent with NX (an
-                # existing row's plain SET always answers True).
-                refused = [
-                    k
-                    for k, result in zip(keys, results)
-                    if k not in stored_create_times and not result
-                ]
-                if not refused:
+                async def write_rows(
+                    row_keys: list[str], hints: dict[str, int]
+                ) -> list[Any]:
+                    pipe = redis.pipeline()
+                    for i, key in enumerate(row_keys, start=1):
+                        hint = hints.get(key)
+                        await script(
+                            keys=[f"{self.final_namespace}:{key}"],
+                            args=[
+                                _dumps_kv_payload(data[key]),
+                                "" if hint is None else hint,
+                                current_time,
+                                _CREATE_TIME_PREFIX_BYTES,
+                            ],
+                            client=pipe,
+                        )
+                        await _cooperative_yield(i)
+                    return await pipe.execute()
+
+                def adopt(row_keys: list[str], results: list[Any]) -> list[str]:
+                    """Record what the server decided; return the unwritten ids."""
+                    deferred: list[str] = []
+                    for key, result in zip(row_keys, results):
+                        outcome, value = result[0], result[1]
+                        if outcome == "needs_hint":
+                            deferred.append(key)
+                            continue
+                        data[key]["create_time"] = int(value)
+                    return deferred
+
+                needs_hint = adopt(keys, await write_rows(keys, {}))
+                if not needs_hint:
                     return
-                logger.debug(
-                    f"[{self.workspace}] {self.namespace}: {len(refused)} "
-                    f"row(s) lost the create_time insert race; adopting the "
-                    f"stored timestamp"
-                )
-                winner_create_times = await self._resolve_stored_create_times(
-                    redis, refused
-                )
-                pipe = redis.pipeline()
-                for i, k in enumerate(refused, start=1):
-                    if k in winner_create_times:
-                        data[k]["create_time"] = winner_create_times[k]
-                    pipe.set(
-                        f"{self.final_namespace}:{k}",
-                        _dumps_create_time_first(data[k]),
+
+                # A non-empty hint always writes, so this cannot loop. Rows the
+                # read could not resolve (gone, or not a JSON object) fall back
+                # to this write's own clock.
+                legacy = await self._read_legacy_create_times(redis, needs_hint)
+                hints = {k: legacy.get(k, current_time) for k in needs_hint}
+                still_deferred = adopt(needs_hint, await write_rows(needs_hint, hints))
+                if still_deferred:
+                    raise RuntimeError(
+                        f"[{self.workspace}] {self.namespace}: upsert script "
+                        f"asked twice for a create_time hint on "
+                        f"{len(still_deferred)} row(s); refusing to loop"
                     )
-                    await _cooperative_yield(i)
-                await pipe.execute()
 
             except json.JSONDecodeError as e:
                 logger.error(f"[{self.workspace}] JSON decode error during upsert: {e}")

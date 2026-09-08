@@ -8,6 +8,12 @@ atomic rebuild switch, and hashes.
 Shared by the doc-status lookup tests and the scheduling-page tests so the
 fake's semantics stay consistent. Deliberately implements only the subset the
 storage class calls; unknown commands fail loudly.
+
+One deliberate limitation: ``register_script`` cannot run Lua, so the KV
+upsert script is REIMPLEMENTED here in Python (see ``FakeScript``). Unit tests
+therefore pin the storage's use of the script, not the script itself -- the
+real thing runs in
+``tests/kg/redis_impl/test_redis_kv_create_time_integration.py``.
 """
 
 from __future__ import annotations
@@ -229,6 +235,38 @@ class FakeRedis:
         self.command_counts[kind] += 1
         if kind == "get":
             return self.store.get(op[1])
+        if kind == "script":
+            from lightrag.kg.redis_impl import _CREATE_TIME_PREFIX_RE
+
+            key, args = op[1], op[2]
+            payload, hint, now, prefix_bytes = (
+                args[0],
+                str(args[1]),
+                str(args[2]),
+                int(args[3]),
+            )
+            stored = self.store.get(key)
+            # The script's own GETRANGE, counted so a test can assert that the
+            # fast path reads a prefix and never a whole value.
+            self.command_counts["getrange"] += 1
+            prefix = "" if stored is None else stored[:prefix_bytes]
+            if prefix == "":
+                create_time, outcome = now, "created"
+            else:
+                match = _CREATE_TIME_PREFIX_RE.match(prefix)
+                if match is not None:
+                    create_time, outcome = match.group(1), "kept"
+                elif hint == "":
+                    return ["needs_hint", ""]
+                else:
+                    create_time, outcome = hint, "hinted"
+            rest = payload[1:]
+            if rest in ("}", ""):
+                self.store[key] = '{"create_time":' + create_time + "}"
+            else:
+                self.store[key] = '{"create_time":' + create_time + "," + rest
+            self._bump(key)
+            return [outcome, create_time]
         if kind == "getrange":
             key, start, end = op[1], op[2], op[3]
             value = self.store.get(key)
@@ -331,8 +369,36 @@ class FakeRedis:
             return dict(self.hashes.get(op[1], {}))
         raise ValueError(f"FakeRedis: unsupported op {kind}")  # pragma: no cover
 
+    def register_script(self, script: str):
+        return FakeScript(self, script)
+
     def pipeline(self, transaction: bool = True):
         return FakePipeline(self)
+
+
+class FakeScript:
+    """Python model of ``_CREATE_TIME_UPSERT_LUA``.
+
+    Mirrors the script's four outcomes -- ``created`` for an absent key,
+    ``kept`` when the stored prefix carries the timestamp, ``needs_hint``
+    (writing nothing) when it does not and no hint was supplied, ``hinted``
+    when one was -- and the atomic read-decide-write step that makes the
+    decision safe against a concurrent delete.
+
+    It reuses the production prefix regex, so a divergence between that regex
+    and the Lua pattern is invisible here by construction; the integration
+    suite pins the Lua side.
+    """
+
+    def __init__(self, fake: FakeRedis, script: str):
+        self._fake = fake
+        self.script = script
+
+    async def __call__(self, keys=None, args=None, client=None):
+        op = ("script", (keys or [None])[0], list(args or []))
+        if client is None or client is self._fake:
+            return self._fake._apply(op)
+        return client._command(op)
 
 
 class FakePipeline:

@@ -438,7 +438,11 @@ def normalize_kv_create_time(value: Any) -> int:
         return 0
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError is not a ValueError: JSON ``1e309`` decodes to float
+        # infinity, and ``int(inf)`` raises it. Without it here a single
+        # hand-edited row would abort the whole upsert instead of taking this
+        # documented fallback.
         logger.warning(
             f"KV create_time is not a number ({value!r}); recording 0 (unknown)"
         )
@@ -533,11 +537,14 @@ class BaseKVStorage(StorageNameSpace, ABC):
             (``ON CONFLICT ... DO UPDATE`` that never assigns
             ``create_time``) are the reference implementations: the
             conditional write belongs on the server, not in a client-side
-            read-modify-write. A backend without such a primitive
+            read-modify-write: a client-side read-then-write cannot keep a
+            concurrent first insert or a concurrent delete from moving the
+            timestamp, and no later write repairs it, because every update
+            preserves what it finds. A backend without such a primitive
             reconstructs one -- ``OpenSearchKVStorage`` with a
-            ``scripted_upsert`` bulk action, ``RedisKVStorage`` with a
-            bounded prefix read -- rather than reading whole values back.
-            See issue #3870.
+            ``scripted_upsert`` bulk action, ``RedisKVStorage`` with a Lua
+            script that reads a bounded prefix and writes in the same step --
+            rather than reading whole values back. See issue #3870.
 
         Multi-worker note:
             Backends that buffer writes in process memory (e.g.
