@@ -32,6 +32,7 @@ import glob
 import logging
 import os
 import stat
+import sys
 import threading
 import time
 from typing import Callable
@@ -110,6 +111,28 @@ def reap_orphan_tmp_files(
                     f"[{workspace}] Failed to reap orphan tmp file {path}: {exc}"
                 )
 
+def _replace_file(src: str, dst: str, workspace: str = "_") -> None:
+    """Replace src into dst, with exponential backoff retry on Windows NTFS.
+
+    On Windows, os.replace (MoveFileEx) raises PermissionError ([WinError 5]) if
+    another thread, coroutine, or system service (e.g. search indexer, antivirus)
+    momentarily holds an open handle to dst. We retry with gentle backoff.
+    """
+    max_attempts = 10 if sys.platform == "win32" else 1
+    delay = 0.05
+    for attempt in range(max_attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError as exc:
+            if attempt == max_attempts - 1:
+                logger.warning(
+                    f"[{workspace}] Failed to atomically replace {dst} after {max_attempts} attempts: {exc}"
+                )
+                raise
+            time.sleep(delay)
+            delay = min(delay * 1.5, 0.5)
+
 
 def atomic_write(
     file_name: str,
@@ -117,11 +140,9 @@ def atomic_write(
     workspace: str = "_",
 ) -> None:
     """Run ``write_fn(tmp_path)`` then atomically replace ``file_name`` with it.
-
     ``write_fn`` is responsible for actually producing the file contents at
     the path it receives. It must not assume the tmp path equals ``file_name``
     — Faiss/Nano callers rely on the tmp path being a real sibling.
-
     On any exception from ``write_fn`` or from the rename, the tmp is removed
     best-effort and the exception propagates. The destination file is not
     touched in that case.
@@ -130,7 +151,7 @@ def atomic_write(
     try:
         write_fn(tmp)
         _preserve_mode(tmp, file_name, workspace)
-        os.replace(tmp, file_name)
+        _replace_file(tmp, file_name, workspace)
     except BaseException:
         try:
             if os.path.exists(tmp):
