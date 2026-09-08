@@ -40,6 +40,7 @@ from copy import deepcopy
 import pytest
 
 from lightrag import utils_graph
+from lightrag.exceptions import CommitBookkeepingError
 from lightrag.kg.networkx_impl import NetworkXStorage
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
 from lightrag.utils import make_relation_chunk_key
@@ -883,3 +884,167 @@ class TestDirectCancellationBeforeTheCommit:
 
         assert rag.persisted_graph().has_edge(ENTITY, OTHER)
         assert rag.relation_chunks.records[RELATION_KEY] == CHUNKS
+
+
+class TestPublishedCommitIsNotAFailure:
+    """The three answers a graph commit can give, and the one middle case.
+
+    ``commit_in_storage_io`` runs its bookkeeping hook only after the write
+    succeeded, so a hook failure means the mutation is already on disk. It
+    arrives as ``CommitBookkeepingError``, which says exactly that, and this
+    deletion must go on to retire the tracking rows a durably removed node owes:
+    the entity's own row is reachable by the ``not_found`` sweep on a retry, but
+    its incident relation rows are not — the edges that named them are gone with
+    the node.
+
+    The two neighbours are the contrast, and both keep today's handling:
+
+    * ``_Boom`` — the write never landed, so the object is still live and its
+      provenance must stay with it;
+    * ``CancelledError`` — carries no evidence either way, so the cleanup is
+      deliberately given up rather than guessed at (see ``adelete_by_entity``).
+
+    Fix-proof: drop the ``except CommitBookkeepingError`` from
+    ``_commit_graph_or_raise`` and the middle case answers ``fail`` with the
+    relation row left behind for a node that is gone.
+    """
+
+    @staticmethod
+    def _commit_raises(fixture, monkeypatch, exc, *, land_the_write: bool):
+        original = fixture.graph.index_done_callback
+
+        async def _commit():
+            if land_the_write:
+                await original()
+            raise exc
+
+        monkeypatch.setattr(fixture.graph, "index_done_callback", _commit)
+
+    @pytest.mark.asyncio
+    async def test_a_published_write_that_failed_to_notify_still_cleans_up(
+        self, rag, monkeypatch
+    ):
+        self._commit_raises(
+            rag,
+            monkeypatch,
+            CommitBookkeepingError(
+                "the offloaded write landed, but its commit bookkeeping failed",
+                result=True,
+            ),
+            land_the_write=True,
+        )
+
+        result = await rag.delete_entity()
+
+        assert result.status == "success"
+        assert not rag.persisted_graph().has_node(ENTITY)
+        assert ENTITY not in rag.entity_chunks.records
+        assert RELATION_KEY not in rag.relation_chunks.records
+        # Only this entity's rows: the sweep must not widen on a publication
+        # failure any more than on a clean commit.
+        assert rag.entity_chunks.records[OTHER] == CHUNKS
+
+    @pytest.mark.asyncio
+    async def test_a_write_that_never_landed_keeps_every_row(self, rag, monkeypatch):
+        self._commit_raises(
+            rag, monkeypatch, _Boom("graph commit failed"), land_the_write=False
+        )
+
+        result = await rag.delete_entity()
+
+        assert result.status == "fail"
+        assert rag.persisted_graph().has_node(ENTITY)
+        assert rag.entity_chunks.records[ENTITY] == CHUNKS
+        assert rag.relation_chunks.records[RELATION_KEY] == CHUNKS
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_commit_keeps_every_row(self, rag, monkeypatch):
+        self._commit_raises(
+            rag, monkeypatch, asyncio.CancelledError(), land_the_write=False
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await rag.delete_entity()
+
+        # Nothing was submitted, so an immediate-write tracking store must not
+        # have its row put in the grave while the node survives on disk.
+        assert rag.persisted_graph().has_node(ENTITY)
+        assert rag.entity_chunks.records[ENTITY] == CHUNKS
+        assert rag.relation_chunks.records[RELATION_KEY] == CHUNKS
+
+    @pytest.mark.asyncio
+    async def test_a_published_relation_delete_still_cleans_up(self, rag, monkeypatch):
+        self._commit_raises(
+            rag,
+            monkeypatch,
+            CommitBookkeepingError(
+                "the offloaded write landed, but its commit bookkeeping failed",
+                result=True,
+            ),
+            land_the_write=True,
+        )
+
+        result = await rag.delete_relation()
+
+        assert result.status == "success"
+        assert not rag.persisted_graph().has_edge(ENTITY, OTHER)
+        assert RELATION_KEY not in rag.relation_chunks.records
+
+
+class TestPublishedCommitSurvivesABrokenSink:
+    """The published-commit handler is past the point of no return.
+
+    ``_commit_graph_or_raise`` answers a ``CommitBookkeepingError`` with a log
+    line and continues, because the removal is durable. If that log call can
+    raise, the exception lands in ``adelete_by_entity``'s generic handler and
+    the deletion answers ``fail``/500 with its tracking rows stranded -- exactly
+    the misreport the handler exists to prevent, reached through the diagnostic
+    about it. ``_persist_graph_updates`` carries the same handler for the
+    tracking flush that follows.
+
+    Fix-proof: call ``logger.error`` directly in either handler and both cases
+    below report ``fail``.
+    """
+
+    @staticmethod
+    def _break_the_sink(monkeypatch):
+        def log_boom(msg):
+            raise RuntimeError("log sink boom")
+
+        monkeypatch.setattr(utils_graph.logger, "error", log_boom)
+
+    @pytest.mark.asyncio
+    async def test_entity_delete_still_succeeds_and_cleans_up(self, rag, monkeypatch):
+        original = rag.graph.index_done_callback
+
+        async def _commit():
+            await original()
+            raise CommitBookkeepingError("published, not notified", result=True)
+
+        monkeypatch.setattr(rag.graph, "index_done_callback", _commit)
+        self._break_the_sink(monkeypatch)
+
+        result = await rag.delete_entity()
+
+        assert result.status == "success"
+        assert not rag.persisted_graph().has_node(ENTITY)
+        assert ENTITY not in rag.entity_chunks.records
+        assert RELATION_KEY not in rag.relation_chunks.records
+
+    @pytest.mark.asyncio
+    async def test_a_tracking_flush_that_only_failed_to_publish_still_succeeds(
+        self, rag, monkeypatch
+    ):
+        original = rag.entity_chunks.index_done_callback
+
+        async def _flush():
+            await original()
+            raise CommitBookkeepingError("published, not notified", result=None)
+
+        monkeypatch.setattr(rag.entity_chunks, "index_done_callback", _flush)
+        self._break_the_sink(monkeypatch)
+
+        result = await rag.delete_entity()
+
+        assert result.status == "success"
+        assert ENTITY not in rag.entity_chunks.records

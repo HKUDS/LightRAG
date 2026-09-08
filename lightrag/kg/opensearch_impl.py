@@ -4737,6 +4737,49 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             logger.error(f"[{self.workspace}] Error getting all labels: {e}")
             raise
 
+    async def iter_labels(self, batch_size: int):
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if not self._indices_ready:
+            return
+        try:
+            await self._refresh_graph_indices_if_dirty(refresh_nodes=True)
+            pit = await self.client.create_pit(
+                index=self._nodes_index, params={"keep_alive": "1m"}
+            )
+            pit_id = pit["pit_id"]
+            try:
+                search_after = None
+                while True:
+                    body = {
+                        "query": {"match_all": {}},
+                        "_source": False,
+                        "size": min(batch_size, 10000),
+                        "pit": {"id": pit_id, "keep_alive": "1m"},
+                        "sort": _pit_sort_with_field("entity_id"),
+                    }
+                    if search_after:
+                        body["search_after"] = search_after
+                    response = await self.client.search(body=body)
+                    hits = response["hits"]["hits"]
+                    if not hits:
+                        break
+                    yield [hit["_id"] for hit in hits]
+                    search_after = hits[-1]["sort"]
+                    if len(hits) < min(batch_size, 10000):
+                        break
+            finally:
+                try:
+                    await self.client.delete_pit(body={"pit_id": [pit_id]})
+                except Exception:
+                    pass
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
+                return
+            logger.error(f"[{self.workspace}] Error iterating labels: {e}")
+            raise
+
     async def _collect_node_ids(
         self,
         limit: int,
@@ -5504,6 +5547,56 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 self._mark_indices_missing()
                 return []
             logger.error(f"[{self.workspace}] Error getting all edges: {e}")
+            raise
+
+    async def iter_edges(self, batch_size: int):
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if not self._indices_ready:
+            return
+        try:
+            await self._refresh_graph_indices_if_dirty(refresh_edges=True)
+            pit = await self.client.create_pit(
+                index=self._edges_index, params={"keep_alive": "1m"}
+            )
+            pit_id = pit["pit_id"]
+            try:
+                search_after = None
+                while True:
+                    body = {
+                        "query": {"match_all": {}},
+                        "size": min(batch_size, 10000),
+                        "pit": {"id": pit_id, "keep_alive": "1m"},
+                        "sort": _pit_sort_with_composite_key(
+                            "source_node_id", "target_node_id"
+                        ),
+                    }
+                    if search_after:
+                        body["search_after"] = search_after
+                    response = await self.client.search(body=body)
+                    hits = response["hits"]["hits"]
+                    if not hits:
+                        break
+                    batch: list[dict] = []
+                    for hit in hits:
+                        edge = dict(hit["_source"])
+                        edge["source"] = edge.get("source_node_id")
+                        edge["target"] = edge.get("target_node_id")
+                        batch.append(edge)
+                    yield batch
+                    search_after = hits[-1]["sort"]
+                    if len(hits) < min(batch_size, 10000):
+                        break
+            finally:
+                try:
+                    await self.client.delete_pit(body={"pit_id": [pit_id]})
+                except Exception:
+                    pass
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
+                return
+            logger.error(f"[{self.workspace}] Error iterating edges: {e}")
             raise
 
     async def _collect_isolated_labels(

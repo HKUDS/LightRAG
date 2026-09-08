@@ -853,6 +853,20 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             A list of all node labels in the graph, sorted alphabetically
         """
 
+    async def iter_labels(self, batch_size: int) -> AsyncIterator[list[str]]:
+        """Yield all graph labels in bounded batches.
+
+        Whole-graph maintenance tools use this instead of ``get_all_labels`` so
+        their client-side memory does not grow with the graph. Backends must
+        override this method with native cursor, keyset, or in-memory graph
+        iteration; the default fails closed because collecting
+        ``get_all_labels`` and slicing it would violate that contract.
+        """
+        raise StorageCapabilityError(
+            f"{type(self).__name__} does not support bounded label iteration"
+        )
+        yield []  # pragma: no cover - make this an async generator
+
     @abstractmethod
     async def get_knowledge_graph(
         self, node_label: str, max_depth: int = 3, max_nodes: int = 1000
@@ -963,6 +977,18 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         Returns:
             A list of all edges, where each edge is a dictionary of its properties
         """
+
+    async def iter_edges(self, batch_size: int) -> AsyncIterator[list[dict]]:
+        """Yield all graph edges in bounded batches.
+
+        The returned dictionaries follow ``get_all_edges`` and carry
+        ``source`` and ``target``. See :meth:`iter_labels` for the fail-closed
+        compatibility rule.
+        """
+        raise StorageCapabilityError(
+            f"{type(self).__name__} does not support bounded edge iteration"
+        )
+        yield []  # pragma: no cover - make this an async generator
 
     @abstractmethod
     async def get_popular_labels(self, limit: int = 300) -> list[str]:

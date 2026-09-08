@@ -8788,6 +8788,29 @@ class PGGraphStorage(BaseGraphStorage):
                 labels.append(result["label"])
         return labels
 
+    async def iter_labels(self, batch_size: int):
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        offset = 0
+        while True:
+            query = """SELECT * FROM cypher('%s', $$
+                     MATCH (n:base)
+                     WHERE n.entity_id IS NOT NULL
+                     RETURN DISTINCT n.entity_id AS label
+                     ORDER BY n.entity_id
+                     SKIP %d LIMIT %d
+                   $$) AS (label text)""" % (self.graph_name, offset, batch_size)
+            results = await self._query(query)
+            batch = [
+                result["label"]
+                for result in results
+                if result and isinstance(result, dict) and "label" in result
+            ]
+            if not batch:
+                break
+            yield batch
+            offset += len(batch)
+
     async def _bfs_subgraph(
         self, node_label: str, max_depth: int, max_nodes: int
     ) -> KnowledgeGraph:
@@ -9251,6 +9274,45 @@ class PGGraphStorage(BaseGraphStorage):
             edge_properties["target"] = result["target"]
             edges.append(edge_properties)
         return edges
+
+    async def iter_edges(self, batch_size: int):
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        offset = 0
+        while True:
+            query = f"""
+                SELECT
+                    (ag_catalog.agtype_access_operator(VARIADIC ARRAY[a.properties, '"entity_id"'::agtype]))::text AS source,
+                    (ag_catalog.agtype_access_operator(VARIADIC ARRAY[b.properties, '"entity_id"'::agtype]))::text AS target,
+                    r.properties
+                FROM {self.graph_name}."DIRECTED" r
+                JOIN {self.graph_name}.base a ON r.start_id = a.id
+                JOIN {self.graph_name}.base b ON r.end_id = b.id
+                ORDER BY r.id
+                LIMIT {int(batch_size)} OFFSET {int(offset)}
+            """
+            results = await self._query(query)
+            if not results:
+                break
+            batch: list[dict] = []
+            for result in results:
+                properties = result["properties"]
+                if isinstance(properties, str):
+                    try:
+                        properties = json.loads(properties)
+                    except json.JSONDecodeError as exc:
+                        raise PGGraphQueryException(
+                            {
+                                "message": f"Corrupt edge properties in graph {self.graph_name}: {exc}",
+                                "details": properties[:200],
+                            }
+                        ) from exc
+                edge = dict(properties)
+                edge["source"] = result["source"]
+                edge["target"] = result["target"]
+                batch.append(edge)
+            yield batch
+            offset += len(results)
 
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
         """Get popular labels by node degree (most connected entities) using native SQL for performance.

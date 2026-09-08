@@ -3433,7 +3433,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Raises ``IndexFlushError`` (carrying driver name + namespace) for the
         first failed flush after every flush has run to completion;
-        ``CancelledError`` propagates as-is.
+        ``CancelledError`` propagates as-is. A flush that returns an explicit
+        ``False`` -- a DECLINED commit, which discards the pending mutation --
+        counts as a failure here; see ``_flush_one``.
         """
 
         async def _flush_one(storage_inst) -> None:
@@ -3442,7 +3444,31 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # reason instead of misattributing a shared-buffer flush error to
             # whichever document happened to trigger index_done_callback.
             try:
-                await cast(StorageNameSpace, storage_inst).index_done_callback()
+                committed = await cast(
+                    StorageNameSpace, storage_inst
+                ).index_done_callback()
+                if committed is False:
+                    # A DECLINED commit, not a failed one: the backend refused
+                    # to write because the file on disk has moved past the
+                    # snapshot it holds, and it discarded the in-memory
+                    # mutation to converge on that file
+                    # (``NetworkXStorage.index_done_callback``'s first block).
+                    # The mutation is gone, so acknowledging the flush would
+                    # mark the document PROCESSED with its graph writes
+                    # dropped and nothing to recover them from. Raising sends
+                    # the batch through the FAILED path, whose reprocessing
+                    # re-extracts and re-writes it -- the only route by which
+                    # the discarded work comes back.
+                    #
+                    # Identity, not truthiness: ``BaseGraphStorage``'s
+                    # signature is ``-> None`` and every other backend returns
+                    # nothing, so only an explicit ``False`` is an answer.
+                    # Same rule as ``utils_graph._commit_graph_or_raise``.
+                    raise RuntimeError(
+                        "index_done_callback declined the commit: the storage "
+                        "reloaded a newer snapshot from disk and discarded the "
+                        "pending mutation"
+                    )
             except Exception as e:
                 namespace = getattr(storage_inst, "final_namespace", None) or getattr(
                     storage_inst, "namespace", ""

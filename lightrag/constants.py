@@ -636,6 +636,13 @@ CHUNKING_SUBMIT_LIMIT = 8
 # worker.
 STORAGE_IO_SUBMIT_LIMIT = 8
 
+# The Milvus pool is the exception to the single-worker shape above: its work is
+# blocking gRPC I/O, not CPU, so one worker would serialize every search in the
+# process behind one flush. This one constant is BOTH the worker count and the
+# submission ceiling, so a submission over the limit waits on the semaphore
+# instead of growing the executor's unbounded wait queue.
+MILVUS_SUBMIT_LIMIT = 8
+
 # Per-workspace ceiling on manual retry requests that have been published but
 # not yet ACKed (LR2 §10.1). The channel is sticky — a request survives until an
 # exclusive reset acknowledges it — so an operator hammering /reprocess_failed

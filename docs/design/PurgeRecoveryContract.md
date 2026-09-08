@@ -35,6 +35,8 @@ The offline remedy for a document with no proof is `audit_kg_integrity(..., appl
 
 Relation chunk tracking is the authoritative chunk list, so the no-source placeholders must never be written into it.
 
+A tracking row whose graph object is gone is not repairable one row at a time: `BaseKVStorage` has no enumeration API, so nothing can sweep for it. The operator remedy is the offline `lightrag-repair-chunk-tracking` tool, run only after every writer for the workspace has stopped. It replaces one or both namespaces from current graph keys, retains authoritative rows for live objects (including rename/merge/manual-create results), and supplements them from cached extraction results. It never seeds from graph `source_id`, whose reuse is precisely the provenance downgrade this section forbids. It is ungated, unlike `_migrate_chunk_tracking_storage`, which only fires on an empty namespace. See [ProgramingWithCore.md → Repairing chunk tracking](../ProgramingWithCore.md#repairing-chunk-tracking).
+
 ## Merge and rename failure model
 
 Read this before reordering anything in `_merge_entities_impl` or the rename branch of `_edit_entity_impl`. Both write to three stores that have **no transaction between them** — the graph, the chunk-tracking KV, and the vector storage — so every ordering has intermediate states. The question a change has to answer is never "does an inconsistent state exist" (one always does) but **which** inconsistency it keeps.

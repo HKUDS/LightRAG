@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from operator import itemgetter
 from typing import final
 
+from lightrag.exceptions import CommitBookkeepingError
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from lightrag.utils import (
@@ -16,6 +17,7 @@ from lightrag.utils import (
 )
 from lightrag.base import BaseGraphStorage
 import networkx as nx
+from . import file_fingerprint
 from .shared_storage import (
     get_namespace_lock,
     get_update_flag,
@@ -104,26 +106,97 @@ class NetworkXStorage(BaseGraphStorage):
         variant would buy nothing while forking the semantics of the one
         choke point.
 
-    Cross-process sync protocol (identical in shape to
-    ``NanoVectorDBStorage`` — see that class's docstring for the canonical
-    description):
+    Cross-process sync protocol (two channels — see issue #3854):
+        The fence rests on **two** independent tests, OR-ed at every point
+        that decides whether this process holds a current snapshot. They are
+        not redundant: their blind spots do not overlap.
+
+        * **Authoritative channel — the file fingerprint.**
+          ``(st_mtime_ns, st_size)`` of the GraphML file, compared against
+          what this process recorded when it last loaded or wrote it
+          (``_loaded_fingerprint``). It is *state*, not an event: nothing
+          consumes it, nothing can lose it, and it matches the storage model
+          above, where the file is the only cross-process synchronization
+          surface. Blind spot: two commits landing inside one filesystem
+          timestamp tick with an identical file size.
+        * **Accelerator channel — the ``storage_updated`` flag.**
+          Distributed through ``lightrag.kg.shared_storage``. Read first,
+          because a ``True`` value already answers the question. It is an
+          *event*: the reader consumes it, and ``set_all_update_flags``
+          publishes it with one Manager RPC per process, so it can be lost —
+          for one process, for several, or for all. Blind spot: exactly that
+          loss. It covers the fingerprint's tick collision, because a
+          collision needs a healthy, fast-committing system.
+
         Writer side (``index_done_callback``):
             1. ``write_nx_graph`` atomically writes the GraphML file
                (``atomic_write`` lays a tmp file beside the target and
                renames it into place — readers either see the previous
                file in full or the new file in full, never a torn write).
-            2. ``set_all_update_flags`` flips every process's
-               ``storage_updated`` flag (including the writer's own).
-            3. Immediately reset the writer's own flag to ``False`` so
-               the next call to ``_get_graph`` does not trigger a
-               self-reload of the data this process just wrote.
+            2. Record the fingerprint of the file just written, so this
+               process does not later mistake its own commit for a peer's.
+               A local ``stat``, done before step 3 because it cannot fail
+               with the manager.
+            3. ``set_all_update_flags`` flips every process's
+               ``storage_updated`` flag (including the writer's own), then
+               reset the writer's own flag to ``False``.
         Reader side (any method that goes through ``_get_graph``):
-            1. Inside ``_storage_lock``, observe
-               ``storage_updated.value is True``.
-            2. **Fully reload** ``self._graph`` from disk via
-               ``load_nx_graph``. networkx GraphML has no incremental
-               sync API, so the entire file is re-parsed.
-            3. Reset the reader's own flag.
+            1. Inside ``_storage_lock``, test the flag; if it is ``False``,
+               test the fingerprint.
+            2. On either, **fully reload** ``self._graph`` from disk via
+               ``load_nx_graph``. networkx GraphML has no incremental sync
+               API, so the entire file is re-parsed.
+            3. One reload, one post-condition, whichever channel fired:
+               record the new fingerprint **and** clear the flag
+               (``_reload_locked`` — do not open-code either half).
+        Writer side, before saving (``index_done_callback``'s first block):
+            The same two tests. A writer holding a snapshot the file has
+            moved past **declines** (returns ``False``) instead of writing:
+            its save serializes the whole graph, so proceeding would
+            overwrite the peer commit it never saw.
+
+            A declined commit must reach its caller as a failure, because
+            declining DISCARDS this process's pending mutation. Both callers
+            do that: ``utils_graph._commit_graph_or_raise`` raises on the
+            ``False`` (admin paths), and ``LightRAG._flush_storages``'s
+            ``_flush_one`` turns it into ``IndexFlushError`` (pipeline paths).
+            Without the second one the fence would only swap which side loses
+            data — the peer's commit preserved, this document marked
+            PROCESSED with its graph writes dropped and nothing to recover
+            them from. As a failure it heals instead: the document goes
+            FAILED and its reprocessing re-extracts and re-writes the work.
+
+        Ordering rule that keeps the fingerprint honest: it is sampled
+        **before** the file is read, never after. A fingerprint sampled after
+        the parse can belong to a newer file than the one now in memory, and
+        recording it would suppress the reload that newer file needs — the
+        one way this fence could *introduce* a lost write. Sampling early can
+        only cost a redundant reload, which is harmless.
+
+        Single-process mode skips the fingerprint test entirely
+        (``file_fingerprint.fence_enabled()``): there is no peer that could have
+        committed, so a divergent file means an external edit, and reloading
+        for it would discard this process's own uncommitted mutations.
+
+        Accepted residues (see *Consistency without transactions* in
+        ``AGENTS.md`` — a documented residue is a decision, an undocumented
+        one is a defect):
+            * Two commits inside one filesystem timestamp tick, with an
+              identical file size, **and** the notification lost for this
+              process: this process does not observe the second one.
+              Recovery: the next commit by any process both flips the flag
+              and changes the fingerprint. Timestamp granularity is
+              kernel-dependent (~10 µs on Linux ≥ 6.13 multigrain
+              timestamps, 1–4 ms on older kernels, coarser on ext3 / HFS+ /
+              FAT), while the deployment shape this fence exists for — a
+              peer becoming the next writer through a later request —
+              separates the two commits by at least a request round trip.
+            * A ``stat`` this process cannot perform (permissions, EIO):
+              the fingerprint channel reports "no change" and the fence
+              degrades to the flag alone, i.e. to the behaviour that
+              predates it. Failing towards a reload instead would install an
+              empty graph from a file it cannot read, and the next commit
+              would serialize that over the real one.
 
     Lock scope:
         ``_storage_lock`` is a per-``(namespace, workspace)`` keyed lock
@@ -140,6 +213,16 @@ class NetworkXStorage(BaseGraphStorage):
 
     Implementation differences from ``NanoVectorDBStorage`` (same design,
     different surface):
+        * **The fence is shared, its verdict is not.** All three test the
+          file fingerprint as well as the flag, through the same
+          ``lightrag.kg.file_fingerprint`` helpers. What differs is what
+          happens once a peer commit is detected on a WRITE path: this class
+          **declines** the save (it has no way to keep the mutation), while
+          the vector backends reload the peer snapshot and replay their
+          pending buffer and redo logs on top (issue #3688) — so they lose
+          nothing and report nothing. The flush-failure propagation a decline
+          requires (``LightRAG._flush_storages``) is therefore this class's
+          concern alone.
         * No ``client_storage`` property — there is no equivalent live
           reference being exposed to callers, so NanoVectorDB's
           "do-not-retain-across-await" caveat does not apply here.
@@ -266,6 +349,16 @@ class NetworkXStorage(BaseGraphStorage):
         self._storage_lock = None
         self.storage_updated = None
         self._graph = None
+        # ``(st_mtime_ns, st_size)`` of the GraphML file this process last
+        # loaded or wrote -- the authoritative half of the cross-process
+        # fence. ``None`` means "no file" (or a stat this process could not
+        # perform). See *Cross-process sync protocol* in the class docstring.
+        self._loaded_fingerprint = None
+        # How many times the file channel caught a commit the flag channel
+        # never announced. Reported in the warning that records each one, so a
+        # deployment can tell whether the lost-notification window in #3854
+        # actually occurs rather than only being reachable on paper.
+        self._missed_notification_reloads = 0
         # Created lazily by _gate(): asyncio.Event binds to a loop on first
         # wait, and instances are constructed outside any running loop.
         self._commit_gate = None
@@ -273,7 +366,9 @@ class NetworkXStorage(BaseGraphStorage):
 
         reap_orphan_tmp_files(self._graphml_xml_file, workspace=self.workspace or "_")
 
-        # Load initial graph
+        # Load initial graph. The fingerprint is sampled BEFORE the read --
+        # see the ordering rule in *Cross-process sync protocol*.
+        fingerprint = self._stat_fingerprint()
         preloaded_graph = NetworkXStorage.load_nx_graph(self._graphml_xml_file)
         if preloaded_graph is not None:
             logger.info(
@@ -284,6 +379,7 @@ class NetworkXStorage(BaseGraphStorage):
                 f"[{self.workspace}] Created new empty graph file: {self._graphml_xml_file}"
             )
         self._graph = preloaded_graph or nx.Graph()
+        self._adopt_fingerprint(fingerprint)
 
     async def initialize(self):
         """Initialize storage data"""
@@ -325,22 +421,86 @@ class NetworkXStorage(BaseGraphStorage):
             self._commit_gate_loop = loop
         return self._commit_gate
 
+    def _stat_fingerprint(self) -> file_fingerprint.Fingerprint | object:
+        """Sample the GraphML file's identity. See ``kg.file_fingerprint``."""
+        return file_fingerprint.sample(
+            (self._graphml_xml_file,), workspace=self.workspace
+        )
+
+    def _adopt_fingerprint(
+        self, fingerprint: file_fingerprint.Fingerprint | object
+    ) -> None:
+        """Record ``fingerprint`` as the file this process now holds."""
+        self._loaded_fingerprint = file_fingerprint.adopted(fingerprint)
+
+    def _peer_commit_detected(self) -> bool:
+        """Whether the file on disk differs from the one this process loaded.
+
+        The fence's authoritative test — the one a failed notification cannot
+        disable. ``False`` in single-process mode and on an unreadable
+        ``stat``; see ``kg.file_fingerprint`` for both.
+        """
+        return file_fingerprint.peer_commit_detected(
+            (self._graphml_xml_file,),
+            self._loaded_fingerprint,
+            workspace=self.workspace,
+        )
+
+    def _reload_locked(self) -> None:
+        """Reload ``self._graph`` from disk and satisfy BOTH fence channels.
+
+        Precondition: the caller holds ``_storage_lock``.
+
+        One reload, one post-condition, whichever channel fired: record the
+        new fingerprint **and** clear the flag. Open-coding either half is the
+        way this fence rots -- a missed fingerprint costs a full GraphML
+        re-parse on the very next call, a missed flag clear costs the same.
+
+        Synchronous on purpose: it adds no suspension point inside
+        ``_get_graph``'s lock body, which the *Commit gate* reasoning depends
+        on.
+        """
+        # Sampled before the read, never after. See the ordering rule in
+        # *Cross-process sync protocol*.
+        fingerprint = self._stat_fingerprint()
+        self._graph = (
+            NetworkXStorage.load_nx_graph(self._graphml_xml_file) or nx.Graph()
+        )
+        self._adopt_fingerprint(fingerprint)
+        self.storage_updated.value = False
+
+    def _record_fingerprint(self) -> None:
+        """Adopt the file currently on disk without reloading from it.
+
+        For the writer: after its own commit the in-memory graph already *is*
+        the file's content, so the fingerprint is recorded and no reload is
+        needed.
+        """
+        self._adopt_fingerprint(self._stat_fingerprint())
+
     async def _get_graph(self):
         """Return the live ``networkx.Graph``, reloading from disk if needed.
 
         This is the **single entry point** every public method funnels
         through to obtain ``self._graph``. It is also the **only place
         readers transition to a fresher on-disk snapshot**: when another
-        process has committed (via ``index_done_callback``) and flipped
-        this process's ``storage_updated`` flag, the next call here
-        rebuilds ``self._graph`` by re-parsing the entire GraphML file.
+        process has committed (via ``index_done_callback``), the next call
+        here rebuilds ``self._graph`` by re-parsing the entire GraphML file.
         networkx has no incremental sync API — the reload is
         unconditionally a full file reload.
 
-        Under the *Single writer* invariant (see class docstring), the
-        reload branch never fires in the writer process: the writer
-        resets its own flag at the end of every ``index_done_callback``.
-        The branch exists for readers.
+        Two tests decide that, and both must stay — see *Cross-process sync
+        protocol* in the class docstring for why neither is redundant: this
+        process's ``storage_updated`` flag, and the GraphML file's
+        ``(st_mtime_ns, st_size)`` against the fingerprint recorded when this
+        process last loaded or wrote it.
+
+        Under the *Single writer* invariant (see class docstring), neither
+        branch fires in the writer process: the writer resets its own flag
+        and adopts its own file's fingerprint at the end of every
+        ``index_done_callback``. Both exist for readers — and for the process
+        that becomes the *next* writer, which the invariant does not require
+        to be the same one.
 
         ``_storage_lock`` is held during the check-and-reload to (a)
         serialize concurrent reload attempts by sibling coroutines in
@@ -348,17 +508,42 @@ class NetworkXStorage(BaseGraphStorage):
         so a reader cannot observe a partially-saved file.
         """
         async with self._storage_lock:
-            # Check if data needs to be reloaded
+            # Flag first -- it is the accelerator channel and a True value
+            # already answers the question. The fingerprint test in the elif is
+            # the authoritative one: it is what makes a lost notification
+            # recoverable. See *Cross-process sync protocol*.
             if self.storage_updated.value:
                 logger.info(
                     f"[{self.workspace}] Process {os.getpid()} reloading graph {self._graphml_xml_file} due to modifications by another process"
                 )
-                # Reload data
-                self._graph = (
-                    NetworkXStorage.load_nx_graph(self._graphml_xml_file) or nx.Graph()
+                if (
+                    file_fingerprint.fence_enabled()
+                    and not self._peer_commit_detected()
+                ):
+                    # Notified about the file this process already holds: a
+                    # self-notification, or a peer commit that a sibling
+                    # coroutine reloaded before this call got the lock. The
+                    # reload below is honoured anyway rather than skipped --
+                    # skipping it would change which uncommitted in-memory
+                    # mutations survive a notification, which is not this
+                    # fence's business.
+                    logger.debug(
+                        f"[{self.workspace}] Reload notification for "
+                        f"{self._graphml_xml_file} names the snapshot already "
+                        "loaded; reloading anyway"
+                    )
+                self._reload_locked()
+            elif self._peer_commit_detected():
+                self._missed_notification_reloads += 1
+                logger.warning(
+                    f"[{self.workspace}] Process {os.getpid()} reloading graph "
+                    f"{self._graphml_xml_file}: the file on disk is not the one "
+                    "this process loaded and no reload notification arrived for "
+                    "it, so a notification was lost. Recovered through the file "
+                    f"channel (occurrence #{self._missed_notification_reloads} "
+                    "in this process)."
                 )
-                # Reset update flag
-                self.storage_updated.value = False
+                self._reload_locked()
 
             graph = self._graph
 
@@ -591,6 +776,19 @@ class NetworkXStorage(BaseGraphStorage):
 
         # Return sorted list
         return sorted(list(labels))
+
+    async def iter_labels(self, batch_size: int):
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        graph = await self._get_graph()
+        batch: list[str] = []
+        for node in graph.nodes():
+            batch.append(str(node))
+            if len(batch) == batch_size:
+                yield batch
+                batch = []
+        if batch:
+            yield batch
 
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
         """
@@ -921,6 +1119,22 @@ class NetworkXStorage(BaseGraphStorage):
             all_edges.append(edge_data_with_nodes)
         return all_edges
 
+    async def iter_edges(self, batch_size: int):
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        graph = await self._get_graph()
+        batch: list[dict] = []
+        for source, target, edge_data in graph.edges(data=True):
+            edge = edge_data.copy()
+            edge["source"] = source
+            edge["target"] = target
+            batch.append(edge)
+            if len(batch) == batch_size:
+                yield batch
+                batch = []
+        if batch:
+            yield batch
+
     async def index_done_callback(self) -> bool:
         """Commit in-memory graph to disk and notify other processes.
 
@@ -934,30 +1148,52 @@ class NetworkXStorage(BaseGraphStorage):
                on the next call to ``_get_graph``.
 
         Two-block structure (intentional, do not collapse):
-            * **First ``async with``** — early-return path for a
-              hypothetical second writer. Under the current single-writer
-              pipeline contract (class docstring, invariant 1) the
-              ``storage_updated.value`` check is permanently ``False`` in
-              the writer, so this branch is **dead code in production**.
-              It is kept as defensive scaffolding for any future
-              relaxation of the single-writer invariant; removing it
-              would silently re-enable lost-write bugs the moment a
-              second writer is introduced.
+            * **First ``async with``** — the decline path: this process is
+              about to serialize its whole graph over a file that has moved
+              on. Two tests, per *Cross-process sync protocol*.
+
+              The ``storage_updated.value`` half is permanently ``False`` in
+              the writer under the single-writer pipeline contract (class
+              docstring, invariant 1), so it is defensive scaffolding for a
+              future relaxation of that invariant.
+
+              The fingerprint half is **not** — it is live in production.
+              Invariant 1 gives one writer *at a time*, not always the same
+              process, so a worker whose notification was lost can become the
+              next legitimate writer holding a stale snapshot. That is the
+              lost write in issue #3854, and this is where it is refused.
             * **Second ``async with``** — the actual save + notify.
         """
         async with self._storage_lock:
-            # Check if storage was updated by another process
+            # Both fence channels, same order and same meaning as _get_graph.
+            # A writer holding a snapshot the file has moved past must DECLINE:
+            # write_nx_graph serializes the WHOLE graph, so saving would
+            # overwrite the peer commit this process never saw.
             if self.storage_updated.value:
                 # Storage was updated by another process, reload data instead of saving
                 logger.info(
                     f"[{self.workspace}] Graph was updated by another process, reloading..."
                 )
-                self._graph = (
-                    NetworkXStorage.load_nx_graph(self._graphml_xml_file) or nx.Graph()
-                )
-                # Reset update flag
-                self.storage_updated.value = False
+                self._reload_locked()
                 return False  # Return error
+            if self._peer_commit_detected():
+                # The lost-notification case this fence exists for. Before it,
+                # this branch was unreachable without a flag and the save went
+                # ahead, silently replacing the peer's commit with this
+                # process's stale snapshot. Declining loses THIS mutation
+                # instead, and loudly: _commit_graph_or_raise turns the False
+                # into an error for the caller.
+                self._missed_notification_reloads += 1
+                logger.warning(
+                    f"[{self.workspace}] Declining to save graph "
+                    f"{self._graphml_xml_file}: the file on disk is not the one "
+                    "this process loaded and no reload notification arrived for "
+                    "it, so saving would overwrite another process's commit. "
+                    "Reloading and reporting the commit as declined (occurrence "
+                    f"#{self._missed_notification_reloads} in this process)."
+                )
+                self._reload_locked()
+                return False
 
         # Acquire lock and perform persistence
         async with self._storage_lock:
@@ -969,11 +1205,6 @@ class NetworkXStorage(BaseGraphStorage):
             gate = self._gate()
             gate.clear()
             try:
-                # Save data to disk, off the event loop. The name is resolved at
-                # call time on purpose: test_networkx_index_done.py monkeypatches
-                # write_nx_graph, and hoisting the reference would leave that
-                # test green while testing nothing.
-                publish_error: list[Exception] = []
 
                 async def _committed() -> None:
                     # Runs inside the same uncancellable region as the write,
@@ -981,57 +1212,64 @@ class NetworkXStorage(BaseGraphStorage):
                     # would be skippable by a cancel, leaving the new GraphML
                     # published while every other process keeps reading the
                     # previous one until some later commit happens to notify it.
-                    try:
-                        await set_all_update_flags(
-                            self.namespace, workspace=self.workspace
-                        )
-                        # Reset own update flag to avoid self-reloading. Inside
-                        # the same guard on purpose: in multiprocess mode this
-                        # flag is a `Manager().Value` proxy, so the assignment
-                        # is another RPC to the very process whose outage makes
-                        # the call above fail. Guarding only the first one lets
-                        # the identical failure escape one line later.
-                        self.storage_updated.value = False
-                    except Exception as e:
-                        # Recorded, never raised. Reaching this line means the
-                        # write already landed (`on_committed` runs only after
-                        # `fn` succeeded), so what failed is the publication of
-                        # that write, not the write: other workers keep reading
-                        # the previous snapshot until the next commit anywhere
-                        # flips their flags, and this process may redundantly
-                        # reload the file it just wrote. Both are visibility
-                        # effects, not a lost write. Raising them would report a
-                        # durable mutation as a failed one, and every caller
-                        # inherits that lie -- the deletion paths in utils_graph
-                        # skip the tracking retirement they still owe (leaving a
-                        # vanished object's authoritative rows behind), and
-                        # _insert_done marks a document FAILED whose graph
-                        # writes are on disk.
-                        publish_error.append(e)
+                    # Adopt the file this process just published, BEFORE the
+                    # fallible notification below. A local stat, so it cannot
+                    # fail with the manager -- and doing it first means a failed
+                    # notification does not additionally leave this process
+                    # treating its own commit as a peer's, which would cost a
+                    # full GraphML re-parse on the next call for nothing.
+                    self._record_fingerprint()
+                    await set_all_update_flags(self.namespace, workspace=self.workspace)
+                    # Reset own update flag to avoid self-reloading. Inside the
+                    # same publication step on purpose: in multiprocess mode this
+                    # flag is a `Manager().Value` proxy, so the assignment is
+                    # another RPC to the very process whose outage makes the call
+                    # above fail. Separating them would let the identical failure
+                    # take a different path one line later.
+                    self.storage_updated.value = False
 
-                await commit_in_storage_io(
-                    lambda: NetworkXStorage.write_nx_graph(
-                        self._graph, self._graphml_xml_file, self.workspace
-                    ),
-                    _committed,
-                )
-                if publish_error:
-                    logger.error(
+                try:
+                    # Save data to disk, off the event loop. The name is resolved
+                    # at call time on purpose: test_networkx_index_done.py
+                    # monkeypatches write_nx_graph, and hoisting the reference
+                    # would leave that test green while testing nothing.
+                    await commit_in_storage_io(
+                        lambda: NetworkXStorage.write_nx_graph(
+                            self._graph, self._graphml_xml_file, self.workspace
+                        ),
+                        _committed,
+                    )
+                except CommitBookkeepingError as e:
+                    # The write already landed (`on_committed` runs only after
+                    # `fn` succeeded), so what failed is the publication of that
+                    # write, not the write: other workers keep reading the
+                    # previous snapshot until the next commit anywhere flips
+                    # their flags, and this process may redundantly reload the
+                    # file it just wrote. Both are visibility effects, not a lost
+                    # write. Letting this reach the handler below would report a
+                    # durable mutation as a failed one, and every caller inherits
+                    # that lie -- the deletion paths in utils_graph skip the
+                    # tracking retirement they still owe (leaving a vanished
+                    # object's authoritative rows behind), and _insert_done marks
+                    # a document FAILED whose graph writes are on disk.
+                    log_without_raising(
+                        logger.error,
                         f"[{self.workspace}] Graph saved to "
                         f"{self._graphml_xml_file}, but publishing that write "
-                        f"failed: {publish_error[0]}. The notification flips "
+                        f"failed: {e.__cause__}. The notification flips "
                         "one flag per process, so an unknown remainder of them "
                         "keeps reading the previous snapshot until the next "
                         "commit notifies them; this process may also reload "
-                        "the file it just wrote."
+                        "the file it just wrote.",
                     )
                 return True  # Return success
             except Exception as e:
                 # Only a genuine write failure reaches here. A failure of the
-                # publication hook is recorded above and does not raise: the
-                # file is already on disk by the time that hook runs, so the
-                # recovery reload below -- and the "the write did not land"
-                # reasoning it rests on -- would both be wrong for it.
+                # publication hook is caught above as CommitBookkeepingError and
+                # does not reach this handler: the file is already on disk by the
+                # time that hook runs, so the recovery reload below -- and the
+                # "the write did not land" reasoning it rests on -- would both be
+                # wrong for it.
                 #
                 # Raise (do NOT swallow + return False): _insert_done's
                 # _flush_one only detects failures via exceptions, so a
@@ -1057,22 +1295,48 @@ class NetworkXStorage(BaseGraphStorage):
                 # closed (the finally below reopens it), so no other coroutine
                 # can be reading or mutating self._graph.
                 try:
-                    self._graph = (
-                        NetworkXStorage.load_nx_graph(self._graphml_xml_file)
-                        or nx.Graph()
-                    )
-                    self.storage_updated.value = False
+                    self._reload_locked()
                 except Exception as reload_error:
                     # Report, never mask: the save error is what the caller
                     # must see, and a failed reload leaves the divergence in
                     # place, so it has to be visible in the log on its own.
-                    # Keep the reload flag armed as a recovery fence: every
-                    # later public graph operation enters through _get_graph,
-                    # which will retry the disk reload before trusting this
-                    # process-local view. Without the flag, a deletion retry
-                    # could mistake the unpersisted mutation for durable state
-                    # and sweep the live object's tracking row.
-                    self.storage_updated.value = True
+                    # Both fence channels are armed here as a recovery fence:
+                    # every later public graph operation enters through
+                    # _get_graph, which will retry the disk reload before
+                    # trusting this process-local view. Without that, a
+                    # deletion retry could mistake the unpersisted mutation for
+                    # durable state and sweep the live object's tracking row.
+                    #
+                    # LOCAL FIRST, fallible RPC second, and the order is
+                    # load-bearing. The fingerprint is a plain attribute write
+                    # that cannot fail with the manager; the flag write below
+                    # is another RPC to the very process whose outage may be
+                    # why the reload just failed. Armed the other way round, a
+                    # manager outage would leave NEITHER channel armed:
+                    # self._graph would still hold the mutation whose save
+                    # failed, while the recorded fingerprint still matched the
+                    # untouched file -- so _get_graph would accept the
+                    # divergent graph and a later flush could persist work
+                    # already reported as failed.
+                    #
+                    # None differs from any real file, so the next _get_graph
+                    # retries the reload through the file channel on its own.
+                    self._loaded_fingerprint = None
+                    try:
+                        self.storage_updated.value = True
+                    except Exception as flag_error:
+                        # Best effort, and safe to be: this assignment can only
+                        # fail in multiprocess mode (single-process flags are a
+                        # local MutableBoolean), which is exactly where the
+                        # file channel above is armed and covers it. Letting it
+                        # out would replace the save error the caller must see
+                        # with a manager outage.
+                        log_without_raising(
+                            logger.error,
+                            f"[{self.workspace}] Failed to arm the reload flag "
+                            "after a failed save; the file fingerprint fence "
+                            f"covers this process instead: {flag_error}",
+                        )
                     logger.error(
                         f"[{self.workspace}] Failed to restore the in-memory "
                         f"graph after a failed save; it may not match "
@@ -1131,6 +1395,10 @@ class NetworkXStorage(BaseGraphStorage):
 
         async def _committed() -> None:
             self._graph = nx.Graph()
+            # The file is gone and this process's graph is empty to match, so
+            # adopt that state instead of letting the next _get_graph read the
+            # removal as a peer commit and reload for it.
+            self._record_fingerprint()
             # Keep publication under the storage lock. Once deletion starts,
             # commit_in_storage_io defers caller cancellation through this hook
             # so it cannot release readers before the notification attempt.
@@ -1174,6 +1442,17 @@ class NetworkXStorage(BaseGraphStorage):
         try:
             async with self._storage_lock:
                 await commit_in_storage_io(_delete_file, _committed)
+        except CommitBookkeepingError as e:
+            # The file is already gone; only the post-removal bookkeeping failed.
+            # Every step of `_committed` guards itself, so nothing raises this
+            # today -- it is the standing answer for a future step that forgets
+            # to, because "error" for a completed destruction is precisely the
+            # misreport those guards exist to prevent.
+            log_without_raising(
+                logger.error,
+                f"[{self.workspace}] Dropped graph file:{self._graphml_xml_file}, "
+                f"but its post-removal bookkeeping failed: {e.__cause__}",
+            )
         except Exception as e:
             log_without_raising(
                 logger.error,
