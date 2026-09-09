@@ -125,12 +125,26 @@ kubectl --namespace rag port-forward svc/lightrag 9621:9621
 
 ## 配置
 
+### 副本数量
+
+**`replicaCount` 必须保持为 `1`。同一个 workspace 不支持运行多个 LightRAG 实例。**
+
+LightRAG 的存储初始化/迁移与文档处理流水线是通过单机共享内存（`lightrag/kg/shared_storage.py`）协调的。该协调只覆盖同一个实例内部的多个 worker 进程，不跨 Pod。当两个及以上副本共用同一个 workspace 时：
+
+- 它们会在首次启动时争抢存储创建（对全新后端并发创建 database/collection）；
+- 它们可能同时执行 schema/数据迁移，而迁移中的崩溃恢复逻辑会把另一个实例正在进行的迁移误判为崩溃残留；
+- 每个 Pod 维护各自独立的流水线状态，同一批文档会被重复扫描和处理。
+
+出于同样的原因，`updateStrategy` 默认为 `Recreate`。`RollingUpdate` 会让新旧 Pod 短暂同时在线，这与上述不受支持的情况相同——而且版本升级正是最可能触发迁移的场景。
+
+如需提升单实例的处理能力，请纵向扩展：调高 `resources`，并在 `env` 中设置 `WORKERS` 以在同一个 Pod 内运行更多 server worker。
+
 ### 修改资源配置
 
 您可以通过修改`values.yaml`文件来配置LightRAG的资源使用：
 
 ```yaml
-replicaCount: 1  # 副本数量，可根据需要增加
+replicaCount: 1  # 必须保持为 1，参见下方“副本数量”
 
 resources:
   limits:
@@ -186,6 +200,7 @@ env:
 
 - 在部署前确保设置了所有必要的环境变量（API密钥和数据库密码）
 - 出于安全原因，建议使用环境变量传递敏感信息，而不是直接写入脚本或values文件
+- `replicaCount` 必须保持为 `1`：同一个 workspace 只支持单个活跃的 LightRAG 实例（参见上方“副本数量”）
 - 轻量级部署适合测试和小规模使用，但数据持久性和性能可能有限
 - 生产环境部署（PostgreSQL + Neo4J）推荐用于生产环境和大规模使用
 - 有关更多自定义配置，请参考LightRAG官方文档
