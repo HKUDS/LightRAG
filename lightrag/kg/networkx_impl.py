@@ -257,17 +257,29 @@ class NetworkXStorage(BaseGraphStorage):
               taken.
 
     Recovery reload (process-local, NOT a third fence channel):
-        ``_recovery_reload_pending`` is a plain ``bool`` on the instance,
-        armed by ``_reload_locked`` whenever a reload fails -- after a failed
-        save, at either fence channel, or on a refusal to load an unsampled
-        file. One choke point, because the state it records does not depend on
-        which caller asked: a failed reload leaves this process holding a
-        graph that does not match the file, and fails the operation that
-        asked for it, so what the graph holds belongs to work already
-        reported as failed. Arming only on the failed-SAVE path left the other
-        four sites able to publish that work over a peer's durable commit
-        once an unreadable ``stat`` blinded both channels. It is tested first
-        at both sites
+        ``_recovery_reload_pending`` is a plain ``bool`` on the instance, and
+        the rule for it is **armed when the reload becomes owed, cleared only
+        by one that completes** -- never "armed when a reload fails".
+
+        Owed is the earlier moment and the safe one: it is the branch entry,
+        before the sample is classified and before anything is loaded.
+        ``_reload_locked``'s third post-condition clears it, so the happy path
+        needs no bookkeeping, and *everything* that can go wrong in between
+        leaves the record standing -- including
+        ``_count_unannounced_peer_commit_locked``, which reads
+        ``storage_updated.value`` over the Manager and can raise before any
+        reload is attempted. Two earlier attempts at this were both too late:
+        arming only in the failed-SAVE handler left the other four sites
+        unarmed, and moving it into ``_reload_locked``'s failure paths still
+        missed everything that raises before the call. Both had the same
+        consequence -- an unreadable ``stat`` blinds the channels, and the
+        next commit publishes work already reported as failed over a peer's
+        durable commit.
+
+        What the state means, whichever site armed it: this process holds a
+        graph that does not match the file, and the operation that wanted it
+        failed, so what the graph holds belongs to work already reported as
+        failed. It is tested first at both sites
         the two channels are tested at: ``_get_graph`` discards the divergent
         graph before serving it, and ``index_done_callback`` declines rather
         than publishing mutations that belong to a batch already reported as
@@ -579,10 +591,10 @@ class NetworkXStorage(BaseGraphStorage):
         # fence. ``None`` means "no file" (or a stat this process could not
         # perform). See *Cross-process sync protocol* in the class docstring.
         self._loaded_fingerprint = None
-        # A reload this process owes ITSELF: armed by _reload_locked on EVERY
-        # failure path, wherever it was called from. Process-local on purpose
-        # -- it says "my memory diverged from the file", which no peer can
-        # observe and none needs to. See *Recovery reload* in the class
+        # A reload this process owes ITSELF: armed at the moment the reload
+        # becomes owed, cleared only by one that completes. Process-local on
+        # purpose -- it says "my memory diverged from the file", which no peer
+        # can observe and none needs to. See *Recovery reload* in the class
         # docstring.
         self._recovery_reload_pending = False
         # The on-disk state the file channel has already counted as a lost
@@ -806,12 +818,13 @@ class NetworkXStorage(BaseGraphStorage):
         re-parse on the very next call, and a missed recovery clear is worse:
         it is sticky, so it would make every later commit decline forever.
 
-        And one post-condition on FAILURE, which is the other half of the
-        reason no caller may open-code this: whatever went wrong, the pending
-        recovery reload is ARMED before the exception leaves. So the
-        invariant this method carries is total -- after it returns, the graph
-        matches the file; after it raises, a reload is owed and recorded.
-        Nothing in between, and nothing that depends on which caller asked.
+        And one on FAILURE: whatever went wrong, the pending recovery reload
+        is armed before the exception leaves. So this method's own invariant
+        is total -- after it returns the graph matches the file, after it
+        raises a reload is owed and recorded. That is a backstop, not the
+        mechanism: callers arm at the branch entry instead, because the
+        classification between there and here can raise on its own. See
+        *Recovery reload*.
 
         **Raises** ``OSError`` without loading anything when the sample is
         ``UNREADABLE`` -- given or taken here. A reload has to record what it
@@ -1006,6 +1019,10 @@ class NetworkXStorage(BaseGraphStorage):
             # the authoritative one: it is what makes a lost notification
             # recoverable. See *Cross-process sync protocol*.
             elif self.storage_updated.value:
+                # OWED from here on, so record it before anything can go wrong
+                # on the way to discharging it -- see *Recovery reload*. A
+                # completed _reload_locked clears it again.
+                self._recovery_reload_pending = True
                 logger.info(
                     f"[{self.workspace}] Process {os.getpid()} reloading graph {self._graphml_xml_file} due to modifications by another process"
                 )
@@ -1054,6 +1071,10 @@ class NetworkXStorage(BaseGraphStorage):
                 # taken at all -- the same as before.
                 sampled = self._stat_fingerprint()
                 if self._peer_commit_detected(sampled):
+                    # Owed from here on; recorded before the classification,
+                    # which reads storage_updated.value over the Manager and
+                    # can raise on its own. See *Recovery reload*.
+                    self._recovery_reload_pending = True
                     if self._count_unannounced_peer_commit_locked(sampled):
                         logger.warning(
                             f"[{self.workspace}] Process {os.getpid()} reloading "
@@ -1066,6 +1087,9 @@ class NetworkXStorage(BaseGraphStorage):
                         )
                     self._reload_locked(sampled)
                 elif self._loaded_fingerprint is None:
+                    # Owed from here on, as above -- and here the reload always
+                    # raises, so the record is all that survives the call.
+                    self._recovery_reload_pending = True
                     # An UNRESOLVED fingerprint with no way to resolve it: the
                     # sample must be ``UNREADABLE`` to get here, because a
                     # concrete one is a divergence against ``None`` and was
@@ -1777,6 +1801,8 @@ class NetworkXStorage(BaseGraphStorage):
             # could improve on. _get_graph needs the test because a reload
             # there DISCARDS, and only its timing decides what.
             if self.storage_updated.value:
+                # Owed from here on -- see *Recovery reload*.
+                self._recovery_reload_pending = True
                 # Storage was updated by another process, reload data instead of saving
                 logger.info(
                     f"[{self.workspace}] Graph was updated by another process, reloading..."
@@ -1791,6 +1817,10 @@ class NetworkXStorage(BaseGraphStorage):
                 # is cross-process. In single-process mode no stat is taken.
                 sampled = self._stat_fingerprint()
                 if self._peer_commit_detected(sampled):
+                    # Owed from here on; recorded before the classification,
+                    # which can raise on its own Manager read. See *Recovery
+                    # reload*.
+                    self._recovery_reload_pending = True
                     # The lost-notification case this fence exists for. Before
                     # it, this branch was unreachable without a flag and the
                     # save went ahead, silently replacing the peer's commit
@@ -1930,13 +1960,17 @@ class NetworkXStorage(BaseGraphStorage):
                     # (see *Non-pipeline write paths*), where two concurrent
                     # /graph/* calls on different workers both commit.
                     #
+                    # Owed from the moment the save failed, so recorded here
+                    # rather than in the handler below -- the classification
+                    # reads storage_updated.value over the Manager and can
+                    # raise before any reload is attempted, and a manager
+                    # outage is a plausible reason the save failed in the first
+                    # place. A completed reload clears it; nothing else does.
+                    self._recovery_reload_pending = True
                     # One sample, shared by the counting and the reload -- see
                     # _count_unannounced_peer_commit_locked for why they must
-                    # not be two independent observations. Both calls sit
-                    # inside this try because the classification reads
-                    # storage_updated.value, a Manager RPC: a manager outage
-                    # must still arm the recovery flag below, and nothing is
-                    # adopted before the count, so the event stays countable.
+                    # not be two independent observations. Nothing is adopted
+                    # before the count, so the event stays countable.
                     sampled = self._stat_fingerprint()
                     if self._count_unannounced_peer_commit_locked(sampled):
                         logger.warning(
@@ -1953,10 +1987,9 @@ class NetworkXStorage(BaseGraphStorage):
                     # must see, and a failed reload leaves the divergence in
                     # place, so it has to be visible in the log on its own.
                     #
-                    # The recovery reload is already armed: _reload_locked
-                    # arms it on every failure path, this site included, which
-                    # is why there is no assignment here any more. What it buys
-                    # is that every later public graph operation enters through
+                    # The recovery reload is already armed -- above, before
+                    # the attempt, not here after it. What it buys is that
+                    # every later public graph operation enters through
                     # _get_graph, which discards this view before trusting it,
                     # and index_done_callback declines rather than publishing
                     # it. Without that, a deletion retry could mistake the

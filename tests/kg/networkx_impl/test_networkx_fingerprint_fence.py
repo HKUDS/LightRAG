@@ -651,6 +651,93 @@ async def test_arming_recovery_does_not_touch_the_manager(
         await worker.finalize()
 
 
+class _DeadOnReadFlag:
+    """A flag proxy whose Manager is gone by the time it is READ again.
+
+    `_WriteOnlyDeadFlag` above models the outage arriving before the flag is
+    written. This one arrives earlier, before it is read -- which is what the
+    peer classification does, and it does so BEFORE any reload is attempted.
+    """
+
+    def __init__(self, reads_before_death: int):
+        self.reads = 0
+        self._budget = reads_before_death
+
+    @property
+    def value(self):
+        self.reads += 1
+        if self.reads > self._budget:
+            raise BrokenPipeError("manager gone")
+        return False
+
+    @value.setter
+    def value(self, _v):
+        raise BrokenPipeError("manager gone")
+
+
+@pytest.mark.asyncio
+async def test_a_classification_that_raises_still_leaves_the_reload_owed(
+    tmp_path, multiprocess
+):
+    """Owed is recorded at the branch entry, not after the reload fails.
+
+    `_count_unannounced_peer_commit_locked` reads `storage_updated.value` over
+    the Manager and can raise there -- before `_reload_locked` is reached at
+    all. Arming on the reload's failure paths therefore misses it: the flag
+    stays false while the failed batch's mutations sit in memory, and the next
+    commit finds an unchanged fingerprint and a false notification flag, so it
+    publishes them.
+
+    A manager outage is a plausible reason the save failed in the first place,
+    which is what makes this the likely case rather than an exotic one.
+    """
+    worker = await _worker(tmp_path)
+    real_flag = worker.storage_updated
+    try:
+        await worker.upsert_node("durable", {"entity_id": "durable"})
+        assert await worker.index_done_callback() is True
+
+        await worker.upsert_node("never_saved", {"entity_id": "never_saved"})
+
+        def save_boom(graph, file_name, workspace):
+            raise OSError("save boom")
+
+        # One read survives -- `index_done_callback`'s own fence test -- and
+        # the next one, inside the failure handler's classification, does not.
+        dead = _DeadOnReadFlag(reads_before_death=1)
+        # A MonkeyPatch of this test's own: undoing the shared fixture would
+        # revert `multiprocess` and run the assertions with the fence off.
+        breakage = pytest.MonkeyPatch()
+        breakage.setattr(NetworkXStorage, "write_nx_graph", staticmethod(save_boom))
+        worker.storage_updated = dead
+        try:
+            # The SAVE error still reaches the caller, unmasked.
+            with pytest.raises(OSError, match="save boom"):
+                await worker.index_done_callback()
+        finally:
+            breakage.undo()
+            worker.storage_updated = real_flag
+        assert dead.reads == 2, "the classification never reached the Manager read"
+        assert file_fingerprint.fence_enabled() is True
+        owed = worker._recovery_reload_pending
+
+        # The manager is back and the file was never touched by the failed
+        # save, so nothing in either channel objects to a commit. What must
+        # stop it is the owed reload.
+        committed = await worker.index_done_callback()
+        on_disk = NetworkXStorage.load_nx_graph(worker._graphml_xml_file)
+        assert not on_disk.has_node("never_saved"), (
+            "work already reported as FAILED was published"
+        )
+        assert on_disk.has_node("durable")
+        assert committed is False, "the commit should have been declined"
+        assert owed is True, "the raised classification left nothing armed"
+        assert worker._recovery_reload_pending is False
+    finally:
+        worker.storage_updated = real_flag
+        await worker.finalize()
+
+
 @pytest.mark.asyncio
 async def test_drop_clears_a_pending_recovery_reload(tmp_path, multiprocess):
     """A sticky flag survives a `drop` and would decline the next real commit.
