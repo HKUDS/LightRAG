@@ -53,6 +53,26 @@ lightrag.fullname would render a name the API server rejects.
 {{- end -}}
 
 {{/*
+Name of the Service that resolves to pod 0 only.
+
+Every write has to reach exactly one instance (K8S-README.md "Replica Count",
+condition 4), and the Service that fronts the workload load-balances across
+all of them -- including the query-only replicas, whose
+check_pipeline_busy_or_raise guard reads their own pod's pipeline_status and
+so cannot see the ingesting pod's run. This Service is the routing target
+that makes that split expressible: it selects the pod named <fullname>-0
+through the statefulset.kubernetes.io/pod-name label the StatefulSet
+controller sets on every pod.
+
+No truncation needed: workload.kind StatefulSet already refuses a
+lightrag.fullname longer than 52 characters, which leaves room for the
+7-character suffix under the 63-character Service-name cap.
+*/}}
+{{- define "lightrag.writerServiceName" -}}
+{{- printf "%s-writer" (include "lightrag.fullname" .) -}}
+{{- end -}}
+
+{{/*
 Workload kind: Deployment (default) or StatefulSet.
 StatefulSet exists for ordered startup (podManagementPolicy: OrderedReady):
 each pod must be Ready -- which for LightRAG means /health returned 200, so
