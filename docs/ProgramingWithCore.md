@@ -1657,7 +1657,10 @@ commits the merged node before it removes the source entities. The error message
 says which of the two happened, and either way the caller must **re-read the
 entity or relation before retrying** rather than assume the operation is undone.
 Retrying blind can hit `Entity 'X' already exists` or re-apply an edit that is
-already durable.
+already durable. The graph endpoints return that wording as the 500's `detail`
+rather than the sanitized generic body, because a REST client is the caller that
+has to act on it and does not read server logs. Every other failure on those
+endpoints keeps the sanitized body.
 
 Server-backed graph stores (Neo4j, PostgreSQL, Memgraph, MongoDB, OpenSearch)
 never take the gate, whatever the KV or vector storage beside them: only the
