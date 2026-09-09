@@ -353,14 +353,17 @@ class NetworkXStorage(BaseGraphStorage):
         evidence by a later object, because the explicit creation paths reset
         attribution (issue #3838 R1); and it is repairable offline with the
         chunk-tracking rebuild tool (R4). The mirror state — a graph object
-        durable without its tracking row — is the forbidden one, and
-        ``utils_graph._persist_graph_updates`` is ordered so no single-writer
-        crash produces it.
+        durable without its tracking row — is the forbidden one, and the
+        creation paths in ``utils_graph`` keep it out of reach by writing and
+        committing the tracking row **before** calling ``upsert_node`` /
+        ``upsert_edge`` at all. Ordering only the flushes would not be enough
+        here: an uncommitted ``upsert_node`` still sits in the process-wide
+        in-memory graph, where the next flush by any co-tenant publishes it.
 
-        **Requirement on new callers.** Any new caller of these mutators
-        must keep tracking rows ahead of the objects they describe, the way
-        ``_persist_graph_updates`` does, and must not be invoked
-        concurrently with another admin writer on a file-backed workspace.
+        **Requirement on new callers.** Any new caller of these mutators must
+        make the tracking row durable BEFORE the mutation call, not merely
+        before the flush, and must not be invoked concurrently with another
+        admin writer on a file-backed workspace.
     """
 
     def _node_context(self, node_id: str) -> str:

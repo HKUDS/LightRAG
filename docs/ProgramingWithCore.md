@@ -1649,7 +1649,23 @@ What that can leave behind, and why it is tolerated:
   later object (the explicit creation paths reset attribution), and is removed by
   the [chunk-tracking repair](#repairing-chunk-tracking).
 - The forbidden mirror — an object durable without its row — is not produced by
-  a single-writer crash, because of the commit order above.
+  a single-writer crash, because on the creation paths the tracking row is
+  written *and committed before the graph mutation is issued at all*. Ordering
+  only the flushes would not have been enough: on Neo4j or PostgreSQL the
+  `upsert_node` is durable the moment it returns, and on NetworkX it is already
+  in the process-wide in-memory graph, where the next flush by any co-tenant
+  publishes it.
+- An edit that *removes* evidence IDs from a row cannot use the creation order —
+  a narrowed row landing ahead of the graph write is itself the over-deleting
+  state. `aedit_relation` therefore stages such an edit as grow-then-shrink: the
+  superset row, then the graph write, then the final row. If the last step
+  fails, the edit still succeeds and the row keeps naming a chunk the relation
+  no longer cites (under-deletion, logged with the storage key, repaired by the
+  chunk-tracking repair) — a retry cannot heal it, because the second edit sees
+  an unchanged `source_id` and skips the tracking update.
+- A graph backend that *declines* its commit (the NetworkX reload fence) raises
+  out of the create, edit, merge and delete paths alike, so the caller sees a
+  500 instead of a success for a write that was discarded.
 
 A workspace-wide admin lock was specified and dropped: it would not have changed
 what a crash can leave behind, since the same residue is reachable with no

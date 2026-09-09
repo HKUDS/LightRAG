@@ -270,12 +270,26 @@ def _normalize_manual_entity_name(entity_name: Any) -> str:
     return normalize_entity_name(entity_name)
 
 
+def _declined_commit_error(context: str) -> RuntimeError:
+    """The single wording for a graph backend that refused to publish a write.
+
+    Raised from both commit sites (``_commit_graph_or_raise`` and the phase-2
+    flush of ``_persist_graph_updates``) so a declined commit reads the same way
+    whichever path reached it.
+    """
+    return RuntimeError(
+        f"{context}: the graph commit was skipped because another process "
+        "updated the graph, so the in-memory mutation was discarded"
+    )
+
+
 async def _persist_graph_updates(
     entities_vdb=None,
     relationships_vdb=None,
     chunk_entity_relation_graph=None,
     entity_chunks_storage=None,
     relation_chunks_storage=None,
+    context: str = "Graph update",
 ) -> None:
     """Unified callback to persist updates after graph operations.
 
@@ -312,17 +326,35 @@ async def _persist_graph_updates(
     inherited by a new object (issue #3838 R1 resets evidence on explicit
     creation), and repairable with the offline chunk-tracking rebuild.
 
-    Phase 1 failing skips phase 2 entirely, which is the point: a tracking
-    commit that did not land must not be followed by publishing the object it
-    describes.
+    **What this ordering does and does not buy.** It orders the *flushes issued
+    by this call*, nothing more. It does not order the mutations themselves: by
+    the time a caller reaches this helper, ``upsert_node`` / ``upsert_edge`` has
+    already run, which on an immediate-write backend (Neo4j, PostgreSQL) is
+    already durable, and on a deferred backend has already mutated the
+    process-wide in-memory graph, where the *next* flush by any co-tenant
+    publishes it. Phase 1 failing therefore only guarantees that *this call*
+    does not publish the object -- it cannot unwrite what the caller already
+    wrote. Keeping the forbidden state unreachable is consequently the caller's
+    job, and the creation paths do it by writing and flushing the tracking row
+    BEFORE the graph mutation; this helper's two phases are the second line of
+    defence for the flush that follows.
 
     Contract for callers, because the order is only correct in one direction:
-    this helper is for callers that ADD or UPDATE a tracking row. A caller that
-    REMOVES one must commit the graph itself first -- ``_commit_graph_or_raise``
-    -- and only then call this helper with the tracking storages alone, so the
-    removal lands in the same benign direction. Every deletion path in this
-    module already does exactly that, which is why none of them passes
+    this helper is for callers that ADD to a tracking row. A caller that REMOVES
+    from one must commit the graph itself first -- ``_commit_graph_or_raise`` --
+    and only then call this helper with the tracking storages alone, so the
+    removal lands in the same benign direction. A caller whose update does both
+    (``aedit_relation``) has to stage it as grow-then-shrink: the superset row
+    first, then the graph, then the final row. Every deletion path in this
+    module already commits the graph itself, which is why none of them passes
     ``chunk_entity_relation_graph`` and a tracking storage together.
+
+    A graph backend that DECLINES its commit -- ``NetworkXStorage`` reloading
+    from disk and discarding the in-memory mutation because a peer committed
+    first -- is raised as a ``RuntimeError``, exactly as in
+    ``_commit_graph_or_raise``. Returning normally there would report a mutation
+    that was thrown away as a success, and would leave the tracking row phase 1
+    just made durable describing an object that never reached disk.
 
     Args:
         entities_vdb: Entity vector database storage (optional)
@@ -330,11 +362,12 @@ async def _persist_graph_updates(
         chunk_entity_relation_graph: Graph storage instance (optional)
         entity_chunks_storage: Entity-chunk tracking storage (optional)
         relation_chunks_storage: Relation-chunk tracking storage (optional)
+        context: Operation prefix used in the declined-commit error message
     """
 
-    async def _flush(storage_inst) -> None:
+    async def _flush(storage_inst, *, require_commit: bool = False) -> None:
         try:
-            await cast(StorageNameSpace, storage_inst).index_done_callback()
+            committed = await cast(StorageNameSpace, storage_inst).index_done_callback()
         except CommitBookkeepingError as e:
             log_without_raising(
                 logger.error,
@@ -343,6 +376,11 @@ async def _persist_graph_updates(
                 "durable; cross-process visibility is deferred to the next "
                 "commit.",
             )
+            return
+        # Only an explicit False means "did not commit"; the base signature is
+        # ``-> None``, so backends that return nothing are unaffected.
+        if require_commit and committed is False:
+            raise _declined_commit_error(context)
 
     # Phase 1: attribution carriers.
     tracking_storages = [
@@ -350,9 +388,12 @@ async def _persist_graph_updates(
         for storage_inst in (entity_chunks_storage, relation_chunks_storage)
         if storage_inst is not None
     ]
-    # Phase 2: the objects those rows describe, plus their vector records.
+    # Phase 2: the objects those rows describe, plus their vector records. Only
+    # the graph is checked for a declined commit -- the vector stores have no
+    # such fence, and their staleness is the rebuildable window accepted
+    # elsewhere in this module.
     object_storages = [
-        storage_inst
+        (storage_inst, storage_inst is chunk_entity_relation_graph)
         for storage_inst in (
             entities_vdb,
             relationships_vdb,
@@ -363,9 +404,32 @@ async def _persist_graph_updates(
 
     # Within a phase the order is unconstrained, so they still flush in
     # parallel; only the boundary between the two phases is ordered.
-    for phase in (tracking_storages, object_storages):
-        if phase:
-            await asyncio.gather(*[_flush(storage_inst) for storage_inst in phase])
+    # ``return_exceptions=True`` keeps a raising flush from stranding its
+    # siblings as never-awaited tasks. A declined graph commit is re-raised
+    # ahead of any sibling failure: it is the one answer that says the caller's
+    # mutation was thrown away, and a stale vector store must not mask it.
+    phases = [
+        [(storage_inst, False) for storage_inst in tracking_storages],
+        object_storages,
+    ]
+    for phase in phases:
+        if not phase:
+            continue
+        results = await asyncio.gather(
+            *[
+                _flush(storage_inst, require_commit=require_commit)
+                for storage_inst, require_commit in phase
+            ],
+            return_exceptions=True,
+        )
+        errors = [
+            (require_commit, result)
+            for (_, require_commit), result in zip(phase, results)
+            if isinstance(result, BaseException)
+        ]
+        if errors:
+            errors.sort(key=lambda item: not item[0])
+            raise errors[0][1]
 
 
 async def _finish_deferring_cancellation(coro, description: str) -> None:
@@ -438,10 +502,7 @@ async def _commit_graph_or_raise(chunk_entity_relation_graph, context: str) -> N
         )
         return
     if committed is False:
-        raise RuntimeError(
-            f"{context}: the graph commit was skipped because another process "
-            "updated the graph, so the in-memory deletion was discarded"
-        )
+        raise _declined_commit_error(context)
 
 
 async def _sweep_orphan_tracking_row(
@@ -1670,29 +1731,22 @@ async def aedit_relation(
                 }
             }
 
-            # 3. Update relation information in the graph
-            await chunk_entity_relation_graph.upsert_edge(
-                source_entity, target_entity, new_edge_data
-            )
-
-            # Delete the old relation record from the vector database.
-            # Delete both permutations to handle relationships created
-            # before normalization.
-            rel_ids_to_delete = [
-                compute_mdhash_id(source_entity + target_entity, prefix="rel-"),
-                compute_mdhash_id(target_entity + source_entity, prefix="rel-"),
-            ]
-            await relationships_vdb.delete(rel_ids_to_delete)
-            logger.debug(
-                f"Relation Delete: delete vdb for `{source_entity}`~`{target_entity}`"
-            )
-
-            # Update vector database
-            await relationships_vdb.upsert(relation_data)
-
-            # 4. Synchronize relation chunk tracking after source edits, when
+            # 3. Synchronize relation chunk tracking after source edits, when
             #    tracking is missing, or when a legacy row still contains a
             #    historical no-evidence placeholder.
+            #
+            #    An edit can both ADD and REMOVE evidence IDs, and the two have
+            #    opposite safe orderings: an addition must be durable before the
+            #    graph write that relies on it, a removal only after it. A
+            #    single ordering cannot serve both -- it just moves which edit
+            #    direction leaves an over-deleting row on disk. So the update is
+            #    staged as grow-then-shrink around the graph write: the superset
+            #    row first, the graph write next, the shrunken row last. The row
+            #    is then never a strict subset of the durable graph evidence,
+            #    and the only residue is a row that still names IDs the edit
+            #    removed -- under-deletion, the direction this codebase accepts.
+            pending_tracking_shrink: list[str] | None = None
+            tracking_storage_key: str | None = None
             if relation_chunks_storage is not None:
                 from .utils import (
                     make_relation_chunk_key,
@@ -1755,29 +1809,99 @@ async def aedit_relation(
                         existing_full_chunk_ids, old_chunk_ids, new_chunk_ids
                     )
 
-                    # Update storage (Update even if updated_chunk_ids is empty)
+                    # Grow phase: everything the row already held, plus the
+                    # genuine additions. Identical to the final row whenever
+                    # this edit removes nothing, which is the common case.
+                    additions = [
+                        cid
+                        for cid in updated_chunk_ids
+                        if cid not in set(existing_full_chunk_ids)
+                    ]
+                    superset_chunk_ids = existing_full_chunk_ids + additions
+                    if set(superset_chunk_ids) != set(updated_chunk_ids):
+                        pending_tracking_shrink = updated_chunk_ids
+                        tracking_storage_key = storage_key
+
+                    # Update storage (Update even if the list is empty)
                     await relation_chunks_storage.upsert(
                         {
                             storage_key: {
-                                "chunk_ids": updated_chunk_ids,
-                                "count": len(updated_chunk_ids),
+                                "chunk_ids": superset_chunk_ids,
+                                "count": len(superset_chunk_ids),
                             }
                         }
                     )
+                    await _persist_graph_updates(
+                        relation_chunks_storage=relation_chunks_storage,
+                    )
 
                     logger.info(
-                        f"Relation Delete: update chunk tracking for `{source_entity}`~`{target_entity}`"
+                        f"Relation Edit: update chunk tracking for `{source_entity}`~`{target_entity}`"
                     )
+
+            # 4. Update relation information in the graph
+            await chunk_entity_relation_graph.upsert_edge(
+                source_entity, target_entity, new_edge_data
+            )
+
+            # Delete the old relation record from the vector database.
+            # Delete both permutations to handle relationships created
+            # before normalization.
+            rel_ids_to_delete = [
+                compute_mdhash_id(source_entity + target_entity, prefix="rel-"),
+                compute_mdhash_id(target_entity + source_entity, prefix="rel-"),
+            ]
+            await relationships_vdb.delete(rel_ids_to_delete)
+            logger.debug(
+                f"Relation Edit: delete vdb for `{source_entity}`~`{target_entity}`"
+            )
+
+            # Update vector database
+            await relationships_vdb.upsert(relation_data)
 
             # 5. Save changes
             await _persist_graph_updates(
                 relationships_vdb=relationships_vdb,
                 chunk_entity_relation_graph=chunk_entity_relation_graph,
-                relation_chunks_storage=relation_chunks_storage,
+                context=f"Relation Edit: `{source_entity}`~`{target_entity}`",
             )
 
+            # 6. Shrink phase: the graph write that justifies dropping these IDs
+            #    is durable now, so the row may finally lose them.
+            #
+            #    A failure here is logged, not raised: the edit itself landed,
+            #    so reporting it as failed would be a lie about the graph, and a
+            #    repeated edit cannot heal the row anyway -- the second run sees
+            #    an unchanged source_id and skips the tracking block entirely.
+            #    What survives is the accepted direction (a row naming IDs the
+            #    relation no longer cites), and the recovery is the offline
+            #    chunk-tracking repair.
+            if pending_tracking_shrink is not None:
+                try:
+                    await relation_chunks_storage.upsert(
+                        {
+                            tracking_storage_key: {
+                                "chunk_ids": pending_tracking_shrink,
+                                "count": len(pending_tracking_shrink),
+                            }
+                        }
+                    )
+                    await _persist_graph_updates(
+                        relation_chunks_storage=relation_chunks_storage,
+                    )
+                except Exception as e:
+                    log_without_raising(
+                        logger.error,
+                        f"Relation Edit: `{source_entity}`~`{target_entity}` is "
+                        f"durable, but pruning its chunk tracking row "
+                        f"`{tracking_storage_key}` down to "
+                        f"{pending_tracking_shrink} failed: {e}. The row still "
+                        "names chunk IDs this edit removed; run "
+                        "lightrag-repair-chunk-tracking to reconcile it.",
+                    )
+
             logger.info(
-                f"Relation Delete: `{source_entity}`~`{target_entity}`' successfully updated"
+                f"Relation Edit: `{source_entity}`~`{target_entity}` successfully updated"
             )
             return await get_relation_info(
                 chunk_entity_relation_graph,
@@ -1919,13 +2043,15 @@ async def acreate_entity(
             if before_create is not None:
                 await before_create()
 
-            # Add entity to knowledge graph
-            await chunk_entity_relation_graph.upsert_node(entity_name, node_data)
-
-            # Update vector database
-            await entities_vdb.upsert(entity_data_for_vdb)
-
-            # Update entity_chunks_storage to track chunk references
+            # Write and commit the attribution row BEFORE the graph mutation
+            # (issue #3838). Ordering only the flushes is not enough: an
+            # immediate-write backend makes `upsert_node` durable on the spot,
+            # and a deferred one leaves the node in the process-wide in-memory
+            # graph, where any co-tenant flush publishes it. Both reach the
+            # forbidden state -- an entity durable with no row carrying its
+            # attribution -- before this function's own flush is even reached.
+            # Writing the row first makes the only residue the benign mirror: a
+            # row whose node never became durable.
             if entity_chunks_storage is not None:
                 source_id = node_data.get("source_id", "")
                 chunk_ids = list(
@@ -1946,17 +2072,25 @@ async def acreate_entity(
                         }
                     }
                 )
+                await _persist_graph_updates(
+                    entity_chunks_storage=entity_chunks_storage,
+                )
                 logger.info(
                     f"Entity Create: tracked {len(chunk_ids)} chunks for `{entity_name}`"
                 )
+
+            # Add entity to knowledge graph
+            await chunk_entity_relation_graph.upsert_node(entity_name, node_data)
+
+            # Update vector database
+            await entities_vdb.upsert(entity_data_for_vdb)
 
             # Save changes
             await _persist_graph_updates(
                 entities_vdb=entities_vdb,
                 relationships_vdb=relationships_vdb,
                 chunk_entity_relation_graph=chunk_entity_relation_graph,
-                entity_chunks_storage=entity_chunks_storage,
-                relation_chunks_storage=relation_chunks_storage,
+                context=f"Entity Create: `{entity_name}`",
             )
 
             logger.info(f"Entity Create: '{entity_name}' successfully created")
@@ -2121,15 +2255,9 @@ async def acreate_relation(
             if before_create is not None:
                 await before_create()
 
-            # Add relation to knowledge graph
-            await chunk_entity_relation_graph.upsert_edge(
-                source_entity, target_entity, edge_data
-            )
-
-            # Update vector database
-            await relationships_vdb.upsert(relation_data_for_vdb)
-
-            # Update relation_chunks_storage to track chunk references
+            # Attribution row first, graph second -- see the same staging in
+            # `acreate_entity` for why ordering the flushes alone leaves the
+            # forbidden state reachable (issue #3838).
             if relation_chunks_storage is not None:
                 from .utils import make_relation_chunk_key
 
@@ -2148,15 +2276,26 @@ async def acreate_relation(
                         }
                     }
                 )
+                await _persist_graph_updates(
+                    relation_chunks_storage=relation_chunks_storage,
+                )
                 logger.info(
                     f"Relation Create: tracked {len(chunk_ids)} chunks for `{vdb_src}`~`{vdb_tgt}`"
                 )
+
+            # Add relation to knowledge graph
+            await chunk_entity_relation_graph.upsert_edge(
+                source_entity, target_entity, edge_data
+            )
+
+            # Update vector database
+            await relationships_vdb.upsert(relation_data_for_vdb)
 
             # Save changes
             await _persist_graph_updates(
                 relationships_vdb=relationships_vdb,
                 chunk_entity_relation_graph=chunk_entity_relation_graph,
-                relation_chunks_storage=relation_chunks_storage,
+                context=f"Relation Create: `{vdb_src}`~`{vdb_tgt}`",
             )
 
             logger.info(
