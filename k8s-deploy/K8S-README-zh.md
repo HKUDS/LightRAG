@@ -146,7 +146,7 @@ LightRAG 的存储初始化/迁移与文档处理流水线是通过单机共享�
 1. **只能使用外部数据库后端。** 轻量级部署（`JsonKVStorage` / `NetworkXStorage` / `JsonDocStatusStorage`）把状态保存在 PVC 上的文件和进程内存中，两个实例共用一个卷必然导致数据损坏。请使用 PostgreSQL / Neo4j / Milvus / Redis / Qdrant。
 2. **实例必须顺序启动——一次一个，前一个 Ready 之后再启动下一个。** 初始化阶段绝不能重叠。用 `/health` 返回 `200` 作为判据是可靠的：`initialize_storages()` 与 `check_and_migrate_data()` 都在 FastAPI lifespan 中执行，先于应用对外提供服务，因此一个 Ready 的实例必然已完成存储创建与迁移，后续实例只会看到存储已经就绪。在 Kubernetes 中，**StatefulSet 配合 `podManagementPolicy: OrderedReady`** 正是这个语义——Pod 按序号逐个创建，每个必须 Running 且 Ready 之后才创建下一个——再配合本 chart 已经配置好的 `/health` readinessProbe 即可。本 chart 提供的是 `Deployment`，因此需要您自行以 StatefulSet 方式部署 LightRAG。
 3. **在所有实例都 Ready 之前，必须停止写入。** 顺序启动只保证 Pod 的**创建**有先后：pod 0 已经 Ready 并对外服务时，pod 1 才刚开始初始化；滚动升级同理，序号较低的旧 Pod 仍在服务，替换 Pod 已经启动。正在启动的实例会执行 `check_and_migrate_data()`，其中的 chunk 追踪迁移先对图中的 `source_id` 取快照，随后用该快照**整行替换**每一条追踪记录。在这个窗口内写入的文档，其追踪记录可能被覆盖；而该迁移以追踪存储为空作为闸门，因此不会再次执行，损失也不会自愈。请在扩容或升级前停止写入，待所有 Pod 都 Ready 之后再恢复。（追踪存储一旦有数据，该迁移会立即返回，因此风险窗口实际上是从早于 chunk 追踪的版本升级后的首次上线——但这条规则不值得写成有条件的。）
-4. **只允许一个实例执行文档写入。** LightRAG 没有只读模式，因此需要在 Pod 前面把文档/写入类流量（`/documents/*`、上传接口）路由到单个实例（使用独立的 Service 或 Ingress 规则）。流水线状态是每实例独立的：两个实例同时接收写入会把同一批文档处理两遍。
+4. **所有写入都发往同一个实例，其余实例只放行白名单内的读接口。** LightRAG 没有只读模式，因此这个划分只能在 Pod 前面完成（使用独立的 Service 或 Ingress 规则）。请为额外副本配置**只读接口白名单**（`/query`、`/query/stream`、图查询接口、`/health`），而不是写接口黑名单——黑名单会随着新接口的加入而悄悄失效。写入面不只有文档摄取：除了 `/documents/*` 和上传接口，还有 WebUI 会发起的图修改接口——`/graph/entity/edit`、`/graph/relation/edit`、`/graph/entity/create`、`/graph/relation/create`、`/graph/entities/merge`、`/graph/entity/delete`、`/graph/relation/delete`。这些处理函数确实有 `check_pipeline_busy_or_raise` 自我保护，但它读的是本 Pod 自己的 `pipeline_status`，所以在查询副本上它看到的是空闲流水线，会在写入实例正在处理文档时放行这次修改——而这正是该守卫本应拒绝的并发图写入。流水线状态每实例独立，也正是两个实例同时接收写入会把同一批文档处理两遍的原因。
 5. **只能指望后端层面的共享。** 查询实例并非完全不写入——查询路径会写 LLM 响应缓存；这在共享数据库后端上无害，但也正是条件 1 不能放宽的原因。所有进程内状态都不共享：额外实例上报的流水线状态是它自己的空闲流水线，而不是写入实例的处理进度。
 
 本 chart 可以直接渲染出这种 StatefulSet 部署：
@@ -161,6 +161,8 @@ replicaCount: 2              # 1 个写入实例 + 1 个只读查询实例
 ```
 
 切换 `workload.kind` 会改变存储的供给方式。Deployment 挂载两个共享 PVC；StatefulSet 则通过 `volumeClaimTemplates` 为每个 Pod 分配各自的 PVC，因为 `ReadWriteOnce` 的 PVC 无法被位于不同节点的多个 Pod 同时挂载。由此带来两个后果：已有的 release 在切换 kind 后**不会**继承原卷中的数据；上传到 `/app/data/inputs` 的文件只存在于接收该请求的那个 Pod 上——这正是上面条件 4 在存储层面的原因。chart 同时会创建一个 headless Service（`<release>-headless`），因此在路由写入流量时可以用 `<release>-0.<release>-headless` 精确寻址某一个实例。
+
+StatefulSet 一旦创建，`volumeClaimTemplates` 就不可变，因此在 `workload.kind: StatefulSet` 下，`persistence` 相关配置在创建时即固定：`helm upgrade` 修改 `persistence.ragStorage.size` / `persistence.inputs.size`，或在最初关闭 persistence 后再将其打开，都会被 API server 拒绝而非生效。若要为运行中的 release 扩容，请直接扩展每个 Pod 各自的 PVC（`kubectl edit pvc rag-storage-<release>-0` 等），这需要 StorageClass 设置了 `allowVolumeExpansion: true`；模板中残留的旧容量只影响之后为新 Pod 创建的 PVC。若要改变结构而非容量，请用 `--cascade=orphan` 删除 StatefulSet（Pod 与 PVC 会保留），再让 Helm 重新创建。
 
 ### 修改资源配置
 

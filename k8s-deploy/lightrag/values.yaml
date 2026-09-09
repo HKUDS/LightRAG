@@ -34,7 +34,10 @@ image:
 # Storage differs by kind: a Deployment mounts the shared PVCs below, while a
 # StatefulSet gives every pod its own claim through volumeClaimTemplates, so
 # switching kind on an existing release does not carry the old volume's data
-# over.
+# over. volumeClaimTemplates is also immutable once the StatefulSet exists:
+# under kind StatefulSet the persistence settings below are fixed at creation,
+# and an upgrade that changes a size or turns persistence on is rejected, not
+# applied. See K8S-README.md for the per-PVC expansion procedure.
 workload:
   kind: Deployment
   # The two settings below apply to StatefulSet only.

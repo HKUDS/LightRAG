@@ -36,6 +36,11 @@ spec:
   # nodes, and file-based storage backends corrupt under concurrent writers.
   # Consequence: uploaded files under /app/data/inputs live on the pod that
   # received them, so document ingestion must be routed to a single pod.
+  #
+  # These templates are immutable once the StatefulSet exists: an upgrade that
+  # changes a size, or that enables persistence after it was installed off, is
+  # rejected by the API server. Expand the per-pod PVCs directly instead --
+  # see K8S-README.md "Replica Count".
   volumeClaimTemplates:
     - metadata:
         name: rag-storage
