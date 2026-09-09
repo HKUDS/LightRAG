@@ -1667,22 +1667,16 @@ What that can leave behind, and why it is tolerated:
   because a retry cannot heal it — the second edit sees an unchanged `source_id`
   and skips the tracking update — so the operator is the only recovery path, and
   a 200 would guarantee they never learn to take it.
-- **Accepted residue, not yet closed: `aedit_entity`'s non-rename path.** It
-  still commits the graph *before* flushing the tracking row, so a hard process
-  exit in that window leaves a **growing** edit — one that adds evidence IDs —
-  with the node on disk citing chunks its row does not yet name. That is the
-  `rows ⊂ graph` direction, the one this codebase does **not** accept: a later
-  purge of a document naming only the older chunks reads the row, concludes "no
-  remaining sources" and deletes an entity the added chunk still anchors. It is
-  reachable from `POST /graph/entity/edit`, whose `updated_data` accepts
-  `source_id`. It is a pre-existing gap rather than a new one — the rename
-  branch of the same function already stages its rows ahead of the commit (see
-  the [merge and rename failure model](design/PurgeRecoveryContract.md#merge-and-rename-failure-model))
-  — and closing it wants the same grow-then-shrink staging as `aedit_relation`,
-  applied without disturbing the rename branch's opposite, deliberate ordering
-  (issue #3609). Until then the recovery for an affected row is the
-  [chunk-tracking repair](#repairing-chunk-tracking), and a growing entity edit
-  should not be issued concurrently with, or shortly before, a document purge.
+- `aedit_entity`'s non-rename path stages its row the same way, for the same
+  reason: a **growing** edit there used to commit the node before flushing the
+  row that attributes it, leaving `rows ⊂ graph` — reachable from `POST
+  /graph/entity/edit`, whose `updated_data` accepts `source_id`. The superset
+  row is now durable before `upsert_node` is called at all, and the removals are
+  applied after the graph commit, with the same raise-on-failure contract. Its
+  **rename** path needs no such staging and deliberately keeps its own ordering:
+  it writes a fresh node whose `source_id` already equals the row it migrates,
+  and it retires the old key only after the commit that removes the old node
+  (see the [merge and rename failure model](design/PurgeRecoveryContract.md#merge-and-rename-failure-model)).
 - A graph backend that *declines* its commit (the NetworkX reload fence) raises
   out of the create, edit, merge and delete paths alike, so the caller sees a
   500 instead of a success for a write that was discarded.
