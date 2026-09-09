@@ -65,7 +65,30 @@ created. See K8S-README.md "Replica Count".
 {{- if not (has $kind (list "Deployment" "StatefulSet")) -}}
 {{- fail (printf "workload.kind must be \"Deployment\" or \"StatefulSet\", got %q" $kind) -}}
 {{- end -}}
+{{- if eq $kind "StatefulSet" -}}
+{{- $name := include "lightrag.fullname" . -}}
+{{- if gt (len $name) 52 -}}
+{{- fail (printf "workload.kind StatefulSet needs a name of at most 52 characters, but lightrag.fullname is %d (%q). Set fullnameOverride (or use a shorter release name). A StatefulSet pod carries a controller-revision-hash label of \"<name>-<hash>\", and that hash is a uint32 printed in decimal, so it can be 10 characters; a label value caps at 63. Kubernetes accepts the StatefulSet itself and then refuses every pod, so `helm install` reports success while no pod is ever created -- see `kubectl describe statefulset`. A shorter hash would let a longer name through by luck, which is why this refuses at the worst case rather than at the observed one." (len $name) $name) -}}
+{{- end -}}
+{{- end -}}
 {{- $kind -}}
+{{- end -}}
+
+{{/*
+StatefulSet podManagementPolicy, validated at render time.
+
+OrderedReady is the reason the StatefulSet exists (see workload.kind above);
+Parallel gives up the ordering guarantee and is accepted only because the
+operator may have another way to sequence startup. Anything else is a typo,
+and without this check it surfaces as an API-server rejection at install.
+*/}}
+{{- define "lightrag.podManagementPolicy" -}}
+{{- $workload := default (dict) .Values.workload -}}
+{{- $policy := default "OrderedReady" $workload.podManagementPolicy -}}
+{{- if not (has $policy (list "OrderedReady" "Parallel")) -}}
+{{- fail (printf "workload.podManagementPolicy must be \"OrderedReady\" or \"Parallel\", got %q" $policy) -}}
+{{- end -}}
+{{- $policy -}}
 {{- end -}}
 
 {{/*

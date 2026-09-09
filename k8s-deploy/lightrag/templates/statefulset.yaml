@@ -30,7 +30,7 @@ spec:
   # See K8S-README.md "Replica Count".
   #
   # Immutable after creation - changing it requires recreating the StatefulSet.
-  podManagementPolicy: {{ default "OrderedReady" $workload.podManagementPolicy }}
+  podManagementPolicy: {{ include "lightrag.podManagementPolicy" . }}
   updateStrategy:
     {{- toYaml (default (dict "type" "RollingUpdate") $workload.updateStrategy) | nindent 4 }}
   selector:
