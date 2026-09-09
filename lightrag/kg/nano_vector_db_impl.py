@@ -178,10 +178,22 @@ class NanoVectorDBStorage(BaseVectorStorage):
             * ``drop`` — currently gated by the API layer (the
               ``/documents/clear`` endpoint takes the pipeline busy
               reservation before invoking it).
-            * ``delete_entity`` / ``delete_entity_relation`` — currently
-              not exposed in the WebUI. If you wire them up to a new
-              caller, that caller must arrange single-writer
-              serialization the same way the pipeline does.
+            * ``delete_entity`` / ``delete_entity_relation`` — reached
+              from the ``utils_graph.py`` admin flows, which the WebUI does
+              exercise (``/graph/entity/edit`` and the other ``/graph/*``
+              endpoints). Admin-vs-pipeline is guarded by
+              ``check_pipeline_busy_or_raise``; admin-vs-admin is not, and
+              deliberately stays that way — see the *Non-pipeline write
+              paths* section of ``NetworkXStorage`` for the accepted residue
+              and issue #3838 for why a workspace-wide admin lock was
+              specified and then dropped.
+
+        A flush here publishes every pending upsert buffered in this
+        instance, not only the caller's, so a co-tenant's unfinished
+        sequence can become durable on someone else's commit. Unlike the
+        graph store this class loses nothing to it (a peer commit is
+        reloaded and the pending buffer and redo log replayed on top), but
+        the *timing* is still not the caller's to choose.
 
     Deferred-embedding protocol:
         ``upsert`` does **not** call the embedding model. It only buffers a

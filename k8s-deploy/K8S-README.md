@@ -125,12 +125,26 @@ kubectl --namespace rag port-forward svc/lightrag 9621:9621
 
 ## Configuration
 
+### Replica Count
+
+**`replicaCount` must stay `1`. Running more than one LightRAG instance against the same workspace is not supported.**
+
+LightRAG coordinates storage initialization/migration and the document-processing pipeline through per-host shared memory (`lightrag/kg/shared_storage.py`). That coordination covers the worker processes of a single instance; it does not extend across pods. With two or more replicas sharing a workspace:
+
+- they race on first-boot storage creation (concurrent database/collection creation against a fresh backend);
+- they can run schema/data migrations at the same time, and those migrations' crash-recovery heuristics can mistake another instance's in-flight migration for leftover state from a crash;
+- each pod keeps its own pipeline status, so the same documents are scanned and processed twice.
+
+For the same reason `updateStrategy` defaults to `Recreate`. A `RollingUpdate` briefly runs the old and the new pod at once, which is the same unsupported situation - and it is the version-upgrade path, where a migration is most likely to run.
+
+To use more capacity on a single instance, scale vertically instead: raise `resources`, and set `WORKERS` in `env` to run more server workers inside the one pod.
+
 ### Modifying Resource Configuration
 
 You can configure LightRAG's resource usage by modifying the `values.yaml` file:
 
 ```yaml
-replicaCount: 1  # Number of replicas, can be increased as needed
+replicaCount: 1  # Must stay 1 - see "Replica Count" below
 
 resources:
   limits:
@@ -186,6 +200,7 @@ env:
 
 - Ensure all necessary environment variables (API keys and database passwords) are set before deployment
 - For security reasons, it's recommended to pass sensitive information using environment variables rather than writing them directly in scripts or values files
+- `replicaCount` must stay `1`: one workspace supports a single active LightRAG instance (see "Replica Count" above)
 - Lightweight deployment is suitable for testing and small-scale usage, but data persistence and performance may be limited
 - Production deployment (PostgreSQL + Neo4J) is recommended for production environments and large-scale usage
 - For more customized configurations, please refer to the official LightRAG documentation
