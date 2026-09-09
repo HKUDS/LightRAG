@@ -17,7 +17,7 @@ from typing import (
     List,
     AsyncIterator,
 )
-from .utils import EmbeddingFunc, get_env_value
+from .utils import EmbeddingFunc, get_env_value, logger
 from .types import KnowledgeGraph
 from .exceptions import (
     StorageCapabilityError,
@@ -414,6 +414,41 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         pass
 
 
+def normalize_kv_create_time(value: Any) -> int:
+    """Coerce a stored ``create_time`` into the int the KV contract promises.
+
+    Stored rows are not always written by the current release: an older
+    LightRAG could store ``time.time()`` unrounded (a float), a hand-edited
+    ``JsonKVStorage`` file can carry ``null``, and external tooling can leave
+    the field a string. Every backend that preserves ``create_time`` across a
+    replacement upsert funnels the stored value through here, so the backends
+    agree on malformed input instead of each writing its own shape back.
+
+    ``None`` -- the documented "unknown" marker -- maps to ``0`` silently.
+    Anything that will not coerce is data corruption rather than a legacy
+    shape, so it is logged before falling back to ``0``.
+    """
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        # bool is an int subclass, so int(True) would record 1. A boolean
+        # timestamp is corruption, not a legacy shape -- and OpenSearch's
+        # server-side equivalent cannot coerce it either, so both answer 0.
+        logger.warning(f"KV create_time is a boolean ({value!r}); recording 0")
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError is not a ValueError: JSON ``1e309`` decodes to float
+        # infinity, and ``int(inf)`` raises it. Without it here a single
+        # hand-edited row would abort the whole upsert instead of taking this
+        # documented fallback.
+        logger.warning(
+            f"KV create_time is not a number ({value!r}); recording 0 (unknown)"
+        )
+        return 0
+
+
 @dataclass
 class BaseKVStorage(StorageNameSpace, ABC):
     embedding_func: EmbeddingFunc
@@ -475,6 +510,41 @@ class BaseKVStorage(StorageNameSpace, ABC):
         Important notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
         2. update flags to notify other processes that data persistence is needed
+
+        Storage-managed timestamps (binding on every backend):
+            1. A key that does not exist yet is stamped with both
+               ``create_time`` and ``update_time``. Under concurrency the
+               FIRST creation defines ``create_time``: a backend whose insert
+               is not naturally atomic must make it so (Mongo's
+               ``$setOnInsert``, PG's ``ON CONFLICT``, Redis's ``SET ... NX``)
+               instead of letting the last writer's clock win.
+            2. A key that already exists keeps its stored ``create_time`` and
+               only advances ``update_time`` -- including when ``data``
+               replaces the whole value with business fields only, which is
+               what the chunk-tracking writers send.
+            3. A stored row carrying no ``create_time`` (written before the
+               field existed) records ``0`` = unknown. Never invent an
+               original timestamp for it: ``0`` is what every read path
+               already substitutes, so the row keeps the meaning it had.
+            4. A caller-supplied ``create_time`` is ignored on the update
+               path. The timestamp is storage-managed, so preserving it must
+               not depend on callers round-tripping metadata fields.
+            5. Stored values reach ``int`` through
+               :func:`normalize_kv_create_time` so the backends agree on
+               legacy and malformed shapes.
+
+            ``MongoKVStorage`` (``$setOnInsert``) and ``PGKVStorage``
+            (``ON CONFLICT ... DO UPDATE`` that never assigns
+            ``create_time``) are the reference implementations: the
+            conditional write belongs on the server, not in a client-side
+            read-modify-write: a client-side read-then-write cannot keep a
+            concurrent first insert or a concurrent delete from moving the
+            timestamp, and no later write repairs it, because every update
+            preserves what it finds. A backend without such a primitive
+            reconstructs one -- ``OpenSearchKVStorage`` with a
+            ``scripted_upsert`` bulk action, ``RedisKVStorage`` with a Lua
+            script that reads a bounded prefix and writes in the same step --
+            rather than reading whole values back. See issue #3870.
 
         Multi-worker note:
             Backends that buffer writes in process memory (e.g.
