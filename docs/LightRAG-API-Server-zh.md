@@ -1233,7 +1233,10 @@ memo.[native-R!].docx
 notes.[-R].md
 ```
 
-`/documents/upload` 和 `/documents/scan` 会读取文件名 hint 和 `LIGHTRAG_PARSER`。`/documents/text` 与 `/documents/texts` 插入的是调用方已经提供的纯文本，在当前服务端路径中使用固定分块。
+`/documents/upload` 和 `/documents/scan` 会读取文件名 hint 和
+`LIGHTRAG_PARSER`。`/documents/text` 与 `/documents/texts` 则通过请求体中的
+`chunking` 对象接收 `strategy` 及该策略的 `params`；省略时使用
+`fixed_token`。
 
 ### 处理选项
 
@@ -1289,6 +1292,11 @@ notes.[-R].md
 时间（即文档的 as-of date），而不是 LightRAG 上传或索引文档的时间。支持
 `YYYY`、`YYYY-MM` 和 `YYYY-MM-DD` 三种格式。如果文档没有有意义的事实日期，
 可以省略该字段；未提供该字段的现有请求保持原有行为。
+
+也接受显式空字符串，包括 multipart 表单字段和批量数组中的单个条目。对新接收
+的文档，省略字段、JSON `null` 和 `""` 都会生成无日期记录。这些端点会对已有
+文档去重，并不会修改其日期，因此 `""` 不是 REST 层的日期清空操作。底层存储
+的 upsert 行为因后端而异，参见 [Core SDK 文档](ProgramingWithCore.md#insert)。
 
 | 端点 | 可选字段 | 请求编码 |
 | --- | --- | --- |

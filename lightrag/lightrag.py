@@ -1820,7 +1820,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             file_paths: single string of the file path or list of file paths, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
             document_date: optional fact date for one document, in YYYY,
-                YYYY-MM, or YYYY-MM-DD format. For batches, use
+                YYYY-MM, or YYYY-MM-DD format; None or "" inserts without a
+                date. Existing documents are not updated. For batches, use
                 apipeline_enqueue_documents(document_dates=...).
 
         Returns:
@@ -1851,17 +1852,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         track_id: str | None = None,
         document_date: str | None = None,
     ) -> str:
-        """Async insert documents with checkpoint support (fixed-token chunking only).
+        """Async insert documents through the legacy chunking entry point.
 
-        SDK convenience entry point. It **always** chunks with the fixed-token
-        (F) strategy: ``process_options`` is intentionally not passed, so the
-        document runs the F chunker. ``split_by_character`` /
-        ``split_by_character_only`` are F-strategy runtime args; the rest of
-        the F config (``chunk_token_size`` / ``chunk_overlap_token_size``,
-        seeded from ``CHUNK_F_SIZE`` / ``CHUNK_SIZE`` etc.) comes from
-        ``addon_params['chunker']['fixed_token']``. ``ainsert`` cannot select
-        the recursive-character (R), semantic-vector (V), or paragraph-semantic
-        (P) strategies.
+        SDK convenience entry point. It does not expose an F/R/V/P/C selector:
+        ``process_options`` is intentionally not passed, so processing follows
+        the legacy ``chunking_func`` path. With the default ``chunking_func``
+        this is fixed-token (F) chunking; if the instance supplies a custom
+        callback, that callback is invoked instead. ``split_by_character`` /
+        ``split_by_character_only`` are arguments to this legacy callback. The
+        rest of the default F config (``chunk_token_size`` /
+        ``chunk_overlap_token_size``, seeded from ``CHUNK_F_SIZE`` /
+        ``CHUNK_SIZE`` etc.) comes from
+        ``addon_params['chunker']['fixed_token']``.
 
         The LightRAG **server / REST API does not call this method** — it
         ingests via :meth:`apipeline_enqueue_documents` +
@@ -1881,7 +1883,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
             document_date: optional fact date for one document, in YYYY,
-                YYYY-MM, or YYYY-MM-DD format. For batches, use
+                YYYY-MM, or YYYY-MM-DD format; None or "" inserts without a
+                date. Existing documents are not updated. For batches, use
                 apipeline_enqueue_documents(document_dates=...).
 
         Returns:
@@ -1891,7 +1894,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         if track_id is None:
             track_id = generate_track_id("insert")
 
-        # Capture the F-strategy runtime args into a chunk_options
+        # Capture the legacy callback's runtime args in a chunk_options
         # snapshot before enqueue so they become a per-document
         # setting.  ``apipeline_enqueue_documents`` itself doesn't take
         # split args — chunk_options is the canonical chunker-config

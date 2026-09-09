@@ -1355,6 +1355,22 @@ print(result["data"]["chunks"][0].get("document_date"))
 content or identifiers and is not used for embedding, retrieval, filtering,
 reranking, or retrieval ordering.
 
+For the public ingestion APIs (`insert`, `ainsert`, and
+`apipeline_enqueue_documents`), `document_date` is creation metadata, not an
+update command. For a newly accepted document, an omitted value, `None`, or
+`""` produces an undated record; a valid non-empty value is stored with the
+precision supplied. Existing documents are deduplicated rather than patched,
+so these APIs do not expose an operation that clears or replaces an existing
+document date.
+
+Low-level `full_docs.upsert` behavior is storage-backend specific and is not a
+portable field-level PATCH contract. PostgreSQL distinguishes three update
+intents: a missing key or `None` preserves the stored date, `""` clears it to
+SQL `NULL`, and a valid non-empty date sets or replaces it. `JsonKVStorage`
+replaces the record as a whole and does not provide the same field-level
+semantics. Code that calls a KV backend directly must follow that backend's
+upsert contract rather than relying on PostgreSQL behavior.
+
 * Insert using Pipeline
 
 `apipeline_enqueue_documents` and `apipeline_process_enqueue_documents` allow incremental insertion of documents in the background while the main thread continues executing.

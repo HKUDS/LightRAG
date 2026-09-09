@@ -1235,7 +1235,10 @@ memo.[native-R!].docx
 notes.[-R].md
 ```
 
-The `/documents/upload` and `/documents/scan` paths honor filename hints and `LIGHTRAG_PARSER`. The `/documents/text` and `/documents/texts` endpoints insert already-provided text and currently use fixed chunking on the server path.
+The `/documents/upload` and `/documents/scan` paths honor filename hints and
+`LIGHTRAG_PARSER`. The `/documents/text` and `/documents/texts` endpoints
+instead accept a `chunking` request object with `strategy` and
+strategy-specific `params`; omitting it selects `fixed_token`.
 
 ### Processing Options
 
@@ -1292,6 +1295,13 @@ the date when the document's facts apply (its as-of date), not the time when
 LightRAG uploads or indexes the document. Accepted formats are `YYYY`,
 `YYYY-MM`, and `YYYY-MM-DD`. Omit the field when the document has no meaningful
 fact date; existing requests that omit it keep their previous behavior.
+
+An explicit empty string is also accepted, including in multipart forms and
+individual batch entries. For a newly accepted document, omission, JSON
+`null`, and `""` all produce an undated record. These endpoints deduplicate
+existing documents and do not edit their dates, so `""` is not a REST
+date-clear operation. Low-level storage upsert behavior is backend-specific;
+see the [Core SDK guide](ProgramingWithCore.md#insert).
 
 | Endpoint | Optional field | Request encoding |
 | --- | --- | --- |

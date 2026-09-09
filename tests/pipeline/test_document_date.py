@@ -13,6 +13,7 @@ from lightrag.constants import FULL_DOCS_FORMAT_PENDING_PARSE
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
 from lightrag.pipeline import _PipelineMixin
 from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
+from lightrag.utils_pipeline import normalize_document_date
 
 pytestmark = pytest.mark.offline
 
@@ -102,7 +103,7 @@ def test_enqueue_keeps_legacy_positional_parameter_order():
         "2018-10-00",
         "2019-02-29",
         "2018-02-30",
-        "",
+        " ",
         " 2018",
         "2018 ",
         "2018/10/01",
@@ -131,8 +132,16 @@ async def test_ainsert_rejects_invalid_document_date(tmp_path, document_date):
         await rag.finalize_storages()
 
 
+@pytest.mark.parametrize("document_date", [None, "", "2018", "2018-10", "2018-10-01"])
+def test_normalize_document_date_preserves_write_intent(document_date):
+    assert normalize_document_date(document_date) == document_date
+
+
 @pytest.mark.asyncio
-async def test_ainsert_persists_date_only_on_full_doc_and_keeps_ids_stable(tmp_path):
+@pytest.mark.parametrize("undated_date", [None, ""])
+async def test_ainsert_persists_date_only_on_full_doc_and_keeps_ids_stable(
+    tmp_path, undated_date
+):
     dated = await _build_rag(tmp_path, "dated")
     undated = await _build_rag(tmp_path, "undated")
     try:
@@ -144,6 +153,7 @@ async def test_ainsert_persists_date_only_on_full_doc_and_keeps_ids_stable(tmp_p
         await undated.ainsert(
             "same historical facts",
             file_paths="organization.txt",
+            document_date=undated_date,
         )
 
         expected_doc_id = compute_mdhash_id("organization.txt", prefix="doc-")
@@ -166,19 +176,45 @@ async def test_ainsert_persists_date_only_on_full_doc_and_keeps_ids_stable(tmp_p
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("repeat_date", [None, "", "2019"])
+async def test_duplicate_ingestion_does_not_patch_existing_document_date(
+    tmp_path, repeat_date
+):
+    rag = await _build_rag(tmp_path, f"duplicate-{repeat_date or 'undated'}")
+    try:
+        await rag.ainsert(
+            "historical facts",
+            ids="doc-existing",
+            document_date="2018",
+        )
+        await rag.ainsert(
+            "historical facts",
+            ids="doc-existing",
+            document_date=repeat_date,
+        )
+
+        full_doc = await rag.full_docs.get_by_id("doc-existing")
+        assert full_doc["document_date"] == "2018"
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
 async def test_batch_document_dates_are_aligned_and_validated_atomically(tmp_path):
     rag = await _build_rag(tmp_path, "batch")
     try:
         await rag.apipeline_enqueue_documents(
-            input=["facts from 2018", "facts without a date"],
-            ids=["doc-2018", "doc-undated"],
-            document_dates=["2018-10", None],
+            input=["facts from 2018", "facts without a date", "explicitly undated"],
+            ids=["doc-2018", "doc-undated", "doc-empty-date"],
+            document_dates=["2018-10", None, ""],
         )
 
         dated = await rag.full_docs.get_by_id("doc-2018")
         undated = await rag.full_docs.get_by_id("doc-undated")
+        empty_date = await rag.full_docs.get_by_id("doc-empty-date")
         assert dated["document_date"] == "2018-10"
         assert "document_date" not in undated
+        assert "document_date" not in empty_date
 
         with pytest.raises(ValueError, match="Number of document_dates"):
             await rag.apipeline_enqueue_documents(

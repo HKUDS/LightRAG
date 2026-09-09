@@ -3563,13 +3563,13 @@ class PGKVStorage(BaseKVStorage):
                 #   sidecar_location, parse_format, content_hash, process_options,
                 #   chunk_options, parse_engine, document_date)
                 #
-                # All pipeline-derived fields pass through untouched so the
-                # SQL-level COALESCE guard in upsert_doc_full can distinguish
-                # "caller did not supply" (None/'') from "caller supplied a
-                # real value". The 'raw' default for parse_format is provided
-                # by the column DDL on initial insert; do NOT default it here
-                # or the COALESCE guard never triggers on subsequent partial
-                # writes.
+                # Pipeline-derived fields pass through untouched. Except for
+                # document_date, the SQL-level COALESCE guards treat None/''
+                # as "no value" and preserve the stored value. The 'raw'
+                # default for parse_format is provided by the column DDL on
+                # initial insert; do NOT default it here or the guard never
+                # triggers on subsequent partial writes. document_date uses a
+                # separate protocol: None preserves, but '' explicitly clears.
                 batch_values.append(
                     (
                         k,
@@ -9799,7 +9799,7 @@ SQL_TEMPLATES = {
                                 """,
     "filter_keys": "SELECT id FROM {table_name} WHERE workspace=$1 AND id IN ({ids})",
     # Pipeline-derived columns (sidecar_location / parse_format / content_hash /
-    # process_options / chunk_options / parse_engine / document_date) are guarded with COALESCE
+    # process_options / chunk_options / parse_engine) are guarded with COALESCE
     # so a partial upsert (e.g. a caller writing only ``content`` + ``doc_name``)
     # does not silently overwrite metadata recorded by _persist_parsed_full_docs.
     # ``content`` and ``doc_name`` themselves are always overwritten — they are
@@ -9808,10 +9808,13 @@ SQL_TEMPLATES = {
     # a default-bearing caller is treated as "no value, preserve existing".
     # For chunk_options (JSONB) we treat NULL or the empty-object literal as
     # "no value, preserve existing".
+    # document_date is caller-managed: None preserves, '' clears, a date sets.
+    # Normalize '' to NULL on insert, but use the original $11 on conflict to
+    # distinguish a clear from an omitted date (both become NULL in EXCLUDED).
     "upsert_doc_full": """INSERT INTO LIGHTRAG_DOC_FULL (id, content, doc_name, workspace,
                             sidecar_location, parse_format, content_hash,
                             process_options, chunk_options, parse_engine, document_date)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF(CAST($11 AS TEXT), ''))
                         ON CONFLICT (workspace,id) DO UPDATE
                            SET content = EXCLUDED.content,
                                doc_name = EXCLUDED.doc_name,
@@ -9841,10 +9844,10 @@ SQL_TEMPLATES = {
                                    NULLIF(EXCLUDED.parse_engine, ''),
                                    LIGHTRAG_DOC_FULL.parse_engine
                                ),
-                               document_date = COALESCE(
-                                   NULLIF(EXCLUDED.document_date, ''),
-                                   LIGHTRAG_DOC_FULL.document_date
-                               ),
+                               document_date = CASE
+                                   WHEN $11 IS NULL THEN LIGHTRAG_DOC_FULL.document_date
+                                   ELSE EXCLUDED.document_date
+                               END,
                                update_time = CURRENT_TIMESTAMP
                        """,
     "upsert_llm_response_cache": """INSERT INTO LIGHTRAG_LLM_CACHE(workspace,id,original_prompt,return_value,chunk_id,cache_type,queryparam)

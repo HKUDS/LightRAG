@@ -745,8 +745,10 @@ class _PipelineMixin:
                 allowed through.  External callers must leave this False.
             document_dates: optional document-level fact dates, aligned with
                 ``input``. Each value must use ``YYYY``, ``YYYY-MM``, or
-                ``YYYY-MM-DD`` precision. Dates are persisted only on the
-                corresponding ``full_docs`` record, never on chunks.
+                ``YYYY-MM-DD`` precision, or be ``None`` / ``""`` for an
+                undated insert. Existing documents are not updated. Dates are
+                persisted only on the corresponding ``full_docs`` record,
+                never on chunks.
 
         Returns:
             str: tracking ID for monitoring processing status

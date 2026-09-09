@@ -11,6 +11,8 @@ Verifies:
 
 import asyncio
 import json
+import sqlite3
+from contextlib import closing
 import pytest
 import numpy as np
 from unittest.mock import AsyncMock, MagicMock
@@ -259,7 +261,7 @@ async def test_upsert_text_chunks_none_heading_sidecar_defaults_to_empty_dict():
 
 @pytest.mark.asyncio
 @pytest.mark.offline
-@pytest.mark.parametrize("document_date", ["2018", "2018-10", "2018-10-01"])
+@pytest.mark.parametrize("document_date", [None, "", "2018", "2018-10", "2018-10-01"])
 async def test_upsert_full_docs_tuple_order(document_date):
     storage = make_storage(NameSpace.KV_STORE_FULL_DOCS)
     data = {
@@ -378,16 +380,68 @@ async def test_upsert_full_docs_sql_protects_partial_writes():
     assert "excluded.chunk_options = '{}'::jsonb" in normalized
     assert "lightrag_doc_full.chunk_options" in normalized
 
-    # document_date preserves reduced precision as a string and follows the
-    # same empty-string protection as the other string metadata columns.
+    # document_date preserves reduced precision and distinguishes omission
+    # from an explicit clear, including on the initial insert.
     assert "$11::text::date" not in normalized
-    assert "document_date = coalesce(" in normalized
-    assert "nullif(excluded.document_date, '')" in normalized
+    assert "nullif(cast($11 as text), '')" in normalized
+    assert "document_date = case" in normalized
+    assert "when $11 is null then lightrag_doc_full.document_date" in normalized
+    assert "else excluded.document_date" in normalized
     assert "lightrag_doc_full.document_date" in normalized
 
     # content / doc_name remain straight overwrites — they ARE the payload
     assert "content = excluded.content" in normalized
     assert "doc_name = excluded.doc_name" in normalized
+
+
+@pytest.mark.asyncio
+@pytest.mark.offline
+@pytest.mark.parametrize("existing_document", [False, True])
+@pytest.mark.parametrize(
+    "date_fields,inserted_date,updated_date",
+    [
+        pytest.param({}, None, "2081", id="omitted"),
+        pytest.param({"document_date": None}, None, "2081", id="none"),
+        pytest.param({"document_date": ""}, None, None, id="clear"),
+        pytest.param({"document_date": "2018"}, "2018", "2018", id="set"),
+    ],
+)
+async def test_upsert_full_docs_date_sets_preserves_and_clears(
+    existing_document, date_fields, inserted_date, updated_date
+):
+    """Exercise the emitted upsert in SQLite, not PostgreSQL type handling."""
+    storage = make_storage(NameSpace.KV_STORE_FULL_DOCS)
+    await storage.upsert({"doc-1": {"content": "full text", **date_fields}})
+    sql, rows = storage._captured[0]
+
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.execute(
+            """CREATE TABLE LIGHTRAG_DOC_FULL (
+                id TEXT, content TEXT, doc_name TEXT, workspace TEXT,
+                sidecar_location TEXT, parse_format TEXT, content_hash TEXT,
+                process_options TEXT, chunk_options TEXT, parse_engine TEXT,
+                document_date TEXT, update_time TEXT,
+                PRIMARY KEY (workspace, id)
+            )"""
+        )
+        if existing_document:
+            connection.execute(
+                "INSERT INTO LIGHTRAG_DOC_FULL (workspace, id, document_date) "
+                "VALUES (?, ?, ?)",
+                (storage.workspace, "doc-1", "2081"),
+            )
+        # The date expression and bound parameters are unchanged. Only the
+        # unrelated JSONB cast needs adapting for the in-memory SQL engine.
+        connection.executemany(
+            sql.replace("'{}'::jsonb", "'{}'"),
+            [{str(i): value for i, value in enumerate(row, start=1)} for row in rows],
+        )
+        result = connection.execute(
+            "SELECT document_date FROM LIGHTRAG_DOC_FULL WHERE workspace = ? AND id = ?",
+            (storage.workspace, "doc-1"),
+        ).fetchone()
+
+    assert result == (updated_date if existing_document else inserted_date,)
 
 
 # ---------------------------------------------------------------------------

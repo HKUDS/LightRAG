@@ -830,7 +830,8 @@ class InsertTextRequest(BaseModel):
         default=None,
         description=(
             "Fact date represented by the document, in YYYY, YYYY-MM, or "
-            "YYYY-MM-DD format"
+            "YYYY-MM-DD format. Omit, use null, or use an empty string for an "
+            "undated insert; this endpoint does not update existing dates."
         ),
     )
     chunking: Optional[TextChunkingConfig] = Field(
@@ -902,7 +903,9 @@ class InsertTextsRequest(BaseModel):
         default=None,
         description=(
             "Fact dates represented by the texts, aligned one-to-one with texts "
-            "and formatted as YYYY, YYYY-MM, or YYYY-MM-DD"
+            "and formatted as YYYY, YYYY-MM, or YYYY-MM-DD. Each entry may be "
+            "null or an empty string for an undated insert; this endpoint does "
+            "not update existing dates."
         ),
     )
     chunking: Optional[TextChunkingConfig] = Field(
@@ -5259,7 +5262,9 @@ def create_document_routes(
                 runs as a tracked asyncio task, not a Starlette callback
             file (UploadFile): The file to be uploaded. It must have an allowed extension.
             document_date: optional fact date represented by the document, in
-                YYYY, YYYY-MM, or YYYY-MM-DD format
+                YYYY, YYYY-MM, or YYYY-MM-DD format. Omit or use an empty
+                string for an undated upload; this endpoint does not update
+                existing dates.
 
         Returns:
             InsertResponse: A response object containing the upload status and a message.

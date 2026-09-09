@@ -138,7 +138,7 @@ def _build_client(monkeypatch, tmp_path):
         "2018-10-00",
         "2019-02-29",
         "2018-02-30",
-        "",
+        " ",
         " 2018",
         "2018 ",
         "2018/10/01",
@@ -162,9 +162,9 @@ def test_text_request_rejects_invalid_document_date(document_date):
 
 
 @pytest.mark.parametrize(
-    "document_date", ["2018", "2018-10", "2018-10-01", "2024-02-29"]
+    "document_date", [None, "", "2018", "2018-10", "2018-10-01", "2024-02-29"]
 )
-def test_text_request_accepts_reduced_precision_calendar_date(document_date):
+def test_text_request_accepts_document_date_or_sentinel(document_date):
     request = InsertTextRequest(
         text="historical facts",
         file_source="organization.txt",
@@ -202,24 +202,29 @@ async def test_pipeline_index_texts_forwards_aligned_dates_to_enqueue():
 
     await pipeline_index_texts(
         rag,
-        ["facts from 2018", "undated facts"],
-        file_sources=["organization-2018.txt", "organization.txt"],
+        ["facts from 2018", "undated facts", "explicitly undated"],
+        file_sources=["organization-2018.txt", "organization.txt", "undated.txt"],
         track_id="track-texts",
-        document_dates=["2018", None],
+        document_dates=["2018", None, ""],
     )
 
     assert len(rag.enqueued) == 1
     args, kwargs = rag.enqueued[0]
     assert args == ()
-    assert kwargs["input"] == ["facts from 2018", "undated facts"]
-    assert kwargs["file_paths"] == ["organization-2018.txt", "organization.txt"]
-    assert kwargs["document_dates"] == ["2018", None]
+    assert kwargs["input"] == ["facts from 2018", "undated facts", "explicitly undated"]
+    assert kwargs["file_paths"] == [
+        "organization-2018.txt",
+        "organization.txt",
+        "undated.txt",
+    ]
+    assert kwargs["document_dates"] == ["2018", None, ""]
     assert rag.process_calls == 1
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("document_date", ["2018-10", ""])
 async def test_pipeline_index_file_forwards_date_through_deferred_parse(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, document_date
 ):
     monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
     file_path = tmp_path / "organization-2018.txt"
@@ -230,14 +235,14 @@ async def test_pipeline_index_file_forwards_date_through_deferred_parse(
         rag,
         file_path,
         track_id="track-upload",
-        document_date="2018-10",
+        document_date=document_date,
     )
 
     assert len(rag.enqueued) == 1
     args, kwargs = rag.enqueued[0]
     assert args == ("",)
     assert kwargs["file_paths"] == str(file_path)
-    assert kwargs["document_dates"] == ["2018-10"]
+    assert kwargs["document_dates"] == [document_date]
     assert kwargs["docs_format"] == "pending_parse"
     assert rag.process_calls == 1
     assert rag.errors == []
@@ -275,7 +280,8 @@ def test_text_endpoints_return_422_for_invalid_dates(
     assert captured["texts"] == []
 
 
-def test_text_endpoints_forward_dates_one_to_one(monkeypatch, tmp_path):
+@pytest.mark.parametrize("document_date", ["2018", ""])
+def test_text_endpoints_forward_dates_one_to_one(monkeypatch, tmp_path, document_date):
     client, captured = _build_client(monkeypatch, tmp_path)
 
     single = client.post(
@@ -284,53 +290,79 @@ def test_text_endpoints_forward_dates_one_to_one(monkeypatch, tmp_path):
         json={
             "text": "facts from 2018",
             "file_source": "organization-2018.txt",
-            "document_date": "2018",
+            "document_date": document_date,
         },
     )
     batch = client.post(
         "/documents/texts",
         headers=_HEADERS,
         json={
-            "texts": ["facts from 2019", "undated facts"],
-            "file_sources": ["organization-2019.txt", "organization.txt"],
-            "document_dates": ["2019-10", None],
+            "texts": ["facts from 2019", "undated facts", "explicitly undated"],
+            "file_sources": [
+                "organization-2019.txt",
+                "organization.txt",
+                "undated.txt",
+            ],
+            "document_dates": ["2019-10", None, ""],
         },
     )
 
     assert single.status_code == 200
     assert batch.status_code == 200
-    assert captured["texts"][0]["document_dates"] == ["2018"]
-    assert captured["texts"][1]["document_dates"] == ["2019-10", None]
+    assert captured["texts"][0]["document_dates"] == [document_date]
+    assert captured["texts"][1]["document_dates"] == ["2019-10", None, ""]
 
 
-def test_omitted_text_dates_keep_the_legacy_none_path(monkeypatch, tmp_path):
+@pytest.mark.parametrize("explicit_null", [False, True])
+@pytest.mark.parametrize(
+    "path,payload,date_field",
+    [
+        (
+            "/documents/text",
+            {"text": "undated facts", "file_source": "organization.txt"},
+            "document_date",
+        ),
+        (
+            "/documents/texts",
+            {"texts": ["undated facts"], "file_sources": ["organization.txt"]},
+            "document_dates",
+        ),
+    ],
+)
+def test_omitted_or_null_text_dates_keep_the_legacy_none_path(
+    monkeypatch, tmp_path, path, payload, date_field, explicit_null
+):
     client, captured = _build_client(monkeypatch, tmp_path)
+    payload = dict(payload)
+    if explicit_null:
+        payload[date_field] = None
 
     response = client.post(
-        "/documents/text",
+        path,
         headers=_HEADERS,
-        json={"text": "undated facts", "file_source": "organization.txt"},
+        json=payload,
     )
 
     assert response.status_code == 200
     assert captured["texts"][0]["document_dates"] is None
 
 
-def test_upload_forwards_valid_form_date(monkeypatch, tmp_path):
+@pytest.mark.parametrize("document_date", ["2018-10", ""])
+def test_upload_forwards_valid_form_date(monkeypatch, tmp_path, document_date):
     client, captured = _build_client(monkeypatch, tmp_path)
 
     response = client.post(
         "/documents/upload",
         headers=_HEADERS,
         files={"file": ("organization.txt", b"historical facts", "text/plain")},
-        data={"document_date": "2018-10"},
+        data={"document_date": document_date},
     )
 
     assert response.status_code == 200
-    assert captured["uploads"][0]["document_date"] == "2018-10"
+    assert captured["uploads"][0]["document_date"] == document_date
 
 
-@pytest.mark.parametrize("document_date", ["2018-02-30", "2018?", ""])
+@pytest.mark.parametrize("document_date", ["2018-02-30", "2018?", " "])
 def test_upload_returns_422_before_writing_for_invalid_form_date(
     monkeypatch, tmp_path, document_date
 ):

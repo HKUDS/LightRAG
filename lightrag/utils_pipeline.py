@@ -73,14 +73,16 @@ _DOCUMENT_DATE_PATTERN = re.compile(
 
 
 def normalize_document_date(document_date: str | None) -> str | None:
-    """Validate and return an ISO 8601 reduced-precision date unchanged.
+    """Validate a reduced-precision date without losing the caller's write intent.
 
     ``document_date`` describes the time of the facts in a document. It is
     deliberately separate from storage timestamps such as ``created_at``.
     Accepted precisions are ``YYYY``, ``YYYY-MM``, and ``YYYY-MM-DD``.
+    ``None`` leaves the date unspecified; ``""`` is preserved as an explicit
+    empty input for caller-specific handling.
     """
-    if document_date is None:
-        return None
+    if document_date is None or document_date == "":
+        return document_date
     match = (
         _DOCUMENT_DATE_PATTERN.fullmatch(document_date)
         if isinstance(document_date, str)
@@ -88,7 +90,8 @@ def normalize_document_date(document_date: str | None) -> str | None:
     )
     if match is None:
         raise ValueError(
-            "document_date must be a valid ISO 8601 calendar date in YYYY, YYYY-MM, or YYYY-MM-DD format"
+            "document_date must be a valid ISO 8601 calendar date in YYYY, YYYY-MM, or YYYY-MM-DD format, "
+            "or be an empty string"
         )
     try:
         date(
@@ -98,7 +101,8 @@ def normalize_document_date(document_date: str | None) -> str | None:
         )
     except ValueError as exc:
         raise ValueError(
-            "document_date must be a valid ISO 8601 calendar date in YYYY, YYYY-MM, or YYYY-MM-DD format"
+            "document_date must be a valid ISO 8601 calendar date in YYYY, YYYY-MM, or YYYY-MM-DD format, "
+            "or be an empty string"
         ) from exc
     return document_date
 
