@@ -866,6 +866,79 @@ def _raise_unreadable(file_name):
 
 
 @pytest.mark.asyncio
+async def test_a_failed_reload_anywhere_arms_the_recovery_reload(
+    tmp_path, multiprocess, lost_notification, monkeypatch
+):
+    """Every failed reload leaves the same state, so every one must arm.
+
+    A reload that fails leaves this process holding a graph that does not
+    match the file, and fails the operation that asked for it -- so what the
+    graph holds belongs to work already reported as failed. Only the
+    failed-SAVE path used to arm `_recovery_reload_pending` for that; the
+    decline path and both `_get_graph` channels armed nothing, and the flag
+    and fingerprint they leave behind keep the divergence visible only while
+    the file can still be sampled.
+
+    Let the `stat` stay broken and both channels report "no change" -- the
+    documented degrade to the flag alone -- and the next commit passes the
+    fence and serializes that graph: the peer's DURABLE commit overwritten,
+    and work already reported as FAILED published in its place. Two losses
+    the fence and the recovery flag each exist to prevent, from one unarmed
+    reload.
+    """
+    worker_a = await _worker(tmp_path)
+    worker_b = await _worker(tmp_path)
+    try:
+        # B holds a mutation from a batch that predates A's commit.
+        await worker_b.upsert_node("from_b_failed", {"entity_id": "from_b_failed"})
+        await worker_a.upsert_node("from_a_durable", {"entity_id": "from_a_durable"})
+        assert await worker_a.index_done_callback() is True
+        assert worker_b.storage_updated.value is False
+
+        # B declines, as it must -- but its reload raises, so the decline is
+        # reported as a failure and B is left holding the failed batch.
+        with pytest.MonkeyPatch.context() as broken_reads:
+            broken_reads.setattr(
+                NetworkXStorage, "load_nx_graph", staticmethod(_raise_unreadable)
+            )
+            with pytest.raises(OSError, match="unreadable"):
+                await worker_b.index_done_callback()
+        # Recorded, not asserted yet: the losses below are what this is for,
+        # and they must be what fails if the arming is removed.
+        armed = worker_b._recovery_reload_pending
+
+        # The `stat` now stays broken, so neither channel can object to
+        # anything. Nothing B does may reach the file.
+        monkeypatch.setattr(
+            file_fingerprint,
+            "sample",
+            lambda paths, *, workspace: file_fingerprint.UNREADABLE,
+        )
+        refused = ""
+        try:
+            await worker_b.upsert_node("later_batch", {"entity_id": "later_batch"})
+            await worker_b.index_done_callback()
+        except OSError as exc:
+            refused = str(exc)
+        monkeypatch.undo()
+
+        on_disk = NetworkXStorage.load_nx_graph(worker_b._graphml_xml_file)
+        assert on_disk.has_node("from_a_durable"), (
+            "the peer's durable commit was overwritten by a stale snapshot"
+        )
+        assert not on_disk.has_node("from_b_failed"), (
+            "work already reported as FAILED was published"
+        )
+        assert "could not be sampled" in refused, (
+            "the file survived by luck, not by the armed recovery reload"
+        )
+        assert armed is True, "the failed decline reload armed nothing"
+    finally:
+        await worker_b.finalize()
+        await worker_a.finalize()
+
+
+@pytest.mark.asyncio
 async def test_a_recurring_state_is_counted_again_after_a_notified_reload(
     tmp_path, multiprocess, lost_notification
 ):
@@ -1284,7 +1357,9 @@ async def test_an_unreadable_sample_adopts_nothing_and_keeps_the_marker(
         await worker_a.upsert_node("from_a", {"entity_id": "from_a"})
         assert await worker_a.index_done_callback() is True
 
-        # Counted once, and the reload fails, so the marker must survive.
+        # Counted once, and the reload fails, so the marker must survive --
+        # and the failure arms the recovery reload, so the retry below goes
+        # through that branch rather than the file channel.
         with pytest.MonkeyPatch.context() as broken_reads:
             broken_reads.setattr(
                 NetworkXStorage, "load_nx_graph", staticmethod(_raise_unreadable)
@@ -1292,17 +1367,22 @@ async def test_an_unreadable_sample_adopts_nothing_and_keeps_the_marker(
             with pytest.raises(OSError, match="unreadable"):
                 await worker_b.has_node("from_a")
         assert worker_b._missed_notification_reloads == 1
+        assert worker_b._recovery_reload_pending is True
 
         # The retry cannot sample, so it decides nothing, counts nothing and
         # adopts nothing -- and the marker it would otherwise have cleared has
-        # to survive that.
+        # to survive that. It refuses rather than serving: a graph this
+        # process owes a reload for is not one it may hand out.
         _unreadable_once(worker_b)
-        assert await worker_b.has_node("from_a") is False
+        with pytest.raises(OSError, match="could not be sampled"):
+            await worker_b.has_node("from_a")
         assert worker_b._loaded_fingerprint is not None
+        assert worker_b._recovery_reload_pending is True
 
         # Same peer commit, still one event.
         assert await worker_b.has_node("from_a") is True
         assert worker_b._missed_notification_reloads == 1
+        assert worker_b._recovery_reload_pending is False
     finally:
         await worker_b.finalize()
         await worker_a.finalize()

@@ -258,8 +258,16 @@ class NetworkXStorage(BaseGraphStorage):
 
     Recovery reload (process-local, NOT a third fence channel):
         ``_recovery_reload_pending`` is a plain ``bool`` on the instance,
-        armed when a save failed **and** the reload that should have discarded
-        the unpersisted mutation failed too. It is tested first at both sites
+        armed by ``_reload_locked`` whenever a reload fails -- after a failed
+        save, at either fence channel, or on a refusal to load an unsampled
+        file. One choke point, because the state it records does not depend on
+        which caller asked: a failed reload leaves this process holding a
+        graph that does not match the file, and fails the operation that
+        asked for it, so what the graph holds belongs to work already
+        reported as failed. Arming only on the failed-SAVE path left the other
+        four sites able to publish that work over a peer's durable commit
+        once an unreadable ``stat`` blinded both channels. It is tested first
+        at both sites
         the two channels are tested at: ``_get_graph`` discards the divergent
         graph before serving it, and ``index_done_callback`` declines rather
         than publishing mutations that belong to a batch already reported as
@@ -268,9 +276,17 @@ class NetworkXStorage(BaseGraphStorage):
         It states a different fact from either channel, and the distinction is
         the point. The channels answer *"did a peer commit?"* — the file has
         moved on and this process's snapshot is behind it. This answers
-        *"is my own memory unpersisted?"* — the file has **not** moved (the
-        save failed), and it is memory that is wrong. Same remedy, opposite
-        direction.
+        *"do I still owe myself a reload?"* — whatever the file did, this
+        process failed to converge on it and cannot say what its own graph
+        represents. Same remedy, and it outranks both channels because a
+        reload discharges all three while only this one is certain.
+
+        Armed after a failed save, that means "my memory is unpersisted": the
+        file has not moved and it is memory that is wrong. Armed after a
+        failed reload at either channel, it means the opposite -- the file
+        moved and this process could not follow. The remedy does not care,
+        and neither does the danger: in both, the graph holds work already
+        reported as failed, and publishing it is what must not happen.
 
         Why not ``storage_updated``, which carried this before:
             * **Accuracy.** That flag means "a peer committed". Nothing here
@@ -563,11 +579,11 @@ class NetworkXStorage(BaseGraphStorage):
         # fence. ``None`` means "no file" (or a stat this process could not
         # perform). See *Cross-process sync protocol* in the class docstring.
         self._loaded_fingerprint = None
-        # A reload this process owes ITSELF: armed when a save failed and the
-        # recovery reload that should have discarded the unpersisted mutation
-        # failed too. Process-local on purpose -- it says "my memory diverged
-        # from the file", which no peer can observe and none needs to. See
-        # *Recovery reload* in the class docstring.
+        # A reload this process owes ITSELF: armed by _reload_locked on EVERY
+        # failure path, wherever it was called from. Process-local on purpose
+        # -- it says "my memory diverged from the file", which no peer can
+        # observe and none needs to. See *Recovery reload* in the class
+        # docstring.
         self._recovery_reload_pending = False
         # The on-disk state the file channel has already counted as a lost
         # notification. A reload that fails leaves the fingerprint and the
@@ -790,6 +806,13 @@ class NetworkXStorage(BaseGraphStorage):
         re-parse on the very next call, and a missed recovery clear is worse:
         it is sticky, so it would make every later commit decline forever.
 
+        And one post-condition on FAILURE, which is the other half of the
+        reason no caller may open-code this: whatever went wrong, the pending
+        recovery reload is ARMED before the exception leaves. So the
+        invariant this method carries is total -- after it returns, the graph
+        matches the file; after it raises, a reload is owed and recorded.
+        Nothing in between, and nothing that depends on which caller asked.
+
         **Raises** ``OSError`` without loading anything when the sample is
         ``UNREADABLE`` -- given or taken here. A reload has to record what it
         read, and an unsampled file cannot be recorded; the branch below says
@@ -808,6 +831,42 @@ class NetworkXStorage(BaseGraphStorage):
         Synchronous on purpose: it adds no suspension point inside
         ``_get_graph``'s lock body, which the *Commit gate* reasoning depends
         on.
+        """
+        try:
+            self._reload_or_arm_locked(fingerprint)
+        except BaseException:
+            # ARM, then re-raise. This is the whole reason the reload is not
+            # open-coded at its five call sites: a reload that fails leaves
+            # this process holding a graph that does not match the file, and
+            # the operation that asked for it fails -- so the mutations in it
+            # belong to a batch that has just been reported as failed. Exactly
+            # the state _recovery_reload_pending exists for, and until this
+            # was the single choke point only the failed-SAVE path armed it.
+            #
+            # What the four other sites left open: the flag and the
+            # fingerprint stay as they were, which keeps the divergence
+            # visible only while the file can be sampled. Let the stat keep
+            # failing and both channels report "no change" (the documented
+            # degrade to the flag alone), so the next commit passes the fence
+            # and serializes that graph -- overwriting the peer's durable
+            # commit AND publishing work already reported as FAILED. Armed,
+            # the same commit declines instead and the next successful reload
+            # discards it.
+            #
+            # BaseException, not Exception: a CancelledError delivered inside
+            # the load leaves the same divergence, and losing the record of it
+            # because the caller went away is how it becomes permanent.
+            self._recovery_reload_pending = True
+            raise
+
+    def _reload_or_arm_locked(
+        self, fingerprint: file_fingerprint.Fingerprint | object | None
+    ) -> None:
+        """``_reload_locked``'s body. Call THAT, never this -- it arms.
+
+        Split out only so the arming wrapper has one expression to guard;
+        every post-condition and every refusal documented on
+        ``_reload_locked`` lives here.
         """
         # Sampled before the read, never after. See the ordering rule in
         # *Cross-process sync protocol*.
@@ -835,10 +894,12 @@ class NetworkXStorage(BaseGraphStorage):
             #
             # Raising instead costs work, never data: the flag and the
             # fingerprint are left exactly as they were, so the divergence
-            # stays visible and the next call retries the reload; a pending
-            # recovery reload stays armed; the operation fails, which takes
-            # its batch through the FAILED path and reprocesses it. Same
-            # shape as a manager outage during recovery.
+            # stays visible and the next call retries the reload; the
+            # recovery reload is ARMED by _reload_locked's wrapper, so the
+            # divergence survives even a stat that never recovers; and the
+            # operation fails, which takes its batch through the FAILED path
+            # and reprocesses it. Same shape as a manager outage during
+            # recovery.
             raise OSError(
                 f"[{self.workspace}] Refusing to reload "
                 f"{self._graphml_xml_file}: its identity could not be sampled, "
@@ -933,10 +994,11 @@ class NetworkXStorage(BaseGraphStorage):
                     )
                 logger.warning(
                     f"[{self.workspace}] Process {os.getpid()} reloading graph "
-                    f"{self._graphml_xml_file}: an earlier save failed and the "
-                    "reload that should have discarded the unpersisted "
-                    "mutation failed too, so this process's graph does not "
-                    "match the file. Discarding it now."
+                    f"{self._graphml_xml_file}: a reload this process owed "
+                    "itself failed earlier -- after a failed save, or at "
+                    "either fence channel -- so its graph does not match the "
+                    "file and holds mutations from an operation already "
+                    "reported as failed. Discarding them now."
                 )
                 self._reload_locked(sampled)
             # Flag next -- it is the accelerator channel and a True value
@@ -1669,13 +1731,14 @@ class NetworkXStorage(BaseGraphStorage):
         """
         async with self._storage_lock:
             # Same three tests, same order and same meaning as _get_graph.
-            # The process-local one first: an earlier save failed and its
-            # recovery reload failed too, so self._graph carries mutations that
-            # belong to a batch already reported as failed. Saving would
-            # publish them under a later document's commit, while their own
-            # documents are marked FAILED and reprocessed from scratch --
-            # duplicating the work at best. Declining discards them, which is
-            # what the failed batch's reprocessing expects.
+            # The process-local one first: a reload this process owed itself
+            # failed, so self._graph carries mutations that belong to an
+            # operation already reported as failed. Saving would publish them
+            # under a later document's commit, while their own documents are
+            # marked FAILED and reprocessed from scratch -- duplicating the
+            # work at best, and overwriting a peer's durable commit at worst.
+            # Declining discards them, which is what the failed batch's
+            # reprocessing expects.
             if self._recovery_reload_pending:
                 # Same precedence, same blind spot, same fix as in _get_graph.
                 # One sample, shared by the counting and the reload -- see
@@ -1692,10 +1755,11 @@ class NetworkXStorage(BaseGraphStorage):
                     )
                 logger.warning(
                     f"[{self.workspace}] Declining to save graph "
-                    f"{self._graphml_xml_file}: an earlier save failed and its "
-                    "recovery reload failed too, so this process's graph holds "
-                    "mutations from a batch already reported as failed. "
-                    "Discarding them and reporting the commit as declined."
+                    f"{self._graphml_xml_file}: a reload this process owed "
+                    "itself failed earlier -- after a failed save, or at "
+                    "either fence channel -- so its graph holds mutations "
+                    "from an operation already reported as failed. Discarding "
+                    "them and reporting the commit as declined."
                 )
                 self._reload_locked(sampled)
                 return False
@@ -1719,28 +1783,33 @@ class NetworkXStorage(BaseGraphStorage):
                 )
                 self._reload_locked()
                 return False  # Return error
-            if self._peer_commit_detected():
-                # The lost-notification case this fence exists for. Before it,
-                # this branch was unreachable without a flag and the save went
-                # ahead, silently replacing the peer's commit with this
-                # process's stale snapshot. Declining loses THIS mutation
-                # instead, and loudly: _commit_graph_or_raise turns the False
-                # into an error for the caller.
-                # One sample, shared by the counting and the reload -- see
-                # _count_unannounced_peer_commit_locked for why they must not
-                # be two independent observations.
+            if file_fingerprint.fence_enabled():
+                # ONE observation for the decision, the count and the
+                # adoption, same rule and same reason as in _get_graph: a
+                # contract that says three-from-one should not have an
+                # exception resting on the unwritten fact that _storage_lock
+                # is cross-process. In single-process mode no stat is taken.
                 sampled = self._stat_fingerprint()
-                if self._count_unannounced_peer_commit_locked(sampled):
-                    logger.warning(
-                        f"[{self.workspace}] Declining to save graph "
-                        f"{self._graphml_xml_file}: the file on disk is not the one "
-                        "this process loaded and no reload notification arrived for "
-                        "it, so saving would overwrite another process's commit. "
-                        "Reloading and reporting the commit as declined (occurrence "
-                        f"#{self._missed_notification_reloads} in this process)."
-                    )
-                self._reload_locked(sampled)
-                return False
+                if self._peer_commit_detected(sampled):
+                    # The lost-notification case this fence exists for. Before
+                    # it, this branch was unreachable without a flag and the
+                    # save went ahead, silently replacing the peer's commit
+                    # with this process's stale snapshot. Declining loses THIS
+                    # mutation instead, and loudly: _commit_graph_or_raise
+                    # turns the False into an error for the caller.
+                    if self._count_unannounced_peer_commit_locked(sampled):
+                        logger.warning(
+                            f"[{self.workspace}] Declining to save graph "
+                            f"{self._graphml_xml_file}: the file on disk is not "
+                            "the one this process loaded and no reload "
+                            "notification arrived for it, so saving would "
+                            "overwrite another process's commit. Reloading and "
+                            "reporting the commit as declined (occurrence "
+                            f"#{self._missed_notification_reloads} in this "
+                            "process)."
+                        )
+                    self._reload_locked(sampled)
+                    return False
 
         # Acquire lock and perform persistence
         async with self._storage_lock:
@@ -1884,12 +1953,15 @@ class NetworkXStorage(BaseGraphStorage):
                     # must see, and a failed reload leaves the divergence in
                     # place, so it has to be visible in the log on its own.
                     #
-                    # Arm the recovery reload: every later public graph
-                    # operation enters through _get_graph, which discards this
-                    # view before trusting it, and index_done_callback declines
-                    # rather than publishing it. Without that, a deletion retry
-                    # could mistake the unpersisted mutation for durable state
-                    # and sweep the live object's tracking row.
+                    # The recovery reload is already armed: _reload_locked
+                    # arms it on every failure path, this site included, which
+                    # is why there is no assignment here any more. What it buys
+                    # is that every later public graph operation enters through
+                    # _get_graph, which discards this view before trusting it,
+                    # and index_done_callback declines rather than publishing
+                    # it. Without that, a deletion retry could mistake the
+                    # unpersisted mutation for durable state and sweep the live
+                    # object's tracking row.
                     #
                     # A plain attribute write, deliberately: what happened here
                     # is process-local ("my memory does not match the file"),
@@ -1902,7 +1974,6 @@ class NetworkXStorage(BaseGraphStorage):
                     # the fingerprint is NOT invalidated here: the save failed,
                     # so the file is untouched and the recorded fingerprint
                     # still describes it correctly.
-                    self._recovery_reload_pending = True
                     logger.error(
                         f"[{self.workspace}] Failed to restore the in-memory "
                         f"graph after a failed save; it may not match "
