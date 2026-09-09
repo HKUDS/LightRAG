@@ -1,3 +1,10 @@
+# A workspace supports exactly ONE active LightRAG instance. Storage
+# initialization/migration and the document pipeline are coordinated through
+# per-host shared memory (lightrag/kg/shared_storage.py), which does not span
+# pods, so a second replica can race on first-boot storage creation, run a
+# schema migration concurrently with another instance, and process the same
+# documents twice. Keep this at 1 and scale vertically (resources / WORKERS)
+# instead. See K8S-README.md "Replica Count".
 replicaCount: 1
 
 image:

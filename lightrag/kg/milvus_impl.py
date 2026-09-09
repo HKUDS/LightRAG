@@ -615,7 +615,22 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             logger.warning(
                 f"[{self.workspace}] Milvus database '{db_name}' not found, creating it"
             )
-            client.create_database(db_name)
+            try:
+                client.create_database(db_name)
+            except MilvusException as e:
+                # Two or more workers can both see the database missing and race to
+                # create it; the loser must treat "already exists" as
+                # success rather than failing startup. Matching on the
+                # message (not the error code, which isn't consistently
+                # assigned across server versions) avoids a second
+                # list_databases() call, which could itself observe stale
+                # cluster metadata and re-raise despite the create having
+                # actually succeeded.
+                if "already exist" not in str(e).lower():
+                    raise
+                logger.debug(
+                    f"[{self.workspace}] Milvus database '{db_name}' already exists — continuing"
+                )
 
         use_database = getattr(client, "use_database", None) or getattr(
             client, "using_database", None
