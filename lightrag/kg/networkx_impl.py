@@ -265,7 +265,8 @@ class NetworkXStorage(BaseGraphStorage):
               pending would be handled correctly and never counted. Both
               recovery branches therefore classify the peer channel before
               they reload -- and so does the reload that would otherwise arm
-              the flag, the failed-save handler's own recovery reload. Overcounting and undercounting are both defects in
+              the flag, the failed-save handler's own recovery reload.
+              Overcounting and undercounting are both defects in
               an instrument a later decision rests on, which is why that one
               helper is now the single increment site for every branch that
               counts — and why it deduplicates by ``(st_mtime_ns, st_size)``:
