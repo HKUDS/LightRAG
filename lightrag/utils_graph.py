@@ -289,6 +289,41 @@ async def _persist_graph_updates(
     tracking rows the retry would then believe it still owed. Every other
     exception still propagates: those mean the flush did not happen.
 
+    Commit order (issue #3838) -- the tracking rows are committed BEFORE the
+    graph, in two phases:
+
+        1. ``entity_chunks_storage`` / ``relation_chunks_storage``
+        2. ``chunk_entity_relation_graph`` and the vector stores
+
+    The invariant behind the split is one-directional: **a graph object must
+    never be durable while the tracking row that carries its attribution is
+    not.** With the row absent, the union in ``_purge_kg_contributions``
+    degrades to the KEEP-truncated graph ``source_id``, from which a later
+    document purge can conclude "no remaining sources" and delete an entity
+    other documents still reference -- the one over-deletion direction this
+    module exists to prevent. Flushing every store in one ``asyncio.gather``
+    left that outcome to whichever write the interpreter finished first, so a
+    hard process exit inside a *single, uncontended* ``acreate_entity`` could
+    put it on disk; no concurrency and no co-tenant flush were required.
+
+    The residue the order accepts instead is the mirror one -- a tracking row
+    whose object never became durable. It is the same state ``adelete_by_entity``
+    already stages for and documents: harmless to queries, unable to be
+    inherited by a new object (issue #3838 R1 resets evidence on explicit
+    creation), and repairable with the offline chunk-tracking rebuild.
+
+    Phase 1 failing skips phase 2 entirely, which is the point: a tracking
+    commit that did not land must not be followed by publishing the object it
+    describes.
+
+    Contract for callers, because the order is only correct in one direction:
+    this helper is for callers that ADD or UPDATE a tracking row. A caller that
+    REMOVES one must commit the graph itself first -- ``_commit_graph_or_raise``
+    -- and only then call this helper with the tracking storages alone, so the
+    removal lands in the same benign direction. Every deletion path in this
+    module already does exactly that, which is why none of them passes
+    ``chunk_entity_relation_graph`` and a tracking storage together.
+
     Args:
         entities_vdb: Entity vector database storage (optional)
         relationships_vdb: Relationship vector database storage (optional)
@@ -296,19 +331,6 @@ async def _persist_graph_updates(
         entity_chunks_storage: Entity-chunk tracking storage (optional)
         relation_chunks_storage: Relation-chunk tracking storage (optional)
     """
-    storages = []
-
-    # Collect all non-None storage instances
-    if entities_vdb is not None:
-        storages.append(entities_vdb)
-    if relationships_vdb is not None:
-        storages.append(relationships_vdb)
-    if chunk_entity_relation_graph is not None:
-        storages.append(chunk_entity_relation_graph)
-    if entity_chunks_storage is not None:
-        storages.append(entity_chunks_storage)
-    if relation_chunks_storage is not None:
-        storages.append(relation_chunks_storage)
 
     async def _flush(storage_inst) -> None:
         try:
@@ -322,9 +344,28 @@ async def _persist_graph_updates(
                 "commit.",
             )
 
-    # Persist all storage instances in parallel
-    if storages:
-        await asyncio.gather(*[_flush(storage_inst) for storage_inst in storages])
+    # Phase 1: attribution carriers.
+    tracking_storages = [
+        storage_inst
+        for storage_inst in (entity_chunks_storage, relation_chunks_storage)
+        if storage_inst is not None
+    ]
+    # Phase 2: the objects those rows describe, plus their vector records.
+    object_storages = [
+        storage_inst
+        for storage_inst in (
+            entities_vdb,
+            relationships_vdb,
+            chunk_entity_relation_graph,
+        )
+        if storage_inst is not None
+    ]
+
+    # Within a phase the order is unconstrained, so they still flush in
+    # parallel; only the boundary between the two phases is ordered.
+    for phase in (tracking_storages, object_storages):
+        if phase:
+            await asyncio.gather(*[_flush(storage_inst) for storage_inst in phase])
 
 
 async def _finish_deferring_cancellation(coro, description: str) -> None:
@@ -484,6 +525,13 @@ async def adelete_by_entity(
         entity_name: Name of the entity to delete
         entity_chunks_storage: Optional KV storage for tracking chunks that reference this entity
         relation_chunks_storage: Optional KV storage for tracking chunks that reference relations
+
+    Concurrency (issue #3838): admin writes are serialized against the document
+    pipeline (HTTP 409 while it is busy) but **not against each other**. On a
+    file-backed workspace a commit publishes the whole namespace, so two admin
+    calls running at once can publish each other's unfinished state. Call the
+    admin API one operation at a time there, or use a server-backed graph and KV
+    store. See ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     # Use keyed lock for entity to ensure atomic graph and vector db operations.
     # The doc-ingest pipeline locks edges under sorted([src, tgt]) in this same
@@ -669,6 +717,13 @@ async def adelete_by_relation(
         source_entity: Name of the source entity
         target_entity: Name of the target entity
         relation_chunks_storage: Optional KV storage for tracking chunks that reference this relation
+
+    Concurrency (issue #3838): admin writes are serialized against the document
+    pipeline (HTTP 409 while it is busy) but **not against each other**. On a
+    file-backed workspace a commit publishes the whole namespace, so two admin
+    calls running at once can publish each other's unfinished state. Call the
+    admin API one operation at a time there, or use a server-backed graph and KV
+    store. See ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     relation_str = f"{source_entity} -> {target_entity}"
     # Normalize entity order for undirected graph (ensures consistent key generation)
@@ -1256,6 +1311,13 @@ async def aedit_entity(
             - "success": Entity successfully merged into target
             - "failed": Merge operation failed
             - "not_attempted": No merge was attempted (normal update/rename)
+
+    Concurrency (issue #3838): admin writes are serialized against the document
+    pipeline (HTTP 409 while it is busy) but **not against each other**. On a
+    file-backed workspace a commit publishes the whole namespace, so two admin
+    calls running at once can publish each other's unfinished state. Call the
+    admin API one operation at a time there, or use a server-backed graph and KV
+    store. See ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     # Order matters: the empty-description check runs first so a `None`
     # description keeps reporting itself as empty (which is what it means to a
@@ -1516,6 +1578,13 @@ async def aedit_relation(
 
     Returns:
         Dictionary containing updated relation information
+
+    Concurrency (issue #3838): admin writes are serialized against the document
+    pipeline (HTTP 409 while it is busy) but **not against each other**. On a
+    file-backed workspace a commit publishes the whole namespace, so two admin
+    calls running at once can publish each other's unfinished state. Call the
+    admin API one operation at a time there, or use a server-backed graph and KV
+    store. See ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     # See `aedit_entity` for the ordering rationale.
     if "description" in updated_data:
@@ -1756,6 +1825,13 @@ async def acreate_entity(
 
     Returns:
         Dictionary containing created entity information
+
+    Concurrency (issue #3838): admin writes are serialized against the document
+    pipeline (HTTP 409 while it is busy) but **not against each other**. On a
+    file-backed workspace a commit publishes the whole namespace, so two admin
+    calls running at once can publish each other's unfinished state. Call the
+    admin API one operation at a time there, or use a server-backed graph and KV
+    store. See ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     _require_non_empty_description(
         entity_data.get("description"), operation="create", object_type="entity"
@@ -1930,6 +2006,13 @@ async def acreate_relation(
 
     Returns:
         Dictionary containing created relation information
+
+    Concurrency (issue #3838): admin writes are serialized against the document
+    pipeline (HTTP 409 while it is busy) but **not against each other**. On a
+    file-backed workspace a commit publishes the whole namespace, so two admin
+    calls running at once can publish each other's unfinished state. Call the
+    admin API one operation at a time there, or use a server-backed graph and KV
+    store. See ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     _require_non_empty_description(
         relation_data.get("description"), operation="create", object_type="relation"
@@ -2862,6 +2945,13 @@ async def amerge_entities(
 
     Returns:
         Dictionary containing the merged entity information
+
+    Concurrency (issue #3838): admin writes are serialized against the document
+    pipeline (HTTP 409 while it is busy) but **not against each other**. On a
+    file-backed workspace a commit publishes the whole namespace, so two admin
+    calls running at once can publish each other's unfinished state. Call the
+    admin API one operation at a time there, or use a server-backed graph and KV
+    store. See ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     if not source_entities:
         raise ValueError("At least one source entity is required for merge")

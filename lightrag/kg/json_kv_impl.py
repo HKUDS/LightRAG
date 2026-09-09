@@ -100,6 +100,29 @@ class JsonKVStorage(BaseKVStorage):
               dict outside the lock (it only mutates the input, not the
               shared store).
 
+    Commit granularity — a commit publishes the whole namespace:
+        ``index_done_callback`` snapshots the entire ``_data`` dict and
+        rewrites the whole JSON file. There is no scoped or transactional
+        commit, and issue #3838 rejects adding one for the file-backed
+        storages. So **any writer's flush durably publishes every other
+        writer's pending in-memory mutation in this namespace.**
+
+        This matters most for the chunk-tracking namespaces
+        (``entity_chunks`` / ``relation_chunks``), whose rows are the
+        authoritative attribution carriers behind
+        ``_purge_kg_contributions``: a row and the graph object it describes
+        live in different stores with no transaction between them, and the
+        forbidden ordering is the object durable without the row.
+        ``utils_graph._persist_graph_updates`` commits the rows first for
+        exactly that reason; a co-tenant's flush can still publish a row
+        early, which lands in the benign direction. See the *Non-pipeline
+        write paths* section of ``NetworkXStorage`` for the full residue.
+
+        Scope decision (issue #3838): this backend is supported for
+        small-scale testing and validation only, so the cost of the
+        whole-file rewrite is not a consideration and no change here may be
+        justified by it.
+
     Who can write:
         Pipeline ``busy`` still serializes the document ingest / purge
         flows, but the *file-flush trigger* is symmetric: any process

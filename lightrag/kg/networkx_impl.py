@@ -288,21 +288,79 @@ class NetworkXStorage(BaseGraphStorage):
         to add a value after the check and before ``add_node`` /
         ``add_edge`` consumes it.
 
+    Commit granularity — a commit publishes the whole namespace:
+        ``index_done_callback`` serializes ``self._graph`` in full and
+        renames the result over the GraphML file. There is no scoped or
+        transactional commit, and none is planned (issue #3838 rejects one
+        for the file-backed storages explicitly). Two consequences the
+        callers have to live with:
+
+        * **Any writer's flush durably publishes every other writer's
+          pending in-memory mutation in this namespace**, including partial
+          state its author had not finished. A caller that stages its own
+          writes to guarantee an ordering guarantees it only for its own
+          objects; a co-tenant's half-applied sequence rides along.
+        * The pipeline tolerates this, because ``doc_status`` plus
+          idempotent FAILED reprocessing rewrites whatever a restart finds
+          half-applied. The admin flows below have no equivalent, which is
+          what makes their residue worth stating rather than assuming away.
+
+    Scope decision (issue #3838):
+        This backend — like ``JsonKVStorage`` / ``JsonDocStatusStorage`` /
+        ``NanoVectorDBStorage`` / ``FaissVectorDBStorage`` — is supported for
+        **small-scale testing and validation only**. Production deployments
+        run a server-backed graph store. Write throughput of the whole-file
+        commit path is therefore not a consideration, and no change to this
+        file may be justified by — or blocked on — it.
+
     Non-pipeline write paths:
         The pipeline's ``busy`` gate serializes mutation calls reached
         through the document ingestion and purge flows. The following
-        entry points are **not** serialized by the pipeline gate and
-        must be guarded externally:
-            * ``drop`` — currently gated by the API layer (the
-              ``/documents/clear`` endpoint takes the pipeline busy
-              reservation before invoking it).
+        entry points are **not** serialized by the pipeline gate:
+            * ``drop`` — gated by the API layer (the ``/documents/clear``
+              endpoint takes the pipeline busy reservation before invoking
+              it).
             * ``delete_node`` / ``remove_nodes`` / ``remove_edges`` /
-              ``upsert_node`` / ``upsert_edge`` when invoked from
+              ``upsert_node`` / ``upsert_edge`` when invoked from the
               ``utils_graph.py`` admin flows (``adelete_by_entity`` /
-              ``adelete_by_relation`` / entity-edit flows). These flows
-              are currently not exposed in the WebUI; any future caller
-              must arrange single-writer serialization the same way the
-              pipeline does.
+              ``adelete_by_relation`` / the create, edit and merge paths).
+
+        For the admin flows, invariant 1 is **not** met and is not going to
+        be. Stating it accurately, because the previous wording ("must be
+        guarded externally", plus a claim that the flows are not exposed in
+        the WebUI) was false on both counts — the WebUI calls
+        ``/graph/entity/edit``:
+
+        * Admin-vs-pipeline **is** guarded: every graph mutation endpoint
+          calls ``check_pipeline_busy_or_raise`` and returns 409 while the
+          pipeline is busy. That check is a snapshot, so a narrow race with
+          the underlying write remains; closing it would mean holding
+          ``busy`` across every UI edit, which is deliberately rejected.
+        * Admin-vs-admin is **not** guarded. Two concurrent
+          ``/graph/*`` calls for different keys both pass the busy check and
+          proceed under different per-entity keyed locks. A workspace-wide
+          admin lock was specified (issue #3838 R3) and then dropped: with
+          the reload fence of issue #3854 in place the losing writer of an
+          overlapping pair *declines*, so the caller gets a loud 500 and
+          retries rather than losing the write silently; and the residue the
+          lock would have prevented is reachable with no concurrency at all,
+          so serializing admin writes would not have changed what a crash can
+          leave behind.
+
+        **Accepted residue.** A hard process exit, or an ill-timed co-tenant
+        flush, can leave a chunk-tracking row whose graph object never became
+        durable. It is harmless to queries; it cannot be inherited as
+        evidence by a later object, because the explicit creation paths reset
+        attribution (issue #3838 R1); and it is repairable offline with the
+        chunk-tracking rebuild tool (R4). The mirror state — a graph object
+        durable without its tracking row — is the forbidden one, and
+        ``utils_graph._persist_graph_updates`` is ordered so no single-writer
+        crash produces it.
+
+        **Requirement on new callers.** Any new caller of these mutators
+        must keep tracking rows ahead of the objects they describe, the way
+        ``_persist_graph_updates`` does, and must not be invoked
+        concurrently with another admin writer on a file-backed workspace.
     """
 
     def _node_context(self, node_id: str) -> str:
