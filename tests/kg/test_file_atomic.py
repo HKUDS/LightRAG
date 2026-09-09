@@ -6,6 +6,7 @@ individual storage backends that build on it lives in
 ``test_atomic_write_faiss.py``, and ``test_atomic_write_nano.py``.
 """
 
+import logging
 import os
 import stat
 import sys
@@ -17,6 +18,9 @@ import pytest
 
 from lightrag.file_atomic import (
     TMP_REAP_AGE_SECONDS,
+    WINDOWS_REPLACE_INITIAL_DELAY,
+    WINDOWS_REPLACE_MAX_ATTEMPTS,
+    WINDOWS_REPLACE_MAX_DELAY,
     _replace_file,
     atomic_write,
     reap_orphan_tmp_files,
@@ -240,8 +244,9 @@ def test_replace_file_windows_transient_permission_error_retries_and_succeeds(tm
 
 @pytest.mark.offline
 def test_atomic_write_windows_retry_exhaustion_cleans_tmp_and_raises(tmp_path):
-    """When PermissionError persists on Windows up to max_attempts (10),
-    atomic_write raises the PermissionError and cleans up the in-flight tmp."""
+    """When PermissionError persists on Windows up to
+    ``WINDOWS_REPLACE_MAX_ATTEMPTS``, atomic_write raises the PermissionError
+    and cleans up the in-flight tmp."""
     dst = str(tmp_path / "out.txt")
     with open(dst, "w") as f:
         f.write("v1")
@@ -261,8 +266,8 @@ def test_atomic_write_windows_retry_exhaustion_cleans_tmp_and_raises(tmp_path):
         with pytest.raises(PermissionError, match="Permission denied"):
             atomic_write(dst, lambda tmp: open(tmp, "w").write("v2"))
 
-    assert call_count == 10
-    assert mock_sleep.call_count == 9
+    assert call_count == WINDOWS_REPLACE_MAX_ATTEMPTS
+    assert mock_sleep.call_count == WINDOWS_REPLACE_MAX_ATTEMPTS - 1
     assert open(dst).read() == "v1"
     leftovers = [p for p in os.listdir(tmp_path) if ".tmp." in p]
     assert leftovers == [], f"exhausted retry must clean tmp, got {leftovers}"
@@ -291,3 +296,48 @@ def test_atomic_write_non_windows_does_not_retry_permission_error(tmp_path):
     assert mock_sleep.call_count == 0
     leftovers = [p for p in os.listdir(tmp_path) if ".tmp." in p]
     assert leftovers == [], f"failure must clean tmp, got {leftovers}"
+
+
+@pytest.mark.offline
+def test_replace_file_non_windows_permission_error_logs_nothing(tmp_path, caplog):
+    """A non-retrying platform must not log a misleading retry warning.
+
+    ``PermissionError`` on POSIX is a real permission problem, reported by the
+    caller (the pipeline turns it into a storage error). An extra
+    "after 1 attempts" warning here both implies a retry that never happened
+    and duplicates that report.
+    """
+    src = str(tmp_path / "src.txt")
+    dst = str(tmp_path / "dst.txt")
+
+    logger = logging.getLogger("lightrag")
+    previous_propagate = logger.propagate
+    logger.propagate = True  # lightrag's logger does not propagate by default
+    try:
+        with caplog.at_level(logging.DEBUG, logger="lightrag"):
+            with (
+                patch("lightrag.file_atomic.sys.platform", "linux"),
+                patch(
+                    "lightrag.file_atomic.os.replace",
+                    side_effect=PermissionError(13, "Permission denied"),
+                ),
+            ):
+                with pytest.raises(PermissionError, match="Permission denied"):
+                    _replace_file(src, dst)
+    finally:
+        logger.propagate = previous_propagate
+
+    assert caplog.records == []
+
+
+@pytest.mark.offline
+def test_windows_replace_backoff_budget_stays_within_one_second():
+    """The retry sleeps block the process-wide single-worker storage-io pool,
+    stalling every other file backend's flush. Cap the worst case near 1s."""
+    delay = WINDOWS_REPLACE_INITIAL_DELAY
+    total = 0.0
+    for _ in range(WINDOWS_REPLACE_MAX_ATTEMPTS - 1):
+        total += delay
+        delay = min(delay * 1.5, WINDOWS_REPLACE_MAX_DELAY)
+
+    assert total <= 1.05, f"worst-case storage-io stall grew to {total:.2f}s"

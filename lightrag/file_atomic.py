@@ -44,6 +44,18 @@ logger = logging.getLogger("lightrag")
 # running (multi-million-node graphml writes finish in minutes, not hours).
 TMP_REAP_AGE_SECONDS = 3600
 
+# Windows-only retry budget for ``os.replace`` (see ``_replace_file``). The
+# backoff sleeps run on the process-wide SINGLE-worker storage-io executor
+# (``lightrag.utils.get_storage_io_executor``), so the total is the worst-case
+# stall imposed on *every* file backend's flush, not just the one retrying.
+# Keep it around a second: a handle held by an indexer or antivirus clears in
+# tens to a few hundred milliseconds, and a longer hold is better surfaced as a
+# failure than paid for by every other namespace queued behind that one worker.
+# 7 sleeps of 0.05, 0.075, 0.1125, 0.169, 0.2, 0.2, 0.2 sum to ~1.0s.
+WINDOWS_REPLACE_MAX_ATTEMPTS = 8
+WINDOWS_REPLACE_INITIAL_DELAY = 0.05
+WINDOWS_REPLACE_MAX_DELAY = 0.2
+
 
 def tmp_path_for(file_name: str) -> str:
     """Return a per-writer tmp sibling for ``file_name``.
@@ -115,24 +127,38 @@ def reap_orphan_tmp_files(
 def _replace_file(src: str, dst: str, workspace: str = "_") -> None:
     """Replace src into dst, with exponential backoff retry on Windows NTFS.
 
-    On Windows, os.replace (MoveFileEx) raises PermissionError ([WinError 5]) if
-    another thread, coroutine, or system service (e.g. search indexer, antivirus)
-    momentarily holds an open handle to dst. We retry with gentle backoff.
+    On Windows, os.replace (MoveFileEx) raises PermissionError ([WinError 5]
+    ACCESS_DENIED or [WinError 32] SHARING_VIOLATION) if another thread,
+    coroutine, or system service (e.g. search indexer, antivirus) momentarily
+    holds an open handle to dst. We retry with gentle backoff. ``src`` stays in
+    place when the rename fails, so every attempt is idempotent.
+
+    Other platforms take a straight ``os.replace``: the retry loop would add a
+    branch and a misleading "after 1 attempts" log line to a path that never
+    retries.
     """
-    max_attempts = 10 if sys.platform == "win32" else 1
-    delay = 0.05
-    for attempt in range(max_attempts):
+    if sys.platform != "win32":
+        os.replace(src, dst)
+        return
+
+    delay = WINDOWS_REPLACE_INITIAL_DELAY
+    for attempt in range(WINDOWS_REPLACE_MAX_ATTEMPTS):
         try:
             os.replace(src, dst)
             return
         except PermissionError as exc:
-            if attempt == max_attempts - 1:
+            if attempt == WINDOWS_REPLACE_MAX_ATTEMPTS - 1:
                 logger.warning(
-                    f"[{workspace}] Failed to atomically replace {dst} after {max_attempts} attempts: {exc}"
+                    f"[{workspace}] Failed to atomically replace {dst} after "
+                    f"{WINDOWS_REPLACE_MAX_ATTEMPTS} attempts: {exc}"
                 )
                 raise
+            logger.debug(
+                f"[{workspace}] Retrying atomic replace of {dst} in {delay:.2f}s "
+                f"(attempt {attempt + 1}/{WINDOWS_REPLACE_MAX_ATTEMPTS}): {exc}"
+            )
             time.sleep(delay)
-            delay = min(delay * 1.5, 0.5)
+            delay = min(delay * 1.5, WINDOWS_REPLACE_MAX_DELAY)
 
 
 def atomic_write(
@@ -141,6 +167,7 @@ def atomic_write(
     workspace: str = "_",
 ) -> None:
     """Run ``write_fn(tmp_path)`` then atomically replace ``file_name`` with it.
+
     ``write_fn`` is responsible for actually producing the file contents at
     the path it receives. It must not assume the tmp path equals ``file_name``
     — Faiss/Nano callers rely on the tmp path being a real sibling.
