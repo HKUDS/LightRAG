@@ -2922,10 +2922,19 @@ _DEFERRED_PAST_CANCEL_ATTR = "lightrag_deferred_past_cancel"
 
 def cancellation_was_deferred(exc: BaseException) -> bool:
     """Whether ``exc`` is a cancellation that was held while an uninterruptible
-    region ran to completion, so writes it had started may be durable.
+    region ran to a SUCCESSFUL end, so what that region wrote is durable.
+
+    Success is part of the claim, not an approximation of it. A region whose
+    work RAISED (a full disk, an I/O error) also withholds the cancellation, and
+    ``_bounded_submit_impl`` gives the cancellation precedence over that failure
+    -- it only logs it -- so the exception the caller sees looks the same in both
+    cases. Reporting the failed one as durable is the mirror of the defect this
+    stamp exists to prevent: it would tell a caller their write landed when
+    nothing did, and a caller told that does not retry.
 
     See :data:`_DEFERRED_PAST_CANCEL_ATTR`. ``False`` for any other exception,
-    and for a cancellation delivered at an ordinary suspension point.
+    for a cancellation delivered at an ordinary suspension point, and for one
+    withheld across work that failed.
     """
     return getattr(exc, _DEFERRED_PAST_CANCEL_ATTR, False) is True
 
@@ -2942,13 +2951,22 @@ async def _wait_deferring_cancellation(
     ``_KeyedLockContext.__aexit__`` in ``lightrag/kg/shared_storage.py``.
 
     Returns the cancellation to re-raise once every step is done (the first one
-    seen, if any), STAMPED with :data:`_DEFERRED_PAST_CANCEL_ATTR` so the caller
-    that re-raises it -- and anything upstream that rewrites it into an error of
-    its own -- can tell it apart from a cancellation delivered at an ordinary
-    await. That distinction is not cosmetic: this function's whole purpose is to
-    let a write finish after the cancel was requested, so the operation reporting
-    failure may have committed. Cancelling ``future`` ITSELF still propagates
-    immediately: it did not run to completion and we must not pretend it did.
+    seen, if any), STAMPED with :data:`_DEFERRED_PAST_CANCEL_ATTR` **when this
+    future completed successfully**, so the caller that re-raises it -- and
+    anything upstream that rewrites it into an error of its own -- can tell it
+    apart both from a cancellation delivered at an ordinary await and from one
+    withheld across work that FAILED. That distinction is not cosmetic: this
+    function's whole purpose is to let a write finish after the cancel was
+    requested, so the operation reporting failure may have committed; but a
+    write that raised committed nothing, and ``_bounded_submit_impl`` gives the
+    cancellation precedence over that failure, so without this the two are
+    indistinguishable downstream.
+
+    An incoming stamp is never cleared. The second call in
+    ``_bounded_submit_impl`` passes the same instance for the commit hook: the
+    write already succeeded and IS durable, so a failing hook must not retract
+    that. Cancelling ``future`` ITSELF still propagates immediately: it did not
+    run to completion and we must not pretend it did.
     """
     while not future.done():
         try:
@@ -2966,14 +2984,28 @@ async def _wait_deferring_cancellation(
             if not future.done():
                 raise
             break
-    if pending_cancel is not None:
+    if pending_cancel is not None and _completed_successfully(future):
         # Stamp the very instance the caller is about to re-raise. The exception
         # object is the natural carrier: it is what travelled through the region,
         # nothing between here and the caller replaces it (the admin flows catch
         # ``Exception``, not ``BaseException``), and it needs neither a contextvar
         # nor a shared counter to reach whoever ends up reporting the failure.
+        #
+        # Gated on success: see the docstring. Never cleared, so a stamp an
+        # earlier round put on this instance survives a later step that fails.
         setattr(pending_cancel, _DEFERRED_PAST_CANCEL_ATTR, True)
     return pending_cancel
+
+
+def _completed_successfully(future: "asyncio.Future") -> bool:
+    """Whether ``future`` finished with a result rather than an error.
+
+    Reads the future without raising: a cancelled or still-pending one is not a
+    success, and ``exception()`` would raise on the former.
+    """
+    if not future.done() or future.cancelled():
+        return False
+    return future.exception() is None
 
 
 async def _bounded_submit_impl(

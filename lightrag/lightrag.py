@@ -371,20 +371,26 @@ class _AdminHoldCeiling:
             "stopped so it stops deferring document ingestion."
         )
         if cancellation_was_deferred(exc):
-            # The ceiling fired while a storage commit was in flight. That
-            # commit was allowed to finish -- say so, rather than sending the
-            # caller to retry a write that already landed.
+            # The ceiling fired while a storage commit was in flight AND that
+            # commit then succeeded -- the stamp is gated on success. Say so,
+            # rather than sending the caller to retry a write that landed.
             detail = (
                 " It was inside a region that must not be interrupted, so that "
                 "region ran to completion first: the storage commit it had "
                 "started IS durable and only the work after it was skipped."
             )
         else:
+            # No stamp covers two cases and must not claim to tell them apart:
+            # nothing was in flight, or a commit WAS in flight and failed
+            # (``_bounded_submit_impl`` gives the cancellation precedence over
+            # the write error, so both arrive here identically). Neither leaves
+            # a new durable commit, but an earlier step of the same operation
+            # may have made one.
             detail = (
-                " It was stopped at a suspension point, so no commit was in "
-                "flight; anything it had committed at an EARLIER step of the "
-                "same operation (a merge commits the merged node before it "
-                "removes the sources) is still durable."
+                " No commit of its own is known to have completed, but anything "
+                "it had committed at an EARLIER step of the same operation (a "
+                "merge commits the merged node before it removes the sources) "
+                "is still durable."
             )
         raise AdminWriteHoldExceededError(
             f"{preamble}{detail} Re-read the entity or relation before retrying. "

@@ -234,11 +234,13 @@ class AdminWriteHoldExceededError(TimeoutError):
     the two ways it can happen -- ``LightRAG._AdminHoldCeiling`` distinguishes
     them from the stamp ``lightrag.utils.cancellation_was_deferred`` reads:
 
-    * The ceiling fired while a storage commit was in flight. The admin flows
-      withhold a cancellation across such a region, so the commit LANDED and only
-      the work after it was skipped.
-    * The ceiling fired at an ordinary suspension point. Nothing was mid-commit,
-      but an EARLIER step of the same operation may already have committed --
+    * The ceiling fired while a storage commit was in flight AND that commit
+      succeeded. The admin flows withhold a cancellation across such a region,
+      so the write LANDED and only the work after it was skipped.
+    * Otherwise. Either nothing was mid-commit, or one was and it FAILED -- the
+      cancellation takes precedence over the write error, so the two are
+      indistinguishable downstream and the message claims neither. Either way an
+      EARLIER step of the same operation may already have committed:
       ``_merge_entities_impl`` commits the merged node before it removes the
       sources.
 

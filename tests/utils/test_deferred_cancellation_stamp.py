@@ -10,8 +10,9 @@ transactions* forbids.
 
 The helper therefore stamps the very instance it returns, and
 ``cancellation_was_deferred`` reads it back. These tests pin that the stamp is
-set exactly when a cancellation was withheld, that it rides the same exception
-object the caller re-raises, and that it is absent everywhere else.
+set exactly when a cancellation was withheld across work that SUCCEEDED, that it
+rides the same exception object the caller re-raises, that a stamp from an
+earlier step survives a later failure, and that it is absent everywhere else.
 """
 
 from __future__ import annotations
@@ -49,6 +50,64 @@ async def test_a_withheld_cancellation_is_stamped():
 
     assert landed == ["committed"]  # the write was NOT torn apart
     assert isinstance(pending, asyncio.CancelledError)
+    assert cancellation_was_deferred(pending) is True
+
+
+@pytest.mark.asyncio
+async def test_work_that_FAILED_is_not_stamped():
+    """The stamp claims success, not merely that the region ran.
+
+    ``_bounded_submit_impl`` gives the withheld cancellation precedence over the
+    work's own error and only logs the error, so downstream the two look
+    identical. Stamping both would tell a caller their write is durable when the
+    write raised, which is the mirror of the defect the stamp prevents.
+
+    Reported by the Codex review of PR #3901 on f26cd98.
+    """
+
+    async def _fails():
+        await asyncio.sleep(0.05)
+        raise OSError(28, "No space left on device")
+
+    async def _region():
+        future = asyncio.ensure_future(_fails())
+        return await _wait_deferring_cancellation(future, None)
+
+    task = asyncio.ensure_future(_region())
+    await asyncio.sleep(0)
+    task.cancel()
+    pending = await task
+
+    # The cancellation is still withheld and handed back ...
+    assert isinstance(pending, asyncio.CancelledError)
+    # ... but it carries no claim of durability.
+    assert cancellation_was_deferred(pending) is False
+
+
+@pytest.mark.asyncio
+async def test_a_stamp_from_an_earlier_step_survives_a_later_failure():
+    """``_bounded_submit_impl`` calls this twice with the same instance: once
+    for the write, once for the commit hook. A write that succeeded IS durable,
+    so a failing hook afterwards must not retract the stamp."""
+
+    async def _ok():
+        await asyncio.sleep(0.05)
+
+    async def _fails():
+        await asyncio.sleep(0.05)
+        raise RuntimeError("publication failed")
+
+    async def _region():
+        write = asyncio.ensure_future(_ok())
+        pending = await _wait_deferring_cancellation(write, None)
+        hook = asyncio.ensure_future(_fails())
+        return await _wait_deferring_cancellation(hook, pending)
+
+    task = asyncio.ensure_future(_region())
+    await asyncio.sleep(0)
+    task.cancel()
+    pending = await task
+
     assert cancellation_was_deferred(pending) is True
 
 

@@ -442,7 +442,7 @@ async def test_hold_ceiling_releases_both_gates_and_fails_loud(rag, monkeypatch)
     assert "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS" in str(excinfo.value)
     # Stopped at a suspension point: no commit was in flight, and the message
     # says that rather than the mid-commit wording (see the two tests below).
-    assert "stopped at a suspension point" in str(excinfo.value)
+    assert "No commit of its own is known to have completed" in str(excinfo.value)
     assert "IS durable" not in str(excinfo.value)
     assert status["busy"] is False and status["busy_owner"] is None
     # The admin lock is free again: the next admin write goes straight through.
@@ -631,7 +631,7 @@ async def test_the_two_ceiling_messages_are_distinguishable(rag, monkeypatch):
 
     clean_text, deferred_text = str(clean.value), str(deferred.value)
     assert clean_text != deferred_text
-    assert "stopped at a suspension point" in clean_text
+    assert "No commit of its own is known to have completed" in clean_text
     assert "IS durable" in deferred_text
     # Neither one tells the caller the operation is undone.
     for text in (clean_text, deferred_text):
@@ -870,3 +870,64 @@ def test_sync_wrapper_without_a_deferred_start_drives_nothing(tmp_path):
         loop.run_until_complete(instance.finalize_storages())
         loop.close()
         asyncio.set_event_loop(None)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_write_under_the_ceiling_is_not_reported_as_durable(
+    rag, monkeypatch
+):
+    """The stamp means the region SUCCEEDED, not merely that it ran.
+
+    ``commit_in_storage_io`` withholds the cancellation until the write is done
+    and then gives it precedence over the write's own error, which it only logs.
+    So a ceiling firing over a write that fails (a full disk, an I/O error)
+    reaches the same exit path as one firing over a write that lands. Claiming
+    durability there is the mirror of the defect the stamp exists to prevent: a
+    caller told their write landed does not retry.
+
+    Reported by the Codex review of PR #3901 on f26cd98. Verified red against
+    the unconditional stamp, which said "IS durable" for a write that raised.
+    """
+    from lightrag.kg.networkx_impl import NetworkXStorage
+
+    monkeypatch.setattr(lightrag_module, "ADMIN_WRITE_MAX_HOLD_SECONDS", 0.3)
+    status, _lock = await _status_handles(rag)
+    graph_store = rag.chunk_entity_relation_graph
+    graphml_file = graph_store._graphml_xml_file
+
+    def _slow_failing_write(graph, file_name, workspace="_"):
+        # Slow enough for the ceiling to fire mid-write, then fail: the cancel
+        # is withheld to the end of the region and wins over this error.
+        time.sleep(1.0)
+        raise OSError(28, "No space left on device")
+
+    original_write = NetworkXStorage.write_nx_graph
+    monkeypatch.setattr(
+        NetworkXStorage, "write_nx_graph", staticmethod(_slow_failing_write)
+    )
+
+    with pytest.raises(AdminWriteHoldExceededError) as excinfo:
+        await _create_alice(rag)
+
+    message = str(excinfo.value)
+    assert "IS durable" not in message
+    assert "No commit of its own is known to have completed" in message
+    assert "Re-read the entity or relation before retrying" in message
+
+    # Nothing landed ...
+    on_disk = NetworkXStorage.load_nx_graph(graphml_file)
+    assert on_disk is None or not on_disk.has_node("Alice")
+    # ... and the process is not left holding the failed operation's mutations.
+    # The CancelledError bypasses the write-failure handler's ``except
+    # Exception``, so without the dedicated branch they would sit in the
+    # in-memory graph with nothing owed, and the next commit would publish them.
+    assert graph_store._graph_dirty is False
+    assert await graph_store.has_node("Alice") is False
+
+    # Prove that end to end: a later, unrelated commit must not carry Alice.
+    monkeypatch.setattr(NetworkXStorage, "write_nx_graph", staticmethod(original_write))
+    assert await graph_store.index_done_callback() is True
+    on_disk = NetworkXStorage.load_nx_graph(graphml_file)
+    assert on_disk is None or not on_disk.has_node("Alice")
+
+    assert status["busy"] is False and status["busy_owner"] is None
