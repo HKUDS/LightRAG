@@ -941,9 +941,11 @@ def _entity_chunk_tracking_update(
     final_chunk_ids = compute_incremental_chunk_ids(
         existing_full_chunk_ids, old_chunk_ids, new_chunk_ids
     )
-    additions = [
-        cid for cid in final_chunk_ids if cid not in set(existing_full_chunk_ids)
-    ]
+    # Built once, not per element: a popular entity's row can hold thousands of
+    # chunk ids, and rebuilding the set inside the comprehension makes an
+    # ordinary source edit quadratic in that count.
+    existing_chunk_id_set = set(existing_full_chunk_ids)
+    additions = [cid for cid in final_chunk_ids if cid not in existing_chunk_id_set]
     superset_chunk_ids = existing_full_chunk_ids + additions
     return final_chunk_ids, superset_chunk_ids
 
@@ -1968,10 +1970,14 @@ async def aedit_relation(
                     # Grow phase: everything the row already held, plus the
                     # genuine additions. Identical to the final row whenever
                     # this edit removes nothing, which is the common case.
+                    # Set built once -- see the same note in
+                    # `_entity_chunk_tracking_update`: rebuilding it per element
+                    # makes the edit quadratic in the row's chunk count.
+                    existing_chunk_id_set = set(existing_full_chunk_ids)
                     additions = [
                         cid
                         for cid in updated_chunk_ids
-                        if cid not in set(existing_full_chunk_ids)
+                        if cid not in existing_chunk_id_set
                     ]
                     superset_chunk_ids = existing_full_chunk_ids + additions
                     if set(superset_chunk_ids) != set(updated_chunk_ids):
