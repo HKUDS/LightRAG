@@ -1858,6 +1858,25 @@ class TestEntityEditGrowsBeforeItShrinks(_EntityEditMixin):
         assert deferred.entity_chunks.disk[ENTITY]["chunk_ids"] == ["chunk-1"]
 
     @pytest.mark.asyncio
+    async def test_a_failing_entity_vector_write_cannot_skip_the_shrink(self, deferred):
+        # The entity vector record used to be written BETWEEN the mutation and
+        # the region that settles tracking. On an immediate-write backend
+        # `upsert_node` is already durable by then, so a truncation or upsert
+        # failure there left the node narrowed with the row still at the
+        # superset -- and nothing heals it, because the next edit reads the
+        # narrowed source_id and skips the staging. The write is now after the
+        # region, so a failure cannot come between the two.
+        await self._seed_two_chunk_entity(deferred)
+        deferred.entities_vdb.fail = True
+
+        with pytest.raises(utils_graph.VectorStorageConsistencyError):
+            await self._edit(deferred, self.SHRINKING_EDIT)
+
+        # The edit is durable and the row is settled, despite the vector error.
+        assert deferred.persisted_graph().nodes[ENTITY]["source_id"] == "chunk-1"
+        assert deferred.entity_chunks.disk[ENTITY]["chunk_ids"] == ["chunk-1"]
+
+    @pytest.mark.asyncio
     async def test_an_unrelated_relation_flush_failure_cannot_skip_the_shrink(
         self, deferred
     ):

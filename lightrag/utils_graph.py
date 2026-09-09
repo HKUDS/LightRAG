@@ -1158,34 +1158,6 @@ async def _edit_entity_impl(
     entity_type = new_node_data.get("entity_type", "")
     entity_id = compute_mdhash_id(entity_name, prefix="ent-")
 
-    # The graph node was already updated above; a truncation failure here is
-    # the same "graph updated, VDB payload could not be completed" class of
-    # failure as an upsert failure.
-    try:
-        content = _truncate_vdb_content(
-            entity_name + "\n" + description,
-            entities_vdb.global_config,
-            f"entity:{entity_name}",
-        )
-        entity_data = {
-            entity_id: {
-                "content": content,
-                "entity_name": entity_name,
-                "source_id": source_id,
-                "description": description,
-                "entity_type": entity_type,
-            }
-        }
-        await entities_vdb.upsert(entity_data)
-    except Exception as e:
-        raise VectorStorageConsistencyError(
-            f"Vector storage upsert failed for entity `{entity_name}` during entity edit: "
-            f"{e}. The knowledge graph was already updated, so it may now be inconsistent "
-            "with the vector storage. No data is lost (the graph is the authoritative "
-            "source). Stop the LightRAG server and run the offline rebuild tool "
-            "(lightrag-rebuild-vdb) to restore consistency."
-        ) from e
-
     # Old keys whose rows may only be retired once the graph state that
     # replaced them is durable -- see the retirement block below.
     tracking_keys_to_retire: list[tuple[Any, str]] = []
@@ -1458,6 +1430,40 @@ async def _edit_entity_impl(
         _commit_graph_and_settle_tracking(),
         f"Entity Edit: `{original_entity_name}` graph and tracking cleanup",
     )
+    # The entity's vector record is written only once the graph state it mirrors
+    # is durable AND the tracking is settled. It used to sit between the
+    # mutation and that region, which made it one more thing that could strand
+    # the pending shrink: on an immediate-write backend `upsert_node` is already
+    # durable when this runs, so a truncation or upsert failure left the node
+    # narrowed with the row still holding the superset -- and nothing heals
+    # that, because the next edit reads the narrowed source_id and skips the
+    # staging. Writing it here instead removes the hazard rather than guarding
+    # it, and matches what the note below has always said about vector residue.
+    try:
+        content = _truncate_vdb_content(
+            entity_name + "\n" + description,
+            entities_vdb.global_config,
+            f"entity:{entity_name}",
+        )
+        entity_data = {
+            entity_id: {
+                "content": content,
+                "entity_name": entity_name,
+                "source_id": source_id,
+                "description": description,
+                "entity_type": entity_type,
+            }
+        }
+        await entities_vdb.upsert(entity_data)
+    except Exception as e:
+        raise VectorStorageConsistencyError(
+            f"Vector storage upsert failed for entity `{entity_name}` during entity edit: "
+            f"{e}. The knowledge graph was already updated, so it may now be inconsistent "
+            "with the vector storage. No data is lost (the graph is the authoritative "
+            "source). Stop the LightRAG server and run the offline rebuild tool "
+            "(lightrag-rebuild-vdb) to restore consistency."
+        ) from e
+
     # Vector stores last: their residue is the rebuildable window this codebase
     # accepts elsewhere, and bundling them earlier would let a vector failure
     # abort an edit whose graph state is already durable. It is also strictly
