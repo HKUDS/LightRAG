@@ -157,29 +157,32 @@ class NetworkXStorage(BaseGraphStorage):
             overwrite the peer commit it never saw.
 
             A declined commit must reach its caller as a failure, because
-            declining DISCARDS this process's pending mutation. Two of the
-            three callers do that: ``utils_graph._commit_graph_or_raise``
-            raises on the ``False`` (``adelete_by_entity``,
-            ``_edit_entity_impl``, ``_merge_entities_impl``), and
-            ``LightRAG._flush_storages``'s ``_flush_one`` turns it into
-            ``IndexFlushError`` (pipeline paths). Without the second one the
-            fence would only swap which side loses data — the peer's commit
-            preserved, this document marked PROCESSED with its graph writes
-            dropped and nothing to recover them from. As a failure it heals
-            instead: the document goes FAILED and its reprocessing
-            re-extracts and re-writes the work.
+            declining DISCARDS this process's pending mutation. All three
+            callers do that:
 
-            **The third caller does not, and that is a known defect, not a
-            decision.** ``utils_graph._persist_graph_updates`` discards the
-            return value entirely, so a decline reaching it through
-            ``aedit_relation`` / ``acreate_entity`` / ``acreate_relation``
-            is silent: the graph mutation is discarded while the vector and
-            chunk-tracking writes of the same operation land, and the caller
-            is told it succeeded. It predates this fence — the helper never
-            inspected the value — and is tracked as rule 5's third call site
-            in #3854; it is not fixed here because it changes those admin
-            endpoints from 200 to 500 in the racing case and belongs with
-            its own regression tests.
+            * ``utils_graph._commit_graph_or_raise`` raises on the ``False``
+              (``adelete_by_entity``, ``_edit_entity_impl``,
+              ``_merge_entities_impl``);
+            * ``LightRAG._flush_storages``'s ``_flush_one`` turns it into
+              ``IndexFlushError`` (pipeline paths);
+            * ``utils_graph._persist_graph_updates`` raises
+              ``_declined_commit_error`` for the graph store — and only for
+              it, since the vector stores carry no such fence
+              (``aedit_relation`` / ``acreate_entity`` /
+              ``acreate_relation``).
+
+            Without the second one the fence would only swap which side loses
+            data — the peer's commit preserved, this document marked
+            PROCESSED with its graph writes dropped and nothing to recover
+            them from. As a failure it heals instead: the document goes
+            FAILED and its reprocessing re-extracts and re-writes the work.
+
+            The third was the last one to get there: it discarded the return
+            value until ``dac05a0``, which closed it as part of the #3838
+            ordering rework. Before that a decline through the admin create
+            and edit paths was silent — the graph mutation discarded, the
+            same operation's vector and tracking rows durable, and the caller
+            told it succeeded.
 
         Ordering rule that keeps the fingerprint honest: it is sampled
         **before** the file is read, never after. A fingerprint sampled after
