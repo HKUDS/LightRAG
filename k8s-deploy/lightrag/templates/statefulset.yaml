@@ -1,0 +1,49 @@
+{{- if eq (include "lightrag.workloadKind" .) "StatefulSet" }}
+{{- $workload := default (dict) .Values.workload }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "lightrag.fullname" . }}
+  labels:
+    {{- include "lightrag.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  serviceName: {{ include "lightrag.fullname" . }}-headless
+  # OrderedReady is what makes a multi-instance rollout safe: pod N+1 is not
+  # created until pod N is Ready, and LightRAG reports Ready only after
+  # initialize_storages() and check_and_migrate_data() have completed, so no
+  # two instances ever initialize or migrate storage concurrently.
+  # Immutable after creation - changing it requires recreating the StatefulSet.
+  podManagementPolicy: {{ default "OrderedReady" $workload.podManagementPolicy }}
+  updateStrategy:
+    {{- toYaml (default (dict "type" "RollingUpdate") $workload.updateStrategy) | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "lightrag.selectorLabels" . | nindent 6 }}
+  template:
+    {{- include "lightrag.podTemplate" . | nindent 4 }}
+  {{- if .Values.persistence.enabled }}
+  # One claim per pod, not the shared claims pvc.yaml creates for a
+  # Deployment: a ReadWriteOnce claim cannot be mounted by pods on different
+  # nodes, and file-based storage backends corrupt under concurrent writers.
+  # Consequence: uploaded files under /app/data/inputs live on the pod that
+  # received them, so document ingestion must be routed to a single pod.
+  volumeClaimTemplates:
+    - metadata:
+        name: rag-storage
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: {{ .Values.persistence.ragStorage.size }}
+    - metadata:
+        name: inputs
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: {{ .Values.persistence.inputs.size }}
+  {{- end }}
+{{- end }}

@@ -40,3 +40,98 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{ $key }}={{ $val }}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Workload kind: Deployment (default) or StatefulSet.
+StatefulSet exists for ordered startup (podManagementPolicy: OrderedReady):
+each pod must be Ready -- which for LightRAG means /health returned 200, so
+storage initialization and migration have finished -- before the next pod is
+created. See K8S-README.md "Replica Count".
+*/}}
+{{- define "lightrag.workloadKind" -}}
+{{- $workload := default (dict) .Values.workload -}}
+{{- $kind := default "Deployment" $workload.kind -}}
+{{- if not (has $kind (list "Deployment" "StatefulSet")) -}}
+{{- fail (printf "workload.kind must be \"Deployment\" or \"StatefulSet\", got %q" $kind) -}}
+{{- end -}}
+{{- $kind -}}
+{{- end -}}
+
+{{/*
+Pod template shared by the Deployment and the StatefulSet, so the two kinds
+can never drift apart. Include it under `template:` with nindent 4.
+
+Storage volumes differ by kind on purpose: a Deployment mounts the shared
+PVCs from pvc.yaml, while a StatefulSet gets one claim per pod from its
+volumeClaimTemplates (a shared ReadWriteOnce claim cannot be mounted by pods
+on different nodes, and concurrent writers to one volume corrupt file-based
+storage).
+*/}}
+{{- define "lightrag.podTemplate" -}}
+metadata:
+  annotations:
+    checksum/config: {{ include "lightrag.envContent" . | sha256sum }}
+  labels:
+    {{- include "lightrag.selectorLabels" . | nindent 4 }}
+spec:
+  containers:
+    - name: {{ .Chart.Name }}
+      image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+      imagePullPolicy: IfNotPresent
+      ports:
+        - name: http
+          containerPort: {{ .Values.env.PORT }}
+          protocol: TCP
+      readinessProbe:
+        httpGet:
+          path: /health
+          port: http
+        initialDelaySeconds: 10
+        periodSeconds: 5
+        timeoutSeconds: 2
+        successThreshold: 1
+        failureThreshold: 3
+      resources:
+        {{- toYaml .Values.resources | nindent 8 }}
+      volumeMounts:
+        - name: rag-storage
+          mountPath: /app/data/rag_storage
+        - name: inputs
+          mountPath: /app/data/inputs
+        - name: env-file
+          mountPath: /app/.env
+          subPath: .env
+      {{- $envFrom := default (dict) .Values.envFrom }}
+      {{- $envFromEntries := list }}
+      {{- range (default (list) (index $envFrom "secrets")) }}
+      {{- $envFromEntries = append $envFromEntries (dict "secretRef" (dict "name" .name)) }}
+      {{- end }}
+      {{- range (default (list) (index $envFrom "configmaps")) }}
+      {{- $envFromEntries = append $envFromEntries (dict "configMapRef" (dict "name" .name)) }}
+      {{- end }}
+      {{- if gt (len $envFromEntries) 0 }}
+      envFrom:
+{{- toYaml $envFromEntries | nindent 8 }}
+      {{- end }}
+  {{- with .Values.image.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  volumes:
+    - name: env-file
+      secret:
+        secretName: {{ include "lightrag.fullname" . }}-env
+    {{- if not .Values.persistence.enabled }}
+    - name: rag-storage
+      emptyDir: {}
+    - name: inputs
+      emptyDir: {}
+    {{- else if eq (include "lightrag.workloadKind" .) "Deployment" }}
+    - name: rag-storage
+      persistentVolumeClaim:
+        claimName: {{ include "lightrag.fullname" . }}-rag-storage
+    - name: inputs
+      persistentVolumeClaim:
+        claimName: {{ include "lightrag.fullname" . }}-inputs
+    {{- end }}
+{{- end -}}

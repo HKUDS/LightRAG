@@ -1,4 +1,5 @@
-{{- if .Values.persistence.enabled }}
+{{- /* A StatefulSet provisions its storage through volumeClaimTemplates */ -}}
+{{- if and .Values.persistence.enabled (eq (include "lightrag.workloadKind" .) "Deployment") }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

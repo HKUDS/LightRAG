@@ -148,6 +148,19 @@ Extra instances that only serve queries can share a workspace, but only if all f
 3. **Exactly one instance may ingest.** LightRAG has no read-only mode, so route document/ingestion traffic (`/documents/*`, uploads) to a single instance in front of the pods (a separate Service or Ingress rule). Pipeline state is per-instance: two ingesting instances scan and process the same documents twice.
 4. **Expect only backend-level sharing.** A query-only instance still writes — the LLM response cache is written on the query path — which is harmless on a shared database but is another reason condition 1 is not optional. Anything held per-instance is not shared: the pipeline status an extra instance reports is its own idle pipeline, not the ingesting instance's progress.
 
+The chart can render the StatefulSet for you:
+
+```yaml
+workload:
+  kind: StatefulSet          # default: Deployment
+  podManagementPolicy: OrderedReady   # immutable after creation
+  updateStrategy:
+    type: RollingUpdate      # StatefulSet only; `updateStrategy` at the top level stays Deployment-only
+replicaCount: 2              # 1 ingesting instance + 1 query-only instance
+```
+
+Switching `workload.kind` changes how storage is provisioned. A Deployment mounts the two shared PVCs; a StatefulSet gives every pod its own claim through `volumeClaimTemplates`, because a `ReadWriteOnce` claim cannot be mounted by pods on different nodes. Two consequences: an existing release does **not** carry its volume's data over when you switch kind, and uploaded files under `/app/data/inputs` live on whichever pod received them - which is the storage-level reason condition 3 above exists. The chart also adds a headless Service (`<release>-headless`), so you can address one specific instance as `<release>-0.<release>-headless` when routing ingestion.
+
 ### Modifying Resource Configuration
 
 You can configure LightRAG's resource usage by modifying the `values.yaml` file:

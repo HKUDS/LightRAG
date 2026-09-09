@@ -148,6 +148,19 @@ LightRAG 的存储初始化/迁移与文档处理流水线是通过单机共享�
 3. **只允许一个实例执行文档写入。** LightRAG 没有只读模式，因此需要在 Pod 前面把文档/写入类流量（`/documents/*`、上传接口）路由到单个实例（使用独立的 Service 或 Ingress 规则）。流水线状态是每实例独立的：两个实例同时接收写入会把同一批文档处理两遍。
 4. **只能指望后端层面的共享。** 查询实例并非完全不写入——查询路径会写 LLM 响应缓存；这在共享数据库后端上无害，但也正是条件 1 不能放宽的原因。所有进程内状态都不共享：额外实例上报的流水线状态是它自己的空闲流水线，而不是写入实例的处理进度。
 
+本 chart 可以直接渲染出这种 StatefulSet 部署：
+
+```yaml
+workload:
+  kind: StatefulSet          # 默认为 Deployment
+  podManagementPolicy: OrderedReady   # 创建后不可修改
+  updateStrategy:
+    type: RollingUpdate      # 仅对 StatefulSet 生效；顶层的 `updateStrategy` 仍然只用于 Deployment
+replicaCount: 2              # 1 个写入实例 + 1 个只读查询实例
+```
+
+切换 `workload.kind` 会改变存储的供给方式。Deployment 挂载两个共享 PVC；StatefulSet 则通过 `volumeClaimTemplates` 为每个 Pod 分配各自的 PVC，因为 `ReadWriteOnce` 的 PVC 无法被位于不同节点的多个 Pod 同时挂载。由此带来两个后果：已有的 release 在切换 kind 后**不会**继承原卷中的数据；上传到 `/app/data/inputs` 的文件只存在于接收该请求的那个 Pod 上——这正是上面条件 3 在存储层面的原因。chart 同时会创建一个 headless Service（`<release>-headless`），因此在路由写入流量时可以用 `<release>-0.<release>-headless` 精确寻址某一个实例。
+
 ### 修改资源配置
 
 您可以通过修改`values.yaml`文件来配置LightRAG的资源使用：
