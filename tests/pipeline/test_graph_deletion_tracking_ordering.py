@@ -1794,13 +1794,16 @@ class TestEntityEditGrowsBeforeItShrinks(_EntityEditMixin):
         assert deferred.entity_chunks.disk[ENTITY]["count"] == 1
 
     @pytest.mark.asyncio
-    async def test_a_failed_shrink_outranks_a_failing_vector_flush(
+    async def test_a_failed_shrink_skips_the_vector_flush_and_says_so(
         self, deferred, monkeypatch
     ):
-        # Both fail. The caller must hear about the residue nothing rebuilds,
-        # and the message has to name both recovery tools because both are owed.
+        # The shrink runs inside the cancellation-deferring region, so it now
+        # precedes the vector flush and a failure there skips it. That is the
+        # acceptable exposure of the two -- vector records are rewritten by a
+        # re-issued edit and restored by lightrag-rebuild-vdb, while the row is
+        # reachable only by the offline repair -- but the caller has to be told
+        # about both, so the message names both.
         await self._seed_two_chunk_entity(deferred)
-        deferred.entities_vdb.fail_flush = True
         calls = {"n": 0}
         original = deferred.entity_chunks.upsert
 
@@ -1811,6 +1814,7 @@ class TestEntityEditGrowsBeforeItShrinks(_EntityEditMixin):
             return await original(data)
 
         monkeypatch.setattr(deferred.entity_chunks, "upsert", _upsert)
+        flushes_before = deferred.entities_vdb.flushes
 
         with pytest.raises(VectorStorageConsistencyError) as excinfo:
             await self._edit(deferred, self.SHRINKING_EDIT)
@@ -1818,3 +1822,37 @@ class TestEntityEditGrowsBeforeItShrinks(_EntityEditMixin):
         message = str(excinfo.value)
         assert "lightrag-repair-chunk-tracking" in message
         assert "lightrag-rebuild-vdb" in message
+        assert deferred.entities_vdb.flushes == flushes_before
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_past_the_commit_still_completes_the_shrink(
+        self, deferred, monkeypatch
+    ):
+        # The finding this staging was moved for. `commit_in_storage_io` defers a
+        # cancellation through the graph commit and re-raises it at the END of
+        # the deferring region, and `CancelledError` is a `BaseException`, so a
+        # shrink placed after that region would simply never run -- and no
+        # `except Exception` out there could notice. The row would keep the
+        # staged superset with nothing able to heal it: the next edit reads the
+        # already-narrowed source_id and skips the staging entirely.
+        await self._seed_two_chunk_entity(deferred)
+        owner: dict = {}
+        original = deferred.graph.index_done_callback
+
+        async def _commit_then_cancel():
+            result = await original()
+            # Cancel the CALLER's task, matching TestCancellationAfterTheCommit:
+            # the owed work runs in a task of its own, so cancelling from the
+            # inside would model a different scenario.
+            owner["task"].cancel()
+            return result
+
+        monkeypatch.setattr(deferred.graph, "index_done_callback", _commit_then_cancel)
+
+        owner["task"] = asyncio.ensure_future(self._edit(deferred, self.SHRINKING_EDIT))
+        with pytest.raises(asyncio.CancelledError):
+            await owner["task"]
+
+        # The node is durably narrowed, so the row is owed the same narrowing.
+        assert deferred.persisted_graph().nodes[ENTITY]["source_id"] == "chunk-1"
+        assert deferred.entity_chunks.disk[ENTITY]["chunk_ids"] == ["chunk-1"]

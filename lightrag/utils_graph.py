@@ -1340,7 +1340,7 @@ async def _edit_entity_impl(
                 "nothing has lost its provenance. Retry the rename."
             ) from e
 
-    async def _commit_rename_and_retire_tracking() -> None:
+    async def _commit_graph_and_settle_tracking() -> None:
         # `entity_name` has been rebound to the new name by now, so the removal
         # names the original explicitly.
         if is_renaming:
@@ -1382,96 +1382,83 @@ async def _edit_entity_impl(
             relation_chunks_storage=relation_chunks_storage,
         )
 
+        # Shrink phase of the non-rename staging (mutually exclusive with the
+        # rename retirement above): the graph write that justifies dropping
+        # these ids is durable now, so the row may finally lose them.
+        #
+        # Inside the region for the same reason the retirement is. A
+        # cancellation delivered during the commit is deferred to the END of
+        # this coroutine, so a shrink placed after the region would simply never
+        # run -- `CancelledError` is a `BaseException`, so no `except Exception`
+        # out there can catch it either. That leaves the un-healable residue: a
+        # row still holding the staged superset, which no retry reaches because
+        # the next edit reads the already-narrowed source_id and
+        # `_entity_chunk_tracking_update` returns None.
+        #
+        # A failure raises `VectorStorageConsistencyError`, matching the
+        # retirement above and `aedit_relation`: the edit IS durable, so the
+        # message says so, but the row is left wider than the node's evidence
+        # and only the offline tool can reconcile it. When a cancel is already
+        # pending, `_finish_deferring_cancellation` logs it instead -- that is
+        # the one place the failure can still be seen. The residue is the
+        # accepted direction (a row naming ids the entity no longer cites);
+        # reordering to avoid it would produce the over-deleting mirror.
+        if pending_entity_shrink is not None:
+            try:
+                await entity_chunks_storage.upsert(
+                    {
+                        entity_tracking_key: {
+                            "chunk_ids": pending_entity_shrink,
+                            "count": len(pending_entity_shrink),
+                        }
+                    }
+                )
+                await _persist_graph_updates(
+                    entity_chunks_storage=entity_chunks_storage,
+                )
+            except Exception as e:
+                logger.error(
+                    f"Entity Edit: `{entity_name}` is durable, but pruning its "
+                    f"chunk tracking row `{entity_tracking_key}` down to "
+                    f"{pending_entity_shrink} failed: {e}"
+                )
+                raise VectorStorageConsistencyError(
+                    f"Pruning the chunk tracking row `{entity_tracking_key}` "
+                    f"failed after editing entity `{entity_name}`: {e}. The edit "
+                    "itself is durable -- the graph carries the new values -- but "
+                    "the row still names chunk IDs the edit removed, so it is "
+                    "wider than the entity's evidence. No data is lost (a purge "
+                    "reading the wider row is more conservative, not less), and "
+                    "re-issuing the edit cannot repair it: the second run sees an "
+                    "unchanged source_id and skips the tracking staging. Run "
+                    "lightrag-repair-chunk-tracking to reconcile the row. The "
+                    "vector records were not flushed either, so re-issue the edit "
+                    "or run lightrag-rebuild-vdb for those."
+                ) from e
+
     # One cancellation-deferring region, as in adelete_by_entity: after the
     # commit the old node is gone for good, so its rows describe nothing and the
     # cleanup is owed; a cancellation delivered mid-cleanup would strand them.
     # The region starts before the commit because that await is itself where a
-    # deferred cancellation reappears.
+    # deferred cancellation reappears, and it ENDS after the tracking is
+    # settled -- retired on a rename, shrunk on a non-rename edit -- because
+    # everything it owes the graph state has to survive a cancel.
     await _finish_deferring_cancellation(
-        _commit_rename_and_retire_tracking(),
+        _commit_graph_and_settle_tracking(),
         f"Entity Edit: `{original_entity_name}` graph and tracking cleanup",
     )
     # Vector stores last: their residue is the rebuildable window this codebase
     # accepts elsewhere, and bundling them earlier would let a vector failure
-    # abort an edit whose graph state is already durable.
-    #
-    # A failure here is CAPTURED, not propagated yet, because the staged shrink
-    # below still has to be attempted. Letting it out here would strand the
-    # shrink, and the two residues are not equally recoverable: a stale vector
-    # store is rebuildable (`lightrag-rebuild-vdb`) and a re-issued edit rebuilds
-    # it anyway, while a row left holding the superset is repairable ONLY by the
-    # offline tool -- the next edit reads the already-narrowed source_id, so
-    # `_entity_chunk_tracking_update` returns None and the staging never runs
-    # again. Stranding the un-healable one to protect the self-healing one is
-    # backwards, so both are completed and the vector error is re-raised after.
-    vector_flush_error: BaseException | None = None
-    try:
-        await _persist_graph_updates(
-            entities_vdb=entities_vdb,
-            relationships_vdb=relationships_vdb,
-        )
-    except Exception as e:
-        logger.error(
-            f"Entity Edit: `{entity_name}` is durable, but flushing its vector "
-            f"records failed: {e}"
-        )
-        vector_flush_error = e
-
-    # Shrink phase of the non-rename staging: the graph write that justifies
-    # dropping these ids is durable now, so the row may finally lose them.
-    #
-    # A failure raises `VectorStorageConsistencyError`, matching `aedit_relation`
-    # and the rename retirement above: the edit IS durable, so the message says
-    # so, but the row is left wider than the node's evidence and only an
-    # operator can reconcile it. The residue is the accepted direction (a row
-    # naming ids the entity no longer cites); reordering to avoid it would
-    # produce the over-deleting mirror instead.
-    if pending_entity_shrink is not None:
-        try:
-            await entity_chunks_storage.upsert(
-                {
-                    entity_tracking_key: {
-                        "chunk_ids": pending_entity_shrink,
-                        "count": len(pending_entity_shrink),
-                    }
-                }
-            )
-            await _persist_graph_updates(
-                entity_chunks_storage=entity_chunks_storage,
-            )
-        except Exception as e:
-            logger.error(
-                f"Entity Edit: `{entity_name}` is durable, but pruning its chunk "
-                f"tracking row `{entity_tracking_key}` down to "
-                f"{pending_entity_shrink} failed: {e}"
-            )
-            # This outranks a vector flush failure, by the same ranking phase 2
-            # of `_persist_graph_updates` uses: the rebuildable window must not
-            # mask the residue nothing rebuilds. When both failed the operator
-            # needs both tools, so the message names both.
-            also_stale_vectors = (
-                " The vector records for this entity also failed to flush "
-                f"({vector_flush_error}), so they are stale as well; run "
-                "lightrag-rebuild-vdb for those."
-                if vector_flush_error is not None
-                else ""
-            )
-            raise VectorStorageConsistencyError(
-                f"Pruning the chunk tracking row `{entity_tracking_key}` failed "
-                f"after editing entity `{entity_name}`: {e}. The edit itself is "
-                "durable -- the graph carries the new values -- but the row still "
-                "names chunk IDs the edit removed, so it is wider than the "
-                "entity's evidence. No data is lost (a purge reading the wider "
-                "row is more conservative, not less), and re-issuing the edit "
-                "cannot repair it: the second run sees an unchanged source_id and "
-                "skips the tracking staging. Run lightrag-repair-chunk-tracking "
-                f"to reconcile the row.{also_stale_vectors}"
-            ) from e
-
-    if vector_flush_error is not None:
-        # The shrink is settled; the vector failure is the caller's answer, with
-        # the same meaning it had before it was deferred past the shrink.
-        raise vector_flush_error
+    # abort an edit whose graph state is already durable. It is also strictly
+    # AFTER the tracking is settled inside the region above, so a raising vector
+    # callback can no longer strand the staged shrink. The reverse exposure is
+    # the acceptable one: a shrink failure skips this flush, leaving vector
+    # records a re-issued edit rewrites and `lightrag-rebuild-vdb` restores,
+    # rather than a tracking row nothing but the offline tool can heal.
+    await _persist_graph_updates(
+        entities_vdb=entities_vdb,
+        relationships_vdb=relationships_vdb,
+    )
 
     logger.info(f"Entity Edit: `{entity_name}` successfully updated")
     return await get_entity_info(
