@@ -1882,13 +1882,23 @@ async def aedit_relation(
             # 6. Shrink phase: the graph write that justifies dropping these IDs
             #    is durable now, so the row may finally lose them.
             #
-            #    A failure here is logged, not raised: the edit itself landed,
-            #    so reporting it as failed would be a lie about the graph, and a
-            #    repeated edit cannot heal the row anyway -- the second run sees
-            #    an unchanged source_id and skips the tracking block entirely.
-            #    What survives is the accepted direction (a row naming IDs the
-            #    relation no longer cites), and the recovery is the offline
-            #    chunk-tracking repair.
+            #    A failure here raises `VectorStorageConsistencyError`, the type
+            #    this codebase already uses for "a step AFTER a durable graph
+            #    update failed" -- its docstring names a chunk-tracking
+            #    retirement as one of its two cases, and the rename branch of
+            #    `_edit_entity_impl` raises it for exactly this shape. The edit
+            #    IS durable, so the message says so; what must not happen is
+            #    answering 200 and letting the caller believe the row matches.
+            #    Logging alone would be a swallowed failure (AGENTS.md,
+            #    *Consistency without transactions*): the residue may heal at
+            #    leisure, the failure may not go unreported. It is also the one
+            #    residue in this function a retry CANNOT heal -- the second edit
+            #    sees an unchanged source_id and skips the tracking block
+            #    entirely -- so the operator is the only recovery path, and a
+            #    silent 200 guarantees they never learn to take it. The residue
+            #    itself stays the accepted direction (a row naming IDs the
+            #    relation no longer cites); reordering to avoid it would produce
+            #    the over-deleting mirror instead.
             if pending_tracking_shrink is not None:
                 try:
                     await relation_chunks_storage.upsert(
@@ -1903,15 +1913,24 @@ async def aedit_relation(
                         relation_chunks_storage=relation_chunks_storage,
                     )
                 except Exception as e:
-                    log_without_raising(
-                        logger.error,
+                    logger.error(
                         f"Relation Edit: `{source_entity}`~`{target_entity}` is "
                         f"durable, but pruning its chunk tracking row "
                         f"`{tracking_storage_key}` down to "
-                        f"{pending_tracking_shrink} failed: {e}. The row still "
-                        "names chunk IDs this edit removed; run "
-                        "lightrag-repair-chunk-tracking to reconcile it.",
+                        f"{pending_tracking_shrink} failed: {e}"
                     )
+                    raise VectorStorageConsistencyError(
+                        f"Pruning the chunk tracking row `{tracking_storage_key}` "
+                        f"failed after editing relation `{source_entity}`~"
+                        f"`{target_entity}`: {e}. The edit itself is durable -- the "
+                        "graph and vector records carry the new values -- but the "
+                        "row still names chunk IDs the edit removed, so it is wider "
+                        "than the relation's evidence. No data is lost (a purge "
+                        "reading the wider row is more conservative, not less), and "
+                        "re-issuing the edit cannot repair it: the second run sees "
+                        "an unchanged source_id and skips the tracking update. Run "
+                        "lightrag-repair-chunk-tracking to reconcile the row."
+                    ) from e
 
             logger.info(
                 f"Relation Edit: `{source_entity}`~`{target_entity}` successfully updated"

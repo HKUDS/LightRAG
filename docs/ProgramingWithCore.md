@@ -1659,10 +1659,14 @@ What that can leave behind, and why it is tolerated:
   a narrowed row landing ahead of the graph write is itself the over-deleting
   state. `aedit_relation` therefore stages such an edit as grow-then-shrink: the
   superset row, then the graph write, then the final row. If the last step
-  fails, the edit still succeeds and the row keeps naming a chunk the relation
-  no longer cites (under-deletion, logged with the storage key, repaired by the
-  chunk-tracking repair) — a retry cannot heal it, because the second edit sees
-  an unchanged `source_id` and skips the tracking update.
+  fails, the edit is already durable and the row keeps naming a chunk the
+  relation no longer cites — under-deletion, the accepted direction, repaired by
+  the [chunk-tracking repair](#repairing-chunk-tracking). The accepted *state*
+  does not make it a silent one: the failure raises
+  `VectorStorageConsistencyError` (a 500 naming the row and the repair tool),
+  because a retry cannot heal it — the second edit sees an unchanged `source_id`
+  and skips the tracking update — so the operator is the only recovery path, and
+  a 200 would guarantee they never learn to take it.
 - **Accepted residue, not yet closed: `aedit_entity`'s non-rename path.** It
   still commits the graph *before* flushing the tracking row, so a hard process
   exit in that window leaves a **growing** edit — one that adds evidence IDs —

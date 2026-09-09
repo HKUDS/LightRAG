@@ -44,7 +44,7 @@ from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.exceptions import CommitBookkeepingError
 from lightrag.kg.networkx_impl import NetworkXStorage
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
-from lightrag.utils import make_relation_chunk_key
+from lightrag.utils import VectorStorageConsistencyError, make_relation_chunk_key
 
 pytestmark = pytest.mark.offline
 
@@ -1555,12 +1555,18 @@ class TestRelationEditGrowsBeforeItShrinks:
         ]
 
     @pytest.mark.asyncio
-    async def test_a_failed_shrink_keeps_the_edit_and_the_wider_row(
+    async def test_a_failed_shrink_keeps_the_edit_and_reports_the_wider_row(
         self, deferred, monkeypatch
     ):
         # The accepted residue of the staging: the edge is durable, the row
         # still names a chunk it no longer cites. Under-deletion, repairable
-        # offline -- and deliberately NOT reported as a failed edit.
+        # offline -- but NOT silent. `VectorStorageConsistencyError` is the type
+        # this codebase already uses for "a step after a durable graph update
+        # failed" (its docstring names a chunk-tracking retirement, and the
+        # rename branch of `_edit_entity_impl` raises it for the same shape), and
+        # the route maps it to a 500. Logging alone would answer 200 for a row
+        # only an operator can fix: a retry re-reads the unchanged source_id and
+        # skips the tracking block, so nothing else will ever reconcile it.
         await self._seed_two_chunk_relation(deferred)
         calls = {"n": 0}
         original = deferred.relation_chunks.upsert
@@ -1573,9 +1579,19 @@ class TestRelationEditGrowsBeforeItShrinks:
 
         monkeypatch.setattr(deferred.relation_chunks, "upsert", _upsert)
 
-        result = await self._edit(deferred)
+        with pytest.raises(VectorStorageConsistencyError) as excinfo:
+            await self._edit(deferred)
 
-        assert result["graph_data"]["source_id"] == "chunk-1"
+        # The message has to say the edit landed, and name both the row and the
+        # only tool that can reconcile it -- that is the whole point of raising
+        # this type rather than a bare failure.
+        message = str(excinfo.value)
+        assert RELATION_KEY in message
+        assert "durable" in message
+        assert "lightrag-repair-chunk-tracking" in message
+
+        # The edit is durable despite the raise, and the residue is the wider
+        # row -- under-deletion, never the over-deleting mirror.
         assert deferred.persisted_graph()[ENTITY][OTHER]["source_id"] == "chunk-1"
         assert deferred.relation_chunks.disk[RELATION_KEY]["chunk_ids"] == [
             "chunk-1",
