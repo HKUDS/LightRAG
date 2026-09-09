@@ -1641,8 +1641,18 @@ mutate-and-commit body, embedding round-trip included:
   (`kind="admin"`, never `destructive_busy`, so uploads stay allowed). While an
   admin write holds it, a pipeline start is *deferred*: the start is reduced to a
   sticky auto-rescan request in the workspace ingress mailbox, and the gate
-  drives the queue once, in the background, when it releases. A pipeline that is
-  already running or scanning refuses the admin write, as before.
+  drives the queue once when it releases. A pipeline that is already running or
+  scanning refuses the admin write, as before.
+
+  That drive runs in the background on a long-lived loop (the API server), but is
+  **awaited inline under the synchronous wrappers** (`create_entity`,
+  `edit_relation`, …), because `run_until_complete` stops the loop as soon as the
+  admin call returns and a background task there would park after taking the
+  `busy` reservation, wedging the workspace under a live pid. A synchronous admin
+  write therefore blocks until the queue is drained — only when a pipeline start
+  was actually deferred during its hold. Driving an `a*` method yourself with a
+  bare `loop.run_until_complete` has the same hazard; use `asyncio.run`, which
+  drains pending tasks before closing the loop, or await `finalize_storages()`.
 
 The hold is bounded by `ADMIN_WRITE_MAX_HOLD_SECONDS` (default 180 s,
 `LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS`; keep it at or above your embedding

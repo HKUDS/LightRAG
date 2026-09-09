@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import traceback
 import asyncio
+import contextvars
 import os
 import threading
 import time
@@ -275,6 +276,30 @@ ADMIN_WRITE_MAX_HOLD_SECONDS: float = get_env_value(
 # set can be garbage-collected mid-run. Discarded by a done-callback.
 _ADMIN_RELEASE_DRIVE_TASKS: set[asyncio.Task] = set()
 
+# True while a SYNCHRONOUS wrapper is driving the loop through
+# ``run_until_complete`` (set by :func:`_run_sync`). The release-time queue
+# drive reads it and runs INLINE instead of as a background task.
+#
+# Why it has to exist. ``run_until_complete`` stops the loop the moment the
+# coroutine it was given returns, so a task created in that coroutine's
+# ``finally`` is left parked at its first await -- and it resumes only if some
+# later synchronous call happens to run the same loop. Measured, that is worse
+# than never scheduling it: the drive gets far enough to CONSUME the mailbox's
+# auto-rescan flag and take the ``busy`` reservation, then parks forever. The
+# workspace is then held busy by a LIVE pid, which dead-owner reclaim cannot
+# reclaim, and the document it was going to process has lost the sticky signal
+# that would have recovered it.
+#
+# ``run_until_complete`` copies the calling thread's context into the task it
+# creates, so a value set around that call is visible inside the coroutine.
+#
+# A synchronous caller has no request to return promptly to (that is R2.5's
+# reason for backgrounding the drive at all), so awaiting it there costs only
+# the wait, and only when a pipeline start was genuinely deferred.
+_SYNC_WRAPPER_DRIVES_INLINE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "lightrag_sync_wrapper_drives_inline", default=False
+)
+
 
 class _AdminHoldCeiling:
     """Bound the time an ``async with`` body may run; expiry is a loud error.
@@ -538,7 +563,15 @@ def _run_sync(
             f"event loop' or stall. "
             f"Use `await {async_name}(...)` on the original loop instead."
         )
-    return loop.run_until_complete(coro_factory())
+    # See _SYNC_WRAPPER_DRIVES_INLINE: the loop below stops as soon as this
+    # coroutine returns, so anything it left running in the background would be
+    # stranded mid-operation. The token is reset in a finally, so a nested or
+    # subsequent call in this thread is unaffected.
+    inline_token = _SYNC_WRAPPER_DRIVES_INLINE.set(True)
+    try:
+        return loop.run_until_complete(coro_factory())
+    finally:
+        _SYNC_WRAPPER_DRIVES_INLINE.reset(inline_token)
 
 
 @final
@@ -6951,6 +6984,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         cancelled one) leaves it armed for the next scan or upload. Any error
         is logged, never raised -- the admin write already succeeded or failed
         on its own terms.
+
+        Backgrounded on an event loop that outlives this call, AWAITED under a
+        synchronous wrapper -- see :data:`_SYNC_WRAPPER_DRIVES_INLINE` for why
+        a background task there is not merely ineffective but harmful. So a
+        synchronous ``create_entity`` / ``edit_relation`` / ... blocks until the
+        queue is drained, and only when a pipeline start was actually deferred
+        during its hold.
         """
         try:
             ingress = await get_pipeline_ingress(workspace)
@@ -6963,7 +7003,35 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 f"for the next scan or upload: {e}"
             )
             return
+        if _SYNC_WRAPPER_DRIVES_INLINE.get():
+            await self._deferred_pipeline_drive(workspace)
+            return
         self._schedule_deferred_pipeline_drive(workspace)
+
+    async def _deferred_pipeline_drive(self, workspace: str) -> None:
+        """Drive the document queue once. Never raises into the admin result.
+
+        The admin write has already finished on its own terms by the time this
+        runs, so a failure here is logged and swallowed. A cancellation still
+        propagates: the mailbox flag is re-armed by
+        ``apipeline_process_enqueue_documents``'s own bookkeeping if it had
+        consumed one, and the caller (a shutdown, or ``finalize_storages``)
+        must not be told the drive completed.
+        """
+        try:
+            await self.apipeline_process_enqueue_documents()
+        except asyncio.CancelledError:
+            logger.info(
+                f"[{workspace}] Deferred pipeline drive after an admin write "
+                "was cancelled; the queued request stays armed for the next "
+                "scan or upload."
+            )
+            raise
+        except Exception as e:
+            logger.error(
+                f"[{workspace}] Deferred pipeline drive after an admin write "
+                f"failed: {e}"
+            )
 
     def _schedule_deferred_pipeline_drive(self, workspace: str) -> asyncio.Task | None:
         """Drive the document queue once, in the background.
@@ -6975,6 +7043,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         mid-run, logs its own failures, and is cancelled -- not awaited -- by
         ``finalize_storages``. Returns ``None`` when no loop can run it (loop
         closed or shutting down); the mailbox flag stays armed in that case.
+
+        ONLY for a loop that outlives this call. A caller driving an ``a*``
+        method with a bare ``loop.run_until_complete`` gets the stranded task
+        described on :data:`_SYNC_WRAPPER_DRIVES_INLINE`; the synchronous
+        wrappers set that flag and take the inline path instead, and
+        ``asyncio.run`` drains pending tasks before it closes the loop.
         """
         try:
             loop = asyncio.get_running_loop()
@@ -6983,24 +7057,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         if loop.is_closed():
             return None
 
-        async def _drive() -> None:
-            try:
-                await self.apipeline_process_enqueue_documents()
-            except asyncio.CancelledError:
-                logger.info(
-                    f"[{workspace}] Deferred pipeline drive after an admin write "
-                    "was cancelled; the queued request stays armed for the next "
-                    "scan or upload."
-                )
-                raise
-            except Exception as e:
-                logger.error(
-                    f"[{workspace}] Deferred pipeline drive after an admin write "
-                    f"failed: {e}"
-                )
-
         task = loop.create_task(
-            _drive(), name=f"lightrag-admin-release-drive:{workspace}"
+            self._deferred_pipeline_drive(workspace),
+            name=f"lightrag-admin-release-drive:{workspace}",
         )
         _ADMIN_RELEASE_DRIVE_TASKS.add(task)
         drives = self._admin_release_drives()

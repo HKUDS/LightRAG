@@ -741,3 +741,132 @@ async def test_a_second_rest_admin_write_queues_instead_of_being_refused(rag):
     await asyncio.gather(
         *lightrag_module._ADMIN_RELEASE_DRIVE_TASKS, return_exceptions=True
     )
+
+
+# ---------------------------------------------------------------------------
+# R2.4/R2.5 under the SYNCHRONOUS wrappers -- the drive must not outlive the loop
+# ---------------------------------------------------------------------------
+#
+# ``_run_sync`` drives one coroutine with ``run_until_complete``, which stops the
+# loop the moment that coroutine returns. A release-time drive created as a
+# background task in the gate's ``finally`` is therefore left parked at its first
+# await, resuming only if some later synchronous call happens to run the same
+# loop. Measured, that is worse than never scheduling it: the drive gets far
+# enough to CONSUME the mailbox's auto-rescan flag and take the ``busy``
+# reservation, then parks forever -- so the workspace is held busy by a LIVE pid
+# that dead-owner reclaim cannot reclaim, and the document has lost the sticky
+# signal that would have recovered it. Found by the Codex review of PR #3901 on
+# d667799.
+
+
+def _sync_rag(tmp_path):
+    """A LightRAG whose storages are initialized on a loop the SYNC wrappers
+    will reuse -- the shape a plain script has."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    instance = LightRAG(
+        working_dir=str(tmp_path / "wd"),
+        workspace=f"sync-{uuid4().hex[:8]}",
+        llm_model_func=_dummy_llm,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=8, max_token_size=8192, func=_dummy_embedding
+        ),
+        tokenizer=Tokenizer("mock-tokenizer", _SimpleTokenizerImpl()),
+        max_parallel_insert=1,
+    )
+    loop.run_until_complete(instance.initialize_storages())
+    return instance, loop
+
+
+def test_sync_wrapper_completes_the_deferred_drive_before_returning(tmp_path):
+    """A synchronous admin write must leave the workspace usable.
+
+    Verified red against the background-task version, which returned with the
+    document PENDING, ``auto_rescan_pending`` consumed, ``busy`` held by this
+    live process, and the drive task parked.
+    """
+    instance, loop = _sync_rag(tmp_path)
+    try:
+        loop.run_until_complete(
+            instance.apipeline_enqueue_documents(
+                ["hello world document"], ids=["doc-1"]
+            )
+        )
+
+        # A peer's pipeline start, refused while the admin write holds ``busy``:
+        # this is what arms the mailbox flag the release must then honour.
+        original = instance.entities_vdb.upsert
+
+        async def _upsert_with_a_deferred_start(data):
+            await instance.apipeline_process_enqueue_documents()
+            return await original(data)
+
+        instance.entities_vdb.upsert = _upsert_with_a_deferred_start
+
+        # THE SYNCHRONOUS WRAPPER -- what a script calls.
+        instance.create_entity(
+            "Alice", {"description": "a person", "entity_type": "PERSON"}
+        )
+
+        async def _inspect():
+            status = await get_namespace_data(
+                "pipeline_status", workspace=instance.workspace
+            )
+            ingress = await get_pipeline_ingress(instance.workspace)
+            doc = await instance.doc_status.get_by_id("doc-1")
+            return status, ingress.counts(), doc
+
+        status, counts, doc = loop.run_until_complete(_inspect())
+
+        # The drive actually ran, inside the call.
+        assert _status_value(doc["status"]) == "processed"
+        # And released everything it took.
+        assert status["busy"] is False
+        assert status["busy_owner"] is None
+        assert counts["auto_rescan_pending"] is False
+        # Nothing was left parked on a loop that has stopped.
+        assert [
+            t for t in lightrag_module._ADMIN_RELEASE_DRIVE_TASKS if not t.done()
+        ] == []
+        assert loop.run_until_complete(
+            instance.chunk_entity_relation_graph.has_node("Alice")
+        )
+    finally:
+        instance.entities_vdb.upsert = original
+        loop.run_until_complete(instance.finalize_storages())
+        loop.close()
+        asyncio.set_event_loop(None)
+
+
+def test_sync_wrapper_without_a_deferred_start_drives_nothing(tmp_path):
+    """The inline path is still conditional: no deferred start, no drive, so an
+    ordinary synchronous edit does not block on the queue."""
+    instance, loop = _sync_rag(tmp_path)
+    scheduled: list[str] = []
+    original_inline = LightRAG._deferred_pipeline_drive
+
+    async def _spy(self, workspace):
+        scheduled.append(workspace)
+        return await original_inline(self, workspace)
+
+    LightRAG._deferred_pipeline_drive = _spy
+    try:
+        loop.run_until_complete(
+            instance.apipeline_enqueue_documents(
+                ["hello world document"], ids=["doc-1"]
+            )
+        )
+        instance.create_entity(
+            "Alice", {"description": "a person", "entity_type": "PERSON"}
+        )
+        assert scheduled == []
+
+        async def _doc():
+            return await instance.doc_status.get_by_id("doc-1")
+
+        assert _status_value(loop.run_until_complete(_doc())["status"]) == "pending"
+    finally:
+        LightRAG._deferred_pipeline_drive = original_inline
+        loop.run_until_complete(instance.finalize_storages())
+        loop.close()
+        asyncio.set_event_loop(None)
