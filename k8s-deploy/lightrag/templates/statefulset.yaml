@@ -9,10 +9,18 @@ metadata:
 spec:
   replicas: {{ .Values.replicaCount }}
   serviceName: {{ include "lightrag.fullname" . }}-headless
-  # OrderedReady is what makes a multi-instance rollout safe: pod N+1 is not
-  # created until pod N is Ready, and LightRAG reports Ready only after
-  # initialize_storages() and check_and_migrate_data() have completed, so no
-  # two instances ever initialize or migrate storage concurrently.
+  # OrderedReady sequences pod CREATION: pod N+1 is not created until pod N is
+  # Ready, and LightRAG reports Ready only after initialize_storages() and
+  # check_and_migrate_data() have completed, so no two instances initialize or
+  # migrate storage concurrently.
+  #
+  # It does NOT quiesce the pods already serving. Pod 0 can ingest while pod 1
+  # initializes (and a rolling upgrade leaves lower-ordinal pods serving), and
+  # the chunk-tracking migration on the starting pod replaces tracking rows
+  # from a graph snapshot -- overwriting a row a concurrent ingestion just
+  # wrote, with no later run to heal it. Stop ingestion before scaling out or
+  # upgrading. See K8S-README.md "Replica Count".
+  #
   # Immutable after creation - changing it requires recreating the StatefulSet.
   podManagementPolicy: {{ default "OrderedReady" $workload.podManagementPolicy }}
   updateStrategy:
