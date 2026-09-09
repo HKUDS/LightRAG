@@ -31,13 +31,21 @@ counters that each storage logs ever show this window occurring in a real
 deployment -- those counters are the evidence this decision waits on, which is
 why the next section exists.
 
-``_missed_notification_reloads``: one increment per peer commit
----------------------------------------------------------------
+``_missed_notification_reloads``: one increment per unannounced state
+---------------------------------------------------------------------
 
 Each storage keeps this counter, and its contract is exactly:
 
-    **it increments once per peer commit that no notification announced --
-    not per detection of one, and not per attempt to reload out of one.**
+    **it increments once per distinct on-disk state this process found
+    unannounced -- not per detection of one, and not per attempt to reload
+    out of one.**
+
+A *state*, not a commit, and the difference is not pedantry: this is a state
+channel and not a log. It can only ever ask "is the file the one I recorded?",
+so several peer commits that land before this process next looks are one
+observation and one increment. Reading the contract as "one per commit" is
+what makes the batching below look like a defect rather than the shape of the
+instrument.
 
 It reads like a log line and is not one. It is the instrument the ``os.utime``
 decision above waits on, so a bias in it is not cosmetic: it silently decides
@@ -90,9 +98,26 @@ fragment:
    the commit point: first the count-vs-adopt pair, then the divergence test
    that was still re-observing. (Loss, not merely undercount.)
 
-What the counter still cannot see is the tick collision itself -- two commits
-sharing one ``(st_mtime_ns, st_size)`` -- which is the residue the remedy above
-would remove. That is the one blind spot by design; the five above were not.
+Two blind spots remain by design, and they are not the same kind. The five
+above were neither -- they were defects.
+
+* **The tick collision**: two commits sharing one ``(st_mtime_ns, st_size)``,
+  so the second raises no divergence at all. This is the residue the
+  ``os.utime`` remedy above would remove, and it is the dangerous one -- not
+  because of the count but because a commit the channel cannot see is a
+  commit it cannot rescue a stale writer out of.
+* **Batching**: N unannounced commits observed as one state, counted once.
+  Inherent to a state channel, and the ``os.utime`` remedy does nothing for
+  it -- monotone timestamps cannot make countable a state that was never
+  observed. Only a monotonic generation persisted with the data would, which
+  is a larger change than the remedy above and buys resolution rather than
+  safety: batching understates how OFTEN the window occurs and cannot hide
+  THAT it occurs, which is the question the counter is read to answer. So it
+  is recorded here and not fixed.
+
+Neither is an excuse for the five defects above: each of those could bias the
+count in a deployment where the window occurs at all, and two could erase the
+evidence outright.
 
 The mechanism lives here, once, because its hazards are in the details rather
 than the shape, and three copies of them is how it rots:
@@ -265,18 +290,20 @@ def counts_as_a_new_lost_notification(
     Every storage here keeps a ``_missed_notification_reloads`` counter, and
     the module docstring designates those counters as the evidence the
     writer-side ``os.utime`` remedy waits on. That only holds if they count
-    **peer commits**, and detection alone does not: a reload that raises
-    leaves the reader's recorded fingerprint untouched, so the same peer
-    commit is re-detected by every later call. Counted at each detection, one
-    commit inflates the counter without bound -- and a file that stays
+    **distinct unannounced states**, and detection alone does not: a reload
+    that raises leaves the reader's recorded fingerprint untouched, so the
+    same state is re-detected by every later call. Counted at each detection,
+    one state inflates the counter without bound -- and a file that stays
     unreadable for a while is not exotic, since that is what a sick storage
     looks like.
 
     So each storage remembers the state it last counted and passes it here.
-    A genuinely later commit has a different fingerprint and counts again;
-    two commits inside one timestamp tick with an identical size do not, which
-    is the collision residue this fence already documents, inherited rather
-    than newly introduced.
+    A genuinely different state counts again. Two things do not, and both are
+    by design (see the module docstring): commits inside one timestamp tick
+    with an identical size, which produce no new state at all, and commits
+    that batch into a single observation because this process did not look in
+    between. This function is the wrong place to fix either -- it is handed a
+    state and can only compare it with the last one.
 
     ``UNREADABLE`` counts nothing: it cannot say WHICH state it would be
     counting, so the count could neither be deduplicated nor trusted. The next

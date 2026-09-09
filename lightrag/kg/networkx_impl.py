@@ -740,8 +740,13 @@ class NetworkXStorage(BaseGraphStorage):
 
         ``_missed_notification_reloads`` is the evidence the writer-side
         ``os.utime`` decision waits on (see ``kg.file_fingerprint``), so it has
-        to count *peer commits*, not detections of them. The two are not the
-        same thing, in both directions:
+        to count *unannounced on-disk states*, not detections of them -- one
+        per distinct state this process found, however many detections or
+        reload attempts that took. (Per state, not per commit: this is a state
+        channel, so peer commits that batch into one observation are one
+        increment. ``kg.file_fingerprint`` records that as one of the two
+        by-design blind spots.) State and detection are not the same thing,
+        in both directions:
 
         * **Undercount.** The recovery flag wins over both channel tests and
           one reload discharges all of them, so a peer commit that arrives
