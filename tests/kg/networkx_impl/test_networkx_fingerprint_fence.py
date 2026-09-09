@@ -1073,6 +1073,122 @@ async def test_an_unreadable_sample_does_not_silently_drop_a_mutation(
         await worker_a.finalize()
 
 
+def _unreadable_for(budget: int, monkeypatch):
+    """Make the next `budget` fence observations fail, then recover.
+
+    Patched at `file_fingerprint.sample` -- the one place the fence observes
+    the file -- so it covers the commit's own fence test, the adoption inside
+    `_record_fingerprint`, and every later branch condition and reload alike.
+    `load_nx_graph` is left real: the file IS readable here, only its `stat`
+    is not, which is the case a fingerprint cannot describe.
+
+    Callers depend on the exact count, in this order: (1) `index_done_callback`
+    block 1's fence test, (2) `_record_fingerprint` inside `_committed`, (3)
+    the next `_get_graph`'s divergence test, (4) the resolving reload's own
+    sample. A budget of 3 leaves (4) readable, so the reload lands; 4 makes it
+    refuse. Returns the remaining counter -- assert it reached 0, or a new
+    `sample()` call anywhere on the path shifts the numbers and the test
+    passes for the wrong reason (budget spent early, real stat, no loss to
+    detect).
+    """
+    remaining = [budget]
+    real = file_fingerprint.sample
+
+    def flaky(paths, *, workspace):
+        if remaining[0] > 0:
+            remaining[0] -= 1
+            return file_fingerprint.UNREADABLE
+        return real(paths, workspace=workspace)
+
+    monkeypatch.setattr(file_fingerprint, "sample", flaky)
+    return remaining
+
+
+@pytest.mark.asyncio
+async def test_a_post_commit_stat_failure_does_not_drop_the_next_mutation(
+    tmp_path, multiprocess, monkeypatch
+):
+    """`_record_fingerprint`'s `None` is only harmless if it is resolved FIRST.
+
+    The writer's own adoption is the one remaining producer of a `None`
+    fingerprint, and the redundant reload it costs is documented as
+    discarding nothing -- true only while that reload happens before any new
+    mutation. It does not, by itself: `UNREADABLE` reports "no change", so the
+    divergence branch cannot fire while the `stat` keeps failing. The call
+    served the graph, a mutation landed on it, and the reload was deferred to
+    whichever later call first managed to `stat` -- mid-batch, discarding that
+    mutation, after which the commit SUCCEEDED without it and its document
+    was marked PROCESSED.
+    """
+    worker = await _worker(tmp_path)
+    try:
+        await worker.upsert_node("durable", {"entity_id": "durable"})
+
+        # Three observations fail: the commit's own fence test, the adoption
+        # in `_record_fingerprint`, and the next call's divergence test. The
+        # fourth -- the resolving reload -- succeeds.
+        remaining = _unreadable_for(3, monkeypatch)
+        assert await worker.index_done_callback() is True
+        assert worker._loaded_fingerprint is None
+        assert remaining[0] == 1, "the commit consumed an unexpected number"
+
+        await worker.upsert_node("X", {"entity_id": "X"})
+        assert remaining[0] == 0, "the divergence test and the reload both ran"
+        monkeypatch.undo()
+        monkeypatch.setattr(file_fingerprint, "is_multiprocess_mode", lambda: True)
+        assert file_fingerprint.fence_enabled() is True
+
+        await worker.upsert_node("Y", {"entity_id": "Y"})
+        assert await worker.index_done_callback() is True
+
+        on_disk = NetworkXStorage.load_nx_graph(worker._graphml_xml_file)
+        # X is the one that used to vanish, and its loss was reported as a
+        # successful commit.
+        assert on_disk.has_node("X")
+        assert on_disk.has_node("Y")
+        assert on_disk.has_node("durable")
+        # And the file this process wrote itself was never miscounted as a
+        # peer commit whose notification went missing.
+        assert worker._missed_notification_reloads == 0
+    finally:
+        await worker.finalize()
+
+
+@pytest.mark.asyncio
+async def test_an_unresolved_fingerprint_refuses_to_serve_the_graph(
+    tmp_path, multiprocess, monkeypatch
+):
+    """While the `stat` keeps failing there is no safe way to serve it.
+
+    Reloading discards the caller's own pending work; adopting the fresh
+    `stat` without reloading would take a peer's commit for this process's
+    own and overwrite it on the next save. So the resolution refuses, and the
+    caller's batch takes the FAILED path until the `stat` works.
+    """
+    worker = await _worker(tmp_path)
+    try:
+        await worker.upsert_node("durable", {"entity_id": "durable"})
+
+        # One more than the test above: the resolving reload's sample fails
+        # too, so there is nothing to resolve with.
+        remaining = _unreadable_for(4, monkeypatch)
+        assert await worker.index_done_callback() is True
+        assert worker._loaded_fingerprint is None
+        assert remaining[0] == 2, "the commit consumed an unexpected number"
+
+        with pytest.raises(OSError, match="could not be sampled"):
+            await worker.has_node("durable")
+        assert remaining[0] == 0, "the divergence test and the reload both ran"
+
+        # Nothing was adopted, so the next readable call still resolves it.
+        monkeypatch.undo()
+        monkeypatch.setattr(file_fingerprint, "is_multiprocess_mode", lambda: True)
+        assert await worker.has_node("durable") is True
+        assert worker._loaded_fingerprint is not None
+    finally:
+        await worker.finalize()
+
+
 @pytest.mark.asyncio
 async def test_an_unreadable_sample_never_installs_an_empty_graph(
     tmp_path, multiprocess, lost_notification

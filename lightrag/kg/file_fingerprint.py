@@ -232,7 +232,14 @@ def adopted(sampled: Fingerprint | object) -> Fingerprint | None:
       and retries), so no reload of its graph can reach this function with
       one. What still can are its adoptions of its OWN commit or drop
       (``_record_fingerprint``), where the in-memory graph already equals the
-      file and the redundant reload discards nothing.
+      file — so the redundant reload discards nothing, **provided it happens
+      before the next mutation**. It does not on its own: ``UNREADABLE``
+      reports "no change", so while the ``stat`` keeps failing no divergence
+      fires and the reload would be deferred to whichever later call first
+      managed to ``stat`` — mid-batch, dropping what was applied in between.
+      ``_get_graph`` therefore treats a ``None`` fingerprint as unresolved
+      and reloads (or, if the ``stat`` still fails, refuses) before it serves
+      the graph.
 
     Recorded as an option, not done: the obvious fix is to keep the previously
     recorded fingerprint instead of clearing it (never worse for the reload

@@ -237,14 +237,23 @@ class NetworkXStorage(BaseGraphStorage):
               and the document is marked PROCESSED. Refusing costs the batch,
               which the FAILED path reprocesses. See ``_reload_locked``.
             * What remains of that failure is the writer adopting its OWN
-              commit or drop through ``_record_fingerprint``, which records
-              ``None`` — one redundant reload of a graph that already equals
-              the file, discarding nothing, plus one
-              ``_missed_notification_reloads`` increment for a peer commit
-              that never happened. Bounded, self-healing on the next readable
-              ``stat``, and biased towards over- rather than
-              under-reporting. See ``file_fingerprint.adopted`` for why the
-              obvious fix is recorded there as an option rather than taken.
+              commit or drop through ``_record_fingerprint`` (and
+              ``initialize``'s first load), which records ``None``. That
+              costs one redundant reload of a graph that already equals the
+              file, plus — if the ``stat`` recovers in time for the
+              divergence branch — one ``_missed_notification_reloads``
+              increment for a peer commit that never happened. Bounded,
+              self-healing on the next readable ``stat``, and biased towards
+              over- rather than under-reporting. The redundant reload must
+              land BEFORE the next mutation, which is why ``_get_graph``
+              treats a ``None`` fingerprint as unresolved and reloads for it
+              in its own right: an ``UNREADABLE`` sample reports "no change",
+              so the divergence branch cannot fire while the ``stat`` keeps
+              failing, and the deferred reload would land mid-batch and drop
+              whatever was applied in the meantime. See
+              ``file_fingerprint.adopted`` for why the obvious fix to the
+              ``None`` itself is recorded there as an option rather than
+              taken.
 
     Recovery reload (process-local, NOT a third fence channel):
         ``_recovery_reload_pending`` is a plain ``bool`` on the instance,
@@ -788,8 +797,11 @@ class NetworkXStorage(BaseGraphStorage):
         needs no new handling -- but it does mean no reload path can adopt
         ``UNREADABLE``. The only remaining producers of a ``None``
         fingerprint are ``_record_fingerprint``'s adoptions of this process's
-        OWN commit or drop, where the in-memory graph already equals the file
-        and the redundant reload that follows discards nothing.
+        OWN commit or drop, and ``initialize``'s first load. What that costs
+        is one redundant reload -- and it discards nothing only because
+        ``_get_graph`` treats the ``None`` as unresolved and reloads for it
+        before serving the graph. Deferred, that same reload lands mid-batch
+        and drops what was applied in the meantime; see its own branch.
 
         Synchronous on purpose: it adds no suspension point inside
         ``_get_graph``'s lock body, which the *Commit gate* reasoning depends
@@ -866,6 +878,13 @@ class NetworkXStorage(BaseGraphStorage):
         process's ``storage_updated`` flag, and the GraphML file's
         ``(st_mtime_ns, st_size)`` against the fingerprint recorded when this
         process last loaded or wrote it.
+
+        Two conditions that are not channels are tested alongside them: the
+        process-local recovery reload FIRST (see *Recovery reload*), and an
+        unresolved fingerprint LAST — a recorded ``None``, which no channel
+        can act on because an unreadable ``stat`` reports "no change", and
+        which must be resolved before a mutation is allowed on top of this
+        graph. Each branch below says why.
 
         Under the *Single writer* invariant (see class docstring), neither
         branch fires in the writer process: the writer resets its own flag
@@ -968,6 +987,43 @@ class NetworkXStorage(BaseGraphStorage):
                         "in this process)."
                     )
                 self._reload_locked(sampled)
+            elif file_fingerprint.fence_enabled() and self._loaded_fingerprint is None:
+                # An UNRESOLVED fingerprint, and it must be resolved BEFORE a
+                # mutation is allowed on top of this graph.
+                #
+                # Since ``_reload_locked`` refuses an ``UNREADABLE`` sample,
+                # ``None`` can only have come from an adoption of a file this
+                # process itself put there -- ``_record_fingerprint`` after its
+                # own commit or drop, or ``initialize``'s first load -- whose
+                # ``stat`` failed. The graph therefore matches the file and the
+                # reload below is the redundant one ``file_fingerprint.adopted``
+                # documents.
+                #
+                # What is NOT optional is the timing. The branch above cannot
+                # fire while the ``stat`` keeps failing (``UNREADABLE`` reports
+                # "no change"), so without this the call would serve the graph,
+                # a mutation would land on it, and the reload would happen at
+                # whichever later call first managed to ``stat`` -- mid-batch,
+                # discarding that mutation, after which the commit SUCCEEDS
+                # without it and its document is marked PROCESSED. Resolving
+                # here means the reload lands before there is anything to lose,
+                # and a ``stat`` that still fails raises instead of serving:
+                # loud, and the FAILED path reprocesses the batch.
+                #
+                # Not gated on this being the writer's own file, deliberately:
+                # this process cannot tell, and the two remedies that do not
+                # reload are both worse. Adopting the fresh ``stat`` without
+                # reloading would take a peer's commit for this process's own
+                # and overwrite it on the next save -- a DURABLE write lost,
+                # silently, which is the defect this whole fence exists for.
+                logger.info(
+                    f"[{self.workspace}] Process {os.getpid()} reloading graph "
+                    f"{self._graphml_xml_file}: this process could not record "
+                    "the identity of the file it last adopted, so it cannot "
+                    "tell that file from a peer's later commit. Reloading "
+                    "before serving the graph."
+                )
+                self._reload_locked()
 
             graph = self._graph
 
@@ -1623,6 +1679,16 @@ class NetworkXStorage(BaseGraphStorage):
             # Then both fence channels. A writer holding a snapshot the file
             # has moved past must DECLINE: write_nx_graph serializes the WHOLE
             # graph, so saving would overwrite the peer commit it never saw.
+            #
+            # No unresolved-fingerprint test here, unlike _get_graph: with a
+            # `None` fingerprint and a still-failing stat all three tests
+            # below report "nothing to do" and the save proceeds, which is
+            # correct. What it serializes is this process's own commit plus
+            # its own mutations, so saving loses nothing; and the fence being
+            # blind to a peer while the stat fails is the documented
+            # "degrades to the flag alone" residue, not something this branch
+            # could improve on. _get_graph needs the test because a reload
+            # there DISCARDS, and only its timing decides what.
             if self.storage_updated.value:
                 # Storage was updated by another process, reload data instead of saving
                 logger.info(
