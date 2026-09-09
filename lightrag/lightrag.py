@@ -7050,11 +7050,25 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         ``finalize_storages``. Returns ``None`` when no loop can run it (loop
         closed or shutting down); the mailbox flag stays armed in that case.
 
-        ONLY for a loop that outlives this call. A caller driving an ``a*``
-        method with a bare ``loop.run_until_complete`` gets the stranded task
-        described on :data:`_SYNC_WRAPPER_DRIVES_INLINE`; the synchronous
-        wrappers set that flag and take the inline path instead, and
-        ``asyncio.run`` drains pending tasks before it closes the loop.
+        ONLY for a loop that outlives this call, and the synchronous wrappers
+        set :data:`_SYNC_WRAPPER_DRIVES_INLINE` to take the inline path instead.
+        What an SDK caller of the ``a*`` methods gets depends on how their loop
+        is driven, and only one shape is harmful (measured, not reasoned):
+
+        * a loop that keeps running, or ``asyncio.run(main())`` with further
+          awaits after the edit -- the drive completes;
+        * ``asyncio.run`` where the edit is the last step, or is followed
+          straight by ``finalize_storages`` -- the drive is CANCELLED in flight.
+          ``asyncio.run`` cancels pending tasks rather than draining them, and
+          ``finalize_storages`` cancels these ones itself. Benign either way:
+          the pipeline's own cleanup releases ``busy`` and the sticky
+          auto-rescan request stays armed for the next scan or upload;
+        * a hand-managed loop stopped and restarted with repeated
+          ``loop.run_until_complete`` and never finalized -- the task advances
+          only while the loop happens to run, so it can take the ``busy``
+          reservation and then park. Dead-owner reclaim cannot clear a live
+          pid. That is the stranded case, it is not a supported pattern, and it
+          is what the inline path removes for the synchronous wrappers.
         """
         try:
             loop = asyncio.get_running_loop()

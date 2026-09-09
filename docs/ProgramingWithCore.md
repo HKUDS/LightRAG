@@ -1650,9 +1650,25 @@ mutate-and-commit body, embedding round-trip included:
   admin call returns and a background task there would park after taking the
   `busy` reservation, wedging the workspace under a live pid. A synchronous admin
   write therefore blocks until the queue is drained — only when a pipeline start
-  was actually deferred during its hold. Driving an `a*` method yourself with a
-  bare `loop.run_until_complete` has the same hazard; use `asyncio.run`, which
-  drains pending tasks before closing the loop, or await `finalize_storages()`.
+  was actually deferred during its hold.
+
+  **The background drive needs an event loop that outlives the admin call**, so
+  what an SDK caller of the `a*` methods gets depends on how the loop is driven.
+  Nothing here risks data: the auto-rescan request is sticky, so a drive that
+  does not run leaves it armed for the next scan or upload. What varies is
+  whether the queue is drained now.
+
+  | How the `a*` call is driven | What happens to the deferred drive |
+  |---|---|
+  | A loop that keeps running (an API server, any long-lived app) | Runs to completion. This is the case the background path is for. |
+  | `asyncio.run(main())` with further `await`s after the edit | Runs to completion. |
+  | `asyncio.run(main())` where the edit is the last step, or followed straight by `finalize_storages()` | Cancelled in flight. `finalize_storages` cancels pending drives and the pipeline's own cleanup releases `busy`, so the end state is clean and the request stays armed — the document simply waits for the next trigger. |
+  | A hand-managed loop stopped and restarted with repeated `loop.run_until_complete(...)`, never finalized | The task advances only while the loop happens to run, so it can take the `busy` reservation and then park. Dead-owner reclaim cannot clear a live pid, so the workspace stays busy until the process exits. **Not a supported pattern** — use `asyncio.run`, or `await finalize_storages()` before going idle. |
+
+  Note that `asyncio.run` **cancels** pending tasks on exit; it does not run them
+  to completion. That is why the third row is a cancellation rather than a drain,
+  and why the fourth row — which never reaches such a cancellation — is the only
+  one that can strand the reservation.
 
 The hold is bounded by `ADMIN_WRITE_MAX_HOLD_SECONDS` (default 180 s,
 `LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS`; keep it at or above your embedding
