@@ -890,6 +890,66 @@ async def adelete_by_relation(
             )
 
 
+def _entity_chunk_tracking_update(
+    stored_data: Any,
+    node_data: dict[str, Any],
+    new_node_data: dict[str, Any],
+) -> tuple[list[str], list[str]] | None:
+    """Work out the chunk-tracking row an entity edit should leave behind.
+
+    Returns ``(final_chunk_ids, superset_chunk_ids)``, or ``None`` when this
+    edit has no reason to touch the row at all (the ``source_id`` is unchanged
+    and a row already exists).
+
+    ``superset_chunk_ids`` is the row plus this edit's genuine ADDITIONS and
+    nothing removed, which is what may be made durable ahead of the graph
+    mutation; ``final_chunk_ids`` is what the row must end up holding. They are
+    equal whenever the edit removes nothing, which is the common case.
+
+    The split exists because the two delta directions have opposite safe
+    orderings, exactly as in ``aedit_relation`` -- see the staging comments at
+    both call sites. This function is pure so both branches of
+    ``_edit_entity_impl`` derive the row from the same rules; only the ordering
+    of the writes differs between them.
+    """
+    from .utils import compute_incremental_chunk_ids, has_chunk_tracking_row
+
+    # Row presence by schema, never list truthiness -- see
+    # has_chunk_tracking_row for the authority model.
+    has_stored_row = has_chunk_tracking_row(stored_data)
+
+    old_source_id = node_data.get("source_id", "")
+    old_chunk_ids = [cid for cid in old_source_id.split(GRAPH_FIELD_SEP) if cid]
+
+    new_source_id = new_node_data.get("source_id", "")
+    new_chunk_ids = [cid for cid in new_source_id.split(GRAPH_FIELD_SEP) if cid]
+
+    if set(new_chunk_ids) == set(old_chunk_ids) and has_stored_row:
+        return None
+
+    existing_full_chunk_ids: list[str] = []
+    if has_stored_row:
+        existing_full_chunk_ids = [
+            cid for cid in stored_data.get("chunk_ids", []) if cid
+        ]
+    else:
+        # Reseed from the graph's source_id only when no tracking row exists at
+        # all; a present-but-empty row must not be repopulated from a possibly
+        # stale source_id.
+        existing_full_chunk_ids = old_chunk_ids.copy()
+
+    final_chunk_ids = compute_incremental_chunk_ids(
+        existing_full_chunk_ids, old_chunk_ids, new_chunk_ids
+    )
+    # Built once, not per element: a popular entity's row can hold thousands of
+    # chunk ids, and rebuilding the set inside the comprehension makes an
+    # ordinary source edit quadratic in that count.
+    existing_chunk_id_set = set(existing_full_chunk_ids)
+    additions = [cid for cid in final_chunk_ids if cid not in existing_chunk_id_set]
+    superset_chunk_ids = existing_full_chunk_ids + additions
+    return final_chunk_ids, superset_chunk_ids
+
+
 async def _edit_entity_impl(
     chunk_entity_relation_graph,
     entities_vdb,
@@ -945,6 +1005,11 @@ async def _edit_entity_impl(
         del new_node_data[
             "entity_name"
         ]  # Node data should not contain entity_name field
+
+    # Set by the non-rename branch below when its tracking delta REMOVES ids, so
+    # the removal can be applied after the graph commit that justifies it.
+    pending_entity_shrink: list[str] | None = None
+    entity_tracking_key: str | None = None
 
     if is_renaming:
         logger.info(f"Entity Edit: renaming `{entity_name}` to `{new_entity_name}`")
@@ -1044,122 +1109,154 @@ async def _edit_entity_impl(
 
         entity_name = new_entity_name
     else:
-        # KNOWN GAP -- this mutation precedes the tracking row it needs, and the
-        # graph commit below (`_commit_rename_and_retire_tracking`) precedes the
-        # row's flush. A hard exit in between leaves a GROWING edit -- one whose
-        # `updated_data` adds evidence IDs, which `/graph/entity/edit` accepts --
-        # with the node durable citing chunks its row does not name yet: the
-        # `rows subset-of graph` direction a later purge misreads as "no
-        # remaining sources". Pre-existing, not introduced by the ordering work
-        # above; the rename branch already stages its rows ahead of the commit.
-        # The fix is the grow-then-shrink staging `aedit_relation` uses, which
-        # cannot simply be lifted here because this tracking block is shared
-        # with the rename branch, whose ordering is deliberately the opposite
-        # (issue #3609). Recovery meanwhile: lightrag-repair-chunk-tracking.
-        # Documented in docs/ProgramingWithCore.md -> Concurrent admin writes.
-        await chunk_entity_relation_graph.upsert_node(entity_name, new_node_data)
+        # Non-rename edit: stage the tracking row grow-then-shrink around this
+        # mutation (issue #3890). The row has to be durable BEFORE the mutation
+        # is issued, not merely before the flush -- on Neo4j or PostgreSQL
+        # `upsert_node` is durable the moment it returns, and on NetworkX the
+        # node is already in the process-wide in-memory graph, where the next
+        # flush by any co-tenant publishes it. Growing edits are the ones that
+        # need this: without it the node lands citing chunks its row does not
+        # name, the `rows subset-of graph` state a purge misreads as "no
+        # remaining sources".
+        #
+        # A single ordering cannot serve both delta directions -- committing a
+        # NARROWED row ahead of the graph is itself that same over-deleting
+        # state -- so the superset row goes first and the removals are applied
+        # after the graph commit, below. The rename branch above needs no such
+        # staging: it writes a fresh node whose `source_id` already matches the
+        # row it stages, and it flushes that row before the commit.
+        if entity_chunks_storage is not None:
+            tracking_update = _entity_chunk_tracking_update(
+                await entity_chunks_storage.get_by_id(entity_name),
+                node_data,
+                new_node_data,
+            )
+            if tracking_update is not None:
+                final_chunk_ids, superset_chunk_ids = tracking_update
+                await entity_chunks_storage.upsert(
+                    {
+                        entity_name: {
+                            "chunk_ids": superset_chunk_ids,
+                            "count": len(superset_chunk_ids),
+                        }
+                    }
+                )
+                await _persist_graph_updates(
+                    entity_chunks_storage=entity_chunks_storage,
+                )
+                if set(superset_chunk_ids) != set(final_chunk_ids):
+                    pending_entity_shrink = final_chunk_ids
+                    entity_tracking_key = entity_name
+                logger.info(
+                    f"Entity Edit: find {len(final_chunk_ids)} chunks related to `{entity_name}`"
+                )
+
+        try:
+            await chunk_entity_relation_graph.upsert_node(entity_name, new_node_data)
+        except BaseException as e:
+            # Accepted residue, and the one place in this staging that cannot be
+            # closed. A cancellation delivered INSIDE this await -- after an
+            # immediate-write backend accepted the row, before control returns
+            # -- tears the edit down before the shrink can run, leaving the node
+            # narrowed with the row still at the staged superset.
+            #
+            # It cannot be deferred away: the CancelledError originates in this
+            # coroutine, so `_finish_deferring_cancellation` has nothing to
+            # defer, and issuing the call from inside that region changes
+            # nothing (measured -- the residue is identical either way).
+            #
+            # It must not be settled blind either. Whether the backend accepted
+            # the mutation is unknowable from here, and narrowing the row when
+            # it did NOT would leave the row a strict SUBSET of the graph --
+            # over-deletion, which AGENTS.md ranks as losing data, traded
+            # against a residue that merely retains a chunk id. So the row stays
+            # wide on purpose and the diagnostic is what is owed.
+            #
+            # It is owed for an ORDINARY exception too, not just a teardown. An
+            # RPC acknowledgement that times out after the backend applied the
+            # update carries exactly the same ambiguity, and the error the
+            # caller gets says "the graph write failed" -- not "your tracking
+            # row may now be wider than the node, and only the offline tool can
+            # prune it". The line only fires for a SHRINKING edit whose write
+            # failed, so it is not noise, and it is hedged because whether the
+            # write landed is precisely what is unknown.
+            if pending_entity_shrink is not None:
+                logger.error(
+                    f"Entity Edit: `{entity_name}`'s graph write did not complete "
+                    f"({type(e).__name__}: {e}). If the backend applied it anyway "
+                    f"-- an immediate-write backend may have, and an "
+                    f"acknowledgement can be lost after the fact -- then its "
+                    f"chunk tracking row `{entity_tracking_key}` is now wider "
+                    "than the node's evidence: it still names the IDs this edit "
+                    "removed, and no retry will prune them, because the next "
+                    "edit reads the narrowed source_id and skips the staging. "
+                    "Run lightrag-repair-chunk-tracking to reconcile it."
+                )
+            raise
 
     description = new_node_data.get("description", "")
     source_id = new_node_data.get("source_id", "")
     entity_type = new_node_data.get("entity_type", "")
     entity_id = compute_mdhash_id(entity_name, prefix="ent-")
 
-    # The graph node was already updated above; a truncation failure here is
-    # the same "graph updated, VDB payload could not be completed" class of
-    # failure as an upsert failure.
-    try:
-        content = _truncate_vdb_content(
-            entity_name + "\n" + description,
-            entities_vdb.global_config,
-            f"entity:{entity_name}",
-        )
-        entity_data = {
-            entity_id: {
-                "content": content,
-                "entity_name": entity_name,
-                "source_id": source_id,
-                "description": description,
-                "entity_type": entity_type,
-            }
-        }
-        await entities_vdb.upsert(entity_data)
-    except Exception as e:
-        raise VectorStorageConsistencyError(
-            f"Vector storage upsert failed for entity `{entity_name}` during entity edit: "
-            f"{e}. The knowledge graph was already updated, so it may now be inconsistent "
-            "with the vector storage. No data is lost (the graph is the authoritative "
-            "source). Stop the LightRAG server and run the offline rebuild tool "
-            "(lightrag-rebuild-vdb) to restore consistency."
-        ) from e
-
     # Old keys whose rows may only be retired once the graph state that
     # replaced them is durable -- see the retirement block below.
     tracking_keys_to_retire: list[tuple[Any, str]] = []
 
     if entity_chunks_storage is not None or relation_chunks_storage is not None:
-        from .utils import (
-            make_relation_chunk_key,
-            compute_incremental_chunk_ids,
-            has_chunk_tracking_row,
-        )
+        from .utils import make_relation_chunk_key, has_chunk_tracking_row
 
-        if entity_chunks_storage is not None:
-            storage_key = original_entity_name if is_renaming else entity_name
-            stored_data = await entity_chunks_storage.get_by_id(storage_key)
-            # Row presence by schema, never list truthiness — see
-            # has_chunk_tracking_row for the authority model.
-            has_stored_row = has_chunk_tracking_row(stored_data)
+        # Rename only. The non-rename edit stages its own row above, ahead of
+        # the graph mutation; reaching this point for it would put the row's
+        # write after the mutation again, which is the defect issue #3890 fixed.
+        if is_renaming and entity_chunks_storage is not None:
+            stored_data = await entity_chunks_storage.get_by_id(original_entity_name)
+            # A rename always migrates the row, even when the source_id is
+            # untouched and the helper would leave it alone: the row has to
+            # reappear under the new key. `final` is used directly -- a rename
+            # writes a FRESH node whose source_id already equals what this row
+            # will name, so there is no wider durable evidence to stay above and
+            # no reason to stage a superset.
+            tracking_update = _entity_chunk_tracking_update(
+                stored_data, node_data, new_node_data
+            )
+            if tracking_update is not None:
+                updated_chunk_ids = tracking_update[0]
+            else:
+                # `None` means the helper saw an unchanged source_id AND a
+                # present row, so the row is already the authoritative list and
+                # migrating it verbatim is the whole job. There is deliberately
+                # no reseed-from-source_id arm here: an absent row cannot reach
+                # this branch, and reseeding one that could would be the stale
+                # reseed issue #3609 exists to prevent.
+                updated_chunk_ids = [
+                    cid for cid in stored_data.get("chunk_ids", []) if cid
+                ]
 
-            old_source_id = node_data.get("source_id", "")
-            old_chunk_ids = [cid for cid in old_source_id.split(GRAPH_FIELD_SEP) if cid]
-
-            new_source_id = new_node_data.get("source_id", "")
-            new_chunk_ids = [cid for cid in new_source_id.split(GRAPH_FIELD_SEP) if cid]
-
-            source_id_changed = set(new_chunk_ids) != set(old_chunk_ids)
-
-            if source_id_changed or not has_stored_row or is_renaming:
-                existing_full_chunk_ids = []
-                if has_stored_row:
-                    existing_full_chunk_ids = [
-                        cid for cid in stored_data.get("chunk_ids", []) if cid
-                    ]
-
-                # Reseed from the graph's source_id only when no tracking row exists at
-                # all; a present-but-empty row must not be repopulated from a possibly
-                # stale source_id.
-                if not has_stored_row:
-                    existing_full_chunk_ids = old_chunk_ids.copy()
-
-                updated_chunk_ids = compute_incremental_chunk_ids(
-                    existing_full_chunk_ids, old_chunk_ids, new_chunk_ids
-                )
-
-                # On rename, write the new key BEFORE deleting the old one: on
-                # RPC-backed KV storages each call commits independently, so the
-                # reverse order opens a crash window in which the row exists under
-                # neither key — turning a curated row absent and re-arming the
-                # stale reseed. An orphaned old-key row is dead bookkeeping; a
-                # lost row is the bug.
-                await entity_chunks_storage.upsert(
-                    {
-                        entity_name: {
-                            "chunk_ids": updated_chunk_ids,
-                            "count": len(updated_chunk_ids),
-                        }
+            # On rename, write the new key BEFORE deleting the old one: on
+            # RPC-backed KV storages each call commits independently, so the
+            # reverse order opens a crash window in which the row exists under
+            # neither key — turning a curated row absent and re-arming the
+            # stale reseed. An orphaned old-key row is dead bookkeeping; a
+            # lost row is the bug.
+            await entity_chunks_storage.upsert(
+                {
+                    entity_name: {
+                        "chunk_ids": updated_chunk_ids,
+                        "count": len(updated_chunk_ids),
                     }
-                )
-                if is_renaming:
-                    # Retired below, after the graph commit that actually
-                    # removes the old node. Deleting it here would strip the
-                    # provenance of an entity still on disk.
-                    tracking_keys_to_retire.append(
-                        (entity_chunks_storage, original_entity_name)
-                    )
+                }
+            )
+            # Retired below, after the graph commit that actually removes the
+            # old node. Deleting it here would strip the provenance of an
+            # entity still on disk.
+            tracking_keys_to_retire.append(
+                (entity_chunks_storage, original_entity_name)
+            )
 
-                logger.info(
-                    f"Entity Edit: find {len(updated_chunk_ids)} chunks related to `{entity_name}`"
-                )
+            logger.info(
+                f"Entity Edit: find {len(updated_chunk_ids)} chunks related to `{entity_name}`"
+            )
 
         if is_renaming and relation_chunks_storage is not None and relations_to_update:
             for src, tgt, edge_data in relations_to_update:
@@ -1258,7 +1355,7 @@ async def _edit_entity_impl(
                 "nothing has lost its provenance. Retry the rename."
             ) from e
 
-    async def _commit_rename_and_retire_tracking() -> None:
+    async def _commit_graph_and_settle_tracking() -> None:
         # `entity_name` has been rebound to the new name by now, so the removal
         # names the original explicitly.
         if is_renaming:
@@ -1295,23 +1392,127 @@ async def _edit_entity_impl(
         # Flushed inside the region: on a deferred KV backend the deletes above
         # only touch memory, so a cancellation delivered before this flush would
         # leave the retired rows on disk -- the orphan the region prevents.
-        await _persist_graph_updates(
-            entity_chunks_storage=entity_chunks_storage,
-            relation_chunks_storage=relation_chunks_storage,
-        )
+        #
+        # Rename-only, because retiring is the only thing that needs it. A
+        # non-rename edit touches neither storage here -- its superset row was
+        # flushed before the graph mutation and its shrink flushes its own row
+        # below -- so flushing them anyway only added a way to fail: this helper
+        # re-raises the first phase-1 error, so an unrelated
+        # `relation_chunks_storage` flush failure would skip the shrink and
+        # surface an error naming neither the row nor the repair tool.
+        if is_renaming:
+            await _persist_graph_updates(
+                entity_chunks_storage=entity_chunks_storage,
+                relation_chunks_storage=relation_chunks_storage,
+            )
+
+        # Shrink phase of the non-rename staging (mutually exclusive with the
+        # rename retirement above): the graph write that justifies dropping
+        # these ids is durable now, so the row may finally lose them.
+        #
+        # Inside the region for the same reason the retirement is. A
+        # cancellation delivered during the commit is deferred to the END of
+        # this coroutine, so a shrink placed after the region would simply never
+        # run -- `CancelledError` is a `BaseException`, so no `except Exception`
+        # out there can catch it either. That leaves the un-healable residue: a
+        # row still holding the staged superset, which no retry reaches because
+        # the next edit reads the already-narrowed source_id and
+        # `_entity_chunk_tracking_update` returns None.
+        #
+        # A failure raises `VectorStorageConsistencyError`, matching the
+        # retirement above and `aedit_relation`: the edit IS durable, so the
+        # message says so, but the row is left wider than the node's evidence
+        # and only the offline tool can reconcile it. When a cancel is already
+        # pending, `_finish_deferring_cancellation` logs it instead -- that is
+        # the one place the failure can still be seen. The residue is the
+        # accepted direction (a row naming ids the entity no longer cites);
+        # reordering to avoid it would produce the over-deleting mirror.
+        if pending_entity_shrink is not None:
+            try:
+                await entity_chunks_storage.upsert(
+                    {
+                        entity_tracking_key: {
+                            "chunk_ids": pending_entity_shrink,
+                            "count": len(pending_entity_shrink),
+                        }
+                    }
+                )
+                await _persist_graph_updates(
+                    entity_chunks_storage=entity_chunks_storage,
+                )
+            except Exception as e:
+                logger.error(
+                    f"Entity Edit: `{entity_name}` is durable, but pruning its "
+                    f"chunk tracking row `{entity_tracking_key}` down to "
+                    f"{pending_entity_shrink} failed: {e}"
+                )
+                raise VectorStorageConsistencyError(
+                    f"Pruning the chunk tracking row `{entity_tracking_key}` "
+                    f"failed after editing entity `{entity_name}`: {e}. The edit "
+                    "itself is durable -- the graph carries the new values -- but "
+                    "the row still names chunk IDs the edit removed, so it is "
+                    "wider than the entity's evidence. No data is lost (a purge "
+                    "reading the wider row is more conservative, not less), and "
+                    "re-issuing the edit cannot repair it: the second run sees an "
+                    "unchanged source_id and skips the tracking staging. Run "
+                    "lightrag-repair-chunk-tracking to reconcile the row. The "
+                    "vector records were not flushed either, so re-issue the edit "
+                    "or run lightrag-rebuild-vdb for those."
+                ) from e
 
     # One cancellation-deferring region, as in adelete_by_entity: after the
     # commit the old node is gone for good, so its rows describe nothing and the
     # cleanup is owed; a cancellation delivered mid-cleanup would strand them.
     # The region starts before the commit because that await is itself where a
-    # deferred cancellation reappears.
+    # deferred cancellation reappears, and it ENDS after the tracking is
+    # settled -- retired on a rename, shrunk on a non-rename edit -- because
+    # everything it owes the graph state has to survive a cancel.
     await _finish_deferring_cancellation(
-        _commit_rename_and_retire_tracking(),
+        _commit_graph_and_settle_tracking(),
         f"Entity Edit: `{original_entity_name}` graph and tracking cleanup",
     )
+    # The entity's vector record is written only once the graph state it mirrors
+    # is durable AND the tracking is settled. It used to sit between the
+    # mutation and that region, which made it one more thing that could strand
+    # the pending shrink: on an immediate-write backend `upsert_node` is already
+    # durable when this runs, so a truncation or upsert failure left the node
+    # narrowed with the row still holding the superset -- and nothing heals
+    # that, because the next edit reads the narrowed source_id and skips the
+    # staging. Writing it here instead removes the hazard rather than guarding
+    # it, and matches what the note below has always said about vector residue.
+    try:
+        content = _truncate_vdb_content(
+            entity_name + "\n" + description,
+            entities_vdb.global_config,
+            f"entity:{entity_name}",
+        )
+        entity_data = {
+            entity_id: {
+                "content": content,
+                "entity_name": entity_name,
+                "source_id": source_id,
+                "description": description,
+                "entity_type": entity_type,
+            }
+        }
+        await entities_vdb.upsert(entity_data)
+    except Exception as e:
+        raise VectorStorageConsistencyError(
+            f"Vector storage upsert failed for entity `{entity_name}` during entity edit: "
+            f"{e}. The knowledge graph was already updated, so it may now be inconsistent "
+            "with the vector storage. No data is lost (the graph is the authoritative "
+            "source). Stop the LightRAG server and run the offline rebuild tool "
+            "(lightrag-rebuild-vdb) to restore consistency."
+        ) from e
+
     # Vector stores last: their residue is the rebuildable window this codebase
     # accepts elsewhere, and bundling them earlier would let a vector failure
-    # abort an edit whose graph state is already durable.
+    # abort an edit whose graph state is already durable. It is also strictly
+    # AFTER the tracking is settled inside the region above, so a raising vector
+    # callback can no longer strand the staged shrink. The reverse exposure is
+    # the acceptable one: a shrink failure skips this flush, leaving vector
+    # records a re-issued edit rewrites and `lightrag-rebuild-vdb` restores,
+    # rather than a tracking row nothing but the offline tool can heal.
     await _persist_graph_updates(
         entities_vdb=entities_vdb,
         relationships_vdb=relationships_vdb,
@@ -1825,10 +2026,14 @@ async def aedit_relation(
                     # Grow phase: everything the row already held, plus the
                     # genuine additions. Identical to the final row whenever
                     # this edit removes nothing, which is the common case.
+                    # Set built once -- see the same note in
+                    # `_entity_chunk_tracking_update`: rebuilding it per element
+                    # makes the edit quadratic in the row's chunk count.
+                    existing_chunk_id_set = set(existing_full_chunk_ids)
                     additions = [
                         cid
                         for cid in updated_chunk_ids
-                        if cid not in set(existing_full_chunk_ids)
+                        if cid not in existing_chunk_id_set
                     ]
                     superset_chunk_ids = existing_full_chunk_ids + additions
                     if set(superset_chunk_ids) != set(updated_chunk_ids):
