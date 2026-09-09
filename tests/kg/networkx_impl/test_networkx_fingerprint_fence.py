@@ -941,13 +941,15 @@ async def test_a_stat_that_fails_only_while_counting_does_not_lose_the_event(
             return file_fingerprint.UNREADABLE
 
         worker_b._stat_fingerprint = unreadable_once
-        assert await worker_b.has_node("from_a") is True
+        with pytest.raises(OSError, match="could not be sampled"):
+            await worker_b.has_node("from_a")
 
         # Not counted on that call — an unreadable sample cannot say what it
-        # would be counting. What matters is that it is not LOST: no
-        # fingerprint was adopted, so the divergence still stands.
+        # would be counting. What matters is that it is not LOST: the shared
+        # sample reached `_reload_locked`, which REFUSED it, so no fingerprint
+        # was adopted and the divergence still stands.
         assert worker_b._missed_notification_reloads == 0
-        assert worker_b._loaded_fingerprint is None
+        assert worker_b._loaded_fingerprint is not None
 
         assert await worker_b.has_node("from_a") is True
         assert worker_b._missed_notification_reloads == 1
@@ -1002,17 +1004,159 @@ async def test_the_divergence_test_reuses_the_caller_s_sample(
         await worker_a.finalize()
 
 
+def _unreadable_once(worker) -> None:
+    """Make the NEXT `_reload_locked` self-sample fail, and only that one.
+
+    `_peer_commit_detected()` samples through `file_fingerprint` directly, so
+    shadowing the instance's `_stat_fingerprint` reaches the reload's own
+    sample and nothing else. Self-restoring on its FIRST call rather than on
+    scope exit -- that is what lets the retry inside the same test see a
+    readable file, and why no `finally` is needed.
+    """
+    original = worker._stat_fingerprint
+
+    def unreadable_once():
+        worker._stat_fingerprint = original
+        return file_fingerprint.UNREADABLE
+
+    worker._stat_fingerprint = unreadable_once
+
+
 @pytest.mark.asyncio
-async def test_an_unreadable_adoption_keeps_the_dedupe_marker(
+async def test_an_unreadable_sample_does_not_silently_drop_a_mutation(
+    tmp_path, multiprocess
+):
+    """The silent partial loss a `None` fingerprint used to cause.
+
+    Loading on an unreadable sample records `None`, against which every state
+    is a divergence -- so the reload inside the NEXT `_get_graph` fired again
+    and discarded whatever had been mutated in between, and the commit after
+    it SUCCEEDED without those mutations. Their document is then marked
+    PROCESSED, which is the one direction the consistency rules forbid: a loss
+    that is neither loud nor self-healing.
+
+    Deliberately without `lost_notification`: this is the ordinary writer
+    handoff, where the flag DOES arrive and the reload is legitimate. Only its
+    unreadable sample is injected.
+    """
+    worker_a = await _worker(tmp_path)
+    worker_b = await _worker(tmp_path)
+    try:
+        await worker_a.upsert_node("from_a", {"entity_id": "from_a"})
+        assert await worker_a.index_done_callback() is True
+        assert worker_b.storage_updated.value is True
+
+        _unreadable_once(worker_b)
+        refused = ""
+        try:
+            await worker_b.upsert_node("X", {"entity_id": "X"})
+        except OSError as exc:
+            # The refusal. Retrying is what the caller does -- at batch
+            # granularity that is the FAILED path reprocessing the document.
+            refused = str(exc)
+            await worker_b.upsert_node("X", {"entity_id": "X"})
+        await worker_b.upsert_node("Y", {"entity_id": "Y"})
+
+        assert await worker_b.index_done_callback() is True
+        on_disk = NetworkXStorage.load_nx_graph(worker_b._graphml_xml_file)
+        # X is the one that used to vanish: applied after the unreadable
+        # adoption, discarded by the spurious reload that Y's `_get_graph`
+        # triggered, and never mentioned again.
+        assert on_disk.has_node("X")
+        assert on_disk.has_node("Y")
+        assert on_disk.has_node("from_a")
+        assert "could not be sampled" in refused, (
+            "the mutation survived by luck, not by the reload refusing"
+        )
+    finally:
+        await worker_b.finalize()
+        await worker_a.finalize()
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_sample_never_installs_an_empty_graph(
     tmp_path, multiprocess, lost_notification
 ):
-    """Clearing the marker is only safe once a CONCRETE state is recorded.
+    """The same failure, at its worst: a whole workspace overwritten.
 
-    `adopted(UNREADABLE)` is `None`, which means "nothing recorded" — and
-    `peer_commit_detected` reports a change against `None` for any state. So a
-    clear on that adoption forgets which commit was already counted, and the
-    next call counts the same one again. The post-drop state is `(None,)`, a
-    real fingerprint, so it still clears.
+    `load_nx_graph` gates on `os.path.exists`, which is False for ANY stat
+    failure -- the same one that produced `UNREADABLE`. So the load returned
+    `None`, `or nx.Graph()` made that an empty graph, and while the stat kept
+    failing the fence could not object (`divergence_detected` is False for
+    `UNREADABLE`): the next commit serialized the empty graph over the real
+    file. The class docstring names that outcome as the one thing this fence
+    must never produce.
+    """
+    worker = await _worker(tmp_path)
+    try:
+        await worker.upsert_node("durable", {"entity_id": "durable"})
+        assert await worker.index_done_callback() is True
+
+        with pytest.MonkeyPatch.context() as unreadable:
+            # Both halves of the same stat failure: the fence cannot sample,
+            # and `os.path.exists` reports the file gone.
+            unreadable.setattr(
+                file_fingerprint,
+                "sample",
+                lambda paths, *, workspace: file_fingerprint.UNREADABLE,
+            )
+            unreadable.setattr(
+                NetworkXStorage, "load_nx_graph", staticmethod(lambda file_name: None)
+            )
+            worker.storage_updated.value = True
+            with pytest.raises(OSError, match="could not be sampled"):
+                await worker.has_node("durable")
+            # And the commit that used to publish the empty graph cannot
+            # proceed either: the refused reload left the flag set, so the
+            # writer's own fence still owes a reload and refuses in turn.
+            # Nothing is serialized at all -- which is why the file survives.
+            with pytest.raises(OSError, match="could not be sampled"):
+                await worker.index_done_callback()
+
+        assert NetworkXStorage.load_nx_graph(worker._graphml_xml_file).has_node(
+            "durable"
+        )
+    finally:
+        await worker.finalize()
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_sample_leaves_the_recovery_reload_armed(
+    tmp_path, multiprocess
+):
+    """A refusal must not discharge the reload this process owes itself.
+
+    Same shape as a manager outage during recovery: the divergence stays
+    visible, the flag stays armed, and the next readable call discards the
+    unpersisted mutation.
+    """
+    worker = await _worker_with_a_failed_save(tmp_path)
+    try:
+        _unreadable_once(worker)
+        with pytest.raises(OSError, match="could not be sampled"):
+            await worker.has_node("durable")
+        assert worker._recovery_reload_pending is True
+
+        assert await worker.has_node("durable") is True
+        assert await worker.has_node("never_saved") is False
+        assert worker._recovery_reload_pending is False
+    finally:
+        await worker.finalize()
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_sample_adopts_nothing_and_keeps_the_marker(
+    tmp_path, multiprocess, lost_notification
+):
+    """A reload cannot adopt what it could not sample — so it must not load.
+
+    `adopted(UNREADABLE)` is `None`, which means "nothing recorded", and
+    `peer_commit_detected` reports a change against `None` for any state.
+    Recording it would forget which commit was already counted AND leave the
+    next `_get_graph` reloading again, discarding whatever was mutated in
+    between. `_reload_locked` therefore refuses an unreadable sample outright:
+    the marker survives because nothing was adopted at all, which is the same
+    guarantee reached one step earlier.
     """
     worker_a = await _worker(tmp_path)
     worker_b = await _worker(tmp_path)
@@ -1029,8 +1173,8 @@ async def test_an_unreadable_adoption_keeps_the_dedupe_marker(
                 await worker_b.has_node("from_a")
         assert worker_b._missed_notification_reloads == 1
 
-        # The retry's pre-read sample fails while the load itself succeeds, so
-        # the adoption records `None` rather than a state.
+        # The retry's pre-read sample fails while the file itself is readable.
+        # Loading anyway would record `None`; refusing records nothing.
         original = worker_b._stat_fingerprint
 
         def unreadable_once():
@@ -1038,8 +1182,9 @@ async def test_an_unreadable_adoption_keeps_the_dedupe_marker(
             return file_fingerprint.UNREADABLE
 
         worker_b._stat_fingerprint = unreadable_once
-        assert await worker_b.has_node("from_a") is True
-        assert worker_b._loaded_fingerprint is None
+        with pytest.raises(OSError, match="could not be sampled"):
+            await worker_b.has_node("from_a")
+        assert worker_b._loaded_fingerprint is not None
 
         # Same peer commit, still one event.
         assert await worker_b.has_node("from_a") is True

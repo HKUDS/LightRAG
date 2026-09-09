@@ -191,6 +191,12 @@ class NetworkXStorage(BaseGraphStorage):
         one way this fence could *introduce* a lost write. Sampling early can
         only cost a redundant reload, which is harmless.
 
+        A sample that fails outright (``UNREADABLE``) is not a third option
+        for a reload: ``_reload_locked`` refuses to load at all, because it
+        could neither trust nor record what it read. See its docstring for
+        both halves of that, and ``file_fingerprint.adopted`` for the residue
+        that remains where a ``None`` fingerprint is still recorded.
+
         Single-process mode skips the fingerprint test entirely
         (``file_fingerprint.fence_enabled()``): there is no peer that could have
         committed, so a divergent file means an external edit, and reloading
@@ -219,13 +225,24 @@ class NetworkXStorage(BaseGraphStorage):
               predates it. Failing towards a reload instead would install an
               empty graph from a file it cannot read, and the next commit
               would serialize that over the real one.
-            * The *same* failure inside a reload has a second, smaller
-              effect: ``adopted(UNREADABLE)`` is ``None``, so the reload
-              records "nothing" and the next call reads any state as a
-              divergence — one redundant reload and one
+            * The *same* failure inside a **reload** is refused rather
+              than absorbed: ``_reload_locked`` raises without loading. Both
+              of the alternatives lose data. Loading blind installs an empty
+              graph (``load_nx_graph`` gates on ``os.path.exists``, false for
+              any stat failure) that the next commit writes over the real
+              file; loading and recording ``adopted(UNREADABLE)`` — i.e.
+              ``None``, against which every state is a divergence — makes the
+              NEXT ``_get_graph`` reload again and discard whatever was
+              mutated in between, after which the commit SUCCEEDS without it
+              and the document is marked PROCESSED. Refusing costs the batch,
+              which the FAILED path reprocesses. See ``_reload_locked``.
+            * What remains of that failure is the writer adopting its OWN
+              commit or drop through ``_record_fingerprint``, which records
+              ``None`` — one redundant reload of a graph that already equals
+              the file, discarding nothing, plus one
               ``_missed_notification_reloads`` increment for a peer commit
-              that may never have happened. Bounded, self-healing on the next
-              readable ``stat``, and biased towards over- rather than
+              that never happened. Bounded, self-healing on the next readable
+              ``stat``, and biased towards over- rather than
               under-reporting. See ``file_fingerprint.adopted`` for why the
               obvious fix is recorded there as an option rather than taken.
 
@@ -763,6 +780,17 @@ class NetworkXStorage(BaseGraphStorage):
         re-parse on the very next call, and a missed recovery clear is worse:
         it is sticky, so it would make every later commit decline forever.
 
+        **Raises** ``OSError`` without loading anything when the sample is
+        ``UNREADABLE`` -- given or taken here. A reload has to record what it
+        read, and an unsampled file cannot be recorded; the branch below says
+        what each half of that costs. Every caller's ``except`` already treats
+        a failed reload as "the divergence stands, retry next call", so this
+        needs no new handling -- but it does mean no reload path can adopt
+        ``UNREADABLE``. The only remaining producers of a ``None``
+        fingerprint are ``_record_fingerprint``'s adoptions of this process's
+        OWN commit or drop, where the in-memory graph already equals the file
+        and the redundant reload that follows discards nothing.
+
         Synchronous on purpose: it adds no suspension point inside
         ``_get_graph``'s lock body, which the *Commit gate* reasoning depends
         on.
@@ -771,6 +799,38 @@ class NetworkXStorage(BaseGraphStorage):
         # *Cross-process sync protocol*.
         if fingerprint is None:
             fingerprint = self._stat_fingerprint()
+        if fingerprint is file_fingerprint.UNREADABLE:
+            # REFUSE, do not load. A reload out of an unreadable sample is
+            # unsafe twice over, and both ways cost data:
+            #
+            # * ``load_nx_graph`` gates on ``os.path.exists``, which reports
+            #   False for *any* stat failure -- the same failure that produced
+            #   UNREADABLE. So the load returns None, ``or nx.Graph()`` makes
+            #   that an EMPTY graph, and while the stat keeps failing the fence
+            #   cannot object (``divergence_detected`` returns False for
+            #   UNREADABLE): the next commit serializes the empty graph over
+            #   the real file. That is the outcome *Cross-process sync
+            #   protocol* names as the one thing this fence must never do.
+            # * Even with the file readable and only its stat failing,
+            #   ``adopted(UNREADABLE)`` records ``None``, against which every
+            #   state is a divergence -- so the NEXT ``_get_graph`` reloads
+            #   again, and that second reload discards whatever this process
+            #   mutated in between. The commit after it then succeeds without
+            #   those mutations and their document is marked PROCESSED: a
+            #   silent partial loss. See ``file_fingerprint.adopted``.
+            #
+            # Raising instead costs work, never data: the flag and the
+            # fingerprint are left exactly as they were, so the divergence
+            # stays visible and the next call retries the reload; a pending
+            # recovery reload stays armed; the operation fails, which takes
+            # its batch through the FAILED path and reprocesses it. Same
+            # shape as a manager outage during recovery.
+            raise OSError(
+                f"[{self.workspace}] Refusing to reload "
+                f"{self._graphml_xml_file}: its identity could not be sampled, "
+                "so a load could neither be trusted to have read the current "
+                "file nor be recorded as one. Retrying on the next call."
+            )
         self._graph = (
             NetworkXStorage.load_nx_graph(self._graphml_xml_file) or nx.Graph()
         )
@@ -864,9 +924,21 @@ class NetworkXStorage(BaseGraphStorage):
                 logger.info(
                     f"[{self.workspace}] Process {os.getpid()} reloading graph {self._graphml_xml_file} due to modifications by another process"
                 )
-                if (
-                    file_fingerprint.fence_enabled()
-                    and not self._peer_commit_detected()
+                # One sample for the log line and the reload alike. This
+                # branch counts nothing (a notification DID arrive, so nothing
+                # was lost), but the two must still agree on what they saw:
+                # sampling twice let the log claim the file was unchanged while
+                # the reload refused an unreadable one.
+                sampled = self._stat_fingerprint()
+                if sampled is file_fingerprint.UNREADABLE:
+                    logger.debug(
+                        f"[{self.workspace}] Reload notification for "
+                        f"{self._graphml_xml_file}, whose identity could not be "
+                        "sampled; the reload below refuses rather than load "
+                        "blind"
+                    )
+                elif file_fingerprint.fence_enabled() and not (
+                    self._peer_commit_detected(sampled)
                 ):
                     # Notified about the file this process already holds: a
                     # self-notification, or a peer commit that a sibling
@@ -880,7 +952,7 @@ class NetworkXStorage(BaseGraphStorage):
                         f"{self._graphml_xml_file} names the snapshot already "
                         "loaded; reloading anyway"
                     )
-                self._reload_locked()
+                self._reload_locked(sampled)
             elif self._peer_commit_detected():
                 # One sample, shared by the counting and the reload -- see
                 # _count_unannounced_peer_commit_locked for why they must not

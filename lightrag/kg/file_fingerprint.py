@@ -196,23 +196,43 @@ def adopted(sampled: Fingerprint | object) -> Fingerprint | None:
 
     ``UNREADABLE`` becomes ``None``, which differs from any real file: the next
     check therefore re-samples and, if the ``stat`` works by then, reloads
-    once. That is the harmless direction.
+    once. That is the safe direction for the *reload decision* — the residue
+    below is what it is not harmless about.
 
-    **Accepted residue — one spurious lost notification per unreadable
-    adoption.** ``None`` means "nothing recorded", and every state reads as a
-    change against it, so a reload whose sample came back ``UNREADABLE``
-    leaves the *next* call reporting a divergence even when the file never
-    moved — costing one redundant reload and, through the ``flag == False``
-    branch, one ``_missed_notification_reloads`` increment for a peer commit
-    that may never have happened. It is the same overcount the module
-    docstring's item 1 rejects, arriving by a different door: there the
-    fingerprint was invalidated deliberately, here a failed ``stat`` does it.
+    **Accepted residue — one spurious divergence per unreadable adoption.**
+    ``None`` means "nothing recorded", and every state reads as a change
+    against it, so a reload whose sample came back ``UNREADABLE`` leaves the
+    *next* call reporting a divergence even when the file never moved. It is
+    the same overcount the module docstring's item 1 rejects, arriving by a
+    different door: there the fingerprint was invalidated deliberately, here
+    a failed ``stat`` does it.
 
     Bounded and self-healing: the next readable ``stat`` adopts a concrete
     state, so it cannot repeat without the ``stat`` failing again, and it
     biases the counter *up*, never down — an inflated counter argues for the
     ``os.utime`` remedy the module docstring defers, which is the direction
     that costs work rather than data.
+
+    **Only a storage that can REPLAY may reload on an unreadable sample.**
+    That is what keeps the residue at one reload. A reload discards whatever
+    the process has mutated in memory and not yet committed, and the
+    storages differ in what that costs:
+
+    * The vector backends replay: ``index_done_callback`` reloads and then
+      ``_flush_pending_locked`` re-applies the pending buffers over the
+      reloaded snapshot. A spurious reload costs them work and nothing else,
+      so they adopt ``None`` and move on.
+    * ``NetworkXStorage`` has no redo log, so a reload DISCARDS those
+      mutations. Between batches that is the intended behaviour; reached
+      spuriously it can land *mid*-batch, and then the mutations dropped are
+      simply absent from the commit that follows — which SUCCEEDS, marking
+      their document PROCESSED. A silent partial loss, neither loud nor
+      self-healing. Its ``_reload_locked`` therefore refuses to load on an
+      ``UNREADABLE`` sample at all (it raises, which fails the batch loudly
+      and retries), so no reload of its graph can reach this function with
+      one. What still can are its adoptions of its OWN commit or drop
+      (``_record_fingerprint``), where the in-memory graph already equals the
+      file and the redundant reload discards nothing.
 
     Recorded as an option, not done: the obvious fix is to keep the previously
     recorded fingerprint instead of clearing it (never worse for the reload
