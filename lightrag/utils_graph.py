@@ -1901,10 +1901,12 @@ async def aedit_relation(
             # verify the VDB payload BEFORE any mutation below: if truncation
             # fails (a deterministic, non-retryable content-shape problem),
             # nothing has been touched yet. The actual VDB delete/upsert I/O
-            # calls happen strictly after the graph write below, so a
-            # transient VDB I/O failure (unlike a truncation failure) still
-            # leaves the normal recoverable (graph-updated, VDB-stale)
-            # window -- the new relation content is never lost.
+            # calls happen strictly after the graph write AND after the
+            # tracking row it justifies is settled, so a transient VDB I/O
+            # failure (unlike a truncation failure) still leaves the normal
+            # recoverable (graph-updated, VDB-stale) window -- the new relation
+            # content is never lost, and no vector failure can come between the
+            # graph write and the shrink that answers it.
             new_edge_data = {**edge_data, **updated_data}
             description = new_edge_data.get("description", "")
             keywords = new_edge_data.get("keywords", "")
@@ -2058,84 +2060,186 @@ async def aedit_relation(
                     )
 
             # 4. Update relation information in the graph
-            await chunk_entity_relation_graph.upsert_edge(
-                source_entity, target_entity, new_edge_data
-            )
-
-            # Delete the old relation record from the vector database.
-            # Delete both permutations to handle relationships created
-            # before normalization.
-            rel_ids_to_delete = [
-                compute_mdhash_id(source_entity + target_entity, prefix="rel-"),
-                compute_mdhash_id(target_entity + source_entity, prefix="rel-"),
-            ]
-            await relationships_vdb.delete(rel_ids_to_delete)
-            logger.debug(
-                f"Relation Edit: delete vdb for `{source_entity}`~`{target_entity}`"
-            )
-
-            # Update vector database
-            await relationships_vdb.upsert(relation_data)
-
-            # 5. Save changes
-            await _persist_graph_updates(
-                relationships_vdb=relationships_vdb,
-                chunk_entity_relation_graph=chunk_entity_relation_graph,
-                context=f"Relation Edit: `{source_entity}`~`{target_entity}`",
-            )
-
-            # 6. Shrink phase: the graph write that justifies dropping these IDs
-            #    is durable now, so the row may finally lose them.
-            #
-            #    A failure here raises `VectorStorageConsistencyError`, the type
-            #    this codebase already uses for "a step AFTER a durable graph
-            #    update failed" -- its docstring names a chunk-tracking
-            #    retirement as one of its two cases, and the rename branch of
-            #    `_edit_entity_impl` raises it for exactly this shape. The edit
-            #    IS durable, so the message says so; what must not happen is
-            #    answering 200 and letting the caller believe the row matches.
-            #    Logging alone would be a swallowed failure (AGENTS.md,
-            #    *Consistency without transactions*): the residue may heal at
-            #    leisure, the failure may not go unreported. It is also the one
-            #    residue in this function a retry CANNOT heal -- the second edit
-            #    sees an unchanged source_id and skips the tracking block
-            #    entirely -- so the operator is the only recovery path, and a
-            #    silent 200 guarantees they never learn to take it. The residue
-            #    itself stays the accepted direction (a row naming IDs the
-            #    relation no longer cites); reordering to avoid it would produce
-            #    the over-deleting mirror instead.
-            if pending_tracking_shrink is not None:
-                try:
-                    await relation_chunks_storage.upsert(
-                        {
-                            tracking_storage_key: {
-                                "chunk_ids": pending_tracking_shrink,
-                                "count": len(pending_tracking_shrink),
-                            }
-                        }
-                    )
-                    await _persist_graph_updates(
-                        relation_chunks_storage=relation_chunks_storage,
-                    )
-                except Exception as e:
+            try:
+                await chunk_entity_relation_graph.upsert_edge(
+                    source_entity, target_entity, new_edge_data
+                )
+            except BaseException as e:
+                # Accepted residue, and the one place in this staging that
+                # cannot be closed -- the same one `_edit_entity_impl` documents
+                # around its `upsert_node`. A cancellation delivered INSIDE this
+                # await, after an immediate-write backend accepted the edge and
+                # before control returns, tears the edit down before the shrink
+                # can run, leaving the edge narrowed with the row still at the
+                # staged superset.
+                #
+                # It cannot be deferred away: the `CancelledError` originates in
+                # this coroutine, so `_finish_deferring_cancellation` has
+                # nothing to defer. It must not be settled blind either --
+                # whether the backend accepted the mutation is unknowable from
+                # here, and narrowing the row when it did NOT would leave the
+                # row a strict SUBSET of the graph, over-deletion, which
+                # AGENTS.md ranks as losing data. So the row stays wide on
+                # purpose and the diagnostic is what is owed.
+                #
+                # Owed for an ordinary exception too: an acknowledgement lost
+                # after the backend applied the write carries the same
+                # ambiguity, and the error the caller gets says only that the
+                # graph write failed. The line fires only for a SHRINKING edit,
+                # so it is not noise, and it is hedged because whether the write
+                # landed is precisely what is unknown.
+                if pending_tracking_shrink is not None:
                     logger.error(
-                        f"Relation Edit: `{source_entity}`~`{target_entity}` is "
-                        f"durable, but pruning its chunk tracking row "
-                        f"`{tracking_storage_key}` down to "
-                        f"{pending_tracking_shrink} failed: {e}"
+                        f"Relation Edit: `{source_entity}`~`{target_entity}`'s "
+                        f"graph write did not complete ({type(e).__name__}: {e}). "
+                        "If the backend applied it anyway -- an immediate-write "
+                        "backend may have, and an acknowledgement can be lost "
+                        "after the fact -- then its chunk tracking row "
+                        f"`{tracking_storage_key}` is now wider than the "
+                        "relation's evidence: it still names the IDs this edit "
+                        "removed, and no retry will prune them, because the next "
+                        "edit reads the narrowed source_id and skips the "
+                        "staging. Run lightrag-repair-chunk-tracking to "
+                        "reconcile it."
                     )
-                    raise VectorStorageConsistencyError(
-                        f"Pruning the chunk tracking row `{tracking_storage_key}` "
-                        f"failed after editing relation `{source_entity}`~"
-                        f"`{target_entity}`: {e}. The edit itself is durable -- the "
-                        "graph and vector records carry the new values -- but the "
-                        "row still names chunk IDs the edit removed, so it is wider "
-                        "than the relation's evidence. No data is lost (a purge "
-                        "reading the wider row is more conservative, not less), and "
-                        "re-issuing the edit cannot repair it: the second run sees "
-                        "an unchanged source_id and skips the tracking update. Run "
-                        "lightrag-repair-chunk-tracking to reconcile the row."
-                    ) from e
+                raise
+
+            async def _commit_graph_and_settle_tracking() -> None:
+                # 5. Commit the graph on its own, and confirm it, before the row
+                #    that describes it is allowed to narrow.
+                #
+                #    This used to be one `_persist_graph_updates` call flushing
+                #    the graph and `relationships_vdb` together, with the shrink
+                #    after it -- so a failure of the vector half exited the edit
+                #    before the shrink ran, leaving the row on the staged
+                #    superset with nothing reported about it (issue #3895).
+                #    Committing the graph alone here keeps the #3889 ranking
+                #    without needing the combined call: a declined commit raises
+                #    at this line, before the vector flush is attempted at all,
+                #    so it still outranks any vector failure -- and the wording
+                #    is the same, both sites raise `_declined_commit_error`.
+                await _commit_graph_or_raise(
+                    chunk_entity_relation_graph,
+                    f"Relation Edit: `{source_entity}`~`{target_entity}`",
+                )
+
+                # 6. Shrink phase: the graph write that justifies dropping these
+                #    IDs is durable now, so the row may finally lose them.
+                #
+                #    Inside the region, and before the vector work, for the two
+                #    reasons #3892 moved the entity one. A cancellation
+                #    delivered during the commit above is deferred to the END of
+                #    this coroutine -- `commit_in_storage_io` finishes the write
+                #    and its commit hook first -- and `CancelledError` is a
+                #    `BaseException`, so a shrink placed outside would simply
+                #    never run and no `except Exception` out there could notice.
+                #
+                #    A failure here raises `VectorStorageConsistencyError`, the
+                #    type this codebase already uses for "a step AFTER a durable
+                #    graph update failed" -- its docstring names a chunk-tracking
+                #    retirement as one of its two cases, and the rename branch of
+                #    `_edit_entity_impl` raises it for exactly this shape. The
+                #    edit IS durable, so the message says so; what must not
+                #    happen is answering 200 and letting the caller believe the
+                #    row matches. Logging alone would be a swallowed failure
+                #    (AGENTS.md, *Consistency without transactions*): the residue
+                #    may heal at leisure, the failure may not go unreported. It
+                #    is also the one residue in this function a retry CANNOT
+                #    heal -- the second edit sees an unchanged source_id and
+                #    skips the tracking block entirely -- so the operator is the
+                #    only recovery path, and a silent 200 guarantees they never
+                #    learn to take it. When a cancel is already pending,
+                #    `_finish_deferring_cancellation` logs it instead: that is
+                #    the one place the failure can still be seen. The residue
+                #    itself stays the accepted direction (a row naming IDs the
+                #    relation no longer cites); reordering to avoid it would
+                #    produce the over-deleting mirror instead.
+                if pending_tracking_shrink is not None:
+                    try:
+                        await relation_chunks_storage.upsert(
+                            {
+                                tracking_storage_key: {
+                                    "chunk_ids": pending_tracking_shrink,
+                                    "count": len(pending_tracking_shrink),
+                                }
+                            }
+                        )
+                        await _persist_graph_updates(
+                            relation_chunks_storage=relation_chunks_storage,
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"Relation Edit: `{source_entity}`~`{target_entity}` is "
+                            f"durable, but pruning its chunk tracking row "
+                            f"`{tracking_storage_key}` down to "
+                            f"{pending_tracking_shrink} failed: {e}"
+                        )
+                        raise VectorStorageConsistencyError(
+                            f"Pruning the chunk tracking row `{tracking_storage_key}` "
+                            f"failed after editing relation `{source_entity}`~"
+                            f"`{target_entity}`: {e}. The edit itself is durable -- "
+                            "the graph carries the new values -- but the row still "
+                            "names chunk IDs the edit removed, so it is wider than "
+                            "the relation's evidence. No data is lost (a purge "
+                            "reading the wider row is more conservative, not less), "
+                            "and re-issuing the edit cannot repair it: the second "
+                            "run sees an unchanged source_id and skips the tracking "
+                            "update. Run lightrag-repair-chunk-tracking to reconcile "
+                            "the row. The vector records were not written either, so "
+                            "re-issue the edit or run lightrag-rebuild-vdb for those."
+                        ) from e
+
+            # One cancellation-deferring region, as in `_edit_entity_impl`: it
+            # starts before the commit, because that await is itself where a
+            # deferred cancellation reappears, and it ENDS after the tracking is
+            # settled, because the narrowing the durable edge now owes its row
+            # has to survive a cancel.
+            await _finish_deferring_cancellation(
+                _commit_graph_and_settle_tracking(),
+                f"Relation Edit: `{source_entity}`~`{target_entity}` graph commit "
+                "and tracking shrink",
+            )
+
+            # 7. The relation's vector record is written only once the graph
+            #    state it mirrors is durable AND the tracking is settled. It
+            #    used to sit between the edge mutation and the commit, which
+            #    made it one more thing that could strand the pending shrink: on
+            #    an immediate-write backend `upsert_edge` is already durable
+            #    when this runs, so a delete or upsert failure left the edge
+            #    narrowed with the row still holding the superset -- and nothing
+            #    heals that, because the next edit reads the narrowed source_id
+            #    and skips the staging. The reverse exposure is the acceptable
+            #    one: vector records a re-issued edit rewrites and
+            #    `lightrag-rebuild-vdb` restores.
+            try:
+                # Delete the old relation record from the vector database.
+                # Delete both permutations to handle relationships created
+                # before normalization.
+                rel_ids_to_delete = [
+                    compute_mdhash_id(source_entity + target_entity, prefix="rel-"),
+                    compute_mdhash_id(target_entity + source_entity, prefix="rel-"),
+                ]
+                await relationships_vdb.delete(rel_ids_to_delete)
+                logger.debug(
+                    f"Relation Edit: delete vdb for `{source_entity}`~`{target_entity}`"
+                )
+                await relationships_vdb.upsert(relation_data)
+            except Exception as e:
+                raise VectorStorageConsistencyError(
+                    f"Vector storage write failed for relation `{source_entity}`~"
+                    f"`{target_entity}` during relation edit: {e}. The knowledge "
+                    "graph was already updated, so it may now be inconsistent with "
+                    "the vector storage. No data is lost (the graph is the "
+                    "authoritative source). Stop the LightRAG server and run the "
+                    "offline rebuild tool (lightrag-rebuild-vdb) to restore "
+                    "consistency."
+                ) from e
+
+            # Vector store last: its residue is the rebuildable window this
+            # codebase accepts elsewhere, and it is strictly AFTER the tracking
+            # is settled inside the region above, so a raising vector callback
+            # can no longer strand the staged shrink.
+            await _persist_graph_updates(relationships_vdb=relationships_vdb)
 
             logger.info(
                 f"Relation Edit: `{source_entity}`~`{target_entity}` successfully updated"
