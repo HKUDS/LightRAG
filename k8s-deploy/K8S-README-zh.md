@@ -127,9 +127,9 @@ kubectl --namespace rag port-forward svc/lightrag 9621:9621
 
 ### 副本数量
 
-**`replicaCount` 必须保持为 `1`。同一个 workspace 不支持运行多个 LightRAG 实例。**
+**请将 `replicaCount` 保持为 `1`。** 同一个 workspace 只支持一个执行写入的 LightRAG 实例，且多个实例绝不能并发初始化。在严格的前提条件下可以运行额外的只读查询实例，参见下方[运行额外的只读查询实例](#运行额外的只读查询实例进阶)。
 
-LightRAG 的存储初始化/迁移与文档处理流水线是通过单机共享内存（`lightrag/kg/shared_storage.py`）协调的。该协调只覆盖同一个实例内部的多个 worker 进程，不跨 Pod。当两个及以上副本共用同一个 workspace 时：
+LightRAG 的存储初始化/迁移与文档处理流水线是通过单机共享内存（`lightrag/kg/shared_storage.py`）协调的。该协调只覆盖同一个实例内部的多个 worker 进程，不跨 Pod。当两个及以上副本同时启动、共用同一个 workspace 时：
 
 - 它们会在首次启动时争抢存储创建（对全新后端并发创建 database/collection）；
 - 它们可能同时执行 schema/数据迁移，而迁移中的崩溃恢复逻辑会把另一个实例正在进行的迁移误判为崩溃残留；
@@ -137,7 +137,16 @@ LightRAG 的存储初始化/迁移与文档处理流水线是通过单机共享�
 
 出于同样的原因，`updateStrategy` 默认为 `Recreate`。`RollingUpdate` 会让新旧 Pod 短暂同时在线，这与上述不受支持的情况相同——而且版本升级正是最可能触发迁移的场景。
 
-如需提升单实例的处理能力，请纵向扩展：调高 `resources`，并在 `env` 中设置 `WORKERS` 以在同一个 Pod 内运行更多 server worker。
+如需提升处理能力，请优先纵向扩展：调高 `resources`，并在 `env` 中设置 `WORKERS` 以在同一个 Pod 内运行更多 server worker。
+
+#### 运行额外的只读查询实例（进阶）
+
+只提供查询服务的额外实例可以与主实例共用同一个 workspace，但必须同时满足下面四个条件。这属于进阶用法：本 chart 不会自动生成这种部署，且以下约束没有任何一条由应用本身强制执行。
+
+1. **只能使用外部数据库后端。** 轻量级部署（`JsonKVStorage` / `NetworkXStorage` / `JsonDocStatusStorage`）把状态保存在 PVC 上的文件和进程内存中，两个实例共用一个卷必然导致数据损坏。请使用 PostgreSQL / Neo4j / Milvus / Redis / Qdrant。
+2. **实例必须顺序启动——一次一个，前一个 Ready 之后再启动下一个。** 初始化阶段绝不能重叠。用 `/health` 返回 `200` 作为判据是可靠的：`initialize_storages()` 与 `check_and_migrate_data()` 都在 FastAPI lifespan 中执行，先于应用对外提供服务，因此一个 Ready 的实例必然已完成存储创建与迁移，后续实例只会看到存储已经就绪。在 Kubernetes 中，**StatefulSet 配合 `podManagementPolicy: OrderedReady`** 正是这个语义——Pod 按序号逐个创建，每个必须 Running 且 Ready 之后才创建下一个——再配合本 chart 已经配置好的 `/health` readinessProbe 即可。本 chart 提供的是 `Deployment`，因此需要您自行以 StatefulSet 方式部署 LightRAG。
+3. **只允许一个实例执行文档写入。** LightRAG 没有只读模式，因此需要在 Pod 前面把文档/写入类流量（`/documents/*`、上传接口）路由到单个实例（使用独立的 Service 或 Ingress 规则）。流水线状态是每实例独立的：两个实例同时接收写入会把同一批文档处理两遍。
+4. **只能指望后端层面的共享。** 查询实例并非完全不写入——查询路径会写 LLM 响应缓存；这在共享数据库后端上无害，但也正是条件 1 不能放宽的原因。所有进程内状态都不共享：额外实例上报的流水线状态是它自己的空闲流水线，而不是写入实例的处理进度。
 
 ### 修改资源配置
 

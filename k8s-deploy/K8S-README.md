@@ -127,9 +127,9 @@ kubectl --namespace rag port-forward svc/lightrag 9621:9621
 
 ### Replica Count
 
-**`replicaCount` must stay `1`. Running more than one LightRAG instance against the same workspace is not supported.**
+**Keep `replicaCount` at `1`.** A workspace supports a single ingesting LightRAG instance, and instances must never initialize concurrently. Additional query-only instances are possible under strict conditions - see [Running additional query-only instances](#running-additional-query-only-instances-advanced) below.
 
-LightRAG coordinates storage initialization/migration and the document-processing pipeline through per-host shared memory (`lightrag/kg/shared_storage.py`). That coordination covers the worker processes of a single instance; it does not extend across pods. With two or more replicas sharing a workspace:
+LightRAG coordinates storage initialization/migration and the document-processing pipeline through per-host shared memory (`lightrag/kg/shared_storage.py`). That coordination covers the worker processes of a single instance; it does not extend across pods. With two or more replicas started at the same time against a shared workspace:
 
 - they race on first-boot storage creation (concurrent database/collection creation against a fresh backend);
 - they can run schema/data migrations at the same time, and those migrations' crash-recovery heuristics can mistake another instance's in-flight migration for leftover state from a crash;
@@ -137,7 +137,16 @@ LightRAG coordinates storage initialization/migration and the document-processin
 
 For the same reason `updateStrategy` defaults to `Recreate`. A `RollingUpdate` briefly runs the old and the new pod at once, which is the same unsupported situation - and it is the version-upgrade path, where a migration is most likely to run.
 
-To use more capacity on a single instance, scale vertically instead: raise `resources`, and set `WORKERS` in `env` to run more server workers inside the one pod.
+To use more capacity on a single instance, scale vertically first: raise `resources`, and set `WORKERS` in `env` to run more server workers inside the one pod.
+
+#### Running additional query-only instances (advanced)
+
+Extra instances that only serve queries can share a workspace, but only if all four conditions below hold. This is an advanced setup: the chart does not produce it for you, and none of it is enforced by the application.
+
+1. **External database backends only.** The lightweight deployment (`JsonKVStorage` / `NetworkXStorage` / `JsonDocStatusStorage`) keeps its state in files under the PVC and in process memory; two instances over one volume corrupt it. Use PostgreSQL / Neo4j / Milvus / Redis / Qdrant.
+2. **Start instances in order — one at a time, each Ready before the next starts.** Initialization must never overlap. A `200` from `/health` is a sound gate: `initialize_storages()` and `check_and_migrate_data()` both run in the FastAPI lifespan before the app serves any request, so a Ready instance has provably finished creating and migrating storage, and every later instance finds it already in place. In Kubernetes this is what a **StatefulSet with `podManagementPolicy: OrderedReady`** does — pods are created in ordinal order and each must be Running and Ready before the next is created — combined with the readiness probe on `/health` that this chart already sets. The chart ships a `Deployment`, so you must deploy LightRAG as a StatefulSet yourself.
+3. **Exactly one instance may ingest.** LightRAG has no read-only mode, so route document/ingestion traffic (`/documents/*`, uploads) to a single instance in front of the pods (a separate Service or Ingress rule). Pipeline state is per-instance: two ingesting instances scan and process the same documents twice.
+4. **Expect only backend-level sharing.** A query-only instance still writes — the LLM response cache is written on the query path — which is harmless on a shared database but is another reason condition 1 is not optional. Anything held per-instance is not shared: the pipeline status an extra instance reports is its own idle pipeline, not the ingesting instance's progress.
 
 ### Modifying Resource Configuration
 
