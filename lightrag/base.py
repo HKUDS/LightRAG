@@ -591,6 +591,22 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
     embedding_func: EmbeddingFunc
 
+    # Whether this backend can lose an uncommitted in-memory mutation when a
+    # peer commit makes it reload (issue #3899). ``True`` means the backend
+    # holds the whole graph in process memory, commits it as one unit, and has
+    # no pending buffer or redo log to replay over a reloaded snapshot -- so
+    # concurrent writers on one workspace must be serialized above it.
+    # ``LightRAG._admin_write_gate`` keys off this: where it is ``True`` the
+    # admin graph writers take the workspace admin lock and the pipeline
+    # ``busy`` reservation; where it is ``False`` (every server-backed store,
+    # which has row/transaction-level concurrency of its own) they run
+    # unserialized, as before.
+    #
+    # ``ClassVar`` on purpose: the storage bases are dataclasses, so a bare
+    # annotated attribute would become an ``__init__`` field and change the
+    # constructor signature and field order of every backend.
+    requires_single_writer: ClassVar[bool] = False
+
     @abstractmethod
     async def has_node(self, node_id: str) -> bool:
         """Check if a node exists in the graph.
