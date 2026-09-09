@@ -944,10 +944,13 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # own partial write as a peer commit.
         #
         # And note the direction differs from ``NetworkXStorage``, which
-        # INVALIDATES its fingerprint after a failed save to force a reload:
-        # it has no redo log, so its in-memory graph is untrustworthy and the
-        # file is the only authority. Here the in-memory client plus the redo
-        # logs ARE the authority to retry from, so the snapshot must be kept.
+        # RELOADS after a failed save: it has no redo log, so its in-memory
+        # graph is untrustworthy and the file is the only authority. It does
+        # not force that reload by invalidating its fingerprint, though —
+        # the failed save left the file untouched, so the fingerprint stays
+        # correct and a process-local ``_recovery_reload_pending`` flag
+        # carries the fact. Here the in-memory client plus the redo logs ARE
+        # the authority to retry from, so the snapshot must be kept.
 
         try:
             await commit_in_storage_io(

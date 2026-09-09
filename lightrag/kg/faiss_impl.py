@@ -166,9 +166,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
             writes from; reloading the mismatched pair instead would bind one
             row's metadata to another's vector and the replay would then
             delete the wrong one. Opposite direction from
-            ``NetworkXStorage``, which invalidates its fingerprint after a
-            failed save *in order to* reload: it has no redo log, so its
-            in-memory graph is the untrustworthy side.
+            ``NetworkXStorage``, which reloads after a failed save: it has no
+            redo log, so its in-memory graph is the untrustworthy side. Note
+            that it does not reach that reload by invalidating its
+            fingerprint — the file did not move, so the fingerprint still
+            describes it — but through a process-local
+            ``_recovery_reload_pending`` flag; see its *Recovery reload*.
 
             Adoption covers the failing writer only. Every OTHER process is
             covered by the both-files-must-move rule above — they never
