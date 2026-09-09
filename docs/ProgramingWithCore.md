@@ -1625,25 +1625,68 @@ deletion is always the recovery step:
 
 #### Concurrent admin writes
 
-The graph mutation endpoints (`/graph/entity/*`, `/graph/relation/*`) refuse a
-request with HTTP 409 while the document pipeline is busy, so an admin write
-never overlaps ingestion except in the narrow window between that snapshot check
-and the underlying write. Holding the pipeline's `busy` flag across a UI edit
-would close that window and is deliberately not done — it would serialize every
-edit against ingestion.
+On a graph storage that declares `requires_single_writer` — `NetworkXStorage`,
+the only one — every public admin graph writer (`acreate_entity`,
+`acreate_relation`, `aedit_entity`, `aedit_relation`, `adelete_by_entity`,
+`adelete_by_relation`, `amerge_entities`, `ainsert_custom_kg`, and therefore
+every `/graph/*` mutation endpoint) runs inside `LightRAG._admin_write_gate`
+(issue #3899), which serializes it in two directions for the whole
+mutate-and-commit body, embedding round-trip included:
 
-Two admin writes are **not** serialized against each other. Each takes only a
-per-entity or per-edge keyed lock, so two calls for different keys run
-concurrently. On a file-backed workspace this matters because a commit there
-publishes the whole namespace: one caller's flush makes another caller's
-unfinished in-memory state durable.
+- **Against other admin writes**, through a workspace-wide admin lock
+  (`{workspace}:GraphAdmin`, key `admin`; cross-process). A second admin write
+  *queues* behind the first for up to `ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT` (30 s)
+  and is refused only on expiry.
+- **Against the document pipeline**, through the pipeline `busy` reservation
+  (`kind="admin"`, never `destructive_busy`, so uploads stay allowed). While an
+  admin write holds it, a pipeline start is *deferred*: the start is reduced to a
+  sticky auto-rescan request in the workspace ingress mailbox, and the gate
+  drives the queue once, in the background, when it releases. A pipeline that is
+  already running or scanning refuses the admin write, as before.
 
-What that can leave behind, and why it is tolerated:
+The hold is bounded by `ADMIN_WRITE_MAX_HOLD_SECONDS` (default 180 s,
+`LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS`; keep it at or above your embedding
+client timeout). On expiry the write fails with HTTP 500 and both gates release,
+so a hung embedding endpoint cannot fence ingestion indefinitely.
 
-- Two admin writes overlapping *in time* on different workers are caught by the
-  reload fence: the losing writer declines its commit, the caller gets a 500,
-  and retrying re-applies the edit against the peer's snapshot. Loud, and
-  recoverable by the operator.
+Server-backed graph stores (Neo4j, PostgreSQL, Memgraph, MongoDB, OpenSearch)
+never take the gate, whatever the KV or vector storage beside them: only the
+graph storage can lose an uncommitted mutation to a peer commit
+(`NanoVectorDBStorage` / `FaissVectorDBStorage` replay their pending buffers over
+a reloaded snapshot, and `JsonKVStorage` has no reload path at all). There, two
+admin writes for different keys still run concurrently under per-entity keyed
+locks, as they always did.
+
+**Two 409s, told apart by the `detail` text.** The graph endpoints return
+HTTP 409 for two different reasons, and the retry semantics differ, so the
+`detail` starts with a stable phrase for each (the WebUI surfaces the response
+body verbatim, so no client change is needed):
+
+| Leading phrase | Cause | Clears when |
+|---|---|---|
+| `Another knowledge graph edit is in progress` | the admin lock was held by a peer admin write past the acquire timeout | that peer admin write finishes — retry the same request |
+| `Pipeline is busy with another operation` | the pipeline holds `busy` (a processing run or a destructive job) or `scanning` — from the router's early check or from the gate's reservation | ingestion or the scan finishes |
+
+Why a lock rather than teaching the file backend to replay its pending work over
+a reloaded snapshot: graph payloads are accumulate-over-read (`source_id` is an
+evidence set merged from what the writer read; `weight` is floored by the
+evidence count it read), so a replay over a peer's newer state would drop the
+peer's evidence and republish a stale `weight`, silently violating the
+[relation weight contract](#relation-weight-contract). It would exchange a loss
+the reload fence can still see for one nothing can. The one part of that idea
+that was kept is loud: `NetworkXStorage` records when a reload discards
+uncommitted mutations and refuses the next commit in that process with
+`GraphMutationsDiscardedError`, so a writer that bypasses the gate fails instead
+of succeeding without its changes.
+
+What remains, and why it is tolerated:
+
+- Two admin requests a second apart, load-balanced to different workers, where a
+  lost reload notification lets the second mutate a stale snapshot: the admin
+  lock was released long before it was re-acquired, so it cannot help. That is
+  the file-fingerprint fence's case (issue #3854): the stale writer declines its
+  commit, the caller gets a 500, and retrying re-applies the edit against the
+  peer's snapshot. Loud, and recoverable by the operator.
 - A hard process exit can leave a tracking row whose graph object never became
   durable. That row is harmless to queries, cannot be inherited as evidence by a
   later object (the explicit creation paths reset attribution), and is removed by

@@ -8,9 +8,29 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lightrag.base import DeletionResult
+from lightrag.exceptions import PipelineReservationConflictError
 from lightrag.utils import logger
 from ..utils_api import get_combined_auth_dependency, internal_server_error
 from .document_routes import check_pipeline_busy_or_raise
+
+
+def _gate_refusal_to_http(exc: PipelineReservationConflictError) -> HTTPException:
+    """Map a core-level admin-write gate refusal to the HTTP status it means.
+
+    ``LightRAG._admin_write_gate`` (issue #3899) raises
+    ``AdminWriteGateRefusedError`` -- a ``PipelineReservationConflictError`` --
+    when an admin write cannot proceed: another admin write held the workspace
+    admin lock past its acquire timeout, or the pipeline holds ``busy`` /
+    ``scanning``. Both are bounded windows the client should retry (409), told
+    apart by the stable leading phrase of the ``detail`` text
+    (``ADMIN_WRITE_LOCK_BUSY_PREFIX`` vs ``ADMIN_WRITE_PIPELINE_BUSY_PREFIX`` in
+    ``lightrag.exceptions``); a workspace fenced for recovery is 503, as in
+    ``check_pipeline_busy_or_raise``. The message is the gate's own wording,
+    which names no internal paths or hosts.
+    """
+    return HTTPException(
+        status_code=503 if exc.recovery_required else 409, detail=str(exc)
+    )
 
 
 def _require_nonempty_entity_name(entity_name: str) -> str:
@@ -469,6 +489,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             }
         except HTTPException:
             raise
+        except PipelineReservationConflictError as gate_refusal:
+            raise _gate_refusal_to_http(gate_refusal)
         except ValueError as ve:
             logger.error(
                 f"Validation error updating entity '{request.entity_name}': {str(ve)}"
@@ -510,6 +532,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             }
         except HTTPException:
             raise
+        except PipelineReservationConflictError as gate_refusal:
+            raise _gate_refusal_to_http(gate_refusal)
         except ValueError as ve:
             logger.error(
                 f"Validation error updating relation between '{request.source_id}' and '{request.target_id}': {str(ve)}"
@@ -587,6 +611,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             }
         except HTTPException:
             raise
+        except PipelineReservationConflictError as gate_refusal:
+            raise _gate_refusal_to_http(gate_refusal)
         except ValueError as ve:
             logger.error(
                 f"Validation error creating entity '{request.entity_name}': {str(ve)}"
@@ -679,6 +705,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             }
         except HTTPException:
             raise
+        except PipelineReservationConflictError as gate_refusal:
+            raise _gate_refusal_to_http(gate_refusal)
         except ValueError as ve:
             logger.error(
                 f"Validation error creating relation between '{request.source_entity}' and '{request.target_entity}': {str(ve)}"
@@ -765,6 +793,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             }
         except HTTPException:
             raise
+        except PipelineReservationConflictError as gate_refusal:
+            raise _gate_refusal_to_http(gate_refusal)
         except ValueError as ve:
             logger.error(
                 f"Validation error merging entities {request.entities_to_change} into '{request.entity_to_change_into}': {str(ve)}"
@@ -807,6 +837,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             return result
         except HTTPException:
             raise
+        except PipelineReservationConflictError as gate_refusal:
+            raise _gate_refusal_to_http(gate_refusal)
         except Exception as e:
             error_msg = f"Error deleting entity '{request.entity_name}': {str(e)}"
             logger.error(error_msg)
@@ -846,6 +878,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             return result
         except HTTPException:
             raise
+        except PipelineReservationConflictError as gate_refusal:
+            raise _gate_refusal_to_http(gate_refusal)
         except Exception as e:
             error_msg = f"Error deleting relation from '{request.source_entity}' to '{request.target_entity}': {str(e)}"
             logger.error(error_msg)

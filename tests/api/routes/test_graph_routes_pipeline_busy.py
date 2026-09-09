@@ -355,3 +355,100 @@ async def test_helper_is_noop_when_pipeline_status_uninitialized():
         await check_pipeline_busy_or_raise(rag)
     finally:
         finalize_share_data()
+
+
+# ---------------------------------------------------------------------------
+# Part C: the core-level admin-write gate (issue #3899) surfaces as 409 / 503
+# ---------------------------------------------------------------------------
+#
+# ``LightRAG._admin_write_gate`` raises ``AdminWriteGateRefusedError`` from
+# INSIDE the ``rag.a*`` method when another admin write holds the workspace
+# admin lock past its acquire timeout, or when the pipeline holds busy /
+# scanning. The routes must map it to 409 (503 when the workspace is fenced for
+# recovery) and pass the gate's own wording through, since the two 409 causes
+# are told apart by the leading phrase of ``detail``.
+
+_GATE_METHOD_FOR_PATH = {
+    "/graph/entity/edit": "aedit_entity",
+    "/graph/relation/edit": "aedit_relation",
+    "/graph/entity/create": "acreate_entity",
+    "/graph/relation/create": "acreate_relation",
+    "/graph/entities/merge": "amerge_entities",
+    "/graph/entity/delete": "adelete_by_entity",
+    "/graph/relation/delete": "adelete_by_relation",
+}
+
+
+@pytest.mark.parametrize("method, path, body", _ENDPOINTS)
+def test_admin_lock_refusal_from_the_core_maps_to_409(method, path, body, monkeypatch):
+    from lightrag.exceptions import (
+        ADMIN_WRITE_LOCK_BUSY_PREFIX,
+        AdminWriteGateRefusedError,
+    )
+
+    rag = _make_mock_rag()
+    getattr(rag, _GATE_METHOD_FOR_PATH[path]).side_effect = AdminWriteGateRefusedError(
+        f"{ADMIN_WRITE_LOCK_BUSY_PREFIX}: `x` waited 30s for the workspace admin lock.",
+        fence="admin_lock",
+    )
+    client = _build_client(rag)
+    _patch_guard(monkeypatch, _noop_guard)  # the router snapshot let it through
+
+    response = client.request(method, path, json=body, headers=_HEADERS)
+
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail.startswith(ADMIN_WRITE_LOCK_BUSY_PREFIX)
+    assert not detail.startswith("Pipeline is busy")
+
+
+def test_pipeline_busy_refusal_from_the_core_maps_to_409_with_its_own_phrase(
+    monkeypatch,
+):
+    from lightrag.exceptions import (
+        ADMIN_WRITE_LOCK_BUSY_PREFIX,
+        ADMIN_WRITE_PIPELINE_BUSY_PREFIX,
+        AdminWriteGateRefusedError,
+    )
+    from lightrag.kg.shared_storage import PipelineReservationConflict
+
+    rag = _make_mock_rag()
+    rag.acreate_entity.side_effect = AdminWriteGateRefusedError(
+        f"{ADMIN_WRITE_PIPELINE_BUSY_PREFIX}. Wait for the running job to finish.",
+        conflict=PipelineReservationConflict.BUSY,
+        fence="busy",
+    )
+    client = _build_client(rag)
+    _patch_guard(monkeypatch, _noop_guard)
+
+    response = client.post(
+        "/graph/entity/create",
+        json={"entity_name": "Alice", "entity_data": {"description": "x"}},
+        headers=_HEADERS,
+    )
+
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail.startswith(ADMIN_WRITE_PIPELINE_BUSY_PREFIX)
+    assert not detail.startswith(ADMIN_WRITE_LOCK_BUSY_PREFIX)
+
+
+def test_recovery_required_refusal_from_the_core_maps_to_503(monkeypatch):
+    from lightrag.exceptions import AdminWriteGateRefusedError
+    from lightrag.kg.shared_storage import PipelineReservationConflict
+
+    rag = _make_mock_rag()
+    rag.acreate_entity.side_effect = AdminWriteGateRefusedError(
+        "Workspace is fenced for recovery.",
+        conflict=PipelineReservationConflict.RECOVERY_REQUIRED,
+    )
+    client = _build_client(rag)
+    _patch_guard(monkeypatch, _noop_guard)
+
+    response = client.post(
+        "/graph/entity/create",
+        json={"entity_name": "Alice", "entity_data": {"description": "x"}},
+        headers=_HEADERS,
+    )
+
+    assert response.status_code == 503, response.text

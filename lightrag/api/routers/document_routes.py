@@ -1812,12 +1812,24 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
     write the same graph storages that these endpoints mutate, so a
     409 here mirrors the existing UI guard and tells clients to wait.
 
-    A narrow race remains between this check and the underlying graph
-    write: if the pipeline transitions to busy in that window, the
-    per-edge/-node locks inside the storage layer are the last line of
-    defense. That trade-off is deliberate -- holding ``busy`` here
-    would serialise every UI edit against document ingestion, which is
-    a worse user-visible failure mode than tolerating the race.
+    This check is a snapshot taken at request entry, while the graph
+    commit happens at request exit, so on its own it leaves the WHOLE
+    request open -- embedding round-trip included -- for the pipeline to
+    start inside; the per-edge/-node keyed locks do not close that, since
+    the pipeline and an admin write lock different keys. The window is
+    closed in the core instead (issue #3899): ``LightRAG._admin_write_gate``
+    takes the pipeline ``busy`` reservation (``kind="admin"``) for the
+    duration of every admin write, deferring a pipeline start until the
+    write commits, and refuses with its own 409 when the pipeline is
+    already busy or scanning. That gate runs only where the graph storage
+    declares ``requires_single_writer`` (``NetworkXStorage``, the one
+    backend whose reload discards uncommitted mutations); server-backed
+    graph stores never take it, so the cost once cited against holding
+    ``busy`` across a UI edit -- serialising every edit against ingestion --
+    does not apply to them, and on the file backend it amounts to deferring
+    a pipeline start by one short, LLM-free request. This router check is
+    kept as the early refusal that fails before any embedding work is
+    done; it is no longer the only guard.
 
     No-op (returns silently) when ``pipeline_status`` was never
     bootstrapped, matching the behaviour of ``_acquire_destructive_busy``
