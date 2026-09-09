@@ -126,9 +126,16 @@ api = [
     "python-pptx>=0.6.21,<2.0.0",  # PPTX processing
     "cairosvg>=2.5.0,<3.0.0",      # SVG->PNG rasterization for native markdown images
     "defusedxml>=0.7.0,<1.0.0",    # Safer XML parser used by parser/docx
-    # Chunking strategies (process_options=R / V); lazy-imported by lightrag.chunker
+    # Chunking strategies (process_options=R / V / T); lazy-imported by lightrag.chunker
     "langchain-text-splitters>=0.3,<2",
     "langchain-experimental>=0.3.2,<1",  # >=0.3.2: SemanticChunker gained min_chunk_size
+    # T (tree-sitter) grammars; each is independently optional at import
+    # time -- a missing one falls back to fixed-token chunking for that
+    # language rather than failing the whole strategy.
+    "tree-sitter>=0.21.0,<1.0.0",
+    "tree-sitter-python>=0.21.0,<1.0.0",
+    "tree-sitter-javascript>=0.21.0,<1.0.0",
+    "tree-sitter-typescript>=0.21.0,<1.0.0",
     # NLP runtime for the native docx smart_heading engine parameter
     # (sentence/NER heuristics). Language models are separate wheels pinned in
     # requirements-offline-smart-heading.txt and installed via

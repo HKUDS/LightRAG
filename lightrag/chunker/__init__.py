@@ -43,6 +43,11 @@ Two contracts coexist intentionally:
         Heading-aware semantic chunker; consumes the docx-native
         ``.blocks.jsonl`` sidecar. Falls back to R when the sidecar is
         missing or unreadable.
+      - :func:`chunking_by_tree_sitter` — the ``"T"`` strategy.
+        Tree-sitter parse-tree-aware chunker for source code (Python,
+        JavaScript, TypeScript/TSX): keeps each top-level function/class
+        as one chunk. Falls back to fixed-token chunking for unsupported
+        languages, a missing grammar package, or a parse error.
 
     The explicit ``"C"`` selector is the bridge between the two contracts:
     it uses the legacy callback signature and the ``fixed_token`` parameter
@@ -64,6 +69,7 @@ from lightrag.chunker.token_size import (
     chunking_by_fixed_token,
     chunking_by_token_size,
 )
+from lightrag.chunker.tree_sitter_code import chunking_by_tree_sitter
 
 __all__ = [
     "chunking_by_fixed_token",
@@ -71,4 +77,5 @@ __all__ = [
     "chunking_by_recursive_character",
     "chunking_by_semantic_vector",
     "chunking_by_token_size",
+    "chunking_by_tree_sitter",
 ]
