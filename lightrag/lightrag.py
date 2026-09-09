@@ -177,6 +177,7 @@ from lightrag.exceptions import (
 )
 from lightrag.utils import (
     Tokenizer,
+    cancellation_was_deferred,
     TiktokenTokenizer,
     EmbeddingFunc,
     always_get_an_event_loop,
@@ -285,11 +286,31 @@ class _AdminHoldCeiling:
     ``AdminWriteHoldExceededError``. A cancellation from anywhere else
     propagates unchanged.
 
-    ``asyncio.timeout`` (3.11+) does the same; this stays until the supported
-    floor leaves 3.10. On 3.10 there is no ``uncancel``, so an external cancel
-    that lands in the same tick as the expiry is reported as the expiry -- a
-    misreport of the cause, never a lost release: the gate's ``finally`` runs
-    either way.
+    **What the error may NOT say.** Expiry cancels the task, but the admin
+    flows deliberately withhold a cancellation while a storage commit is in
+    flight: the edit/delete/merge paths through ``_finish_deferring_cancellation``
+    (``lightrag/utils_graph.py``), and every path through
+    ``commit_in_storage_io``, which finishes the GraphML write and its
+    publication hook before re-raising. So a ceiling that fires mid-commit lets
+    that commit LAND and only then gets its cancellation back. Reporting that as
+    "aborted" would report a durable write as one that did not happen -- what
+    ``AGENTS.md`` *Consistency without transactions* forbids, and what a caller
+    would act on by retrying into "entity already exists".
+
+    ``__aexit__`` therefore reads ``cancellation_was_deferred(exc)``, the stamp
+    ``_wait_deferring_cancellation`` puts on a cancellation it withheld, and says
+    which case happened. Neither message claims nothing was written: a multi-step
+    flow commits more than once (``_merge_entities_impl`` commits the merged node
+    before the region that removes the sources), so even a cancellation caught at
+    a clean await can follow a durable commit. Both messages send the caller to
+    re-read the object before retrying.
+
+    ``asyncio.timeout`` (3.11+) cancels the same way and rewrites the same
+    exception unconditionally, which is exactly the distinction it cannot make;
+    that is why this stays a context manager of its own rather than delegating.
+    On 3.10 there is no ``uncancel``, so an external cancel that lands in the
+    same tick as the expiry is reported as the expiry -- a misreport of the
+    cause, never a lost release: the gate's ``finally`` runs either way.
     """
 
     def __init__(self, seconds: float, what: str) -> None:
@@ -319,11 +340,31 @@ class _AdminHoldCeiling:
         uncancel = getattr(self._task, "uncancel", None)
         if uncancel is not None:
             uncancel()
-        raise AdminWriteHoldExceededError(
+        preamble = (
             f"{self._what} exceeded the admin-write hold ceiling of "
             f"{self._seconds:g}s (LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS) and was "
-            "aborted so it stops deferring document ingestion. Raise the ceiling "
-            "if the embedding round-trip legitimately takes that long."
+            "stopped so it stops deferring document ingestion."
+        )
+        if cancellation_was_deferred(exc):
+            # The ceiling fired while a storage commit was in flight. That
+            # commit was allowed to finish -- say so, rather than sending the
+            # caller to retry a write that already landed.
+            detail = (
+                " It was inside a region that must not be interrupted, so that "
+                "region ran to completion first: the storage commit it had "
+                "started IS durable and only the work after it was skipped."
+            )
+        else:
+            detail = (
+                " It was stopped at a suspension point, so no commit was in "
+                "flight; anything it had committed at an EARLIER step of the "
+                "same operation (a merge commits the merged node before it "
+                "removes the sources) is still durable."
+            )
+        raise AdminWriteHoldExceededError(
+            f"{preamble}{detail} Re-read the entity or relation before retrying. "
+            "Raise the ceiling if the embedding round-trip legitimately takes "
+            "that long."
         ) from None
 
 
@@ -6760,8 +6801,20 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         for as long as it runs, and dead-owner reclaim covers a dead process,
         not a hung one. A ceiling that fires cannot tear a commit apart -- the
         admin flows run their commit-plus-cleanup regions under
-        ``_finish_deferring_cancellation`` -- and what it can leave behind is
-        the crash residue issue #3838 documents.
+        ``_finish_deferring_cancellation``, and ``commit_in_storage_io``
+        finishes the file write and its publication hook regardless.
+
+        **Accepted residue of the ceiling.** Precisely because a commit is
+        allowed to finish, an operation the ceiling stops may have written
+        durably while its caller is told it failed. That is unavoidable for any
+        cancellation-based bound (``asyncio.timeout`` has it too), so it is
+        reported rather than hidden: ``_AdminHoldCeiling`` reads the stamp
+        ``_wait_deferring_cancellation`` leaves on a withheld cancellation and
+        says whether a commit was in flight, and neither of its messages claims
+        the operation wrote nothing -- a multi-step flow commits more than once.
+        Recovery is to re-read the object; a blind retry is what turns this into
+        "entity already exists" or a re-applied edit. Beyond that, what the
+        ceiling can leave behind is the crash residue issue #3838 documents.
 
         **Release-time drive.** A pipeline start turned away during the hold
         left ``auto_rescan_pending`` armed in the mailbox, and that flag is

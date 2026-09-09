@@ -222,14 +222,33 @@ ADMIN_WRITE_PIPELINE_BUSY_PREFIX = "Pipeline is busy with another operation"
 
 class AdminWriteHoldExceededError(TimeoutError):
     """An admin graph write ran past ``ADMIN_WRITE_MAX_HOLD_SECONDS`` and was
-    aborted (issue #3899 R2.3).
+    stopped (issue #3899 R2.3).
 
     While an admin write holds the pipeline ``busy`` reservation it defers every
     pipeline start in its workspace, so the hold is bounded. Expiry is a loud
     failure (HTTP 500 through the graph routes), never a silent release: the
     gate's ``finally`` releases the admin lock and the reservation, and the
-    caller sees this error instead of a success. What the aborted operation can
-    leave behind is the crash residue issue #3838 documents for admin writes.
+    caller sees this error instead of a success.
+
+    **This error does not mean nothing was written**, and its message says so in
+    the two ways it can happen -- ``LightRAG._AdminHoldCeiling`` distinguishes
+    them from the stamp ``lightrag.utils.cancellation_was_deferred`` reads:
+
+    * The ceiling fired while a storage commit was in flight. The admin flows
+      withhold a cancellation across such a region, so the commit LANDED and only
+      the work after it was skipped.
+    * The ceiling fired at an ordinary suspension point. Nothing was mid-commit,
+      but an EARLIER step of the same operation may already have committed --
+      ``_merge_entities_impl`` commits the merged node before it removes the
+      sources.
+
+    A caller must therefore re-read the entity or relation before retrying rather
+    than assume the operation is undone; retrying blind can hit "already exists"
+    or re-apply an edit that is already durable. Reporting it any other way would
+    break ``AGENTS.md`` *Consistency without transactions*: a durable write must
+    never be reported as one that did not happen. What the stopped operation can
+    leave behind beyond that is the crash residue issue #3838 documents for admin
+    writes.
     """
 
 

@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 import sys
+import time
 from uuid import uuid4
 
 import numpy as np
@@ -425,6 +426,10 @@ async def test_hold_ceiling_releases_both_gates_and_fails_loud(rag, monkeypatch)
         rag.entities_vdb.upsert = original
 
     assert "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS" in str(excinfo.value)
+    # Stopped at a suspension point: no commit was in flight, and the message
+    # says that rather than the mid-commit wording (see the two tests below).
+    assert "stopped at a suspension point" in str(excinfo.value)
+    assert "IS durable" not in str(excinfo.value)
     assert status["busy"] is False and status["busy_owner"] is None
     # The admin lock is free again: the next admin write goes straight through.
     async with asyncio.timeout(5):
@@ -512,3 +517,109 @@ async def test_ainsert_custom_kg_takes_both_gates(rag):
 
     assert status["busy"] is False and status["busy_owner"] is None
     assert await rag.chunk_entity_relation_graph.has_node("Alice") is True
+
+
+# ---------------------------------------------------------------------------
+# R2.3 -- the ceiling must not report a durable write as one that did not happen
+# ---------------------------------------------------------------------------
+#
+# The ceiling stops an admin write by cancelling it, but the admin flows
+# deliberately WITHHOLD a cancellation while a storage commit is in flight:
+# ``commit_in_storage_io`` finishes the GraphML write and its publication hook
+# before re-raising, and the edit/delete/merge paths wrap their commit in
+# ``_finish_deferring_cancellation``. So a ceiling that fires mid-commit lets
+# that commit land and only then gets its cancellation back. Reporting that as
+# "aborted" would send the caller to retry a write that already happened -- into
+# "entity already exists" for a create, or a re-applied edit -- and would break
+# AGENTS.md *Consistency without transactions*: a durable write must never be
+# reported as one that did not happen.
+
+
+@pytest.mark.asyncio
+async def test_ceiling_firing_mid_commit_reports_the_commit_as_durable(
+    rag, monkeypatch
+):
+    """The entity IS on disk afterwards, and the error says so.
+
+    Verified red before the fix: the ceiling used to rewrite every expiry
+    cancellation into the same "was aborted" message.
+    """
+    from lightrag.kg.networkx_impl import NetworkXStorage
+
+    monkeypatch.setattr(lightrag_module, "ADMIN_WRITE_MAX_HOLD_SECONDS", 0.3)
+    status, _lock = await _status_handles(rag)
+    graphml_file = rag.chunk_entity_relation_graph._graphml_xml_file
+    original_write = NetworkXStorage.write_nx_graph
+
+    def _slow_write(graph, file_name, workspace="_"):
+        # Runs in the storage-IO pool, so the ceiling's timer still fires: the
+        # cancellation lands while commit_in_storage_io is deferring it.
+        time.sleep(1.0)
+        return original_write(graph, file_name, workspace)
+
+    monkeypatch.setattr(NetworkXStorage, "write_nx_graph", staticmethod(_slow_write))
+
+    with pytest.raises(AdminWriteHoldExceededError) as excinfo:
+        await _create_alice(rag)
+
+    message = str(excinfo.value)
+    assert "IS durable" in message
+    assert "Re-read the entity or relation before retrying" in message
+    # Not a claim that the write did not happen ...
+    assert "aborted" not in message
+    # ... because it did: the commit was allowed to finish.
+    on_disk = NetworkXStorage.load_nx_graph(graphml_file)
+    assert on_disk is not None and on_disk.has_node("Alice")
+
+    # Both gates still released, which is what the ceiling exists for.
+    assert status["busy"] is False and status["busy_owner"] is None
+    async with asyncio.timeout(5):
+        async with get_storage_keyed_lock(
+            ["admin"], namespace=f"{rag.workspace}:GraphAdmin"
+        ):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_the_two_ceiling_messages_are_distinguishable(rag, monkeypatch):
+    """Codex review of PR #3901: the timeout must distinguish a cancellation
+    taken before the commit point from one re-raised after a successful commit,
+    instead of reporting both as aborted. Neither message may claim the
+    operation wrote nothing -- a multi-step flow (``_merge_entities_impl``
+    commits the merged node before it removes the sources) can have committed at
+    an earlier step even when the ceiling catches it at a clean await."""
+    from lightrag.kg.networkx_impl import NetworkXStorage
+
+    monkeypatch.setattr(lightrag_module, "ADMIN_WRITE_MAX_HOLD_SECONDS", 0.3)
+
+    # (a) stopped at an ordinary suspension point: the embedding round-trip.
+    never = asyncio.Event()
+    original_upsert = rag.entities_vdb.upsert
+    rag.entities_vdb.upsert = lambda data: never.wait()
+    try:
+        with pytest.raises(AdminWriteHoldExceededError) as clean:
+            await _create_alice(rag)
+    finally:
+        rag.entities_vdb.upsert = original_upsert
+
+    # (b) stopped inside the commit region.
+    original_write = NetworkXStorage.write_nx_graph
+
+    def _slow_write(graph, file_name, workspace="_"):
+        time.sleep(1.0)
+        return original_write(graph, file_name, workspace)
+
+    monkeypatch.setattr(NetworkXStorage, "write_nx_graph", staticmethod(_slow_write))
+    with pytest.raises(AdminWriteHoldExceededError) as deferred:
+        await rag.acreate_entity(
+            "Bob", {"description": "another person", "entity_type": "PERSON"}
+        )
+
+    clean_text, deferred_text = str(clean.value), str(deferred.value)
+    assert clean_text != deferred_text
+    assert "stopped at a suspension point" in clean_text
+    assert "IS durable" in deferred_text
+    # Neither one tells the caller the operation is undone.
+    for text in (clean_text, deferred_text):
+        assert "Re-read the entity or relation before retrying" in text
+        assert "still durable" in text or "IS durable" in text

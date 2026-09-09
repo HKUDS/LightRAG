@@ -1649,6 +1649,16 @@ The hold is bounded by `ADMIN_WRITE_MAX_HOLD_SECONDS` (default 180 s,
 client timeout). On expiry the write fails with HTTP 500 and both gates release,
 so a hung embedding endpoint cannot fence ingestion indefinitely.
 
+**A 500 from that ceiling does not mean the edit was undone.** The ceiling stops
+the operation by cancelling it, and an admin write withholds a cancellation while
+a storage commit is in flight, so a ceiling firing mid-commit lets that commit
+land. A multi-step flow can also have committed at an earlier step: a merge
+commits the merged node before it removes the source entities. The error message
+says which of the two happened, and either way the caller must **re-read the
+entity or relation before retrying** rather than assume the operation is undone.
+Retrying blind can hit `Entity 'X' already exists` or re-apply an edit that is
+already durable.
+
 Server-backed graph stores (Neo4j, PostgreSQL, Memgraph, MongoDB, OpenSearch)
 never take the gate, whatever the KV or vector storage beside them: only the
 graph storage can lose an uncommitted mutation to a peer commit

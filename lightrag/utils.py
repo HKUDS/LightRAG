@@ -2904,6 +2904,32 @@ def _consume_future_exception(fut: "asyncio.Future") -> None:
         fut.exception()
 
 
+# Marker stamped on a ``CancelledError`` that was WITHHELD while a region which
+# must not be interrupted ran to its end -- see
+# :func:`_wait_deferring_cancellation`. It states one narrow fact: the operation
+# kept running AFTER its cancellation was requested, so the storage write that
+# region was performing had the chance to become durable even though the
+# operation is about to report failure.
+#
+# Read it through :func:`cancellation_was_deferred`. A caller that converts a
+# cancellation into an error of its own MUST NOT describe such an operation as
+# one that did not happen -- ``AGENTS.md`` *Consistency without transactions*:
+# "a durable write must never be reported as one that did not happen". The
+# admin-write hold ceiling (``LightRAG._AdminHoldCeiling``) is the reference
+# consumer.
+_DEFERRED_PAST_CANCEL_ATTR = "lightrag_deferred_past_cancel"
+
+
+def cancellation_was_deferred(exc: BaseException) -> bool:
+    """Whether ``exc`` is a cancellation that was held while an uninterruptible
+    region ran to completion, so writes it had started may be durable.
+
+    See :data:`_DEFERRED_PAST_CANCEL_ATTR`. ``False`` for any other exception,
+    and for a cancellation delivered at an ordinary suspension point.
+    """
+    return getattr(exc, _DEFERRED_PAST_CANCEL_ATTR, False) is True
+
+
 async def _wait_deferring_cancellation(
     future: "asyncio.Future",
     pending_cancel: Optional[asyncio.CancelledError],
@@ -2916,8 +2942,13 @@ async def _wait_deferring_cancellation(
     ``_KeyedLockContext.__aexit__`` in ``lightrag/kg/shared_storage.py``.
 
     Returns the cancellation to re-raise once every step is done (the first one
-    seen, if any). Cancelling ``future`` ITSELF still propagates immediately: it
-    did not run to completion and we must not pretend it did.
+    seen, if any), STAMPED with :data:`_DEFERRED_PAST_CANCEL_ATTR` so the caller
+    that re-raises it -- and anything upstream that rewrites it into an error of
+    its own -- can tell it apart from a cancellation delivered at an ordinary
+    await. That distinction is not cosmetic: this function's whole purpose is to
+    let a write finish after the cancel was requested, so the operation reporting
+    failure may have committed. Cancelling ``future`` ITSELF still propagates
+    immediately: it did not run to completion and we must not pretend it did.
     """
     while not future.done():
         try:
@@ -2935,6 +2966,13 @@ async def _wait_deferring_cancellation(
             if not future.done():
                 raise
             break
+    if pending_cancel is not None:
+        # Stamp the very instance the caller is about to re-raise. The exception
+        # object is the natural carrier: it is what travelled through the region,
+        # nothing between here and the caller replaces it (the admin flows catch
+        # ``Exception``, not ``BaseException``), and it needs neither a contextvar
+        # nor a shared counter to reach whoever ends up reporting the failure.
+        setattr(pending_cancel, _DEFERRED_PAST_CANCEL_ATTR, True)
     return pending_cancel
 
 
