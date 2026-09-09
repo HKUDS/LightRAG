@@ -1597,6 +1597,8 @@ class TestRelationEditGrowsBeforeItShrinks:
             "chunk-1",
             "chunk-2",
         ]
+
+
 class _EntityEditMixin:
     """Shared helpers for the entity-edit staging cases."""
 
@@ -1773,3 +1775,46 @@ class TestEntityEditGrowsBeforeItShrinks(_EntityEditMixin):
             "chunk-1",
             "chunk-2",
         ]
+
+    @pytest.mark.asyncio
+    async def test_a_failing_vector_flush_does_not_strand_the_shrink(self, deferred):
+        # The shrink sits after the vector flush, so a raising vector callback
+        # used to exit the edit with the row still holding the staged superset --
+        # and nothing heals that: the next edit reads the already-narrowed
+        # source_id and skips the staging entirely. The vector store, by
+        # contrast, is the rebuildable window. So the shrink is completed and
+        # the vector error is re-raised after it.
+        await self._seed_two_chunk_entity(deferred)
+        deferred.entities_vdb.fail_flush = True
+
+        with pytest.raises(_Boom, match="vector flush failed"):
+            await self._edit(deferred, self.SHRINKING_EDIT)
+
+        assert deferred.entity_chunks.disk[ENTITY]["chunk_ids"] == ["chunk-1"]
+        assert deferred.entity_chunks.disk[ENTITY]["count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failed_shrink_outranks_a_failing_vector_flush(
+        self, deferred, monkeypatch
+    ):
+        # Both fail. The caller must hear about the residue nothing rebuilds,
+        # and the message has to name both recovery tools because both are owed.
+        await self._seed_two_chunk_entity(deferred)
+        deferred.entities_vdb.fail_flush = True
+        calls = {"n": 0}
+        original = deferred.entity_chunks.upsert
+
+        async def _upsert(data):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise _Boom("shrink write failed")
+            return await original(data)
+
+        monkeypatch.setattr(deferred.entity_chunks, "upsert", _upsert)
+
+        with pytest.raises(VectorStorageConsistencyError) as excinfo:
+            await self._edit(deferred, self.SHRINKING_EDIT)
+
+        message = str(excinfo.value)
+        assert "lightrag-repair-chunk-tracking" in message
+        assert "lightrag-rebuild-vdb" in message
