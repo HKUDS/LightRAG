@@ -9,7 +9,12 @@ import pytest
 
 from lightrag import LightRAG, ROLES, RoleLLMConfig
 from lightrag.llm.binding_options import OpenAILLMOptions
-from lightrag.utils import EmbeddingFunc, Tokenizer, priority_limit_async_func_call
+from lightrag.utils import (
+    EmbeddingFunc,
+    TokenTracker,
+    Tokenizer,
+    priority_limit_async_func_call,
+)
 
 
 pytestmark = pytest.mark.offline
@@ -402,6 +407,30 @@ async def test_role_specific_kwargs_and_fallback(tmp_path):
     # We do not inspect base function internals, but the call must succeed.
     assert vlm_calls[-1]["tag"] == "vlm"
     assert vlm_calls[-1]["shared"] == "vlm"
+
+
+@pytest.mark.asyncio
+async def test_shared_token_tracker_reaches_each_role(tmp_path):
+    calls = []
+    tracker = TokenTracker()
+
+    async def llm_func(*args, **kwargs):
+        calls.append(kwargs)
+        return "response"
+
+    rag = _make_rag(
+        tmp_path,
+        llm_model_kwargs={"token_tracker": tracker},
+        role_llm_configs={
+            role: RoleLLMConfig(func=llm_func)
+            for role in ("extract", "keyword", "query", "vlm")
+        },
+    )
+
+    for role in ("extract", "keyword", "query", "vlm"):
+        await rag.role_llm_funcs[role]("prompt")
+
+    assert [call["token_tracker"] for call in calls] == [tracker] * 4
 
 
 @pytest.mark.asyncio
