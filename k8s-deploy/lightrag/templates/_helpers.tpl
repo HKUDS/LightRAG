@@ -42,6 +42,17 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{/*
+Name of the StatefulSet's governing headless Service.
+
+A Service name is a DNS label, capped at 63 characters, so the base name is
+truncated to 54 to leave room for the suffix -- appending it to a full-length
+lightrag.fullname would render a name the API server rejects.
+*/}}
+{{- define "lightrag.headlessServiceName" -}}
+{{- printf "%s-headless" (include "lightrag.fullname" . | trunc 54 | trimSuffix "-") -}}
+{{- end -}}
+
+{{/*
 Workload kind: Deployment (default) or StatefulSet.
 StatefulSet exists for ordered startup (podManagementPolicy: OrderedReady):
 each pod must be Ready -- which for LightRAG means /health returned 200, so

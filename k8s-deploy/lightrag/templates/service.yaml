@@ -21,7 +21,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "lightrag.fullname" . }}-headless
+  name: {{ include "lightrag.headlessServiceName" . }}
   labels:
     {{- include "lightrag.labels" . | nindent 4 }}
 spec:

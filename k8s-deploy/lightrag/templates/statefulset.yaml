@@ -8,7 +8,7 @@ metadata:
     {{- include "lightrag.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
-  serviceName: {{ include "lightrag.fullname" . }}-headless
+  serviceName: {{ include "lightrag.headlessServiceName" . }}
   # OrderedReady sequences pod CREATION: pod N+1 is not created until pod N is
   # Ready, and LightRAG reports Ready only after initialize_storages() and
   # check_and_migrate_data() have completed, so no two instances initialize or
