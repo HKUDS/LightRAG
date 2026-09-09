@@ -244,13 +244,14 @@ class NetworkXStorage(BaseGraphStorage):
               divergence branch — one ``_missed_notification_reloads``
               increment for a peer commit that never happened. Bounded,
               self-healing on the next readable ``stat``, and biased towards
-              over- rather than under-reporting. The redundant reload must
-              land BEFORE the next mutation, which is why ``_get_graph``
-              treats a ``None`` fingerprint as unresolved and reloads for it
-              in its own right: an ``UNREADABLE`` sample reports "no change",
-              so the divergence branch cannot fire while the ``stat`` keeps
-              failing, and the deferred reload would land mid-batch and drop
-              whatever was applied in the meantime. See
+              over- rather than under-reporting. What is NOT optional is
+              that the redundant reload land BEFORE the next mutation, which
+              is why ``_get_graph`` treats a ``None`` fingerprint as
+              unresolved: a readable sample settles it through the divergence
+              test, and one that is ``UNREADABLE`` -- reporting "no change",
+              so no channel would act on it -- makes the call REFUSE instead
+              of serving a snapshot a mutation would then land on, whose
+              reload would arrive mid-batch and drop it. See
               ``file_fingerprint.adopted`` for why the obvious fix to the
               ``None`` itself is recorded there as an option rather than
               taken.
@@ -799,9 +800,10 @@ class NetworkXStorage(BaseGraphStorage):
         fingerprint are ``_record_fingerprint``'s adoptions of this process's
         OWN commit or drop, and ``initialize``'s first load. What that costs
         is one redundant reload -- and it discards nothing only because
-        ``_get_graph`` treats the ``None`` as unresolved and reloads for it
-        before serving the graph. Deferred, that same reload lands mid-batch
-        and drops what was applied in the meantime; see its own branch.
+        ``_get_graph`` settles the ``None`` before it serves the graph:
+        through the divergence test if it can sample, by REFUSING if it
+        cannot. Deferred instead, that same reload lands mid-batch and drops
+        what was applied in the meantime; see that branch.
 
         Synchronous on purpose: it adds no suspension point inside
         ``_get_graph``'s lock body, which the *Commit gate* reasoning depends
@@ -881,10 +883,12 @@ class NetworkXStorage(BaseGraphStorage):
 
         Two conditions that are not channels are tested alongside them: the
         process-local recovery reload FIRST (see *Recovery reload*), and an
-        unresolved fingerprint LAST — a recorded ``None``, which no channel
-        can act on because an unreadable ``stat`` reports "no change", and
-        which must be resolved before a mutation is allowed on top of this
-        graph. Each branch below says why.
+        unresolved fingerprint — a recorded ``None`` — LAST. The file channel
+        settles that one itself whenever it can sample: any concrete state is
+        a divergence against ``None``, so it reloads. What the last test
+        covers is the case where it cannot, since an unreadable ``stat``
+        reports "no change" and would leave the question open across a
+        mutation. Each branch below says why.
 
         Under the *Single writer* invariant (see class docstring), neither
         branch fires in the writer process: the writer resets its own flag
@@ -972,58 +976,77 @@ class NetworkXStorage(BaseGraphStorage):
                         "loaded; reloading anyway"
                     )
                 self._reload_locked(sampled)
-            elif self._peer_commit_detected():
-                # One sample, shared by the counting and the reload -- see
-                # _count_unannounced_peer_commit_locked for why they must not
-                # be two independent observations.
+            elif file_fingerprint.fence_enabled():
+                # ONE observation for everything the file channel does on this
+                # call: the decision, the count, the adoption, and the
+                # unresolved-fingerprint test below. That is the rule
+                # file_fingerprint.divergence_detected states, and it is
+                # satisfied here rather than argued around: this branch used to
+                # sample once in its condition and again for the count, which
+                # held only because _storage_lock is cross-process and there is
+                # no await between the two -- an unwritten invariant propping up
+                # a contract that says three-from-one, with no exceptions.
+                #
+                # In single-process mode the fence is off entirely (a divergent
+                # file is an external edit, not a peer commit), so no stat is
+                # taken at all -- the same as before.
                 sampled = self._stat_fingerprint()
-                if self._count_unannounced_peer_commit_locked(sampled):
+                if self._peer_commit_detected(sampled):
+                    if self._count_unannounced_peer_commit_locked(sampled):
+                        logger.warning(
+                            f"[{self.workspace}] Process {os.getpid()} reloading "
+                            f"graph {self._graphml_xml_file}: the file on disk is "
+                            "not the one this process loaded and no reload "
+                            "notification arrived for it, so a notification was "
+                            "lost. Recovered through the file channel (occurrence "
+                            f"#{self._missed_notification_reloads} in this "
+                            "process)."
+                        )
+                    self._reload_locked(sampled)
+                elif self._loaded_fingerprint is None:
+                    # An UNRESOLVED fingerprint with no way to resolve it: the
+                    # sample must be ``UNREADABLE`` to get here, because a
+                    # concrete one is a divergence against ``None`` and was
+                    # handled above. So this always REFUSES -- ``_reload_locked``
+                    # raises on that sample, and it is called rather than
+                    # open-coding the raise so the refusal has one message.
+                    #
+                    # Why refusing is the answer. ``None`` is recorded only by
+                    # an adoption whose ``stat`` failed --
+                    # ``_record_fingerprint`` after this process's own commit
+                    # or drop, or ``initialize``'s first load (no reload path
+                    # can record it, since they refuse the same sample). The
+                    # graph therefore matches the file, and the redundant
+                    # reload that settles the ``None`` is harmless -- but only
+                    # if it happens BEFORE the next mutation, and the
+                    # divergence test cannot make it happen while the ``stat``
+                    # keeps failing (``UNREADABLE`` reports "no change").
+                    # Serving the graph here is what opened that window:
+                    # a mutation landed on it and the reload was deferred to
+                    # whichever later call first managed to ``stat`` --
+                    # mid-batch, discarding that mutation, after which the
+                    # commit SUCCEEDS without it and its document is marked
+                    # PROCESSED.
+                    #
+                    # The two remedies that do not refuse are both worse.
+                    # Re-sampling for a second chance breaks the
+                    # one-observation rule this branch exists inside, for a
+                    # ``stat`` that failed microseconds ago. Adopting the
+                    # fresh ``stat`` without reloading would take a peer's
+                    # commit for this process's own -- it cannot tell them
+                    # apart, that is what ``None`` means -- and overwrite it on
+                    # the next save: a DURABLE write lost, silently, which is
+                    # the defect this whole fence exists for.
                     logger.warning(
-                        f"[{self.workspace}] Process {os.getpid()} reloading graph "
-                        f"{self._graphml_xml_file}: the file on disk is not the one "
-                        "this process loaded and no reload notification arrived for "
-                        "it, so a notification was lost. Recovered through the file "
-                        f"channel (occurrence #{self._missed_notification_reloads} "
-                        "in this process)."
+                        f"[{self.workspace}] Process {os.getpid()} refusing to "
+                        f"serve graph {self._graphml_xml_file}: this process "
+                        "could not record the identity of the file it last "
+                        "adopted, and cannot sample it now either, so it can "
+                        "neither tell that file from a peer's later commit nor "
+                        "settle the question before a mutation lands on this "
+                        "snapshot."
                     )
-                self._reload_locked(sampled)
-            elif file_fingerprint.fence_enabled() and self._loaded_fingerprint is None:
-                # An UNRESOLVED fingerprint, and it must be resolved BEFORE a
-                # mutation is allowed on top of this graph.
-                #
-                # Since ``_reload_locked`` refuses an ``UNREADABLE`` sample,
-                # ``None`` can only have come from an adoption of a file this
-                # process itself put there -- ``_record_fingerprint`` after its
-                # own commit or drop, or ``initialize``'s first load -- whose
-                # ``stat`` failed. The graph therefore matches the file and the
-                # reload below is the redundant one ``file_fingerprint.adopted``
-                # documents.
-                #
-                # What is NOT optional is the timing. The branch above cannot
-                # fire while the ``stat`` keeps failing (``UNREADABLE`` reports
-                # "no change"), so without this the call would serve the graph,
-                # a mutation would land on it, and the reload would happen at
-                # whichever later call first managed to ``stat`` -- mid-batch,
-                # discarding that mutation, after which the commit SUCCEEDS
-                # without it and its document is marked PROCESSED. Resolving
-                # here means the reload lands before there is anything to lose,
-                # and a ``stat`` that still fails raises instead of serving:
-                # loud, and the FAILED path reprocesses the batch.
-                #
-                # Not gated on this being the writer's own file, deliberately:
-                # this process cannot tell, and the two remedies that do not
-                # reload are both worse. Adopting the fresh ``stat`` without
-                # reloading would take a peer's commit for this process's own
-                # and overwrite it on the next save -- a DURABLE write lost,
-                # silently, which is the defect this whole fence exists for.
-                logger.info(
-                    f"[{self.workspace}] Process {os.getpid()} reloading graph "
-                    f"{self._graphml_xml_file}: this process could not record "
-                    "the identity of the file it last adopted, so it cannot "
-                    "tell that file from a peer's later commit. Reloading "
-                    "before serving the graph."
-                )
-                self._reload_locked()
+                    self._reload_locked(sampled)
 
             graph = self._graph
 

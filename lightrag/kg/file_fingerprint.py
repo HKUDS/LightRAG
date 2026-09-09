@@ -237,9 +237,10 @@ def adopted(sampled: Fingerprint | object) -> Fingerprint | None:
       reports "no change", so while the ``stat`` keeps failing no divergence
       fires and the reload would be deferred to whichever later call first
       managed to ``stat`` — mid-batch, dropping what was applied in between.
-      ``_get_graph`` therefore treats a ``None`` fingerprint as unresolved
-      and reloads (or, if the ``stat`` still fails, refuses) before it serves
-      the graph.
+      ``_get_graph`` therefore settles a ``None`` fingerprint before it
+      serves the graph — through the divergence test when it can sample (any
+      concrete state is a divergence against ``None``), by refusing when it
+      cannot.
 
     Recorded as an option, not done: the obvious fix is to keep the previously
     recorded fingerprint instead of clearing it (never worse for the reload

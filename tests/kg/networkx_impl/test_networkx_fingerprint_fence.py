@@ -908,17 +908,18 @@ async def test_a_recurring_state_is_counted_again_after_a_notified_reload(
 
 
 @pytest.mark.asyncio
-async def test_a_stat_that_fails_only_while_counting_does_not_lose_the_event(
+async def test_an_unreadable_observation_defers_the_event_rather_than_losing_it(
     tmp_path, multiprocess, lost_notification, monkeypatch
 ):
-    """The count and the adoption must come from ONE observation.
+    """An unreadable `stat` degrades the channel; it must not erase evidence.
 
-    Sampling separately for each, a transient failure on the counting sample
-    alone loses the event for good: the count is skipped, and the reload's own
-    successful sample adopts the peer state, so there is no divergence left
-    for a later call to count. Sharing the sample ties the two outcomes —
-    either it counts, or it adopts nothing that could suppress counting next
-    time.
+    One observation decides, counts and adopts, so an unreadable one does all
+    three of nothing: the divergence is not reported (the documented degrade
+    to the flag channel — this call serves the snapshot it already holds),
+    nothing is counted, and nothing is adopted. That last part is what keeps
+    the event countable, and it is the property the one-observation rule
+    exists to guarantee: either the event counts, or no fingerprint is adopted
+    that could suppress counting it next time.
     """
     worker_a = await _worker(tmp_path)
     worker_b = await _worker(tmp_path)
@@ -929,25 +930,15 @@ async def test_a_stat_that_fails_only_while_counting_does_not_lose_the_event(
         assert worker_b.storage_updated.value is False
         assert worker_b._missed_notification_reloads == 0
 
-        # Fail the COUNTING sample and nothing else: `_peer_commit_detected`
-        # reaches `file_fingerprint.sample` directly, so shadowing
-        # `_stat_fingerprint` hits only the hoisted sample. Self-restoring, so
-        # the reload that follows within the same call would succeed if it
-        # sampled for itself — which is the defect.
-        original = worker_b._stat_fingerprint
-
-        def unreadable_once():
-            worker_b._stat_fingerprint = original
-            return file_fingerprint.UNREADABLE
-
-        worker_b._stat_fingerprint = unreadable_once
-        with pytest.raises(OSError, match="could not be sampled"):
-            await worker_b.has_node("from_a")
+        _unreadable_once(worker_b)
+        # The stale snapshot is served: B predates A's commit, so it does not
+        # have the node. This is the pre-fence behaviour, restored for exactly
+        # as long as the file cannot be sampled.
+        assert await worker_b.has_node("from_a") is False
 
         # Not counted on that call — an unreadable sample cannot say what it
-        # would be counting. What matters is that it is not LOST: the shared
-        # sample reached `_reload_locked`, which REFUSED it, so no fingerprint
-        # was adopted and the divergence still stands.
+        # would be counting. What matters is that it is not LOST: nothing was
+        # adopted, so the divergence still stands.
         assert worker_b._missed_notification_reloads == 0
         assert worker_b._loaded_fingerprint is not None
 
@@ -959,17 +950,22 @@ async def test_a_stat_that_fails_only_while_counting_does_not_lose_the_event(
 
 
 @pytest.mark.asyncio
-async def test_the_divergence_test_reuses_the_caller_s_sample(
+async def test_the_file_channel_takes_exactly_one_observation(
     tmp_path, multiprocess, lost_notification, monkeypatch
 ):
-    """DECIDING is the third participant in the one-observation rule.
+    """Decide, count, adopt — one `stat`, per the rule in `file_fingerprint`.
 
-    The counting helper re-applies the full divergence decision, but it must
-    apply it to the sample it was handed. Taking a fresh `stat` there lets it
-    fail while the caller's succeeded — the count is skipped, and
-    `_reload_locked(sampled)` then adopts that good sample, erasing the
+    A second observation anywhere in the branch reintroduces the split the
+    rule forbids: the decision succeeds on one sample while the count is
+    skipped on another, and the reload then adopts the good one, erasing the
     divergence a later call would have counted. The event is lost, not merely
-    deferred, which is what makes this worse than a missed count.
+    deferred.
+
+    Pinned as a COUNT rather than as an outcome, because the split used to be
+    invisible in behavior: `_storage_lock` is cross-process and there is no
+    `await` between the branch condition and the body, so no peer could
+    actually commit in between. That argument is not written in the contract,
+    and a rule stating three-from-one should not rest on it.
     """
     worker_a = await _worker(tmp_path)
     worker_b = await _worker(tmp_path)
@@ -978,17 +974,17 @@ async def test_the_divergence_test_reuses_the_caller_s_sample(
         assert await worker_a.index_done_callback() is True
         assert worker_b.storage_updated.value is False
 
-        # Let the branch condition and the hoisted sample through, then make
-        # every FURTHER fence observation unreadable. With the decision reusing
-        # the caller's sample there is no further observation; taking its own,
-        # it lands here. Targeting `sample` rather than `os.stat` keeps the
-        # load's own `os.path.exists` out of it.
+        # Let the first observation through, then make every FURTHER one
+        # unreadable: a second `stat` anywhere in the branch would land here
+        # and change the outcome, which is how this test can see it at all.
+        # Targeting `sample` rather than `os.stat` keeps the load's own
+        # `os.path.exists` out of it.
         real_sample = file_fingerprint.sample
         taken = [0]
 
         def budgeted(paths, *, workspace):
             taken[0] += 1
-            if taken[0] > 2:
+            if taken[0] > 1:
                 return file_fingerprint.UNREADABLE
             return real_sample(paths, workspace=workspace)
 
@@ -996,7 +992,7 @@ async def test_the_divergence_test_reuses_the_caller_s_sample(
         assert await worker_b.has_node("from_a") is True
         monkeypatch.undo()
 
-        assert taken[0] == 2, "the counting path observed the file a third time"
+        assert taken[0] == 1, "the file channel observed the file twice"
         assert worker_b._missed_notification_reloads == 1
         assert worker_b._loaded_fingerprint is not None
     finally:
@@ -1084,12 +1080,12 @@ def _unreadable_for(budget: int, monkeypatch):
 
     Callers depend on the exact count, in this order: (1) `index_done_callback`
     block 1's fence test, (2) `_record_fingerprint` inside `_committed`, (3)
-    the next `_get_graph`'s divergence test, (4) the resolving reload's own
-    sample. A budget of 3 leaves (4) readable, so the reload lands; 4 makes it
-    refuse. Returns the remaining counter -- assert it reached 0, or a new
-    `sample()` call anywhere on the path shifts the numbers and the test
-    passes for the wrong reason (budget spent early, real stat, no loss to
-    detect).
+    the next `_get_graph`'s single file-channel observation. A budget of 3
+    makes (3) unreadable, which is what reaches the refusal; the file channel
+    takes exactly one observation per call, so there is no fourth. Returns the
+    remaining counter -- assert it reached 0, or a new `sample()` call anywhere
+    on the path shifts the numbers and the test passes for the wrong reason
+    (budget spent early, real stat, nothing to detect).
     """
     remaining = [budget]
     real = file_fingerprint.sample
@@ -1124,20 +1120,26 @@ async def test_a_post_commit_stat_failure_does_not_drop_the_next_mutation(
     try:
         await worker.upsert_node("durable", {"entity_id": "durable"})
 
-        # Three observations fail: the commit's own fence test, the adoption
-        # in `_record_fingerprint`, and the next call's divergence test. The
-        # fourth -- the resolving reload -- succeeds.
+        # All three observations fail: the commit's own fence test, the
+        # adoption in `_record_fingerprint`, and the next call's.
         remaining = _unreadable_for(3, monkeypatch)
         assert await worker.index_done_callback() is True
         assert worker._loaded_fingerprint is None
         assert remaining[0] == 1, "the commit consumed an unexpected number"
 
-        await worker.upsert_node("X", {"entity_id": "X"})
-        assert remaining[0] == 0, "the divergence test and the reload both ran"
+        # Refused rather than served, so the mutation cannot land on a
+        # snapshot whose relationship to the file is unknown. Retrying is what
+        # the caller does -- at batch granularity that is the FAILED path
+        # reprocessing the document.
+        with pytest.raises(OSError, match="could not be sampled"):
+            await worker.upsert_node("X", {"entity_id": "X"})
+        assert remaining[0] == 0, "the file channel observed the file once"
+
         monkeypatch.undo()
         monkeypatch.setattr(file_fingerprint, "is_multiprocess_mode", lambda: True)
         assert file_fingerprint.fence_enabled() is True
 
+        await worker.upsert_node("X", {"entity_id": "X"})
         await worker.upsert_node("Y", {"entity_id": "Y"})
         assert await worker.index_done_callback() is True
 
@@ -1147,9 +1149,11 @@ async def test_a_post_commit_stat_failure_does_not_drop_the_next_mutation(
         assert on_disk.has_node("X")
         assert on_disk.has_node("Y")
         assert on_disk.has_node("durable")
-        # And the file this process wrote itself was never miscounted as a
-        # peer commit whose notification went missing.
-        assert worker._missed_notification_reloads == 0
+        # The retry's readable observation resolved the `None` through the
+        # divergence test, which cannot tell this process's own file from a
+        # peer's commit and counts one -- the documented bias towards
+        # over-reporting (`file_fingerprint.adopted`), not evidence of a peer.
+        assert worker._missed_notification_reloads == 1
     finally:
         await worker.finalize()
 
@@ -1169,16 +1173,16 @@ async def test_an_unresolved_fingerprint_refuses_to_serve_the_graph(
     try:
         await worker.upsert_node("durable", {"entity_id": "durable"})
 
-        # One more than the test above: the resolving reload's sample fails
-        # too, so there is nothing to resolve with.
-        remaining = _unreadable_for(4, monkeypatch)
+        remaining = _unreadable_for(3, monkeypatch)
         assert await worker.index_done_callback() is True
         assert worker._loaded_fingerprint is None
-        assert remaining[0] == 2, "the commit consumed an unexpected number"
+        assert remaining[0] == 1, "the commit consumed an unexpected number"
 
+        # A read, not a mutation: what is unknown is the relationship between
+        # the graph and the file, not the caller's intent, so this refuses too.
         with pytest.raises(OSError, match="could not be sampled"):
             await worker.has_node("durable")
-        assert remaining[0] == 0, "the divergence test and the reload both ran"
+        assert remaining[0] == 0, "the file channel observed the file once"
 
         # Nothing was adopted, so the next readable call still resolves it.
         monkeypatch.undo()
@@ -1289,17 +1293,11 @@ async def test_an_unreadable_sample_adopts_nothing_and_keeps_the_marker(
                 await worker_b.has_node("from_a")
         assert worker_b._missed_notification_reloads == 1
 
-        # The retry's pre-read sample fails while the file itself is readable.
-        # Loading anyway would record `None`; refusing records nothing.
-        original = worker_b._stat_fingerprint
-
-        def unreadable_once():
-            worker_b._stat_fingerprint = original
-            return file_fingerprint.UNREADABLE
-
-        worker_b._stat_fingerprint = unreadable_once
-        with pytest.raises(OSError, match="could not be sampled"):
-            await worker_b.has_node("from_a")
+        # The retry cannot sample, so it decides nothing, counts nothing and
+        # adopts nothing -- and the marker it would otherwise have cleared has
+        # to survive that.
+        _unreadable_once(worker_b)
+        assert await worker_b.has_node("from_a") is False
         assert worker_b._loaded_fingerprint is not None
 
         # Same peer commit, still one event.
