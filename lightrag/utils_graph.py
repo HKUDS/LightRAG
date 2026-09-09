@@ -1210,15 +1210,15 @@ async def _edit_entity_impl(
             if tracking_update is not None:
                 updated_chunk_ids = tracking_update[0]
             else:
-                updated_chunk_ids = (
-                    [cid for cid in stored_data.get("chunk_ids", []) if cid]
-                    if has_chunk_tracking_row(stored_data)
-                    else [
-                        cid
-                        for cid in node_data.get("source_id", "").split(GRAPH_FIELD_SEP)
-                        if cid
-                    ]
-                )
+                # `None` means the helper saw an unchanged source_id AND a
+                # present row, so the row is already the authoritative list and
+                # migrating it verbatim is the whole job. There is deliberately
+                # no reseed-from-source_id arm here: an absent row cannot reach
+                # this branch, and reseeding one that could would be the stale
+                # reseed issue #3609 exists to prevent.
+                updated_chunk_ids = [
+                    cid for cid in stored_data.get("chunk_ids", []) if cid
+                ]
 
             # On rename, write the new key BEFORE deleting the old one: on
             # RPC-backed KV storages each call commits independently, so the
@@ -1379,10 +1379,19 @@ async def _edit_entity_impl(
         # Flushed inside the region: on a deferred KV backend the deletes above
         # only touch memory, so a cancellation delivered before this flush would
         # leave the retired rows on disk -- the orphan the region prevents.
-        await _persist_graph_updates(
-            entity_chunks_storage=entity_chunks_storage,
-            relation_chunks_storage=relation_chunks_storage,
-        )
+        #
+        # Rename-only, because retiring is the only thing that needs it. A
+        # non-rename edit touches neither storage here -- its superset row was
+        # flushed before the graph mutation and its shrink flushes its own row
+        # below -- so flushing them anyway only added a way to fail: this helper
+        # re-raises the first phase-1 error, so an unrelated
+        # `relation_chunks_storage` flush failure would skip the shrink and
+        # surface an error naming neither the row nor the repair tool.
+        if is_renaming:
+            await _persist_graph_updates(
+                entity_chunks_storage=entity_chunks_storage,
+                relation_chunks_storage=relation_chunks_storage,
+            )
 
         # Shrink phase of the non-rename staging (mutually exclusive with the
         # rename retirement above): the graph write that justifies dropping

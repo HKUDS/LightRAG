@@ -1856,3 +1856,59 @@ class TestEntityEditGrowsBeforeItShrinks(_EntityEditMixin):
         # The node is durably narrowed, so the row is owed the same narrowing.
         assert deferred.persisted_graph().nodes[ENTITY]["source_id"] == "chunk-1"
         assert deferred.entity_chunks.disk[ENTITY]["chunk_ids"] == ["chunk-1"]
+
+    @pytest.mark.asyncio
+    async def test_an_unrelated_relation_flush_failure_cannot_skip_the_shrink(
+        self, deferred
+    ):
+        # A non-rename entity edit writes nothing to relation_chunks, but the
+        # region's retirement flush used to flush it anyway -- and
+        # `_persist_graph_updates` re-raises the first phase-1 error, so that
+        # unrelated failure skipped the shrink and surfaced an error naming
+        # neither the row nor the repair tool. The flush is rename-only now.
+        await self._seed_two_chunk_entity(deferred)
+        deferred.relation_chunks.fail_commit_times = 1
+
+        await self._edit(deferred, self.SHRINKING_EDIT)
+
+        assert deferred.entity_chunks.disk[ENTITY]["chunk_ids"] == ["chunk-1"]
+        assert deferred.entity_chunks.disk[ENTITY]["count"] == 1
+
+
+class TestEntityChunkTrackingUpdateHelper:
+    """`_entity_chunk_tracking_update`'s contract, which both branches rely on."""
+
+    NODE = {"source_id": f"chunk-1{GRAPH_FIELD_SEP}chunk-2"}
+
+    def test_none_is_returned_only_when_a_row_is_already_present(self):
+        # The rename branch reads `None` as "the stored row is authoritative",
+        # and migrates it verbatim with no reseed arm. That is only sound while
+        # `None` implies a present row, so pin it: an ABSENT row with an
+        # unchanged source_id must NOT return None.
+        absent = utils_graph._entity_chunk_tracking_update(None, self.NODE, self.NODE)
+
+        assert absent is not None
+        # Reseeded from the graph's source_id, exactly once, and identical in
+        # both slots because nothing was removed.
+        assert absent == (["chunk-1", "chunk-2"], ["chunk-1", "chunk-2"])
+
+    def test_a_present_row_with_an_unchanged_source_id_is_left_alone(self):
+        stored = {"chunk_ids": ["chunk-1", "chunk-2"], "count": 2}
+
+        assert (
+            utils_graph._entity_chunk_tracking_update(stored, self.NODE, self.NODE)
+            is None
+        )
+
+    def test_the_superset_keeps_the_row_and_adds_only_genuine_additions(self):
+        stored = {"chunk_ids": ["chunk-1", "chunk-2"], "count": 2}
+        new_node = {"source_id": f"chunk-2{GRAPH_FIELD_SEP}chunk-9"}
+
+        final, superset = utils_graph._entity_chunk_tracking_update(
+            stored, self.NODE, new_node
+        )
+
+        # chunk-9 is added, chunk-1 is dropped by the final row but retained by
+        # the superset -- that difference is what the staging is built on.
+        assert "chunk-9" in final and "chunk-1" not in final
+        assert superset == ["chunk-1", "chunk-2", "chunk-9"]

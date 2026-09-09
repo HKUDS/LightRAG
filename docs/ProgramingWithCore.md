@@ -1662,17 +1662,30 @@ What that can leave behind, and why it is tolerated:
   fails, the edit is already durable and the row keeps naming a chunk the
   relation no longer cites — under-deletion, the accepted direction, repaired by
   the [chunk-tracking repair](#repairing-chunk-tracking). The accepted *state*
-  does not make it a silent one: the failure raises
+  does not make it a silent one: a failure of that last step raises
   `VectorStorageConsistencyError` (a 500 naming the row and the repair tool),
   because a retry cannot heal it — the second edit sees an unchanged `source_id`
   and skips the tracking update — so the operator is the only recovery path, and
   a 200 would guarantee they never learn to take it.
+  **Residue, not yet closed:** that last step can still be *skipped* rather than
+  fail, and then nothing is reported. It sits outside any
+  cancellation-deferring region and after the `_persist_graph_updates` call that
+  flushes the graph and the relation vector store together, so a cancellation
+  delivered during that commit, or a failure of the vector flush inside it,
+  exits the edit with the row still holding the superset and no line naming it.
+  The state stays the accepted direction, but the operator is not told to run
+  the repair — which is the part that cannot heal itself. Tracked separately;
+  `aedit_entity`'s non-rename path (below) does not share it.
 - `aedit_entity`'s non-rename path stages its row the same way, for the same
   reason: a **growing** edit there used to commit the node before flushing the
   row that attributes it, leaving `rows ⊂ graph` — reachable from `POST
   /graph/entity/edit`, whose `updated_data` accepts `source_id`. The superset
   row is now durable before `upsert_node` is called at all, and the removals are
-  applied after the graph commit, with the same raise-on-failure contract. Its
+  applied after the graph commit. Its shrink goes further than the relation
+  one's: it runs *inside* the cancellation-deferring region and *before* the
+  vector flush, so neither a cancellation nor a vector failure can skip it —
+  the two ways the relation path still can. It either completes or raises with
+  the row key and the repair tool named. Its
   **rename** path needs no such staging and deliberately keeps its own ordering:
   it writes a fresh node whose `source_id` already equals the row it migrates,
   and it retires the old key only after the commit that removes the old node
