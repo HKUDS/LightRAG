@@ -1044,6 +1044,19 @@ async def _edit_entity_impl(
 
         entity_name = new_entity_name
     else:
+        # KNOWN GAP -- this mutation precedes the tracking row it needs, and the
+        # graph commit below (`_commit_rename_and_retire_tracking`) precedes the
+        # row's flush. A hard exit in between leaves a GROWING edit -- one whose
+        # `updated_data` adds evidence IDs, which `/graph/entity/edit` accepts --
+        # with the node durable citing chunks its row does not name yet: the
+        # `rows subset-of graph` direction a later purge misreads as "no
+        # remaining sources". Pre-existing, not introduced by the ordering work
+        # above; the rename branch already stages its rows ahead of the commit.
+        # The fix is the grow-then-shrink staging `aedit_relation` uses, which
+        # cannot simply be lifted here because this tracking block is shared
+        # with the rename branch, whose ordering is deliberately the opposite
+        # (issue #3609). Recovery meanwhile: lightrag-repair-chunk-tracking.
+        # Documented in docs/ProgramingWithCore.md -> Concurrent admin writes.
         await chunk_entity_relation_graph.upsert_node(entity_name, new_node_data)
 
     description = new_node_data.get("description", "")

@@ -360,6 +360,17 @@ class NetworkXStorage(BaseGraphStorage):
         here: an uncommitted ``upsert_node`` still sits in the process-wide
         in-memory graph, where the next flush by any co-tenant publishes it.
 
+        **One path still reaches the forbidden state.**
+        ``utils_graph._edit_entity_impl``'s NON-rename branch commits the graph
+        before it flushes the tracking row, so a hard exit in that window
+        leaves a *growing* edit's node on disk citing chunks its row does not
+        name yet -- the state a later purge misreads as "no remaining
+        sources". Pre-existing (the rename branch of the same function already
+        stages its rows ahead of the commit); recovery is the chunk-tracking
+        rebuild tool; the fix is the grow-then-shrink staging
+        ``aedit_relation`` uses, applied without disturbing the rename
+        branch's opposite ordering (issue #3609).
+
         **Requirement on new callers.** Any new caller of these mutators must
         make the tracking row durable BEFORE the mutation call, not merely
         before the flush, and must not be invoked concurrently with another

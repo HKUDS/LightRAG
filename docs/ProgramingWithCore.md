@@ -1648,13 +1648,13 @@ What that can leave behind, and why it is tolerated:
   durable. That row is harmless to queries, cannot be inherited as evidence by a
   later object (the explicit creation paths reset attribution), and is removed by
   the [chunk-tracking repair](#repairing-chunk-tracking).
-- The forbidden mirror — an object durable without its row — is not produced by
-  a single-writer crash, because on the creation paths the tracking row is
-  written *and committed before the graph mutation is issued at all*. Ordering
-  only the flushes would not have been enough: on Neo4j or PostgreSQL the
-  `upsert_node` is durable the moment it returns, and on NetworkX it is already
-  in the process-wide in-memory graph, where the next flush by any co-tenant
-  publishes it.
+- The forbidden mirror — an object durable without the row that carries its
+  attribution — is not produced by a single-writer crash **on the creation
+  paths**, because there the tracking row is written *and committed before the
+  graph mutation is issued at all*. Ordering only the flushes would not have
+  been enough: on Neo4j or PostgreSQL the `upsert_node` is durable the moment it
+  returns, and on NetworkX it is already in the process-wide in-memory graph,
+  where the next flush by any co-tenant publishes it.
 - An edit that *removes* evidence IDs from a row cannot use the creation order —
   a narrowed row landing ahead of the graph write is itself the over-deleting
   state. `aedit_relation` therefore stages such an edit as grow-then-shrink: the
@@ -1663,6 +1663,22 @@ What that can leave behind, and why it is tolerated:
   no longer cites (under-deletion, logged with the storage key, repaired by the
   chunk-tracking repair) — a retry cannot heal it, because the second edit sees
   an unchanged `source_id` and skips the tracking update.
+- **Accepted residue, not yet closed: `aedit_entity`'s non-rename path.** It
+  still commits the graph *before* flushing the tracking row, so a hard process
+  exit in that window leaves a **growing** edit — one that adds evidence IDs —
+  with the node on disk citing chunks its row does not yet name. That is the
+  `rows ⊂ graph` direction, the one this codebase does **not** accept: a later
+  purge of a document naming only the older chunks reads the row, concludes "no
+  remaining sources" and deletes an entity the added chunk still anchors. It is
+  reachable from `POST /graph/entity/edit`, whose `updated_data` accepts
+  `source_id`. It is a pre-existing gap rather than a new one — the rename
+  branch of the same function already stages its rows ahead of the commit (see
+  the [merge and rename failure model](design/PurgeRecoveryContract.md#merge-and-rename-failure-model))
+  — and closing it wants the same grow-then-shrink staging as `aedit_relation`,
+  applied without disturbing the rename branch's opposite, deliberate ordering
+  (issue #3609). Until then the recovery for an affected row is the
+  [chunk-tracking repair](#repairing-chunk-tracking), and a growing entity edit
+  should not be issued concurrently with, or shortly before, a document purge.
 - A graph backend that *declines* its commit (the NetworkX reload fence) raises
   out of the create, edit, merge and delete paths alike, so the caller sees a
   500 instead of a success for a write that was discarded.
