@@ -16,6 +16,13 @@ the CURRENT call's ``track_id`` (see the "Handle duplicate documents" block in
 duplicate-detection paths: an exact file-path repeat (``duplicate_kind ==
 "filename"``) and a different file_path with identical content
 (``duplicate_kind == "content_hash"``).
+
+Both halves of that contract are pinned, because the fix is a trade: the
+top-level ``track_id`` field now answers the duplicate upload, so the original's
+track_id is displaced into ``metadata.original_track_id`` (alongside
+``original_doc_id``). Losing that metadata would trade one unanswerable lookup
+for another — the client could reach its own record but no longer name the
+document it collided with.
 """
 
 from __future__ import annotations
@@ -50,17 +57,6 @@ async def _dummy_llm(*args, **kwargs) -> str:
     return "ok"
 
 
-def _chunking(
-    tokenizer,
-    content,
-    split_by_character,
-    split_by_character_only,
-    chunk_overlap_token_size,
-    chunk_token_size,
-) -> list[dict]:
-    return [{"tokens": 1, "content": content, "chunk_order_index": 0}]
-
-
 async def _build_rag(tmp_path) -> LightRAG:
     rag = LightRAG(
         working_dir=str(tmp_path / "wd"),
@@ -70,7 +66,6 @@ async def _build_rag(tmp_path) -> LightRAG:
             embedding_dim=8, max_token_size=8192, func=_dummy_embedding
         ),
         tokenizer=Tokenizer("mock-tokenizer", _SimpleTokenizerImpl()),
-        chunking_func=_chunking,
         max_parallel_insert=1,
     )
     await rag.initialize_storages()
@@ -82,6 +77,41 @@ def _shared():
     initialize_share_data()
     yield
     finalize_share_data()
+
+
+async def _assert_both_track_ids_resolve(
+    rag: LightRAG,
+    *,
+    original_track_id: str,
+    dup_track_id: str,
+    dup_kind: str,
+) -> None:
+    """Each of the two uploads must be answerable under the track_id ITS OWN
+    call was handed, and the duplicate must name the document it collided with.
+    """
+    original_docs = await rag.aget_docs_by_track_id(original_track_id)
+    assert len(original_docs) == 1, (
+        "the original document's track_id must answer with only its own record "
+        "— a duplicate stamped with the original's track_id lands here instead"
+    )
+    original_doc_id, original_status = next(iter(original_docs.items()))
+    assert original_status.track_id == original_track_id
+    assert original_status.status == DocStatus.PENDING
+
+    dup_docs = await rag.aget_docs_by_track_id(dup_track_id)
+    assert len(dup_docs) == 1, (
+        "the duplicate upload's own track_id must resolve to its "
+        "FAILED duplicate record, not come back empty"
+    )
+    (dup_status,) = dup_docs.values()
+    assert dup_status.track_id == dup_track_id
+    assert dup_status.status == DocStatus.FAILED
+    assert dup_status.metadata.get("is_duplicate") is True
+    assert dup_status.metadata.get("duplicate_kind") == dup_kind
+    # The displaced original identity: without these the client reaches its own
+    # record but can no longer name what it collided with.
+    assert dup_status.metadata.get("original_doc_id") == original_doc_id
+    assert dup_status.metadata.get("original_track_id") == original_track_id
 
 
 def test_filename_duplicate_is_retrievable_by_its_own_track_id(tmp_path):
@@ -100,21 +130,12 @@ def test_filename_duplicate_is_retrievable_by_its_own_track_id(tmp_path):
                 track_id="track-dup-filename",
             )
 
-            original_docs = await rag.aget_docs_by_track_id("track-original")
-            assert len(original_docs) == 1
-            (original_status,) = original_docs.values()
-            assert original_status.status == DocStatus.PENDING
-
-            dup_docs = await rag.aget_docs_by_track_id("track-dup-filename")
-            assert len(dup_docs) == 1, (
-                "the duplicate upload's own track_id must resolve to its "
-                "FAILED duplicate record, not come back empty"
+            await _assert_both_track_ids_resolve(
+                rag,
+                original_track_id="track-original",
+                dup_track_id="track-dup-filename",
+                dup_kind="filename",
             )
-            (dup_status,) = dup_docs.values()
-            assert dup_status.track_id == "track-dup-filename"
-            assert dup_status.status == DocStatus.FAILED
-            assert dup_status.metadata.get("is_duplicate") is True
-            assert dup_status.metadata.get("duplicate_kind") == "filename"
         finally:
             await rag.finalize_storages()
 
@@ -138,20 +159,12 @@ def test_content_hash_duplicate_is_retrievable_by_its_own_track_id(tmp_path):
                 track_id="track-dup-content",
             )
 
-            dup_docs = await rag.aget_docs_by_track_id("track-dup-content")
-            assert len(dup_docs) == 1, (
-                "the duplicate upload's own track_id must resolve to its "
-                "FAILED duplicate record, not come back empty"
+            await _assert_both_track_ids_resolve(
+                rag,
+                original_track_id="track-original",
+                dup_track_id="track-dup-content",
+                dup_kind="content_hash",
             )
-            (dup_status,) = dup_docs.values()
-            assert dup_status.track_id == "track-dup-content"
-            assert dup_status.status == DocStatus.FAILED
-            assert dup_status.metadata.get("is_duplicate") is True
-            assert dup_status.metadata.get("duplicate_kind") == "content_hash"
-
-            # The original keeps answering under its own track_id, untouched.
-            original_docs = await rag.aget_docs_by_track_id("track-original")
-            assert len(original_docs) == 1
         finally:
             await rag.finalize_storages()
 
