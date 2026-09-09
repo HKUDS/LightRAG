@@ -1,10 +1,14 @@
-# A workspace supports exactly ONE active LightRAG instance. Storage
-# initialization/migration and the document pipeline are coordinated through
-# per-host shared memory (lightrag/kg/shared_storage.py), which does not span
-# pods, so a second replica can race on first-boot storage creation, run a
-# schema migration concurrently with another instance, and process the same
-# documents twice. Keep this at 1 and scale vertically (resources / WORKERS)
-# instead. See K8S-README.md "Replica Count".
+# A workspace supports exactly ONE ingesting LightRAG instance, and instances
+# must never initialize concurrently. Storage initialization/migration and the
+# document pipeline are coordinated through per-host shared memory
+# (lightrag/kg/shared_storage.py), which does not span pods, so a second
+# replica started at the same time can race on first-boot storage creation,
+# run a schema migration concurrently with another instance, and process the
+# same documents twice. Keep this at 1 and scale vertically (resources /
+# WORKERS). Extra query-only instances are possible, but only with external
+# database backends, ordered startup (StatefulSet + OrderedReady, gated on
+# /health) and ingestion routed to a single instance -- see K8S-README.md
+# "Replica Count".
 replicaCount: 1
 
 image:
@@ -16,7 +20,35 @@ image:
   #   - name: my-registry-secret
   imagePullSecrets: []
 
-# Specify a deployment strategy
+# Workload kind: Deployment (default) or StatefulSet.
+# Use StatefulSet only when you need ordered startup for extra query-only
+# instances: podManagementPolicy OrderedReady creates one pod at a time and
+# waits for each to be Ready -- and LightRAG is Ready only once
+# initialize_storages() and check_and_migrate_data() have finished -- so no two
+# instances initialize or migrate storage concurrently. It does NOT stop the
+# pods already serving: ingestion must be quiesced until every pod is Ready,
+# including during upgrades, or a starting pod's migration can overwrite what
+# a serving pod just wrote. That and the other conditions (external database
+# backends, ingestion routed to a single pod) are NOT enforced by the chart;
+# read K8S-README.md "Replica Count" first.
+# Storage differs by kind: a Deployment mounts the shared PVCs below, while a
+# StatefulSet gives every pod its own claim through volumeClaimTemplates, so
+# switching kind on an existing release does not carry the old volume's data
+# over. volumeClaimTemplates is also immutable once the StatefulSet exists:
+# under kind StatefulSet the persistence settings below are fixed at creation,
+# and an upgrade that changes a size or turns persistence on is rejected, not
+# applied. See K8S-README.md for the per-PVC expansion procedure.
+workload:
+  kind: Deployment
+  # The two settings below apply to StatefulSet only.
+  # podManagementPolicy is immutable: changing it requires recreating the
+  # StatefulSet. Parallel gives up the ordering guarantee above.
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+
+# Deployment update strategy (ignored when workload.kind is StatefulSet -- set
+# workload.updateStrategy instead).
 # example:
 # updateStrategy:
 #   type: RollingUpdate
