@@ -1629,6 +1629,22 @@ holds for any mix of backends, including a deferred graph with an immediate-writ
 tracking store, which is why the staging is by *durability* rather than by call
 order.
 
+That one-directional rule — **a graph object must never be durable while the
+tracking row carrying its attribution is not** — governs the other admin paths
+too, and it makes their commit order the mirror of the deletion order. On a
+create or an edit the row is the half that starts out absent, so
+`_persist_graph_updates` commits the tracking rows first and the graph and
+vector stores second. A failure in the first phase skips the second entirely: a
+tracking commit that did not land is never followed by publishing the object it
+describes. Both directions therefore converge on the same tolerated residue, a
+row whose object is not (or no longer) in the graph.
+
+Callers writing directly against `lightrag.utils_graph` inherit that contract.
+A helper that *removes* a tracking row must commit the graph itself first via
+`_commit_graph_or_raise` and only then flush the tracking stores; passing a
+graph store and a tracking store to `_persist_graph_updates` together is
+correct only in the add/update direction.
+
 Removing the object and cleaning up its rows is additionally one region a
 cancellation cannot cut in half. It has to begin at the graph mutation: a cancel
 before the commit leaves the removal in the in-memory graph with the backend
@@ -1652,9 +1668,194 @@ deletion is always the recovery step:
 | --- | --- | --- |
 | Graph commit | Entity live, rows live | Consistent; retry the deletion |
 | Tracking delete or commit | Entity gone, its row stale | Retry: a deletion reporting `not_found` sweeps a stale row for that name and flushes pending tracking state whether or not a row is still visible in memory |
-| A failing tracking delete leaves incident relation rows of an entity deletion | Entity gone, relation rows stale | Not reachable automatically — the node is gone, so its edges are unknowable. Logged with the exact storage keys; delete the relation directly to sweep its row |
-| The cleanup never runs although the graph commit landed — process exit before a **deferred** tracking backend (JSON) flushes, the graph backend's commit notification raising after the write, or a direct cancellation of the deletion task mid-write | Entity gone, its rows and its relations' rows stale | The entity's own row is swept by a repeated deletion; its incident relation rows are not, and their keys are not logged because nothing failed. Delete the relations directly, or rebuild tracking. Not closed by this staging: the file-backed commit layer cannot tell a caller what landed |
+| A failing tracking delete leaves incident relation rows of an entity deletion | Entity gone, relation rows stale | Not reachable automatically — the node is gone, so its edges are unknowable. Logged with the exact storage keys; delete the relation directly to sweep its row, or run the [chunk-tracking repair](#repairing-chunk-tracking) |
+| The cleanup never runs although the graph commit landed — process exit before a **deferred** tracking backend (JSON) flushes, or a direct cancellation of the deletion task mid-write | Entity gone, its rows and its relations' rows stale | The entity's own row is swept by a repeated deletion; its incident relation rows are not, and their keys are not logged because nothing failed — so there is nothing to delete directly *by*. The recovery is the [chunk-tracking repair](#repairing-chunk-tracking). Not closed by this staging: neither a hard process exit nor a cancellation carries evidence about what landed. A commit notification that raises *after* the write does, and no longer reaches this row — it arrives as `CommitBookkeepingError` and `_commit_graph_or_raise` continues with the cleanup |
 | Vector flush | Entity and rows gone, vector record stale | The rebuildable window this codebase accepts elsewhere; `lightrag-rebuild-vdb` restores it |
+
+#### Concurrent admin writes
+
+The graph mutation endpoints (`/graph/entity/*`, `/graph/relation/*`) refuse a
+request with HTTP 409 while the document pipeline is busy, so an admin write
+never overlaps ingestion except in the narrow window between that snapshot check
+and the underlying write. Holding the pipeline's `busy` flag across a UI edit
+would close that window and is deliberately not done — it would serialize every
+edit against ingestion.
+
+Two admin writes are **not** serialized against each other. Each takes only a
+per-entity or per-edge keyed lock, so two calls for different keys run
+concurrently. On a file-backed workspace this matters because a commit there
+publishes the whole namespace: one caller's flush makes another caller's
+unfinished in-memory state durable.
+
+What that can leave behind, and why it is tolerated:
+
+- Two admin writes overlapping *in time* on different workers are caught by the
+  reload fence: the losing writer declines its commit, the caller gets a 500,
+  and retrying re-applies the edit against the peer's snapshot. Loud, and
+  recoverable by the operator.
+- A hard process exit can leave a tracking row whose graph object never became
+  durable. That row is harmless to queries, cannot be inherited as evidence by a
+  later object (the explicit creation paths reset attribution), and is removed by
+  the [chunk-tracking repair](#repairing-chunk-tracking).
+- The forbidden mirror — an object durable without the row that carries its
+  attribution — is not produced by a single-writer crash **on the creation
+  paths**, because there the tracking row is written *and committed before the
+  graph mutation is issued at all*. Ordering only the flushes would not have
+  been enough: on Neo4j or PostgreSQL the `upsert_node` is durable the moment it
+  returns, and on NetworkX it is already in the process-wide in-memory graph,
+  where the next flush by any co-tenant publishes it.
+- An edit that *removes* evidence IDs from a row cannot use the creation order —
+  a narrowed row landing ahead of the graph write is itself the over-deleting
+  state. `aedit_relation` therefore stages such an edit as grow-then-shrink: the
+  superset row, then the graph write, then the final row. If the last step
+  fails, the edit is already durable and the row keeps naming a chunk the
+  relation no longer cites — under-deletion, the accepted direction, repaired by
+  the [chunk-tracking repair](#repairing-chunk-tracking). The accepted *state*
+  does not make it a silent one: a failure of that last step raises
+  `VectorStorageConsistencyError` (a 500 naming the row and the repair tool),
+  because a retry cannot heal it — the second edit sees an unchanged `source_id`
+  and skips the tracking update — so the operator is the only recovery path, and
+  a 200 would guarantee they never learn to take it.
+  Both ways that last step could be *skipped* rather than fail are closed
+  (issue #3895): it runs *inside* a cancellation-deferring region alongside the
+  graph commit, so a cancellation deferred through that commit cannot walk past
+  it, and *before* the relation's vector work, so no vector failure can strand
+  it. The reverse exposure is the acceptable one — a shrink failure skips the
+  vector write, leaving records a re-issued edit rewrites and
+  `lightrag-rebuild-vdb` restores, and the message names both. A declined graph
+  commit still outranks a vector failure, because the commit is confirmed on its
+  own before any vector call is made.
+  **One residue stays open, deliberately, the same one the entity path carries
+  below:** a cancellation — or an ordinary error, an acknowledgement lost after
+  the fact carries the same ambiguity — delivered inside `upsert_edge`'s own
+  await tears the edit down before the shrink, so the edge may be narrowed while
+  the row keeps the superset. It cannot be deferred (the exception originates in
+  that coroutine) and must not be settled blind (narrowing a row whose write the
+  backend never accepted is the over-deleting mirror), so the row stays wide and
+  the failure is *logged* with the row key and the repair tool.
+- `aedit_entity`'s non-rename path stages its row the same way, for the same
+  reason: a **growing** edit there used to commit the node before flushing the
+  row that attributes it, leaving `rows ⊂ graph` — reachable from `POST
+  /graph/entity/edit`, whose `updated_data` accepts `source_id`. The superset
+  row is now durable before `upsert_node` is called at all, and the removals are
+  applied after the graph commit. Its shrink is staged exactly like the relation
+  one's: it runs *inside* the cancellation-deferring region and *before* the
+  vector write, so neither a cancellation nor a vector failure can skip it. It
+  either completes or raises with the row key and the repair tool named.
+  **One residue there stays open, deliberately:** a cancellation delivered
+  *inside* `upsert_node`'s own await — after an immediate-write backend accepted
+  the row, before control returns — tears the edit down before the shrink, so
+  the node is narrowed while the row keeps the superset. It cannot be deferred
+  (the `CancelledError` originates in that coroutine, so there is nothing for
+  `_finish_deferring_cancellation` to defer, and issuing the call from inside
+  that region gives the identical residue), and it must not be settled blind:
+  whether the backend accepted the write is unknowable there, and narrowing the
+  row when it did not would leave `rows ⊂ graph` — over-deletion, which this
+  ranking treats as losing data, traded against a residue that merely retains a
+  chunk ID. So the row stays wide and the failure is *logged* with the row key
+  and the repair tool, which is the part that was actually owed — for an
+  ordinary backend error as much as for a cancellation, since an
+  acknowledgement lost after the write was applied carries the same ambiguity
+  and the caller's error says only that the write failed. Its
+  **rename** path needs no such staging and deliberately keeps its own ordering:
+  it writes a fresh node whose `source_id` already equals the row it migrates,
+  and it retires the old key only after the commit that removes the old node
+  (see the [merge and rename failure model](design/PurgeRecoveryContract.md#merge-and-rename-failure-model)).
+- A graph backend that *declines* its commit (the NetworkX reload fence) raises
+  out of the create, edit, merge and delete paths alike, so the caller sees a
+  500 instead of a success for a write that was discarded.
+
+A workspace-wide admin lock was specified and dropped: it would not have changed
+what a crash can leave behind, since the same residue is reachable with no
+concurrency at all. If you drive the public Python admin API yourself
+(`acreate_entity`, `aedit_entity`, `amerge_entities`, `adelete_by_entity` and
+their relation counterparts) **do not call them concurrently on a file-backed
+workspace** — one at a time, or use a server-backed graph and KV store.
+`ainsert_custom_kg` is subject to the same rule.
+
+#### Repairing chunk tracking
+
+A stale or orphaned `entity_chunks` / `relation_chunks` row cannot be found, let
+alone pruned, one row at a time: `BaseKVStorage` has no enumeration API, so
+nothing can sweep for it. The repair is therefore whole-namespace — it replaces
+one or both namespaces from current graph keys, retaining authoritative rows for
+live objects and supplementing them from cached extraction results. Because that
+replacement cannot be coordinated with writers in other processes, it is
+available only as an offline tool.
+
+Before every run, stop **all** LightRAG API servers, pipeline workers, and SDK
+writers that use the same backing stores and workspace. The default invocation
+only scans and prints the complete replacement plan:
+
+```bash
+lightrag-repair-chunk-tracking
+lightrag-repair-chunk-tracking --apply
+lightrag-repair-chunk-tracking --apply --namespace entity  # or relation
+lightrag-repair-chunk-tracking --apply --resume-plan /path/from/failed/run.sqlite3
+# equivalent: python -m lightrag.tools.chunk_tracking_repair [--apply]
+```
+
+The repair scans document status and graph objects in bounded batches. Its
+deduplication and replacement plan live in a disk-backed SQLite database, so
+client memory is bounded by a batch plus the largest individual tracking row;
+local disk usage grows with the complete plan. Process-buffered KV backends are
+flushed after each repair batch; pending operations fail the apply instead of
+being counted as completed. Dry-run plans are temporary, while apply plans remain
+available for recovery until success.
+
+An apply durably seals that SQLite plan before the first namespace drop. If the
+apply fails or the process is interrupted, keep the workspace offline and use
+the printed `--resume-plan` path. Resume validates the configured storage
+identity and rewrites from the pre-drop snapshot without reading the partial
+tracking namespace. The plan is deleted only after all selected namespaces have
+been rebuilt successfully.
+
+The tool asks for an offline confirmation before initializing storage and asks
+again before the destructive apply. `--yes` is intended for an already-isolated
+maintenance environment. It prints the configured working directory, workspace,
+and concrete storage classes before planning. See
+[`README_CHUNK_TRACKING_REPAIR.md`](../lightrag/tools/README_CHUNK_TRACKING_REPAIR.md)
+for configuration and recovery instructions.
+
+It is deliberately **not** the startup migration:
+
+|                | startup chunk-tracking migration | offline repair tool |
+| --- | --- | --- |
+| When           | startup / first explicit creation | operator, on demand |
+| Gate           | only when the namespace `is_empty()` | never gated |
+| Seed           | graph `source_id` | live-object tracking rows + cached extraction results |
+| Existing rows  | left untouched | current graph keys retained; orphan keys removed |
+
+The seed is the point. Graph `source_id` is KEEP-truncated and chunk tracking
+outranks it, so re-seeding from it downgrades provenance across the whole
+install. The repair never reads it; the graph is consulted only for current
+object keys, so rows for deleted objects are not copied into the replacement.
+Rows for live objects remain authoritative: rename, merge, and manual creation
+can produce keys or attribution the extraction cache cannot reproduce. Cached
+extraction (`text_chunks.llm_cache_list` → `llm_response_cache`) supplements
+those rows at chunk granularity. The `full_entities` / `full_relations` anchors
+remain too coarse to write a tracking row from.
+
+Two consequences an operator has to plan for, both reported in the plan:
+
+- An object with neither an existing authoritative row nor matching cached
+  extraction remains without a row and is reported. An existing row—including
+  an authoritative empty row—is never discarded merely because cache evidence
+  is absent.
+- If retained rows plus cached evidence would leave a namespace **empty while
+  the graph contains corresponding objects**, apply fails before the first drop.
+- Any plan that leaves a current graph object without a row is blocked by
+  default. `--allow-missing-rows` accepts that explicitly after review of the
+  existing/planned row denominators printed by the dry run.
+- A completely empty graph also blocks apply by default: it may mean the wrong
+  backend/workspace or an unavailable graph index. `--allow-empty-graph` is an
+  explicit override after the operator independently verifies the empty graph.
+
+The tool computes the whole mapping before the first `drop()`, so a read failure
+leaves every existing row untouched. Each selected namespace is dropped and
+fully rewritten before the next namespace is touched, reducing the partial
+failure window. If an apply still fails after a drop, keep every writer stopped,
+fix the cause, and re-run the tool until it completes.
 
 ### Delete Relations
 

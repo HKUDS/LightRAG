@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+import re
 import time
 import hashlib
 from typing import Any, ClassVar, final, Sequence, Union
@@ -30,6 +31,7 @@ from lightrag.utils import (
 )
 
 from lightrag.base import (
+    normalize_kv_create_time,
     CURSOR_END,
     CURSOR_START,
     CursorAfter,
@@ -65,6 +67,98 @@ from tenacity import (
     retry_if_exception_type,
     before_sleep_log,
 )
+
+# Storage-managed ``create_time`` is serialized as the FIRST key of every KV
+# value so it can be recovered with a bounded prefix read instead of pulling
+# the whole row back over the wire -- a ``full_docs`` row is an entire
+# document, and Redis has no way to read one JSON field. 64 bytes covers
+# ``{"create_time":`` plus a 19-digit integer and its comma.
+#
+# The separator is matched loosely on purpose: ``json.dumps`` writes
+# ``{"create_time": 1700000000,`` (a space after the colon) while a compact
+# dump or a hand-edited row writes it without one. A prefix that does not
+# match is not a failure -- it falls back to a full read -- but a needlessly
+# strict pattern would silently send EVERY update down that fallback and
+# quietly undo the optimization.
+_CREATE_TIME_PREFIX_BYTES = 64
+_CREATE_TIME_PREFIX_RE = re.compile(r'^\{\s*"create_time"\s*:\s*(-?\d+)\s*[,}]')
+
+# Lua counterpart of _CREATE_TIME_PREFIX_RE. Keep the two in step; the
+# integration suite pins them to the same verdict on the same prefixes.
+_CREATE_TIME_PREFIX_LUA_PATTERN = '^{%s*"create_time"%s*:%s*(%-?%d+)%s*[,}]'
+
+# The script that writes a KV row. Reading the previous ``create_time`` and
+# writing the new value must be ONE atomic step, or a concurrent ``delete()``
+# landing between them lets the row come back carrying the deleted
+# incarnation's timestamp -- and nothing would ever correct it, because every
+# later update preserves what it finds. Redis runs a script atomically, so the
+# decision happens next to the data:
+#
+#   * key absent            -> stamp ARGV[3] (the write's own clock). Two
+#     writers racing a first insert therefore cannot disagree: the second one
+#     to run finds the row and keeps the first one's timestamp. ``GETRANGE``
+#     answers ``''`` for a missing key AND for a key holding an empty string,
+#     so an ``EXISTS`` disambiguates them -- only on that branch, so the
+#     steady state still reads once. An empty row is a stored row with no
+#     usable timestamp, and the contract says such a row records ``0``; it
+#     must never be mistaken for a first creation and given this clock.
+#   * prefix carries an int -> keep it. This is the steady state, and it needs
+#     nothing from the caller: one round trip, no read amplification.
+#   * prefix does not match -> a row written before this layout existed, or by
+#     hand. The timestamp may sit anywhere in the value or be malformed, and
+#     normalizing it belongs to ``normalize_kv_create_time`` and not to a
+#     second implementation in Lua -- so the script WRITES NOTHING and answers
+#     ``needs_hint``. The caller reads the value, normalizes it, and calls
+#     again with ARGV[2] set; a non-empty hint always writes, so the exchange
+#     cannot loop.
+#
+# No ``cjson`` and no arithmetic: the timestamp travels as a string and the
+# value is spliced in front of the caller's payload, so a large row is never
+# decoded server-side and Lua's number formatting never enters the picture.
+_CREATE_TIME_UPSERT_LUA = f"""
+local prefix = redis.call('GETRANGE', KEYS[1], 0, tonumber(ARGV[4]) - 1)
+local outcome
+local create_time
+if prefix == '' and redis.call('EXISTS', KEYS[1]) == 0 then
+    create_time = ARGV[3]
+    outcome = 'created'
+else
+    local matched = string.match(prefix, '{_CREATE_TIME_PREFIX_LUA_PATTERN}')
+    if matched then
+        create_time = matched
+        outcome = 'kept'
+    elseif ARGV[2] == '' then
+        return {{'needs_hint', ''}}
+    else
+        create_time = ARGV[2]
+        outcome = 'hinted'
+    end
+end
+local rest = string.sub(ARGV[1], 2)
+if rest == '}}' or rest == '' then
+    redis.call('SET', KEYS[1], '{{"create_time":' .. create_time .. '}}')
+else
+    redis.call('SET', KEYS[1], '{{"create_time":' .. create_time .. ',' .. rest)
+end
+return {{outcome, create_time}}
+"""
+
+
+def _dumps_kv_payload(value: dict[str, Any]) -> str:
+    """Serialize a KV row WITHOUT ``create_time``, for the upsert script.
+
+    The script prepends the timestamp it decided on, which is what puts the
+    field first (see ``_CREATE_TIME_PREFIX_BYTES``) and what keeps the
+    decision atomic. Dropping the key here also means a caller-supplied
+    ``create_time`` cannot reach storage, as the ``BaseKVStorage.upsert``
+    contract requires.
+
+    The result always starts with ``{`` and normally carries at least
+    ``_id`` and ``update_time``; the script handles the empty-object case
+    anyway so the splice cannot produce invalid JSON.
+    """
+    return json.dumps({k: v for k, v in value.items() if k != "create_time"})
+
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
@@ -527,8 +621,83 @@ class RedisKVStorage(BaseKVStorage):
             existing_ids = {keys_list[i] for i, exists in enumerate(results) if exists}
             return set(keys) - existing_ids
 
+    async def _read_legacy_create_times(self, redis, keys: list[str]) -> dict[str, int]:
+        """Full-read the ``create_time`` of rows the upsert script could not.
+
+        Only rows whose stored prefix does not carry the field reach this --
+        an older layout or a hand-edited value -- so the whole value has to
+        come back to find it. The upsert rewrites them ``create_time``-first,
+        which makes this a one-time cost per row.
+
+        A key absent from the result is genuinely gone -- only ``None``
+        counts, because a key holding an empty string is a stored row and
+        must record the documented ``0`` rather than borrow the caller's
+        clock. A decodable object with no ``create_time`` yields ``0`` too.
+        """
+        resolved: dict[str, int] = {}
+        if not keys:
+            return resolved
+
+        logger.debug(
+            f"[{self.workspace}] {self.namespace}: full read for {len(keys)} "
+            f"row(s) whose create_time is not in the value prefix"
+        )
+        pipe = redis.pipeline()
+        for i, k in enumerate(keys, start=1):
+            pipe.get(f"{self.final_namespace}:{k}")
+            await _cooperative_yield(i)
+        values = await pipe.execute()
+
+        for k, raw in zip(keys, values):
+            if raw is None:
+                # Deleted between the script's read and this one. An empty
+                # string is NOT this case -- it falls through to the decode
+                # below, which records 0 like any other unusable value.
+                continue
+            try:
+                stored = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                # Not a legacy shape but corruption: say so instead of
+                # silently recording an unknown.
+                logger.warning(
+                    f"[{self.workspace}] {self.namespace}: row '{k}' is not "
+                    f"decodable JSON; recording create_time=0 (unknown)"
+                )
+                resolved[k] = 0
+                continue
+            resolved[k] = normalize_kv_create_time(
+                stored.get("create_time") if isinstance(stored, dict) else None
+            )
+        return resolved
+
     @redis_retry
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        """Write KV rows, preserving each row's original ``create_time``.
+
+        ``create_time`` is the moment the row was FIRST created; only
+        ``update_time`` may move afterwards (issue #3870). Redis cannot read
+        one JSON field, so the value is written ``create_time``-first and the
+        previous timestamp is recovered from a bounded prefix.
+
+        The decision is made INSIDE ``_CREATE_TIME_UPSERT_LUA``, atomically
+        with the write. A client-side read-then-write would leave two holes
+        that no later write repairs, because every update preserves the
+        timestamp it finds:
+
+        * two writers that both saw the key absent would each stamp their own
+          clock, and the last ``SET`` would report a creation that never
+          happened;
+        * a ``delete()`` completing between one writer's read and its ``SET``
+          would let the row come back carrying the deleted incarnation's
+          timestamp.
+
+        The steady state is therefore ONE round trip. A second one happens
+        only for rows written before this layout existed: the script answers
+        ``needs_hint`` without writing, and this method reads those values,
+        normalizes them through ``normalize_kv_create_time`` (the single
+        authority for malformed shapes) and calls the script again. Their
+        rewrite puts the field first, so they take the fast path afterwards.
+        """
         if not data:
             return
 
@@ -536,36 +705,73 @@ class RedisKVStorage(BaseKVStorage):
 
         async with self._get_redis_connection() as redis:
             try:
-                # Check which keys already exist to determine create vs update
-                pipe = redis.pipeline()
-                for i, k in enumerate(data.keys(), start=1):
-                    pipe.exists(f"{self.final_namespace}:{k}")
-                    await _cooperative_yield(i)
-                exists_results = await pipe.execute()
-
-                # Add timestamps to data
+                keys = list(data.keys())
                 for i, (k, v) in enumerate(data.items(), start=1):
                     # For text_chunks namespace, ensure llm_cache_list field exists
                     if self.namespace.endswith("text_chunks"):
                         if "llm_cache_list" not in v:
                             v["llm_cache_list"] = []
 
-                    # Add timestamps based on whether key exists
-                    if exists_results[i - 1]:  # Key exists, only update update_time
-                        v["update_time"] = current_time
-                    else:  # New key, set both create_time and update_time
-                        v["create_time"] = current_time
-                        v["update_time"] = current_time
-
+                    v["update_time"] = current_time
+                    # Optimistic: right for an insert, and replaced below by
+                    # whatever the script decided. A caller-supplied value
+                    # never reaches storage -- _dumps_kv_payload drops the key
+                    # and the script writes its own.
+                    v["create_time"] = current_time
                     v["_id"] = k
                     await _cooperative_yield(i)
 
-                # Store the data
-                pipe = redis.pipeline()
-                for i, (k, v) in enumerate(data.items(), start=1):
-                    pipe.set(f"{self.final_namespace}:{k}", json.dumps(v))
-                    await _cooperative_yield(i)
-                await pipe.execute()
+                # register_script only hashes the source locally; the pipeline
+                # loads it server-side before executing (redis-py tracks it
+                # via ``pipe.scripts``) and retries on NOSCRIPT.
+                script = redis.register_script(_CREATE_TIME_UPSERT_LUA)
+
+                async def write_rows(
+                    row_keys: list[str], hints: dict[str, int]
+                ) -> list[Any]:
+                    pipe = redis.pipeline()
+                    for i, key in enumerate(row_keys, start=1):
+                        hint = hints.get(key)
+                        await script(
+                            keys=[f"{self.final_namespace}:{key}"],
+                            args=[
+                                _dumps_kv_payload(data[key]),
+                                "" if hint is None else hint,
+                                current_time,
+                                _CREATE_TIME_PREFIX_BYTES,
+                            ],
+                            client=pipe,
+                        )
+                        await _cooperative_yield(i)
+                    return await pipe.execute()
+
+                def adopt(row_keys: list[str], results: list[Any]) -> list[str]:
+                    """Record what the server decided; return the unwritten ids."""
+                    deferred: list[str] = []
+                    for key, result in zip(row_keys, results):
+                        outcome, value = result[0], result[1]
+                        if outcome == "needs_hint":
+                            deferred.append(key)
+                            continue
+                        data[key]["create_time"] = int(value)
+                    return deferred
+
+                needs_hint = adopt(keys, await write_rows(keys, {}))
+                if not needs_hint:
+                    return
+
+                # A non-empty hint always writes, so this cannot loop. Rows the
+                # read could not resolve (gone, or not a JSON object) fall back
+                # to this write's own clock.
+                legacy = await self._read_legacy_create_times(redis, needs_hint)
+                hints = {k: legacy.get(k, current_time) for k in needs_hint}
+                still_deferred = adopt(needs_hint, await write_rows(needs_hint, hints))
+                if still_deferred:
+                    raise RuntimeError(
+                        f"[{self.workspace}] {self.namespace}: upsert script "
+                        f"asked twice for a create_time hint on "
+                        f"{len(still_deferred)} row(s); refusing to loop"
+                    )
 
             except json.JSONDecodeError as e:
                 logger.error(f"[{self.workspace}] JSON decode error during upsert: {e}")

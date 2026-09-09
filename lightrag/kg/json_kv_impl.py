@@ -4,18 +4,20 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, final
 
 from lightrag.base import (
+    normalize_kv_create_time,
     BaseKVStorage,
 )
 from lightrag.file_atomic import reap_orphan_tmp_files
 from lightrag.utils import (
     _cooperative_yield,
     load_json,
+    log_without_raising,
     logger,
     validate_workspace,
     commit_in_storage_io,
     write_json,
 )
-from lightrag.exceptions import StorageNotInitializedError
+from lightrag.exceptions import CommitBookkeepingError, StorageNotInitializedError
 from .shared_storage import (
     get_namespace_data,
     get_namespace_lock,
@@ -97,6 +99,29 @@ class JsonKVStorage(BaseKVStorage):
             * ``JsonDocStatusStorage.upsert`` prepares its caller-supplied
               dict outside the lock (it only mutates the input, not the
               shared store).
+
+    Commit granularity — a commit publishes the whole namespace:
+        ``index_done_callback`` snapshots the entire ``_data`` dict and
+        rewrites the whole JSON file. There is no scoped or transactional
+        commit, and issue #3838 rejects adding one for the file-backed
+        storages. So **any writer's flush durably publishes every other
+        writer's pending in-memory mutation in this namespace.**
+
+        This matters most for the chunk-tracking namespaces
+        (``entity_chunks`` / ``relation_chunks``), whose rows are the
+        authoritative attribution carriers behind
+        ``_purge_kg_contributions``: a row and the graph object it describes
+        live in different stores with no transaction between them, and the
+        forbidden ordering is the object durable without the row.
+        ``utils_graph._persist_graph_updates`` commits the rows first for
+        exactly that reason; a co-tenant's flush can still publish a row
+        early, which lands in the benign direction. See the *Non-pipeline
+        write paths* section of ``NetworkXStorage`` for the full residue.
+
+        Scope decision (issue #3838): this backend is supported for
+        small-scale testing and validation only, so the cost of the
+        whole-file rewrite is not a consideration and no change here may be
+        justified by it.
 
     Who can write:
         Pipeline ``busy`` still serializes the document ingest / purge
@@ -250,6 +275,7 @@ class JsonKVStorage(BaseKVStorage):
                 # -- `data_dict` is snapshotted above, on the loop, under the
                 # lock, so the worker thread touches nothing shared.
                 write_outcome: dict[str, bool] = {}
+                reconcile_failure: list[Exception] = []
 
                 def _write() -> None:
                     write_outcome["needs_reload"] = write_json(
@@ -274,14 +300,61 @@ class JsonKVStorage(BaseKVStorage):
                         )
                         cleaned_data = load_json(self._file_name)
                         if cleaned_data is not None:
-                            self._data.clear()
-                            self._data.update(cleaned_data)
+                            try:
+                                self._data.clear()
+                                self._data.update(cleaned_data)
+                            except Exception as exc:
+                                # NOT publication, and not absorbable. On a
+                                # shared ``Manager().dict()`` these are two
+                                # separate RPCs, so a failure between them
+                                # leaves the shared dict EMPTY while the file on
+                                # disk holds the correct sanitized snapshot —
+                                # and the dirty flags are still set, so the next
+                                # flush would write that empty dict straight
+                                # over it, losing every row in the namespace.
+                                # Recorded so the handler below re-raises
+                                # instead of reporting a healthy deferred
+                                # publication.
+                                reconcile_failure.append(exc)
+                                raise
 
                     await clear_all_update_flags(
                         self.namespace, workspace=self.workspace
                     )
 
-                await commit_in_storage_io(_write, _committed)
+                try:
+                    await commit_in_storage_io(_write, _committed)
+                except CommitBookkeepingError as e:
+                    if reconcile_failure:
+                        # Fail loud. What is unreliable now is the shared
+                        # in-memory view, and no later flush heals it — a later
+                        # flush is what would PUBLISH it. The file on disk is
+                        # the correct snapshot, so the recovery is to stop
+                        # writing to this workspace and restart the workers,
+                        # which reload it. Re-raised as the original failure
+                        # rather than as CommitBookkeepingError: callers read
+                        # that type as "committed, only publication deferred"
+                        # and some deliberately absorb it.
+                        raise reconcile_failure[0]
+                    # Past the guard above, the only thing that can have
+                    # failed is the dirty-flag clear — the file is published and
+                    # the shared dict matches it. That heals on the next flush:
+                    # the flags stay set, so the next index_done_callback
+                    # rewrites this same snapshot and retries the clear.
+                    #
+                    # Re-raising instead would report a durable write as one that
+                    # never happened, and every caller inherits that: _insert_done
+                    # marks a document FAILED whose rows are on disk, and
+                    # utils_graph's deletion paths turn a chunk-tracking cleanup
+                    # they have already completed into fail/500.
+                    log_without_raising(
+                        logger.error,
+                        f"[{self.workspace}] KV data for {self.namespace} was "
+                        f"written to {self._file_name}, but its post-write "
+                        f"bookkeeping failed: {e.__cause__}. The dirty flags stay "
+                        "set, so the next commit rewrites this snapshot and "
+                        "retries them.",
+                    )
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         async with self._storage_lock:
@@ -337,7 +410,14 @@ class JsonKVStorage(BaseKVStorage):
 
         Two side effects under ``_storage_lock``:
             1. Stamp ``create_time`` / ``update_time`` / ``_id`` on each
-               value, then ``self._data.update(data)``. Because
+               value, then ``self._data.update(data)``. Timestamping
+               follows the ``BaseKVStorage.upsert`` contract: a new key
+               gets both stamps, an existing key keeps its stored
+               ``create_time`` (``0`` when the row never had one) and only
+               advances ``update_time``, and a caller-supplied
+               ``create_time`` is ignored. No I/O is needed for that --
+               unlike the remote backends, the previous value is already in
+               shared memory. Because
                ``self._data`` is the shared ``Manager.dict()`` proxy, the
                update is visible to all processes immediately — no
                reload needed.
@@ -380,9 +460,24 @@ class JsonKVStorage(BaseKVStorage):
                     if "llm_cache_list" not in v:
                         v["llm_cache_list"] = []
 
-                # Add timestamps based on whether key exists
-                if k in self._data:  # Key exists, only update update_time
+                # Timestamps per the BaseKVStorage.upsert contract. A single
+                # ``get`` -- not ``__contains__`` + ``__getitem__`` -- because
+                # on a multi-worker deployment ``self._data`` is a
+                # ``Manager().dict()`` proxy and each subscript is a separate
+                # RPC; ``get`` is what this file's read paths already use.
+                # Values are always dicts, so ``None`` means absent.
+                existing = self._data.get(k)
+                if existing is not None:
+                    # Update: the business value is replaced wholesale, but the
+                    # storage-managed create_time survives it. A legacy row
+                    # without the field records 0 (unknown) -- never a
+                    # fabricated original timestamp.
                     v["update_time"] = current_time
+                    v["create_time"] = normalize_kv_create_time(
+                        existing.get("create_time")
+                        if isinstance(existing, dict)
+                        else None
+                    )
                 else:  # New key, set both create_time and update_time
                     v["create_time"] = current_time
                     v["update_time"] = current_time

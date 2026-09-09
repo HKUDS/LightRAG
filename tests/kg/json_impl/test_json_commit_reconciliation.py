@@ -16,6 +16,7 @@ uncancellable region, which is what these tests pin.
 
 import asyncio
 import json
+import logging
 import threading
 
 import pytest
@@ -153,3 +154,162 @@ async def test_reconciliation_is_skipped_when_the_write_fails(
         await storage.index_done_callback()
 
     assert reloads == [], "reconciled a write that never landed"
+
+
+@pytest.mark.parametrize(
+    "factory, row",
+    [
+        (_make_kv, {"content": "alpha"}),
+        (_make_doc_status, {"status": "processed", "file_path": "a.pdf"}),
+    ],
+    ids=["kv", "doc_status"],
+)
+async def test_a_failed_flag_clear_is_not_reported_as_a_failed_write(
+    tmp_path, monkeypatch, caplog, factory, row
+):
+    """A publication failure must not be raised as a save failure.
+
+    ``on_committed`` runs only after ``write_json`` succeeded, so an exception
+    out of ``clear_all_update_flags`` means the file is already on disk. Letting
+    it propagate reported a durable write as a lost one, and every caller
+    inherited that: ``_insert_done`` marked a document FAILED whose rows are
+    persisted, and ``utils_graph``'s deletion paths turned a chunk-tracking
+    cleanup they had already completed into ``fail``/500 — stranding, on the
+    retry that followed, rows the sweep can no longer reach.
+
+    What failed is only the dirty-flag reset, and it heals: the flags stay set,
+    so the next commit rewrites this same snapshot and retries them.
+    """
+    storage = await factory(tmp_path)
+    await storage.upsert({"id1": row})
+
+    module = type(storage).__module__
+
+    async def failing_clear_all_update_flags(namespace, workspace=None):
+        raise RuntimeError("shared-storage manager is down")
+
+    monkeypatch.setattr(
+        f"{module}.clear_all_update_flags", failing_clear_all_update_flags
+    )
+    storage.storage_updated.value = True
+
+    # lightrag's logger does not propagate, so caplog cannot see it otherwise.
+    logger = logging.getLogger("lightrag")
+    monkeypatch.setattr(logger, "propagate", True)
+
+    with caplog.at_level(logging.ERROR, logger="lightrag"):
+        await storage.index_done_callback()
+
+    with open(storage._file_name, encoding="utf-8") as f:
+        persisted = json.load(f)
+    assert "id1" in persisted, "the write did not land, so this proves nothing"
+    assert storage.storage_updated.value is True, (
+        "the dirty flag was cleared despite the failure, so the next commit "
+        "would not retry the publication"
+    )
+    assert any(
+        "post-write bookkeeping failed" in record.getMessage()
+        for record in caplog.records
+    ), f"the deferred publication was not logged: {caplog.text}"
+
+
+@pytest.mark.parametrize(
+    "factory, row",
+    [
+        (_make_kv, {"content": "alpha"}),
+        (_make_doc_status, {"status": "processed", "file_path": "a.pdf"}),
+    ],
+    ids=["kv", "doc_status"],
+)
+async def test_a_broken_sink_cannot_turn_a_landed_write_into_a_failure(
+    tmp_path, monkeypatch, factory, row
+):
+    """The bookkeeping-failure diagnostic is past the point of no return.
+
+    The file is published by the time that handler runs, so a broken logging
+    handler, formatter or output target must not escape it — the caller would
+    then hear that a durable write never happened. For ``JsonDocStatusStorage``
+    that caller is ``upsert``, which flushes synchronously precisely to make the
+    recovery anchor durable before it returns.
+
+    Fix-proof: call ``logger.error`` directly in the handler and this raises.
+    """
+    storage = await factory(tmp_path)
+    await storage.upsert({"id1": row})
+
+    module = type(storage).__module__
+
+    async def failing_clear_all_update_flags(namespace, workspace=None):
+        raise RuntimeError("shared-storage manager is down")
+
+    def log_boom(msg):
+        raise RuntimeError("log sink boom")
+
+    monkeypatch.setattr(
+        f"{module}.clear_all_update_flags", failing_clear_all_update_flags
+    )
+    monkeypatch.setattr(f"{module}.logger.error", log_boom)
+    storage.storage_updated.value = True
+
+    await storage.index_done_callback()
+
+    with open(storage._file_name, encoding="utf-8") as f:
+        persisted = json.load(f)
+    assert "id1" in persisted, "the write did not land, so this proves nothing"
+
+
+@pytest.mark.parametrize(
+    "factory, row",
+    [
+        (_make_kv, {"content": "alpha"}),
+        (_make_doc_status, {"status": "processed", "file_path": "a.pdf"}),
+    ],
+    ids=["kv", "doc_status"],
+)
+async def test_a_failed_sanitize_reload_is_not_absorbed(
+    tmp_path, monkeypatch, factory, row
+):
+    """A reconciliation failure is not a deferred publication — it must raise.
+
+    ``self._data.clear()`` and ``self._data.update()`` are two separate RPCs on
+    the shared ``Manager().dict()``, so a failure between them leaves the shared
+    dict EMPTY while the file on disk holds the correct sanitized snapshot. The
+    dirty flags are still set, so the next flush would write that empty dict
+    straight over a good file and lose every row in the namespace.
+
+    Absorbing it — as the dirty-flag clear beside it legitimately is — would make
+    that loss silent. Nothing about it heals: the shared in-memory view is what a
+    later flush PUBLISHES, so the failure has to reach a caller.
+
+    Fix-proof: drop the ``reconcile_failure`` guard from the handler and this
+    returns normally with the store emptied.
+    """
+    storage = await factory(tmp_path)
+    await storage.upsert({"id1": row})
+
+    module = type(storage).__module__
+
+    class _BrokenUpdate(dict):
+        def update(self, *args, **kwargs):
+            raise RuntimeError("shared-dict RPC failed")
+
+    def _sanitizing_write(data_dict, file_name):
+        with open(file_name, "w", encoding="utf-8") as f:
+            json.dump({"id1": dict(row, content_was="sanitized")}, f)
+        return True  # sanitization happened -> caller must reload
+
+    monkeypatch.setattr(f"{module}.write_json", _sanitizing_write)
+    storage._data = _BrokenUpdate(storage._data)
+    storage.storage_updated.value = True
+
+    with pytest.raises(RuntimeError, match="shared-dict RPC failed"):
+        await storage.index_done_callback()
+
+    # The file is the correct sanitized snapshot; it is memory that is now
+    # unreliable, which is why the recovery is a restart, not a retry.
+    with open(storage._file_name, encoding="utf-8") as f:
+        assert json.load(f)["id1"]["content_was"] == "sanitized"
+    assert dict(storage._data) == {}, (
+        "the scenario under test is the emptied shared dict; if it is intact "
+        "this test proves nothing"
+    )

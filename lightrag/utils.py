@@ -41,7 +41,11 @@ import numpy as np
 from dotenv import load_dotenv
 import json_repair
 
-from lightrag.exceptions import ChunkBlockMatchError, EmptyTruncatedResponseError
+from lightrag.exceptions import (
+    ChunkBlockMatchError,
+    CommitBookkeepingError,
+    EmptyTruncatedResponseError,
+)
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
@@ -2982,6 +2986,11 @@ async def _bounded_submit_impl(
       because nothing was ever submitted. That is load-bearing, not tidiness:
       Nano's bookkeeping retires the redo log, and running it without a write
       would discard rows that were never persisted.
+    * ``on_committed`` raised → the write is already durable, so the failure is
+      re-raised as :class:`CommitBookkeepingError`, which says exactly that. The
+      hook's own exception must NOT reach the caller unwrapped: it is then
+      indistinguishable from a write that never landed, and every call site's
+      ``except Exception`` handles it by reasoning that only holds for that case.
     """
     await semaphore.acquire()
     try:
@@ -3041,6 +3050,23 @@ async def _bounded_submit_impl(
                 logger.error(f"{label} failed while its caller was cancelled: {exc}")
         raise pending_cancel
     if commit_exc is not None:
+        if isinstance(commit_exc, Exception):
+            # Typed, because the two failures this function can report want
+            # opposite handling and used to look identical: ``fn`` raising means
+            # nothing was persisted, while reaching HERE means the write is on
+            # disk and only its publication failed. A caller that cannot tell
+            # them apart rolls back in-memory state the file already has, and
+            # reports a durable mutation as one that never happened.
+            raise CommitBookkeepingError(
+                f"The offloaded write landed, but its commit bookkeeping "
+                f"failed: {commit_exc}",
+                result=async_future.result(),
+            ) from commit_exc
+        # A BaseException that is not an Exception (SystemExit, KeyboardInterrupt)
+        # is interpreter-level control flow, not a bookkeeping failure, and
+        # wrapping it would demote a shutdown request into a storage error. A
+        # cancelled hook never arrives here — ``commit_future.cancelled()`` is
+        # tested above, and that case is the caller's cancellation path.
         raise commit_exc
     return async_future.result()
 
@@ -3313,6 +3339,15 @@ async def commit_in_storage_io(
     this signature clear of the keyword-forwarding hazard ``run_in_storage_io``
     has to live with. ``on_committed`` runs ONLY if ``fn`` succeeded — see
     ``_bounded_submit_impl`` for why running it otherwise would lose data.
+
+    Raises:
+        CommitBookkeepingError: ``fn`` succeeded and ``on_committed`` did not.
+            The write is DURABLE; only its publication failed. Every call site
+            must handle this separately from a write failure and report the
+            commit as landed — see the exception's own docstring for the
+            contract, and ``NetworkXStorage.index_done_callback`` for the
+            reference handler.
+        Exception: whatever ``fn`` raised. Nothing was persisted.
     """
     from lightrag.constants import STORAGE_IO_SUBMIT_LIMIT
 
