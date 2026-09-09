@@ -1697,6 +1697,16 @@ for direct SDK callers — and the client would be told to wait for document
 ingestion when what is ahead of it is another UI edit. A `busy` holder that
 cannot be identified is never exempt.
 
+**Accepted residue: queueing can still end in a refusal.** Every admin write
+drives the queue once when it releases, so with two of them in flight the first
+one's drive races the second one's reservation for `busy`. In one process the
+second write wins (it is woken by the lock release, while the drive is a task
+created after it). Across workers it may not: the second write waits on the
+lease lock with backoff, so the first one's drive can take `busy` first and the
+second write gets the pipeline-busy 409 despite having queued. No data is at
+risk — the write simply did not happen and the client retries — so this is
+accepted rather than fixed; treat it as the queued request having missed a turn.
+
 Why a lock rather than teaching the file backend to replay its pending work over
 a reloaded snapshot: graph payloads are accumulate-over-read (`source_id` is an
 evidence set merged from what the writer read; `weight` is floored by the
