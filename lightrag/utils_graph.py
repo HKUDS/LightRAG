@@ -1151,7 +1151,39 @@ async def _edit_entity_impl(
                     f"Entity Edit: find {len(final_chunk_ids)} chunks related to `{entity_name}`"
                 )
 
-        await chunk_entity_relation_graph.upsert_node(entity_name, new_node_data)
+        try:
+            await chunk_entity_relation_graph.upsert_node(entity_name, new_node_data)
+        except BaseException as e:
+            # Accepted residue, and the one place in this staging that cannot be
+            # closed. A cancellation delivered INSIDE this await -- after an
+            # immediate-write backend accepted the row, before control returns
+            # -- tears the edit down before the shrink can run, leaving the node
+            # narrowed with the row still at the staged superset.
+            #
+            # It cannot be deferred away: the CancelledError originates in this
+            # coroutine, so `_finish_deferring_cancellation` has nothing to
+            # defer, and issuing the call from inside that region changes
+            # nothing (measured -- the residue is identical either way).
+            #
+            # It must not be settled blind either. Whether the backend accepted
+            # the mutation is unknowable from here, and narrowing the row when
+            # it did NOT would leave the row a strict SUBSET of the graph --
+            # over-deletion, which AGENTS.md ranks as losing data, traded
+            # against a residue that merely retains a chunk id. So the row stays
+            # wide on purpose; only the diagnostic is owed, and only for a
+            # teardown that carries no normal error path of its own.
+            if pending_entity_shrink is not None and not isinstance(e, Exception):
+                logger.error(
+                    f"Entity Edit: `{entity_name}` was torn down by "
+                    f"{type(e).__name__} during its graph write. If the backend "
+                    f"accepted that write, its chunk tracking row "
+                    f"`{entity_tracking_key}` is now wider than the node's "
+                    f"evidence -- it still names the IDs this edit removed, and "
+                    "no retry will prune them (the next edit reads the narrowed "
+                    "source_id and skips the staging). Run "
+                    "lightrag-repair-chunk-tracking to reconcile it."
+                )
+            raise
 
     description = new_node_data.get("description", "")
     source_id = new_node_data.get("source_id", "")

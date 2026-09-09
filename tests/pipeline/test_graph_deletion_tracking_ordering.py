@@ -1858,6 +1858,74 @@ class TestEntityEditGrowsBeforeItShrinks(_EntityEditMixin):
         assert deferred.entity_chunks.disk[ENTITY]["chunk_ids"] == ["chunk-1"]
 
     @pytest.mark.asyncio
+    async def test_a_cancel_inside_the_node_write_leaves_a_diagnosed_wide_row(
+        self, deferred, monkeypatch
+    ):
+        # The one residue of this staging that cannot be closed. A cancellation
+        # delivered inside `upsert_node`'s own await -- after an immediate-write
+        # backend accepted the row -- aborts before the shrink, so the node is
+        # narrowed while the row still holds the superset.
+        #
+        # Deferring cannot help: the CancelledError originates in this
+        # coroutine, so there is nothing for `_finish_deferring_cancellation` to
+        # defer, and issuing the call from inside that region gives the
+        # identical residue (measured before writing this test).
+        #
+        # Settling blind is worse: whether the backend accepted the write is
+        # unknowable, and narrowing the row when it did not would leave the row
+        # a strict SUBSET of the graph -- over-deletion. So the row stays wide,
+        # and what is owed is the diagnostic naming the repair tool.
+        graph = _ImmediateGraphStorage()
+        await graph.upsert_node(
+            ENTITY,
+            {
+                "entity_id": ENTITY,
+                "description": "d",
+                "source_id": f"chunk-1{GRAPH_FIELD_SEP}chunk-2",
+            },
+        )
+        await deferred.entity_chunks.upsert(
+            {ENTITY: {"chunk_ids": ["chunk-1", "chunk-2"], "count": 2}}
+        )
+        await deferred.entity_chunks.index_done_callback()
+        original = graph.upsert_node
+
+        async def _write_then_cancelled(node_id, node_data):
+            await original(node_id, node_data)
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(graph, "upsert_node", _write_then_cancelled)
+        # `lightrag.utils.logger` sets propagate=False, so caplog sees nothing;
+        # collect from the logger this module actually calls.
+        errors: list[str] = []
+        monkeypatch.setattr(
+            utils_graph.logger, "error", lambda msg, *a, **k: errors.append(str(msg))
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await utils_graph.aedit_entity(
+                graph,
+                deferred.entities_vdb,
+                deferred.relationships_vdb,
+                ENTITY,
+                dict(self.SHRINKING_EDIT),
+                entity_chunks_storage=deferred.entity_chunks,
+                relation_chunks_storage=deferred.relation_chunks,
+            )
+
+        # The write landed, the row stayed wide -- under-deletion, never the
+        # over-deleting mirror.
+        assert graph.nodes[ENTITY]["source_id"] == "chunk-1"
+        assert deferred.entity_chunks.disk[ENTITY]["chunk_ids"] == [
+            "chunk-1",
+            "chunk-2",
+        ]
+        # And it is not silent: the operator is told which row and which tool.
+        diagnostic = "\n".join(errors)
+        assert "lightrag-repair-chunk-tracking" in diagnostic
+        assert ENTITY in diagnostic
+
+    @pytest.mark.asyncio
     async def test_a_failing_entity_vector_write_cannot_skip_the_shrink(self, deferred):
         # The entity vector record used to be written BETWEEN the mutation and
         # the region that settles tracking. On an immediate-write backend

@@ -1685,7 +1685,19 @@ What that can leave behind, and why it is tolerated:
   one's: it runs *inside* the cancellation-deferring region and *before* the
   vector flush, so neither a cancellation nor a vector failure can skip it —
   the two ways the relation path still can. It either completes or raises with
-  the row key and the repair tool named. Its
+  the row key and the repair tool named.
+  **One residue there stays open, deliberately:** a cancellation delivered
+  *inside* `upsert_node`'s own await — after an immediate-write backend accepted
+  the row, before control returns — tears the edit down before the shrink, so
+  the node is narrowed while the row keeps the superset. It cannot be deferred
+  (the `CancelledError` originates in that coroutine, so there is nothing for
+  `_finish_deferring_cancellation` to defer, and issuing the call from inside
+  that region gives the identical residue), and it must not be settled blind:
+  whether the backend accepted the write is unknowable there, and narrowing the
+  row when it did not would leave `rows ⊂ graph` — over-deletion, which this
+  ranking treats as losing data, traded against a residue that merely retains a
+  chunk ID. So the row stays wide and the failure is *logged* with the row key
+  and the repair tool, which is the part that was actually owed. Its
   **rename** path needs no such staging and deliberately keeps its own ordering:
   it writes a fresh node whose `source_id` already equals the row it migrates,
   and it retires the old key only after the commit that removes the old node
