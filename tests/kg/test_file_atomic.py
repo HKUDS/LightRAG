@@ -18,9 +18,7 @@ import pytest
 
 from lightrag.file_atomic import (
     TMP_REAP_AGE_SECONDS,
-    WINDOWS_REPLACE_INITIAL_DELAY,
     WINDOWS_REPLACE_MAX_ATTEMPTS,
-    WINDOWS_REPLACE_MAX_DELAY,
     _replace_file,
     atomic_write,
     reap_orphan_tmp_files,
@@ -268,6 +266,11 @@ def test_atomic_write_windows_retry_exhaustion_cleans_tmp_and_raises(tmp_path):
 
     assert call_count == WINDOWS_REPLACE_MAX_ATTEMPTS
     assert mock_sleep.call_count == WINDOWS_REPLACE_MAX_ATTEMPTS - 1
+
+    # The sleeps run on the process-wide SINGLE-worker storage-io executor, so
+    # this total is the worst-case stall imposed on every file backend's flush.
+    stall = sum(call.args[0] for call in mock_sleep.call_args_list)
+    assert stall <= 1.05, f"worst-case storage-io stall grew to {stall:.2f}s"
     assert open(dst).read() == "v1"
     leftovers = [p for p in os.listdir(tmp_path) if ".tmp." in p]
     assert leftovers == [], f"exhausted retry must clean tmp, got {leftovers}"
@@ -328,16 +331,3 @@ def test_replace_file_non_windows_permission_error_logs_nothing(tmp_path, caplog
         logger.propagate = previous_propagate
 
     assert caplog.records == []
-
-
-@pytest.mark.offline
-def test_windows_replace_backoff_budget_stays_within_one_second():
-    """The retry sleeps block the process-wide single-worker storage-io pool,
-    stalling every other file backend's flush. Cap the worst case near 1s."""
-    delay = WINDOWS_REPLACE_INITIAL_DELAY
-    total = 0.0
-    for _ in range(WINDOWS_REPLACE_MAX_ATTEMPTS - 1):
-        total += delay
-        delay = min(delay * 1.5, WINDOWS_REPLACE_MAX_DELAY)
-
-    assert total <= 1.05, f"worst-case storage-io stall grew to {total:.2f}s"
