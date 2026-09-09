@@ -392,6 +392,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # How many times the file channel caught a commit the flag channel
         # never announced, so a deployment can tell whether the
         # lost-notification window in #3854 actually occurs.
+        # The on-disk state already counted as a lost notification. A load
+        # that raises leaves _loaded_fingerprint in place, so the same peer
+        # commit is re-detected by every later call; without this it would
+        # also be re-counted, without bound. See
+        # file_fingerprint.counts_as_a_new_lost_notification.
+        self._counted_peer_fingerprint = None
         self._missed_notification_reloads = 0
 
         self._client = NanoVectorDB(
@@ -448,7 +454,26 @@ class NanoVectorDBStorage(BaseVectorStorage):
         self, fingerprint: file_fingerprint.Fingerprint | object
     ) -> None:
         """Record ``fingerprint`` as the file this process now holds."""
-        self._loaded_fingerprint = file_fingerprint.adopted(fingerprint)
+        adopted = file_fingerprint.adopted(fingerprint)
+        self._loaded_fingerprint = adopted
+        # The dedupe marker's job ends here -- but ONLY if a concrete state
+        # was recorded. It exists to stop a detection being re-counted while
+        # the reload that should discharge it keeps failing, and a landed
+        # reload normally ends that: ``_loaded_fingerprint`` IS this state
+        # from here, so any later divergence is genuinely new. Keeping it
+        # past that point would suppress a state that RECURS -- a peer drop,
+        # a notified recreation, then a second drop whose notification is
+        # lost, all sharing the "absent" fingerprint, which is a real second
+        # loss and not the same-tick collision residue.
+        #
+        # ``adopted(UNREADABLE)`` is ``None``, which is not a state: it means
+        # "nothing recorded", and ``peer_commit_detected`` reports a change
+        # against it for ANY state. Clearing on that would forget which
+        # commit was already counted and count the same one again on the next
+        # call. The post-drop fingerprint is ``(None,)`` -- a real, concrete
+        # state -- so a drop still clears.
+        if adopted is not None:
+            self._counted_peer_fingerprint = None
 
     def _record_fingerprint(self) -> None:
         """Adopt the file currently on disk without reloading from it.
@@ -496,22 +521,40 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 logger.warning(log_message)
             else:
                 logger.info(log_message)
-        else:
+        # Sampled BEFORE the read, never after -- see ``kg.file_fingerprint``.
+        # Hoisted above the logging so the counting below can deduplicate on
+        # the very sample this reload will adopt, at no extra stat.
+        fingerprint = self._stat_fingerprint()
+
+        if not notified:
             # The lost-notification case the file channel exists for. Always a
             # warning, on the read path too: unlike a notified reload this one
             # says a publication failed somewhere.
-            self._missed_notification_reloads += 1
-            logger.warning(
-                f"[{self.workspace}] Process {os.getpid()} reloading "
-                f"{self.namespace}: {self._client_file_name} is not the file "
-                "this process loaded and no reload notification arrived for "
-                "it, so a notification was lost. Recovering through the file "
-                f"channel (occurrence #{self._missed_notification_reloads} in "
-                "this process)."
-            )
-
-        # Sampled BEFORE the read, never after -- see ``kg.file_fingerprint``.
-        fingerprint = self._stat_fingerprint()
+            #
+            # Counted once per on-disk state, not once per detection: a load
+            # that raises below leaves _loaded_fingerprint in place, so this
+            # same commit is re-detected by every later call. See
+            # ``file_fingerprint.counts_as_a_new_lost_notification``.
+            if file_fingerprint.counts_as_a_new_lost_notification(
+                fingerprint, self._counted_peer_fingerprint
+            ):
+                self._counted_peer_fingerprint = file_fingerprint.adopted(fingerprint)
+                self._missed_notification_reloads += 1
+                logger.warning(
+                    f"[{self.workspace}] Process {os.getpid()} reloading "
+                    f"{self.namespace}: {self._client_file_name} is not the file "
+                    "this process loaded and no reload notification arrived for "
+                    "it, so a notification was lost. Recovering through the file "
+                    f"channel (occurrence #{self._missed_notification_reloads} in "
+                    "this process)."
+                )
+            else:
+                logger.debug(
+                    f"[{self.workspace}] The peer commit to "
+                    f"{self._client_file_name} is the one already counted, or "
+                    "its stat failed; this is a retry of a reload that did not "
+                    "land, not a second lost notification."
+                )
         self._client = NanoVectorDB(
             self.embedding_func.embedding_dim,
             storage_file=self._client_file_name,
@@ -901,10 +944,13 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # own partial write as a peer commit.
         #
         # And note the direction differs from ``NetworkXStorage``, which
-        # INVALIDATES its fingerprint after a failed save to force a reload:
-        # it has no redo log, so its in-memory graph is untrustworthy and the
-        # file is the only authority. Here the in-memory client plus the redo
-        # logs ARE the authority to retry from, so the snapshot must be kept.
+        # RELOADS after a failed save: it has no redo log, so its in-memory
+        # graph is untrustworthy and the file is the only authority. It does
+        # not force that reload by invalidating its fingerprint, though —
+        # the failed save left the file untouched, so the fingerprint stays
+        # correct and a process-local ``_recovery_reload_pending`` flag
+        # carries the fact. Here the in-memory client plus the redo logs ARE
+        # the authority to retry from, so the snapshot must be kept.
 
         try:
             await commit_in_storage_io(
