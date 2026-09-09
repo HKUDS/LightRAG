@@ -111,6 +111,7 @@ def reap_orphan_tmp_files(
                     f"[{workspace}] Failed to reap orphan tmp file {path}: {exc}"
                 )
 
+
 def _replace_file(src: str, dst: str, workspace: str = "_") -> None:
     """Replace src into dst, with exponential backoff retry on Windows NTFS.
 
