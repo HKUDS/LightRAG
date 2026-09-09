@@ -92,9 +92,12 @@ _P_CN_NUM = re.compile(rf"^\s*([{_CN_ORD}]+)[.、\s]")
 _P_CN_PARENT = re.compile(rf"^\s*([（(][{_CN_ORD}]+[）)]|[{_CN_ORD}]+[）)])")
 _P_ROMAN = re.compile(r"^\s*([IVX]{2,}|[ivx]{2,}|[Ⅰ-Ⅻⅰ-ⅻ])[.、]")
 _P_EN_NUM = re.compile(r"^\s*(\d+)(?:\s|[.、]|(?=[一-龥]))")
-_P_EN_ALPHA = re.compile(r"^\s*([A-Za-z])[.、]")
-_P_EN_DOUBLE_PAREN = re.compile(r"^\s*([（(](?:\d+|[a-zA-Z])[）)])")
-_P_EN_SINGLE_PAREN = re.compile(r"^\s*((?:\d+|[a-zA-Z]))[）)]")
+# Bounded repeated-letter group: Word list labels repeat the SAME letter
+# (a, z, aa, zz, aaa). Mixed runs like "CV" or "MD" are abbreviations and
+# must not classify as EnAlpha.
+_P_EN_ALPHA = re.compile(r"^\s*(([A-Za-z])\2{0,2})[.、]")
+_P_EN_DOUBLE_PAREN = re.compile(r"^\s*([（(](?:\d+|([A-Za-z])\2{0,2})[）)])")
+_P_EN_SINGLE_PAREN = re.compile(r"^\s*((?:\d+|([A-Za-z])\2{0,2}))[）)]")
 
 #: Try order: MultiLevelNum first, then the table order top-down.
 _MATCH_ORDER: tuple[tuple[str, re.Pattern], ...] = (
@@ -202,10 +205,23 @@ def _to_roman(num: int) -> str | None:
 
 
 def parse_alpha_ordinal(text: str) -> int | None:
+    """Parse a homogeneous ASCII-letter run like ``a``, ``z``, ``aa``, ``zz``.
+
+    Word repeated-letter labels run the letter through the alphabet and count
+    the run length as the round: ``a``/``z`` are 1/26, ``aa``/``zz`` are
+    27/52, ``aaa`` is 53. Mixed runs (``ab``) and runs longer than 3 letters
+    are not list labels and return None.
+    """
     text = text.strip()
-    if len(text) == 1 and text.isalpha() and text.isascii():
-        return ord(text.lower()) - ord("a") + 1
-    return None
+    if not (text.isalpha() and text.isascii()):
+        return None
+    if not 1 <= len(text) <= 3:
+        return None
+    lowered = text.lower()
+    if len(set(lowered)) != 1:
+        return None
+    letter_index = ord(lowered[0]) - ord("a") + 1
+    return letter_index + 26 * (len(lowered) - 1)
 
 
 #: Normalized unit ranks (smaller = shallower). Spec: 篇/部/编/卷 > 章 > 节;

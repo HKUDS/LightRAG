@@ -21,6 +21,7 @@ from lightrag.parser.docx.smart_heading.style_key import (
     STYLE_KEY_PRIORITY,
     classify_numbering,
     compute_fs_base,
+    parse_alpha_ordinal,
     parse_cn_ordinal,
     parse_roman,
     reclassify_single_char_romans,
@@ -54,6 +55,7 @@ POSITIVE_CASES = [
     ("Section 3", EN_CHAPTER, "Section 3"),  # wins over EnClause
     ("Volume II Overview", EN_CHAPTER, "Volume II"),
     ("Part A", EN_CHAPTER, "Part A"),
+    ("Section aa", EN_CHAPTER, "Section aa"),
     # MultiLevelNum
     ("1.2 节", MULTI_LEVEL_NUM, "1.2"),
     ("§ 1.1.4 节", MULTI_LEVEL_NUM, "§ 1.1.4"),
@@ -102,15 +104,19 @@ POSITIVE_CASES = [
     ("A. 概念", EN_ALPHA, "A"),
     ("a. Intro", EN_ALPHA, "a"),
     ("B、内容", EN_ALPHA, "B"),
+    ("aa. Double", EN_ALPHA, "aa"),
+    ("zz. Double", EN_ALPHA, "zz"),
     # EnDoubleParen
     ("(1) 内容", EN_DOUBLE_PAREN, "(1)"),
     ("（a）内容", EN_DOUBLE_PAREN, "（a）"),
     ("(A) Text", EN_DOUBLE_PAREN, "(A)"),
     ("（12）内容", EN_DOUBLE_PAREN, "（12）"),
+    ("(bb) double", EN_DOUBLE_PAREN, "(bb)"),
     # EnSingleParen
     ("1) 内容", EN_SINGLE_PAREN, "1"),
     ("a) Intro", EN_SINGLE_PAREN, "a"),
     ("12）内容", EN_SINGLE_PAREN, "12"),
+    ("zz) double", EN_SINGLE_PAREN, "zz"),
 ]
 
 
@@ -217,6 +223,32 @@ def test_ordinals() -> None:
     assert classify_numbering("PART I").ordinal == 1
     assert parse_cn_ordinal("一百二十") == 120
     assert parse_roman("XXXIX") == 39
+
+
+def test_repeated_letter_alpha_ordinals() -> None:
+    """Word repeated-letter labels (aa, zz, aaa) parse to 27, 52, 53."""
+    assert classify_numbering("a. Intro").ordinal == 1
+    assert classify_numbering("z. Intro").ordinal == 26
+    assert classify_numbering("aa. Intro").ordinal == 27
+    assert classify_numbering("zz) Intro").ordinal == 52
+    assert classify_numbering("aaa. Intro").ordinal == 53
+    assert classify_numbering("(bb) Intro").ordinal == 28
+    assert classify_numbering("Section aa").ordinal == 27
+    assert classify_numbering("B. Beta").ordinal == 2
+    assert parse_alpha_ordinal("A") == 1
+    assert parse_alpha_ordinal("ZZ") == 52
+    assert parse_alpha_ordinal("AAA") == 53
+
+
+def test_non_word_letter_runs_return_no_ordinal() -> None:
+    """Mixed or over-long alpha runs are not Word list labels."""
+    assert parse_alpha_ordinal("ab") is None
+    assert parse_alpha_ordinal("aaaab") is None
+    assert parse_alpha_ordinal("a1") is None
+    # a mixed run must not classify as EnAlpha at all (words/abbreviations)
+    assert classify_numbering("ab. Intro") is None
+    assert classify_numbering("CV. 简历缩写") is None
+    assert classify_numbering("MD. 医生头像") is None
 
 
 def test_multilevel_raw_level_and_top() -> None:
