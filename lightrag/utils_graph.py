@@ -289,6 +289,29 @@ async def _persist_graph_updates(
     tracking rows the retry would then believe it still owed. Every other
     exception still propagates: those mean the flush did not happen.
 
+    An explicit ``False`` is the third answer, and it is the opposite of a
+    ``CommitBookkeepingError``: the commit was **DECLINED**, so the in-memory
+    mutation was discarded rather than persisted (see
+    ``NetworkXStorage.index_done_callback``'s first block, and rule 5 of
+    #3854). This helper used to drop the return value, which made a decline
+    reaching ``aedit_relation`` / ``acreate_entity`` / ``acreate_relation``
+    silent: the graph mutation gone, the caller told it succeeded. It now
+    raises, matching :func:`_commit_graph_or_raise`, which every other admin
+    graph path already routes its commit through.
+
+    **Accepted residue — the sibling flushes still land.** All flushes are
+    awaited to completion before the decline is raised, so a declined graph
+    commit leaves this operation's vector and chunk-tracking rows durable with
+    no graph object behind them. Raising early to cancel the siblings would be
+    worse, not better: ``commit_in_storage_io`` defers cancellation, so a
+    cancelled flush may have written anyway, and which ones did would depend
+    on scheduling. Per *Consistency without transactions* in ``AGENTS.md``
+    this is the acceptable direction — the rows are keyed by deterministic ids
+    (entity name / relation pair hashes), so the caller's retry rewrites them,
+    a rebuild rewrites them, and in the meantime a query may surface a row
+    whose graph object is missing. Reporting a discarded mutation as a success
+    is the direction that is never acceptable.
+
     Args:
         entities_vdb: Entity vector database storage (optional)
         relationships_vdb: Relationship vector database storage (optional)
@@ -310,9 +333,10 @@ async def _persist_graph_updates(
     if relation_chunks_storage is not None:
         storages.append(relation_chunks_storage)
 
-    async def _flush(storage_inst) -> None:
+    async def _flush(storage_inst) -> str | None:
+        """Flush one store. Returns its namespace if it DECLINED, else None."""
         try:
-            await cast(StorageNameSpace, storage_inst).index_done_callback()
+            committed = await cast(StorageNameSpace, storage_inst).index_done_callback()
         except CommitBookkeepingError as e:
             log_without_raising(
                 logger.error,
@@ -321,10 +345,31 @@ async def _persist_graph_updates(
                 "durable; cross-process visibility is deferred to the next "
                 "commit.",
             )
+            return None
+        # Only an explicit False counts. The base signature is ``-> None``, so
+        # backends that simply return nothing are unaffected -- same test as
+        # _commit_graph_or_raise.
+        if committed is False:
+            return str(getattr(storage_inst, "namespace", storage_inst))
+        return None
 
     # Persist all storage instances in parallel
     if storages:
-        await asyncio.gather(*[_flush(storage_inst) for storage_inst in storages])
+        declined = [
+            namespace
+            for namespace in await asyncio.gather(
+                *[_flush(storage_inst) for storage_inst in storages]
+            )
+            if namespace is not None
+        ]
+        if declined:
+            # Raised only after every flush has run: see the accepted residue
+            # in the docstring for why the siblings are not cancelled.
+            raise RuntimeError(
+                "Graph persistence was skipped because another process updated "
+                f"the storage, so the in-memory mutation was discarded: "
+                f"{', '.join(sorted(declined))}"
+            )
 
 
 async def _finish_deferring_cancellation(coro, description: str) -> None:
