@@ -1680,6 +1680,13 @@ body verbatim, so no client change is needed):
 | `Another knowledge graph edit is in progress` | the admin lock was held by a peer admin write past the acquire timeout | that peer admin write finishes — retry the same request |
 | `Pipeline is busy with another operation` | the pipeline holds `busy` (a processing run or a destructive job) or `scanning` — from the router's early check or from the gate's reservation | ingestion or the scan finishes |
 
+The router's early check refuses on `busy` **except when an admin write owns
+it**. Without that exemption the second concurrent REST edit would be refused
+before it ever reached the admin lock, so the queueing above would exist only
+for direct SDK callers — and the client would be told to wait for document
+ingestion when what is ahead of it is another UI edit. A `busy` holder that
+cannot be identified is never exempt.
+
 Why a lock rather than teaching the file backend to replay its pending work over
 a reloaded snapshot: graph payloads are accumulate-over-read (`source_id` is an
 evidence set merged from what the writer read; `weight` is floored by the

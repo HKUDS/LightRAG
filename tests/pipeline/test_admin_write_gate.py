@@ -32,6 +32,7 @@ storages, offline, and pin:
 from __future__ import annotations
 
 import asyncio
+import importlib
 import subprocess
 import sys
 import time
@@ -61,6 +62,19 @@ from lightrag.kg.shared_storage import (
     reconcile_dead_pipeline_reservations,
 )
 from lightrag.utils import EmbeddingFunc, Tokenizer
+
+# ``check_pipeline_busy_or_raise`` is the preflight every /graph/* route runs
+# before the core method, so the REST-path tests at the bottom need it. Import
+# it under a clean argv: the router package parses ``sys.argv`` with argparse at
+# import time and would choke on pytest's flags. Same idiom, and same reason, as
+# tests/kg/test_reservation_dead_process_recovery.py; done via importlib (an
+# assignment, not an ``import`` statement) so it is not flagged as a late
+# module-level import (E402).
+_original_argv = sys.argv[:]
+sys.argv = [sys.argv[0]]
+_document_routes = importlib.import_module("lightrag.api.routers.document_routes")
+sys.argv = _original_argv
+check_pipeline_busy_or_raise = _document_routes.check_pipeline_busy_or_raise
 
 pytestmark = pytest.mark.offline
 
@@ -623,3 +637,107 @@ async def test_the_two_ceiling_messages_are_distinguishable(rag, monkeypatch):
     for text in (clean_text, deferred_text):
         assert "Re-read the entity or relation before retrying" in text
         assert "still durable" in text or "IS durable" in text
+
+
+# ---------------------------------------------------------------------------
+# R1.5 over REST -- the router preflight must not swallow the admin queue
+# ---------------------------------------------------------------------------
+#
+# Every /graph/* route calls check_pipeline_busy_or_raise before the core
+# method. It refused on the raw ``busy`` flag, which an admin write now sets
+# itself -- so a second concurrent REST admin write was refused with the
+# pipeline-busy 409 and never reached the workspace admin lock. The bounded
+# queueing R1.5 promises, and the distinct admin-lock refusal, existed only for
+# direct SDK callers, and the message blamed document ingestion for what was
+# actually another UI edit. Found by the Codex review of PR #3901 on d9ba12b.
+
+
+async def _preflight(rag):
+    """The exact call every /graph/* route makes before the core method."""
+    await check_pipeline_busy_or_raise(rag)
+
+
+@pytest.mark.asyncio
+async def test_router_preflight_lets_a_second_admin_write_through_to_the_lock(rag):
+    """An admin-owned ``busy`` is not a pipeline-busy refusal."""
+    async with _HeldAdminWrite(rag, lambda: _create_alice(rag)) as held:
+        status, _lock = await _status_handles(rag)
+        assert status["busy"] is True
+        assert status["busy_owner"]["kind"] == "admin"
+
+        await _preflight(rag)  # must NOT raise
+
+        held.release()
+        await held.task
+    await asyncio.gather(
+        *lightrag_module._ADMIN_RELEASE_DRIVE_TASKS, return_exceptions=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_router_preflight_still_refuses_a_pipeline_owned_busy(rag):
+    """The exemption is for ``kind == "admin"`` only. A processing or
+    destructive holder, and an unidentifiable one, still refuse: those DO write
+    the same graph storages these endpoints mutate."""
+    from fastapi import HTTPException
+
+    status, lock = await _status_handles(rag)
+    for owner in (
+        {"token": "p", "kind": "processing"},
+        {"token": "d", "kind": "delete"},
+        {"token": "c", "kind": "clear"},
+        {"token": "legacy"},  # no kind at all
+        "bare-token",  # not a record
+        None,  # busy with no owner
+    ):
+        async with lock:
+            status.update({"busy": True, "busy_owner": owner})
+        try:
+            with pytest.raises(HTTPException) as excinfo:
+                await _preflight(rag)
+            assert excinfo.value.status_code == 409, owner
+            assert "Pipeline is busy" in excinfo.value.detail
+        finally:
+            async with lock:
+                status.update({"busy": False, "busy_owner": None})
+
+
+@pytest.mark.asyncio
+async def test_a_second_rest_admin_write_queues_instead_of_being_refused(rag):
+    """End to end on the REST path: preflight, then the core gate. The second
+    write WAITS for the first and then succeeds -- it is not refused, and it
+    does not run concurrently.
+
+    Verified red before the fix: the preflight raised the pipeline-busy 409.
+    """
+    order: list[str] = []
+
+    async def _second_write():
+        await _preflight(rag)
+        order.append("second-entered-gate")
+        result = await rag.acreate_entity(
+            "Bob", {"description": "another person", "entity_type": "PERSON"}
+        )
+        order.append("second-done")
+        return result
+
+    async with _HeldAdminWrite(rag, lambda: _create_alice(rag)) as held:
+        second = asyncio.create_task(_second_write())
+        # Give it room to pass the preflight and park on the admin lock.
+        await asyncio.sleep(0.2)
+        assert order == ["second-entered-gate"]  # past the preflight ...
+        assert second.done() is False  # ... and queued, not refused
+        assert await rag.chunk_entity_relation_graph.has_node("Bob") is False
+
+        order.append("first-releasing")
+        held.release()
+        await held.task
+
+    result = await asyncio.wait_for(second, timeout=10)
+    assert result["entity_name"] == "Bob"
+    assert order == ["second-entered-gate", "first-releasing", "second-done"]
+    assert await rag.chunk_entity_relation_graph.has_node("Alice") is True
+    assert await rag.chunk_entity_relation_graph.has_node("Bob") is True
+    await asyncio.gather(
+        *lightrag_module._ADMIN_RELEASE_DRIVE_TASKS, return_exceptions=True
+    )

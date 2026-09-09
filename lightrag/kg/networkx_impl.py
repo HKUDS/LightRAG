@@ -571,13 +571,21 @@ class NetworkXStorage(BaseGraphStorage):
         also arms ``_recovery_reload_pending`` so the next ``_get_graph``
         discards them rather than a later commit publishing them.
 
-        Two reloads are exempt and must stay so: the recovery reload
-        (``_recovery_reload_pending``) exists precisely to discard mutations
-        of a batch already reported as failed, and a notification that names
-        the snapshot already loaded (a self-notification, or a peer commit a
-        sibling coroutine already reloaded) discards nothing a peer replaced.
-        The decline paths of ``index_done_callback`` are exempt too: they
-        already report the loss to their caller.
+        Exempt, and they must stay so: the recovery reload
+        (``_recovery_reload_pending``), which exists precisely to discard
+        mutations of a batch already reported as failed, and the decline paths
+        of ``index_done_callback``, which already report the loss to their
+        caller.
+
+        NOT exempt, contrary to issue #3899 R4: a notification whose sampled
+        fingerprint equals the loaded one. That was specified as a
+        self-notification, which replaces nothing a peer wrote -- but an equal
+        fingerprint does not identify a self-notification. A same-tick,
+        same-size peer commit is the file channel's documented blind spot, and
+        a set flag is the evidence that the channel is blind right now (see
+        *Cross-process sync protocol*: the flag exists to cover exactly that
+        collision). Disarming on the blind channel's verdict is how a
+        peer-replaced dirty graph would be discarded silently.
 
         **Accepted residue.** The refusing commit is not necessarily the
         operation whose mutations were discarded: if that writer is already
@@ -1169,9 +1177,6 @@ class NetworkXStorage(BaseGraphStorage):
                 # sampling twice let the log claim the file was unchanged while
                 # the reload refused an unreadable one.
                 sampled = self._stat_fingerprint()
-                # Dirty-graph backstop: a notification for the snapshot already
-                # loaded discards nothing a peer replaced, so it must not arm
-                # the refusal (see the elif below).
                 arm_dirty_discard = True
                 if sampled is file_fingerprint.UNREADABLE:
                     logger.debug(
@@ -1183,19 +1188,40 @@ class NetworkXStorage(BaseGraphStorage):
                 elif file_fingerprint.fence_enabled() and not (
                     self._peer_commit_detected(sampled)
                 ):
-                    # Notified about the file this process already holds: a
-                    # self-notification, or a peer commit that a sibling
-                    # coroutine reloaded before this call got the lock. The
-                    # reload below is honoured anyway rather than skipped --
-                    # skipping it would change which uncommitted in-memory
-                    # mutations survive a notification, which is not this
-                    # fence's business.
+                    # Notified about a file whose identity matches the one
+                    # this process already holds: a self-notification, a peer
+                    # commit a sibling coroutine reloaded before this call got
+                    # the lock, or -- and this is why the dirty-graph backstop
+                    # stays ARMED here -- a peer commit that collided with the
+                    # loaded fingerprint. The reload below is honoured anyway
+                    # rather than skipped: skipping it would change which
+                    # uncommitted in-memory mutations survive a notification,
+                    # which is not this fence's business.
+                    #
+                    # Issue #3899 R4 specified disarming the backstop in this
+                    # branch, on the grounds that a self-notification replaces
+                    # nothing a peer wrote. True of a self-notification -- but
+                    # an equal fingerprint does not IDENTIFY one. A same-tick,
+                    # same-size peer commit is the file channel's documented
+                    # blind spot (see *Cross-process sync protocol*), and the
+                    # flag being set is precisely the evidence that the channel
+                    # is blind right now: the docstring there says the flag
+                    # exists to cover this collision. Disarming on the blind
+                    # channel's verdict would discard a peer-replaced dirty
+                    # graph silently, which is the defect the backstop exists
+                    # for. So the fail-loud direction wins (AGENTS.md
+                    # *Consistency without transactions*): at worst a genuine
+                    # self-notification costs ONE refused commit that clears
+                    # the flag and converges; at best it catches a real loss.
+                    # A dirty graph receiving any notification is already
+                    # anomalous under the admin-write gate, which is the single
+                    # writer this backstop assumes.
                     logger.debug(
                         f"[{self.workspace}] Reload notification for "
-                        f"{self._graphml_xml_file} names the snapshot already "
-                        "loaded; reloading anyway"
+                        f"{self._graphml_xml_file} names a snapshot whose "
+                        "identity matches the one already loaded; reloading "
+                        "anyway"
                     )
-                    arm_dirty_discard = False
                 self._reload_locked(sampled, arm_dirty_discard=arm_dirty_discard)
             elif file_fingerprint.fence_enabled():
                 # ONE observation for everything the file channel does on this

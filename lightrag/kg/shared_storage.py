@@ -2655,6 +2655,26 @@ def _reservation_owner_token(record: Any) -> Any:
     return record
 
 
+def reservation_owner_kind(record: Any) -> Optional[str]:
+    """The ``kind`` of a reservation owner record, or ``None`` when unknown.
+
+    Public because a caller outside this layer has to tell WHICH holder owns a
+    flag, not just that it is set: ``check_pipeline_busy_or_raise`` must let an
+    ``admin`` holder of ``busy`` through (that request queues on the workspace
+    admin lock instead) while still refusing a ``processing`` / ``clear`` /
+    ``delete`` one. The record's shape stays known only here, as with
+    :func:`make_owner_record` and :func:`_reservation_owner_token`.
+
+    ``None`` for a bare token, a legacy record without the field, and a missing
+    owner. Callers MUST treat ``None`` as "not exempt": a flag with no
+    identifiable owner is the case a fence exists for.
+    """
+    if isinstance(record, Mapping):
+        kind = record.get("kind")
+        return str(kind) if kind is not None else None
+    return None
+
+
 async def acquire_reservation(
     pipeline_status: Dict[str, Any],
     pipeline_status_lock,

@@ -1807,10 +1807,23 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
     the namespace lock and raises immediately on contention -- it does
     NOT set any flag, so it cannot block the pipeline itself.
 
-    ``busy`` is set by the processing loop and by destructive jobs
-    (``/documents/clear`` / per-doc delete). Both paths concurrently
-    write the same graph storages that these endpoints mutate, so a
-    409 here mirrors the existing UI guard and tells clients to wait.
+    ``busy`` is set by the processing loop, by destructive jobs
+    (``/documents/clear`` / per-doc delete), AND by an admin graph write
+    itself (issue #3899). The first two concurrently write the same graph
+    storages that these endpoints mutate, so a 409 here mirrors the
+    existing UI guard and tells clients to wait.
+
+    **An ``admin`` holder is exempt, and the exemption is load-bearing.**
+    Refusing on the raw flag would refuse the second concurrent REST admin
+    write before it ever reaches the workspace admin lock, so the bounded
+    QUEUEING that lock provides (issue #3899 R1.5) would exist only for
+    direct SDK callers, and the client would be told to wait for document
+    ingestion when what is actually ahead of it is another UI edit. Letting
+    it through costs nothing: the core gate takes the admin lock, waits for
+    the peer edit, and only then takes the reservation -- and if a pipeline
+    job has claimed ``busy`` by that point, the gate refuses it there with
+    the same 409. ``None`` (a bare token, a legacy record, no owner) is NOT
+    exempt: an unidentifiable holder is what a fence exists for.
 
     This check is a snapshot taken at request entry, while the graph
     commit happens at request exit, so on its own it leaves the WHOLE
@@ -1841,6 +1854,7 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
         check_pipeline_status_mutation,
         get_namespace_data,
         get_namespace_lock,
+        reservation_owner_kind,
     )
 
     try:
@@ -1852,16 +1866,13 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
     pipeline_status_lock = get_namespace_lock(
         "pipeline_status", workspace=rag.workspace
     )
+    # ``reject_when=()``: the recovery fence is still evaluated (and is
+    # mandatory), but the ``busy`` decision needs the flag AND its owner, which
+    # the helper's flag-only form cannot express. Both come from the ONE
+    # snapshot the helper took inside ``pipeline_status_lock``, so this stays a
+    # single critical section rather than a second, racing read.
     result = await check_pipeline_status_mutation(
-        pipeline_status,
-        pipeline_status_lock,
-        reject_when=(
-            (
-                "busy",
-                "Pipeline is busy with another operation. Wait for the running "
-                "job to finish before editing the knowledge graph.",
-            ),
-        ),
+        pipeline_status, pipeline_status_lock, reject_when=()
     )
     if not result.acquired:
         raise HTTPException(
@@ -1871,6 +1882,17 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
                 else 409
             ),
             detail=result.message,
+        )
+    snapshot = result.snapshot or {}
+    if snapshot.get("busy") and (
+        reservation_owner_kind(snapshot.get("busy_owner")) != "admin"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Pipeline is busy with another operation. Wait for the running "
+                "job to finish before editing the knowledge graph."
+            ),
         )
 
 

@@ -18,9 +18,11 @@ backstop makes a bypass loud:
 - ``index_done_callback`` refuses with ``GraphMutationsDiscardedError`` while
   the flag is set, and clears it in the same step so the following commit is
   not blocked;
-- the recovery reload and a notification naming the snapshot already loaded
-  are exempt (they discard nothing a peer replaced / nothing not already
-  reported as failed);
+- the recovery reload and the decline paths are exempt (what they discard was
+  already reported as failed, or is already reported to the caller), but a
+  notification whose fingerprint matches the loaded one is NOT: an equal
+  fingerprint is the file channel's documented blind spot, not proof of a
+  self-notification;
 - reachable in SINGLE-process mode with two storage instances on one
   workspace, not only under multiprocess: each instance registers its own
   update flag, and one's commit makes the other reload.
@@ -250,25 +252,72 @@ async def test_recovery_reload_discards_silently(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_notification_naming_the_loaded_snapshot_does_not_arm(
+async def test_a_notification_matching_the_loaded_fingerprint_still_arms(
     tmp_path, multiprocess
 ):
-    """A self-notification -- the flag set while the file is the one this
-    process already holds -- reloads anyway (existing behaviour) but discards
-    nothing a peer replaced, so it must not make the next commit refuse."""
+    """An equal fingerprint does not prove the reload discards nothing.
+
+    Issue #3899 R4 specified disarming the backstop here, calling this case a
+    self-notification. But a same-tick, same-size peer commit is the file
+    channel's documented blind spot, and a set flag is the evidence that the
+    channel is blind right now -- the flag exists to cover that collision. So
+    the reload still discards, and the next commit must still refuse.
+
+    Reported by the Codex review of PR #3901 on d9ba12b. Verified red against
+    the disarming version, which let the mutation vanish and the commit
+    succeed -- the exact silent loss the backstop exists for.
+    """
     worker = await _worker(tmp_path)
     try:
         await worker.upsert_node("durable", {"entity_id": "durable"})
         assert await worker.index_done_callback() is True
 
         await worker.upsert_node("unpublished", {"entity_id": "unpublished"})
-        worker.storage_updated.value = True  # names the snapshot already loaded
+        worker.storage_updated.value = True  # matches the loaded fingerprint
 
         assert await worker.has_node("unpublished") is False  # reloaded anyway
+        assert worker._dirty_discard_pending is True
+        with pytest.raises(GraphMutationsDiscardedError):
+            await worker.index_done_callback()
+        # Not sticky: the refusal clears it and the next commit is fine.
         assert worker._dirty_discard_pending is False
         assert await worker.index_done_callback() is True
     finally:
         await worker.finalize()
+
+
+@pytest.mark.asyncio
+async def test_a_fingerprint_colliding_peer_commit_is_not_lost_silently(
+    tmp_path, multiprocess, monkeypatch
+):
+    """The case the disarm actually exposed: a peer commit whose
+    ``(st_mtime_ns, st_size)`` collides with the fingerprint this process
+    loaded, so only the notification proves the file moved. The peer's content
+    must not replace a dirty graph without a word."""
+    worker_a = await _worker(tmp_path)
+    worker_b = await _worker(tmp_path)
+    try:
+        # B holds an uncommitted mutation; A commits over the same file.
+        await worker_b.upsert_node("from_b", {"entity_id": "from_b"})
+        await worker_a.upsert_node("from_a", {"entity_id": "from_a"})
+        assert await worker_a.index_done_callback() is True
+
+        # Force the collision: every sample B takes reports the identity B
+        # already recorded, so its file channel sees "no change" and only the
+        # notification is left.
+        collided = worker_b._loaded_fingerprint
+        monkeypatch.setattr(type(worker_b), "_stat_fingerprint", lambda self: collided)
+        assert worker_b._peer_commit_detected(collided) is False
+        assert worker_b.storage_updated.value is True
+
+        assert await worker_b.has_node("from_a") is True  # A's content loaded
+        assert await worker_b.has_node("from_b") is False  # B's was discarded
+        assert worker_b._dirty_discard_pending is True
+        with pytest.raises(GraphMutationsDiscardedError):
+            await worker_b.index_done_callback()
+    finally:
+        await worker_a.finalize()
+        await worker_b.finalize()
 
 
 @pytest.mark.asyncio
