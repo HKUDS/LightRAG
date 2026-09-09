@@ -177,7 +177,7 @@ StatefulSet 一旦创建，`volumeClaimTemplates` 就不可变，因此在 `work
 您可以通过修改`values.yaml`文件来配置LightRAG的资源使用：
 
 ```yaml
-replicaCount: 1  # 必须保持为 1，参见下方“副本数量”
+replicaCount: 1  # 请保持为 1，参见上方“副本数量”
 
 resources:
   limits:
@@ -198,6 +198,8 @@ persistence:
   inputs:
     size: 5Gi     # 输入数据存储大小，可根据需要调整
 ```
+
+这两个容量只在 `workload.kind: Deployment` 下可以通过升级修改。StatefulSet 的存储由 `volumeClaimTemplates` 供给，而它在对象创建后即不可变，因此在 `workload.kind: StatefulSet` 下，`helm upgrade` 修改容量、或在最初关闭 persistence 后再打开，都会被 API server 拒绝而非生效。每个 PVC 的扩容步骤见上方「副本数量」。
 
 ### 配置环境变量
 
@@ -233,7 +235,8 @@ env:
 
 - 在部署前确保设置了所有必要的环境变量（API密钥和数据库密码）
 - 出于安全原因，建议使用环境变量传递敏感信息，而不是直接写入脚本或values文件
-- `replicaCount` 必须保持为 `1`：同一个 workspace 只支持单个活跃的 LightRAG 实例（参见上方“副本数量”）
+- 除非已经读过上方「副本数量」，请把 `replicaCount` 保持为 `1`：同一个 workspace 只支持一个**执行写入**的 LightRAG 实例，额外的只读查询实例只有在该节列出的五个条件全部满足时才可行
+- `helm uninstall`（以及 `uninstall_lightrag.sh`）会**保留**存储 PVC：它们带有 `helm.sh/resource-policy: keep`，因为删除它们就等于销毁整个 workspace，而对动态供给、默认 `Delete` 回收策略的卷而言，数据会随 PVC 一起消失。卸载脚本会打印被保留的 PVC 以及删除它们的命令——请在数据已备份或确认不再需要之后自行执行
 - 轻量级部署适合测试和小规模使用，但数据持久性和性能可能有限
 - 生产环境部署（PostgreSQL + Neo4J）推荐用于生产环境和大规模使用
 - 有关更多自定义配置，请参考LightRAG官方文档

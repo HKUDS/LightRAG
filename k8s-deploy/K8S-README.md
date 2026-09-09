@@ -177,7 +177,7 @@ Switching kind on a release that already has data therefore needs care, because 
 You can configure LightRAG's resource usage by modifying the `values.yaml` file:
 
 ```yaml
-replicaCount: 1  # Must stay 1 - see "Replica Count" below
+replicaCount: 1  # Keep at 1 - see "Replica Count" above
 
 resources:
   limits:
@@ -198,6 +198,8 @@ persistence:
   inputs:
     size: 5Gi     # Input data storage size, can be adjusted as needed
 ```
+
+These sizes are upgradable only under `workload.kind: Deployment`. A StatefulSet provisions its storage through `volumeClaimTemplates`, which is immutable once the object exists, so under `workload.kind: StatefulSet` a `helm upgrade` that changes a size - or that flips `persistence.enabled` on after installing with it off - is rejected by the API server rather than applied. See "Replica Count" above for the per-PVC expansion procedure.
 
 ### Configuring Environment Variables
 
@@ -233,7 +235,8 @@ env:
 
 - Ensure all necessary environment variables (API keys and database passwords) are set before deployment
 - For security reasons, it's recommended to pass sensitive information using environment variables rather than writing them directly in scripts or values files
-- `replicaCount` must stay `1`: one workspace supports a single active LightRAG instance (see "Replica Count" above)
+- Keep `replicaCount` at `1` unless you have read "Replica Count" above: a workspace supports a single *writing* LightRAG instance, and extra query-only instances are possible only under the five conditions listed there
+- `helm uninstall` (and `uninstall_lightrag.sh`) **keeps** the storage claims: they carry `helm.sh/resource-policy: keep`, because deleting them destroys the workspace and, on a dynamically provisioned volume with the default `Delete` reclaim policy, the data with it. The uninstall script prints the retained claims and the command that deletes them - run it yourself once the data is backed up or confirmed unwanted
 - Lightweight deployment is suitable for testing and small-scale usage, but data persistence and performance may be limited
 - Production deployment (PostgreSQL + Neo4J) is recommended for production environments and large-scale usage
 - For more customized configurations, please refer to the official LightRAG documentation
