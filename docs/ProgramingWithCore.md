@@ -1674,8 +1674,8 @@ What that can leave behind, and why it is tolerated:
   delivered during that commit, or a failure of the vector flush inside it,
   exits the edit with the row still holding the superset and no line naming it.
   The state stays the accepted direction, but the operator is not told to run
-  the repair — which is the part that cannot heal itself. Tracked separately;
-  `aedit_entity`'s non-rename path (below) does not share it.
+  the repair — which is the part that cannot heal itself. Tracked in issue
+  #3895; `aedit_entity`'s non-rename path (below) does not share it.
 - `aedit_entity`'s non-rename path stages its row the same way, for the same
   reason: a **growing** edit there used to commit the node before flushing the
   row that attributes it, leaving `rows ⊂ graph` — reachable from `POST
