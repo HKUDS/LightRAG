@@ -264,7 +264,8 @@ class NetworkXStorage(BaseGraphStorage):
               so a peer commit that arrived unannounced *while* recovery was
               pending would be handled correctly and never counted. Both
               recovery branches therefore classify the peer channel before
-              they reload. Overcounting and undercounting are both defects in
+              they reload -- and so does the reload that would otherwise arm
+              the flag, the failed-save handler's own recovery reload. Overcounting and undercounting are both defects in
               an instrument a later decision rests on, which is why that one
               helper is now the single increment site for every branch that
               counts — and why it deduplicates by ``(st_mtime_ns, st_size)``:
@@ -295,7 +296,10 @@ class NetworkXStorage(BaseGraphStorage):
         The fingerprint is deliberately *not* invalidated when this is armed:
         the save failed, so the file is untouched and the recorded fingerprint
         still describes it correctly. Saying otherwise would be a second lie
-        in the opposite direction.
+        in the opposite direction. Untouched *by this process*, that is --
+        ``index_done_callback`` releases the lock between its fence block and
+        its save, so the recovery reload in its failure handler classifies the
+        peer channel before it adopts the file, like the branches above.
 
         ``drop`` clears it: the mutation it protects is destroyed with
         everything else, and memory matches the file again. That clear is
@@ -686,7 +690,8 @@ class NetworkXStorage(BaseGraphStorage):
         * **Undercount.** The recovery flag wins over both channel tests and
           one reload discharges all of them, so a peer commit that arrives
           while recovery is pending would be handled and never counted. That
-          is why the recovery branches call this at all.
+          is why the recovery branches -- and the failed-save handler's own
+          recovery reload -- call this at all.
         * **Overcount.** A reload that raises leaves ``_loaded_fingerprint``
           and ``_recovery_reload_pending`` exactly as they were, so the same
           peer commit is re-detected by every later call -- and, counted at
@@ -1675,7 +1680,43 @@ class NetworkXStorage(BaseGraphStorage):
                 # closed (the finally below reopens it), so no other coroutine
                 # can be reading or mutating self._graph.
                 try:
-                    self._reload_locked()
+                    # Classify the peer channel before reloading, exactly as
+                    # the two recovery branches do and for the same reason:
+                    # _reload_locked adopts the file, after which the question
+                    # cannot be asked any more, so a lost notification would
+                    # go uncounted -- the undercount that made
+                    # _count_unannounced_peer_commit_locked the single
+                    # increment site in the first place.
+                    #
+                    # A divergence here can only be a peer commit, never this
+                    # process's own half-written file: atomic_write leaves the
+                    # destination untouched when the write raises, and
+                    # commit_in_storage_io persists nothing in that case. What
+                    # it would be is a peer commit landing in the window
+                    # between the fence block above and this one, where the
+                    # lock is released. That window is live, not scaffolding:
+                    # invariant 1 is not met for the utils_graph admin flows
+                    # (see *Non-pipeline write paths*), where two concurrent
+                    # /graph/* calls on different workers both commit.
+                    #
+                    # One sample, shared by the counting and the reload -- see
+                    # _count_unannounced_peer_commit_locked for why they must
+                    # not be two independent observations. Both calls sit
+                    # inside this try because the classification reads
+                    # storage_updated.value, a Manager RPC: a manager outage
+                    # must still arm the recovery flag below, and nothing is
+                    # adopted before the count, so the event stays countable.
+                    sampled = self._stat_fingerprint()
+                    if self._count_unannounced_peer_commit_locked(sampled):
+                        logger.warning(
+                            f"[{self.workspace}] The save failed and "
+                            f"{self._graphml_xml_file} is not the one this "
+                            "process loaded either, and no reload notification "
+                            "arrived for it, so a notification was lost "
+                            f"(occurrence #{self._missed_notification_reloads} "
+                            "in this process)."
+                        )
+                    self._reload_locked(sampled)
                 except Exception as reload_error:
                     # Report, never mask: the save error is what the caller
                     # must see, and a failed reload leaves the divergence in

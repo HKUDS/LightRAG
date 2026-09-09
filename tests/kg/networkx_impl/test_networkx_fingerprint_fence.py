@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 
+import networkx as nx
 import numpy as np
 import pytest
 
@@ -481,6 +482,129 @@ async def test_a_recovery_reload_is_not_counted_as_a_lost_notification(
         assert worker._recovery_reload_pending is False
         assert worker._missed_notification_reloads == 0
         assert worker._peer_commit_detected() is False
+    finally:
+        await worker.finalize()
+
+
+def _save_that_publishes_a_peer_commit_then_fails(peer_node: str):
+    """A save that fails, having first let a peer commit land on the file.
+
+    `index_done_callback` releases `_storage_lock` between its fence block and
+    its save, so a peer commit can land in that window -- with its
+    notification lost, the state the counter exists to record. Injecting it
+    from inside the save is the only way to reach the failure handler with a
+    file the fence block already found unchanged.
+
+    The peer's node name differs in length from the local one, so
+    `(st_mtime_ns, st_size)` diverges on the SIZE half too: an mtime-only
+    change would make the test depend on the filesystem's timestamp
+    granularity, which is the documented tick-collision residue.
+    """
+    original = NetworkXStorage.write_nx_graph
+
+    def save_boom(graph, file_name, workspace):
+        peer = nx.Graph()
+        peer.add_node("durable", entity_id="durable")
+        peer.add_node(peer_node, entity_id=peer_node)
+        original(peer, file_name, workspace)
+        raise OSError("save boom")
+
+    return save_boom
+
+
+@pytest.mark.asyncio
+async def test_a_peer_commit_behind_a_failed_saves_recovery_is_still_counted(
+    tmp_path, multiprocess
+):
+    """The failed-save handler reloads too, so it must classify first.
+
+    Same undercount as the two recovery branches, one site further on: the
+    handler's recovery reload adopts the file, and once adopted the question
+    "did a peer commit without announcing it?" can no longer be asked. The
+    save error still reaches the caller either way -- what is lost is the
+    evidence the writer-side `os.utime` decision waits on.
+    """
+    worker = await _worker(tmp_path)
+    try:
+        assert file_fingerprint.fence_enabled() is True
+
+        await worker.upsert_node("durable", {"entity_id": "durable"})
+        assert await worker.index_done_callback() is True
+
+        await worker.upsert_node("never_saved", {"entity_id": "never_saved"})
+        # A MonkeyPatch of this test's OWN: undoing the shared `monkeypatch`
+        # fixture would also revert `multiprocess`, and the assertions below
+        # would run with the fence silently disabled.
+        breakage = pytest.MonkeyPatch()
+        breakage.setattr(
+            NetworkXStorage,
+            "write_nx_graph",
+            staticmethod(_save_that_publishes_a_peer_commit_then_fails("from_a_peer")),
+        )
+        try:
+            with pytest.raises(OSError, match="save boom"):
+                await worker.index_done_callback()
+        finally:
+            breakage.undo()
+        assert file_fingerprint.fence_enabled() is True
+
+        # The lost notification is on the record, once.
+        assert worker._missed_notification_reloads == 1
+        # And the dedupe marker is already spent: the reload that followed
+        # adopted the peer's state, which is the point rule 4 in
+        # `kg.file_fingerprint` clears it at -- it guards a reload that did
+        # not land, not the counted state forever.
+        assert worker._counted_peer_fingerprint is None
+
+        # And the recovery still happened: the reload succeeded, so nothing is
+        # armed, the unpersisted mutation is gone and the peer's commit is the
+        # view this process serves.
+        assert worker._recovery_reload_pending is False
+        assert await worker.has_node("from_a_peer") is True
+        assert await worker.has_node("never_saved") is False
+        assert worker._missed_notification_reloads == 1
+    finally:
+        await worker.finalize()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_save_alone_is_not_counted_as_a_lost_notification(
+    tmp_path, multiprocess
+):
+    """The negative half: classifying must not turn every failed save into one.
+
+    `atomic_write` leaves the destination untouched when the write raises, so
+    the ordinary failed save diverges from nothing and the counter must stay
+    at zero -- the overcount that arming the file channel for recovery used to
+    produce.
+    """
+    worker = await _worker(tmp_path)
+    try:
+        assert file_fingerprint.fence_enabled() is True
+
+        await worker.upsert_node("durable", {"entity_id": "durable"})
+        assert await worker.index_done_callback() is True
+
+        await worker.upsert_node("never_saved", {"entity_id": "never_saved"})
+
+        def save_boom(graph, file_name, workspace):
+            raise OSError("save boom")
+
+        # This test's own, for the reason above.
+        breakage = pytest.MonkeyPatch()
+        breakage.setattr(NetworkXStorage, "write_nx_graph", staticmethod(save_boom))
+        try:
+            with pytest.raises(OSError, match="save boom"):
+                await worker.index_done_callback()
+        finally:
+            breakage.undo()
+        assert file_fingerprint.fence_enabled() is True
+
+        assert worker._missed_notification_reloads == 0
+        assert worker._counted_peer_fingerprint is None
+        assert worker._recovery_reload_pending is False
+        assert await worker.has_node("never_saved") is False
+        assert await worker.has_node("durable") is True
     finally:
         await worker.finalize()
 

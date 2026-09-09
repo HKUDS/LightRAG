@@ -56,8 +56,9 @@ fragment:
 2. **Classify before a reload that discharges several conditions at once.**
    That same recovery flag outranks both channels, and one reload satisfies
    all of them, so a peer commit arriving while recovery is pending would be
-   handled and never counted. Both recovery branches count first, then
-   reload. (Undercount.)
+   handled and never counted. Every reload that could discharge it counts
+   first: both recovery branches, and the failed-save handler's reload --
+   the one that arms the flag when it fails. (Undercount.)
 3. **Count states, not attempts.** A reload that raises leaves the reader's
    recorded fingerprint untouched, so the same commit is re-detected by every
    later call. :func:`counts_as_a_new_lost_notification` plus each storage's
