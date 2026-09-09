@@ -1667,25 +1667,32 @@ What that can leave behind, and why it is tolerated:
   because a retry cannot heal it — the second edit sees an unchanged `source_id`
   and skips the tracking update — so the operator is the only recovery path, and
   a 200 would guarantee they never learn to take it.
-  **Residue, not yet closed:** that last step can still be *skipped* rather than
-  fail, and then nothing is reported. It sits outside any
-  cancellation-deferring region and after the `_persist_graph_updates` call that
-  flushes the graph and the relation vector store together, so a cancellation
-  delivered during that commit, or a failure of the vector flush inside it,
-  exits the edit with the row still holding the superset and no line naming it.
-  The state stays the accepted direction, but the operator is not told to run
-  the repair — which is the part that cannot heal itself. Tracked in issue
-  #3895; `aedit_entity`'s non-rename path (below) does not share it.
+  Both ways that last step could be *skipped* rather than fail are closed
+  (issue #3895): it runs *inside* a cancellation-deferring region alongside the
+  graph commit, so a cancellation deferred through that commit cannot walk past
+  it, and *before* the relation's vector work, so no vector failure can strand
+  it. The reverse exposure is the acceptable one — a shrink failure skips the
+  vector write, leaving records a re-issued edit rewrites and
+  `lightrag-rebuild-vdb` restores, and the message names both. A declined graph
+  commit still outranks a vector failure, because the commit is confirmed on its
+  own before any vector call is made.
+  **One residue stays open, deliberately, the same one the entity path carries
+  below:** a cancellation — or an ordinary error, an acknowledgement lost after
+  the fact carries the same ambiguity — delivered inside `upsert_edge`'s own
+  await tears the edit down before the shrink, so the edge may be narrowed while
+  the row keeps the superset. It cannot be deferred (the exception originates in
+  that coroutine) and must not be settled blind (narrowing a row whose write the
+  backend never accepted is the over-deleting mirror), so the row stays wide and
+  the failure is *logged* with the row key and the repair tool.
 - `aedit_entity`'s non-rename path stages its row the same way, for the same
   reason: a **growing** edit there used to commit the node before flushing the
   row that attributes it, leaving `rows ⊂ graph` — reachable from `POST
   /graph/entity/edit`, whose `updated_data` accepts `source_id`. The superset
   row is now durable before `upsert_node` is called at all, and the removals are
-  applied after the graph commit. Its shrink goes further than the relation
+  applied after the graph commit. Its shrink is staged exactly like the relation
   one's: it runs *inside* the cancellation-deferring region and *before* the
-  vector flush, so neither a cancellation nor a vector failure can skip it —
-  the two ways the relation path still can. It either completes or raises with
-  the row key and the repair tool named.
+  vector write, so neither a cancellation nor a vector failure can skip it. It
+  either completes or raises with the row key and the repair tool named.
   **One residue there stays open, deliberately:** a cancellation delivered
   *inside* `upsert_node`'s own await — after an immediate-write backend accepted
   the row, before control returns — tears the edit down before the shrink, so
