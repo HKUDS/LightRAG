@@ -157,15 +157,29 @@ class NetworkXStorage(BaseGraphStorage):
             overwrite the peer commit it never saw.
 
             A declined commit must reach its caller as a failure, because
-            declining DISCARDS this process's pending mutation. Both callers
-            do that: ``utils_graph._commit_graph_or_raise`` raises on the
-            ``False`` (admin paths), and ``LightRAG._flush_storages``'s
-            ``_flush_one`` turns it into ``IndexFlushError`` (pipeline paths).
-            Without the second one the fence would only swap which side loses
-            data — the peer's commit preserved, this document marked
-            PROCESSED with its graph writes dropped and nothing to recover
-            them from. As a failure it heals instead: the document goes
-            FAILED and its reprocessing re-extracts and re-writes the work.
+            declining DISCARDS this process's pending mutation. Two of the
+            three callers do that: ``utils_graph._commit_graph_or_raise``
+            raises on the ``False`` (``adelete_by_entity``,
+            ``_edit_entity_impl``, ``_merge_entities_impl``), and
+            ``LightRAG._flush_storages``'s ``_flush_one`` turns it into
+            ``IndexFlushError`` (pipeline paths). Without the second one the
+            fence would only swap which side loses data — the peer's commit
+            preserved, this document marked PROCESSED with its graph writes
+            dropped and nothing to recover them from. As a failure it heals
+            instead: the document goes FAILED and its reprocessing
+            re-extracts and re-writes the work.
+
+            **The third caller does not, and that is a known defect, not a
+            decision.** ``utils_graph._persist_graph_updates`` discards the
+            return value entirely, so a decline reaching it through
+            ``aedit_relation`` / ``acreate_entity`` / ``acreate_relation``
+            is silent: the graph mutation is discarded while the vector and
+            chunk-tracking writes of the same operation land, and the caller
+            is told it succeeded. It predates this fence — the helper never
+            inspected the value — and is tracked as rule 5's third call site
+            in #3854; it is not fixed here because it changes those admin
+            endpoints from 200 to 500 in the racing case and belongs with
+            its own regression tests.
 
         Ordering rule that keeps the fingerprint honest: it is sampled
         **before** the file is read, never after. A fingerprint sampled after
@@ -202,6 +216,15 @@ class NetworkXStorage(BaseGraphStorage):
               predates it. Failing towards a reload instead would install an
               empty graph from a file it cannot read, and the next commit
               would serialize that over the real one.
+            * The *same* failure inside a reload has a second, smaller
+              effect: ``adopted(UNREADABLE)`` is ``None``, so the reload
+              records "nothing" and the next call reads any state as a
+              divergence — one redundant reload and one
+              ``_missed_notification_reloads`` increment for a peer commit
+              that may never have happened. Bounded, self-healing on the next
+              readable ``stat``, and biased towards over- rather than
+              under-reporting. See ``file_fingerprint.adopted`` for why the
+              obvious fix is recorded there as an option rather than taken.
 
     Recovery reload (process-local, NOT a third fence channel):
         ``_recovery_reload_pending`` is a plain ``bool`` on the instance,
@@ -245,14 +268,26 @@ class NetworkXStorage(BaseGraphStorage):
               a reload that raises leaves the fingerprint and this flag
               untouched, so without that the same peer commit is re-counted
               by every later call, without bound.
-            * **It cannot fail.** In multiprocess mode ``storage_updated`` is
-              a ``Manager().Value`` proxy, so arming it was an RPC to the very
-              process whose outage may be why the reload just failed. That
-              needed its own failure path, its own best-effort log, and an
-              ordering argument against the fingerprint half. An attribute
-              write needs none of them, and covers single-process mode too —
-              where the file channel is gated off entirely, so the flag was
-              the only thing arming recovery at all.
+            * **Arming cannot fail.** In multiprocess mode
+              ``storage_updated`` is a ``Manager().Value`` proxy, so arming it
+              was an RPC to the very process whose outage may be why the
+              reload just failed. That needed its own failure path, its own
+              best-effort log, and an ordering argument against the
+              fingerprint half. An attribute write needs none of them, and
+              covers single-process mode too — where the file channel is
+              gated off entirely, so the flag was the only thing arming
+              recovery at all.
+
+              **Arming**, precisely — not the recovery path, which still
+              reads ``storage_updated.value`` to classify and writes it in
+              ``_reload_locked``, both Manager RPCs. A manager still down
+              when recovery is attempted raises out of ``_get_graph`` /
+              ``index_done_callback`` with the flag **still armed**, which is
+              the outcome to want: the divergence stays visible and the next
+              call retries. What the change buys is that *recording* the
+              divergence no longer depends on the thing that may have caused
+              it — the old code could lose the fact itself, and then nothing
+              later would retry.
 
         The fingerprint is deliberately *not* invalidated when this is armed:
         the save failed, so the file is untouched and the recorded fingerprint

@@ -196,6 +196,34 @@ def adopted(sampled: Fingerprint | object) -> Fingerprint | None:
     ``UNREADABLE`` becomes ``None``, which differs from any real file: the next
     check therefore re-samples and, if the ``stat`` works by then, reloads
     once. That is the harmless direction.
+
+    **Accepted residue — one spurious lost notification per unreadable
+    adoption.** ``None`` means "nothing recorded", and every state reads as a
+    change against it, so a reload whose sample came back ``UNREADABLE``
+    leaves the *next* call reporting a divergence even when the file never
+    moved — costing one redundant reload and, through the ``flag == False``
+    branch, one ``_missed_notification_reloads`` increment for a peer commit
+    that may never have happened. It is the same overcount the module
+    docstring's item 1 rejects, arriving by a different door: there the
+    fingerprint was invalidated deliberately, here a failed ``stat`` does it.
+
+    Bounded and self-healing: the next readable ``stat`` adopts a concrete
+    state, so it cannot repeat without the ``stat`` failing again, and it
+    biases the counter *up*, never down — an inflated counter argues for the
+    ``os.utime`` remedy the module docstring defers, which is the direction
+    that costs work rather than data.
+
+    Recorded as an option, not done: the obvious fix is to keep the previously
+    recorded fingerprint instead of clearing it (never worse for the reload
+    decision, since the file only moves forward and an under-recorded state
+    fails towards a redundant reload). It is entangled, though — each
+    storage's ``_adopt_fingerprint`` clears ``_counted_peer_fingerprint``
+    exactly when this returns a concrete state, so retaining one here would
+    clear the dedupe marker on an adoption that did not actually observe the
+    file, and re-counting would return through
+    :func:`counts_as_a_new_lost_notification`. Both halves have to move
+    together, with tests for the pair, which is more than a residue this small
+    justifies today.
     """
     return None if sampled is UNREADABLE else sampled  # type: ignore[return-value]
 
