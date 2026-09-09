@@ -1857,9 +1857,19 @@ class TestEntityEditGrowsBeforeItShrinks(_EntityEditMixin):
         assert deferred.persisted_graph().nodes[ENTITY]["source_id"] == "chunk-1"
         assert deferred.entity_chunks.disk[ENTITY]["chunk_ids"] == ["chunk-1"]
 
+    @pytest.mark.parametrize(
+        "teardown",
+        [
+            pytest.param(asyncio.CancelledError(), id="cancelled"),
+            # Same ambiguity, and the caller's own error says only that the
+            # graph write failed: an acknowledgement lost after an
+            # immediate-write backend applied the update.
+            pytest.param(_Boom("ack timed out"), id="ordinary-exception"),
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_a_cancel_inside_the_node_write_leaves_a_diagnosed_wide_row(
-        self, deferred, monkeypatch
+    async def test_a_failed_node_write_leaves_a_diagnosed_wide_row(
+        self, deferred, monkeypatch, teardown
     ):
         # The one residue of this staging that cannot be closed. A cancellation
         # delivered inside `upsert_node`'s own await -- after an immediate-write
@@ -1890,11 +1900,11 @@ class TestEntityEditGrowsBeforeItShrinks(_EntityEditMixin):
         await deferred.entity_chunks.index_done_callback()
         original = graph.upsert_node
 
-        async def _write_then_cancelled(node_id, node_data):
+        async def _write_then_fail(node_id, node_data):
             await original(node_id, node_data)
-            raise asyncio.CancelledError()
+            raise teardown
 
-        monkeypatch.setattr(graph, "upsert_node", _write_then_cancelled)
+        monkeypatch.setattr(graph, "upsert_node", _write_then_fail)
         # `lightrag.utils.logger` sets propagate=False, so caplog sees nothing;
         # collect from the logger this module actually calls.
         errors: list[str] = []
@@ -1902,7 +1912,7 @@ class TestEntityEditGrowsBeforeItShrinks(_EntityEditMixin):
             utils_graph.logger, "error", lambda msg, *a, **k: errors.append(str(msg))
         )
 
-        with pytest.raises(asyncio.CancelledError):
+        with pytest.raises(type(teardown)):
             await utils_graph.aedit_entity(
                 graph,
                 deferred.entities_vdb,
@@ -1914,7 +1924,7 @@ class TestEntityEditGrowsBeforeItShrinks(_EntityEditMixin):
             )
 
         # The write landed, the row stayed wide -- under-deletion, never the
-        # over-deleting mirror.
+        # over-deleting mirror. Same outcome for either teardown.
         assert graph.nodes[ENTITY]["source_id"] == "chunk-1"
         assert deferred.entity_chunks.disk[ENTITY]["chunk_ids"] == [
             "chunk-1",

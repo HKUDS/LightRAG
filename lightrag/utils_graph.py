@@ -1170,18 +1170,27 @@ async def _edit_entity_impl(
             # it did NOT would leave the row a strict SUBSET of the graph --
             # over-deletion, which AGENTS.md ranks as losing data, traded
             # against a residue that merely retains a chunk id. So the row stays
-            # wide on purpose; only the diagnostic is owed, and only for a
-            # teardown that carries no normal error path of its own.
-            if pending_entity_shrink is not None and not isinstance(e, Exception):
+            # wide on purpose and the diagnostic is what is owed.
+            #
+            # It is owed for an ORDINARY exception too, not just a teardown. An
+            # RPC acknowledgement that times out after the backend applied the
+            # update carries exactly the same ambiguity, and the error the
+            # caller gets says "the graph write failed" -- not "your tracking
+            # row may now be wider than the node, and only the offline tool can
+            # prune it". The line only fires for a SHRINKING edit whose write
+            # failed, so it is not noise, and it is hedged because whether the
+            # write landed is precisely what is unknown.
+            if pending_entity_shrink is not None:
                 logger.error(
-                    f"Entity Edit: `{entity_name}` was torn down by "
-                    f"{type(e).__name__} during its graph write. If the backend "
-                    f"accepted that write, its chunk tracking row "
-                    f"`{entity_tracking_key}` is now wider than the node's "
-                    f"evidence -- it still names the IDs this edit removed, and "
-                    "no retry will prune them (the next edit reads the narrowed "
-                    "source_id and skips the staging). Run "
-                    "lightrag-repair-chunk-tracking to reconcile it."
+                    f"Entity Edit: `{entity_name}`'s graph write did not complete "
+                    f"({type(e).__name__}: {e}). If the backend applied it anyway "
+                    f"-- an immediate-write backend may have, and an "
+                    f"acknowledgement can be lost after the fact -- then its "
+                    f"chunk tracking row `{entity_tracking_key}` is now wider "
+                    "than the node's evidence: it still names the IDs this edit "
+                    "removed, and no retry will prune them, because the next "
+                    "edit reads the narrowed source_id and skips the staging. "
+                    "Run lightrag-repair-chunk-tracking to reconcile it."
                 )
             raise
 

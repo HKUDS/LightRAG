@@ -1697,7 +1697,10 @@ What that can leave behind, and why it is tolerated:
   row when it did not would leave `rows ⊂ graph` — over-deletion, which this
   ranking treats as losing data, traded against a residue that merely retains a
   chunk ID. So the row stays wide and the failure is *logged* with the row key
-  and the repair tool, which is the part that was actually owed. Its
+  and the repair tool, which is the part that was actually owed — for an
+  ordinary backend error as much as for a cancellation, since an
+  acknowledgement lost after the write was applied carries the same ambiguity
+  and the caller's error says only that the write failed. Its
   **rename** path needs no such staging and deliberately keeps its own ordering:
   it writes a fresh node whose `source_id` already equals the row it migrates,
   and it retires the old key only after the commit that removes the old node
