@@ -40,10 +40,11 @@ from copy import deepcopy
 import pytest
 
 from lightrag import utils_graph
+from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.exceptions import CommitBookkeepingError
 from lightrag.kg.networkx_impl import NetworkXStorage
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
-from lightrag.utils import make_relation_chunk_key
+from lightrag.utils import VectorStorageConsistencyError, make_relation_chunk_key
 
 pytestmark = pytest.mark.offline
 
@@ -109,6 +110,11 @@ class _VectorStorage:
             raise _Boom("vector backend unavailable")
 
     async def delete(self, ids):
+        self._check()
+
+    async def upsert(self, data):
+        # Creation paths write through the vector store before the commit; the
+        # deletion cases never reach this, so it stays a bare success stub.
         self._check()
 
     async def delete_entity(self, entity_name):
@@ -1048,3 +1054,1150 @@ class TestPublishedCommitSurvivesABrokenSink:
 
         assert result.status == "success"
         assert ENTITY not in rag.entity_chunks.records
+
+
+NEW_ENTITY = "CASSIOPEIA"
+NEW_RELATION_KEY = make_relation_chunk_key(*sorted([NEW_ENTITY, OTHER]))
+
+
+@pytest.fixture
+async def creating(tmp_path):
+    """Real NetworkX graph plus deferred-commit tracking doubles, for creation.
+
+    Same shape as the ``deferred`` fixture, but the object under test does not
+    exist yet: creation is the only direction in which a tracking row goes from
+    absent to present, which is what makes its commit order load-bearing.
+    """
+    fixture = _Fixture(tmp_path)
+    fixture.commit_log: list[str] = []
+    fixture.entity_chunks = _DeferredKVStorage("entity_chunks", fixture.commit_log)
+    fixture.relation_chunks = _DeferredKVStorage("relation_chunks", fixture.commit_log)
+    await fixture.start()
+    await fixture.entity_chunks.index_done_callback()
+    await fixture.relation_chunks.index_done_callback()
+    fixture.commit_log.clear()
+    yield fixture
+    await fixture.graph.finalize()
+
+
+async def _create_entity(fixture, name=NEW_ENTITY):
+    return await utils_graph.acreate_entity(
+        fixture.graph,
+        fixture.entities_vdb,
+        fixture.relationships_vdb,
+        name,
+        {"description": "d", "entity_type": "thing", "source_id": "chunk-9"},
+        entity_chunks_storage=fixture.entity_chunks,
+        relation_chunks_storage=fixture.relation_chunks,
+    )
+
+
+async def _create_relation(fixture, source=NEW_ENTITY, target=OTHER):
+    return await utils_graph.acreate_relation(
+        fixture.graph,
+        fixture.entities_vdb,
+        fixture.relationships_vdb,
+        source,
+        target,
+        {"description": "d", "weight": 1.0, "source_id": "chunk-9"},
+        relation_chunks_storage=fixture.relation_chunks,
+    )
+
+
+class TestCreationCommitsTrackingBeforeTheObject:
+    """The mirror of `TestDurableCommitOrdering`, for the creation direction.
+
+    Deletion commits the graph first because that is the order which leaves the
+    benign residue (a row whose object is gone). Creation must commit the row
+    first for exactly the same reason: the forbidden state is an object durable
+    without the row that carries its attribution, and on creation the row is the
+    half that starts out absent.
+
+    The two order tests and the two "never starts" tests are fix proofs: they go
+    red on the previous single `asyncio.gather`, which started every commit at
+    once and so left it to the interpreter whether the node or its row reached
+    disk first. No concurrency and no co-tenant flush were needed to lose that
+    race -- one uncontended `acreate_entity` and a hard exit was enough.
+
+    `test_accepted_residue_is_the_row_without_the_object` is not a fix proof;
+    the unordered flush produced that residue too. It pins the state the chosen
+    order deliberately keeps, so a later reshuffle cannot quietly trade it for
+    its forbidden mirror.
+    """
+
+    @pytest.mark.asyncio
+    async def test_entity_creation_commits_the_row_first(self, creating, monkeypatch):
+        _log_graph_commit(creating, monkeypatch, fail=False)
+
+        await _create_entity(creating)
+
+        assert creating.commit_log[0] == "entity_chunks"
+        assert creating.commit_log.index("entity_chunks") < creating.commit_log.index(
+            "graph"
+        )
+        assert NEW_ENTITY in creating.entity_chunks.disk
+
+    @pytest.mark.asyncio
+    async def test_relation_creation_commits_the_row_first(self, creating, monkeypatch):
+        _log_graph_commit(creating, monkeypatch, fail=False)
+        await creating.graph.upsert_node(
+            NEW_ENTITY, {"entity_id": NEW_ENTITY, "description": "d", "source_id": "s"}
+        )
+
+        await _create_relation(creating)
+
+        assert creating.commit_log.index("relation_chunks") < creating.commit_log.index(
+            "graph"
+        )
+        assert NEW_RELATION_KEY in creating.relation_chunks.disk
+
+    @pytest.mark.asyncio
+    async def test_tracking_commit_failure_never_publishes_the_entity(
+        self, creating, monkeypatch
+    ):
+        # Asserting only "the node is not in GraphML" would pass on the pre-fix
+        # gather too, for the wrong reason: the tracking commit raises out of
+        # the gather before the graph task finishes its write. What actually
+        # separates the two is whether the object commit was ever ENTERED --
+        # in a real process it is offloaded, so once entered it lands.
+        _log_graph_commit(creating, monkeypatch, fail=False)
+        creating.entity_chunks.fail_commit_times = 1
+
+        with pytest.raises(_Boom):
+            await _create_entity(creating)
+
+        assert "graph" not in creating.commit_log
+        assert NEW_ENTITY not in creating.entity_chunks.disk
+        persisted = creating.persisted_graph()
+        assert persisted.has_node(NEW_ENTITY) is False
+        # Skipping this call's own graph commit is not the guarantee: on a
+        # deferred backend the node would sit in the process-wide in-memory
+        # graph, and the next flush by ANY co-tenant would publish it. The node
+        # must never have entered the graph at all.
+        await creating.graph.index_done_callback()
+        assert creating.persisted_graph().has_node(NEW_ENTITY) is False
+
+    @pytest.mark.asyncio
+    async def test_tracking_commit_failure_never_publishes_the_relation(
+        self, creating, monkeypatch
+    ):
+        _log_graph_commit(creating, monkeypatch, fail=False)
+        await creating.graph.upsert_node(
+            NEW_ENTITY, {"entity_id": NEW_ENTITY, "description": "d", "source_id": "s"}
+        )
+        creating.relation_chunks.fail_commit_times = 1
+
+        with pytest.raises(_Boom):
+            await _create_relation(creating)
+
+        assert "graph" not in creating.commit_log
+        assert NEW_RELATION_KEY not in creating.relation_chunks.disk
+        persisted = creating.persisted_graph()
+        assert persisted.has_edge(NEW_ENTITY, OTHER) is False
+        # As above: a later co-tenant flush must find nothing to publish.
+        await creating.graph.index_done_callback()
+        assert creating.persisted_graph().has_edge(NEW_ENTITY, OTHER) is False
+
+    @pytest.mark.asyncio
+    async def test_accepted_residue_is_the_row_without_the_object(
+        self, creating, monkeypatch
+    ):
+        # The mirror residue the order deliberately keeps: the row is durable
+        # while the object never became so. Harmless to queries, not inheritable
+        # (R1 resets evidence on explicit creation), repairable offline.
+        _log_graph_commit(creating, monkeypatch, fail=True)
+
+        with pytest.raises(_Boom):
+            await _create_entity(creating)
+
+        assert NEW_ENTITY in creating.entity_chunks.disk
+        persisted = creating.persisted_graph()
+        assert persisted.has_node(NEW_ENTITY) is False
+
+
+class TestDeletionOrderIsUnchanged:
+    """The deletion direction must keep committing the graph first.
+
+    `TestDurableCommitOrdering` already pins this, but the two-phase split is
+    only correct because every deletion path commits the graph itself and then
+    calls `_persist_graph_updates` with the tracking storages alone. This pins
+    that call-shape contract directly, so a future caller that hands the helper
+    a graph and a tracking store together in the removal direction is caught
+    here rather than in production.
+    """
+
+    @pytest.mark.asyncio
+    async def test_persist_helper_orders_tracking_before_graph(self):
+        log: list[str] = []
+
+        class _Store:
+            def __init__(self, name):
+                self.name = name
+                self.namespace = name
+
+            async def index_done_callback(self):
+                await asyncio.sleep(0)
+                log.append(self.name)
+
+        await utils_graph._persist_graph_updates(
+            entities_vdb=_Store("entities_vdb"),
+            chunk_entity_relation_graph=_Store("graph"),
+            entity_chunks_storage=_Store("entity_chunks"),
+            relation_chunks_storage=_Store("relation_chunks"),
+        )
+
+        assert set(log[:2]) == {"entity_chunks", "relation_chunks"}
+        assert set(log[2:]) == {"entities_vdb", "graph"}
+
+    @pytest.mark.asyncio
+    async def test_no_deletion_path_passes_graph_and_tracking_together(self, deferred):
+        # `adelete_by_entity` commits the graph through `_commit_graph_or_raise`
+        # and only then flushes tracking, so the helper never sees both.
+        seen: list[dict] = []
+        original = utils_graph._persist_graph_updates
+
+        async def _record(**kwargs):
+            seen.append({k: v is not None for k, v in kwargs.items()})
+            return await original(**kwargs)
+
+        utils_graph._persist_graph_updates = _record
+        try:
+            await deferred.delete_entity()
+        finally:
+            utils_graph._persist_graph_updates = original
+
+        assert seen
+        for call in seen:
+            graph_passed = call.get("chunk_entity_relation_graph", False)
+            tracking_passed = call.get("entity_chunks_storage", False) or call.get(
+                "relation_chunks_storage", False
+            )
+            assert not (graph_passed and tracking_passed)
+
+
+class _ImmediateGraphStorage:
+    """Immediate-write graph double: `upsert_*` is durable before the next await.
+
+    Models Neo4j / PostgreSQL, where the mutation itself is the durable write
+    and `index_done_callback` is bookkeeping. On such a backend, ordering the
+    *flushes* cannot keep a node out of the store -- only ordering the calls
+    can, which is what the creation paths do.
+    """
+
+    def __init__(self):
+        self.nodes: dict = {}
+        self.edges: dict = {}
+        self.flushes = 0
+
+    async def has_node(self, node_id):
+        await asyncio.sleep(0)
+        return node_id in self.nodes
+
+    async def get_node(self, node_id):
+        return deepcopy(self.nodes.get(node_id))
+
+    async def has_edge(self, source, target):
+        await asyncio.sleep(0)
+        return (source, target) in self.edges or (target, source) in self.edges
+
+    async def get_edge(self, source, target):
+        return deepcopy(
+            self.edges.get((source, target)) or self.edges.get((target, source))
+        )
+
+    async def upsert_node(self, node_id, node_data):
+        await asyncio.sleep(0)
+        self.nodes[node_id] = deepcopy(node_data)
+
+    async def upsert_edge(self, source, target, edge_data):
+        await asyncio.sleep(0)
+        self.edges[(source, target)] = deepcopy(edge_data)
+
+    async def index_done_callback(self):
+        await asyncio.sleep(0)
+        self.flushes += 1
+
+
+class TestCreationWritesTheRowBeforeTheGraphCall:
+    """Fix proof: the tracking row must precede the graph MUTATION, not only its flush.
+
+    Splitting the flush into two phases orders nothing on an immediate-write
+    graph backend -- `upsert_node` is already durable by the time
+    `_persist_graph_updates` is reached, so a tracking store that then fails
+    leaves exactly the forbidden state (object durable, no attribution row).
+    The same hole exists on a deferred backend for a different reason: the node
+    sits in the process-wide in-memory graph, and the next flush by any
+    co-tenant publishes it.
+
+    These go red on the pre-fix ordering because the node/edge is in the store
+    even though the tracking write never landed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_entity_is_not_written_when_its_row_cannot_be_stored(self, creating):
+        graph = _ImmediateGraphStorage()
+        creating.entity_chunks.fail_commit_times = 1
+
+        with pytest.raises(_Boom):
+            await utils_graph.acreate_entity(
+                graph,
+                creating.entities_vdb,
+                creating.relationships_vdb,
+                NEW_ENTITY,
+                {"description": "d", "entity_type": "thing", "source_id": "chunk-9"},
+                entity_chunks_storage=creating.entity_chunks,
+                relation_chunks_storage=creating.relation_chunks,
+            )
+
+        assert NEW_ENTITY not in graph.nodes
+        assert NEW_ENTITY not in creating.entity_chunks.disk
+
+    @pytest.mark.asyncio
+    async def test_relation_is_not_written_when_its_row_cannot_be_stored(
+        self, creating
+    ):
+        graph = _ImmediateGraphStorage()
+        for name in (NEW_ENTITY, OTHER):
+            await graph.upsert_node(name, {"entity_id": name, "source_id": "chunk-1"})
+        creating.relation_chunks.fail_commit_times = 1
+
+        with pytest.raises(_Boom):
+            await utils_graph.acreate_relation(
+                graph,
+                creating.entities_vdb,
+                creating.relationships_vdb,
+                NEW_ENTITY,
+                OTHER,
+                {"description": "d", "weight": 1.0, "source_id": "chunk-9"},
+                relation_chunks_storage=creating.relation_chunks,
+            )
+
+        assert (NEW_ENTITY, OTHER) not in graph.edges
+        assert NEW_RELATION_KEY not in creating.relation_chunks.disk
+
+
+class TestDeclinedCommitFailsTheCreateAndEditPaths:
+    """Fix proof: a declined graph commit must surface, not be swallowed.
+
+    `_persist_graph_updates` used to discard `index_done_callback`'s return
+    value, so `NetworkXStorage` reloading from disk and DISCARDING the caller's
+    mutation looked exactly like a successful commit. The create and edit paths
+    commit through that helper (the deletion paths use
+    `_commit_graph_or_raise`), so they returned HTTP 200 for a write that never
+    reached disk -- while the tracking row phase 1 had just made durable stayed
+    behind, describing an object that does not exist.
+    """
+
+    @staticmethod
+    def _decline_graph_commit(fixture, monkeypatch):
+        async def _declined():
+            return False
+
+        monkeypatch.setattr(fixture.graph, "index_done_callback", _declined)
+
+    @pytest.mark.asyncio
+    async def test_entity_creation_raises_when_the_graph_declines(
+        self, creating, monkeypatch
+    ):
+        self._decline_graph_commit(creating, monkeypatch)
+
+        with pytest.raises(RuntimeError, match="discarded"):
+            await _create_entity(creating)
+
+    @pytest.mark.asyncio
+    async def test_relation_creation_raises_when_the_graph_declines(
+        self, creating, monkeypatch
+    ):
+        await creating.graph.upsert_node(
+            NEW_ENTITY, {"entity_id": NEW_ENTITY, "description": "d", "source_id": "s"}
+        )
+        self._decline_graph_commit(creating, monkeypatch)
+
+        with pytest.raises(RuntimeError, match="discarded"):
+            await _create_relation(creating)
+
+    @pytest.mark.asyncio
+    async def test_relation_edit_raises_when_the_graph_declines(
+        self, deferred, monkeypatch
+    ):
+        self._decline_graph_commit(deferred, monkeypatch)
+
+        with pytest.raises(RuntimeError, match="discarded"):
+            await utils_graph.aedit_relation(
+                deferred.graph,
+                deferred.entities_vdb,
+                deferred.relationships_vdb,
+                ENTITY,
+                OTHER,
+                {"description": "edited"},
+                relation_chunks_storage=deferred.relation_chunks,
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_declined_commit_outranks_a_failing_vector_flush(
+        self, creating, monkeypatch
+    ):
+        # Both halves of phase 2 fail. The vector store being stale is the
+        # rebuildable window; the graph having discarded the write is not, so
+        # that is the answer the caller has to get.
+        creating.entities_vdb.fail_flush = True
+        self._decline_graph_commit(creating, monkeypatch)
+
+        with pytest.raises(RuntimeError, match="discarded"):
+            await _create_entity(creating)
+
+    @pytest.mark.asyncio
+    async def test_a_backend_returning_none_still_creates(self, creating, monkeypatch):
+        # The base signature is `-> None`; only an explicit False means refusal.
+        async def _committed_quietly():
+            return None
+
+        monkeypatch.setattr(creating.graph, "index_done_callback", _committed_quietly)
+
+        result = await _create_entity(creating)
+
+        assert result["entity_name"] == NEW_ENTITY
+
+
+class TestRelationEditGrowsBeforeItShrinks:
+    """Fix proof: an edit that DROPS evidence must not persist the drop first.
+
+    `aedit_relation`'s tracking update applies a delta in both directions. With
+    the row committed unconditionally before the graph, a shrinking edit puts
+    the narrowed row on disk while the edge still carries the wider
+    `source_id`: a later purge of the dropped chunk's document reads the row,
+    concludes "no remaining sources" and deletes a relation another document
+    still anchors. The staging is therefore grow-then-shrink -- superset row,
+    graph, final row -- so the durable row is never a strict subset of the
+    durable evidence.
+    """
+
+    SHRINKING_EDIT = {"source_id": "chunk-1"}
+
+    @staticmethod
+    async def _seed_two_chunk_relation(fixture):
+        await fixture.graph.upsert_edge(
+            ENTITY,
+            OTHER,
+            {
+                "description": "d",
+                "weight": 2.0,
+                "source_id": f"chunk-1{GRAPH_FIELD_SEP}chunk-2",
+            },
+        )
+        await fixture.graph.index_done_callback()
+        await fixture.relation_chunks.upsert(
+            {RELATION_KEY: {"chunk_ids": ["chunk-1", "chunk-2"], "count": 2}}
+        )
+        await fixture.relation_chunks.index_done_callback()
+        fixture.commit_log.clear()
+
+    async def _edit(self, fixture):
+        return await utils_graph.aedit_relation(
+            fixture.graph,
+            fixture.entities_vdb,
+            fixture.relationships_vdb,
+            ENTITY,
+            OTHER,
+            dict(self.SHRINKING_EDIT),
+            relation_chunks_storage=fixture.relation_chunks,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_failed_graph_commit_leaves_the_wider_row_on_disk(
+        self, deferred, monkeypatch
+    ):
+        await self._seed_two_chunk_relation(deferred)
+        _log_graph_commit(deferred, monkeypatch, fail=True)
+
+        with pytest.raises(_Boom):
+            await self._edit(deferred)
+
+        # The edge on disk still cites both chunks, so the row must too.
+        assert deferred.relation_chunks.disk[RELATION_KEY]["chunk_ids"] == [
+            "chunk-1",
+            "chunk-2",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_successful_edit_ends_with_the_narrowed_row(self, deferred):
+        await self._seed_two_chunk_relation(deferred)
+
+        await self._edit(deferred)
+
+        assert deferred.relation_chunks.disk[RELATION_KEY]["chunk_ids"] == ["chunk-1"]
+        assert deferred.relation_chunks.disk[RELATION_KEY]["count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_purely_growing_edit_commits_the_row_before_the_graph(
+        self, deferred, monkeypatch
+    ):
+        # Stability: the additive direction keeps the original ordering, so the
+        # new IDs are durable before the edge that cites them.
+        _log_graph_commit(deferred, monkeypatch, fail=False)
+
+        await utils_graph.aedit_relation(
+            deferred.graph,
+            deferred.entities_vdb,
+            deferred.relationships_vdb,
+            ENTITY,
+            OTHER,
+            {"source_id": f"chunk-1{GRAPH_FIELD_SEP}chunk-7", "weight": 2.0},
+            relation_chunks_storage=deferred.relation_chunks,
+        )
+
+        assert deferred.commit_log.index("relation_chunks") < deferred.commit_log.index(
+            "graph"
+        )
+        assert deferred.relation_chunks.disk[RELATION_KEY]["chunk_ids"] == [
+            "chunk-1",
+            "chunk-7",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_shrink_keeps_the_edit_and_reports_the_wider_row(
+        self, deferred, monkeypatch
+    ):
+        # The accepted residue of the staging: the edge is durable, the row
+        # still names a chunk it no longer cites. Under-deletion, repairable
+        # offline -- but NOT silent. `VectorStorageConsistencyError` is the type
+        # this codebase already uses for "a step after a durable graph update
+        # failed" (its docstring names a chunk-tracking retirement, and the
+        # rename branch of `_edit_entity_impl` raises it for the same shape), and
+        # the route maps it to a 500. Logging alone would answer 200 for a row
+        # only an operator can fix: a retry re-reads the unchanged source_id and
+        # skips the tracking block, so nothing else will ever reconcile it.
+        await self._seed_two_chunk_relation(deferred)
+        calls = {"n": 0}
+        original = deferred.relation_chunks.upsert
+
+        async def _upsert(data):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise _Boom("shrink write failed")
+            return await original(data)
+
+        monkeypatch.setattr(deferred.relation_chunks, "upsert", _upsert)
+
+        with pytest.raises(VectorStorageConsistencyError) as excinfo:
+            await self._edit(deferred)
+
+        # The message has to say the edit landed, and name both the row and the
+        # only tool that can reconcile it -- that is the whole point of raising
+        # this type rather than a bare failure.
+        message = str(excinfo.value)
+        assert RELATION_KEY in message
+        assert "durable" in message
+        assert "lightrag-repair-chunk-tracking" in message
+
+        # The edit is durable despite the raise, and the residue is the wider
+        # row -- under-deletion, never the over-deleting mirror.
+        assert deferred.persisted_graph()[ENTITY][OTHER]["source_id"] == "chunk-1"
+        assert deferred.relation_chunks.disk[RELATION_KEY]["chunk_ids"] == [
+            "chunk-1",
+            "chunk-2",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_failing_vector_flush_does_not_strand_the_shrink(self, deferred):
+        # Issue #3895. The shrink used to sit after a `_persist_graph_updates`
+        # call that flushed the graph and `relationships_vdb` TOGETHER, so the
+        # vector half raising exited the edit before the shrink ran -- the row
+        # kept the staged superset and nothing said so. Nothing heals that: the
+        # next edit reads the already-narrowed source_id and skips the staging.
+        # The vector store, by contrast, is the rebuildable window. So the
+        # shrink completes and the vector error is re-raised after it.
+        await self._seed_two_chunk_relation(deferred)
+        deferred.relationships_vdb.fail_flush = True
+
+        with pytest.raises(_Boom, match="vector flush failed"):
+            await self._edit(deferred)
+
+        assert deferred.relation_chunks.disk[RELATION_KEY]["chunk_ids"] == ["chunk-1"]
+        assert deferred.relation_chunks.disk[RELATION_KEY]["count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failing_vector_write_cannot_skip_the_shrink(self, deferred):
+        # The same hole one call earlier: the vector delete/upsert used to run
+        # between the edge mutation and the commit, and on an immediate-write
+        # backend `upsert_edge` is already durable by then -- so a vector
+        # failure there left the edge narrowed with the row at the superset.
+        # The write is now after the region, so it cannot come between the two.
+        await self._seed_two_chunk_relation(deferred)
+        deferred.relationships_vdb.fail = True
+
+        with pytest.raises(VectorStorageConsistencyError):
+            await self._edit(deferred)
+
+        assert deferred.persisted_graph()[ENTITY][OTHER]["source_id"] == "chunk-1"
+        assert deferred.relation_chunks.disk[RELATION_KEY]["chunk_ids"] == ["chunk-1"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_shrink_skips_the_vector_work_and_says_so(
+        self, deferred, monkeypatch
+    ):
+        # The shrink now precedes the vector work, so a failure there skips it.
+        # That is the acceptable exposure of the two -- vector records are
+        # rewritten by a re-issued edit and restored by lightrag-rebuild-vdb,
+        # while the row is reachable only by the offline repair -- but the
+        # caller has to be told about both, so the message names both.
+        await self._seed_two_chunk_relation(deferred)
+        calls = {"n": 0}
+        original = deferred.relation_chunks.upsert
+
+        async def _upsert(data):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise _Boom("shrink write failed")
+            return await original(data)
+
+        monkeypatch.setattr(deferred.relation_chunks, "upsert", _upsert)
+        flushes_before = deferred.relationships_vdb.flushes
+
+        with pytest.raises(VectorStorageConsistencyError) as excinfo:
+            await self._edit(deferred)
+
+        message = str(excinfo.value)
+        assert "lightrag-repair-chunk-tracking" in message
+        assert "lightrag-rebuild-vdb" in message
+        assert deferred.relationships_vdb.flushes == flushes_before
+
+    @pytest.mark.asyncio
+    async def test_a_declined_commit_outranks_a_failing_vector_flush(
+        self, deferred, monkeypatch
+    ):
+        # Splitting the combined flush must not lose the #3889 ranking: a graph
+        # that DISCARDED the mutation is the answer the caller needs, and a
+        # stale vector store -- the rebuildable window -- must not mask it.
+        await self._seed_two_chunk_relation(deferred)
+        deferred.relationships_vdb.fail_flush = True
+
+        async def _declined():
+            return False
+
+        monkeypatch.setattr(deferred.graph, "index_done_callback", _declined)
+
+        with pytest.raises(RuntimeError, match="discarded"):
+            await self._edit(deferred)
+
+        # The mutation was thrown away, so the row must keep the wider evidence.
+        assert deferred.relation_chunks.disk[RELATION_KEY]["chunk_ids"] == [
+            "chunk-1",
+            "chunk-2",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_past_the_commit_still_completes_the_shrink(
+        self, deferred, monkeypatch
+    ):
+        # The other half of issue #3895. `commit_in_storage_io` defers a
+        # cancellation through the graph commit and re-raises it at the END of
+        # the deferring region, and `CancelledError` is a `BaseException`, so
+        # the shrink -- which had no region at all -- simply never ran, and no
+        # `except Exception` out there could notice. The row would keep the
+        # staged superset with nothing able to heal it.
+        await self._seed_two_chunk_relation(deferred)
+        owner: dict = {}
+        original = deferred.graph.index_done_callback
+
+        async def _commit_then_cancel():
+            result = await original()
+            # Cancel the CALLER's task: the owed work runs in a task of its own,
+            # so cancelling from the inside would model a different scenario.
+            owner["task"].cancel()
+            return result
+
+        monkeypatch.setattr(deferred.graph, "index_done_callback", _commit_then_cancel)
+
+        owner["task"] = asyncio.ensure_future(self._edit(deferred))
+        with pytest.raises(asyncio.CancelledError):
+            await owner["task"]
+
+        # The edge is durably narrowed, so the row is owed the same narrowing.
+        assert deferred.persisted_graph()[ENTITY][OTHER]["source_id"] == "chunk-1"
+        assert deferred.relation_chunks.disk[RELATION_KEY]["chunk_ids"] == ["chunk-1"]
+
+    @pytest.mark.parametrize(
+        "teardown",
+        [
+            pytest.param(asyncio.CancelledError(), id="cancelled"),
+            # Same ambiguity, and the caller's own error says only that the
+            # graph write failed: an acknowledgement lost after an
+            # immediate-write backend applied the update.
+            pytest.param(_Boom("ack timed out"), id="ordinary-exception"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_failed_edge_write_leaves_a_diagnosed_wide_row(
+        self, deferred, monkeypatch, teardown
+    ):
+        # The one residue of this staging that cannot be closed, and the same
+        # one the entity path documents: a teardown inside `upsert_edge`'s own
+        # await aborts before the shrink, so the edge may be narrowed while the
+        # row still holds the superset. Deferring cannot help (the exception
+        # originates in that coroutine) and settling blind would risk the
+        # over-deleting mirror, so what is owed is the diagnostic.
+        graph = _ImmediateGraphStorage()
+        for name in (ENTITY, OTHER):
+            await graph.upsert_node(name, {"entity_id": name, "source_id": "chunk-1"})
+        await graph.upsert_edge(
+            ENTITY,
+            OTHER,
+            {
+                "description": "d",
+                "weight": 2.0,
+                "source_id": f"chunk-1{GRAPH_FIELD_SEP}chunk-2",
+            },
+        )
+        await deferred.relation_chunks.upsert(
+            {RELATION_KEY: {"chunk_ids": ["chunk-1", "chunk-2"], "count": 2}}
+        )
+        await deferred.relation_chunks.index_done_callback()
+        original = graph.upsert_edge
+
+        async def _write_then_fail(src, tgt, edge_data):
+            await original(src, tgt, edge_data)
+            raise teardown
+
+        monkeypatch.setattr(graph, "upsert_edge", _write_then_fail)
+        # `lightrag.utils.logger` sets propagate=False, so caplog sees nothing;
+        # collect from the logger this module actually calls.
+        errors: list[str] = []
+        monkeypatch.setattr(
+            utils_graph.logger, "error", lambda msg, *a, **k: errors.append(str(msg))
+        )
+
+        with pytest.raises(type(teardown)):
+            await utils_graph.aedit_relation(
+                graph,
+                deferred.entities_vdb,
+                deferred.relationships_vdb,
+                ENTITY,
+                OTHER,
+                dict(self.SHRINKING_EDIT),
+                relation_chunks_storage=deferred.relation_chunks,
+            )
+
+        # The write landed, the row stayed wide -- under-deletion, never the
+        # over-deleting mirror. Same outcome for either teardown.
+        assert graph.edges[(ENTITY, OTHER)]["source_id"] == "chunk-1"
+        assert deferred.relation_chunks.disk[RELATION_KEY]["chunk_ids"] == [
+            "chunk-1",
+            "chunk-2",
+        ]
+        # And it is not silent: the operator is told which row and which tool.
+        diagnostic = "\n".join(errors)
+        assert "lightrag-repair-chunk-tracking" in diagnostic
+        assert RELATION_KEY in diagnostic
+
+
+class _EntityEditMixin:
+    """Shared helpers for the entity-edit staging cases."""
+
+    GROWING_EDIT = {"source_id": f"chunk-1{GRAPH_FIELD_SEP}chunk-7"}
+    SHRINKING_EDIT = {"source_id": "chunk-1"}
+
+    @staticmethod
+    async def _seed_two_chunk_entity(fixture):
+        node = await fixture.graph.get_node(ENTITY)
+        await fixture.graph.upsert_node(
+            ENTITY,
+            {**node, "source_id": f"chunk-1{GRAPH_FIELD_SEP}chunk-2"},
+        )
+        await fixture.graph.index_done_callback()
+        await fixture.entity_chunks.upsert(
+            {ENTITY: {"chunk_ids": ["chunk-1", "chunk-2"], "count": 2}}
+        )
+        await fixture.entity_chunks.index_done_callback()
+        fixture.commit_log.clear()
+
+    @staticmethod
+    async def _edit(fixture, updated_data):
+        return await utils_graph.aedit_entity(
+            fixture.graph,
+            fixture.entities_vdb,
+            fixture.relationships_vdb,
+            ENTITY,
+            dict(updated_data),
+            entity_chunks_storage=fixture.entity_chunks,
+            relation_chunks_storage=fixture.relation_chunks,
+        )
+
+
+class TestEntityEditWritesTheRowBeforeTheGraphCall(_EntityEditMixin):
+    """Fix proof: a non-rename entity edit must not mutate the node first.
+
+    `_edit_entity_impl`'s non-rename branch used to call `upsert_node` before
+    its tracking row existed, and flush that row only AFTER the graph commit. On
+    an immediate-write backend the node is durable the moment `upsert_node`
+    returns, so a growing edit whose row cannot be stored left the node citing
+    chunks nothing attributes -- `rows subset-of graph`, which a later purge
+    misreads as "no remaining sources".
+
+    Goes red on the pre-fix ordering: the node carries the widened source_id
+    even though the tracking write never landed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_growing_edit_leaves_the_node_alone_when_its_row_fails(
+        self, deferred
+    ):
+        # The graph double is passed in rather than swapped onto the fixture, so
+        # the fixture keeps owning the NetworkX instance it has to finalize.
+        graph = _ImmediateGraphStorage()
+        await graph.upsert_node(
+            ENTITY, {"entity_id": ENTITY, "description": "d", "source_id": "chunk-1"}
+        )
+        deferred.entity_chunks.fail_commit_times = 1
+
+        with pytest.raises(_Boom):
+            await utils_graph.aedit_entity(
+                graph,
+                deferred.entities_vdb,
+                deferred.relationships_vdb,
+                ENTITY,
+                dict(self.GROWING_EDIT),
+                entity_chunks_storage=deferred.entity_chunks,
+                relation_chunks_storage=deferred.relation_chunks,
+            )
+
+        # The node must still cite only what its durable row attributes.
+        assert graph.nodes[ENTITY]["source_id"] == "chunk-1"
+        assert deferred.entity_chunks.disk[ENTITY]["chunk_ids"] == ["chunk-1"]
+
+
+class TestEntityEditGrowsBeforeItShrinks(_EntityEditMixin):
+    """Fix proof + residue pins for the non-rename grow-then-shrink staging.
+
+    The delta runs in both directions and they have opposite safe orderings, so
+    the row is staged as superset -> graph -> final, exactly as in
+    `aedit_relation`. The durable row is then never a strict subset of the
+    durable node evidence.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_growing_edit_commits_the_row_before_the_graph(
+        self, deferred, monkeypatch
+    ):
+        _log_graph_commit(deferred, monkeypatch, fail=False)
+
+        await self._edit(deferred, self.GROWING_EDIT)
+
+        assert deferred.commit_log.index("entity_chunks") < deferred.commit_log.index(
+            "graph"
+        )
+        assert deferred.entity_chunks.disk[ENTITY]["chunk_ids"] == [
+            "chunk-1",
+            "chunk-7",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_graph_commit_leaves_the_wider_row_on_disk(
+        self, deferred, monkeypatch
+    ):
+        _log_graph_commit(deferred, monkeypatch, fail=True)
+
+        with pytest.raises(_Boom):
+            await self._edit(deferred, self.GROWING_EDIT)
+
+        # Residue is the accepted direction: the row names a chunk the durable
+        # node does not cite yet, never the reverse.
+        assert deferred.entity_chunks.disk[ENTITY]["chunk_ids"] == [
+            "chunk-1",
+            "chunk-7",
+        ]
+        assert deferred.persisted_graph().nodes[ENTITY]["source_id"] == "chunk-1"
+
+    @pytest.mark.asyncio
+    async def test_a_shrinking_edit_ends_with_the_narrowed_row(self, deferred):
+        await self._seed_two_chunk_entity(deferred)
+
+        await self._edit(deferred, self.SHRINKING_EDIT)
+
+        assert deferred.entity_chunks.disk[ENTITY]["chunk_ids"] == ["chunk-1"]
+        assert deferred.entity_chunks.disk[ENTITY]["count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failed_graph_commit_during_a_shrink_keeps_the_wider_row(
+        self, deferred, monkeypatch
+    ):
+        # The shrink is withheld until the graph commit justifies it, so a
+        # failure here must not have narrowed the row already.
+        await self._seed_two_chunk_entity(deferred)
+        _log_graph_commit(deferred, monkeypatch, fail=True)
+
+        with pytest.raises(_Boom):
+            await self._edit(deferred, self.SHRINKING_EDIT)
+
+        assert deferred.entity_chunks.disk[ENTITY]["chunk_ids"] == [
+            "chunk-1",
+            "chunk-2",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_shrink_keeps_the_edit_and_reports_the_wider_row(
+        self, deferred, monkeypatch
+    ):
+        # Same contract as the relation path: the edit is durable, the residue is
+        # the wider row, and the failure is reported rather than swallowed --
+        # a retry reads an unchanged source_id and skips the staging, so only an
+        # operator can reconcile it.
+        await self._seed_two_chunk_entity(deferred)
+        calls = {"n": 0}
+        original = deferred.entity_chunks.upsert
+
+        async def _upsert(data):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise _Boom("shrink write failed")
+            return await original(data)
+
+        monkeypatch.setattr(deferred.entity_chunks, "upsert", _upsert)
+
+        with pytest.raises(VectorStorageConsistencyError) as excinfo:
+            await self._edit(deferred, self.SHRINKING_EDIT)
+
+        message = str(excinfo.value)
+        assert ENTITY in message
+        assert "durable" in message
+        assert "lightrag-repair-chunk-tracking" in message
+
+        assert deferred.persisted_graph().nodes[ENTITY]["source_id"] == "chunk-1"
+        assert deferred.entity_chunks.disk[ENTITY]["chunk_ids"] == [
+            "chunk-1",
+            "chunk-2",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_failing_vector_flush_does_not_strand_the_shrink(self, deferred):
+        # The shrink sits after the vector flush, so a raising vector callback
+        # used to exit the edit with the row still holding the staged superset --
+        # and nothing heals that: the next edit reads the already-narrowed
+        # source_id and skips the staging entirely. The vector store, by
+        # contrast, is the rebuildable window. So the shrink is completed and
+        # the vector error is re-raised after it.
+        await self._seed_two_chunk_entity(deferred)
+        deferred.entities_vdb.fail_flush = True
+
+        with pytest.raises(_Boom, match="vector flush failed"):
+            await self._edit(deferred, self.SHRINKING_EDIT)
+
+        assert deferred.entity_chunks.disk[ENTITY]["chunk_ids"] == ["chunk-1"]
+        assert deferred.entity_chunks.disk[ENTITY]["count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failed_shrink_skips_the_vector_flush_and_says_so(
+        self, deferred, monkeypatch
+    ):
+        # The shrink runs inside the cancellation-deferring region, so it now
+        # precedes the vector flush and a failure there skips it. That is the
+        # acceptable exposure of the two -- vector records are rewritten by a
+        # re-issued edit and restored by lightrag-rebuild-vdb, while the row is
+        # reachable only by the offline repair -- but the caller has to be told
+        # about both, so the message names both.
+        await self._seed_two_chunk_entity(deferred)
+        calls = {"n": 0}
+        original = deferred.entity_chunks.upsert
+
+        async def _upsert(data):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise _Boom("shrink write failed")
+            return await original(data)
+
+        monkeypatch.setattr(deferred.entity_chunks, "upsert", _upsert)
+        flushes_before = deferred.entities_vdb.flushes
+
+        with pytest.raises(VectorStorageConsistencyError) as excinfo:
+            await self._edit(deferred, self.SHRINKING_EDIT)
+
+        message = str(excinfo.value)
+        assert "lightrag-repair-chunk-tracking" in message
+        assert "lightrag-rebuild-vdb" in message
+        assert deferred.entities_vdb.flushes == flushes_before
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_past_the_commit_still_completes_the_shrink(
+        self, deferred, monkeypatch
+    ):
+        # The finding this staging was moved for. `commit_in_storage_io` defers a
+        # cancellation through the graph commit and re-raises it at the END of
+        # the deferring region, and `CancelledError` is a `BaseException`, so a
+        # shrink placed after that region would simply never run -- and no
+        # `except Exception` out there could notice. The row would keep the
+        # staged superset with nothing able to heal it: the next edit reads the
+        # already-narrowed source_id and skips the staging entirely.
+        await self._seed_two_chunk_entity(deferred)
+        owner: dict = {}
+        original = deferred.graph.index_done_callback
+
+        async def _commit_then_cancel():
+            result = await original()
+            # Cancel the CALLER's task, matching TestCancellationAfterTheCommit:
+            # the owed work runs in a task of its own, so cancelling from the
+            # inside would model a different scenario.
+            owner["task"].cancel()
+            return result
+
+        monkeypatch.setattr(deferred.graph, "index_done_callback", _commit_then_cancel)
+
+        owner["task"] = asyncio.ensure_future(self._edit(deferred, self.SHRINKING_EDIT))
+        with pytest.raises(asyncio.CancelledError):
+            await owner["task"]
+
+        # The node is durably narrowed, so the row is owed the same narrowing.
+        assert deferred.persisted_graph().nodes[ENTITY]["source_id"] == "chunk-1"
+        assert deferred.entity_chunks.disk[ENTITY]["chunk_ids"] == ["chunk-1"]
+
+    @pytest.mark.parametrize(
+        "teardown",
+        [
+            pytest.param(asyncio.CancelledError(), id="cancelled"),
+            # Same ambiguity, and the caller's own error says only that the
+            # graph write failed: an acknowledgement lost after an
+            # immediate-write backend applied the update.
+            pytest.param(_Boom("ack timed out"), id="ordinary-exception"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_failed_node_write_leaves_a_diagnosed_wide_row(
+        self, deferred, monkeypatch, teardown
+    ):
+        # The one residue of this staging that cannot be closed. A cancellation
+        # delivered inside `upsert_node`'s own await -- after an immediate-write
+        # backend accepted the row -- aborts before the shrink, so the node is
+        # narrowed while the row still holds the superset.
+        #
+        # Deferring cannot help: the CancelledError originates in this
+        # coroutine, so there is nothing for `_finish_deferring_cancellation` to
+        # defer, and issuing the call from inside that region gives the
+        # identical residue (measured before writing this test).
+        #
+        # Settling blind is worse: whether the backend accepted the write is
+        # unknowable, and narrowing the row when it did not would leave the row
+        # a strict SUBSET of the graph -- over-deletion. So the row stays wide,
+        # and what is owed is the diagnostic naming the repair tool.
+        graph = _ImmediateGraphStorage()
+        await graph.upsert_node(
+            ENTITY,
+            {
+                "entity_id": ENTITY,
+                "description": "d",
+                "source_id": f"chunk-1{GRAPH_FIELD_SEP}chunk-2",
+            },
+        )
+        await deferred.entity_chunks.upsert(
+            {ENTITY: {"chunk_ids": ["chunk-1", "chunk-2"], "count": 2}}
+        )
+        await deferred.entity_chunks.index_done_callback()
+        original = graph.upsert_node
+
+        async def _write_then_fail(node_id, node_data):
+            await original(node_id, node_data)
+            raise teardown
+
+        monkeypatch.setattr(graph, "upsert_node", _write_then_fail)
+        # `lightrag.utils.logger` sets propagate=False, so caplog sees nothing;
+        # collect from the logger this module actually calls.
+        errors: list[str] = []
+        monkeypatch.setattr(
+            utils_graph.logger, "error", lambda msg, *a, **k: errors.append(str(msg))
+        )
+
+        with pytest.raises(type(teardown)):
+            await utils_graph.aedit_entity(
+                graph,
+                deferred.entities_vdb,
+                deferred.relationships_vdb,
+                ENTITY,
+                dict(self.SHRINKING_EDIT),
+                entity_chunks_storage=deferred.entity_chunks,
+                relation_chunks_storage=deferred.relation_chunks,
+            )
+
+        # The write landed, the row stayed wide -- under-deletion, never the
+        # over-deleting mirror. Same outcome for either teardown.
+        assert graph.nodes[ENTITY]["source_id"] == "chunk-1"
+        assert deferred.entity_chunks.disk[ENTITY]["chunk_ids"] == [
+            "chunk-1",
+            "chunk-2",
+        ]
+        # And it is not silent: the operator is told which row and which tool.
+        diagnostic = "\n".join(errors)
+        assert "lightrag-repair-chunk-tracking" in diagnostic
+        assert ENTITY in diagnostic
+
+    @pytest.mark.asyncio
+    async def test_a_failing_entity_vector_write_cannot_skip_the_shrink(self, deferred):
+        # The entity vector record used to be written BETWEEN the mutation and
+        # the region that settles tracking. On an immediate-write backend
+        # `upsert_node` is already durable by then, so a truncation or upsert
+        # failure there left the node narrowed with the row still at the
+        # superset -- and nothing heals it, because the next edit reads the
+        # narrowed source_id and skips the staging. The write is now after the
+        # region, so a failure cannot come between the two.
+        await self._seed_two_chunk_entity(deferred)
+        deferred.entities_vdb.fail = True
+
+        with pytest.raises(utils_graph.VectorStorageConsistencyError):
+            await self._edit(deferred, self.SHRINKING_EDIT)
+
+        # The edit is durable and the row is settled, despite the vector error.
+        assert deferred.persisted_graph().nodes[ENTITY]["source_id"] == "chunk-1"
+        assert deferred.entity_chunks.disk[ENTITY]["chunk_ids"] == ["chunk-1"]
+
+    @pytest.mark.asyncio
+    async def test_an_unrelated_relation_flush_failure_cannot_skip_the_shrink(
+        self, deferred
+    ):
+        # A non-rename entity edit writes nothing to relation_chunks, but the
+        # region's retirement flush used to flush it anyway -- and
+        # `_persist_graph_updates` re-raises the first phase-1 error, so that
+        # unrelated failure skipped the shrink and surfaced an error naming
+        # neither the row nor the repair tool. The flush is rename-only now.
+        await self._seed_two_chunk_entity(deferred)
+        deferred.relation_chunks.fail_commit_times = 1
+
+        await self._edit(deferred, self.SHRINKING_EDIT)
+
+        assert deferred.entity_chunks.disk[ENTITY]["chunk_ids"] == ["chunk-1"]
+        assert deferred.entity_chunks.disk[ENTITY]["count"] == 1
+
+
+class TestEntityChunkTrackingUpdateHelper:
+    """`_entity_chunk_tracking_update`'s contract, which both branches rely on."""
+
+    NODE = {"source_id": f"chunk-1{GRAPH_FIELD_SEP}chunk-2"}
+
+    def test_none_is_returned_only_when_a_row_is_already_present(self):
+        # The rename branch reads `None` as "the stored row is authoritative",
+        # and migrates it verbatim with no reseed arm. That is only sound while
+        # `None` implies a present row, so pin it: an ABSENT row with an
+        # unchanged source_id must NOT return None.
+        absent = utils_graph._entity_chunk_tracking_update(None, self.NODE, self.NODE)
+
+        assert absent is not None
+        # Reseeded from the graph's source_id, exactly once, and identical in
+        # both slots because nothing was removed.
+        assert absent == (["chunk-1", "chunk-2"], ["chunk-1", "chunk-2"])
+
+    def test_a_present_row_with_an_unchanged_source_id_is_left_alone(self):
+        stored = {"chunk_ids": ["chunk-1", "chunk-2"], "count": 2}
+
+        assert (
+            utils_graph._entity_chunk_tracking_update(stored, self.NODE, self.NODE)
+            is None
+        )
+
+    def test_the_superset_keeps_the_row_and_adds_only_genuine_additions(self):
+        stored = {"chunk_ids": ["chunk-1", "chunk-2"], "count": 2}
+        new_node = {"source_id": f"chunk-2{GRAPH_FIELD_SEP}chunk-9"}
+
+        final, superset = utils_graph._entity_chunk_tracking_update(
+            stored, self.NODE, new_node
+        )
+
+        # chunk-9 is added, chunk-1 is dropped by the final row but retained by
+        # the superset -- that difference is what the staging is built on.
+        assert "chunk-9" in final and "chunk-1" not in final
+        assert superset == ["chunk-1", "chunk-2", "chunk-9"]

@@ -18,6 +18,107 @@ are far apart in time and the fingerprint sees them; the fingerprint fails when
 two commits land inside one filesystem timestamp tick with an identical size,
 which needs a healthy, fast-committing system -- exactly when the flag works.
 
+**The deferred remedy for the tick collision**, recorded here so it is not
+rediscovered from scratch: make the writer guarantee mtime monotonicity --
+``stat`` the target before the commit and, if ``os.replace`` did not advance
+its mtime, bump it with ``os.utime``. That would make the file channel exact
+on its own. It is deliberately NOT done, because the bump has no good value on
+a coarse filesystem: ``+1 ns`` is truncated away on a 1 s (ext3, HFS+) or 2 s
+(FAT) granularity, and a whole-granule bump produces user-visible future
+timestamps. It costs one extra ``stat`` per commit plus a rare ``utime``, so
+cost is not the objection. Do it only if the ``_missed_notification_reloads``
+counters that each storage logs ever show this window occurring in a real
+deployment -- those counters are the evidence this decision waits on, which is
+why the next section exists.
+
+``_missed_notification_reloads``: one increment per unannounced state
+---------------------------------------------------------------------
+
+Each storage keeps this counter, and its contract is exactly:
+
+    **it increments once per distinct on-disk state this process found
+    unannounced -- not per detection of one, and not per attempt to reload
+    out of one.**
+
+A *state*, not a commit, and the difference is not pedantry: this is a state
+channel and not a log. It can only ever ask "is the file the one I recorded?",
+so several peer commits that land before this process next looks are one
+observation and one increment. Reading the contract as "one per commit" is
+what makes the batching below look like a defect rather than the shape of the
+instrument.
+
+It reads like a log line and is not one. It is the instrument the ``os.utime``
+decision above waits on, so a bias in it is not cosmetic: it silently decides
+whether that work is ever judged necessary. Both directions are defects, and
+review found this counter wrong in five distinct ways, each fixed in a
+different place. They are indexed here because no single site shows the whole
+contract, and the next person to touch any one of them will be looking at a
+fragment:
+
+1. **Do not arm a cross-process channel for a process-local fact.**
+   ``NetworkXStorage`` recovers from a failed save by discarding its
+   unpersisted graph. Arming that through ``_loaded_fingerprint`` made the
+   file channel report a peer commit that never happened. It uses a
+   process-local ``_recovery_reload_pending`` bool instead -- see that class's
+   *Recovery reload*. (Overcount.)
+2. **Classify before a reload that discharges several conditions at once.**
+   That same recovery flag outranks both channels, and one reload satisfies
+   all of them, so a peer commit arriving while recovery is pending would be
+   handled and never counted. Every reload that could discharge it counts
+   first: both recovery branches, and the failed-save handler's reload --
+   the one that arms the flag when it fails. (Undercount.)
+3. **Count states, not attempts.** A reload that raises leaves the reader's
+   recorded fingerprint untouched, so the same commit is re-detected by every
+   later call. :func:`counts_as_a_new_lost_notification` plus each storage's
+   ``_counted_peer_fingerprint`` makes it once-per-state. (Overcount, and it
+   was unbounded.)
+4. **End that marker at the reload it was protecting -- and not before.**
+   Kept longer, it suppresses a state that RECURS -- a drop, a notified
+   recreation, a second drop -- which is a real second loss and not the
+   tick-collision residue. Cleared in each storage's ``_adopt_fingerprint``,
+   the single point a new state is recorded and one reached only after a load
+   or commit landed. **Only when that adoption records a CONCRETE state**,
+   though: ``adopted(UNREADABLE)`` is ``None``, which means "nothing
+   recorded" and against which any state reads as a change, so clearing there
+   forgets which commit was counted and counts it again. The post-drop
+   fingerprint is ``(None,)``, a real state, so a drop still clears. (Both
+   directions: undercount if kept too long, double-count if dropped too
+   early.)
+5. **Once a call is committed to adopting, it must not observe the file
+   again.** Every step from there -- deciding there is a divergence, counting
+   it, adopting the new state -- runs on ONE sample. A second observation can
+   come back ``UNREADABLE`` while the first succeeded, and then its step is
+   skipped while the adoption still happens on the good sample, erasing the
+   divergence a later call would have counted. So the counting callers pass
+   their sample to :func:`divergence_detected`, to
+   :func:`counts_as_a_new_lost_notification` and to their reload alike.
+   An observation *before* that point is fine and the vector backends use one:
+   theirs gates the whole function and returns early, adopting nothing, so a
+   failure there costs a retry rather than the event. Found twice, both after
+   the commit point: first the count-vs-adopt pair, then the divergence test
+   that was still re-observing. (Loss, not merely undercount.)
+
+Two blind spots remain by design, and they are not the same kind. The five
+above were neither -- they were defects.
+
+* **The tick collision**: two commits sharing one ``(st_mtime_ns, st_size)``,
+  so the second raises no divergence at all. This is the residue the
+  ``os.utime`` remedy above would remove, and it is the dangerous one -- not
+  because of the count but because a commit the channel cannot see is a
+  commit it cannot rescue a stale writer out of.
+* **Batching**: N unannounced commits observed as one state, counted once.
+  Inherent to a state channel, and the ``os.utime`` remedy does nothing for
+  it -- monotone timestamps cannot make countable a state that was never
+  observed. Only a monotonic generation persisted with the data would, which
+  is a larger change than the remedy above and buys resolution rather than
+  safety: batching understates how OFTEN the window occurs and cannot hide
+  THAT it occurs, which is the question the counter is read to answer. So it
+  is recorded here and not fixed.
+
+Neither is an excuse for the five defects above: each of those could bias the
+count in a deployment where the window occurs at all, and two could erase the
+evidence outright.
+
 The mechanism lives here, once, because its hazards are in the details rather
 than the shape, and three copies of them is how it rots:
 
@@ -120,9 +221,107 @@ def adopted(sampled: Fingerprint | object) -> Fingerprint | None:
 
     ``UNREADABLE`` becomes ``None``, which differs from any real file: the next
     check therefore re-samples and, if the ``stat`` works by then, reloads
-    once. That is the harmless direction.
+    once. That is the safe direction for the *reload decision* — the residue
+    below is what it is not harmless about.
+
+    **Accepted residue — one spurious divergence per unreadable adoption.**
+    ``None`` means "nothing recorded", and every state reads as a change
+    against it, so a reload whose sample came back ``UNREADABLE`` leaves the
+    *next* call reporting a divergence even when the file never moved. It is
+    the same overcount the module docstring's item 1 rejects, arriving by a
+    different door: there the fingerprint was invalidated deliberately, here
+    a failed ``stat`` does it.
+
+    Bounded and self-healing: the next readable ``stat`` adopts a concrete
+    state, so it cannot repeat without the ``stat`` failing again, and it
+    biases the counter *up*, never down — an inflated counter argues for the
+    ``os.utime`` remedy the module docstring defers, which is the direction
+    that costs work rather than data.
+
+    **Only a storage that can REPLAY may reload on an unreadable sample.**
+    That is what keeps the residue at one reload. A reload discards whatever
+    the process has mutated in memory and not yet committed, and the
+    storages differ in what that costs:
+
+    * The vector backends replay: ``index_done_callback`` reloads and then
+      ``_flush_pending_locked`` re-applies the pending buffers over the
+      reloaded snapshot. A spurious reload costs them work and nothing else,
+      so they adopt ``None`` and move on.
+    * ``NetworkXStorage`` has no redo log, so a reload DISCARDS those
+      mutations. Between batches that is the intended behaviour; reached
+      spuriously it can land *mid*-batch, and then the mutations dropped are
+      simply absent from the commit that follows — which SUCCEEDS, marking
+      their document PROCESSED. A silent partial loss, neither loud nor
+      self-healing. Its ``_reload_locked`` therefore refuses to load on an
+      ``UNREADABLE`` sample at all (it raises, which fails the batch loudly
+      and retries), so no reload of its graph can reach this function with
+      one. What still can are its adoptions of its OWN commit or drop
+      (``_record_fingerprint``), where the in-memory graph already equals the
+      file — so the redundant reload discards nothing, **provided it happens
+      before the next mutation**. It does not on its own: ``UNREADABLE``
+      reports "no change", so while the ``stat`` keeps failing no divergence
+      fires and the reload would be deferred to whichever later call first
+      managed to ``stat`` — mid-batch, dropping what was applied in between.
+      ``_get_graph`` therefore settles a ``None`` fingerprint before it
+      serves the graph — through the divergence test when it can sample (any
+      concrete state is a divergence against ``None``), by refusing when it
+      cannot.
+
+    Recorded as an option, not done: the obvious fix is to keep the previously
+    recorded fingerprint instead of clearing it (never worse for the reload
+    decision, since the file only moves forward and an under-recorded state
+    fails towards a redundant reload). It is entangled, though — each
+    storage's ``_adopt_fingerprint`` clears ``_counted_peer_fingerprint``
+    exactly when this returns a concrete state, so retaining one here would
+    clear the dedupe marker on an adoption that did not actually observe the
+    file, and re-counting would return through
+    :func:`counts_as_a_new_lost_notification`. Both halves have to move
+    together, with tests for the pair, which is more than a residue this small
+    justifies today.
     """
     return None if sampled is UNREADABLE else sampled  # type: ignore[return-value]
+
+
+def counts_as_a_new_lost_notification(
+    sampled: Fingerprint | object, already_counted: Fingerprint | None
+) -> bool:
+    """Whether this detection is a NEW lost notification, not a re-detection.
+
+    Every storage here keeps a ``_missed_notification_reloads`` counter, and
+    the module docstring designates those counters as the evidence the
+    writer-side ``os.utime`` remedy waits on. That only holds if they count
+    **distinct unannounced states**, and detection alone does not: a reload
+    that raises leaves the reader's recorded fingerprint untouched, so the
+    same state is re-detected by every later call. Counted at each detection,
+    one state inflates the counter without bound -- and a file that stays
+    unreadable for a while is not exotic, since that is what a sick storage
+    looks like.
+
+    So each storage remembers the state it last counted and passes it here.
+    A genuinely different state counts again. Two things do not, and both are
+    by design (see the module docstring): commits inside one timestamp tick
+    with an identical size, which produce no new state at all, and commits
+    that batch into a single observation because this process did not look in
+    between. This function is the wrong place to fix either -- it is handed a
+    state and can only compare it with the last one.
+
+    ``UNREADABLE`` counts nothing: it cannot say WHICH state it would be
+    counting, so the count could neither be deduplicated nor trusted. The next
+    call counts it if the ``stat`` works by then -- but ONLY because the
+    caller feeds this same sample to its reload, so an unreadable one adopts
+    no fingerprint and leaves the divergence standing. A caller that sampled
+    here and let its reload sample independently would lose the event for
+    good: this would skip the count while that sample succeeded and adopted
+    the peer state. Count and adopt from one observation.
+
+    Counting at detection rather than after a successful reload is deliberate:
+    the window occurred whether or not this process could reload out of it,
+    and a file that never becomes readable would otherwise erase the evidence
+    entirely.
+    """
+    if sampled is UNREADABLE:
+        return False
+    return sampled != already_counted
 
 
 def peer_commit_detected(
@@ -151,7 +350,33 @@ def peer_commit_detected(
     """
     if not fence_enabled():
         return False
-    sampled = sample(paths, workspace=workspace)
+    return divergence_detected(
+        sample(paths, workspace=workspace), recorded, paths=paths, workspace=workspace
+    )
+
+
+def divergence_detected(
+    sampled: Fingerprint | object,
+    recorded: Fingerprint | None,
+    *,
+    paths: Sequence[str],
+    workspace: str,
+) -> bool:
+    """:func:`peer_commit_detected`'s decision, from a sample already taken.
+
+    For the caller that will DECIDE, COUNT and ADOPT within one call: all
+    three must come from **one observation**. Taking a fresh ``stat`` for the
+    decision lets it fail while the caller's sample succeeded, and then the
+    count is skipped while the reload adopts that good sample -- erasing the
+    divergence that would have let a later call count the event. The
+    one-observation rule in :func:`counts_as_a_new_lost_notification` covers
+    counting and adoption; this covers the third participant.
+
+    A caller with nothing else to do with the sample should use
+    :func:`peer_commit_detected`, which takes one for itself.
+    """
+    if not fence_enabled():
+        return False
     if sampled is UNREADABLE:
         return False
     if sampled == recorded:
@@ -203,6 +428,17 @@ def publication_complete(sampled: Fingerprint) -> bool:
 
     Everything absent is complete (the post-``drop`` state, which peers must
     be able to converge on). A present marker with any file missing is not.
+
+    **This test is timestamp-based because the formats give it nothing else.**
+    The deferred remedy, recorded so it is not rediscovered: put an explicit
+    generation counter in the metadata each file carries (FAISS's
+    ``meta.json``), or publish the set atomically -- stage a whole generation
+    in a directory and rename that directory into place -- and completeness
+    becomes a comparison of equal generation numbers, independent of the
+    filesystem clock and of the strictness argument above. It is not done here
+    because it is a storage-format change, and these multi-file backends are
+    development and test storage today. It is the right answer if they ever
+    become production storage.
     """
     *committed, marker = sampled
     if marker is None:

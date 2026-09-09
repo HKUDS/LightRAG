@@ -8,11 +8,17 @@ atomic rebuild switch, and hashes.
 Shared by the doc-status lookup tests and the scheduling-page tests so the
 fake's semantics stay consistent. Deliberately implements only the subset the
 storage class calls; unknown commands fail loudly.
+
+One deliberate limitation: ``register_script`` cannot run Lua, so the KV
+upsert script is REIMPLEMENTED here in Python (see ``FakeScript``). Unit tests
+therefore pin the storage's use of the script, not the script itself -- the
+real thing runs in
+``tests/kg/redis_impl/test_redis_kv_create_time_integration.py``.
 """
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Any
 
 from redis.exceptions import ResponseError, WatchError
@@ -27,6 +33,10 @@ class FakeRedis:
         self.versions: dict[str, int] = defaultdict(int)
         # Test hook: raise this exception on the next matching command.
         self.fail_next: dict[str, Exception] = {}
+        # Per-command call counts, so a test can assert WHICH command a code
+        # path used (e.g. RedisKVStorage.upsert must read create_time with
+        # GETRANGE and never pull whole values back with GET).
+        self.command_counts: Counter[str] = Counter()
         # CONFIG GET response; the default is an eviction-safe server.
         self.config_values: dict[str, str] = {
             "maxmemory": "0",
@@ -58,7 +68,23 @@ class FakeRedis:
 
     async def get(self, key: str):
         self._maybe_fail("get")
+        self.command_counts["get"] += 1
         return self.store.get(key)
+
+    async def getrange(self, key: str, start: int, end: int) -> str:
+        """Real GETRANGE semantics: inclusive range, empty string when absent.
+
+        Redis returns an empty string (not nil) for a missing key, which is
+        what RedisKVStorage.upsert reads as "this is an insert".
+        """
+        self._maybe_fail("getrange")
+        self.command_counts["getrange"] += 1
+        value = self.store.get(key)
+        if value is None:
+            return ""
+        if end < 0:
+            end = len(value) + end
+        return value[start : end + 1]
 
     async def set(self, key: str, value: str, nx: bool = False, ex: int | None = None):
         self._maybe_fail("set")
@@ -206,9 +232,60 @@ class FakeRedis:
 
     def _apply(self, op: tuple) -> Any:
         kind = op[0]
+        self.command_counts[kind] += 1
         if kind == "get":
             return self.store.get(op[1])
+        if kind == "script":
+            from lightrag.kg.redis_impl import _CREATE_TIME_PREFIX_RE
+
+            key, args = op[1], op[2]
+            payload, hint, now, prefix_bytes = (
+                args[0],
+                str(args[1]),
+                str(args[2]),
+                int(args[3]),
+            )
+            # The script's own GETRANGE, counted so a test can assert that the
+            # fast path reads a prefix and never a whole value.
+            self.command_counts["getrange"] += 1
+            exists = key in self.store
+            prefix = self.store[key][:prefix_bytes] if exists else ""
+            if prefix == "":
+                # GETRANGE cannot tell a missing key from an empty value, so
+                # the script disambiguates with EXISTS on this branch only.
+                self.command_counts["exists"] += 1
+            if prefix == "" and not exists:
+                create_time, outcome = now, "created"
+            else:
+                match = _CREATE_TIME_PREFIX_RE.match(prefix)
+                if match is not None:
+                    create_time, outcome = match.group(1), "kept"
+                elif hint == "":
+                    return ["needs_hint", ""]
+                else:
+                    create_time, outcome = hint, "hinted"
+            rest = payload[1:]
+            if rest in ("}", ""):
+                self.store[key] = '{"create_time":' + create_time + "}"
+            else:
+                self.store[key] = '{"create_time":' + create_time + "," + rest
+            self._bump(key)
+            return [outcome, create_time]
+        if kind == "getrange":
+            key, start, end = op[1], op[2], op[3]
+            value = self.store.get(key)
+            if value is None:
+                return ""
+            if end < 0:
+                end = len(value) + end
+            return value[start : end + 1]
         if kind == "set":
+            # NX mirrors real Redis: refuse (and answer nil) when the key
+            # already exists. RedisKVStorage.upsert relies on that to make a
+            # first creation atomic.
+            nx = op[3] if len(op) > 3 else False
+            if nx and op[1] in self.store:
+                return None
             self.store[op[1]] = op[2]
             self._bump(op[1])
             return True
@@ -296,8 +373,38 @@ class FakeRedis:
             return dict(self.hashes.get(op[1], {}))
         raise ValueError(f"FakeRedis: unsupported op {kind}")  # pragma: no cover
 
+    def register_script(self, script: str):
+        return FakeScript(self, script)
+
     def pipeline(self, transaction: bool = True):
         return FakePipeline(self)
+
+
+class FakeScript:
+    """Python model of ``_CREATE_TIME_UPSERT_LUA``.
+
+    Mirrors the script's four outcomes -- ``created`` for an absent key,
+    ``kept`` when the stored prefix carries the timestamp, ``needs_hint``
+    (writing nothing) when it does not and no hint was supplied, ``hinted``
+    when one was -- and the atomic read-decide-write step that makes the
+    decision safe against a concurrent delete. A key holding an empty string
+    is a stored row, not an absent one, exactly as the script's ``EXISTS``
+    check decides.
+
+    It reuses the production prefix regex, so a divergence between that regex
+    and the Lua pattern is invisible here by construction; the integration
+    suite pins the Lua side.
+    """
+
+    def __init__(self, fake: FakeRedis, script: str):
+        self._fake = fake
+        self.script = script
+
+    async def __call__(self, keys=None, args=None, client=None):
+        op = ("script", (keys or [None])[0], list(args or []))
+        if client is None or client is self._fake:
+            return self._fake._apply(op)
+        return client._command(op)
 
 
 class FakePipeline:
@@ -350,6 +457,9 @@ class FakePipeline:
         self._ops.append(op)
         return self
 
+    def getrange(self, key: str, start: int, end: int):
+        return self._command(("getrange", key, start, end))
+
     def get(self, key: str):
         if self._immediate:
             # Delegate to the top-level async method so tests can intercept
@@ -374,8 +484,8 @@ class FakePipeline:
             )
         return self._fake.scan(cursor, match=match, count=count)
 
-    def set(self, key: str, value: str):
-        return self._command(("set", key, value))
+    def set(self, key: str, value: str, nx: bool = False):
+        return self._command(("set", key, value, nx))
 
     def delete(self, key: str):
         return self._command(("delete", key))
