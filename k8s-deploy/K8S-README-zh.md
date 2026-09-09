@@ -144,10 +144,16 @@ LightRAG 的存储初始化/迁移与文档处理流水线是通过单机共享�
 只提供查询服务的额外实例可以与主实例共用同一个 workspace，但必须同时满足下面五个条件。这属于进阶用法：本 chart 不会自动生成这种部署，且以下约束没有任何一条由应用本身强制执行。
 
 1. **只能使用外部数据库后端。** 轻量级部署（`JsonKVStorage` / `NetworkXStorage` / `JsonDocStatusStorage`）把状态保存在 PVC 上的文件和进程内存中，两个实例共用一个卷必然导致数据损坏。请使用 PostgreSQL / Neo4j / Milvus / Redis / Qdrant。
-2. **实例必须顺序启动——一次一个，前一个 Ready 之后再启动下一个。** 初始化阶段绝不能重叠。用 `/health` 返回 `200` 作为判据是可靠的：`initialize_storages()` 与 `check_and_migrate_data()` 都在 FastAPI lifespan 中执行，先于应用对外提供服务，因此一个 Ready 的实例必然已完成存储创建与迁移，后续实例只会看到存储已经就绪。在 Kubernetes 中，**StatefulSet 配合 `podManagementPolicy: OrderedReady`** 正是这个语义——Pod 按序号逐个创建，每个必须 Running 且 Ready 之后才创建下一个——再配合本 chart 已经配置好的 `/health` readinessProbe 即可。本 chart 提供的是 `Deployment`，因此需要您自行以 StatefulSet 方式部署 LightRAG。
+2. **实例必须顺序启动——一次一个，前一个 Ready 之后再启动下一个。** 初始化阶段绝不能重叠。用 `/health` 返回 `200` 作为判据是可靠的：`initialize_storages()` 与 `check_and_migrate_data()` 都在 FastAPI lifespan 中执行，先于应用对外提供服务，因此一个 Ready 的实例必然已完成存储创建与迁移，后续实例只会看到存储已经就绪。在 Kubernetes 中，**StatefulSet 配合 `podManagementPolicy: OrderedReady`** 正是这个语义——Pod 按序号逐个创建，每个必须 Running 且 Ready 之后才创建下一个——再配合本 chart 已经配置好的 `/health` readinessProbe 即可。设置 `workload.kind: StatefulSet` 即可让 chart 直接渲染出这种部署（默认仍为 `Deployment`），参见下方的 values 示例。
 3. **在所有实例都 Ready 之前，必须停止写入。** 顺序启动只保证 Pod 的**创建**有先后：pod 0 已经 Ready 并对外服务时，pod 1 才刚开始初始化；滚动升级同理，序号较低的旧 Pod 仍在服务，替换 Pod 已经启动。正在启动的实例会执行 `check_and_migrate_data()`，其中的 chunk 追踪迁移先对图中的 `source_id` 取快照，随后用该快照**整行替换**每一条追踪记录。在这个窗口内写入的文档，其追踪记录可能被覆盖；而该迁移以追踪存储为空作为闸门，因此不会再次执行，损失也不会自愈。请在扩容或升级前停止写入，待所有 Pod 都 Ready 之后再恢复。（追踪存储一旦有数据，该迁移会立即返回，因此风险窗口实际上是从早于 chunk 追踪的版本升级后的首次上线——但这条规则不值得写成有条件的。）
 4. **所有写入都发往同一个实例，其余实例只放行白名单内的读接口。** LightRAG 没有只读模式，因此这个划分只能在 Pod 前面完成（使用独立的 Service 或 Ingress 规则）。请为额外副本配置**只读接口白名单**（`/query`、`/query/stream`、图查询接口、`/health`），而不是写接口黑名单——黑名单会随着新接口的加入而悄悄失效。写入面不只有文档摄取：除了 `/documents/*` 和上传接口，还有 WebUI 会发起的图修改接口——`/graph/entity/edit`、`/graph/relation/edit`、`/graph/entity/create`、`/graph/relation/create`、`/graph/entities/merge`、`/graph/entity/delete`、`/graph/relation/delete`。这些处理函数确实有 `check_pipeline_busy_or_raise` 自我保护，但它读的是本 Pod 自己的 `pipeline_status`，所以在查询副本上它看到的是空闲流水线，会在写入实例正在处理文档时放行这次修改——而这正是该守卫本应拒绝的并发图写入。流水线状态每实例独立，也正是两个实例同时接收写入会把同一批文档处理两遍的原因。
 5. **只能指望后端层面的共享。** 查询实例并非完全不写入——查询路径会写 LLM 响应缓存；这在共享数据库后端上无害，但也正是条件 1 不能放宽的原因。所有进程内状态都不共享：额外实例上报的流水线状态是它自己的空闲流水线，而不是写入实例的处理进度。
+
+**顺序启动覆盖不到的部分。** `OrderedReady` 管的是 Pod 的**创建**——首次上线、扩容、滚动更新。它对非计划的重启没有约束力：容器崩溃时 kubelet 会就地重启它；Pod 随节点丢失后，只要序号更低的同伴处于 Ready 就会立即被重建——而它们正在服务，当然是 Ready。多个 Pod 也可能同时重启。每一次重启都会在其他实例继续写入的同时重新执行 `initialize_storages()` 与 `check_and_migrate_data()`，而 LightRAG 内部没有任何跨 Pod 的协调机制。
+
+在稳定状态下这基本无害：存储都已存在，初始化只是一连串空操作；每个迁移都以目标为空作为闸门，会立即返回。真正有风险的窗口是仍有迁移待执行时——即引入了新迁移的那次升级后的首次上线——此时一次重启就可能落入条件 3 描述的「快照后整行替换」写入。若真的发生，可用 `lightrag-repair-chunk-tracking` 重建追踪记录（该工具仅支持离线运行：请先停止所有对该 workspace 的写入方）。
+
+请把这一点视为「在没有跨 Pod 协调的前提下运行额外副本」所接受的既有残留，而不是 chart 已经处理掉的问题。如果无法接受，请保持 `replicaCount: 1`。要真正消除它，需要一个分布式初始化锁——PostgreSQL advisory lock 或 Redis lease——而 LightRAG 目前还没有。
 
 本 chart 可以直接渲染出这种 StatefulSet 部署：
 

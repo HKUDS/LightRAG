@@ -19,7 +19,15 @@ spec:
   # the chunk-tracking migration on the starting pod replaces tracking rows
   # from a graph snapshot -- overwriting a row a concurrent ingestion just
   # wrote, with no later run to heal it. Stop ingestion before scaling out or
-  # upgrading. See K8S-README.md "Replica Count".
+  # upgrading.
+  #
+  # It also has no say over an UNPLANNED restart: a crashed container is
+  # restarted in place by the kubelet, and a pod lost with its node is
+  # recreated while its serving peers stay up. Those restarts re-run
+  # initialization and migration with no cross-pod coordination -- the
+  # accepted residue of extra replicas, harmless once every migration has
+  # run, recoverable with lightrag-repair-chunk-tracking if one had not.
+  # See K8S-README.md "Replica Count".
   #
   # Immutable after creation - changing it requires recreating the StatefulSet.
   podManagementPolicy: {{ default "OrderedReady" $workload.podManagementPolicy }}
