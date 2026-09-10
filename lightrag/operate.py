@@ -6204,6 +6204,17 @@ async def _find_most_related_edges_from_entities(
 
 
 def _vector_chunk_quota(max_related_chunks: int, group_count: int) -> int:
+    """How many chunks VECTOR-mode selection may draw, scaled by group count.
+
+    Floored at 1 (once max_related_chunks and group_count are both positive)
+    so a query with very few related entities/relations still gets at least
+    one chunk instead of being rounded down to zero by the /2 scaling below.
+
+    The group_count <= 0 branch is defensive only: both call sites already
+    guard on their group list being non-empty (entities_with_chunks /
+    relations_with_chunks) before reaching here, so group_count is always
+    >= 1 in practice.
+    """
     if max_related_chunks <= 0 or group_count <= 0:
         return 0
     return max(1, int(max_related_chunks * group_count / 2))

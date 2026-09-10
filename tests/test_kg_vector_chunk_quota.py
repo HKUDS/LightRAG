@@ -7,10 +7,26 @@ from lightrag.base import QueryParam
 from lightrag.operate import (
     _find_related_text_unit_from_entities,
     _find_related_text_unit_from_relations,
+    _vector_chunk_quota,
 )
 
 
 pytestmark = pytest.mark.offline
+
+
+@pytest.mark.parametrize(
+    ("max_related_chunks", "group_count", "expected"),
+    [
+        (0, 5, 0),  # related_chunk_number disabled entirely
+        (5, 0, 0),  # defensive branch: no call site reaches this in practice
+        (1, 1, 1),  # floor kicks in: 1 * 1 / 2 would round down to 0
+        (2, 1, 1),  # 2 * 1 / 2 == 1, floor is a no-op here
+        (4, 3, 6),  # normal scaling, no floor/rounding involved
+        (3, 1, 1),  # 3 * 1 / 2 == 1.5, int() truncates to 1
+    ],
+)
+def test_vector_chunk_quota(max_related_chunks, group_count, expected):
+    assert _vector_chunk_quota(max_related_chunks, group_count) == expected
 
 
 def _text_chunks_db():
