@@ -1907,6 +1907,41 @@ class NetworkXStorage(BaseGraphStorage):
         if batch:
             yield batch
 
+    def discard_uncommitted_mutations(self, reason: str) -> bool:
+        """Owe a reload that drops mutations no commit has published.
+
+        See :meth:`BaseGraphStorage.discard_uncommitted_mutations` for who
+        calls this and why it is synchronous. ``_graph_dirty`` is the whole
+        test: it is set by every mutator and cleared only by ``_committed``, so
+        True here means this process holds graph changes the file does not have
+        and no operation is left to publish them on purpose.
+
+        Arming ``_recovery_reload_pending`` -- rather than reloading right here
+        -- is the *Recovery reload* rule in the class docstring: **armed when
+        the reload becomes owed, cleared only by one that completes.** Both
+        consumers already handle exactly this case and say so in their log
+        lines: ``_get_graph`` reloads and discards (exempt from the dirty-graph
+        backstop, since what it drops was already reported as failed), and
+        ``index_done_callback`` DECLINES a commit that would publish it. Every
+        flow reads the graph before it writes, so in practice the reload
+        discharges the flag long before any commit can decline on it.
+
+        No lock is taken, and none is needed. The flag is a plain ``bool``, the
+        gate's admin lock and ``busy`` reservation mean no other writer exists,
+        and a concurrent reader can only either reload (doing the discard for
+        us) or not (leaving the next call to do it).
+        """
+        if not self._graph_dirty:
+            return False
+        self._recovery_reload_pending = True
+        logger.error(
+            f"[{self.workspace}] Graph {self._graphml_xml_file} holds "
+            f"uncommitted in-memory mutations after {reason}, and no operation "
+            "is left to publish them. Owing a reload so they are discarded "
+            "instead of being published by a later, unrelated commit."
+        )
+        return True
+
     def _recover_from_failed_save_locked(self) -> None:
         """Restore the process view after a save that did NOT land.
 

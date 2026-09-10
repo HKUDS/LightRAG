@@ -6989,13 +6989,28 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 ADMIN_WRITE_MAX_HOLD_SECONDS, f"Admin write `{operation}`"
             ):
                 yield
-        except asyncio.CancelledError:
-            # Covers the acquire as well as the body: a cancellation landing at
-            # the reservation lock's exit can leave ``busy`` ours (which is why
-            # ``reserved`` is set before the acquire), and driving the pipeline
-            # from a cancelled task would only start work nobody is waiting for.
-            # The mailbox flag is sticky, so the next scan or upload picks it up.
-            cancelled = True
+        except (asyncio.CancelledError, AdminWriteHoldExceededError) as exc:
+            # The one exit the operation's own handlers never see: every admin
+            # flow guards its body with ``except Exception``, which cannot catch
+            # a ``CancelledError``, so a write killed between its graph mutation
+            # and its commit leaves that mutation in the process-wide in-memory
+            # graph with nothing owing anything about it. Give it up here, while
+            # the admin lock and the reservation are still held so no other
+            # writer can be mid-mutation -- otherwise the release-time drive or
+            # the next unrelated admin write commits it, and an operation
+            # reported as failed becomes durable after the fact.
+            self._discard_uncommitted_graph_mutations(operation)
+            # Only a real cancellation suppresses the release-time drive:
+            # driving the pipeline from a cancelled task would start work
+            # nobody is waiting for, and the mailbox flag is sticky so the next
+            # scan or upload picks it up. A ceiling expiry is a completed
+            # failure of THIS write, not of the caller, so it still drives.
+            #
+            # Catching the cancellation out here rather than around the body
+            # also covers the acquire: a cancellation landing at the
+            # reservation lock's exit can leave ``busy`` ours, which is why
+            # ``reserved`` is set before the acquire.
+            cancelled = isinstance(exc, asyncio.CancelledError)
             raise
         finally:
             try:
@@ -7014,6 +7029,37 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 await admin_lock.__aexit__(None, None, None)
             if reserved and not cancelled:
                 await self._drive_pipeline_if_deferred(workspace)
+
+    def _discard_uncommitted_graph_mutations(self, operation: str) -> None:
+        """Give up graph mutations an interrupted admin write left unpublished.
+
+        Called from the gate's cancellation exit only, and deliberately: every
+        other way out of the body ran the flow's own ``except Exception``
+        handlers, whose per-path residues are decided and documented where they
+        happen. A cancellation runs none of them.
+
+        Synchronous all the way down (see
+        :meth:`BaseGraphStorage.discard_uncommitted_mutations`), so it cannot be
+        interrupted by a second cancellation the way an ``await`` here could.
+        Unconditional: the base method is a no-op returning ``False``, so the
+        backends with nothing to give up need no test of their own here.
+
+        Never raises. It runs while a cancellation or the ceiling's error is
+        already propagating, and swallowing that to report a bookkeeping
+        failure would lose the reason the operation actually failed.
+        """
+        graph = getattr(self, "chunk_entity_relation_graph", None)
+        if graph is None:
+            return
+        try:
+            graph.discard_uncommitted_mutations(
+                f"admin write `{operation}` was interrupted before its commit"
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.error(
+                f"Failed to discard uncommitted graph mutations after the "
+                f"interrupted admin write `{operation}`: {e}"
+            )
 
     async def _drive_pipeline_if_deferred(self, workspace: str) -> None:
         """Start the release-time queue drive when the hold turned a start away.

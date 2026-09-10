@@ -50,6 +50,7 @@ from lightrag.exceptions import (
     AdminWriteGateRefusedError,
     AdminWriteHoldExceededError,
 )
+from lightrag.kg.networkx_impl import NetworkXStorage
 from lightrag.kg.shared_storage import (
     PipelineReservationConflict,
     acquire_processing_reservation,
@@ -581,6 +582,83 @@ async def test_hold_ceiling_releases_both_gates_and_fails_loud(rag, monkeypatch)
     await asyncio.gather(
         *lightrag_module._ADMIN_RELEASE_DRIVE_TASKS, return_exceptions=True
     )
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_write_does_not_become_durable_later(rag, monkeypatch):
+    """The ceiling fires between the graph mutation and its commit.
+
+    ``acreate_entity`` calls ``upsert_node`` -- in-memory only on NetworkX --
+    and then waits in ``entities_vdb.upsert``. A cancellation there runs none of
+    the flow's ``except Exception`` handlers, so the node used to sit in the
+    process-wide graph with nothing owing anything about it, and the next
+    unrelated commit published it: an operation reported as a 500 becoming
+    durable after the fact, with no success anywhere to explain it.
+
+    Reported by the Codex review of PR #3901 on 07740a5a15.
+    """
+    monkeypatch.setattr(lightrag_module, "ADMIN_WRITE_MAX_HOLD_SECONDS", 0.2)
+    graph = rag.chunk_entity_relation_graph
+    never = asyncio.Event()
+    original = rag.entities_vdb.upsert
+
+    async def _hung_upsert(data):
+        await never.wait()
+
+    rag.entities_vdb.upsert = _hung_upsert
+    try:
+        with pytest.raises(AdminWriteHoldExceededError):
+            await _create_alice(rag)
+    finally:
+        rag.entities_vdb.upsert = original
+
+    # Given up at the gate, while it still held the admin lock and the
+    # reservation, so no reader can have seen it published either.
+    assert await graph.has_node("Alice") is False
+
+    # And an unrelated later write -- the commit that used to publish it --
+    # goes through carrying only its own change.
+    await rag.acreate_entity("Bob", {"description": "another", "entity_type": "PERSON"})
+    await asyncio.gather(
+        *lightrag_module._ADMIN_RELEASE_DRIVE_TASKS, return_exceptions=True
+    )
+    on_disk = NetworkXStorage.load_nx_graph(graph._graphml_xml_file)
+    assert on_disk is not None
+    assert sorted(on_disk.nodes()) == ["Bob"]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_write_does_not_become_durable_later(rag):
+    """The same guarantee for an ordinary cancellation -- a disconnected client
+    or a shutdown -- which reaches the identical exit."""
+    graph = rag.chunk_entity_relation_graph
+
+    async with _HeldAdminWrite(rag, lambda: _create_alice(rag)) as held:
+        held.task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await held.task
+
+    assert await graph.has_node("Alice") is False
+    await rag.acreate_entity("Bob", {"description": "another", "entity_type": "PERSON"})
+    await asyncio.gather(
+        *lightrag_module._ADMIN_RELEASE_DRIVE_TASKS, return_exceptions=True
+    )
+    on_disk = NetworkXStorage.load_nx_graph(graph._graphml_xml_file)
+    assert sorted(on_disk.nodes()) == ["Bob"]
+
+
+@pytest.mark.asyncio
+async def test_a_successful_write_gives_up_nothing(rag):
+    """The discard is keyed on unpublished mutations, so the ordinary path is
+    untouched: nothing is dirty by the time the gate exits."""
+    await _create_alice(rag)
+    await asyncio.gather(
+        *lightrag_module._ADMIN_RELEASE_DRIVE_TASKS, return_exceptions=True
+    )
+    graph = rag.chunk_entity_relation_graph
+    assert graph._graph_dirty is False
+    assert graph._recovery_reload_pending is False
+    assert await graph.has_node("Alice") is True
 
 
 # ---------------------------------------------------------------------------
