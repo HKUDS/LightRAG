@@ -2252,10 +2252,17 @@ class NetworkXStorage(BaseGraphStorage):
                 # be owed, so the next unrelated commit in this process would
                 # publish work from an operation that failed.
                 #
-                # STAMPED means the write AND its hook completed, so
-                # ``_committed`` already recorded the fingerprint and cleared
-                # ``_graph_dirty``. Nothing to recover, and arming the recovery
-                # reload would make the next commit decline for no reason.
+                # STAMPED means the WRITE landed -- the file on disk carries
+                # these mutations. ``_committed`` therefore ran, and its first
+                # two statements (record the fingerprint, clear ``_graph_dirty``)
+                # cannot fail: both are local. So there is nothing to recover,
+                # and arming the recovery reload would make the next commit
+                # decline for no reason. The hook's later, fallible step (the
+                # peer notification) may still have failed -- the cancellation
+                # takes precedence over that error, which is only logged -- but
+                # that is a visibility effect, the same one the
+                # ``CommitBookkeepingError`` handler above accepts, not a lost
+                # write for this branch to undo.
                 if not cancellation_was_deferred(cancel):
                     logger.error(
                         f"[{self.workspace}] Graph save to "

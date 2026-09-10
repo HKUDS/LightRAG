@@ -323,8 +323,11 @@ class _AdminHoldCeiling:
     would act on by retrying into "entity already exists".
 
     ``__aexit__`` therefore reads ``cancellation_was_deferred(exc)``, the stamp
-    ``_wait_deferring_cancellation`` puts on a cancellation it withheld, and says
-    which case happened. Neither message claims nothing was written: a multi-step
+    the uncancellable regions put on a cancellation they withheld across work
+    that committed (``_wait_deferring_cancellation`` when the future it was
+    handed succeeded, ``_bounded_submit_impl`` on behalf of an operation whose
+    write landed but whose commit hook then failed), and says which case
+    happened. Neither message claims nothing was written: a multi-step
     flow commits more than once (``_merge_entities_impl`` commits the merged node
     before the region that removes the sources), so even a cancellation caught at
     a clean await can follow a durable commit. Both messages send the caller to
@@ -335,7 +338,7 @@ class _AdminHoldCeiling:
     that is why this stays a context manager of its own rather than delegating.
     Its BOOKKEEPING is borrowed, though: ``__aenter__`` records
     ``task.cancelling()`` and ``__aexit__`` rewrites only while
-    ``task.uncancel()`` returns to that baseline. Without the baseline, a
+    ``task.uncancel()`` does not exceed that baseline. Without the baseline, a
     shutdown or client-disconnect cancel arriving in the same window as the
     expiry would be swallowed -- ``uncancel()`` would drop it and the task would
     carry on as if it had never been cancelled. On 3.10 neither API exists, so
@@ -390,7 +393,7 @@ class _AdminHoldCeiling:
         )
         if cancellation_was_deferred(exc):
             # The ceiling fired while a storage commit was in flight AND that
-            # commit then succeeded -- the stamp is gated on success. Say so,
+            # commit's WRITE then landed -- the stamp is gated on that. Say so,
             # rather than sending the caller to retry a write that landed.
             detail = (
                 " It was inside a region that must not be interrupted, so that "
@@ -6865,9 +6868,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         allowed to finish, an operation the ceiling stops may have written
         durably while its caller is told it failed. That is unavoidable for any
         cancellation-based bound (``asyncio.timeout`` has it too), so it is
-        reported rather than hidden: ``_AdminHoldCeiling`` reads the stamp
-        ``_wait_deferring_cancellation`` leaves on a withheld cancellation and
-        says whether a commit was in flight, and neither of its messages claims
+        reported rather than hidden: ``_AdminHoldCeiling`` reads the stamp the
+        uncancellable regions leave on a withheld cancellation whose write
+        committed and says whether a commit was in flight, and neither of its messages claims
         the operation wrote nothing -- a multi-step flow commits more than once.
         Recovery is to re-read the object; a blind retry is what turns this into
         "entity already exists" or a re-applied edit. Beyond that, what the
@@ -6998,7 +7001,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             try:
                 if reserved:
                     # Owner-checked and cancellation-resistant: a no-op if the
-                    # slot was refused (never ours) or reclaimed from us.
+                    # acquire was cancelled at its lock exit without taking the
+                    # slot, or if the slot was reclaimed from us. A refusal never
+                    # gets here -- it clears ``reserved`` above.
                     await release_owned_reservation(
                         workspace,
                         owner_key="busy_owner",
