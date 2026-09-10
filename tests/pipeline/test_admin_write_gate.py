@@ -60,6 +60,7 @@ from lightrag.kg.shared_storage import (
     get_pipeline_ingress,
     get_storage_keyed_lock,
     initialize_share_data,
+    make_owner_record,
     reconcile_dead_pipeline_reservations,
 )
 from lightrag.utils import EmbeddingFunc, Tokenizer
@@ -659,6 +660,108 @@ async def test_a_successful_write_gives_up_nothing(rag):
     assert graph._graph_dirty is False
     assert graph._recovery_reload_pending is False
     assert await graph.has_node("Alice") is True
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_before_the_reservation_leaves_the_pipeline_alone(rag):
+    """The discard belongs to whoever holds the writer gate, nobody else.
+
+    The graph is process-wide and shared with the pipeline. A cancellation
+    landing BEFORE the reservation is taken -- waiting on ``get_namespace_data``
+    or the reservation lock, while the PIPELINE holds ``busy`` and is mid-batch
+    -- must not condemn the pipeline's own uncommitted mutations: they vanish
+    through a reload that is deliberately exempt from the dirty-graph backstop,
+    so its batch then commits successfully WITHOUT the changes it made. Silent
+    loss, which is the one direction never acceptable.
+
+    Reported by the Codex review of PR #3901 on 865e3c7b70.
+    """
+    graph = rag.chunk_entity_relation_graph
+    status, lock = await _status_handles(rag)
+
+    # A pipeline batch is running and holds legitimate uncommitted mutations.
+    async with lock:
+        status.update(
+            {
+                "busy": True,
+                "busy_owner": make_owner_record("pipeline-token", kind="processing"),
+            }
+        )
+    await graph.upsert_node(
+        "PipelineEntity", {"entity_id": "PipelineEntity", "description": "mid-batch"}
+    )
+    assert graph._graph_dirty is True
+
+    original = lightrag_module.acquire_reservation
+
+    async def _slow_acquire(*args, **kwargs):
+        await asyncio.sleep(5)
+        return await original(*args, **kwargs)
+
+    monkeypatch_target = lightrag_module
+    monkeypatch_target.acquire_reservation = _slow_acquire
+    try:
+        task = asyncio.ensure_future(_create_alice(rag))
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        monkeypatch_target.acquire_reservation = original
+        async with lock:
+            status.update({"busy": False, "busy_owner": None})
+
+    # Nothing was owed, so the pipeline's work is intact and commits with it.
+    assert graph._recovery_reload_pending is False
+    assert await graph.has_node("PipelineEntity") is True
+    assert await graph.index_done_callback() is True
+    on_disk = NetworkXStorage.load_nx_graph(graph._graphml_xml_file)
+    assert "PipelineEntity" in set(on_disk.nodes())
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_custom_kg_that_flushed_is_reported_as_durable(
+    rag, monkeypatch
+):
+    """``ainsert_custom_kg`` flushes from a ``finally``, so its commit STARTS
+    after the cancellation was delivered: nothing is pending for
+    ``_wait_deferring_cancellation`` to withhold and stamp, and the ceiling used
+    to report a custom KG that is on disk as one no commit is known for.
+
+    Reported by the Codex review of PR #3901 on 865e3c7b70.
+    """
+    monkeypatch.setattr(lightrag_module, "ADMIN_WRITE_MAX_HOLD_SECONDS", 0.3)
+    graph = rag.chunk_entity_relation_graph
+    never = asyncio.Event()
+    original = rag.entities_vdb.upsert
+
+    async def _hung_upsert(data):
+        await never.wait()
+
+    rag.entities_vdb.upsert = _hung_upsert
+    try:
+        with pytest.raises(AdminWriteHoldExceededError) as excinfo:
+            await rag.ainsert_custom_kg(
+                {
+                    "chunks": [],
+                    "entities": [
+                        {
+                            "entity_name": "CustomAlice",
+                            "entity_type": "PERSON",
+                            "description": "from custom kg",
+                            "source_id": "manual",
+                        }
+                    ],
+                    "relationships": [],
+                }
+            )
+    finally:
+        rag.entities_vdb.upsert = original
+
+    on_disk = NetworkXStorage.load_nx_graph(graph._graphml_xml_file)
+    assert "CustomAlice" in set(on_disk.nodes())  # it really did land ...
+    assert "IS durable" in str(excinfo.value)  # ... and the caller is told so
+    assert "No commit of its own is known" not in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------

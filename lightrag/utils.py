@@ -2939,6 +2939,25 @@ def cancellation_was_deferred(exc: BaseException) -> bool:
     return getattr(exc, _DEFERRED_PAST_CANCEL_ATTR, False) is True
 
 
+def mark_cancellation_deferred(exc: BaseException) -> None:
+    """Record on ``exc`` that a storage commit completed despite it.
+
+    The stamp normally comes from an uninterruptible region WITHHOLDING a
+    pending cancellation (``_wait_deferring_cancellation``) or from the
+    operation-level view of one (``_bounded_submit_impl``). This is the third
+    author, for the case neither can see: a commit that STARTS after the
+    cancellation has already been delivered, from a ``finally`` unwinding on it.
+    No cancellation is pending there for those two to notice, yet the write is
+    just as durable, and a caller told otherwise retries a change that landed.
+
+    A no-op unless ``exc`` is a cancellation: nothing else carries this claim,
+    and stamping an arbitrary exception would put a durability promise on an
+    object no reader of the stamp expects to find one on.
+    """
+    if isinstance(exc, asyncio.CancelledError):
+        setattr(exc, _DEFERRED_PAST_CANCEL_ATTR, True)
+
+
 async def _wait_deferring_cancellation(
     future: "asyncio.Future",
     pending_cancel: Optional[asyncio.CancelledError],

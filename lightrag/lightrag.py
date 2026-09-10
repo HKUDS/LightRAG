@@ -179,6 +179,7 @@ from lightrag.exceptions import (
 from lightrag.utils import (
     Tokenizer,
     cancellation_was_deferred,
+    mark_cancellation_deferred,
     TiktokenTokenizer,
     EmbeddingFunc,
     always_get_an_event_loop,
@@ -3805,6 +3806,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # hole. The gate covers the graph writes AND the commit in the finally.
         async with self._admin_write_gate("ainsert_custom_kg"):
             update_storage = False
+            # The cancellation this call is unwinding on, if any. Recorded by
+            # the handler below rather than read from ``sys.exc_info()`` in the
+            # ``finally``: on the SUCCESS path that call returns whatever
+            # exception an enclosing frame happens to be handling, and stamping
+            # a stranger's cancellation would put this flush's durability claim
+            # on an operation that has nothing to do with it.
+            interrupted: BaseException | None = None
             try:
                 from lightrag.utils_graph import (
                     relation_evidence_source_ids,
@@ -4216,9 +4224,32 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             except Exception as e:
                 logger.error(f"Error in ainsert_custom_kg: {e}")
                 raise
+            except BaseException as exc:
+                # A cancellation -- the hold ceiling's, a disconnected client's.
+                # Recorded, never handled: the flush below has to know it is
+                # running under one. ``except Exception`` above cannot see it.
+                interrupted = exc
+                raise
             finally:
                 if update_storage:
+                    # This runs while a cancellation may already be propagating
+                    # (the hold ceiling's, a disconnected client's). The flush
+                    # still happens: the writes above are in memory, so it is
+                    # the OWED commit finishing, exactly as
+                    # ``_finish_deferring_cancellation`` lets an in-flight one
+                    # finish rather than tearing it apart.
+                    #
+                    # What must not happen is the caller then being told nothing
+                    # landed. This commit STARTS after the cancellation was
+                    # delivered, so no cancellation is pending for
+                    # ``_wait_deferring_cancellation`` to withhold and stamp,
+                    # and ``_AdminHoldCeiling`` would report "no commit of its
+                    # own is known to have completed" over a custom KG that is
+                    # on disk. Stamp the very exception that is propagating --
+                    # only after the flush returns, so the claim is true.
                     await self._insert_done_with_cleanup()
+                    if interrupted is not None:
+                        mark_cancellation_deferred(interrupted)
 
     def query(
         self,
@@ -6939,6 +6970,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         token = uuid.uuid4().hex
         reserved = False
         cancelled = False
+        # Whether the body actually ran. Only then can this operation own
+        # uncommitted graph mutations -- and only then is the single-writer
+        # invariant established, so that only then may they be given up.
+        entered_body = False
         try:
             try:
                 pipeline_status = await get_namespace_data(
@@ -6988,6 +7023,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             async with _AdminHoldCeiling(
                 ADMIN_WRITE_MAX_HOLD_SECONDS, f"Admin write `{operation}`"
             ):
+                entered_body = True
                 yield
         except (asyncio.CancelledError, AdminWriteHoldExceededError) as exc:
             # The one exit the operation's own handlers never see: every admin
@@ -6999,7 +7035,17 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # writer can be mid-mutation -- otherwise the release-time drive or
             # the next unrelated admin write commits it, and an operation
             # reported as failed becomes durable after the fact.
-            self._discard_uncommitted_graph_mutations(operation)
+            #
+            # ONLY once the body ran. The graph is process-wide and shared with
+            # the pipeline, and the "no other writer" clause above is exactly
+            # what the reservation buys: before it, a cancellation here (waiting
+            # on ``get_namespace_data`` or the reservation lock, with the
+            # PIPELINE holding ``busy``) would condemn the pipeline's own
+            # in-flight mutations, which then vanish through a reload that is
+            # deliberately exempt from the dirty-graph backstop -- its batch
+            # commits successfully WITHOUT the changes it made.
+            if entered_body:
+                self._discard_uncommitted_graph_mutations(operation)
             # Only a real cancellation suppresses the release-time drive:
             # driving the pipeline from a cancelled task would start work
             # nobody is waiting for, and the mailbox flag is sticky so the next
