@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
+import math
 import uuid
 
 import pytest
@@ -15,6 +16,7 @@ from lightrag.base import (
 )
 from lightrag.kg.hologres.capabilities import (
     ProbeKind,
+    ProbeStatus,
     probe_production_capabilities,
     run_initial_isolated_probes,
 )
@@ -28,8 +30,14 @@ from lightrag.kg.hologres.schema import (
     SchemaState,
     doc_status_schema_descriptors,
     kv_schema_descriptors,
+    vector_schema_descriptors,
+)
+from lightrag.kg.hologres.vector import (
+    HologresVectorError,
+    HologresVectorStorage,
 )
 from lightrag.namespace import NameSpace
+from lightrag.utils import compute_mdhash_id
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.hologres_live]
@@ -45,6 +53,23 @@ async def test_initial_hologres_capabilities(hologres_live_client):
     assert isolated_report.supports(ProbeKind.SINGLE_AUTOCOMMIT_DDL)
     assert isolated_report.supports(ProbeKind.ASYNCPG_SETUP_RESET_BINDINGS)
     assert isolated_report.supports(ProbeKind.JSONB_ON_CONFLICT_ARRAYS_RECONNECT)
+    hgraph_result = next(
+        result
+        for result in isolated_report.results
+        if result.kind is ProbeKind.HGRAPH
+    )
+    assert hgraph_result.status is ProbeStatus.PASSED
+    assert hgraph_result.detail_code == "hgraph_semantics_frozen"
+    assert hgraph_result.evidence is not None
+    assert [
+        identifier
+        for identifier, _raw_score in hgraph_result.evidence.ordered_raw_scores
+    ] == [1, 4, 2, 3]
+    observed_scores = dict(hgraph_result.evidence.ordered_raw_scores)
+    for identifier, expected in {1: 1.0, 4: 1.0, 2: 0.0, 3: -1.0}.items():
+        assert math.isfinite(observed_scores[identifier])
+        assert abs(observed_scores[identifier] - expected) <= 1e-3
+    assert hgraph_result.evidence.vector_filter_used is False
 
 
 async def test_resumable_schema_management(hologres_live_client):
@@ -577,3 +602,250 @@ async def test_hologres_doc_status_contract(hologres_live_client):
                 await item.drop()
             finally:
                 await item.finalize()
+
+
+class _LiveVectorEmbedding:
+    def __init__(self, dimension=3):
+        self.embedding_dim = dimension
+
+    async def __call__(self, _texts, **_kwargs):
+        raise AssertionError("Live vector tests supply normalized embeddings")
+
+
+def _live_vector_storage(client, *, workspace, namespace, dimension=3):
+    return HologresVectorStorage(
+        namespace=namespace,
+        workspace=workspace,
+        global_config={
+            "embedding_batch_num": 2,
+            "vector_db_storage_cls_kwargs": {
+                "cosine_better_than_threshold": 0.2
+            },
+        },
+        embedding_func=_LiveVectorEmbedding(dimension),
+        meta_fields={"content", "source", "src_id", "tgt_id"},
+        config=client.config,
+        client=client,
+    )
+
+
+async def test_hologres_vector_catalog_crud_and_live_similarity_query(
+    hologres_live_client,
+):
+    client, schema = hologres_live_client
+    suffix = uuid.uuid4().hex
+    workspace_a = f"lightrag_test_vector_a_{suffix}"
+    workspace_b = f"lightrag_test_vector_b_{suffix}"
+    primary = _live_vector_storage(
+        client,
+        workspace=workspace_a,
+        namespace=NameSpace.VECTOR_STORE_CHUNKS,
+    )
+    isolated = _live_vector_storage(
+        client,
+        workspace=workspace_b,
+        namespace=NameSpace.VECTOR_STORE_CHUNKS,
+    )
+    relations = _live_vector_storage(
+        client,
+        workspace=workspace_a,
+        namespace=NameSpace.VECTOR_STORE_RELATIONSHIPS,
+    )
+    entities = _live_vector_storage(
+        client,
+        workspace=workspace_a,
+        namespace=NameSpace.VECTOR_STORE_ENTITIES,
+    )
+    initialized = []
+
+    try:
+        for storage in (primary, isolated, relations, entities):
+            await storage.initialize()
+            initialized.append(storage)
+
+        (descriptor,) = vector_schema_descriptors(schema, 3)
+        assert (
+            await client.fetch_value(
+                descriptor.postcondition_sql,
+                *descriptor.postcondition_args,
+                descriptor="live.vector.catalog",
+            )
+            is True
+        )
+
+        wrong_dimension = _live_vector_storage(
+            client,
+            workspace=workspace_a,
+            namespace=NameSpace.VECTOR_STORE_CHUNKS,
+            dimension=2,
+        )
+        with pytest.raises(HologresVectorError, match="initialization failed"):
+            await wrong_dimension.initialize()
+
+        known_vectors = {
+            "identical": {
+                "content": "identical",
+                "embedding": [1.0, 0.0, 0.0],
+                "source": {"kind": "known", "rank": 1},
+            },
+            "orthogonal": {
+                "content": "orthogonal",
+                "embedding": [0.0, 1.0, 0.0],
+                "source": {"kind": "known", "rank": 2},
+            },
+            "opposite": {
+                "content": "opposite",
+                "embedding": [-1.0, 0.0, 0.0],
+                "source": {"kind": "known", "rank": 3},
+            },
+            "tie": {
+                "content": "tie",
+                "embedding": [1.0, 0.0, 0.0],
+                "source": {"kind": "known", "rank": 4},
+            },
+        }
+        await primary.upsert(known_vectors)
+        await isolated.upsert(
+            {
+                "identical": {
+                    "content": "isolated",
+                    "embedding": [0.0, 0.0, 1.0],
+                    "source": {"workspace": "other"},
+                }
+            }
+        )
+
+        assert await primary.get_by_id("identical") == {
+            "id": "identical",
+            "content": "identical",
+            "source": {"kind": "known", "rank": 1},
+        }
+        assert await primary.get_by_ids(
+            ["tie", "missing", "identical", "tie"]
+        ) == [
+            {
+                "id": "tie",
+                "content": "tie",
+                "source": {"kind": "known", "rank": 4},
+            },
+            None,
+            {
+                "id": "identical",
+                "content": "identical",
+                "source": {"kind": "known", "rank": 1},
+            },
+            {
+                "id": "tie",
+                "content": "tie",
+                "source": {"kind": "known", "rank": 4},
+            },
+        ]
+        assert await primary.get_vectors_by_ids(
+            ["opposite", "missing", "orthogonal", "identical"]
+        ) == {
+            "identical": [1.0, 0.0, 0.0],
+            "opposite": [-1.0, 0.0, 0.0],
+            "orthogonal": [0.0, 1.0, 0.0],
+        }
+        assert (await isolated.get_by_id("identical"))["content"] == "isolated"
+
+        await primary.upsert(
+            {
+                "identical": {
+                    "content": "updated",
+                    "embedding": [0.0, 0.0, 1.0],
+                    "source": {"replacement": True},
+                }
+            }
+        )
+        assert await primary.get_by_id("identical") == {
+            "id": "identical",
+            "content": "updated",
+            "source": {"replacement": True},
+        }
+        assert await primary.get_vectors_by_ids(["identical"]) == {
+            "identical": [0.0, 0.0, 1.0]
+        }
+
+        await relations.upsert(
+            {
+                "relation-a": {
+                    "content": "relation-a",
+                    "embedding": [1.0, 0.0, 0.0],
+                    "src_id": "Alice",
+                    "tgt_id": "Bob",
+                },
+                "relation-b": {
+                    "content": "relation-b",
+                    "embedding": [0.0, 1.0, 0.0],
+                    "src_id": "Carol",
+                    "tgt_id": "Alice",
+                },
+            }
+        )
+        await relations.delete_entity_relation("Alice")
+        assert await relations.get_by_ids(["relation-a", "relation-b"]) == [
+            None,
+            None,
+        ]
+
+        entity_id = compute_mdhash_id("Alice", prefix="ent-")
+        await entities.upsert(
+            {
+                entity_id: {
+                    "content": "Alice",
+                    "embedding": [1.0, 0.0, 0.0],
+                }
+            }
+        )
+        await entities.delete_entity("Alice")
+        assert await entities.get_by_id(entity_id) is None
+
+        await primary.upsert(
+            {
+                "near": {
+                    "content": "near",
+                    "embedding": [0.8, 0.6, 0.0],
+                    "source": {"kind": "known", "rank": 5},
+                }
+            }
+        )
+        # Frozen contract: approx_cosine_distance returns cosine similarity,
+        # results ordered nearest-first, threshold (0.2) filters the rest.
+        results = await primary.query(
+            "known query", top_k=4, query_embedding=[1.0, 0.0, 0.0]
+        )
+        assert [row["id"] for row in results] == ["tie", "near"]
+        assert results[0]["content"] == "tie"
+        assert results[0]["source"] == {"kind": "known", "rank": 4}
+        assert abs(results[0]["distance"] - 1.0) <= 1e-3
+        assert results[1]["content"] == "near"
+        assert abs(results[1]["distance"] - 0.8) <= 1e-3
+        assert all(isinstance(row["created_at"], int) for row in results)
+        top_one = await primary.query(
+            "known query", top_k=1, query_embedding=[1.0, 0.0, 0.0]
+        )
+        assert [row["id"] for row in top_one] == ["tie"]
+        assert (
+            await isolated.query(
+                "known query", top_k=4, query_embedding=[1.0, 0.0, 0.0]
+            )
+            == []
+        )
+        await primary.delete(["near"])
+
+        await primary.delete(["opposite"])
+        assert await primary.get_by_id("opposite") is None
+        await primary.drop()
+        assert await primary.get_by_ids(["identical", "orthogonal", "tie"]) == [
+            None,
+            None,
+            None,
+        ]
+        assert (await isolated.get_by_id("identical"))["content"] == "isolated"
+    finally:
+        for storage in initialized:
+            try:
+                await storage.drop()
+            finally:
+                await storage.finalize()

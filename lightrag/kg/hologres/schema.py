@@ -42,6 +42,7 @@ from .client import (
 LEDGER_TABLE_NAME = "lightrag_hologres_schema_ledger"
 KV_TABLE_NAME = "lightrag_hologres_kv"
 DOC_STATUS_TABLE_NAME = "lightrag_hologres_doc_status"
+VECTOR_TABLE_NAME = "lightrag_hologres_vectors"
 
 _MAX_ERROR_SUMMARY = 200
 _NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -546,6 +547,123 @@ def doc_status_schema_descriptors(schema: str) -> tuple[SchemaDescriptor]:
         postcondition_args=(
             validated,
             DOC_STATUS_TABLE_NAME,
+            expected_columns,
+            expected_primary_key,
+        ),
+        replay_safe=True,
+    )
+    return (descriptor,)
+
+
+def vector_schema_descriptors(
+    schema: str, dimension: int
+) -> tuple[SchemaDescriptor]:
+    """Return the dimension-bound descriptor for the shared vector table.
+
+    The table carries the HGraph Cosine index property whose DDL syntax and
+    score contract were frozen by the isolated live probe: identical DDL,
+    identical builder parameters, and ``approx_cosine_distance`` returning
+    cosine similarity (higher is closer).
+    """
+
+    validated = _validated_schema(schema)
+    if isinstance(dimension, bool) or not isinstance(dimension, int) or dimension < 1:
+        raise HologresSchemaDefinitionError("Invalid vector embedding dimension")
+
+    qualified_table = quote_qualified_identifier(validated, VECTOR_TABLE_NAME)
+    # extra_columns is deliberately absent: Hologres only accepts integer or
+    # floating-point columns there, and this table's id is text (live-proven).
+    vector_properties = json.dumps(
+        {
+            "embedding": {
+                "algorithm": "HGraph",
+                "distance_method": "Cosine",
+                "builder_params": {
+                    "max_degree": 64,
+                    "ef_construction": 400,
+                    "base_quantization_type": "fp32",
+                    "precise_quantization_type": "fp32",
+                    "use_reorder": True,
+                },
+            }
+        },
+        separators=(",", ":"),
+    )
+    expected_columns = json.dumps(
+        [
+            ["workspace", "text", True],
+            ["namespace", "text", True],
+            ["id", "text", True],
+            ["embedding", "_float4", True],
+            ["content", "text", True],
+            ["payload", "jsonb", True],
+            ["updated_at", "timestamptz", True],
+        ],
+        separators=(",", ":"),
+    )
+    expected_primary_key = json.dumps(
+        ["workspace", "namespace", "id"], separators=(",", ":")
+    )
+    postcondition_sql = (
+        "SELECT "
+        "(SELECT count(*) = 1 FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r') "
+        "AND COALESCE(("
+        "SELECT jsonb_agg(jsonb_build_array(a.attname, t.typname, a.attnotnull) "
+        "ORDER BY a.attnum) FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid "
+        "JOIN pg_catalog.pg_type t ON t.oid = a.atttypid "
+        "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r' "
+        "AND a.attnum > 0 AND NOT a.attisdropped"
+        "), '[]'::jsonb) = $3::jsonb "
+        "AND (SELECT count(*) = 1 FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "JOIN pg_catalog.pg_constraint p ON p.conrelid = c.oid "
+        "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r' "
+        "AND p.contype = 'p') "
+        "AND COALESCE(("
+        "SELECT jsonb_agg(a.attname ORDER BY gs.ordinality) "
+        "FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "JOIN pg_catalog.pg_constraint p ON p.conrelid = c.oid "
+        "CROSS JOIN LATERAL generate_series(1, array_length(p.conkey, 1)) "
+        "AS gs(ordinality) "
+        "JOIN pg_catalog.pg_attribute a "
+        "ON a.attrelid = c.oid AND a.attnum = p.conkey[gs.ordinality] "
+        "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r' "
+        "AND p.contype = 'p' AND NOT a.attisdropped"
+        "), '[]'::jsonb) = $4::jsonb "
+        "AND COALESCE(("
+        "SELECT (property_value::jsonb -> 'embedding' ->> 'algorithm') = 'HGraph' "
+        "AND (property_value::jsonb -> 'embedding' ->> 'distance_method') "
+        "= 'Cosine' FROM hologres.hg_table_properties "
+        "WHERE table_namespace = $1 AND table_name = $2 "
+        "AND property_key = 'vectors'), false)"
+    )
+    descriptor = SchemaDescriptor(
+        name="shared_table",
+        component="vector",
+        version=1,
+        step=1,
+        sql=(
+            f"CREATE TABLE IF NOT EXISTS {qualified_table} ("
+            "workspace text NOT NULL, "
+            "namespace text NOT NULL, "
+            "id text NOT NULL, "
+            f"embedding float4[] NOT NULL CHECK (array_ndims(embedding) = 1 AND array_length(embedding, 1) = {dimension}), "
+            "content text NOT NULL, "
+            "payload jsonb NOT NULL, "
+            "updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+            "PRIMARY KEY (workspace, namespace, id)"
+            ") WITH (orientation = 'column', "
+            f"vectors = '{vector_properties}')"
+        ),
+        postcondition_sql=postcondition_sql,
+        postcondition_args=(
+            validated,
+            VECTOR_TABLE_NAME,
             expected_columns,
             expected_primary_key,
         ),

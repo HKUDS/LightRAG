@@ -6,12 +6,14 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
 import json
+import math
 import re
 import uuid
 
 from .client import (
     HologresClient,
     HologresSqlError,
+    OperationKind,
     quote_qualified_identifier,
     validate_identifier,
 )
@@ -106,15 +108,46 @@ PROBE_SPECS = {
 
 
 @dataclass(frozen=True)
+class HGraphProbeEvidence:
+    ordered_raw_scores: tuple[tuple[int, float], ...]
+    vector_filter_used: bool | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.ordered_raw_scores, tuple) or (
+            self.vector_filter_used is not None
+            and not isinstance(self.vector_filter_used, bool)
+        ):
+            raise ValueError("HGraph probe evidence is invalid")
+        for observation in self.ordered_raw_scores:
+            if not isinstance(observation, tuple) or len(observation) != 2:
+                raise ValueError("HGraph probe evidence is invalid")
+            identifier, raw_score = observation
+            if (
+                isinstance(identifier, bool)
+                or not isinstance(identifier, int)
+                or isinstance(raw_score, bool)
+                or not isinstance(raw_score, (int, float))
+                or not math.isfinite(raw_score)
+            ):
+                raise ValueError("HGraph probe evidence is invalid")
+
+
+@dataclass(frozen=True)
 class ProbeResult:
     kind: ProbeKind
     status: ProbeStatus
     blocking: bool
     detail_code: str
+    evidence: HGraphProbeEvidence | None = None
 
     def __post_init__(self) -> None:
         if _DETAIL_CODE_PATTERN.fullmatch(self.detail_code) is None:
             raise ValueError("Probe detail_code must be a non-secret code")
+        if self.evidence is not None and (
+            self.kind is not ProbeKind.HGRAPH
+            or not isinstance(self.evidence, HGraphProbeEvidence)
+        ):
+            raise ValueError("Probe evidence is invalid")
 
 
 @dataclass(frozen=True)
@@ -191,12 +224,18 @@ def validate_test_schema_name(schema: str) -> str:
     return schema
 
 
-def _result(kind: ProbeKind, status: ProbeStatus, detail_code: str) -> ProbeResult:
+def _result(
+    kind: ProbeKind,
+    status: ProbeStatus,
+    detail_code: str,
+    evidence: HGraphProbeEvidence | None = None,
+) -> ProbeResult:
     return ProbeResult(
         kind=kind,
         status=status,
         blocking=PROBE_SPECS[kind].blocking,
         detail_code=detail_code,
+        evidence=evidence,
     )
 
 
@@ -338,6 +377,261 @@ async def _probe_basic_types(
         )
 
 
+async def _probe_hgraph(
+    client: HologresClient,
+    schema: str,
+    table: str,
+    verify_ownership: Callable[[], Awaitable[None]],
+) -> ProbeResult:
+    qualified_table = quote_qualified_identifier(schema, table)
+    # extra_columns is deliberately absent so the probe DDL stays identical
+    # to the shared vector table, whose text id column Hologres rejects there.
+    vector_properties = json.dumps(
+        {
+            "embedding": {
+                "algorithm": "HGraph",
+                "distance_method": "Cosine",
+                "builder_params": {
+                    "max_degree": 64,
+                    "ef_construction": 400,
+                    "base_quantization_type": "fp32",
+                    "precise_quantization_type": "fp32",
+                    "use_reorder": True,
+                },
+            }
+        },
+        separators=(",", ":"),
+    )
+    create_sql = (
+        f"CREATE TABLE {qualified_table} ("
+        "id bigint PRIMARY KEY, "
+        "embedding float4[] NOT NULL, "
+        "CHECK (array_ndims(embedding) = 1 AND "
+        "array_length(embedding, 1) = 3)"
+        ") WITH (orientation = 'column', "
+        f"vectors = '{vector_properties}')"
+    )
+    upsert_sql = (
+        f"INSERT INTO {qualified_table} (id, embedding) VALUES "
+        "($1, $2::float4[]), ($3, $4::float4[]), "
+        "($5, $6::float4[]), ($7, $8::float4[]) "
+        "ON CONFLICT (id) DO UPDATE SET embedding = EXCLUDED.embedding"
+    )
+    query_sql = (
+        "SELECT id, approx_cosine_distance(embedding, $1::float4[]) "
+        f"AS raw_score FROM {qualified_table} "
+        "ORDER BY raw_score DESC, id ASC LIMIT 4"
+    )
+
+    try:
+        await verify_ownership()
+        await client.execute_one(
+            create_sql,
+            descriptor="probe.hgraph.create",
+            replay_safe=False,
+        )
+        await verify_ownership()
+        await client.execute_one(
+            upsert_sql,
+            1,
+            [1.0, 0.0, 0.0],
+            2,
+            [0.0, 1.0, 0.0],
+            3,
+            [-1.0, 0.0, 0.0],
+            4,
+            [1.0, 0.0, 0.0],
+            descriptor="probe.hgraph.insert",
+            replay_safe=True,
+        )
+        await verify_ownership()
+        await client.fetch_value(
+            "SELECT hologres.hg_full_compact_table($1, $2)",
+            f"{schema}.{table}",
+            "max_file_size_mb=4096",
+            descriptor="probe.hgraph.compact",
+            operation_kind=OperationKind.WRITE,
+            replay_safe=False,
+        )
+        await verify_ownership()
+        raw_properties = await client.fetch_value(
+            "SELECT property_value FROM hologres.hg_table_properties "
+            "WHERE table_namespace = $1 AND table_name = $2 "
+            "AND property_key = $3",
+            schema,
+            table,
+            "vectors",
+            descriptor="probe.hgraph.catalog",
+        )
+        if isinstance(raw_properties, str):
+            try:
+                raw_properties = json.loads(raw_properties)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return _result(
+                    ProbeKind.HGRAPH,
+                    ProbeStatus.FAILED,
+                    "hgraph_catalog_mismatch",
+                )
+        if not isinstance(raw_properties, dict):
+            return _result(
+                ProbeKind.HGRAPH, ProbeStatus.FAILED, "hgraph_catalog_mismatch"
+            )
+        embedding_properties = raw_properties.get("embedding")
+        if not isinstance(embedding_properties, dict) or (
+            embedding_properties.get("algorithm") != "HGraph"
+            or embedding_properties.get("distance_method") != "Cosine"
+        ):
+            return _result(
+                ProbeKind.HGRAPH, ProbeStatus.FAILED, "hgraph_catalog_mismatch"
+            )
+
+        await verify_ownership()
+        raw_rows = await client.fetch_all(
+            query_sql,
+            [1.0, 0.0, 0.0],
+            descriptor="probe.hgraph.query",
+        )
+        try:
+            rows = list(raw_rows)
+        except (TypeError, ValueError):
+            return _result(
+                ProbeKind.HGRAPH, ProbeStatus.FAILED, "hgraph_query_mismatch"
+            )
+        if len(rows) != 4:
+            return _result(
+                ProbeKind.HGRAPH, ProbeStatus.FAILED, "hgraph_query_mismatch"
+            )
+        observed: list[tuple[int, float]] = []
+        for row in rows:
+            try:
+                identifier = row["id"]
+                raw_score = row["raw_score"]
+            except (KeyError, TypeError, IndexError):
+                return _result(
+                    ProbeKind.HGRAPH, ProbeStatus.FAILED, "hgraph_query_mismatch"
+                )
+            if (
+                isinstance(identifier, bool)
+                or not isinstance(identifier, int)
+                or isinstance(raw_score, bool)
+                or not isinstance(raw_score, (int, float))
+                or not math.isfinite(raw_score)
+            ):
+                return _result(
+                    ProbeKind.HGRAPH, ProbeStatus.FAILED, "hgraph_query_mismatch"
+                )
+            observed.append((identifier, float(raw_score)))
+        scores = dict(observed)
+        if (
+            [identifier for identifier, _score in observed] != [1, 4, 2, 3]
+            or set(scores) != {1, 2, 3, 4}
+            or scores[1] != scores[4]
+            or not scores[1] > scores[2] > scores[3]
+        ):
+            return _result(
+                ProbeKind.HGRAPH,
+                ProbeStatus.FAILED,
+                "hgraph_query_mismatch",
+                HGraphProbeEvidence(
+                    ordered_raw_scores=tuple(observed),
+                    vector_filter_used=None,
+                ),
+            )
+        # Freeze the score contract: approx_cosine_distance(stored, query)
+        # under distance_method=Cosine returns cosine SIMILARITY (higher is
+        # closer), proven here against known vectors, not inferred from docs.
+        expected_scores = {1: 1.0, 4: 1.0, 2: 0.0, 3: -1.0}
+        if any(
+            abs(scores[identifier] - expected) > 1e-3
+            for identifier, expected in expected_scores.items()
+        ):
+            return _result(
+                ProbeKind.HGRAPH,
+                ProbeStatus.FAILED,
+                "hgraph_score_contract_mismatch",
+                HGraphProbeEvidence(
+                    ordered_raw_scores=tuple(observed),
+                    vector_filter_used=None,
+                ),
+            )
+
+        await verify_ownership()
+        vector_filter_used = False
+        try:
+            raw_plan_rows = await client.fetch_all(
+                f"EXPLAIN {query_sql}",
+                [1.0, 0.0, 0.0],
+                descriptor="probe.hgraph.explain",
+            )
+            plan_rows = list(raw_plan_rows)
+            plan_text = "\n".join(
+                str(value) for row in plan_rows for value in row.values()
+            )
+            vector_filter_used = "Vector Filter" in plan_text
+        except Exception:
+            pass
+
+        await verify_ownership()
+        await client.execute_one(
+            f"INSERT INTO {qualified_table} (id, embedding) "
+            "VALUES ($1, $2::float4[]) "
+            "ON CONFLICT (id) DO UPDATE SET embedding = EXCLUDED.embedding",
+            1,
+            [0.0, 0.0, 1.0],
+            descriptor="probe.hgraph.update",
+            replay_safe=True,
+        )
+        await verify_ownership()
+        updated = await client.fetch_one(
+            f"SELECT embedding FROM {qualified_table} WHERE id = $1",
+            1,
+            descriptor="probe.hgraph.update.verify",
+        )
+        try:
+            updated_embedding = (
+                None if updated is None else list(updated["embedding"])
+            )
+        except (KeyError, TypeError, ValueError, IndexError):
+            updated_embedding = None
+        if updated_embedding != [0.0, 0.0, 1.0]:
+            return _result(
+                ProbeKind.HGRAPH, ProbeStatus.FAILED, "hgraph_update_mismatch"
+            )
+
+        await verify_ownership()
+        await client.execute_one(
+            f"DELETE FROM {qualified_table} WHERE id = $1",
+            4,
+            descriptor="probe.hgraph.delete",
+            replay_safe=True,
+        )
+        await verify_ownership()
+        remaining = await client.fetch_value(
+            f"SELECT count(*) FROM {qualified_table} WHERE id = $1",
+            4,
+            descriptor="probe.hgraph.delete.verify",
+        )
+        if isinstance(remaining, bool) or remaining != 0:
+            return _result(
+                ProbeKind.HGRAPH, ProbeStatus.FAILED, "hgraph_delete_mismatch"
+            )
+        return _result(
+            ProbeKind.HGRAPH,
+            ProbeStatus.PASSED,
+            "hgraph_semantics_frozen",
+            HGraphProbeEvidence(
+                ordered_raw_scores=tuple(observed),
+                vector_filter_used=vector_filter_used,
+            ),
+        )
+    except HologresProbeError:
+        raise
+    except Exception:
+        return _result(
+            ProbeKind.HGRAPH, ProbeStatus.FAILED, "hgraph_probe_failed"
+        )
+
+
 async def _verify_probe_ownership(
     client: HologresClient,
     schema: str,
@@ -369,14 +663,14 @@ async def _cleanup_owned_probe_schema(
     schema: str,
     marker_table: str,
     owner_token: str,
-    probe_tables: tuple[str, ...],
+    probe_tables: tuple[tuple[str, str], ...],
 ) -> None:
     try:
-        for table in probe_tables:
+        for table, descriptor in probe_tables:
             await _verify_probe_ownership(client, schema, marker_table, owner_token)
             await client.execute_one(
                 f"DROP TABLE IF EXISTS {quote_qualified_identifier(schema, table)}",
-                descriptor="probe.basic.drop",
+                descriptor=descriptor,
                 replay_safe=True,
             )
         await _verify_probe_ownership(client, schema, marker_table, owner_token)
@@ -427,6 +721,7 @@ async def run_initial_isolated_probes(
     marker_table = f"lightrag_test_owner_{uuid.uuid4().hex}"
     owner_token = uuid.uuid4().hex
     table = f"lightrag_test_basic_{uuid.uuid4().hex}"
+    hgraph_table = f"lightrag_test_hgraph_{uuid.uuid4().hex}"
     qualified_schema = quote_qualified_identifier(guarded_schema)
     qualified_marker = quote_qualified_identifier(guarded_schema, marker_table)
     try:
@@ -480,13 +775,22 @@ async def run_initial_isolated_probes(
                 client, guarded_schema, table, verify_ownership
             )
         )
+        await verify_ownership()
+        results.append(
+            await _probe_hgraph(
+                client, guarded_schema, hgraph_table, verify_ownership
+            )
+        )
     finally:
         await _cleanup_owned_probe_schema(
             client,
             guarded_schema,
             marker_table,
             owner_token,
-            (table,),
+            (
+                (table, "probe.basic.drop"),
+                (hgraph_table, "probe.hgraph.drop"),
+            ),
         )
 
     return CapabilityReport(version=version_report.version, results=tuple(results))

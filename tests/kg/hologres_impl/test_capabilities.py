@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import lightrag.kg.hologres.capabilities as hologres_capabilities
 from lightrag.kg.hologres.capabilities import (
     CapabilityReport,
     HologresProbeError,
@@ -191,6 +192,36 @@ def test_probe_results_reject_free_form_details_that_could_capture_secrets():
             status=ProbeStatus.FAILED,
             blocking=True,
             detail_code="failed against password=secret",
+        )
+
+
+def test_probe_results_reject_unstructured_hgraph_evidence():
+    with pytest.raises(ValueError, match="evidence"):
+        ProbeResult(
+            kind=ProbeKind.HGRAPH,
+            status=ProbeStatus.FAILED,
+            blocking=True,
+            detail_code="hgraph_score_contract_mismatch",
+            evidence="password=secret",
+        )
+
+
+@pytest.mark.parametrize(
+    ("ordered_raw_scores", "vector_filter_used"),
+    [
+        (((True, 1.0),), True),
+        (((1, "password=secret"),), True),
+        (((1, float("nan")),), True),
+        (((1, 1.0),), "yes"),
+    ],
+)
+def test_hgraph_probe_evidence_rejects_untyped_or_nonfinite_values(
+    ordered_raw_scores, vector_filter_used
+):
+    with pytest.raises(ValueError, match="evidence"):
+        hologres_capabilities.HGraphProbeEvidence(
+            ordered_raw_scores=ordered_raw_scores,
+            vector_filter_used=vector_filter_used,
         )
 
 
@@ -469,6 +500,326 @@ async def test_reset_probe_cannot_pass_by_verifying_a_different_physical_connect
     assert any("pg_backend_pid" in sql for sql in executed_sql)
 
 
+class HGraphProbeClient:
+    def __init__(self):
+        self.events = []
+        self.statements = {}
+
+    async def execute_one(self, sql, *values, descriptor, replay_safe=False):
+        self.events.append(descriptor)
+        self.statements[descriptor] = (sql, values, replay_safe)
+        return "OK"
+
+    async def fetch_value(
+        self,
+        sql,
+        *values,
+        descriptor,
+        operation_kind=None,
+        replay_safe=None,
+    ):
+        self.events.append(descriptor)
+        self.statements[descriptor] = (sql, values, replay_safe)
+        if descriptor == "probe.hgraph.compact":
+            assert operation_kind is hologres_capabilities.OperationKind.WRITE
+            return "OK"
+        if descriptor == "probe.hgraph.catalog":
+            return (
+                '{"embedding":{"algorithm":"HGraph",'
+                '"distance_method":"Cosine"}}'
+            )
+        if descriptor == "probe.hgraph.delete.verify":
+            return 0
+        raise AssertionError(f"Unexpected value fetch: {descriptor}")
+
+    async def fetch_all(self, sql, *values, descriptor):
+        self.events.append(descriptor)
+        self.statements[descriptor] = (sql, values, None)
+        if descriptor == "probe.hgraph.query":
+            return [
+                {"id": 1, "raw_score": 1.0},
+                {"id": 4, "raw_score": 1.0},
+                {"id": 2, "raw_score": 0.0},
+                {"id": 3, "raw_score": -1.0},
+            ]
+        if descriptor == "probe.hgraph.explain":
+            return [{"QUERY PLAN": "Vector Filter: VectorCond => KNN"}]
+        raise AssertionError(f"Unexpected row fetch: {descriptor}")
+
+    async def fetch_one(self, sql, *values, descriptor):
+        self.events.append(descriptor)
+        self.statements[descriptor] = (sql, values, None)
+        if descriptor == "probe.hgraph.update.verify":
+            return {"embedding": [0.0, 0.0, 1.0]}
+        raise AssertionError(f"Unexpected row fetch: {descriptor}")
+
+
+@pytest.mark.asyncio
+async def test_hgraph_probe_executes_disposable_index_crud_and_explain_contract():
+    schema = "lightrag_test_hgraph_probe"
+    table = "lightrag_test_hgraph_vectors"
+    client = HGraphProbeClient()
+
+    async def verify_ownership():
+        client.events.append("probe.marker.verify")
+
+    probe = getattr(hologres_capabilities, "_probe_hgraph")
+    result = await probe(client, schema, table, verify_ownership)
+
+    assert result.kind is ProbeKind.HGRAPH
+    assert result.status is ProbeStatus.PASSED
+    assert result.blocking is True
+    assert result.detail_code == "hgraph_semantics_frozen"
+    assert result.evidence.ordered_raw_scores == (
+        (1, 1.0),
+        (4, 1.0),
+        (2, 0.0),
+        (3, -1.0),
+    )
+    assert result.evidence.vector_filter_used is True
+    assert client.events == [
+        "probe.marker.verify",
+        "probe.hgraph.create",
+        "probe.marker.verify",
+        "probe.hgraph.insert",
+        "probe.marker.verify",
+        "probe.hgraph.compact",
+        "probe.marker.verify",
+        "probe.hgraph.catalog",
+        "probe.marker.verify",
+        "probe.hgraph.query",
+        "probe.marker.verify",
+        "probe.hgraph.explain",
+        "probe.marker.verify",
+        "probe.hgraph.update",
+        "probe.marker.verify",
+        "probe.hgraph.update.verify",
+        "probe.marker.verify",
+        "probe.hgraph.delete",
+        "probe.marker.verify",
+        "probe.hgraph.delete.verify",
+    ]
+
+    create_sql, create_values, create_replay_safe = client.statements[
+        "probe.hgraph.create"
+    ]
+    assert create_values == ()
+    assert create_replay_safe is False
+    assert "embedding float4[]" in create_sql
+    assert "array_length(embedding, 1) = 3" in create_sql
+    assert "vectors =" in create_sql
+    assert '"algorithm":"HGraph"' in create_sql
+    assert '"distance_method":"Cosine"' in create_sql
+    assert "extra_columns" not in create_sql
+
+    compact_sql, compact_values, _ = client.statements["probe.hgraph.compact"]
+    assert compact_sql == "SELECT hologres.hg_full_compact_table($1, $2)"
+    assert compact_values == (
+        f"{schema}.{table}",
+        "max_file_size_mb=4096",
+    )
+
+    catalog_sql, catalog_values, _ = client.statements["probe.hgraph.catalog"]
+    assert "FROM hologres.hg_table_properties" in catalog_sql
+    assert catalog_values == (schema, table, "vectors")
+
+    query_sql, query_values, _ = client.statements["probe.hgraph.query"]
+    assert "approx_cosine_distance(embedding, $1::float4[])" in query_sql
+    assert "ORDER BY raw_score DESC, id ASC" in query_sql
+    assert query_values == ([1.0, 0.0, 0.0],)
+
+    explain_sql, explain_values, _ = client.statements["probe.hgraph.explain"]
+    assert explain_sql.startswith("EXPLAIN SELECT")
+    assert "approx_cosine_distance(embedding, $1::float4[])" in explain_sql
+    assert explain_values == ([1.0, 0.0, 0.0],)
+
+    for sql, _values, _replay_safe in client.statements.values():
+        assert ";" not in sql
+
+
+class ObservedFailureHGraphProbeClient(HGraphProbeClient):
+    def __init__(self, stage):
+        super().__init__()
+        self.stage = stage
+
+    async def fetch_all(self, sql, *values, descriptor):
+        if descriptor == "probe.hgraph.query" and self.stage == "query":
+            return [
+                {"id": 3, "raw_score": 3.0},
+                {"id": 2, "raw_score": 2.0},
+                {"id": 1, "raw_score": 1.0},
+                {"id": 4, "raw_score": 1.0},
+            ]
+        if descriptor == "probe.hgraph.query" and self.stage == "scores":
+            return [
+                {"id": 1, "raw_score": 0.5},
+                {"id": 4, "raw_score": 0.5},
+                {"id": 2, "raw_score": 0.0},
+                {"id": 3, "raw_score": -0.5},
+            ]
+        if descriptor == "probe.hgraph.explain" and self.stage == "explain":
+            return [{"QUERY PLAN": "Seq Scan on lightrag_test_hgraph_vectors"}]
+        return await super().fetch_all(sql, *values, descriptor=descriptor)
+
+
+@pytest.mark.asyncio
+async def test_hgraph_probe_preserves_scores_when_query_semantics_mismatch():
+    client = ObservedFailureHGraphProbeClient("query")
+
+    async def verify_ownership():
+        client.events.append("probe.marker.verify")
+
+    result = await hologres_capabilities._probe_hgraph(
+        client,
+        "lightrag_test_hgraph_probe",
+        "lightrag_test_hgraph_vectors",
+        verify_ownership,
+    )
+
+    assert result.status is ProbeStatus.FAILED
+    assert result.detail_code == "hgraph_query_mismatch"
+    assert result.evidence == hologres_capabilities.HGraphProbeEvidence(
+        ordered_raw_scores=(
+            (3, 3.0),
+            (2, 2.0),
+            (1, 1.0),
+            (4, 1.0),
+        ),
+        vector_filter_used=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_hgraph_probe_fails_when_ordered_scores_break_the_frozen_contract():
+    client = ObservedFailureHGraphProbeClient("scores")
+
+    async def verify_ownership():
+        client.events.append("probe.marker.verify")
+
+    result = await hologres_capabilities._probe_hgraph(
+        client,
+        "lightrag_test_hgraph_probe",
+        "lightrag_test_hgraph_vectors",
+        verify_ownership,
+    )
+
+    assert result.status is ProbeStatus.FAILED
+    assert result.detail_code == "hgraph_score_contract_mismatch"
+    assert result.evidence == hologres_capabilities.HGraphProbeEvidence(
+        ordered_raw_scores=(
+            (1, 0.5),
+            (4, 0.5),
+            (2, 0.0),
+            (3, -0.5),
+        ),
+        vector_filter_used=None,
+    )
+    assert "probe.hgraph.explain" not in client.events
+
+
+@pytest.mark.asyncio
+async def test_hgraph_probe_preserves_scores_when_vector_filter_is_not_used():
+    client = ObservedFailureHGraphProbeClient("explain")
+
+    async def verify_ownership():
+        client.events.append("probe.marker.verify")
+
+    result = await hologres_capabilities._probe_hgraph(
+        client,
+        "lightrag_test_hgraph_probe",
+        "lightrag_test_hgraph_vectors",
+        verify_ownership,
+    )
+
+    assert result.status is ProbeStatus.PASSED
+    assert result.detail_code == "hgraph_semantics_frozen"
+    assert result.evidence == hologres_capabilities.HGraphProbeEvidence(
+        ordered_raw_scores=(
+            (1, 1.0),
+            (4, 1.0),
+            (2, 0.0),
+            (3, -1.0),
+        ),
+        vector_filter_used=False,
+    )
+
+
+class MalformedHGraphProbeClient(HGraphProbeClient):
+    def __init__(self, stage):
+        super().__init__()
+        self.stage = stage
+
+    async def fetch_value(
+        self,
+        sql,
+        *values,
+        descriptor,
+        operation_kind=None,
+        replay_safe=None,
+    ):
+        if descriptor == "probe.hgraph.catalog" and self.stage == "catalog":
+            return "{"
+        if descriptor == "probe.hgraph.delete.verify" and self.stage == "delete":
+            return True
+        return await super().fetch_value(
+            sql,
+            *values,
+            descriptor=descriptor,
+            operation_kind=operation_kind,
+            replay_safe=replay_safe,
+        )
+
+    async def fetch_all(self, sql, *values, descriptor):
+        if descriptor == "probe.hgraph.query" and self.stage == "query":
+            return [
+                {"id": 1, "raw_score": 1.0},
+                {"id": 4},
+                {"id": 2, "raw_score": 0.0},
+                {"id": 3, "raw_score": -1.0},
+            ]
+        if descriptor == "probe.hgraph.explain" and self.stage == "explain":
+            return None
+        return await super().fetch_all(sql, *values, descriptor=descriptor)
+
+    async def fetch_one(self, sql, *values, descriptor):
+        if descriptor == "probe.hgraph.update.verify" and self.stage == "update":
+            return {"embedding": None}
+        return await super().fetch_one(sql, *values, descriptor=descriptor)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stage", "detail_code"),
+    [
+        ("catalog", "hgraph_catalog_mismatch"),
+        ("query", "hgraph_query_mismatch"),
+        ("update", "hgraph_update_mismatch"),
+        ("delete", "hgraph_delete_mismatch"),
+    ],
+)
+async def test_hgraph_probe_classifies_malformed_stage_results(
+    stage, detail_code
+):
+    client = MalformedHGraphProbeClient(stage)
+
+    async def verify_ownership():
+        client.events.append("probe.marker.verify")
+
+    result = await hologres_capabilities._probe_hgraph(
+        client,
+        "lightrag_test_hgraph_probe",
+        "lightrag_test_hgraph_vectors",
+        verify_ownership,
+    )
+
+    assert result == ProbeResult(
+        kind=ProbeKind.HGRAPH,
+        status=ProbeStatus.FAILED,
+        blocking=True,
+        detail_code=detail_code,
+    )
+
+
 class SuccessfulProbeClient:
     def __init__(self):
         self.writes = []
@@ -512,19 +863,25 @@ async def test_initial_probes_do_not_replay_nonidempotent_create_ddl():
     report = await run_initial_isolated_probes(client, "lightrag_test_new_probe")
 
     replay_safety = dict(client.writes)
-    assert {result.kind for result in report.blocking_failures} == {
+    assert any(result.kind is ProbeKind.HGRAPH for result in report.results)
+    failures = {result.kind: result for result in report.blocking_failures}
+    assert set(failures) == {
+        ProbeKind.HGRAPH,
         ProbeKind.LOGICAL_PARTITION,
         ProbeKind.GRAPH_ADJACENCY_EXPLAIN,
-        ProbeKind.HGRAPH,
     }
-    assert all(
-        result.status is ProbeStatus.NOT_RUN for result in report.blocking_failures
-    )
+    assert failures[ProbeKind.HGRAPH].status is ProbeStatus.FAILED
+    assert failures[ProbeKind.HGRAPH].detail_code == "hgraph_probe_failed"
+    assert failures[ProbeKind.LOGICAL_PARTITION].status is ProbeStatus.NOT_RUN
+    assert failures[ProbeKind.GRAPH_ADJACENCY_EXPLAIN].status is ProbeStatus.NOT_RUN
     assert replay_safety["probe.schema.create"] is False
     assert replay_safety["probe.marker.create"] is False
     assert replay_safety["probe.marker.insert"] is False
     assert replay_safety["probe.basic.create"] is False
+    assert replay_safety["probe.hgraph.create"] is False
+    assert replay_safety["probe.hgraph.insert"] is True
     assert replay_safety["probe.basic.drop"] is True
+    assert replay_safety["probe.hgraph.drop"] is True
     assert replay_safety["probe.marker.drop"] is True
     assert replay_safety["probe.schema.drop"] is True
     assert client.reconnect_count == 1
