@@ -33,6 +33,7 @@ from lightrag.kg.hologres.client import (
 from lightrag.kg.hologres.config import HologresConfig
 from lightrag.kg.hologres.doc_status import HologresDocStatusStorage
 from lightrag.kg.hologres.graph import HologresGraphStorage
+from lightrag.kg.hologres.graph_age import HologresAGEGraphStorage
 from lightrag.kg.hologres.kv import HologresKVStorage
 from lightrag.kg.hologres.schema import (
     LEDGER_TABLE_NAME,
@@ -241,6 +242,178 @@ async def test_age_graph_capability_probe_on_live_hologres(hologres_live_client)
         assert leaked == 0
     finally:
         await age_client.close()
+
+
+async def test_hologres_age_graph_contract(hologres_live_client):
+    client, schema = hologres_live_client
+    del schema
+    suffix = uuid.uuid4().hex[:10]
+    workspace_a = f"agews{suffix}a"
+    workspace_b = f"agews{suffix}b"
+    config = HologresConfig.from_env(dict(os.environ))
+
+    def storage(workspace):
+        return HologresAGEGraphStorage(
+            namespace=NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION,
+            workspace=workspace,
+            global_config={"max_graph_nodes": 1000},
+            embedding_func=None,
+            config=config,
+        )
+
+    primary = storage(workspace_a)
+    isolated = storage(workspace_b)
+    initialized = []
+    try:
+        for item in (primary, isolated):
+            await item.initialize()
+            initialized.append(item)
+        assert primary._delegate is None, "live AGE probe unexpectedly failed"
+
+        tricky = "it's a \"tricky\" \\ value;\nwith 中文 🚀"
+        await primary.upsert_node(
+            "alpha", {"entity_id": "alpha", "description": tricky}
+        )
+        assert await primary.has_node("alpha") is True
+        assert await primary.get_node("alpha") == {
+            "entity_id": "alpha",
+            "description": tricky,
+        }
+        # Second upsert merges: omitted keys survive, shared keys update.
+        await primary.upsert_node(
+            "alpha", {"entity_id": "alpha", "entity_type": "org"}
+        )
+        assert await primary.get_node("alpha") == {
+            "entity_id": "alpha",
+            "description": tricky,
+            "entity_type": "org",
+        }
+
+        await primary.upsert_node("beta", {"entity_id": "beta"})
+        await primary.upsert_edge(
+            "beta", "alpha", {"weight": 2.5, "keywords": "k1"}
+        )
+        assert await primary.has_edge("alpha", "beta") is True
+        assert await primary.get_edge("alpha", "beta") == {
+            "weight": 2.5,
+            "keywords": "k1",
+        }
+        assert await primary.get_edge("beta", "alpha") == {
+            "weight": 2.5,
+            "keywords": "k1",
+        }
+        # Edge properties REPLACE the stored map.
+        await primary.upsert_edge("alpha", "beta", {"weight": 9.0})
+        assert await primary.get_edge("beta", "alpha") == {"weight": 9.0}
+
+        # Auto-created endpoint stubs and a self-loop counting twice.
+        await primary.upsert_edge("alpha", "ghost", {"weight": 1.0})
+        assert await primary.get_node("ghost") == {"entity_id": "ghost"}
+        await primary.upsert_edge("alpha", "alpha", {"weight": 0.5})
+        assert await primary.node_degree("alpha") == 4
+        assert await primary.node_degrees_batch(["alpha", "beta", "missing"]) == {
+            "alpha": 4,
+            "beta": 1,
+            "missing": 0,
+        }
+        assert await primary.edge_degree("alpha", "beta") == 5
+
+        assert await primary.get_node_edges("missing") is None
+        await primary.upsert_node("lonely", {"entity_id": "lonely"})
+        assert await primary.get_node_edges("lonely") == []
+        assert await primary.get_node_edges("alpha") == [
+            ("alpha", "alpha"),
+            ("alpha", "beta"),
+            ("alpha", "ghost"),
+        ]
+
+        nodes = await primary.get_nodes_batch(["alpha", "beta", "missing"])
+        assert set(nodes) == {"alpha", "beta"}
+        assert await primary.has_nodes_batch(["alpha", "missing"]) == {"alpha"}
+        edges = await primary.get_edges_batch(
+            [{"src": "beta", "tgt": "alpha"}, {"src": "alpha", "tgt": "missing"}]
+        )
+        assert edges == {("beta", "alpha"): {"weight": 9.0}}
+
+        assert await primary.get_all_labels() == [
+            "alpha",
+            "beta",
+            "ghost",
+            "lonely",
+        ]
+        assert (await primary.get_popular_labels(limit=2)) == ["alpha", "beta"]
+        assert await primary.search_labels("alp") == ["alpha"]
+
+        all_nodes = await primary.get_all_nodes()
+        assert [node["id"] for node in all_nodes] == [
+            "alpha",
+            "beta",
+            "ghost",
+            "lonely",
+        ]
+        all_edges = await primary.get_all_edges()
+        assert [(edge["source"], edge["target"]) for edge in all_edges] == [
+            ("alpha", "alpha"),
+            ("alpha", "beta"),
+            ("alpha", "ghost"),
+        ]
+
+        kg = await primary.get_knowledge_graph("beta", max_depth=1)
+        assert kg.nodes[0].id == "beta"
+        assert {node.id for node in kg.nodes} == {"alpha", "beta"}
+        assert kg.is_truncated is False
+        wildcard = await primary.get_knowledge_graph("*", max_nodes=2)
+        assert {node.id for node in wildcard.nodes} == {"alpha", "beta"}
+        assert wildcard.is_truncated is True
+
+        # Workspace isolation: the second graph sees none of it.
+        assert await isolated.get_all_labels() == []
+        await isolated.upsert_node("alpha", {"entity_id": "alpha"})
+        assert await isolated.get_node("alpha") == {"entity_id": "alpha"}
+        assert await isolated.node_degree("alpha") == 0
+
+        await primary.remove_edges([("ghost", "alpha")])
+        assert await primary.get_edge("alpha", "ghost") is None
+        assert await primary.has_node("ghost") is True
+        await primary.delete_node("ghost")
+        assert await primary.has_node("ghost") is False
+        await primary.remove_nodes(["lonely", "missing"])
+        assert await primary.has_node("lonely") is False
+
+        assert await primary.drop() == {
+            "status": "success",
+            "message": "data dropped",
+        }
+        assert await primary.get_all_labels() == []
+        assert await isolated.get_node("alpha") == {"entity_id": "alpha"}
+    finally:
+        cleanup_client = HologresClient(
+            HologresConfig.from_env(
+                {**os.environ, "HOLOGRES_AGE_SEARCH_PATH": "true"}
+            )
+        )
+        await cleanup_client.open()
+        try:
+            for workspace in (workspace_a, workspace_b):
+                graph = f"lightrag_age_{workspace}"
+                exists = await cleanup_client.fetch_value(
+                    "SELECT EXISTS (SELECT 1 FROM pg_namespace "
+                    "WHERE nspname = $1)",
+                    graph,
+                    descriptor="live.age.cleanup.check",
+                )
+                if exists:
+                    await cleanup_client.call_age_procedure(
+                        "drop_graph",
+                        graph,
+                        True,
+                        descriptor="live.age.cleanup.drop",
+                        replay_safe=False,
+                    )
+        finally:
+            await cleanup_client.close()
+            for item in initialized:
+                await item.finalize()
 
 
 async def test_resumable_schema_management(hologres_live_client):
