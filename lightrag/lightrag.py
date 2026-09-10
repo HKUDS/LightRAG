@@ -5819,7 +5819,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Args:
             doc_id (str): The unique identifier of the document to be deleted.
             delete_llm_cache (bool): Whether to delete cached LLM extraction results
-                associated with the document. Defaults to False.
+                associated with the document. Defaults to False. Cache rows are
+                found through each chunk's ``llm_cache_list``; when a chunk of a
+                document whose extraction ran carries no such reference, the
+                deletion still succeeds but the returned ``message`` reports the
+                cache deletion as incomplete (issue #3833).
 
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
@@ -5849,6 +5853,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         in_final_delete_stage = False
         original_exception = None
         doc_llm_cache_ids: list[str] = []
+        # Chunk rows that exist but carry no ``llm_cache_list`` reference,
+        # counted during cache-id collection so a requested cache deletion can
+        # be reported as incomplete instead of as an unqualified success.
+        chunks_examined_for_cache = 0
+        chunks_without_cache_refs = 0
+        incomplete_cache_notice: str | None = None
         deletion_stage = "initializing"
         doc_status_data: dict[str, Any] | None = None
         file_path: str | None = None
@@ -6141,17 +6151,21 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         for chunk_data in chunk_data_list:
                             if not chunk_data or not isinstance(chunk_data, dict):
                                 continue
+                            chunks_examined_for_cache += 1
                             cache_ids = chunk_data.get("llm_cache_list", [])
                             if not isinstance(cache_ids, list):
+                                chunks_without_cache_refs += 1
                                 continue
+                            chunk_has_cache_ref = False
                             for cache_id in cache_ids:
-                                if (
-                                    isinstance(cache_id, str)
-                                    and cache_id
-                                    and cache_id not in seen_cache_ids
-                                ):
+                                if not (isinstance(cache_id, str) and cache_id):
+                                    continue
+                                chunk_has_cache_ref = True
+                                if cache_id not in seen_cache_ids:
                                     doc_llm_cache_ids.append(cache_id)
                                     seen_cache_ids.add(cache_id)
+                            if not chunk_has_cache_ref:
+                                chunks_without_cache_refs += 1
                     except Exception as cache_collect_error:
                         logger.error(
                             "Failed to collect LLM cache ids for document %s: %s",
@@ -6195,6 +6209,36 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     )
                 else:
                     logger.info("No LLM cache entries found for document %s", doc_id)
+
+                # Cache rows written during extraction are reachable for
+                # cleanup only through the owning chunk's ``llm_cache_list``.
+                # A chunk row without one on a document whose extraction ran
+                # means its rows — if the extraction cache was enabled at
+                # ingest — were never attached (a cancelled sibling, a hard
+                # kill, or a suppressed ``update_chunk_cache_list`` failure;
+                # issue #3833) and cannot be found from here. They self-heal
+                # only on a successful re-ingest of the same content, which
+                # deleting the document forecloses. Accepted residue: the rows
+                # stay behind, and a requested cache deletion says so instead
+                # of reporting an unqualified success. Documents ingested with
+                # ``process_options='!'`` never ran extraction, so their
+                # reference-less chunks are expected and not reported.
+                if (
+                    delete_llm_cache
+                    and chunks_without_cache_refs
+                    and metadata.get("skip_kg") is not True
+                ):
+                    incomplete_cache_notice = (
+                        f"{chunks_without_cache_refs} of {chunks_examined_for_cache} "
+                        "chunks carried no llm_cache_list references, so any "
+                        "extraction cache rows written for them could not be "
+                        "located and were not deleted"
+                    )
+                    logger.warning(
+                        "LLM cache deletion for document %s is incomplete: %s",
+                        doc_id,
+                        incomplete_cache_notice,
+                    )
 
             # 4. Purge every KG contribution of this document, then its chunks.
             #
@@ -6276,6 +6320,19 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         pipeline_status["latest_message"] = log_message
                         append_pipeline_history(pipeline_status, log_message)
                     raise Exception(log_message) from cache_delete_error
+
+            if incomplete_cache_notice:
+                # Qualify the success: the document is gone, but part of what
+                # ``delete_llm_cache`` promised to remove could not be found.
+                # Reported on the result AND in the pipeline history, the two
+                # places a caller reads without opening the server log.
+                log_message = (
+                    f"{log_message}; LLM cache deletion is incomplete: "
+                    f"{incomplete_cache_notice}"
+                )
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = log_message
+                    append_pipeline_history(pipeline_status, log_message)
 
             # 10. (The recovery anchor rows were deleted by the purge above —
             # LAST within that operation, and only once its journal recorded
