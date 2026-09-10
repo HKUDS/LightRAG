@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import os
 import subprocess
 import sys
 import time
@@ -1239,3 +1240,250 @@ async def test_a_failed_write_under_the_ceiling_is_not_reported_as_durable(
     assert on_disk is None or not on_disk.has_node("Alice")
 
     assert status["busy"] is False and status["busy_owner"] is None
+
+
+# ---------------------------------------------------------------------------
+# The two time bounds and how they are configured
+# ---------------------------------------------------------------------------
+#
+# ``ADMIN_WRITE_MAX_HOLD_SECONDS`` and ``ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT``
+# bound different things and must not be derived from each other: the ceiling
+# bounds the worst LEGITIMATE write, the acquire timeout bounds how long a
+# caller waits before being told to retry. The ceiling IS derived from
+# ``EMBEDDING_TIMEOUT``, because that round-trip runs inside the hold and a
+# fixed ceiling would silently stop honouring an operator who raised it.
+
+
+def _build_rag(tmp_path, **overrides):
+    """A ``LightRAG`` on the default storages, built but not initialized.
+
+    ``__post_init__`` is where the bounds are checked, so construction alone is
+    what these cases need -- no storages, no event loop.
+    """
+    return LightRAG(
+        working_dir=str(tmp_path / f"wd-{uuid4().hex[:8]}"),
+        workspace=f"admin-{uuid4().hex[:8]}",
+        llm_model_func=_dummy_llm,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=8, max_token_size=8192, func=_dummy_embedding
+        ),
+        tokenizer=Tokenizer("mock-tokenizer", _SimpleTokenizerImpl()),
+        max_parallel_insert=1,
+        **overrides,
+    )
+
+
+@pytest.mark.parametrize(
+    "embedding_timeout, expected",
+    [
+        (30, 180.0),  # the default: 6x30 == the floor, so nothing changes
+        (60, 360.0),  # raised timeout carries the ceiling with it
+        (120, 720.0),
+        (5, 180.0),  # the floor wins for a small timeout
+        (1, 180.0),
+    ],
+)
+def test_the_hold_ceiling_default_follows_the_embedding_timeout(
+    monkeypatch, embedding_timeout, expected
+):
+    """The default is ``max(180, 6 x EMBEDDING_TIMEOUT)``, computed per call.
+
+    The point of deriving it: an operator who raises ``EMBEDDING_TIMEOUT`` and
+    nothing else must not end up with a ceiling that kills the retries the
+    higher timeout was meant to allow.
+    """
+    monkeypatch.setenv("EMBEDDING_TIMEOUT", str(embedding_timeout))
+    assert lightrag_module._default_admin_write_hold_seconds() == expected
+
+
+def test_the_default_ceiling_covers_one_embedding_retry_storm(monkeypatch):
+    """The floor is not arbitrary: it has to cover what one hold cannot split.
+
+    ``openai_embed`` retries three times with a flat 4s wait, so one embedding
+    can legitimately occupy ``3 x timeout + 8s`` -- and a whole-graph GraphML
+    commit follows it inside the same hold. A ceiling under that turns a slow
+    but healthy write into a failure whose commit may already have landed.
+    """
+    for embedding_timeout in (10, 30, 60, 120):
+        monkeypatch.setenv("EMBEDDING_TIMEOUT", str(embedding_timeout))
+        ceiling = lightrag_module._default_admin_write_hold_seconds()
+        retry_storm = 3 * embedding_timeout + 8
+        assert ceiling > retry_storm
+
+
+def test_both_admin_write_bounds_are_read_from_the_environment(tmp_path):
+    """Both are overridable, and the ceiling's default is derived at import.
+
+    Read in a subprocess because the constants are module-level: reloading
+    ``lightrag.lightrag`` in-process would rebind ``LightRAG`` itself for every
+    test that follows.
+    """
+    script = (
+        "import lightrag.lightrag as m;"
+        "print(m.ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT, m.ADMIN_WRITE_MAX_HOLD_SECONDS)"
+    )
+
+    explicit = subprocess.run(
+        [sys.executable, "-c", script],
+        env={
+            **os.environ,
+            "LIGHTRAG_ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT": "7.5",
+            "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS": "600",
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert explicit.stdout.split() == ["7.5", "600.0"]
+
+    # No ceiling set: it follows EMBEDDING_TIMEOUT, and the acquire timeout --
+    # deliberately NOT derived from it -- stays at its own default.
+    derived_env = {
+        key: value
+        for key, value in os.environ.items()
+        if key
+        not in (
+            "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS",
+            "LIGHTRAG_ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT",
+        )
+    }
+    derived = subprocess.run(
+        [sys.executable, "-c", script],
+        env={**derived_env, "EMBEDDING_TIMEOUT": "60"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert derived.stdout.split() == ["30.0", "360.0"]
+
+
+def test_a_ceiling_below_the_embedding_timeout_is_refused_at_startup(
+    tmp_path, monkeypatch
+):
+    """Fatal, and it names both numbers so the operator can see which to move.
+
+    Only an explicit override can reach this -- the derived default cannot --
+    so refusing refuses a hand-written mistake rather than a stale default.
+    """
+    monkeypatch.setattr(lightrag_module, "ADMIN_WRITE_MAX_HOLD_SECONDS", 20.0)
+
+    with pytest.raises(ValueError) as excinfo:
+        _build_rag(tmp_path, default_embedding_timeout=90)
+
+    message = str(excinfo.value)
+    assert "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS" in message
+    assert "20s" in message and "90s" in message
+
+
+def test_the_startup_check_is_scoped_to_storages_that_take_the_gate(
+    tmp_path, monkeypatch
+):
+    """A server-backed graph store never takes the gate, so it is never refused.
+
+    Same misconfiguration as the case above; only the storage's
+    ``requires_single_writer`` declaration differs.
+    """
+    monkeypatch.setattr(lightrag_module, "ADMIN_WRITE_MAX_HOLD_SECONDS", 20.0)
+    monkeypatch.setattr(NetworkXStorage, "requires_single_writer", False)
+
+    instance = _build_rag(tmp_path, default_embedding_timeout=90)
+
+    assert instance._admin_write_gate_required() is False
+
+
+def test_an_acquire_timeout_above_the_ceiling_warns_but_still_starts(
+    tmp_path, monkeypatch
+):
+    """Pointless, not unsafe: warn and carry on.
+
+    The holder is killed by the ceiling first, so the extra patience buys the
+    waiter nothing -- but nothing is lost either, which is why this is not a
+    refusal.
+    """
+    monkeypatch.setattr(lightrag_module, "ADMIN_WRITE_MAX_HOLD_SECONDS", 60.0)
+    monkeypatch.setattr(lightrag_module, "ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT", 90.0)
+
+    warned: list[str] = []
+    monkeypatch.setattr(
+        lightrag_module.logger,
+        "warning",
+        lambda message, *args, **kwargs: warned.append(str(message)),
+    )
+
+    instance = _build_rag(tmp_path)
+
+    assert instance._admin_write_gate_required() is True
+    assert [
+        message
+        for message in warned
+        if "LIGHTRAG_ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT" in message
+        and "90s" in message
+        and "60s" in message
+    ]
+
+
+def test_bounds_that_agree_start_silently(tmp_path, monkeypatch):
+    """The default configuration trips neither check.
+
+    Companion guard: without it the two cases above would still pass if the
+    validation fired unconditionally.
+    """
+    warned: list[str] = []
+    monkeypatch.setattr(
+        lightrag_module.logger,
+        "warning",
+        lambda message, *args, **kwargs: warned.append(str(message)),
+    )
+
+    instance = _build_rag(tmp_path)
+
+    assert instance._admin_write_gate_required() is True
+    assert lightrag_module.ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT <= (
+        lightrag_module.ADMIN_WRITE_MAX_HOLD_SECONDS
+    )
+    assert not [
+        message for message in warned if "ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT" in message
+    ]
+
+
+def test_the_derived_ceiling_sees_a_dotenv_embedding_timeout(tmp_path):
+    """``.env`` is loaded before the ceiling is computed, so the two agree.
+
+    Load-bearing and invisible if it breaks. ``ADMIN_WRITE_MAX_HOLD_SECONDS``
+    is a module-level constant evaluated at import, while the API server passes
+    ``default_embedding_timeout`` from arguments parsed after its own dotenv
+    load. If the constant were computed BEFORE ``.env`` reached the
+    environment, the two would disagree for every deployment that sets
+    ``EMBEDDING_TIMEOUT`` there -- and a value above 180 would then be refused
+    at startup by ``_validate_admin_write_bounds``. What keeps them in step is
+    that ``lightrag.base`` calls ``load_dotenv`` at import, which
+    ``lightrag.lightrag`` reaches before its own constants block.
+
+    Run from a scratch cwd, since ``load_dotenv(dotenv_path=".env")`` resolves
+    relative to it.
+    """
+    (tmp_path / ".env").write_text("EMBEDDING_TIMEOUT=300\n", encoding="utf-8")
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in ("EMBEDDING_TIMEOUT", "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS")
+    }
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import lightrag.lightrag as m;"
+            "print(m.ADMIN_WRITE_MAX_HOLD_SECONDS,"
+            " m.LightRAG.__dataclass_fields__['default_embedding_timeout'].default)",
+        ],
+        cwd=str(tmp_path),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    ceiling, embedding_timeout = result.stdout.split()
+    assert (ceiling, embedding_timeout) == ("1800.0", "300")
+    assert float(ceiling) >= float(embedding_timeout)

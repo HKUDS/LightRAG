@@ -1635,8 +1635,10 @@ mutate-and-commit body, embedding round-trip included:
 
 - **Against other admin writes**, through a workspace-wide admin lock
   (`{workspace}:GraphAdmin`, key `admin`; cross-process). A second admin write
-  *queues* behind the first for up to `ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT` (30 s)
-  and is refused only on expiry.
+  *queues* behind the first for up to `ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT`
+  (default 30 s, `LIGHTRAG_ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT`) and is refused
+  only on expiry. That timeout is the *only* bound on the wait — the
+  multiprocess keyed lock polls with backoff and has no timeout of its own.
 - **Against the document pipeline**, through the pipeline `busy` reservation
   (`kind="admin"`, never `destructive_busy`, so uploads stay allowed). While an
   admin write holds it, a pipeline start is *deferred*: the start is reduced to a
@@ -1670,10 +1672,32 @@ mutate-and-commit body, embedding round-trip included:
   and why the fourth row — which never reaches such a cancellation — is the only
   one that can strand the reservation.
 
-The hold is bounded by `ADMIN_WRITE_MAX_HOLD_SECONDS` (default 180 s,
-`LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS`; keep it at or above your embedding
-client timeout). On expiry the write fails with HTTP 500 and both gates release,
-so a hung embedding endpoint cannot fence ingestion indefinitely.
+The hold is bounded by `ADMIN_WRITE_MAX_HOLD_SECONDS`
+(`LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS`), which defaults to
+`max(180, 6 × EMBEDDING_TIMEOUT)` — 180 s at the default embedding timeout. On
+expiry the write fails with HTTP 500 and both gates release, so a hung embedding
+endpoint cannot fence ingestion indefinitely.
+
+The default is *derived* rather than fixed because the embedding round-trip runs
+inside the hold: raising `EMBEDDING_TIMEOUT` alone would otherwise leave a
+ceiling sized for the old value, killing every retry it was meant to allow. One
+hold has to cover an embedding retry storm (`3 × EMBEDDING_TIMEOUT` plus 8 s of
+backoff — 98 s at the default) plus one whole-graph GraphML commit (~17 s at
+200k nodes, since `write_nx_graph` rewrites the entire graph however small the
+edit was), so ~115 s; the remainder is headroom for the edges an edit touches.
+
+Setting the ceiling *below* `EMBEDDING_TIMEOUT` is refused at startup, and an
+acquire timeout above the ceiling warns. Prefer erring high: a ceiling that is
+too high only defers ingestion, and a deferred start is sticky in the ingress
+mailbox so it self-heals, whereas one that is too low kills edits whose commit
+may already have landed.
+
+These two knobs are **not** derived from each other. The ceiling asks how long
+the worst legitimate write may run; the acquire timeout asks how long a caller
+should wait before being told to retry. Deriving one from the other would make
+them equal — which would park an interactive edit for the full worst case
+instead of returning the actionable 409. When the edit ahead runs long, the
+queue is *meant* to degrade to fast failure.
 
 **A 500 from that ceiling does not mean the edit was undone.** The ceiling stops
 the operation by cancelling it, and an admin write withholds a cancellation while

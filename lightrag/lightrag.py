@@ -257,8 +257,69 @@ ADMIN_WRITE_LOCK_KEY = "admin"
 # How long an admin write waits for a peer admin write to finish before it is
 # refused (HTTP 409 with ``ADMIN_WRITE_LOCK_BUSY_PREFIX``). Admin writes are
 # manual operations, so queueing them is the point; the bound only keeps a
-# stuck peer from parking a request forever.
-ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT: float = 30.0
+# stuck peer from parking a request forever. It is also the ONLY bound on that
+# wait: the multiprocess keyed lock polls the holder table with backoff and has
+# no timeout of its own, so without this a waiter polls until its connection
+# dies.
+#
+# A RESPONSIVENESS bound, deliberately NOT derived from the hold ceiling below
+# -- the two answer different questions. The ceiling asks how long the worst
+# LEGITIMATE write may run; this asks how long a caller should wait before
+# being told to retry. Deriving one from the other makes them equal, which is
+# the wrong answer to both: a waiter would sit out the full worst case (minutes,
+# on an interactive edit) instead of getting the actionable 409 this refusal
+# exists to give. So when a holder does run long -- an embedding retry storm --
+# the queue degrades to fast failure rather than to a longer wait, and that is
+# the intended degradation, not a gap in it.
+ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT: float = get_env_value(
+    "LIGHTRAG_ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT", 30.0, float
+)
+
+# Floor and embedding-timeout multiplier behind the hold ceiling's default; see
+# ``_default_admin_write_hold_seconds`` for the derivation.
+ADMIN_WRITE_HOLD_FLOOR_SECONDS: float = 180.0
+ADMIN_WRITE_HOLD_EMBEDDING_MULTIPLIER: float = 6.0
+
+
+def _default_admin_write_hold_seconds() -> float:
+    """Default hold ceiling, derived from the deployment's embedding timeout.
+
+    The embedding round-trip runs INSIDE the hold, so a fixed ceiling and a
+    configurable ``EMBEDDING_TIMEOUT`` drift apart the moment an operator raises
+    the latter: every embedding retry would then be killed by a ceiling that was
+    sized for the old timeout. Deriving it keeps that impossible by construction
+    rather than by documentation.
+
+    What one hold has to cover, and where ``6x`` comes from::
+
+        one embedding retry storm   3 x EMBEDDING_TIMEOUT + 8s of backoff = 98s
+        one whole-graph GraphML commit (~200k nodes, measured)           ~ 17s
+                                                                          -----
+                                                                           115s
+
+    ``openai_embed`` retries three times (``stop_after_attempt(3)``) with a flat
+    4s ``wait_exponential(min=4)`` between attempts, and ``write_nx_graph``
+    serializes the WHOLE graph on every commit however small the edit was -- so
+    both terms are floors the edit's own size cannot reduce. ``6x`` keeps
+    ``6T >= 3T + 25`` for any ``T >= 9``, leaving the remainder as headroom for
+    the handful of edges an edit touches (a rename or merge upserts them one at
+    a time). The floor keeps the default at 180s for the default embedding
+    timeout, so no existing deployment's behaviour changes.
+
+    Erring high is deliberate. A ceiling that is too high defers ingestion
+    longer, and a deferred pipeline start is sticky in the ingress mailbox --
+    it self-heals. A ceiling that is too low kills a legitimate write whose
+    commit may ALREADY have landed (see ``_AdminHoldCeiling``), which does not.
+    ``AGENTS.md`` *Consistency without transactions* decides that direction.
+    """
+    embedding_timeout = get_env_value(
+        "EMBEDDING_TIMEOUT", DEFAULT_EMBEDDING_TIMEOUT, int
+    )
+    return max(
+        ADMIN_WRITE_HOLD_FLOOR_SECONDS,
+        ADMIN_WRITE_HOLD_EMBEDDING_MULTIPLIER * embedding_timeout,
+    )
+
 
 # Ceiling on how long one admin write may hold both gates. While it holds the
 # pipeline ``busy`` reservation it DEFERS every pipeline start in the workspace,
@@ -267,9 +328,10 @@ ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT: float = 30.0
 # process, not a hung one. On expiry the operation fails loud (500) and the
 # gate's ``finally`` releases both halves. Must be >= the deployment's embedding
 # client timeout (``EMBEDDING_TIMEOUT``), since that round-trip runs inside the
-# hold. Overridable with ``LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS``.
+# hold -- which the default guarantees and ``__post_init__`` enforces for an
+# explicit override. Overridable with ``LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS``.
 ADMIN_WRITE_MAX_HOLD_SECONDS: float = get_env_value(
-    "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS", 180.0, float
+    "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS", _default_admin_write_hold_seconds(), float
 )
 
 # Strong references to the release-time queue drives (see
@@ -1735,6 +1797,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             workspace=self.workspace,
             embedding_func=self.embedding_func,
         )
+
+        self._validate_admin_write_bounds()
 
         self.entities_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
             namespace=NameSpace.VECTOR_STORE_ENTITIES,
@@ -6820,6 +6884,56 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 type(self.chunk_entity_relation_graph), "requires_single_writer", False
             )
         )
+
+    def _validate_admin_write_bounds(self) -> None:
+        """Check the two admin-write time bounds against each other at startup.
+
+        Called from ``__post_init__`` once the graph storage exists, and ONLY
+        when ``_admin_write_gate_required()`` -- a server-backed graph store
+        never takes the gate, so it must not be refused startup over knobs it
+        does not use.
+
+        Both relations were documented in ``env.example`` and enforced nowhere,
+        which is how a misconfiguration reached the request path instead of the
+        boot log:
+
+        1. ``ceiling >= embedding timeout`` is FATAL. The embedding round-trip
+           runs inside the hold, so a ceiling below it kills every admin write
+           that reaches the embedder -- and kills it at a point where a commit
+           may already have landed, which is the one failure mode this whole
+           gate works to report honestly. The derived default cannot violate
+           this; only an explicit ``LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS``
+           can, so refusing is refusing a hand-written mistake.
+        2. ``acquire timeout <= ceiling`` is a WARNING, not fatal. Waiting
+           longer than a holder can possibly hold is merely pointless -- the
+           ceiling kills the holder first, so the extra patience buys the waiter
+           nothing. Nothing is unsafe, so nothing is refused.
+        """
+        if not self._admin_write_gate_required():
+            return
+        if ADMIN_WRITE_MAX_HOLD_SECONDS < self.default_embedding_timeout:
+            raise ValueError(
+                "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS "
+                f"({ADMIN_WRITE_MAX_HOLD_SECONDS:g}s) must be at least the "
+                f"embedding timeout ({self.default_embedding_timeout:g}s): the "
+                "embedding round-trip runs inside the admin-write hold, so a "
+                "lower ceiling stops every knowledge-graph edit that reaches "
+                "the embedder -- possibly after its commit has already landed. "
+                "Raise the ceiling (at least "
+                f"{ADMIN_WRITE_HOLD_EMBEDDING_MULTIPLIER:g}x the embedding "
+                "timeout is recommended, which is the default) or lower "
+                "EMBEDDING_TIMEOUT."
+            )
+        if ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT > ADMIN_WRITE_MAX_HOLD_SECONDS:
+            logger.warning(
+                "LIGHTRAG_ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT "
+                f"({ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT:g}s) exceeds "
+                "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS "
+                f"({ADMIN_WRITE_MAX_HOLD_SECONDS:g}s), so a queued knowledge "
+                "graph edit can wait longer than the edit ahead of it is even "
+                "allowed to run. The extra wait buys nothing -- the hold "
+                "ceiling releases the lock first."
+            )
 
     def _admin_write_lock_namespace(self) -> str:
         workspace = self.workspace or ""
