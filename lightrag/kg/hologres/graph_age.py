@@ -971,16 +971,21 @@ class HologresAGEGraphStorage(BaseGraphStorage):
         kg_edges: list[KnowledgeGraphEdge] = []
         if node_ids:
             decoded_edges: list[tuple[str, str, dict[str, Any]]] = []
-            for chunk in _chunks(sorted(node_ids), _ID_CHUNK_SIZE):
+            selected_ids = sorted(node_ids)
+            # Chunk only canonical sources so cross-chunk edges remain visible once.
+            for chunk in _chunks(selected_ids, _ID_CHUNK_SIZE):
                 rows = await self._read(
                     "MATCH (a:Entity)-[r:DIRECTED]->(b:Entity) "
-                    "WHERE a.entity_id IN $entity_ids "
-                    "AND b.entity_id IN $entity_ids "
+                    "WHERE a.entity_id IN $source_ids "
+                    "AND b.entity_id IN $target_ids "
                     "RETURN a.entity_id, b.entity_id, properties(r)",
                     "src ag_catalog.agtype, tgt ag_catalog.agtype, "
                     "props ag_catalog.agtype",
                     descriptor="age.kg.edges",
-                    params={"entity_ids": list(chunk)},
+                    params={
+                        "source_ids": list(chunk),
+                        "target_ids": selected_ids,
+                    },
                 )
                 decoded_edges.extend(
                     (

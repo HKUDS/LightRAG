@@ -500,6 +500,83 @@ async def test_drop_detach_deletes_the_workspace_graph(ready_storage):
     assert drop["replay_safe"] is True
 
 
+async def test_knowledge_graph_hydrates_edges_across_id_chunks(ready_storage):
+    from lightrag.kg.hologres.graph_age import _ID_CHUNK_SIZE
+
+    neighbours = [f"n{index:03d}" for index in range(_ID_CHUNK_SIZE)]
+    star_edges = {("hub", neighbour) for neighbour in neighbours}
+    every_node = ["hub", *neighbours]
+
+    def requested(values):
+        return json.loads(values[0])
+
+    def hop(_sql, values):
+        seeds = set(requested(values)["entity_ids"])
+        peers = {
+            peer
+            for src, tgt in star_edges
+            for peer in ((tgt,) if src in seeds else ())
+        }
+        peers |= {src for src, tgt in star_edges if tgt in seeds}
+        return [(json.dumps(peer),) for peer in sorted(peers)]
+
+    def degrees(_sql, values):
+        asked = requested(values)["entity_ids"]
+        return [
+            (
+                json.dumps(node_id),
+                json.dumps(len(neighbours) if node_id == "hub" else 1),
+            )
+            for node_id in asked
+        ]
+
+    def node_rows(_sql, values):
+        return [
+            (json.dumps(node_id), json.dumps({"entity_id": node_id}))
+            for node_id in requested(values)["entity_ids"]
+        ]
+
+    def edge_rows(sql, values):
+        params = requested(values)
+        # Falling back to entity_ids emulates the buggy same-chunk contract.
+        targets = set(params.get("target_ids", params.get("entity_ids", [])))
+        sources = set(params.get("source_ids", targets))
+        if "source_ids" in params:
+            assert "a.entity_id IN $source_ids" in sql
+            assert "b.entity_id IN $target_ids" in sql
+        return [
+            (json.dumps(src), json.dumps(tgt), json.dumps({"weight": 1}))
+            for src, tgt in sorted(star_edges)
+            if src in sources and tgt in targets
+        ]
+
+    client = FakeAgeClient()
+    client.handlers.update(
+        {
+            "age.node.exists": _agtype_rows(json.dumps(1)),
+            "age.kg.hop": hop,
+            "age.degree.base": degrees,
+            "age.degree.loops": [],
+            "age.node.read.batch": node_rows,
+            "age.kg.edges": edge_rows,
+        }
+    )
+    storage = await ready_storage(client)
+
+    graph = await storage.get_knowledge_graph("hub", max_depth=1, max_nodes=300)
+
+    assert len(graph.nodes) == len(every_node)
+    assert graph.is_truncated is False
+    # A same-chunk endpoint filter would omit the final neighbour's edge.
+    assert {(edge.source, edge.target) for edge in graph.edges} == star_edges
+    hydration = calls_for(client, "age.kg.edges")
+    assert len(hydration) == 2
+    for call in hydration:
+        params = requested(call["values"])
+        assert params["target_ids"] == sorted(every_node)
+        assert len(params["source_ids"]) <= _ID_CHUNK_SIZE
+
+
 # ---------------------------------------------------------------------------
 # Static source guard
 # ---------------------------------------------------------------------------
