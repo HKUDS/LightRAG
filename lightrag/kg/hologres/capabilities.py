@@ -1034,6 +1034,172 @@ async def _probe_jsonb_column_optimization(
         return _failed("jsonb_columnar_probe_failed")
 
 
+_STREAM_COPY_PROBE_ROWS = (
+    ("conflict-key", "after"),
+    ("fresh-key", "new"),
+)
+
+
+async def _exercise_stream_copy_contract(
+    client: HologresClient,
+    schema: str,
+    table: str,
+    verify_ownership: Callable[[], Awaitable[None]],
+    descriptor_prefix: str,
+) -> ProbeResult:
+    """Freeze the semantic watershed against plain COPY on an existing table.
+
+    A plain binary COPY raises a unique violation on a duplicate key; the
+    stream copy channel must turn that same row into an update instead. The
+    caller owns table creation and cleanup.
+    """
+
+    qualified_table = quote_qualified_identifier(schema, table)
+
+    def _failed(detail_code: str) -> ProbeResult:
+        return _result(ProbeKind.STREAM_COPY, ProbeStatus.FAILED, detail_code)
+
+    await verify_ownership()
+    await client.execute_one(
+        f"INSERT INTO {qualified_table} (id, val) VALUES ($1, $2)",
+        "conflict-key",
+        "before",
+        descriptor=f"{descriptor_prefix}.seed",
+        replay_safe=False,
+    )
+    await verify_ownership()
+    await client._stream_copy_for_probe(
+        schema,
+        table,
+        ("id", "val"),
+        _STREAM_COPY_PROBE_ROWS,
+        descriptor=f"{descriptor_prefix}.copy",
+    )
+    await verify_ownership()
+    updated = await client.fetch_value(
+        f"SELECT val FROM {qualified_table} WHERE id = $1",
+        "conflict-key",
+        descriptor=f"{descriptor_prefix}.check",
+    )
+    if updated != "after":
+        return _failed("stream_copy_conflict_not_updated")
+    await verify_ownership()
+    count = await client.fetch_value(
+        f"SELECT count(*) FROM {qualified_table}",
+        descriptor=f"{descriptor_prefix}.count",
+    )
+    if count != 2:
+        return _failed("stream_copy_row_count_mismatch")
+    return _result(
+        ProbeKind.STREAM_COPY,
+        ProbeStatus.PASSED,
+        "stream_copy_conflict_update_frozen",
+    )
+
+
+async def _probe_stream_copy(
+    client: HologresClient,
+    schema: str,
+    table: str,
+    verify_ownership: Callable[[], Awaitable[None]],
+) -> ProbeResult:
+    qualified_table = quote_qualified_identifier(schema, table)
+    try:
+        await verify_ownership()
+        await client.execute_one(
+            f"CREATE TABLE {qualified_table} "
+            "(id text NOT NULL, val text NOT NULL, PRIMARY KEY (id)) "
+            "WITH (orientation = 'row,column')",
+            descriptor="probe.streamcopy.create",
+            replay_safe=False,
+        )
+        return await _exercise_stream_copy_contract(
+            client, schema, table, verify_ownership, "probe.streamcopy"
+        )
+    except HologresProbeError:
+        raise
+    except Exception:
+        return _result(
+            ProbeKind.STREAM_COPY, ProbeStatus.FAILED, "stream_copy_probe_failed"
+        )
+
+
+async def _no_ownership_check() -> None:
+    return None
+
+
+async def _probe_production_stream_copy(
+    client: HologresClient, schema: str
+) -> ProbeResult:
+    """Prove stream copy on a disposable table inside the production schema.
+
+    This never raises: any failure keeps the capability off. The DROP is
+    attempted even when the CREATE outcome is unknown (connection loss can
+    leave the table behind), and a failed DROP is reported through the
+    distinct cleanup detail code so a leaked table is observable.
+    """
+
+    table = f"lightrag_test_streamcopy_{uuid.uuid4().hex}"
+    qualified_table = quote_qualified_identifier(schema, table)
+    try:
+        await client.execute_one(
+            f"CREATE TABLE {qualified_table} "
+            "(id text NOT NULL, val text NOT NULL, PRIMARY KEY (id)) "
+            "WITH (orientation = 'row,column')",
+            descriptor="capability.streamcopy.create",
+            replay_safe=False,
+        )
+        result = await _exercise_stream_copy_contract(
+            client, schema, table, _no_ownership_check, "capability.streamcopy"
+        )
+    except Exception:
+        result = _result(
+            ProbeKind.STREAM_COPY, ProbeStatus.FAILED, "stream_copy_probe_failed"
+        )
+    try:
+        await client.execute_one(
+            f"DROP TABLE IF EXISTS {qualified_table}",
+            descriptor="capability.streamcopy.drop",
+            replay_safe=True,
+        )
+    except Exception:
+        return _result(
+            ProbeKind.STREAM_COPY,
+            ProbeStatus.FAILED,
+            "stream_copy_probe_cleanup_failed",
+        )
+    return result
+
+
+async def prove_stream_copy_capability(
+    client: HologresClient, report: CapabilityReport
+) -> CapabilityReport:
+    """Attach a stream copy proof to a production report when configured.
+
+    The proof is opt-in and non-blocking: with the config gate off the report
+    passes through untouched, a proof already cached on the shared client is
+    reused instead of re-probed, and a failed probe records a FAILED result so
+    writers keep the parameterized-INSERT path without blocking startup. The
+    cached result is reused whatever its status, so a FAILED proof pins the
+    fallback for the shared client's lifetime; a restart re-probes.
+    """
+
+    config = getattr(client, "config", None)
+    if config is None or not getattr(config, "stream_copy_enabled", False):
+        return report
+    if any(result.kind is ProbeKind.STREAM_COPY for result in report.results):
+        return report
+    cached = getattr(client, "capabilities", None)
+    if cached is not None:
+        for result in cached.results:
+            if result.kind is ProbeKind.STREAM_COPY:
+                return CapabilityReport(
+                    version=report.version, results=(*report.results, result)
+                )
+    probed = await _probe_production_stream_copy(client, config.schema)
+    return CapabilityReport(version=report.version, results=(*report.results, probed))
+
+
 async def _verify_probe_ownership(
     client: HologresClient,
     schema: str,
@@ -1127,6 +1293,7 @@ async def run_initial_isolated_probes(
     graph_nodes_table = f"lightrag_test_gnodes_{uuid.uuid4().hex}"
     graph_edges_table = f"lightrag_test_gedges_{uuid.uuid4().hex}"
     jsonb_columnar_table = f"lightrag_test_jsonbcol_{uuid.uuid4().hex}"
+    stream_copy_table = f"lightrag_test_streamcopy_{uuid.uuid4().hex}"
     qualified_schema = quote_qualified_identifier(guarded_schema)
     qualified_marker = quote_qualified_identifier(guarded_schema, marker_table)
     try:
@@ -1202,6 +1369,12 @@ async def run_initial_isolated_probes(
                 client, guarded_schema, jsonb_columnar_table, verify_ownership
             )
         )
+        await verify_ownership()
+        results.append(
+            await _probe_stream_copy(
+                client, guarded_schema, stream_copy_table, verify_ownership
+            )
+        )
     finally:
         await _cleanup_owned_probe_schema(
             client,
@@ -1214,6 +1387,7 @@ async def run_initial_isolated_probes(
                 (graph_edges_table, "probe.graph.edges.drop"),
                 (graph_nodes_table, "probe.graph.nodes.drop"),
                 (jsonb_columnar_table, "probe.jsonbcol.drop"),
+                (stream_copy_table, "probe.streamcopy.drop"),
             ),
         )
 

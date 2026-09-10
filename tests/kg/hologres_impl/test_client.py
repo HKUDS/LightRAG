@@ -23,9 +23,28 @@ from lightrag.kg.hologres.client import (
 from lightrag.kg.hologres.config import HologresConfig
 
 
+class PreparedStatementStub:
+    def __init__(self, sql):
+        self.sql = sql
+        self._state = f"STATE {sql}"
+
+
+class CopyProtocolStub:
+    def __init__(self):
+        self.copy_in_calls = []
+
+    async def copy_in(self, statement, reader, data, records, intro_state, timeout):
+        self.copy_in_calls.append(
+            (statement, reader, data, records, intro_state, timeout)
+        )
+        return f"COPY {len(records)}"
+
+
 class DataConnection:
     def __init__(self):
         self.executed = []
+        self.prepared = []
+        self._protocol = CopyProtocolStub()
 
     async def execute(self, sql, *args, timeout=None):
         self.executed.append((sql, args, timeout))
@@ -40,16 +59,9 @@ class DataConnection:
     async def fetchval(self, _sql, *args, timeout=None):
         return args[0] * 2
 
-    async def copy_records_to_table(
-        self, table_name, *, records, columns, schema_name, timeout
-    ):
-        return {
-            "table": table_name,
-            "records": list(records),
-            "columns": tuple(columns),
-            "schema": schema_name,
-            "timeout": timeout,
-        }
+    async def prepare(self, sql, *, timeout=None):
+        self.prepared.append((sql, timeout))
+        return PreparedStatementStub(sql)
 
 
 class DataPool:
@@ -246,13 +258,99 @@ async def test_copy_rows_uses_validated_identifiers_after_both_gates_pass(
         descriptor="event.copy",
     )
 
-    assert result == {
-        "table": "events",
-        "records": [("event-1", "payload-1")],
-        "columns": ("id", "payload"),
-        "schema": "LightRAG_1",
-        "timeout": 19.0,
-    }
+    intro_sql = 'SELECT "id", "payload" FROM "LightRAG_1"."events" LIMIT 1'
+    assert result == "COPY 1"
+    assert connection.prepared == [(intro_sql, 19.0)]
+    assert connection._protocol.copy_in_calls == [
+        (
+            'COPY "LightRAG_1"."events" ("id", "payload") FROM STDIN '
+            "WITH (format binary, stream_mode true, on_conflict update)",
+            None,
+            None,
+            (("event-1", "payload-1"),),
+            f"STATE {intro_sql}",
+            19.0,
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stream_copy_for_probe_bypasses_gates_and_targets_probe_schema(
+    base_environment,
+):
+    connection = DataConnection()
+    pool = DataPool(connection)
+    client = HologresClient(HologresConfig.from_env(base_environment), pool=pool)
+
+    result = await client._stream_copy_for_probe(
+        "lightrag_test_abc",
+        "probe_table",
+        ("id", "val"),
+        [("conflict-key", "after"), ("fresh-key", "new")],
+        descriptor="probe.streamcopy.copy",
+    )
+
+    intro_sql = 'SELECT "id", "val" FROM "lightrag_test_abc"."probe_table" LIMIT 1'
+    assert result == "COPY 2"
+    assert connection.prepared == [(intro_sql, 19.0)]
+    assert connection._protocol.copy_in_calls == [
+        (
+            'COPY "lightrag_test_abc"."probe_table" ("id", "val") FROM STDIN '
+            "WITH (format binary, stream_mode true, on_conflict update)",
+            None,
+            None,
+            (("conflict-key", "after"), ("fresh-key", "new")),
+            f"STATE {intro_sql}",
+            19.0,
+        )
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "columns",
+    [(), ("id", 'payload"; DROP TABLE x; --')],
+    ids=["empty", "injection"],
+)
+async def test_copy_rows_rejects_unsafe_column_lists_before_touching_the_pool(
+    base_environment, columns
+):
+    pool = DataPool(DataConnection())
+    client = HologresClient(
+        HologresConfig.from_env(
+            {**base_environment, "HOLOGRES_STREAM_COPY_ENABLED": "true"}
+        ),
+        pool=pool,
+        capabilities=_capabilities_with_stream_copy(ProbeStatus.PASSED),
+    )
+
+    with pytest.raises(HologresSqlError):
+        await client.copy_rows(
+            "events", columns, [("event-1",)], descriptor="event.copy"
+        )
+
+    assert pool.acquire_count == 0
+
+
+def test_stream_copy_available_requires_config_and_a_passed_probe(base_environment):
+    enabled_config = HologresConfig.from_env(
+        {**base_environment, "HOLOGRES_STREAM_COPY_ENABLED": "true"}
+    )
+    disabled_config = HologresConfig.from_env(base_environment)
+    passed = _capabilities_with_stream_copy(ProbeStatus.PASSED)
+
+    cases = [
+        (disabled_config, passed, False),
+        (enabled_config, None, False),
+        (enabled_config, _capabilities_with_stream_copy(ProbeStatus.NOT_RUN), False),
+        (enabled_config, _capabilities_with_stream_copy(ProbeStatus.FAILED), False),
+        (enabled_config, passed, True),
+    ]
+    for config, capabilities, expected in cases:
+        client = HologresClient(
+            config, pool=DataPool(DataConnection()), capabilities=capabilities
+        )
+        assert client.stream_copy_available is expected
 
 
 @pytest.mark.asyncio

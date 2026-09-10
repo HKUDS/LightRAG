@@ -790,34 +790,111 @@ class HologresClient:
         replay_safe: bool = False,
         timeout: float | None = None,
     ) -> Any:
-        """Copy rows only after configuration and capability gates both pass."""
+        """Stream-copy rows only after configuration and capability gates pass."""
 
         del workspace
-        from .capabilities import ProbeKind
-
-        if not self.config.stream_copy_enabled:
-            raise HologresCapabilityError("Stream COPY is disabled by configuration")
-        if self._capabilities is None or not self._capabilities.supports(
-            ProbeKind.STREAM_COPY
-        ):
+        if not self.stream_copy_available:
+            if not self.config.stream_copy_enabled:
+                raise HologresCapabilityError(
+                    "Stream COPY is disabled by configuration"
+                )
             raise HologresCapabilityError("Stream COPY capability is not proven")
-        table_name = validate_identifier(table)
+        return await self._stream_copy(
+            self.config.schema,
+            table,
+            columns,
+            records,
+            descriptor=descriptor,
+            replay_safe=replay_safe,
+            timeout=timeout,
+        )
+
+    async def _stream_copy_for_probe(
+        self,
+        schema: str,
+        table: str,
+        columns: Sequence[str],
+        records: Iterable[Sequence[Any]],
+        *,
+        descriptor: str,
+    ) -> Any:
+        """Exercise the stream COPY channel for a capability probe, ungated."""
+
+        return await self._stream_copy(
+            schema,
+            table,
+            columns,
+            records,
+            descriptor=descriptor,
+            replay_safe=True,
+        )
+
+    async def _stream_copy(
+        self,
+        schema: str,
+        table: str,
+        columns: Sequence[str],
+        records: Iterable[Sequence[Any]],
+        *,
+        descriptor: str,
+        replay_safe: bool,
+        timeout: float | None = None,
+    ) -> Any:
+        qualified_table = quote_qualified_identifier(schema, table)
         column_names = tuple(validate_identifier(column) for column in columns)
         if not column_names:
             raise HologresSqlError("COPY requires at least one column")
+        column_list = ", ".join(quote_identifier(column) for column in column_names)
+        # Hologres stream copy (fixed copy) turns duplicate-key rows into
+        # updates instead of unique violations; asyncpg's public
+        # copy_records_to_table hardcodes "(FORMAT binary)", so the statement
+        # is built here and handed to the same protocol-level copy-in entry
+        # point that method uses internally. The intro prepared statement
+        # supplies the binary row codec exactly as asyncpg does.
+        copy_statement = (
+            f"COPY {qualified_table} ({column_list}) FROM STDIN "
+            "WITH (format binary, stream_mode true, on_conflict update)"
+        )
+        validate_single_statement(copy_statement)
+        intro_sql = f"SELECT {column_list} FROM {qualified_table} LIMIT 1"
+        validate_single_statement(intro_sql)
         materialized_records = tuple(tuple(record) for record in records)
         command_timeout = self.config.command_timeout if timeout is None else timeout
+
+        async def run_stream_copy(connection: Any) -> Any:
+            intro_statement = await connection.prepare(
+                intro_sql, timeout=command_timeout
+            )
+            return await connection._protocol.copy_in(
+                copy_statement,
+                None,
+                None,
+                materialized_records,
+                intro_statement._state,
+                command_timeout,
+            )
+
         return await self._run(
             OperationKind.WRITE,
-            lambda connection: connection.copy_records_to_table(
-                table_name,
-                records=materialized_records,
-                columns=column_names,
-                schema_name=self.config.schema,
-                timeout=command_timeout,
-            ),
+            run_stream_copy,
             descriptor=descriptor,
             replay_safe=replay_safe,
+        )
+
+    @property
+    def capabilities(self) -> "CapabilityReport | None":
+        return self._capabilities
+
+    @property
+    def stream_copy_available(self) -> bool:
+        """True only when both the config and proven-capability gates pass."""
+
+        from .capabilities import ProbeKind
+
+        return (
+            self.config.stream_copy_enabled
+            and self._capabilities is not None
+            and self._capabilities.supports(ProbeKind.STREAM_COPY)
         )
 
     async def _observe_setup_reset_for_probe(

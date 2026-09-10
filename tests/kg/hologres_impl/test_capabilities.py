@@ -15,6 +15,7 @@ from lightrag.kg.hologres.capabilities import (
     ProbeStatus,
     _probe_setup_reset_bindings,
     parse_hologres_version,
+    prove_stream_copy_capability,
     run_initial_isolated_probes,
     validate_hologres_version,
     validate_test_schema_name,
@@ -1251,6 +1252,386 @@ async def test_jsonb_columnar_probe_reraises_ownership_errors():
         await _run_jsonb_columnar_probe(client)
 
 
+class StreamCopyProbeClient:
+    def __init__(self):
+        self.events = []
+        self.statements = {}
+        self.copies = []
+
+    async def execute_one(self, sql, *values, descriptor, replay_safe=False):
+        self.events.append(descriptor)
+        self.statements[descriptor] = (sql, values, replay_safe)
+        return "OK"
+
+    async def fetch_value(self, sql, *values, descriptor):
+        self.events.append(descriptor)
+        self.statements[descriptor] = (sql, values, None)
+        if descriptor == "probe.streamcopy.check":
+            return "after"
+        if descriptor == "probe.streamcopy.count":
+            return 2
+        raise AssertionError(f"Unexpected value fetch: {descriptor}")
+
+    async def _stream_copy_for_probe(
+        self, schema, table, columns, records, *, descriptor
+    ):
+        self.events.append(descriptor)
+        self.copies.append((schema, table, tuple(columns), tuple(records)))
+        return "COPY 2"
+
+
+async def _run_stream_copy_probe(client):
+    async def verify_ownership():
+        client.events.append("probe.marker.verify")
+
+    return await hologres_capabilities._probe_stream_copy(
+        client,
+        "lightrag_test_streamcopy_probe",
+        "lightrag_test_streamcopy",
+        verify_ownership,
+    )
+
+
+@pytest.mark.asyncio
+async def test_stream_copy_probe_freezes_conflict_update_contract():
+    client = StreamCopyProbeClient()
+
+    result = await _run_stream_copy_probe(client)
+
+    assert result == ProbeResult(
+        kind=ProbeKind.STREAM_COPY,
+        status=ProbeStatus.PASSED,
+        blocking=False,
+        detail_code="stream_copy_conflict_update_frozen",
+    )
+    assert client.events == [
+        "probe.marker.verify",
+        "probe.streamcopy.create",
+        "probe.marker.verify",
+        "probe.streamcopy.seed",
+        "probe.marker.verify",
+        "probe.streamcopy.copy",
+        "probe.marker.verify",
+        "probe.streamcopy.check",
+        "probe.marker.verify",
+        "probe.streamcopy.count",
+    ]
+
+    create_sql, _values, create_replay_safe = client.statements[
+        "probe.streamcopy.create"
+    ]
+    assert create_replay_safe is False
+    assert create_sql == (
+        'CREATE TABLE "lightrag_test_streamcopy_probe"."lightrag_test_streamcopy" '
+        "(id text NOT NULL, val text NOT NULL, PRIMARY KEY (id)) "
+        "WITH (orientation = 'row,column')"
+    )
+
+    _seed_sql, seed_values, seed_replay_safe = client.statements[
+        "probe.streamcopy.seed"
+    ]
+    assert seed_replay_safe is False
+    assert seed_values == ("conflict-key", "before")
+
+    # The copy payload rewrites the seeded key: an update proves the stream
+    # channel, a unique violation would be plain COPY semantics.
+    assert client.copies == [
+        (
+            "lightrag_test_streamcopy_probe",
+            "lightrag_test_streamcopy",
+            ("id", "val"),
+            (("conflict-key", "after"), ("fresh-key", "new")),
+        )
+    ]
+
+    _check_sql, check_values, _safe = client.statements["probe.streamcopy.check"]
+    assert check_values == ("conflict-key",)
+    for sql, _values, _replay_safe in client.statements.values():
+        assert ";" not in sql
+
+
+class MismatchStreamCopyProbeClient(StreamCopyProbeClient):
+    def __init__(self, stage):
+        super().__init__()
+        self.stage = stage
+
+    async def fetch_value(self, sql, *values, descriptor):
+        if descriptor == "probe.streamcopy.check" and self.stage == "conflict":
+            self.events.append(descriptor)
+            return "before"
+        if descriptor == "probe.streamcopy.count" and self.stage == "count":
+            self.events.append(descriptor)
+            return 3
+        return await super().fetch_value(sql, *values, descriptor=descriptor)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stage", "detail_code"),
+    [
+        ("conflict", "stream_copy_conflict_not_updated"),
+        ("count", "stream_copy_row_count_mismatch"),
+    ],
+)
+async def test_stream_copy_probe_classifies_stage_mismatches(stage, detail_code):
+    client = MismatchStreamCopyProbeClient(stage)
+
+    result = await _run_stream_copy_probe(client)
+
+    assert result == ProbeResult(
+        kind=ProbeKind.STREAM_COPY,
+        status=ProbeStatus.FAILED,
+        blocking=False,
+        detail_code=detail_code,
+    )
+    if stage == "conflict":
+        assert "probe.streamcopy.count" not in client.events
+
+
+class FailingStreamCopyProbeClient(StreamCopyProbeClient):
+    async def _stream_copy_for_probe(
+        self, schema, table, columns, records, *, descriptor
+    ):
+        raise RuntimeError("stream copy rejected")
+
+
+@pytest.mark.asyncio
+async def test_stream_copy_probe_classifies_execution_failures():
+    client = FailingStreamCopyProbeClient()
+
+    result = await _run_stream_copy_probe(client)
+
+    assert result == ProbeResult(
+        kind=ProbeKind.STREAM_COPY,
+        status=ProbeStatus.FAILED,
+        blocking=False,
+        detail_code="stream_copy_probe_failed",
+    )
+
+
+class OwnershipLossStreamCopyProbeClient(StreamCopyProbeClient):
+    async def execute_one(self, sql, *values, descriptor, replay_safe=False):
+        if descriptor == "probe.streamcopy.seed":
+            raise HologresProbeError(
+                "ownership lost",
+                leaked_objects=("lightrag_test_streamcopy_probe",),
+            )
+        return await super().execute_one(
+            sql, *values, descriptor=descriptor, replay_safe=replay_safe
+        )
+
+
+@pytest.mark.asyncio
+async def test_stream_copy_probe_reraises_ownership_errors():
+    client = OwnershipLossStreamCopyProbeClient()
+
+    with pytest.raises(HologresProbeError):
+        await _run_stream_copy_probe(client)
+
+
+class ProductionStreamCopyClient:
+    def __init__(self, *, enabled=True, capabilities=None):
+        self.config = SimpleNamespace(
+            stream_copy_enabled=enabled, schema="LightRAG"
+        )
+        self.capabilities = capabilities
+        self.events = []
+        self.statements = {}
+        self.copies = []
+
+    async def execute_one(self, sql, *values, descriptor, replay_safe=False):
+        self.events.append(descriptor)
+        self.statements[descriptor] = (sql, values, replay_safe)
+        return "OK"
+
+    async def fetch_value(self, sql, *values, descriptor):
+        self.events.append(descriptor)
+        self.statements[descriptor] = (sql, values, None)
+        if descriptor == "capability.streamcopy.check":
+            return "after"
+        if descriptor == "capability.streamcopy.count":
+            return 2
+        raise AssertionError(f"Unexpected value fetch: {descriptor}")
+
+    async def _stream_copy_for_probe(
+        self, schema, table, columns, records, *, descriptor
+    ):
+        self.events.append(descriptor)
+        self.copies.append((schema, table, tuple(columns), tuple(records)))
+        return "COPY 2"
+
+
+def _version_only_report():
+    return CapabilityReport(version=HologresVersion(5, 0, 0), results=())
+
+
+def _report_with_stream_copy(status, detail_code):
+    return CapabilityReport(
+        version=HologresVersion(5, 0, 0),
+        results=(
+            ProbeResult(
+                kind=ProbeKind.STREAM_COPY,
+                status=status,
+                blocking=False,
+                detail_code=detail_code,
+            ),
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_stream_copy_proof_passes_reports_through_when_config_gate_is_off():
+    client = ProductionStreamCopyClient(enabled=False)
+    report = _version_only_report()
+
+    assert await prove_stream_copy_capability(client, report) is report
+    assert client.events == []
+
+
+@pytest.mark.asyncio
+async def test_stream_copy_proof_passes_reports_through_when_already_present():
+    client = ProductionStreamCopyClient()
+    report = _report_with_stream_copy(ProbeStatus.FAILED, "stream_copy_probe_failed")
+
+    assert await prove_stream_copy_capability(client, report) is report
+    assert client.events == []
+
+
+@pytest.mark.asyncio
+async def test_stream_copy_proof_reuses_the_result_cached_on_the_shared_client():
+    cached_result = ProbeResult(
+        kind=ProbeKind.STREAM_COPY,
+        status=ProbeStatus.PASSED,
+        blocking=False,
+        detail_code="stream_copy_conflict_update_frozen",
+    )
+    client = ProductionStreamCopyClient(
+        capabilities=CapabilityReport(
+            version=HologresVersion(5, 0, 0), results=(cached_result,)
+        )
+    )
+
+    enriched = await prove_stream_copy_capability(client, _version_only_report())
+
+    assert enriched.results == (cached_result,)
+    assert enriched.supports(ProbeKind.STREAM_COPY) is True
+    assert client.events == []
+
+
+@pytest.mark.asyncio
+async def test_stream_copy_proof_probes_a_disposable_table_and_appends_the_result():
+    client = ProductionStreamCopyClient()
+
+    enriched = await prove_stream_copy_capability(client, _version_only_report())
+
+    assert enriched.supports(ProbeKind.STREAM_COPY) is True
+    (result,) = enriched.results
+    assert result.detail_code == "stream_copy_conflict_update_frozen"
+    assert client.events == [
+        "capability.streamcopy.create",
+        "capability.streamcopy.seed",
+        "capability.streamcopy.copy",
+        "capability.streamcopy.check",
+        "capability.streamcopy.count",
+        "capability.streamcopy.drop",
+    ]
+
+    create_sql, _values, create_replay_safe = client.statements[
+        "capability.streamcopy.create"
+    ]
+    assert create_replay_safe is False
+    match = re.fullmatch(
+        r'CREATE TABLE "LightRAG"\."(lightrag_test_streamcopy_[0-9a-f]{32})" '
+        r"\(id text NOT NULL, val text NOT NULL, PRIMARY KEY \(id\)\) "
+        r"WITH \(orientation = 'row,column'\)",
+        create_sql,
+    )
+    assert match is not None
+    table = match.group(1)
+    assert client.copies == [
+        (
+            "LightRAG",
+            table,
+            ("id", "val"),
+            (("conflict-key", "after"), ("fresh-key", "new")),
+        )
+    ]
+
+    drop_sql, _values, drop_replay_safe = client.statements[
+        "capability.streamcopy.drop"
+    ]
+    assert drop_replay_safe is True
+    assert drop_sql == f'DROP TABLE IF EXISTS "LightRAG"."{table}"'
+
+
+class FailingProductionStreamCopyClient(ProductionStreamCopyClient):
+    async def _stream_copy_for_probe(
+        self, schema, table, columns, records, *, descriptor
+    ):
+        raise RuntimeError("stream copy rejected")
+
+
+@pytest.mark.asyncio
+async def test_stream_copy_proof_records_failures_and_still_drops_without_raising():
+    client = FailingProductionStreamCopyClient()
+
+    enriched = await prove_stream_copy_capability(client, _version_only_report())
+
+    assert enriched.supports(ProbeKind.STREAM_COPY) is False
+    (result,) = enriched.results
+    assert result.status is ProbeStatus.FAILED
+    assert result.detail_code == "stream_copy_probe_failed"
+    assert client.events[-1] == "capability.streamcopy.drop"
+
+
+class CreateFailureProductionStreamCopyClient(ProductionStreamCopyClient):
+    async def execute_one(self, sql, *values, descriptor, replay_safe=False):
+        if descriptor == "capability.streamcopy.create":
+            self.events.append(descriptor)
+            raise RuntimeError("create outcome unknown")
+        return await super().execute_one(
+            sql, *values, descriptor=descriptor, replay_safe=replay_safe
+        )
+
+
+@pytest.mark.asyncio
+async def test_stream_copy_proof_drops_best_effort_after_unknown_create_outcome():
+    client = CreateFailureProductionStreamCopyClient()
+
+    enriched = await prove_stream_copy_capability(client, _version_only_report())
+
+    (result,) = enriched.results
+    assert result.status is ProbeStatus.FAILED
+    assert result.detail_code == "stream_copy_probe_failed"
+    assert client.events == [
+        "capability.streamcopy.create",
+        "capability.streamcopy.drop",
+    ]
+
+
+class DropFailureProductionStreamCopyClient(ProductionStreamCopyClient):
+    async def execute_one(self, sql, *values, descriptor, replay_safe=False):
+        if descriptor == "capability.streamcopy.drop":
+            self.events.append(descriptor)
+            raise RuntimeError("drop rejected")
+        return await super().execute_one(
+            sql, *values, descriptor=descriptor, replay_safe=replay_safe
+        )
+
+
+@pytest.mark.asyncio
+async def test_stream_copy_proof_reports_leaked_cleanup_with_a_distinct_code():
+    client = DropFailureProductionStreamCopyClient()
+
+    enriched = await prove_stream_copy_capability(client, _version_only_report())
+
+    assert enriched.supports(ProbeKind.STREAM_COPY) is False
+    (result,) = enriched.results
+    assert result.status is ProbeStatus.FAILED
+    assert result.detail_code == "stream_copy_probe_cleanup_failed"
+    assert client.events[-1] == "capability.streamcopy.drop"
+
+
 class SuccessfulProbeClient:
     def __init__(self):
         self.writes = []
@@ -1271,6 +1652,8 @@ class SuccessfulProbeClient:
             "probe.jsonbcol.catalog": True,
             "probe.jsonbcol.catalog.replay": True,
             "probe.jsonbcol.fetch": '{"keep":"x","nested":{"a":[1,2]}}',
+            "probe.streamcopy.check": "after",
+            "probe.streamcopy.count": 2,
         }
         return results[descriptor]
 
@@ -1292,6 +1675,12 @@ class SuccessfulProbeClient:
             self.owner_token = values[0]
         self.writes.append((descriptor, replay_safe))
         return "OK"
+
+    async def _stream_copy_for_probe(
+        self, schema, table, columns, records, *, descriptor
+    ):
+        self.writes.append((descriptor, True))
+        return "COPY 2"
 
     async def _observe_setup_reset_for_probe(self, *, bound, marker):
         return SimpleNamespace(
@@ -1321,6 +1710,7 @@ async def test_initial_probes_do_not_replay_nonidempotent_create_ddl():
     assert passed[ProbeKind.LOGICAL_PARTITION].status is ProbeStatus.PASSED
     assert passed[ProbeKind.GRAPH_ADJACENCY_EXPLAIN].status is ProbeStatus.PASSED
     assert passed[ProbeKind.JSONB_COLUMN_OPTIMIZATION].status is ProbeStatus.PASSED
+    assert passed[ProbeKind.STREAM_COPY].status is ProbeStatus.PASSED
     assert replay_safety["probe.schema.create"] is False
     assert replay_safety["probe.marker.create"] is False
     assert replay_safety["probe.marker.insert"] is False
@@ -1329,6 +1719,8 @@ async def test_initial_probes_do_not_replay_nonidempotent_create_ddl():
     assert replay_safety["probe.graph.nodes.create"] is False
     assert replay_safety["probe.graph.edges.create"] is False
     assert replay_safety["probe.jsonbcol.create"] is False
+    assert replay_safety["probe.streamcopy.create"] is False
+    assert replay_safety["probe.streamcopy.seed"] is False
     assert replay_safety["probe.hgraph.insert"] is True
     assert replay_safety["probe.graph.nodes.insert"] is True
     assert replay_safety["probe.graph.nodes.merge"] is True
@@ -1341,6 +1733,7 @@ async def test_initial_probes_do_not_replay_nonidempotent_create_ddl():
     assert replay_safety["probe.graph.edges.drop"] is True
     assert replay_safety["probe.graph.nodes.drop"] is True
     assert replay_safety["probe.jsonbcol.drop"] is True
+    assert replay_safety["probe.streamcopy.drop"] is True
     assert replay_safety["probe.marker.drop"] is True
     assert replay_safety["probe.schema.drop"] is True
     assert client.reconnect_count == 1

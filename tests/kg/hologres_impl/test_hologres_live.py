@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 import math
+import os
 import uuid
 
 import numpy as np
@@ -20,9 +21,14 @@ from lightrag.kg.hologres.capabilities import (
     ProbeKind,
     ProbeStatus,
     probe_production_capabilities,
+    prove_stream_copy_capability,
     run_initial_isolated_probes,
 )
-from lightrag.kg.hologres.client import quote_qualified_identifier
+from lightrag.kg.hologres.client import (
+    HologresClient,
+    quote_qualified_identifier,
+)
+from lightrag.kg.hologres.config import HologresConfig
 from lightrag.kg.hologres.doc_status import HologresDocStatusStorage
 from lightrag.kg.hologres.graph import HologresGraphStorage
 from lightrag.kg.hologres.kv import HologresKVStorage
@@ -69,6 +75,11 @@ async def test_initial_hologres_capabilities(hologres_live_client):
         by_kind[ProbeKind.GRAPH_ADJACENCY_EXPLAIN].detail_code
         == "graph_adjacency_plan_partition_pruned"
     )
+    assert isolated_report.supports(ProbeKind.STREAM_COPY)
+    assert (
+        by_kind[ProbeKind.STREAM_COPY].detail_code
+        == "stream_copy_conflict_update_frozen"
+    )
     hgraph_result = next(
         result
         for result in isolated_report.results
@@ -86,6 +97,42 @@ async def test_initial_hologres_capabilities(hologres_live_client):
         assert math.isfinite(observed_scores[identifier])
         assert abs(observed_scores[identifier] - expected) <= 1e-3
     assert hgraph_result.evidence.vector_filter_used is False
+
+
+async def test_stream_copy_capability_proof_on_live_hologres(hologres_live_client):
+    client, schema = hologres_live_client
+
+    await client.execute_one(
+        f"CREATE SCHEMA {quote_qualified_identifier(schema)}",
+        descriptor="live.streamcopy.schema",
+        replay_safe=False,
+    )
+    enabled_client = HologresClient(
+        HologresConfig.from_env(
+            {
+                **os.environ,
+                "HOLOGRES_SCHEMA": schema,
+                "HOLOGRES_STREAM_COPY_ENABLED": "true",
+            }
+        )
+    )
+    await enabled_client.open()
+    try:
+        assert enabled_client.stream_copy_available is False
+        version_report = await probe_production_capabilities(enabled_client)
+        proven = await prove_stream_copy_capability(enabled_client, version_report)
+        by_kind = {result.kind: result for result in proven.results}
+        assert by_kind[ProbeKind.STREAM_COPY].status is ProbeStatus.PASSED
+        assert (
+            by_kind[ProbeKind.STREAM_COPY].detail_code
+            == "stream_copy_conflict_update_frozen"
+        )
+        enabled_client.apply_capabilities(proven)
+        assert enabled_client.stream_copy_available is True
+        cached = await prove_stream_copy_capability(enabled_client, version_report)
+        assert cached.supports(ProbeKind.STREAM_COPY) is True
+    finally:
+        await enabled_client.close()
 
 
 async def test_resumable_schema_management(hologres_live_client):
