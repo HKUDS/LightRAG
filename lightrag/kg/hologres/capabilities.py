@@ -56,7 +56,6 @@ class ProbeKind(str, Enum):
     GRAPH_ADJACENCY_EXPLAIN = "graph_adjacency_explain"
     HGRAPH = "hgraph"
     STREAM_COPY = "stream_copy"
-    FULL_TEXT_DDL = "full_text_ddl"
     JSONB_COLUMN_OPTIMIZATION = "jsonb_column_optimization"
     AGE = "age"
 
@@ -97,9 +96,6 @@ PROBE_SPECS = {
     ),
     ProbeKind.STREAM_COPY: ProbeSpec(
         ProbeKind.STREAM_COPY, blocking=False, disposable=True
-    ),
-    ProbeKind.FULL_TEXT_DDL: ProbeSpec(
-        ProbeKind.FULL_TEXT_DDL, blocking=False, disposable=True
     ),
     ProbeKind.JSONB_COLUMN_OPTIMIZATION: ProbeSpec(
         ProbeKind.JSONB_COLUMN_OPTIMIZATION, blocking=False, disposable=True

@@ -129,7 +129,6 @@ def test_probe_catalog_defines_all_later_blocking_and_optional_checks():
         ProbeKind.GRAPH_ADJACENCY_EXPLAIN,
         ProbeKind.HGRAPH,
         ProbeKind.STREAM_COPY,
-        ProbeKind.FULL_TEXT_DDL,
         ProbeKind.JSONB_COLUMN_OPTIMIZATION,
         ProbeKind.AGE,
     }
