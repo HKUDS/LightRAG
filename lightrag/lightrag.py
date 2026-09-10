@@ -966,30 +966,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         default=get_env_value("EMBEDDING_TIMEOUT", DEFAULT_EMBEDDING_TIMEOUT, int)
     )
 
-    admin_write_max_hold_seconds: float | None = field(
-        default=ADMIN_WRITE_MAX_HOLD_SECONDS_OVERRIDE
-    )
-    """Ceiling on how long ONE admin graph write may hold both halves of
-    ``_admin_write_gate``; ``None`` (the default) derives it from this
-    instance's ``default_embedding_timeout``.
-
-    While an admin write holds the pipeline ``busy`` reservation it DEFERS every
-    pipeline start in the workspace, so an unbounded hold -- an embedding
-    endpoint that hangs -- would fence ingestion; dead-owner reclaim does not
-    cover that, because it detects a dead process, not a hung one. On expiry the
-    operation fails loud (500) and the gate's ``finally`` releases both halves.
-
-    Per-instance rather than a module constant BECAUSE the embedding timeout it
-    is derived from is per-instance: ``LightRAG(default_embedding_timeout=300)``
-    is legal without touching the environment, and a process-wide ceiling could
-    not follow it. Set explicitly here or through
-    ``LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS``; an explicit value below the
-    embedding timeout is refused in ``__post_init__``.
-
-    Applies only where the graph storage declares ``requires_single_writer``
-    (``NetworkXStorage``); other backends never take the gate.
-    """
-
     # LLM Configuration
     # ---
 
@@ -1319,6 +1295,36 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
     Full contract, worked example and the exact definition of ``chunk_text``:
     see "Extraction Quality Hook" in ``docs/ProgramingWithCore.md``.
+    """
+
+    admin_write_max_hold_seconds: float | None = field(
+        default=ADMIN_WRITE_MAX_HOLD_SECONDS_OVERRIDE
+    )
+    """Ceiling on how long ONE admin graph write may hold both halves of
+    ``_admin_write_gate``; ``None`` (the default) derives it from this
+    instance's ``default_embedding_timeout``.
+
+    While an admin write holds the pipeline ``busy`` reservation it DEFERS every
+    pipeline start in the workspace, so an unbounded hold -- an embedding
+    endpoint that hangs -- would fence ingestion; dead-owner reclaim does not
+    cover that, because it detects a dead process, not a hung one. On expiry the
+    operation fails loud (500) and the gate's ``finally`` releases both halves.
+
+    Per-instance rather than a module constant BECAUSE the embedding timeout it
+    is derived from is per-instance: ``LightRAG(default_embedding_timeout=300)``
+    is legal without touching the environment, and a process-wide ceiling could
+    not follow it. Set explicitly here or through
+    ``LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS``; an explicit value below the
+    embedding timeout is refused in ``__post_init__``.
+
+    Applies only where the graph storage declares ``requires_single_writer``
+    (``NetworkXStorage``); other backends never take the gate.
+
+    Declared LAST, away from the ``default_embedding_timeout`` it is derived
+    from, because ``LightRAG`` is a plain dataclass without ``kw_only``: field
+    order is public API, and a field inserted mid-class silently rebinds every
+    positional argument after it. Placing it next to its logical neighbour
+    shifted 43 of them. See ``tests/test_dataclass_positional_compatibility.py``.
     """
 
     def _mark_addon_params_dirty(self) -> None:
