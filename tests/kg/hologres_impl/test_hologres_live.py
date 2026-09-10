@@ -25,6 +25,7 @@ from lightrag.kg.hologres.capabilities import (
     run_initial_isolated_probes,
 )
 from lightrag.kg.hologres.client import (
+    STREAM_COPY_MIN_ROWS,
     HologresClient,
     quote_qualified_identifier,
 )
@@ -132,6 +133,88 @@ async def test_stream_copy_capability_proof_on_live_hologres(hologres_live_clien
         cached = await prove_stream_copy_capability(enabled_client, version_report)
         assert cached.supports(ProbeKind.STREAM_COPY) is True
     finally:
+        await enabled_client.close()
+
+
+async def test_stream_copy_bulk_upserts_round_trip_on_live_hologres(
+    hologres_live_client,
+):
+    _client, schema = hologres_live_client
+    enabled_client = HologresClient(
+        HologresConfig.from_env(
+            {
+                **os.environ,
+                "HOLOGRES_SCHEMA": schema,
+                "HOLOGRES_STREAM_COPY_ENABLED": "true",
+            }
+        )
+    )
+    await enabled_client.open()
+    suffix = uuid.uuid4().hex
+    kv = HologresKVStorage(
+        namespace=NameSpace.KV_STORE_TEXT_CHUNKS,
+        workspace=f"lightrag_test_copy_kv_{suffix}",
+        global_config={},
+        embedding_func=None,
+        config=enabled_client.config,
+        client=enabled_client,
+    )
+    vectors = _live_vector_storage(
+        enabled_client,
+        workspace=f"lightrag_test_copy_vec_{suffix}",
+        namespace=NameSpace.VECTOR_STORE_CHUNKS,
+    )
+    initialized = []
+    try:
+        for storage in (kv, vectors):
+            await storage.initialize()
+            initialized.append(storage)
+        assert enabled_client.stream_copy_available is True
+
+        data = {
+            f"chunk-{index:04d}": {"value": index}
+            for index in range(STREAM_COPY_MIN_ROWS)
+        }
+        await kv.upsert(data)
+        assert await kv.get_by_id_strict("chunk-0000") == {"value": 0}
+        await kv.upsert(
+            {key: {**payload, "rev": 2} for key, payload in data.items()}
+        )
+        assert await kv.get_by_id_strict("chunk-0000") == {"value": 0, "rev": 2}
+        assert await kv.get_by_id_strict(
+            f"chunk-{STREAM_COPY_MIN_ROWS - 1:04d}"
+        ) == {"value": STREAM_COPY_MIN_ROWS - 1, "rev": 2}
+        assert await kv.filter_keys(set(data) | {"missing"}) == {"missing"}
+
+        vector_data = {
+            f"vec-{index:04d}": {
+                "content": f"content-{index}",
+                "embedding": [1.0, 0.0, 0.0],
+            }
+            for index in range(STREAM_COPY_MIN_ROWS)
+        }
+        await vectors.upsert(vector_data)
+        stored = await vectors.get_by_id("vec-0000")
+        assert stored is not None
+        assert stored["content"] == "content-0"
+        await vectors.upsert(
+            {
+                key: {
+                    "content": payload["content"] + "-updated",
+                    "embedding": [0.0, 1.0, 0.0],
+                }
+                for key, payload in vector_data.items()
+            }
+        )
+        updated = await vectors.get_by_id("vec-0000")
+        assert updated is not None
+        assert updated["content"] == "content-0-updated"
+    finally:
+        for storage in initialized:
+            try:
+                await storage.drop()
+            finally:
+                await storage.finalize()
         await enabled_client.close()
 
 

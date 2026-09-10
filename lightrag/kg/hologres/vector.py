@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import json
 import math
 from numbers import Real
@@ -14,8 +15,11 @@ from ...base import BaseVectorStorage
 from ...constants import DEFAULT_QUERY_PRIORITY
 from ...namespace import NameSpace
 from ...utils import compute_mdhash_id, validate_workspace
-from .capabilities import probe_production_capabilities
-from .client import quote_qualified_identifier
+from .capabilities import (
+    probe_production_capabilities,
+    prove_stream_copy_capability,
+)
+from .client import STREAM_COPY_MIN_ROWS, quote_qualified_identifier
 from .config import HologresConfig
 from .kv import _SHARED_CLIENTS, _release_shared_client
 from .schema import (
@@ -232,13 +236,16 @@ class HologresVectorStorage(BaseVectorStorage):
                         )
 
                 capabilities = await probe_production_capabilities(actual_client)
-                apply_capabilities = getattr(actual_client, "apply_capabilities", None)
-                if apply_capabilities is not None:
-                    apply_capabilities(capabilities)
                 manager = HologresSchemaManager(actual_client, schema=config.schema)
                 await manager.initialize(
                     vector_schema_descriptors(config.schema, self._dimension)
                 )
+                capabilities = await prove_stream_copy_capability(
+                    actual_client, capabilities
+                )
+                apply_capabilities = getattr(actual_client, "apply_capabilities", None)
+                if apply_capabilities is not None:
+                    apply_capabilities(capabilities)
             except BaseException as initialization_error:
                 release_error = None
                 if owns_shared and actual_client is not None and config is not None:
@@ -405,16 +412,52 @@ class HologresVectorStorage(BaseVectorStorage):
             "embedding = EXCLUDED.embedding, content = EXCLUDED.content, "
             "payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP"
         )
+        use_stream_copy = bool(getattr(client, "stream_copy_available", False))
         for payload_json in payloads:
             records = json.loads(payload_json)
             ids = [r["id"] for r in records]
-            embeddings = [
-                "{" + ",".join(str(float(x)) for x in r["embedding"]) + "}"
-                for r in records
-            ]
             contents = [r["content"] for r in records]
             payload_values = [
                 _deterministic_json(r["payload"], "Hologres vector input is invalid")
+                for r in records
+            ]
+            if use_stream_copy and len(ids) >= STREAM_COPY_MIN_ROWS:
+                updated_at = datetime.now(timezone.utc)
+                rows = [
+                    (
+                        self.workspace,
+                        self.namespace,
+                        record["id"],
+                        [float(value) for value in record["embedding"]],
+                        record["content"],
+                        payload_value,
+                        updated_at,
+                    )
+                    for record, payload_value in zip(records, payload_values)
+                ]
+                try:
+                    await client.copy_rows(
+                        VECTOR_TABLE_NAME,
+                        (
+                            "workspace",
+                            "namespace",
+                            "id",
+                            "embedding",
+                            "content",
+                            "payload",
+                            "updated_at",
+                        ),
+                        rows,
+                        descriptor="vector.upsert",
+                        replay_safe=True,
+                    )
+                except Exception:
+                    raise HologresVectorError(
+                        "Hologres vector upsert failed"
+                    ) from None
+                continue
+            embeddings = [
+                "{" + ",".join(str(float(x)) for x in r["embedding"]) + "}"
                 for r in records
             ]
             try:

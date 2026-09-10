@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 import inspect
 import json
 import math
@@ -7,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from lightrag.kg.hologres.capabilities import CapabilityReport, HologresVersion
+from lightrag.kg.hologres.client import STREAM_COPY_MIN_ROWS
 from lightrag.kg.hologres.config import HologresConfig
 from lightrag.kg.hologres.schema import (
     VECTOR_TABLE_NAME,
@@ -592,6 +594,98 @@ async def test_upsert_accepts_supplied_embeddings_without_calling_provider(ready
     assert ids == ["a", "b"]
     assert json.loads(payloads[0]) == {"content": "alpha", "keep": "yes"}
     assert json.loads(payloads[1]) == {"content": "beta"}
+
+
+class StreamCopyCallClient(CallClient):
+    def __init__(self, config=CONFIG):
+        super().__init__(config)
+        self.stream_copy_available = True
+        self.copies = []
+
+    async def copy_rows(
+        self, table, columns, records, *, descriptor, replay_safe=False, timeout=None
+    ):
+        self.copies.append(
+            {
+                "table": table,
+                "columns": tuple(columns),
+                "records": [tuple(record) for record in records],
+                "descriptor": descriptor,
+                "replay_safe": replay_safe,
+            }
+        )
+        return f"COPY {len(self.copies[-1]['records'])}"
+
+
+def _bulk_vector_data(count):
+    return {
+        f"id-{index:04d}": {
+            "content": f"content-{index}",
+            "embedding": [float(index), 0.0, 0.0],
+        }
+        for index in range(count)
+    }
+
+
+async def test_bulk_upsert_routes_through_stream_copy_when_gated_and_large(
+    ready_storage,
+):
+    client = StreamCopyCallClient()
+    storage = await ready_storage(client)
+    data = _bulk_vector_data(STREAM_COPY_MIN_ROWS)
+
+    await storage.upsert(data)
+
+    assert calls_for(client, "vector.upsert") == []
+    (copy,) = client.copies
+    assert copy["table"] == VECTOR_TABLE_NAME
+    assert copy["columns"] == (
+        "workspace",
+        "namespace",
+        "id",
+        "embedding",
+        "content",
+        "payload",
+        "updated_at",
+    )
+    assert copy["descriptor"] == "vector.upsert"
+    assert copy["replay_safe"] is True
+    assert len(copy["records"]) == len(data)
+    for row in copy["records"]:
+        workspace, namespace, identifier, embedding, content, payload, updated_at = row
+        assert workspace == storage.workspace
+        assert namespace == storage.namespace
+        assert embedding == data[identifier]["embedding"]
+        assert all(isinstance(value, float) for value in embedding)
+        assert content == data[identifier]["content"]
+        assert json.loads(payload) == {"content": data[identifier]["content"]}
+        assert isinstance(updated_at, datetime)
+        assert updated_at.tzinfo is timezone.utc
+
+
+async def test_bulk_upsert_below_threshold_keeps_parameterized_insert(ready_storage):
+    client = StreamCopyCallClient()
+    storage = await ready_storage(client)
+    data = _bulk_vector_data(STREAM_COPY_MIN_ROWS - 1)
+
+    await storage.upsert(data)
+
+    assert client.copies == []
+    (write,) = calls_for(client, "vector.upsert")
+    assert write["method"] == "execute_one"
+
+
+async def test_bulk_upsert_without_proven_capability_keeps_parameterized_insert(
+    ready_storage,
+):
+    client = CallClient()
+    storage = await ready_storage(client)
+    data = _bulk_vector_data(STREAM_COPY_MIN_ROWS)
+
+    await storage.upsert(data)
+
+    (write,) = calls_for(client, "vector.upsert")
+    assert write["method"] == "execute_one"
 
 
 async def test_upsert_uses_bounded_replay_safe_sql_chunks(ready_storage, monkeypatch):

@@ -82,6 +82,10 @@ _RESET_STATEMENTS = (
 )
 _T = TypeVar("_T")
 
+# Below this many rows the parameterized INSERT path wins: the COPY channel
+# pays an extra intro prepare round-trip per call.
+STREAM_COPY_MIN_ROWS = 32
+
 
 def validate_identifier(identifier: str) -> str:
     """Validate one unquoted PostgreSQL identifier component."""

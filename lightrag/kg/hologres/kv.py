@@ -5,14 +5,22 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import json
 from typing import Any, ClassVar, final
 
 from ...base import BaseKVStorage
 from ...namespace import NameSpace
 from ...utils import validate_workspace
-from .capabilities import probe_production_capabilities
-from .client import HologresClientManager, quote_qualified_identifier
+from .capabilities import (
+    probe_production_capabilities,
+    prove_stream_copy_capability,
+)
+from .client import (
+    STREAM_COPY_MIN_ROWS,
+    HologresClientManager,
+    quote_qualified_identifier,
+)
 from .config import HologresConfig
 from .schema import KV_TABLE_NAME, HologresSchemaManager, kv_schema_descriptors
 
@@ -198,13 +206,16 @@ class HologresKVStorage(BaseKVStorage):
 
             try:
                 capabilities = await probe_production_capabilities(actual_client)
-                apply_capabilities = getattr(actual_client, "apply_capabilities", None)
-                if apply_capabilities is not None:
-                    apply_capabilities(capabilities)
                 schema_manager = HologresSchemaManager(
                     actual_client, schema=config.schema
                 )
                 await schema_manager.initialize(kv_schema_descriptors(config.schema))
+                capabilities = await prove_stream_copy_capability(
+                    actual_client, capabilities
+                )
+                apply_capabilities = getattr(actual_client, "apply_capabilities", None)
+                if apply_capabilities is not None:
+                    apply_capabilities(capabilities)
             except BaseException as initialization_error:
                 if owns_shared:
                     release = getattr(_SHARED_CLIENTS, "release")
@@ -405,6 +416,7 @@ class HologresKVStorage(BaseKVStorage):
             "payload = EXCLUDED.payload, "
             "updated_at = CURRENT_TIMESTAMP"
         )
+        use_stream_copy = bool(getattr(client, "stream_copy_available", False))
         for payload_json in chunks:
             payload_dict = json.loads(payload_json)
             keys = list(payload_dict.keys())
@@ -419,6 +431,23 @@ class HologresKVStorage(BaseKVStorage):
             values = [
                 _deterministic_json(payload_dict[k]) for k in keys
             ]
+            if use_stream_copy and len(keys) >= STREAM_COPY_MIN_ROWS:
+                updated_at = datetime.now(timezone.utc)
+                rows = [
+                    (self.workspace, self.namespace, key, value, updated_at)
+                    for key, value in zip(keys, values)
+                ]
+                try:
+                    await client.copy_rows(
+                        KV_TABLE_NAME,
+                        ("workspace", "namespace", "id", "payload", "updated_at"),
+                        rows,
+                        descriptor=descriptor,
+                        replay_safe=True,
+                    )
+                except Exception:
+                    raise HologresKVError("Hologres KV upsert failed") from None
+                continue
             try:
                 await client.execute_one(
                     sql,

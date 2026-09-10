@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import replace
+from datetime import datetime, timezone
 import inspect
 import json
 import logging
@@ -9,6 +10,7 @@ import pytest
 
 from lightrag.kg.hologres.capabilities import CapabilityReport, HologresVersion
 from lightrag.kg.hologres.client import (
+    STREAM_COPY_MIN_ROWS,
     HologresClientManager,
     HologresOperationError,
 )
@@ -997,6 +999,163 @@ async def test_generic_upsert_sends_complete_objects_in_replay_safe_replacement_
     assert len(client.calls) == before
 
 
+class StreamCopyCallClient(CallClient):
+    def __init__(self, config=CONFIG):
+        super().__init__(config)
+        self.stream_copy_available = True
+        self.copies = []
+
+    async def copy_rows(
+        self, table, columns, records, *, descriptor, replay_safe=False, timeout=None
+    ):
+        self.copies.append(
+            {
+                "table": table,
+                "columns": tuple(columns),
+                "records": [tuple(record) for record in records],
+                "descriptor": descriptor,
+                "replay_safe": replay_safe,
+            }
+        )
+        return f"COPY {len(self.copies[-1]['records'])}"
+
+
+def _bulk_kv_data(count):
+    return {f"id-{index:04d}": {"value": index} for index in range(count)}
+
+
+async def test_bulk_upsert_routes_through_stream_copy_when_gated_and_large(
+    ready_storage,
+):
+    client = StreamCopyCallClient()
+    storage = await ready_storage(client, workspace="workspace-secret")
+    data = _bulk_kv_data(STREAM_COPY_MIN_ROWS)
+
+    await storage.upsert(data)
+
+    assert calls_for(client, "kv.upsert.replace") == []
+    (copy,) = client.copies
+    assert copy["table"] == KV_TABLE_NAME
+    assert copy["columns"] == (
+        "workspace",
+        "namespace",
+        "id",
+        "payload",
+        "updated_at",
+    )
+    assert copy["descriptor"] == "kv.upsert.replace"
+    assert copy["replay_safe"] is True
+    assert len(copy["records"]) == len(data)
+    timestamps = set()
+    sent = {}
+    for row in copy["records"]:
+        workspace, namespace, identifier, payload, updated_at = row
+        assert workspace == storage.workspace
+        assert namespace == storage.namespace
+        assert isinstance(updated_at, datetime)
+        assert updated_at.tzinfo is timezone.utc
+        timestamps.add(updated_at)
+        sent[identifier] = json.loads(payload)
+    assert sent == data
+    # One shared client-side timestamp per chunk keeps the replayed COPY
+    # byte-identical, which is what justifies replay_safe=True.
+    assert len(timestamps) == 1
+
+
+async def test_bulk_upsert_below_threshold_keeps_parameterized_insert(
+    ready_storage,
+):
+    client = StreamCopyCallClient()
+    storage = await ready_storage(client, workspace="workspace-secret")
+    data = _bulk_kv_data(STREAM_COPY_MIN_ROWS - 1)
+
+    await storage.upsert(data)
+
+    assert client.copies == []
+    (call,) = calls_for(client, "kv.upsert.replace")
+    assert call["method"] == "execute_one"
+
+
+async def test_bulk_upsert_without_proven_capability_keeps_parameterized_insert(
+    ready_storage,
+):
+    client = CallClient()
+    storage = await ready_storage(client, workspace="workspace-secret")
+    data = _bulk_kv_data(STREAM_COPY_MIN_ROWS)
+
+    await storage.upsert(data)
+
+    (call,) = calls_for(client, "kv.upsert.replace")
+    assert call["method"] == "execute_one"
+
+
+async def test_full_docs_bulk_upsert_merges_before_the_stream_copy(ready_storage):
+    client = StreamCopyCallClient()
+
+    def batch_rows(_sql, values, _kwargs):
+        return [
+            {"ordinality": index, "payload": None}
+            for index, _item in enumerate(values[3], start=1)
+        ]
+
+    client.handlers["kv.read.batch"] = batch_rows
+    storage = await ready_storage(
+        client,
+        namespace=NameSpace.KV_STORE_FULL_DOCS,
+        workspace="workspace-secret",
+    )
+    data = _bulk_kv_data(STREAM_COPY_MIN_ROWS)
+
+    await storage.upsert(data)
+
+    (copy,) = client.copies
+    assert copy["descriptor"] == "kv.upsert.full_docs"
+    assert {
+        row[2]: json.loads(row[3]) for row in copy["records"]
+    } == data
+
+
+async def test_initialize_orders_probe_schema_prove_and_applies_the_proven_report(
+    monkeypatch,
+):
+    import lightrag.kg.hologres.kv as kv_module
+
+    events = []
+    version_report = CapabilityReport(HologresVersion(5, 0, 0))
+    proven_report = CapabilityReport(HologresVersion(5, 0, 0))
+
+    async def probe(client):
+        events.append("probe")
+        return version_report
+
+    async def prove(client, incoming):
+        assert incoming is version_report
+        events.append("prove")
+        return proven_report
+
+    class OrderedSchemaManager:
+        def __init__(self, client, *, schema):
+            self.schema = schema
+
+        async def initialize(self, descriptors):
+            events.append("schema")
+            return ()
+
+    class ApplyClient(CallClient):
+        def apply_capabilities(self, capabilities):
+            events.append(("apply", capabilities))
+
+    monkeypatch.setattr(kv_module, "probe_production_capabilities", probe)
+    monkeypatch.setattr(kv_module, "prove_stream_copy_capability", prove)
+    monkeypatch.setattr(kv_module, "HologresSchemaManager", OrderedSchemaManager)
+
+    client = ApplyClient()
+    storage = make_storage(client=client, config=client.config)
+    await storage.initialize()
+
+    assert events == ["probe", "schema", "prove", ("apply", proven_report)]
+
+
 async def test_full_docs_upsert_sql_pins_every_protected_merge_rule(ready_storage):
     client = CallClient()
 
@@ -1181,17 +1340,19 @@ async def test_drop_database_failure_raises_instead_of_returning_error_dict(read
     assert "drop-secret" not in str(exc_info.value)
 
 
-def test_kv_module_has_no_raw_connection_transaction_copy_or_script_escape_hatches():
+def test_kv_module_has_no_raw_connection_transaction_or_script_escape_hatches():
     source = (
         Path(__file__).resolve().parents[3] / "lightrag/kg/hologres/kv.py"
     ).read_text(encoding="utf-8")
 
+    # copy_rows is the restricted client's gated stream COPY channel, so it is
+    # no longer forbidden here; raw COPY SQL still cannot appear because the
+    # module never builds COPY statements itself.
     for forbidden in (
         "asyncpg",
         "transaction(",
         "executemany",
         ".acquire(",
-        "copy_rows",
         "COPY ",
         "BEGIN",
         "COMMIT",

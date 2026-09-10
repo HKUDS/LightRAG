@@ -29,7 +29,10 @@ from ...base import BaseGraphStorage
 from ...namespace import NameSpace
 from ...types import KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode
 from ...utils import validate_workspace
-from .capabilities import probe_production_capabilities
+from .capabilities import (
+    probe_production_capabilities,
+    prove_stream_copy_capability,
+)
 from .client import quote_qualified_identifier
 from .config import HologresConfig
 from .kv import _SHARED_CLIENTS, _release_shared_client
@@ -196,13 +199,16 @@ class HologresGraphStorage(BaseGraphStorage):
                         )
 
                 capabilities = await probe_production_capabilities(actual_client)
+                manager = HologresSchemaManager(actual_client, schema=config.schema)
+                await manager.initialize(graph_schema_descriptors(config.schema))
+                capabilities = await prove_stream_copy_capability(
+                    actual_client, capabilities
+                )
                 apply_capabilities = getattr(
                     actual_client, "apply_capabilities", None
                 )
                 if apply_capabilities is not None:
                     apply_capabilities(capabilities)
-                manager = HologresSchemaManager(actual_client, schema=config.schema)
-                await manager.initialize(graph_schema_descriptors(config.schema))
             except BaseException as initialization_error:
                 release_error = None
                 if owns_shared and actual_client is not None and config is not None:
