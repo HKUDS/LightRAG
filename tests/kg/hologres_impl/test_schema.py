@@ -423,6 +423,7 @@ def test_descriptor_rejects_destructive_and_rebuild_shapes(sql):
         'CREATE INDEX IF NOT EXISTS "a_idx" ON "s"."a" ("id")',
         'CREATE UNIQUE INDEX IF NOT EXISTS "a_uidx" ON "s"."a" ("id")',
         'ALTER TABLE "s"."a" ADD COLUMN IF NOT EXISTS "payload" text',
+        'ALTER TABLE "s"."a" ALTER COLUMN payload SET (enable_columnar_type = on)',
         'COMMENT ON TABLE "s"."a" IS \'probe\'',
     ],
 )
@@ -430,6 +431,28 @@ def test_descriptor_accepts_additive_shapes(sql):
     descriptor = make_descriptor(sql=sql)
 
     assert descriptor.sql == sql
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        'ALTER TABLE "s"."a" ALTER COLUMN payload SET (orientation = on)',
+        'ALTER TABLE "s"."a" ALTER COLUMN payload SET (enable_columnar_type = off)',
+        'ALTER TABLE "s"."a" ALTER COLUMN payload '
+        "SET (enable_columnar_type = on, dictionary_encoding = on)",
+        'ALTER TABLE s.a ALTER COLUMN payload SET (enable_columnar_type = on)',
+        'ALTER TABLE "s"."a" ALTER COLUMN "payload" '
+        "SET (enable_columnar_type = on)",
+        'ALTER TABLE "s"."a" ALTER COLUMN payload '
+        "SET ((enable_columnar_type = on))",
+        'ALTER TABLE "s"."a" ALTER COLUMN payload '
+        "SET (enable_columnar_type = on) DISABLE TRIGGER ALL",
+        'ALTER TABLE "s"."a" ALTER COLUMN payload RESET (enable_columnar_type)',
+    ],
+)
+def test_descriptor_rejects_columnar_property_variants(sql):
+    with pytest.raises(HologresOfflineMigrationRequired):
+        make_descriptor(sql=sql)
 
 
 @pytest.mark.parametrize(

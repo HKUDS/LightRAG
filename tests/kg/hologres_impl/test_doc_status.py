@@ -211,7 +211,7 @@ def test_constructor_validates_namespace_workspace_and_redacts_repr():
 
 
 def test_descriptor_is_exact_partitioned_and_single_statement():
-    (descriptor,) = doc_status_schema_descriptors(CONFIG.schema)
+    (descriptor, *columnar_descriptors) = doc_status_schema_descriptors(CONFIG.schema)
 
     assert descriptor.identity == ("doc_status", 1, 1, "shared_table")
     assert descriptor.replay_safe is True
@@ -259,6 +259,29 @@ def test_descriptor_is_exact_partitioned_and_single_statement():
     )
     assert "a.attnotnull" in descriptor.postcondition_sql
     assert "p.contype = 'p'" in descriptor.postcondition_sql
+
+    assert [d.identity for d in columnar_descriptors] == [
+        ("doc_status", 1, 2, "columnar_chunks_list"),
+        ("doc_status", 1, 3, "columnar_metadata"),
+        ("doc_status", 1, 4, "columnar_extra"),
+    ]
+    for columnar_descriptor, column in zip(
+        columnar_descriptors, ("chunks_list", "metadata", "extra")
+    ):
+        assert columnar_descriptor.replay_safe is True
+        assert columnar_descriptor.sql == (
+            f'ALTER TABLE "{CONFIG.schema}"."{DOC_STATUS_TABLE_NAME}" '
+            f"ALTER COLUMN {column} SET (enable_columnar_type = on)"
+        )
+        assert (
+            "attoptions @> ARRAY['enable_columnar_type=on']"
+            in columnar_descriptor.postcondition_sql
+        )
+        assert columnar_descriptor.postcondition_args == (
+            CONFIG.schema,
+            DOC_STATUS_TABLE_NAME,
+            column,
+        )
 
 
 async def test_injected_lifecycle_is_idempotent_and_caller_owned(

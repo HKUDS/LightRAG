@@ -918,6 +918,122 @@ async def _probe_graph_partition_adjacency(
         return _adjacency_failed("graph_probe_failed")
 
 
+async def _probe_jsonb_column_optimization(
+    client: HologresClient,
+    schema: str,
+    table: str,
+    verify_ownership: Callable[[], Awaitable[None]],
+) -> ProbeResult:
+    """Freeze the columnar-jsonb contract live before production relies on it.
+
+    Hologres rejects ``enable_columnar_type`` inline in CREATE TABLE, so the
+    production descriptors apply it with a separate ALTER step. This probe
+    proves, on a disposable row-column hybrid table, that the exact ALTER
+    shape the schema manager emits is accepted, that
+    ``pg_attribute.attoptions`` records the property (the same catalog check
+    the descriptor postconditions use), that re-running the identical ALTER
+    is safe (the ledger may replay a prepared step after a crash), and that
+    jsonb values written after the switch round-trip unchanged.
+    """
+
+    qualified_table = quote_qualified_identifier(schema, table)
+    alter_sql = (
+        f"ALTER TABLE {qualified_table} "
+        "ALTER COLUMN payload SET (enable_columnar_type = on)"
+    )
+    # Byte-identical to schema._JSONB_COLUMNAR_POSTCONDITION so the probe
+    # freezes exactly the readback the production postconditions depend on.
+    attoptions_sql = (
+        "SELECT COALESCE(("
+        "SELECT a.attoptions @> ARRAY['enable_columnar_type=on'] "
+        "FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid "
+        "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r' "
+        "AND a.attname = $3 AND NOT a.attisdropped"
+        "), false)"
+    )
+
+    def _failed(detail_code: str) -> ProbeResult:
+        return _result(
+            ProbeKind.JSONB_COLUMN_OPTIMIZATION, ProbeStatus.FAILED, detail_code
+        )
+
+    try:
+        await verify_ownership()
+        await client.execute_one(
+            f"CREATE TABLE {qualified_table} ("
+            "id text PRIMARY KEY, payload jsonb NOT NULL"
+            ") WITH (orientation = 'row,column')",
+            descriptor="probe.jsonbcol.create",
+            replay_safe=False,
+        )
+        await verify_ownership()
+        await client.execute_one(
+            alter_sql,
+            descriptor="probe.jsonbcol.alter",
+            replay_safe=True,
+        )
+        await verify_ownership()
+        recorded = await client.fetch_value(
+            attoptions_sql,
+            schema,
+            table,
+            "payload",
+            descriptor="probe.jsonbcol.catalog",
+        )
+        if recorded is not True:
+            return _failed("jsonb_columnar_property_missing")
+        await verify_ownership()
+        await client.execute_one(
+            alter_sql,
+            descriptor="probe.jsonbcol.alter.replay",
+            replay_safe=True,
+        )
+        await verify_ownership()
+        replay_recorded = await client.fetch_value(
+            attoptions_sql,
+            schema,
+            table,
+            "payload",
+            descriptor="probe.jsonbcol.catalog.replay",
+        )
+        if replay_recorded is not True:
+            return _failed("jsonb_columnar_replay_mismatch")
+        await verify_ownership()
+        await client.execute_one(
+            f"INSERT INTO {qualified_table} (id, payload) "
+            "VALUES ($1, $2::jsonb) "
+            "ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload",
+            "probe-row",
+            '{"keep":"x","nested":{"a":[1,2]}}',
+            descriptor="probe.jsonbcol.upsert",
+            replay_safe=True,
+        )
+        await verify_ownership()
+        payload = await client.fetch_value(
+            f"SELECT payload FROM {qualified_table} WHERE id = $1",
+            "probe-row",
+            descriptor="probe.jsonbcol.fetch",
+        )
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return _failed("jsonb_columnar_roundtrip_mismatch")
+        if payload != {"keep": "x", "nested": {"a": [1, 2]}}:
+            return _failed("jsonb_columnar_roundtrip_mismatch")
+        return _result(
+            ProbeKind.JSONB_COLUMN_OPTIMIZATION,
+            ProbeStatus.PASSED,
+            "jsonb_columnar_layout_frozen",
+        )
+    except HologresProbeError:
+        raise
+    except Exception:
+        return _failed("jsonb_columnar_probe_failed")
+
+
 async def _verify_probe_ownership(
     client: HologresClient,
     schema: str,
@@ -1010,6 +1126,7 @@ async def run_initial_isolated_probes(
     hgraph_table = f"lightrag_test_hgraph_{uuid.uuid4().hex}"
     graph_nodes_table = f"lightrag_test_gnodes_{uuid.uuid4().hex}"
     graph_edges_table = f"lightrag_test_gedges_{uuid.uuid4().hex}"
+    jsonb_columnar_table = f"lightrag_test_jsonbcol_{uuid.uuid4().hex}"
     qualified_schema = quote_qualified_identifier(guarded_schema)
     qualified_marker = quote_qualified_identifier(guarded_schema, marker_table)
     try:
@@ -1079,6 +1196,12 @@ async def run_initial_isolated_probes(
                 verify_ownership,
             )
         )
+        await verify_ownership()
+        results.append(
+            await _probe_jsonb_column_optimization(
+                client, guarded_schema, jsonb_columnar_table, verify_ownership
+            )
+        )
     finally:
         await _cleanup_owned_probe_schema(
             client,
@@ -1090,6 +1213,7 @@ async def run_initial_isolated_probes(
                 (hgraph_table, "probe.hgraph.drop"),
                 (graph_edges_table, "probe.graph.edges.drop"),
                 (graph_nodes_table, "probe.graph.nodes.drop"),
+                (jsonb_columnar_table, "probe.jsonbcol.drop"),
             ),
         )
 

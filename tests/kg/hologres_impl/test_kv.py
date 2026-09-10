@@ -696,7 +696,7 @@ def test_storage_repr_hides_injected_config_and_client_secrets():
 
 
 def test_kv_descriptor_pins_logical_hybrid_table_and_exact_catalog_postcondition():
-    (descriptor,) = kv_schema_descriptors("lightrag_test_kv")
+    (descriptor, columnar_descriptor) = kv_schema_descriptors("lightrag_test_kv")
 
     assert KV_TABLE_NAME == "lightrag_hologres_kv"
     assert descriptor.identity == ("kv", 1, 1, "shared_table")
@@ -751,6 +751,23 @@ def test_kv_descriptor_pins_logical_hybrid_table_and_exact_catalog_postcondition
         "namespace",
         "id",
     ]
+
+    assert columnar_descriptor.identity == ("kv", 1, 2, "columnar_payload")
+    assert columnar_descriptor.replay_safe is True
+    assert columnar_descriptor.sql == (
+        'ALTER TABLE "lightrag_test_kv"."lightrag_hologres_kv" '
+        "ALTER COLUMN payload SET (enable_columnar_type = on)"
+    )
+    assert (
+        "attoptions @> ARRAY['enable_columnar_type=on']"
+        in columnar_descriptor.postcondition_sql
+    )
+    assert "NOT a.attisdropped" in columnar_descriptor.postcondition_sql
+    assert columnar_descriptor.postcondition_args == (
+        "lightrag_test_kv",
+        KV_TABLE_NAME,
+        "payload",
+    )
 
 
 @pytest.mark.parametrize("schema", ['bad"schema', "bad.schema", ""])

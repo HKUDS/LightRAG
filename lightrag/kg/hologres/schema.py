@@ -31,6 +31,7 @@ from .client import (
     HologresSqlError,
     OperationKind,
     _is_lexically_read_only,
+    _QuotedIdentifier,
     _scan_statement_tokens,
     _top_level_tokens,
     quote_qualified_identifier,
@@ -173,16 +174,52 @@ def _reject_offline() -> None:
     )
 
 
+_COLUMNAR_PROPERTY_TOKENS = ("ENABLE_COLUMNAR_TYPE", "ON")
+
+
+def _is_columnar_property_statement(
+    scanned: tuple[tuple[Any, int], ...],
+) -> bool:
+    """Match exactly ``ALTER TABLE "s"."t" ALTER COLUMN c SET (enable_columnar_type = on)``.
+
+    This is the sole accepted ALTER beyond ADD COLUMN IF NOT EXISTS: Hologres
+    only assigns the columnar layout property after CREATE (the inline CREATE
+    column-property syntax was refused live), and the statement changes the
+    column's physical layout only, never the logical schema.
+    """
+
+    top = _top_level_tokens(scanned)
+    if len(top) != 8:
+        return False
+    if (top[0], top[1]) != ("ALTER", "TABLE"):
+        return False
+    if not (
+        isinstance(top[2], _QuotedIdentifier)
+        and isinstance(top[3], _QuotedIdentifier)
+    ):
+        return False
+    if (top[4], top[5], top[7]) != ("ALTER", "COLUMN", "SET"):
+        return False
+    if not isinstance(top[6], str):
+        return False
+    if any(depth > 1 for _token, depth in scanned):
+        return False
+    nested = tuple(token for token, depth in scanned if depth == 1)
+    return nested == _COLUMNAR_PROPERTY_TOKENS
+
+
 def _validate_additive_statement(sql: str) -> None:
     """Reject anything that is not an additive, expand-only change.
 
     The classifier is lexical and deliberately conservative: only guarded
-    ``CREATE ... IF NOT EXISTS``, ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS``
-    and ``COMMENT ON`` shapes are accepted. Destructive statements, renames,
-    type changes and table rebuilds are refused with an offline-migration hint.
+    ``CREATE ... IF NOT EXISTS``, ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS``,
+    the single columnar-property ``ALTER COLUMN ... SET`` shape and
+    ``COMMENT ON`` are accepted. Destructive statements, renames, type changes
+    and table rebuilds are refused with an offline-migration hint.
     """
 
-    tokens = _top_level_tokens(_scan_statement_tokens(sql))
+    scanned = _scan_statement_tokens(sql)
+    tokens = _top_level_tokens(scanned)
     if not tokens:
         _reject_offline()
     command = tokens[0]
@@ -198,6 +235,8 @@ def _validate_additive_statement(sql: str) -> None:
         return
 
     if command == "ALTER":
+        if _is_columnar_property_statement(scanned):
+            return
         if len(tokens) < 2 or tokens[1] != "TABLE":
             _reject_offline()
         if not _contains_sequence(tokens, ("ADD", "COLUMN", "IF", "NOT", "EXISTS")):
@@ -338,6 +377,47 @@ def _orientation_postcondition(expected_orientation: str) -> str:
     )
 
 
+_JSONB_COLUMNAR_POSTCONDITION = (
+    "SELECT COALESCE(("
+    "SELECT a.attoptions @> ARRAY['enable_columnar_type=on'] "
+    "FROM pg_catalog.pg_class c "
+    "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+    "JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid "
+    "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r' "
+    "AND a.attname = $3 AND NOT a.attisdropped"
+    "), false)"
+)
+
+
+def _jsonb_columnar_descriptor(
+    schema: str, component: str, step: int, table_name: str, column: str
+) -> SchemaDescriptor:
+    """Return the descriptor enabling columnar layout for one jsonb column.
+
+    Hologres only accepts ``enable_columnar_type`` as a post-CREATE column
+    property (the inline CREATE column-property syntax was refused live), so
+    every jsonb column gets its own single-statement descriptor step whose
+    postcondition reads the persisted option back from pg_attribute.
+    """
+
+    validated = _validated_schema(schema)
+    qualified_table = quote_qualified_identifier(validated, table_name)
+    column_name = validate_identifier(column)
+    return SchemaDescriptor(
+        name=f"columnar_{column_name}",
+        component=component,
+        version=1,
+        step=step,
+        sql=(
+            f"ALTER TABLE {qualified_table} "
+            f"ALTER COLUMN {column_name} SET (enable_columnar_type = on)"
+        ),
+        postcondition_sql=_JSONB_COLUMNAR_POSTCONDITION,
+        postcondition_args=(validated, table_name, column_name),
+        replay_safe=True,
+    )
+
+
 def bootstrap_descriptors(schema: str) -> tuple[SchemaDescriptor, SchemaDescriptor]:
     """Return the narrowly scoped descriptors that create the ledger itself.
 
@@ -398,8 +478,8 @@ def bootstrap_descriptors(schema: str) -> tuple[SchemaDescriptor, SchemaDescript
     return namespace, ledger
 
 
-def kv_schema_descriptors(schema: str) -> tuple[SchemaDescriptor]:
-    """Return the fixed shared-table descriptor for Hologres KV records."""
+def kv_schema_descriptors(schema: str) -> tuple[SchemaDescriptor, SchemaDescriptor]:
+    """Return the shared-table and columnar-payload descriptors for KV records."""
 
     validated = _validated_schema(schema)
     qualified_table = quote_qualified_identifier(validated, KV_TABLE_NAME)
@@ -474,11 +554,14 @@ def kv_schema_descriptors(schema: str) -> tuple[SchemaDescriptor]:
         ),
         replay_safe=True,
     )
-    return (descriptor,)
+    return (
+        descriptor,
+        _jsonb_columnar_descriptor(schema, "kv", 2, KV_TABLE_NAME, "payload"),
+    )
 
 
-def doc_status_schema_descriptors(schema: str) -> tuple[SchemaDescriptor]:
-    """Return the fixed shared-table descriptor for document status records."""
+def doc_status_schema_descriptors(schema: str) -> tuple[SchemaDescriptor, ...]:
+    """Return the shared-table and columnar-jsonb descriptors for doc status."""
 
     validated = _validated_schema(schema)
     qualified_table = quote_qualified_identifier(validated, DOC_STATUS_TABLE_NAME)
@@ -573,12 +656,23 @@ def doc_status_schema_descriptors(schema: str) -> tuple[SchemaDescriptor]:
         ),
         replay_safe=True,
     )
-    return (descriptor,)
+    return (
+        descriptor,
+        _jsonb_columnar_descriptor(
+            schema, "doc_status", 2, DOC_STATUS_TABLE_NAME, "chunks_list"
+        ),
+        _jsonb_columnar_descriptor(
+            schema, "doc_status", 3, DOC_STATUS_TABLE_NAME, "metadata"
+        ),
+        _jsonb_columnar_descriptor(
+            schema, "doc_status", 4, DOC_STATUS_TABLE_NAME, "extra"
+        ),
+    )
 
 
 def vector_schema_descriptors(
     schema: str, dimension: int
-) -> tuple[SchemaDescriptor]:
+) -> tuple[SchemaDescriptor, SchemaDescriptor]:
     """Return the dimension-bound descriptor for the shared vector table.
 
     The table carries the HGraph Cosine index property whose DDL syntax and
@@ -691,11 +785,14 @@ def vector_schema_descriptors(
         ),
         replay_safe=True,
     )
-    return (descriptor,)
+    return (
+        descriptor,
+        _jsonb_columnar_descriptor(schema, "vector", 2, VECTOR_TABLE_NAME, "payload"),
+    )
 
 
-def graph_schema_descriptors(schema: str) -> tuple[SchemaDescriptor, SchemaDescriptor]:
-    """Return the fixed two-table descriptors for the Hologres graph store.
+def graph_schema_descriptors(schema: str) -> tuple[SchemaDescriptor, ...]:
+    """Return the two-table and columnar-jsonb descriptors for the graph store.
 
     Both tables use the live-proven Hologres DDL: row-column hybrid
     orientation, LOGICAL PARTITION BY LIST on workspace, and a composite
@@ -819,7 +916,16 @@ def graph_schema_descriptors(schema: str) -> tuple[SchemaDescriptor, SchemaDescr
         ),
         replay_safe=True,
     )
-    return (nodes_descriptor, edges_descriptor)
+    return (
+        nodes_descriptor,
+        edges_descriptor,
+        _jsonb_columnar_descriptor(
+            schema, "graph", 3, GRAPH_NODES_TABLE_NAME, "properties"
+        ),
+        _jsonb_columnar_descriptor(
+            schema, "graph", 4, GRAPH_EDGES_TABLE_NAME, "properties"
+        ),
+    )
 
 
 def claim_statement(schema: str) -> str:

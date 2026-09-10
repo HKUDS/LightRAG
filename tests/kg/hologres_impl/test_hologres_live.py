@@ -219,15 +219,15 @@ async def test_hologres_kv_logical_partitions_and_crud(hologres_live_client):
             await item.initialize()
             initialized.append(item)
 
-        (descriptor,) = kv_schema_descriptors(schema)
-        assert (
-            await client.fetch_value(
-                descriptor.postcondition_sql,
-                *descriptor.postcondition_args,
-                descriptor="live.kv.catalog",
+        for descriptor in kv_schema_descriptors(schema):
+            assert (
+                await client.fetch_value(
+                    descriptor.postcondition_sql,
+                    *descriptor.postcondition_args,
+                    descriptor="live.kv.catalog",
+                )
+                is True
             )
-            is True
-        )
 
         await primary.upsert({"shared": {"value": "a", "old": True}})
         await isolated.upsert({"shared": {"value": "b"}})
@@ -409,15 +409,15 @@ async def test_hologres_doc_status_contract(hologres_live_client):
             await item.initialize()
             initialized.append(item)
 
-        (descriptor,) = doc_status_schema_descriptors(schema)
-        assert (
-            await client.fetch_value(
-                descriptor.postcondition_sql,
-                *descriptor.postcondition_args,
-                descriptor="live.doc_status.catalog",
+        for descriptor in doc_status_schema_descriptors(schema):
+            assert (
+                await client.fetch_value(
+                    descriptor.postcondition_sql,
+                    *descriptor.postcondition_args,
+                    descriptor="live.doc_status.catalog",
+                )
+                is True
             )
-            is True
-        )
 
         await primary.upsert(
             {
@@ -679,15 +679,15 @@ async def test_hologres_vector_catalog_crud_and_live_similarity_query(
             await storage.initialize()
             initialized.append(storage)
 
-        (descriptor,) = vector_schema_descriptors(schema, 3)
-        assert (
-            await client.fetch_value(
-                descriptor.postcondition_sql,
-                *descriptor.postcondition_args,
-                descriptor="live.vector.catalog",
+        for descriptor in vector_schema_descriptors(schema, 3):
+            assert (
+                await client.fetch_value(
+                    descriptor.postcondition_sql,
+                    *descriptor.postcondition_args,
+                    descriptor="live.vector.catalog",
+                )
+                is True
             )
-            is True
-        )
 
         wrong_dimension = _live_vector_storage(
             client,

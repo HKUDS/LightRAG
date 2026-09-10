@@ -21,6 +21,7 @@ from lightrag.kg.hologres.capabilities import (
 )
 from lightrag.kg.hologres.client import HologresClient
 from lightrag.kg.hologres.config import HologresConfig
+from lightrag.kg.hologres.schema import _JSONB_COLUMNAR_POSTCONDITION
 
 
 @pytest.mark.parametrize(
@@ -1068,6 +1069,188 @@ async def test_graph_probe_reraises_ownership_errors_instead_of_classifying():
         await _run_graph_probe(client)
 
 
+class JsonbColumnarProbeClient:
+    def __init__(self):
+        self.events = []
+        self.statements = {}
+
+    async def execute_one(self, sql, *values, descriptor, replay_safe=False):
+        self.events.append(descriptor)
+        self.statements[descriptor] = (sql, values, replay_safe)
+        return "OK"
+
+    async def fetch_value(self, sql, *values, descriptor):
+        self.events.append(descriptor)
+        self.statements[descriptor] = (sql, values, None)
+        if descriptor in ("probe.jsonbcol.catalog", "probe.jsonbcol.catalog.replay"):
+            return True
+        if descriptor == "probe.jsonbcol.fetch":
+            return '{"keep":"x","nested":{"a":[1,2]}}'
+        raise AssertionError(f"Unexpected value fetch: {descriptor}")
+
+
+async def _run_jsonb_columnar_probe(client):
+    async def verify_ownership():
+        client.events.append("probe.marker.verify")
+
+    return await hologres_capabilities._probe_jsonb_column_optimization(
+        client,
+        "lightrag_test_jsonbcol_probe",
+        "lightrag_test_jsonbcol",
+        verify_ownership,
+    )
+
+
+@pytest.mark.asyncio
+async def test_jsonb_columnar_probe_freezes_alter_catalog_and_roundtrip():
+    client = JsonbColumnarProbeClient()
+
+    result = await _run_jsonb_columnar_probe(client)
+
+    assert result == ProbeResult(
+        kind=ProbeKind.JSONB_COLUMN_OPTIMIZATION,
+        status=ProbeStatus.PASSED,
+        blocking=False,
+        detail_code="jsonb_columnar_layout_frozen",
+    )
+    assert client.events == [
+        "probe.marker.verify",
+        "probe.jsonbcol.create",
+        "probe.marker.verify",
+        "probe.jsonbcol.alter",
+        "probe.marker.verify",
+        "probe.jsonbcol.catalog",
+        "probe.marker.verify",
+        "probe.jsonbcol.alter.replay",
+        "probe.marker.verify",
+        "probe.jsonbcol.catalog.replay",
+        "probe.marker.verify",
+        "probe.jsonbcol.upsert",
+        "probe.marker.verify",
+        "probe.jsonbcol.fetch",
+    ]
+
+    create_sql, _values, create_replay_safe = client.statements[
+        "probe.jsonbcol.create"
+    ]
+    assert create_replay_safe is False
+    assert "orientation = 'row,column'" in create_sql
+    # The columnar property must go through the separate ALTER path; the
+    # inline CREATE syntax was rejected by live Hologres.
+    assert "enable_columnar_type" not in create_sql
+
+    alter_sql, _values, alter_replay_safe = client.statements["probe.jsonbcol.alter"]
+    replay_sql, _values, replay_replay_safe = client.statements[
+        "probe.jsonbcol.alter.replay"
+    ]
+    assert alter_replay_safe is True
+    assert replay_replay_safe is True
+    assert alter_sql == replay_sql
+    assert alter_sql == (
+        'ALTER TABLE "lightrag_test_jsonbcol_probe"."lightrag_test_jsonbcol" '
+        "ALTER COLUMN payload SET (enable_columnar_type = on)"
+    )
+
+    catalog_sql, catalog_values, _safe = client.statements["probe.jsonbcol.catalog"]
+    assert catalog_sql == client.statements["probe.jsonbcol.catalog.replay"][0]
+    assert catalog_sql == _JSONB_COLUMNAR_POSTCONDITION
+    assert catalog_values == (
+        "lightrag_test_jsonbcol_probe",
+        "lightrag_test_jsonbcol",
+        "payload",
+    )
+
+    assert client.statements["probe.jsonbcol.upsert"][2] is True
+    for sql, _values, _replay_safe in client.statements.values():
+        assert ";" not in sql
+
+
+class MismatchJsonbColumnarProbeClient(JsonbColumnarProbeClient):
+    def __init__(self, stage):
+        super().__init__()
+        self.stage = stage
+
+    async def fetch_value(self, sql, *values, descriptor):
+        if descriptor == "probe.jsonbcol.catalog" and self.stage == "catalog":
+            self.events.append(descriptor)
+            return False
+        if descriptor == "probe.jsonbcol.catalog.replay" and self.stage == "replay":
+            self.events.append(descriptor)
+            return False
+        if descriptor == "probe.jsonbcol.fetch" and self.stage == "roundtrip":
+            self.events.append(descriptor)
+            return '{"keep":"x"}'
+        return await super().fetch_value(sql, *values, descriptor=descriptor)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stage", "detail_code"),
+    [
+        ("catalog", "jsonb_columnar_property_missing"),
+        ("replay", "jsonb_columnar_replay_mismatch"),
+        ("roundtrip", "jsonb_columnar_roundtrip_mismatch"),
+    ],
+)
+async def test_jsonb_columnar_probe_classifies_stage_mismatches(stage, detail_code):
+    client = MismatchJsonbColumnarProbeClient(stage)
+
+    result = await _run_jsonb_columnar_probe(client)
+
+    assert result == ProbeResult(
+        kind=ProbeKind.JSONB_COLUMN_OPTIMIZATION,
+        status=ProbeStatus.FAILED,
+        blocking=False,
+        detail_code=detail_code,
+    )
+    if stage == "catalog":
+        assert "probe.jsonbcol.alter.replay" not in client.events
+    if stage in ("catalog", "replay"):
+        assert "probe.jsonbcol.upsert" not in client.events
+
+
+class FailingJsonbColumnarProbeClient(JsonbColumnarProbeClient):
+    async def execute_one(self, sql, *values, descriptor, replay_safe=False):
+        if descriptor == "probe.jsonbcol.alter":
+            raise RuntimeError("alter rejected")
+        return await super().execute_one(
+            sql, *values, descriptor=descriptor, replay_safe=replay_safe
+        )
+
+
+@pytest.mark.asyncio
+async def test_jsonb_columnar_probe_classifies_execution_failures():
+    client = FailingJsonbColumnarProbeClient()
+
+    result = await _run_jsonb_columnar_probe(client)
+
+    assert result == ProbeResult(
+        kind=ProbeKind.JSONB_COLUMN_OPTIMIZATION,
+        status=ProbeStatus.FAILED,
+        blocking=False,
+        detail_code="jsonb_columnar_probe_failed",
+    )
+
+
+class OwnershipLossJsonbColumnarProbeClient(JsonbColumnarProbeClient):
+    async def execute_one(self, sql, *values, descriptor, replay_safe=False):
+        if descriptor == "probe.jsonbcol.alter":
+            raise HologresProbeError(
+                "ownership lost", leaked_objects=("lightrag_test_jsonbcol_probe",)
+            )
+        return await super().execute_one(
+            sql, *values, descriptor=descriptor, replay_safe=replay_safe
+        )
+
+
+@pytest.mark.asyncio
+async def test_jsonb_columnar_probe_reraises_ownership_errors():
+    client = OwnershipLossJsonbColumnarProbeClient()
+
+    with pytest.raises(HologresProbeError):
+        await _run_jsonb_columnar_probe(client)
+
+
 class SuccessfulProbeClient:
     def __init__(self):
         self.writes = []
@@ -1085,6 +1268,9 @@ class SuccessfulProbeClient:
             "probe.graph.nodes.merge.verify": {"keep": "x", "step": 2},
             "probe.graph.degree": 3,
             "probe.graph.pairs": 2,
+            "probe.jsonbcol.catalog": True,
+            "probe.jsonbcol.catalog.replay": True,
+            "probe.jsonbcol.fetch": '{"keep":"x","nested":{"a":[1,2]}}',
         }
         return results[descriptor]
 
@@ -1134,6 +1320,7 @@ async def test_initial_probes_do_not_replay_nonidempotent_create_ddl():
     passed = {result.kind: result for result in report.results}
     assert passed[ProbeKind.LOGICAL_PARTITION].status is ProbeStatus.PASSED
     assert passed[ProbeKind.GRAPH_ADJACENCY_EXPLAIN].status is ProbeStatus.PASSED
+    assert passed[ProbeKind.JSONB_COLUMN_OPTIMIZATION].status is ProbeStatus.PASSED
     assert replay_safety["probe.schema.create"] is False
     assert replay_safety["probe.marker.create"] is False
     assert replay_safety["probe.marker.insert"] is False
@@ -1141,14 +1328,19 @@ async def test_initial_probes_do_not_replay_nonidempotent_create_ddl():
     assert replay_safety["probe.hgraph.create"] is False
     assert replay_safety["probe.graph.nodes.create"] is False
     assert replay_safety["probe.graph.edges.create"] is False
+    assert replay_safety["probe.jsonbcol.create"] is False
     assert replay_safety["probe.hgraph.insert"] is True
     assert replay_safety["probe.graph.nodes.insert"] is True
     assert replay_safety["probe.graph.nodes.merge"] is True
     assert replay_safety["probe.graph.edges.insert"] is True
+    assert replay_safety["probe.jsonbcol.alter"] is True
+    assert replay_safety["probe.jsonbcol.alter.replay"] is True
+    assert replay_safety["probe.jsonbcol.upsert"] is True
     assert replay_safety["probe.basic.drop"] is True
     assert replay_safety["probe.hgraph.drop"] is True
     assert replay_safety["probe.graph.edges.drop"] is True
     assert replay_safety["probe.graph.nodes.drop"] is True
+    assert replay_safety["probe.jsonbcol.drop"] is True
     assert replay_safety["probe.marker.drop"] is True
     assert replay_safety["probe.schema.drop"] is True
     assert client.reconnect_count == 1

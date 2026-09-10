@@ -204,7 +204,9 @@ def test_repr_redacts_configuration_and_runtime_state():
 
 @pytest.mark.parametrize("dimension", [1, 3, 1536])
 def test_vector_descriptor_is_dimension_specific_and_carries_frozen_hgraph_index(dimension):
-    (descriptor,) = vector_schema_descriptors(CONFIG.schema, dimension)
+    (descriptor, columnar_descriptor) = vector_schema_descriptors(
+        CONFIG.schema, dimension
+    )
     normalized = " ".join(descriptor.sql.split()).lower()
 
     assert descriptor.component == "vector"
@@ -236,6 +238,22 @@ def test_vector_descriptor_is_dimension_specific_and_carries_frozen_hgraph_index
     assert "property_value = 'column'" in descriptor.postcondition_sql
     assert "= 'HGraph'" in descriptor.postcondition_sql
     assert "= 'Cosine'" in descriptor.postcondition_sql
+
+    assert columnar_descriptor.identity == ("vector", 1, 2, "columnar_payload")
+    assert columnar_descriptor.replay_safe is True
+    assert columnar_descriptor.sql == (
+        f'ALTER TABLE "{CONFIG.schema}"."{VECTOR_TABLE_NAME}" '
+        "ALTER COLUMN payload SET (enable_columnar_type = on)"
+    )
+    assert (
+        "attoptions @> ARRAY['enable_columnar_type=on']"
+        in columnar_descriptor.postcondition_sql
+    )
+    assert columnar_descriptor.postcondition_args == (
+        CONFIG.schema,
+        VECTOR_TABLE_NAME,
+        "payload",
+    )
 
 
 def test_vector_descriptor_digest_changes_with_embedding_dimension():
