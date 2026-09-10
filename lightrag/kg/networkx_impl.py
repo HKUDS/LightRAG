@@ -3,12 +3,13 @@ import os
 from collections import deque
 from dataclasses import dataclass
 from operator import itemgetter
-from typing import final
+from typing import ClassVar, final
 
-from lightrag.exceptions import CommitBookkeepingError
+from lightrag.exceptions import CommitBookkeepingError, GraphMutationsDiscardedError
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from lightrag.utils import (
+    cancellation_was_deferred,
     commit_in_storage_io,
     log_without_raising,
     logger,
@@ -56,7 +57,11 @@ class NetworkXStorage(BaseGraphStorage):
            one process
            performs ``upsert_*`` / ``delete_*`` / ``remove_*`` /
            ``index_done_callback`` at any time. Every other process is
-           read-only.
+           read-only. The admin flows in ``utils_graph.py`` and
+           ``ainsert_custom_kg`` are brought under the same invariant by
+           ``LightRAG._admin_write_gate`` (issue #3899), which this class
+           requests through ``requires_single_writer`` -- see *Non-pipeline
+           write paths* below.
         2. **Eventual consistency is sufficient.** Read-only processes
            only need to observe the writer's data *after* the writer's
            ``index_done_callback`` completes. Reads landing in the gap
@@ -481,49 +486,133 @@ class NetworkXStorage(BaseGraphStorage):
     Non-pipeline write paths:
         The pipeline's ``busy`` gate serializes mutation calls reached
         through the document ingestion and purge flows. The following
-        entry points are **not** serialized by the pipeline gate:
+        entry points are not reached through it, and each is serialized by
+        something else:
             * ``drop`` — gated by the API layer (the ``/documents/clear``
               endpoint takes the pipeline busy reservation before invoking
               it).
             * ``delete_node`` / ``remove_nodes`` / ``remove_edges`` /
-              ``upsert_node`` / ``upsert_edge`` when invoked from the
-              ``utils_graph.py`` admin flows (``adelete_by_entity`` /
-              ``adelete_by_relation`` / the create, edit and merge paths).
+              ``upsert_node`` / ``upsert_edge`` and the batch variants when
+              invoked from the ``utils_graph.py`` admin flows
+              (``adelete_by_entity`` / ``adelete_by_relation`` / the create,
+              edit and merge paths) or from ``ainsert_custom_kg`` — gated by
+              ``LightRAG._admin_write_gate`` (issue #3899), which every one
+              of those eight public writers runs inside.
 
-        For the admin flows, invariant 1 is **not** met and is not going to
-        be. Stating it accurately, because the previous wording ("must be
-        guarded externally", plus a claim that the flows are not exposed in
-        the WebUI) was false on both counts — the WebUI calls
-        ``/graph/entity/edit``:
+        For the admin flows invariant 1 is met **by the gate**, and this
+        class asks for it through ``requires_single_writer = True`` (the only
+        storage that does):
 
-        * Admin-vs-pipeline **is** guarded: every graph mutation endpoint
-          calls ``check_pipeline_busy_or_raise`` and returns 409 while the
-          pipeline is busy. That check is a snapshot, so a narrow race with
-          the underlying write remains; closing it would mean holding
-          ``busy`` across every UI edit, which is deliberately rejected.
-        * Admin-vs-admin is **not** guarded. Two concurrent
-          ``/graph/*`` calls for different keys both pass the busy check and
-          proceed under different per-entity keyed locks. A workspace-wide
-          admin lock was specified (issue #3838 R3) and then dropped: with
-          the reload fence of issue #3854 in place the losing writer of an
-          overlapping pair *declines*, so the caller gets a loud 500 and
-          retries rather than losing the write silently; and the residue the
-          lock would have prevented is reachable with no concurrency at all,
-          so serializing admin writes would not have changed what a crash can
-          leave behind.
+        * Admin-vs-admin is guarded by a workspace-wide admin lock
+          (``{workspace}:GraphAdmin`` / ``"admin"``, cross-process). A
+          second admin write WAITS for the first, bounded by
+          ``ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT``, and is refused with 409 only
+          on expiry. The lock covers mutate AND commit, so no peer admin
+          commit can land between two of one flow's ``_get_graph`` calls.
+        * Admin-vs-pipeline is guarded in both directions. An admin write
+          holds the pipeline ``busy`` reservation (``kind="admin"``, no
+          ``destructive_busy``) for its duration, so a pipeline start
+          arriving meanwhile is deferred into the ingress mailbox and driven
+          once the gate releases; a pipeline already running refuses the
+          admin write with 409, as the router's snapshot check already did
+          and still does (kept as an early refusal before any embedding
+          work). The hold is bounded by ``admin_write_max_hold_seconds``.
 
-        **Accepted residue.** A hard process exit, or an ill-timed co-tenant
-        flush, can leave a chunk-tracking row whose graph object never became
-        durable. It is harmless to queries; it cannot be inherited as
-        evidence by a later object, because the explicit creation paths reset
-        attribution (issue #3838 R1); and it is repairable offline with the
-        chunk-tracking rebuild tool (R4). The mirror state — a graph object
-        durable without its tracking row — is the forbidden one, and the
-        creation paths in ``utils_graph`` keep it out of reach by writing and
-        committing the tracking row **before** calling ``upsert_node`` /
-        ``upsert_edge`` at all. Ordering only the flushes would not be enough
-        here: an uncommitted ``upsert_node`` still sits in the process-wide
-        in-memory graph, where the next flush by any co-tenant publishes it.
+        Why the admin lock of issue #3838 R3 is back after being dropped
+        (issue #3899): the drop argued that, with the #3854 fence, the losing
+        writer of an overlapping pair *declines* and gets a loud 500. That
+        holds only if ``index_done_callback`` is the next fence test after
+        the peer commit -- and for every admin flow it is not: an intervening
+        ``_get_graph`` (a read, or the flow's next mutator call) catches the
+        peer commit first, DISCARDS the mutations already applied, and the
+        commit that follows finds no divergence and succeeds without them.
+        No decline, no 500 -- exactly the silent loss the drop said could no
+        longer happen. Reachable in one process too: two ``LightRAG``
+        instances on one workspace each register their own update flag, and
+        one's commit makes the other reload.
+
+        Why not reload-then-replay, as ``NanoVectorDBStorage`` /
+        ``FaissVectorDBStorage`` do (``_flush_pending_locked``): their pending
+        buffers hold complete rows keyed by id, so replaying is
+        last-writer-wins per id, which is already their contract. Graph
+        payloads are accumulate-over-read -- ``source_id`` is an evidence set
+        merged from what the writer read, and ``weight`` is floored by the
+        evidence count it read -- so replaying one over a peer's newer state
+        drops the evidence the peer accumulated and republishes a ``weight``
+        computed against a stale source set, silently breaking the
+        relation-weight contract; a replayed delete removes an object the
+        peer may have re-created. Replay would turn a loss the fence can
+        still see into one nothing can. Do not re-open this without
+        addressing the accumulate-over-read point. What was kept from that
+        proposal is the loud assertion: see *Dirty-graph backstop*.
+
+        Note that ``JsonKVStorage`` / ``JsonDocStatusStorage`` are neither
+        case: they have no reload path at all (their data is a shared Manager
+        mapping, already cross-process consistent), so nothing there can
+        discard an uncommitted write and they carry no capability flag.
+
+    Dirty-graph backstop (issue #3899 R4):
+        The gate makes the mid-flow discard unreachable by enumeration of its
+        callers, and an enumeration rots. ``_graph_dirty`` records that
+        ``self._graph`` holds mutations no commit has published (set by every
+        mutator, cleared when the graph is replaced from disk or a commit or
+        drop lands). A reload that would replace a dirty graph still
+        replaces it -- the reload is correct, and the coroutine that
+        triggered it may be an innocent reader across the writer's embedding
+        ``await`` -- but logs at ERROR and arms ``_dirty_discard_pending``.
+        The enforcement point is the COMMIT: ``index_done_callback`` refuses
+        with ``GraphMutationsDiscardedError`` while that flag is set, clearing
+        it in the same step so a later commit is not blocked forever (a
+        sticky refusal would make every later commit fail; see
+        ``_reload_locked``). The writer therefore fails loud -- a pipeline
+        batch takes the FAILED path and is reprocessed, an admin request
+        gets a 500 -- instead of succeeding without its mutations. If the
+        refusing commit finds the graph dirty again (mutations applied after
+        the discarding reload, belonging to the operation now failing), it
+        also arms ``_recovery_reload_pending`` so the next ``_get_graph``
+        discards them rather than a later commit publishing them.
+
+        Exempt, and they must stay so: the recovery reload
+        (``_recovery_reload_pending``), which exists precisely to discard
+        mutations of a batch already reported as failed, and the decline paths
+        of ``index_done_callback``, which already report the loss to their
+        caller.
+
+        NOT exempt, contrary to issue #3899 R4: a notification whose sampled
+        fingerprint equals the loaded one. That was specified as a
+        self-notification, which replaces nothing a peer wrote -- but an equal
+        fingerprint does not identify a self-notification. A same-tick,
+        same-size peer commit is the file channel's documented blind spot, and
+        a set flag is the evidence that the channel is blind right now (see
+        *Cross-process sync protocol*: the flag exists to cover exactly that
+        collision). Disarming on the blind channel's verdict is how a
+        peer-replaced dirty graph would be discarded silently.
+
+        **Accepted residue.** The refusing commit is not necessarily the
+        operation whose mutations were discarded: if that writer is already
+        gone, the next unrelated commit refuses once and clears the flag.
+        That is loud, it converges, and it is strictly better than the silent
+        success it replaces. Under the gate the branch is unreachable, so the
+        residue is unreachable with it. The one variant the gate cannot cover
+        -- two admin requests a second apart on different workers, where a
+        lost notification lets the second mutate a stale snapshot -- is the
+        #3854 fence's, and this backstop is its second line.
+
+        **Accepted residue (crash).** A hard process exit inside an admin
+        write can leave a chunk-tracking row whose graph object never became
+        durable; the gate does not change that. It is harmless to queries; it
+        cannot be inherited as evidence by a later object, because the
+        explicit creation paths reset attribution (issue #3838 R1); and it is
+        repairable offline with the chunk-tracking rebuild tool (R4). The
+        dead admin owner's ``busy`` reservation is reclaimed without fencing
+        the workspace (``kind="admin"`` is re-runnable). The mirror state — a
+        graph object durable without its tracking row — is the forbidden one,
+        and the creation paths in ``utils_graph`` keep it out of reach by
+        writing and committing the tracking row **before** calling
+        ``upsert_node`` / ``upsert_edge`` at all. Ordering only the flushes
+        would not be enough here: an uncommitted ``upsert_node`` still sits
+        in the process-wide in-memory graph, where the next flush publishes
+        it.
 
         The edit paths reach the same guarantee by a different route, because
         their delta can also REMOVE ids and a narrowed row landing ahead of the
@@ -534,9 +623,18 @@ class NetworkXStorage(BaseGraphStorage):
 
         **Requirement on new callers.** Any new caller of these mutators must
         make the tracking row durable BEFORE the mutation call, not merely
-        before the flush, and must not be invoked concurrently with another
-        admin writer on a file-backed workspace.
+        before the flush, and must run inside ``LightRAG._admin_write_gate``
+        (or the pipeline's ``busy`` reservation) so it is serialized against
+        every other writer on the workspace. A caller that bypasses both
+        trips the *Dirty-graph backstop* above: loud, not silent.
     """
+
+    # The only graph storage that can lose an uncommitted mutation to a peer
+    # commit -- see *Non-pipeline write paths*. Read by
+    # ``LightRAG._admin_write_gate_required``. ``ClassVar``: this class is a
+    # dataclass, and a plain annotated attribute would become a constructor
+    # field.
+    requires_single_writer: ClassVar[bool] = True
 
     def _node_context(self, node_id: str) -> str:
         """Error-message prefix identifying a node write."""
@@ -593,6 +691,11 @@ class NetworkXStorage(BaseGraphStorage):
         # can observe and none needs to. See *Recovery reload* in the class
         # docstring.
         self._recovery_reload_pending = False
+        # *Dirty-graph backstop* (class docstring): whether self._graph holds
+        # mutations no commit has published, and whether a reload discarded
+        # such mutations since the last commit. Both process-local.
+        self._graph_dirty = False
+        self._dirty_discard_pending = False
         # The on-disk state the file channel has already counted as a lost
         # notification. A reload that fails leaves the fingerprint and the
         # recovery flag untouched, so the same peer commit is re-detected by
@@ -799,11 +902,21 @@ class NetworkXStorage(BaseGraphStorage):
         return True
 
     def _reload_locked(
-        self, fingerprint: file_fingerprint.Fingerprint | object | None = None
+        self,
+        fingerprint: file_fingerprint.Fingerprint | object | None = None,
+        *,
+        arm_dirty_discard: bool = True,
     ) -> None:
         """Reload ``self._graph`` from disk and satisfy BOTH fence channels.
 
         Precondition: the caller holds ``_storage_lock``.
+
+        ``arm_dirty_discard`` is the *Dirty-graph backstop* switch: when the
+        graph being replaced is dirty, ``True`` (the default) records the
+        discard for the next commit to refuse, ``False`` only logs it. The
+        exempt callers -- the recovery reload, a notification naming the
+        snapshot already loaded, and ``index_done_callback``'s decline paths
+        -- pass ``False``; see the class docstring for why each is exempt.
 
         ``fingerprint`` is for the callers that already sampled in order to
         count -- they pass theirs in so the count and the adoption describe
@@ -847,7 +960,7 @@ class NetworkXStorage(BaseGraphStorage):
         on.
         """
         try:
-            self._reload_or_arm_locked(fingerprint)
+            self._reload_or_arm_locked(fingerprint, arm_dirty_discard=arm_dirty_discard)
         except BaseException:
             # ARM, then re-raise. This is the whole reason the reload is not
             # open-coded at its five call sites: a reload that fails leaves
@@ -874,7 +987,10 @@ class NetworkXStorage(BaseGraphStorage):
             raise
 
     def _reload_or_arm_locked(
-        self, fingerprint: file_fingerprint.Fingerprint | object | None
+        self,
+        fingerprint: file_fingerprint.Fingerprint | object | None,
+        *,
+        arm_dirty_discard: bool,
     ) -> None:
         """``_reload_locked``'s body. Call THAT, never this -- it arms.
 
@@ -920,9 +1036,35 @@ class NetworkXStorage(BaseGraphStorage):
                 "so a load could neither be trusted to have read the current "
                 "file nor be recorded as one. Retrying on the next call."
             )
+        if self._graph_dirty:
+            # The reload below replaces mutations no commit has published --
+            # the mid-batch discard of issue #3899. Recorded here, refused at
+            # the writer's commit (index_done_callback); NOT raised here, since
+            # this coroutine may be a reader that merely happened to trigger
+            # the reload, and discarding keeps the process converging.
+            if arm_dirty_discard:
+                self._dirty_discard_pending = True
+                logger.error(
+                    f"[{self.workspace}] Reloading graph {self._graphml_xml_file} "
+                    "over uncommitted in-memory mutations: a peer commit landed "
+                    "while this process held unpublished graph changes, which "
+                    "are discarded now. The next commit in this process will be "
+                    "refused so the operation that owns them fails loud instead "
+                    "of succeeding without them. Under the admin-write gate and "
+                    "the pipeline busy reservation this should be unreachable; "
+                    "a writer is bypassing both."
+                )
+            else:
+                logger.debug(
+                    f"[{self.workspace}] Reloading graph {self._graphml_xml_file} "
+                    "over uncommitted in-memory mutations that belong to an "
+                    "operation already reported as failed; discarding them."
+                )
         self._graph = (
             NetworkXStorage.load_nx_graph(self._graphml_xml_file) or nx.Graph()
         )
+        # The graph now IS the file: nothing unpublished remains in memory.
+        self._graph_dirty = False
         self._adopt_fingerprint(fingerprint)
         self.storage_updated.value = False
         # Cleared LAST, and only once the load above has actually returned:
@@ -1014,7 +1156,10 @@ class NetworkXStorage(BaseGraphStorage):
                     "file and holds mutations from an operation already "
                     "reported as failed. Discarding them now."
                 )
-                self._reload_locked(sampled)
+                # Exempt from the dirty-graph backstop: what it discards was
+                # already reported as failed. Pinned by
+                # test_a_failed_save_forces_a_reload_in_single_process_mode.
+                self._reload_locked(sampled, arm_dirty_discard=False)
             # Flag next -- it is the accelerator channel and a True value
             # already answers the question. The fingerprint test in the elif is
             # the authoritative one: it is what makes a lost notification
@@ -1033,6 +1178,7 @@ class NetworkXStorage(BaseGraphStorage):
                 # sampling twice let the log claim the file was unchanged while
                 # the reload refused an unreadable one.
                 sampled = self._stat_fingerprint()
+                arm_dirty_discard = True
                 if sampled is file_fingerprint.UNREADABLE:
                     logger.debug(
                         f"[{self.workspace}] Reload notification for "
@@ -1043,19 +1189,41 @@ class NetworkXStorage(BaseGraphStorage):
                 elif file_fingerprint.fence_enabled() and not (
                     self._peer_commit_detected(sampled)
                 ):
-                    # Notified about the file this process already holds: a
-                    # self-notification, or a peer commit that a sibling
-                    # coroutine reloaded before this call got the lock. The
-                    # reload below is honoured anyway rather than skipped --
-                    # skipping it would change which uncommitted in-memory
-                    # mutations survive a notification, which is not this
-                    # fence's business.
+                    # Notified about a file whose identity matches the one
+                    # this process already holds: a self-notification, a peer
+                    # commit a sibling coroutine reloaded before this call got
+                    # the lock, or -- and this is why the dirty-graph backstop
+                    # stays ARMED here -- a peer commit that collided with the
+                    # loaded fingerprint. The reload below is honoured anyway
+                    # rather than skipped: skipping it would change which
+                    # uncommitted in-memory mutations survive a notification,
+                    # which is not this fence's business.
+                    #
+                    # Issue #3899 R4 specified disarming the backstop in this
+                    # branch, on the grounds that a self-notification replaces
+                    # nothing a peer wrote. True of a self-notification -- but
+                    # an equal fingerprint does not IDENTIFY one. A same-tick,
+                    # same-size peer commit is the file channel's documented
+                    # blind spot (see *Cross-process sync protocol*), and the
+                    # flag being set is precisely the evidence that the channel
+                    # is blind right now: the docstring there says the flag
+                    # exists to cover this collision. Disarming on the blind
+                    # channel's verdict would discard a peer-replaced dirty
+                    # graph silently, which is the defect the backstop exists
+                    # for. So the fail-loud direction wins (AGENTS.md
+                    # *Consistency without transactions*): at worst a genuine
+                    # self-notification costs ONE refused commit that clears
+                    # the flag and converges; at best it catches a real loss.
+                    # A dirty graph receiving any notification is already
+                    # anomalous under the admin-write gate, which is the single
+                    # writer this backstop assumes.
                     logger.debug(
                         f"[{self.workspace}] Reload notification for "
-                        f"{self._graphml_xml_file} names the snapshot already "
-                        "loaded; reloading anyway"
+                        f"{self._graphml_xml_file} names a snapshot whose "
+                        "identity matches the one already loaded; reloading "
+                        "anyway"
                     )
-                self._reload_locked(sampled)
+                self._reload_locked(sampled, arm_dirty_discard=arm_dirty_discard)
             elif file_fingerprint.fence_enabled():
                 # ONE observation for everything the file channel does on this
                 # call: the decision, the count, the adoption, and the
@@ -1086,6 +1254,8 @@ class NetworkXStorage(BaseGraphStorage):
                             f"#{self._missed_notification_reloads} in this "
                             "process)."
                         )
+                    # A peer commit replacing a dirty graph: the case the
+                    # dirty-graph backstop exists for (default arms it).
                     self._reload_locked(sampled)
                 elif self._loaded_fingerprint is None:
                     # Owed from here on, as above -- and here the reload always
@@ -1133,7 +1303,9 @@ class NetworkXStorage(BaseGraphStorage):
                         "settle the question before a mutation lands on this "
                         "snapshot."
                     )
-                    self._reload_locked(sampled)
+                    # Always raises (nothing is replaced), so the backstop
+                    # switch is moot; False keeps the intent explicit.
+                    self._reload_locked(sampled, arm_dirty_discard=False)
 
             graph = self._graph
 
@@ -1207,7 +1379,8 @@ class NetworkXStorage(BaseGraphStorage):
             batch. Callers outside the pipeline must persist explicitly.
 
         Correctness relies on the class docstring *Lock scope* invariant
-        (synchronous networkx ops + single-writer pipeline gate).
+        (synchronous networkx ops + the single-writer invariant, held by the
+        pipeline ``busy`` gate or ``LightRAG._admin_write_gate``).
 
         Validates before mutating: see *Attribute validation* in the class
         docstring.
@@ -1217,6 +1390,7 @@ class NetworkXStorage(BaseGraphStorage):
         # synchronous block -- see *Attribute validation* in the class docstring.
         validate_xml_attributes(node_data, context=self._node_context(node_id))
         graph.add_node(node_id, **node_data)
+        self._graph_dirty = True
 
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
@@ -1239,6 +1413,7 @@ class NetworkXStorage(BaseGraphStorage):
             edge_data, context=self._edge_context(source_node_id, target_node_id)
         )
         graph.add_edge(source_node_id, target_node_id, **edge_data)
+        self._graph_dirty = True
 
     async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
         """Batch insert/update multiple nodes in a single call.
@@ -1263,6 +1438,8 @@ class NetworkXStorage(BaseGraphStorage):
             validate_xml_attributes(node_data, context=self._node_context(node_id))
         for node_id, node_data in nodes:
             graph.add_node(node_id, **node_data)
+        if nodes:
+            self._graph_dirty = True
 
     async def has_nodes_batch(self, node_ids: list[str]) -> set[str]:
         """Check existence of multiple nodes in a single call.
@@ -1292,6 +1469,8 @@ class NetworkXStorage(BaseGraphStorage):
             validate_xml_attributes(edge_data, context=self._edge_context(src, tgt))
         for src, tgt, edge_data in edges:
             graph.add_edge(src, tgt, **edge_data)
+        if edges:
+            self._graph_dirty = True
 
     async def delete_node(self, node_id: str) -> None:
         """Remove a single node from the graph; persistence is deferred.
@@ -1301,14 +1480,15 @@ class NetworkXStorage(BaseGraphStorage):
             a subsequent ``index_done_callback``. Callers outside the
             pipeline must persist explicitly.
 
-        Pipeline-gating depends on the caller: invocations from the
-        document purge flow are serialized by ``pipeline busy``;
-        invocations from ``utils_graph.py`` admin flows are **not** —
+        Gating depends on the caller: invocations from the document purge
+        flow are serialized by ``pipeline busy``; invocations from the
+        ``utils_graph.py`` admin flows by ``LightRAG._admin_write_gate`` —
         see class docstring *Non-pipeline write paths*.
         """
         graph = await self._get_graph()
         if graph.has_node(node_id):
             graph.remove_node(node_id)
+            self._graph_dirty = True
             logger.debug(f"[{self.workspace}] Node {node_id} deleted from the graph")
         else:
             logger.warning(
@@ -1323,8 +1503,8 @@ class NetworkXStorage(BaseGraphStorage):
             a subsequent ``index_done_callback``. Callers outside the
             pipeline must persist explicitly.
 
-        Pipeline-gating depends on the caller — see ``delete_node`` and
-        class docstring *Non-pipeline write paths*.
+        Gating depends on the caller — see ``delete_node`` and class
+        docstring *Non-pipeline write paths*.
 
         Args:
             nodes: List of node IDs to be deleted
@@ -1333,6 +1513,7 @@ class NetworkXStorage(BaseGraphStorage):
         for node in nodes:
             if graph.has_node(node):
                 graph.remove_node(node)
+                self._graph_dirty = True
 
     async def remove_edges(self, edges: list[tuple[str, str]]):
         """Delete multiple edges from the graph.
@@ -1342,8 +1523,8 @@ class NetworkXStorage(BaseGraphStorage):
             a subsequent ``index_done_callback``. Callers outside the
             pipeline must persist explicitly.
 
-        Pipeline-gating depends on the caller — see ``delete_node`` and
-        class docstring *Non-pipeline write paths*.
+        Gating depends on the caller — see ``delete_node`` and class
+        docstring *Non-pipeline write paths*.
 
         Args:
             edges: List of edges to be deleted, each edge is a (source, target) tuple
@@ -1352,6 +1533,7 @@ class NetworkXStorage(BaseGraphStorage):
         for source, target in edges:
             if graph.has_edge(source, target):
                 graph.remove_edge(source, target)
+                self._graph_dirty = True
 
     async def get_all_labels(self) -> list[str]:
         """
@@ -1725,6 +1907,148 @@ class NetworkXStorage(BaseGraphStorage):
         if batch:
             yield batch
 
+    def discard_uncommitted_mutations(self, reason: str) -> bool:
+        """Owe a reload that drops mutations no commit has published.
+
+        See :meth:`BaseGraphStorage.discard_uncommitted_mutations` for who
+        calls this and why it is synchronous. ``_graph_dirty`` is the whole
+        test: it is set by every mutator and cleared only by ``_committed``, so
+        True here means this process holds graph changes the file does not have
+        and no operation is left to publish them on purpose.
+
+        Arming ``_recovery_reload_pending`` -- rather than reloading right here
+        -- is the *Recovery reload* rule in the class docstring: **armed when
+        the reload becomes owed, cleared only by one that completes.** Both
+        consumers already handle exactly this case and say so in their log
+        lines: ``_get_graph`` reloads and discards (exempt from the dirty-graph
+        backstop, since what it drops was already reported as failed), and
+        ``index_done_callback`` DECLINES a commit that would publish it. Every
+        flow reads the graph before it writes, so in practice the reload
+        discharges the flag long before any commit can decline on it.
+
+        No lock is taken, and none is needed. The flag is a plain ``bool``, the
+        gate's admin lock and ``busy`` reservation mean no other writer exists,
+        and a concurrent reader can only either reload (doing the discard for
+        us) or not (leaving the next call to do it).
+        """
+        if not self._graph_dirty:
+            return False
+        self._recovery_reload_pending = True
+        logger.error(
+            f"[{self.workspace}] Graph {self._graphml_xml_file} holds "
+            f"uncommitted in-memory mutations after {reason}, and no operation "
+            "is left to publish them. Owing a reload so they are discarded "
+            "instead of being published by a later, unrelated commit."
+        )
+        return True
+
+    def _recover_from_failed_save_locked(self) -> None:
+        """Restore the process view after a save that did NOT land.
+
+        Precondition: the caller holds ``_storage_lock`` and the commit gate is
+        still closed, so no other coroutine can read or mutate ``self._graph``.
+
+        Called from the two handlers that mean "the write did not happen": a
+        genuine write failure, and a cancellation withheld across the commit
+        WITHOUT the success stamp (see ``index_done_callback``). Both leave this
+        process holding mutations the file does not have, and both owe exactly
+        this recovery.
+        """
+        # Restore the process view from the file before re-raising,
+        # symmetrically with the declined-commit branch above. The write
+        # did not land, so self._graph now claims a state the file does
+        # not have -- and nothing would ever repair it: a failed write
+        # never reaches _committed, so storage_updated stays False and
+        # _get_graph's reload branch never fires again. A caller must
+        # not be told an object is absent while it is still on disk:
+        # utils_graph's deletion retry reads that as a durable removal
+        # and sweeps the object's authoritative tracking row, leaving a
+        # live node on disk with no provenance. It also stops the next
+        # successful commit from publishing mutations that belong to
+        # the failed batch, whose documents are marked FAILED and
+        # reprocessed from scratch.
+        #
+        # Safe here: _storage_lock is held and the commit gate is still
+        # closed (the finally below reopens it), so no other coroutine
+        # can be reading or mutating self._graph.
+        try:
+            # Classify the peer channel before reloading, exactly as
+            # the two recovery branches do and for the same reason:
+            # _reload_locked adopts the file, after which the question
+            # cannot be asked any more, so a lost notification would
+            # go uncounted -- the undercount that made
+            # _count_unannounced_peer_commit_locked the single
+            # increment site in the first place.
+            #
+            # A divergence here can only be a peer commit, never this
+            # process's own half-written file: atomic_write leaves the
+            # destination untouched when the write raises, and
+            # commit_in_storage_io persists nothing in that case. What
+            # it would be is a peer commit landing in the window
+            # between the fence block above and this one, where the
+            # lock is released. With the admin-write gate of issue
+            # #3899 holding invariant 1 for the utils_graph admin flows
+            # too (see *Non-pipeline write paths*), that window is
+            # reachable only by a writer bypassing both gates -- which
+            # is exactly what the classification below must still
+            # count rather than assume away.
+            #
+            # Owed from the moment the save failed, so recorded here
+            # rather than in the handler below -- the classification
+            # reads storage_updated.value over the Manager and can
+            # raise before any reload is attempted, and a manager
+            # outage is a plausible reason the save failed in the first
+            # place. A completed reload clears it; nothing else does.
+            self._recovery_reload_pending = True
+            # One sample, shared by the counting and the reload -- see
+            # _count_unannounced_peer_commit_locked for why they must
+            # not be two independent observations. Nothing is adopted
+            # before the count, so the event stays countable.
+            sampled = self._stat_fingerprint()
+            if self._count_unannounced_peer_commit_locked(sampled):
+                logger.warning(
+                    f"[{self.workspace}] The save failed and "
+                    f"{self._graphml_xml_file} is not the one this "
+                    "process loaded either, and no reload notification "
+                    "arrived for it, so a notification was lost "
+                    f"(occurrence #{self._missed_notification_reloads} "
+                    "in this process)."
+                )
+            # A recovery reload: the mutations it discards belong to
+            # the save that just failed, which the caller is told
+            # about. Exempt from the dirty-graph backstop.
+            self._reload_locked(sampled, arm_dirty_discard=False)
+        except Exception as reload_error:
+            # Report, never mask: the save error is what the caller
+            # must see, and a failed reload leaves the divergence in
+            # place, so it has to be visible in the log on its own.
+            #
+            # The recovery reload is already armed -- above, before
+            # the attempt, not here after it. What it buys is that
+            # every later public graph operation enters through
+            # _get_graph, which discards this view before trusting it,
+            # and index_done_callback declines rather than publishing
+            # it. Without that, a deletion retry could mistake the
+            # unpersisted mutation for durable state and sweep the live
+            # object's tracking row.
+            #
+            # A plain attribute write, deliberately: what happened here
+            # is process-local ("my memory does not match the file"),
+            # not a peer commit, so neither cross-process channel says
+            # it. Arming storage_updated instead -- as this did before
+            # -- was an RPC to the very manager whose outage may be why
+            # the reload just failed, and it needed a whole failure
+            # path of its own. See *Recovery reload* in the class
+            # docstring for the rest of the reasoning, including why
+            # the fingerprint is NOT invalidated here: the save failed,
+            # so the file is untouched and the recorded fingerprint
+            # still describes it correctly.
+            logger.error(
+                f"[{self.workspace}] Failed to restore the in-memory "
+                f"graph after a failed save; it may not match "
+                f"{self._graphml_xml_file}: {reload_error}"
+            )
+
     async def index_done_callback(self) -> bool:
         """Commit in-memory graph to disk and notify other processes.
 
@@ -1743,9 +2067,10 @@ class NetworkXStorage(BaseGraphStorage):
               on. Two tests, per *Cross-process sync protocol*.
 
               The ``storage_updated.value`` half is permanently ``False`` in
-              the writer under the single-writer pipeline contract (class
-              docstring, invariant 1), so it is defensive scaffolding for a
-              future relaxation of that invariant.
+              the writer while the single-writer invariant holds (class
+              docstring, invariant 1 -- the pipeline gate plus the admin-write
+              gate of issue #3899), so it is defensive scaffolding for a
+              writer that bypasses both.
 
               The fingerprint half is **not** — it is live in production.
               Invariant 1 gives one writer *at a time*, not always the same
@@ -1753,8 +2078,37 @@ class NetworkXStorage(BaseGraphStorage):
               next legitimate writer holding a stale snapshot. That is the
               lost write in issue #3854, and this is where it is refused.
             * **Second ``async with``** — the actual save + notify.
+
+        Before either block, the *Dirty-graph backstop* (class docstring):
+        raises ``GraphMutationsDiscardedError`` when a reload since the last
+        commit discarded uncommitted mutations, clearing that record in the
+        same step. This is the one place the discard becomes a failure the
+        owning operation can see.
         """
         async with self._storage_lock:
+            if self._dirty_discard_pending:
+                # Cleared FIRST, so the refusal happens exactly once: a sticky
+                # refusal would block every later commit forever (the same
+                # warning _reload_locked gives for the recovery flag).
+                self._dirty_discard_pending = False
+                if self._graph_dirty:
+                    # Mutations applied AFTER the discarding reload belong to
+                    # the operation that is about to fail. Owe a recovery
+                    # reload so the next _get_graph discards them (exempt from
+                    # re-arming this backstop) instead of a later, unrelated
+                    # commit publishing them.
+                    self._recovery_reload_pending = True
+                raise GraphMutationsDiscardedError(
+                    f"[{self.workspace}] Refusing to save graph "
+                    f"{self._graphml_xml_file}: a reload since the last commit "
+                    "discarded uncommitted in-memory mutations (a peer commit "
+                    "landed mid-operation), so committing now would report an "
+                    "operation as successful without the changes it made. The "
+                    "operation fails instead; its pipeline batch is reprocessed "
+                    "or its admin request must be retried. This is a bypass of "
+                    "the admin-write gate / pipeline busy reservation -- see "
+                    "NetworkXStorage *Dirty-graph backstop*."
+                )
             # Same three tests, same order and same meaning as _get_graph.
             # The process-local one first: a reload this process owed itself
             # failed, so self._graph carries mutations that belong to an
@@ -1786,7 +2140,9 @@ class NetworkXStorage(BaseGraphStorage):
                     "from an operation already reported as failed. Discarding "
                     "them and reporting the commit as declined."
                 )
-                self._reload_locked(sampled)
+                # A decline is already reported to the caller; the dirty-graph
+                # backstop must not make the NEXT commit refuse for it too.
+                self._reload_locked(sampled, arm_dirty_discard=False)
                 return False
             # Then both fence channels. A writer holding a snapshot the file
             # has moved past must DECLINE: write_nx_graph serializes the WHOLE
@@ -1808,7 +2164,9 @@ class NetworkXStorage(BaseGraphStorage):
                 logger.info(
                     f"[{self.workspace}] Graph was updated by another process, reloading..."
                 )
-                self._reload_locked()
+                # Decline path: reported to the caller as False, so exempt
+                # from the dirty-graph backstop.
+                self._reload_locked(arm_dirty_discard=False)
                 return False  # Return error
             if file_fingerprint.fence_enabled():
                 # ONE observation for the decision, the count and the
@@ -1839,7 +2197,8 @@ class NetworkXStorage(BaseGraphStorage):
                             f"#{self._missed_notification_reloads} in this "
                             "process)."
                         )
-                    self._reload_locked(sampled)
+                    # Decline path, exempt from the dirty-graph backstop.
+                    self._reload_locked(sampled, arm_dirty_discard=False)
                     return False
 
         # Acquire lock and perform persistence
@@ -1866,6 +2225,9 @@ class NetworkXStorage(BaseGraphStorage):
                     # treating its own commit as a peer's, which would cost a
                     # full GraphML re-parse on the next call for nothing.
                     self._record_fingerprint()
+                    # Everything in memory is now published (the gate was
+                    # closed for the whole write, so nothing landed meanwhile).
+                    self._graph_dirty = False
                     await set_all_update_flags(self.namespace, workspace=self.workspace)
                     # Reset own update flag to avoid self-reloading. Inside the
                     # same publication step on purpose: in multiprocess mode this
@@ -1910,6 +2272,41 @@ class NetworkXStorage(BaseGraphStorage):
                         "the file it just wrote.",
                     )
                 return True  # Return success
+            except asyncio.CancelledError as cancel:
+                # ``commit_in_storage_io`` withholds a cancellation until the
+                # write and its publication hook are done, and gives it
+                # PRECEDENCE over a write failure, which it only logs. So the
+                # exception arriving here looks identical whether the write
+                # landed or raised, and ``except Exception`` below cannot see it
+                # at all (``CancelledError`` is a ``BaseException``).
+                #
+                # UNSTAMPED means the region did not complete successfully: the
+                # write did not land, and this process holds mutations the file
+                # does not have. That is the same state the write-failure
+                # handler recovers from, and without this branch nothing would
+                # be owed, so the next unrelated commit in this process would
+                # publish work from an operation that failed.
+                #
+                # STAMPED means the WRITE landed -- the file on disk carries
+                # these mutations. ``_committed`` therefore ran, and its first
+                # two statements (record the fingerprint, clear ``_graph_dirty``)
+                # cannot fail: both are local. So there is nothing to recover,
+                # and arming the recovery reload would make the next commit
+                # decline for no reason. The hook's later, fallible step (the
+                # peer notification) may still have failed -- the cancellation
+                # takes precedence over that error, which is only logged -- but
+                # that is a visibility effect, the same one the
+                # ``CommitBookkeepingError`` handler above accepts, not a lost
+                # write for this branch to undo.
+                if not cancellation_was_deferred(cancel):
+                    logger.error(
+                        f"[{self.workspace}] Graph save to "
+                        f"{self._graphml_xml_file} was cancelled without "
+                        "completing; restoring the in-memory graph from the "
+                        "file."
+                    )
+                    self._recover_from_failed_save_locked()
+                raise
             except Exception as e:
                 # Only a genuine write failure reaches here. A failure of the
                 # publication hook is caught above as CommitBookkeepingError and
@@ -1924,95 +2321,7 @@ class NetworkXStorage(BaseGraphStorage):
                 # PROCESSED with the graph changes unpersisted. Surfacing it
                 # aligns this backend with the others (faiss/nano raise too).
                 logger.error(f"[{self.workspace}] Error saving graph: {e}")
-                # Restore the process view from the file before re-raising,
-                # symmetrically with the declined-commit branch above. The write
-                # did not land, so self._graph now claims a state the file does
-                # not have -- and nothing would ever repair it: a failed write
-                # never reaches _committed, so storage_updated stays False and
-                # _get_graph's reload branch never fires again. A caller must
-                # not be told an object is absent while it is still on disk:
-                # utils_graph's deletion retry reads that as a durable removal
-                # and sweeps the object's authoritative tracking row, leaving a
-                # live node on disk with no provenance. It also stops the next
-                # successful commit from publishing mutations that belong to
-                # the failed batch, whose documents are marked FAILED and
-                # reprocessed from scratch.
-                #
-                # Safe here: _storage_lock is held and the commit gate is still
-                # closed (the finally below reopens it), so no other coroutine
-                # can be reading or mutating self._graph.
-                try:
-                    # Classify the peer channel before reloading, exactly as
-                    # the two recovery branches do and for the same reason:
-                    # _reload_locked adopts the file, after which the question
-                    # cannot be asked any more, so a lost notification would
-                    # go uncounted -- the undercount that made
-                    # _count_unannounced_peer_commit_locked the single
-                    # increment site in the first place.
-                    #
-                    # A divergence here can only be a peer commit, never this
-                    # process's own half-written file: atomic_write leaves the
-                    # destination untouched when the write raises, and
-                    # commit_in_storage_io persists nothing in that case. What
-                    # it would be is a peer commit landing in the window
-                    # between the fence block above and this one, where the
-                    # lock is released. That window is live, not scaffolding:
-                    # invariant 1 is not met for the utils_graph admin flows
-                    # (see *Non-pipeline write paths*), where two concurrent
-                    # /graph/* calls on different workers both commit.
-                    #
-                    # Owed from the moment the save failed, so recorded here
-                    # rather than in the handler below -- the classification
-                    # reads storage_updated.value over the Manager and can
-                    # raise before any reload is attempted, and a manager
-                    # outage is a plausible reason the save failed in the first
-                    # place. A completed reload clears it; nothing else does.
-                    self._recovery_reload_pending = True
-                    # One sample, shared by the counting and the reload -- see
-                    # _count_unannounced_peer_commit_locked for why they must
-                    # not be two independent observations. Nothing is adopted
-                    # before the count, so the event stays countable.
-                    sampled = self._stat_fingerprint()
-                    if self._count_unannounced_peer_commit_locked(sampled):
-                        logger.warning(
-                            f"[{self.workspace}] The save failed and "
-                            f"{self._graphml_xml_file} is not the one this "
-                            "process loaded either, and no reload notification "
-                            "arrived for it, so a notification was lost "
-                            f"(occurrence #{self._missed_notification_reloads} "
-                            "in this process)."
-                        )
-                    self._reload_locked(sampled)
-                except Exception as reload_error:
-                    # Report, never mask: the save error is what the caller
-                    # must see, and a failed reload leaves the divergence in
-                    # place, so it has to be visible in the log on its own.
-                    #
-                    # The recovery reload is already armed -- above, before
-                    # the attempt, not here after it. What it buys is that
-                    # every later public graph operation enters through
-                    # _get_graph, which discards this view before trusting it,
-                    # and index_done_callback declines rather than publishing
-                    # it. Without that, a deletion retry could mistake the
-                    # unpersisted mutation for durable state and sweep the live
-                    # object's tracking row.
-                    #
-                    # A plain attribute write, deliberately: what happened here
-                    # is process-local ("my memory does not match the file"),
-                    # not a peer commit, so neither cross-process channel says
-                    # it. Arming storage_updated instead -- as this did before
-                    # -- was an RPC to the very manager whose outage may be why
-                    # the reload just failed, and it needed a whole failure
-                    # path of its own. See *Recovery reload* in the class
-                    # docstring for the rest of the reasoning, including why
-                    # the fingerprint is NOT invalidated here: the save failed,
-                    # so the file is untouched and the recorded fingerprint
-                    # still describes it correctly.
-                    logger.error(
-                        f"[{self.workspace}] Failed to restore the in-memory "
-                        f"graph after a failed save; it may not match "
-                        f"{self._graphml_xml_file}: {reload_error}"
-                    )
+                self._recover_from_failed_save_locked()
                 raise
             finally:
                 # Every path, including CancelledError. Leaking a cleared gate
@@ -2077,6 +2386,10 @@ class NetworkXStorage(BaseGraphStorage):
             # by index_done_callback, so leaving it set would make the first
             # commit after a clear DECLINE and discard fresh work.
             self._recovery_reload_pending = False
+            # Same for the dirty-graph backstop: whatever was unpublished or
+            # discarded is destroyed with the rest, so neither record is owed.
+            self._graph_dirty = False
+            self._dirty_discard_pending = False
             # Keep publication under the storage lock. Once deletion starts,
             # commit_in_storage_io defers caller cancellation through this hook
             # so it cannot release readers before the notification attempt.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import traceback
 import asyncio
+import contextvars
 import os
 import threading
 import time
@@ -14,6 +15,7 @@ try:
     import httpx
 except Exception:  # pragma: no cover - optional dependency
     httpx = None
+from contextlib import asynccontextmanager
 from dataclasses import InitVar, asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from functools import partial
@@ -114,6 +116,7 @@ from lightrag.kg.shared_storage import (
     get_namespace_lock,
     get_pipeline_ingress,
     get_storage_keyed_lock,
+    release_owned_reservation,
     with_reservation_lock,
 )
 
@@ -164,12 +167,19 @@ from lightrag.utils_pipeline import (
 )
 from lightrag.constants import GRAPH_FIELD_SEP, RELATION_NO_EVIDENCE_SOURCE_IDS
 from lightrag.exceptions import (
+    ADMIN_WRITE_LOCK_BUSY_PREFIX,
+    ADMIN_WRITE_PIPELINE_BUSY_PREFIX,
+    AdminWriteGateRefusedError,
+    AdminWriteHoldExceededError,
     IndexFlushError,
     KGPurgeOperationConflictError,
+    PipelineNotInitializedError,
     RecoveryAnchorMissingError,
 )
 from lightrag.utils import (
     Tokenizer,
+    cancellation_was_deferred,
+    mark_cancellation_deferred,
     TiktokenTokenizer,
     EmbeddingFunc,
     always_get_an_event_loop,
@@ -218,6 +228,262 @@ load_dotenv(dotenv_path=".env", override=False)
 
 _SyncResultT = TypeVar("_SyncResultT")
 
+# ---------------------------------------------------------------------------
+# Admin-write gate (issue #3899)
+# ---------------------------------------------------------------------------
+#
+# The eight public admin graph writers (``adelete_by_entity``,
+# ``adelete_by_relation``, ``aedit_entity``, ``aedit_relation``,
+# ``acreate_entity``, ``acreate_relation``, ``amerge_entities``,
+# ``ainsert_custom_kg``) run their body inside ``LightRAG._admin_write_gate``.
+# On a graph storage that declares ``requires_single_writer`` (only
+# ``NetworkXStorage``) the gate takes, in this fixed order:
+#
+#     admin lock (WAITS, bounded)  ->  pipeline ``busy`` reservation (REFUSES)
+#                                  ->  the per-entity / per-edge keyed locks
+#                                      the utils_graph flow takes itself
+#
+# and holds both across the whole mutate-and-commit body, embedding round-trip
+# included. See the method docstring for why each half exists.
+
+# Keyed-lock namespace suffix and key of the workspace-wide admin lock. A
+# namespace of its own rather than a sentinel key inside ``{workspace}:GraphDB``:
+# entity names are arbitrary normalized strings, so any in-namespace sentinel is
+# a name a caller could collide with, and a namespace nothing else acquires makes
+# the lock order above trivially acyclic.
+ADMIN_WRITE_LOCK_NAMESPACE_SUFFIX = "GraphAdmin"
+ADMIN_WRITE_LOCK_KEY = "admin"
+
+# How long an admin write waits for a peer admin write to finish before it is
+# refused (HTTP 409 with ``ADMIN_WRITE_LOCK_BUSY_PREFIX``). Admin writes are
+# manual operations, so queueing them is the point; the bound only keeps a
+# stuck peer from parking a request forever. It is also the ONLY bound on that
+# wait: the multiprocess keyed lock polls the holder table with backoff and has
+# no timeout of its own, so without this a waiter polls until its connection
+# dies.
+#
+# A RESPONSIVENESS bound, deliberately NOT derived from the hold ceiling below
+# -- the two answer different questions. The ceiling asks how long the worst
+# LEGITIMATE write may run; this asks how long a caller should wait before
+# being told to retry. Deriving one from the other makes them equal, which is
+# the wrong answer to both: a waiter would sit out the full worst case (minutes,
+# on an interactive edit) instead of getting the actionable 409 this refusal
+# exists to give. So when a holder does run long -- an embedding retry storm --
+# the queue degrades to fast failure rather than to a longer wait, and that is
+# the intended degradation, not a gap in it.
+ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT: float = get_env_value(
+    "LIGHTRAG_ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT", 30.0, float
+)
+
+# Floor and embedding-timeout multiplier behind the hold ceiling's default; see
+# ``_default_admin_write_hold_seconds`` for the derivation.
+ADMIN_WRITE_HOLD_FLOOR_SECONDS: float = 180.0
+ADMIN_WRITE_HOLD_EMBEDDING_MULTIPLIER: float = 6.0
+
+
+def _default_admin_write_hold_seconds(embedding_timeout: float) -> float:
+    """Default hold ceiling for an embedding timeout of ``embedding_timeout``.
+
+    The embedding round-trip runs INSIDE the hold, so a fixed ceiling and a
+    configurable embedding timeout drift apart the moment an operator raises
+    the latter: every embedding retry would then be killed by a ceiling that was
+    sized for the old timeout. Deriving it keeps that impossible by construction
+    rather than by documentation.
+
+    Takes the timeout as an ARGUMENT rather than reading ``EMBEDDING_TIMEOUT``
+    itself, because the timeout is per-instance (``default_embedding_timeout``,
+    which a direct ``LightRAG(...)`` caller may pass without touching the
+    environment) while a module-level constant is per-process. Reading the
+    environment here made the two disagree for exactly that caller, and the
+    disagreement surfaced as a startup refusal on a configuration that is
+    perfectly legal.
+
+    What one hold has to cover, and where ``6x`` comes from::
+
+        one embedding retry storm   3 x EMBEDDING_TIMEOUT + 8s of backoff = 98s
+        one whole-graph GraphML commit (~200k nodes, measured)           ~ 17s
+                                                                          -----
+                                                                           115s
+
+    ``openai_embed`` retries three times (``stop_after_attempt(3)``) with a flat
+    4s ``wait_exponential(min=4)`` between attempts, and ``write_nx_graph``
+    serializes the WHOLE graph on every commit however small the edit was -- so
+    both terms are floors the edit's own size cannot reduce. ``6x`` keeps
+    ``6T >= 3T + 25`` for any ``T >= 9``, leaving the remainder as headroom for
+    the handful of edges an edit touches (a rename or merge upserts them one at
+    a time). The floor keeps the default at 180s for the default embedding
+    timeout, so no existing deployment's behaviour changes.
+
+    Erring high is deliberate. A ceiling that is too high defers ingestion
+    longer, and a deferred pipeline start is sticky in the ingress mailbox --
+    it self-heals. A ceiling that is too low kills a legitimate write whose
+    commit may ALREADY have landed (see ``_AdminHoldCeiling``), which does not.
+    ``AGENTS.md`` *Consistency without transactions* decides that direction.
+    """
+    return max(
+        ADMIN_WRITE_HOLD_FLOOR_SECONDS,
+        ADMIN_WRITE_HOLD_EMBEDDING_MULTIPLIER * embedding_timeout,
+    )
+
+
+# The EXPLICIT hold-ceiling override, or None when the operator set none. Not
+# the effective ceiling: that is per-instance (``admin_write_max_hold_seconds``,
+# resolved in ``__post_init__``), because the embedding timeout it is derived
+# from is per-instance too. A module-level effective ceiling is what let an
+# instance run with a ceiling sized for a different instance's timeout.
+ADMIN_WRITE_MAX_HOLD_SECONDS_OVERRIDE: float | None = get_env_value(
+    "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS", None, float
+)
+
+# Strong references to the release-time queue drives (see
+# ``_schedule_deferred_pipeline_drive``); a task held only by the loop's weak
+# set can be garbage-collected mid-run. Discarded by a done-callback.
+_ADMIN_RELEASE_DRIVE_TASKS: set[asyncio.Task] = set()
+
+# True while a SYNCHRONOUS wrapper is driving the loop through
+# ``run_until_complete`` (set by :func:`_run_sync`). The release-time queue
+# drive reads it and runs INLINE instead of as a background task.
+#
+# Why it has to exist. ``run_until_complete`` stops the loop the moment the
+# coroutine it was given returns, so a task created in that coroutine's
+# ``finally`` is left parked at its first await -- and it resumes only if some
+# later synchronous call happens to run the same loop. Measured, that is worse
+# than never scheduling it: the drive gets far enough to CONSUME the mailbox's
+# auto-rescan flag and take the ``busy`` reservation, then parks forever. The
+# workspace is then held busy by a LIVE pid, which dead-owner reclaim cannot
+# reclaim, and the document it was going to process has lost the sticky signal
+# that would have recovered it.
+#
+# ``run_until_complete`` copies the calling thread's context into the task it
+# creates, so a value set around that call is visible inside the coroutine.
+#
+# A synchronous caller has no request to return promptly to (that is R2.5's
+# reason for backgrounding the drive at all), so awaiting it there costs only
+# the wait, and only when a pipeline start was genuinely deferred.
+_SYNC_WRAPPER_DRIVES_INLINE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "lightrag_sync_wrapper_drives_inline", default=False
+)
+
+
+class _AdminHoldCeiling:
+    """Bound the time an ``async with`` body may run; expiry is a loud error.
+
+    ``asyncio.wait_for`` wants a coroutine, and the admin-write gate is a
+    context manager around a ``yield``, so the ceiling is a context manager
+    too: a timer cancels the current task when it fires, and ``__aexit__``
+    turns THAT cancellation -- and only that one -- into
+    ``AdminWriteHoldExceededError``. A cancellation from anywhere else
+    propagates unchanged.
+
+    **What the error may NOT say.** Expiry cancels the task, but the admin
+    flows deliberately withhold a cancellation while a storage commit is in
+    flight: the edit/delete/merge paths through ``_finish_deferring_cancellation``
+    (``lightrag/utils_graph.py``), and every path through
+    ``commit_in_storage_io``, which finishes the GraphML write and its
+    publication hook before re-raising. So a ceiling that fires mid-commit lets
+    that commit LAND and only then gets its cancellation back. Reporting that as
+    "aborted" would report a durable write as one that did not happen -- what
+    ``AGENTS.md`` *Consistency without transactions* forbids, and what a caller
+    would act on by retrying into "entity already exists".
+
+    ``__aexit__`` therefore reads ``cancellation_was_deferred(exc)``, the stamp
+    the uncancellable regions put on a cancellation they withheld across work
+    that committed (``_wait_deferring_cancellation`` when the future it was
+    handed succeeded, ``_bounded_submit_impl`` on behalf of an operation whose
+    write landed but whose commit hook then failed), and says which case
+    happened. Neither message claims nothing was written: a multi-step
+    flow commits more than once (``_merge_entities_impl`` commits the merged node
+    before the region that removes the sources), so even a cancellation caught at
+    a clean await can follow a durable commit. Both messages send the caller to
+    re-read the object before retrying.
+
+    ``asyncio.timeout`` (3.11+) cancels the same way and rewrites the same
+    exception unconditionally, which is exactly the distinction it cannot make;
+    that is why this stays a context manager of its own rather than delegating.
+    Its BOOKKEEPING is borrowed, though: ``__aenter__`` records
+    ``task.cancelling()`` and ``__aexit__`` rewrites only while
+    ``task.uncancel()`` does not exceed that baseline. Without the baseline, a
+    shutdown or client-disconnect cancel arriving in the same window as the
+    expiry would be swallowed -- ``uncancel()`` would drop it and the task would
+    carry on as if it had never been cancelled. On 3.10 neither API exists, so
+    there the ceiling still reports such a cancel as its own expiry: a misreport
+    of the cause, never a lost release, since the gate's ``finally`` runs either
+    way.
+    """
+
+    def __init__(self, seconds: float, what: str) -> None:
+        self._seconds = seconds
+        self._what = what
+        self._task: asyncio.Task | None = None
+        self._handle: asyncio.TimerHandle | None = None
+        self._expired = False
+        self._cancelling = 0
+
+    def _expire(self) -> None:
+        self._expired = True
+        if self._task is not None:
+            self._task.cancel()
+
+    async def __aenter__(self) -> "_AdminHoldCeiling":
+        self._task = asyncio.current_task()
+        # The count of cancellations already requested on this task before the
+        # timer could add one of its own. ``__aexit__`` compares against it to
+        # tell "my expiry" from "my expiry AND somebody else's cancel". Absent
+        # on 3.10, where the whole mechanism is unavailable.
+        cancelling = getattr(self._task, "cancelling", None)
+        self._cancelling = cancelling() if cancelling is not None else 0
+        self._handle = asyncio.get_running_loop().call_later(
+            self._seconds, self._expire
+        )
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        if self._handle is not None:
+            self._handle.cancel()
+        if not self._expired or exc_type is not asyncio.CancelledError:
+            return False
+        uncancel = getattr(self._task, "uncancel", None)
+        if uncancel is not None and uncancel() > self._cancelling:
+            # Our expiry is not the only cancellation outstanding: something
+            # else -- a shutdown, a disconnected client, an outer timeout --
+            # also cancelled this task. ``uncancel()`` above consumed OUR
+            # request; theirs still stands, and rewriting the exception here
+            # would swallow it and let the task run on. Propagate unchanged.
+            return False
+        preamble = (
+            f"{self._what} exceeded the admin-write hold ceiling of "
+            f"{self._seconds:g}s (LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS) and was "
+            "stopped so it stops deferring document ingestion."
+        )
+        if cancellation_was_deferred(exc):
+            # The ceiling fired while a storage commit was in flight AND that
+            # commit's WRITE then landed -- the stamp is gated on that. Say so,
+            # rather than sending the caller to retry a write that landed.
+            detail = (
+                " It was inside a region that must not be interrupted, so that "
+                "region ran to completion first: the storage commit it had "
+                "started IS durable and only the work after it was skipped."
+            )
+        else:
+            # No stamp covers two cases and must not claim to tell them apart:
+            # nothing was in flight, or a commit WAS in flight and failed
+            # (``_bounded_submit_impl`` gives the cancellation precedence over
+            # the write error, so both arrive here identically). Neither leaves
+            # a new durable commit, but an earlier step of the same operation
+            # may have made one.
+            detail = (
+                " No commit of its own is known to have completed, but anything "
+                "it had committed at an EARLIER step of the same operation (a "
+                "merge commits the merged node before it removes the sources) "
+                "is still durable."
+            )
+        raise AdminWriteHoldExceededError(
+            f"{preamble}{detail} Re-read the entity or relation before retrying. "
+            "Raise the ceiling if the embedding round-trip legitimately takes "
+            "that long."
+        ) from None
+
+
 # Ordered purge journal phases (issue #3400). Index = how much destructive work
 # is already persisted, so a resumed purge can skip exactly that much:
 #   prepared          — proof verified, journal durable, NOTHING deleted yet
@@ -233,6 +499,11 @@ _KG_PURGE_PHASE_ORDER: tuple[str, ...] = (
     KG_PURGE_PHASE_COMPLETED,
 )
 _KG_PURGE_RESUMABLE_PHASES: frozenset[str] = frozenset(_KG_PURGE_PHASE_ORDER)
+
+
+def _release_admin_busy(status) -> None:
+    """Owner-checked release action for the admin-write ``busy`` reservation."""
+    status.update({"busy": False, "busy_owner": None})
 
 
 class _PurgeStageError(Exception):
@@ -383,7 +654,15 @@ def _run_sync(
             f"event loop' or stall. "
             f"Use `await {async_name}(...)` on the original loop instead."
         )
-    return loop.run_until_complete(coro_factory())
+    # See _SYNC_WRAPPER_DRIVES_INLINE: the loop below stops as soon as this
+    # coroutine returns, so anything it left running in the background would be
+    # stranded mid-operation. The token is reset in a finally, so a nested or
+    # subsequent call in this thread is unaffected.
+    inline_token = _SYNC_WRAPPER_DRIVES_INLINE.set(True)
+    try:
+        return loop.run_until_complete(coro_factory())
+    finally:
+        _SYNC_WRAPPER_DRIVES_INLINE.reset(inline_token)
 
 
 @final
@@ -1018,6 +1297,36 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     see "Extraction Quality Hook" in ``docs/ProgramingWithCore.md``.
     """
 
+    admin_write_max_hold_seconds: float | None = field(
+        default=ADMIN_WRITE_MAX_HOLD_SECONDS_OVERRIDE
+    )
+    """Ceiling on how long ONE admin graph write may hold both halves of
+    ``_admin_write_gate``; ``None`` (the default) derives it from this
+    instance's ``default_embedding_timeout``.
+
+    While an admin write holds the pipeline ``busy`` reservation it DEFERS every
+    pipeline start in the workspace, so an unbounded hold -- an embedding
+    endpoint that hangs -- would fence ingestion; dead-owner reclaim does not
+    cover that, because it detects a dead process, not a hung one. On expiry the
+    operation fails loud (500) and the gate's ``finally`` releases both halves.
+
+    Per-instance rather than a module constant BECAUSE the embedding timeout it
+    is derived from is per-instance: ``LightRAG(default_embedding_timeout=300)``
+    is legal without touching the environment, and a process-wide ceiling could
+    not follow it. Set explicitly here or through
+    ``LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS``; an explicit value below the
+    embedding timeout is refused in ``__post_init__``.
+
+    Applies only where the graph storage declares ``requires_single_writer``
+    (``NetworkXStorage``); other backends never take the gate.
+
+    Declared LAST, away from the ``default_embedding_timeout`` it is derived
+    from, because ``LightRAG`` is a plain dataclass without ``kw_only``: field
+    order is public API, and a field inserted mid-class silently rebinds every
+    positional argument after it. Placing it next to its logical neighbour
+    shifted 43 of them. See ``tests/test_dataclass_positional_compatibility.py``.
+    """
+
     def _mark_addon_params_dirty(self) -> None:
         self._addon_params_dirty = True
 
@@ -1326,6 +1635,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 f"control); got {self.max_pending_documents}"
             )
 
+        # Resolve the admin-write hold ceiling against THIS instance's embedding
+        # timeout. Unconditional (not gated on the graph backend) so the
+        # attribute is always a number a caller can read; whether it is ever
+        # USED is decided by ``_admin_write_gate_required()``.
+        if self.admin_write_max_hold_seconds is None:
+            self.admin_write_max_hold_seconds = _default_admin_write_hold_seconds(
+                self.default_embedding_timeout
+            )
+
         # Embedding hard-fallback overlap: 0 disables it; negative is a
         # misconfiguration (there is no such thing as negative overlap).
         if self.embedding_chunk_overlap_token_size < 0:
@@ -1519,6 +1837,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             workspace=self.workspace,
             embedding_func=self.embedding_func,
         )
+
+        self._validate_admin_write_bounds()
 
         self.entities_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
             namespace=NameSpace.VECTOR_STORE_ENTITIES,
@@ -1721,6 +2041,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     async def finalize_storages(self):
         """Asynchronously finalize the storages with improved error handling"""
         self._shutdown_parser_executor()
+        # A release-time queue drive (issue #3899) still running at shutdown is
+        # cancelled, not awaited: its auto-rescan flag stays armed in the
+        # mailbox for the next run to honour.
+        await self._cancel_admin_release_drives()
         if self._storages_status == StoragesStatus.INITIALIZED:
             storages = [
                 ("full_docs", self.full_docs),
@@ -3580,409 +3904,456 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # like the other SDK mutations, before touching any storage.
         await self._raise_if_recovery_required()
 
-        update_storage = False
-        try:
-            from lightrag.utils_graph import (
-                relation_evidence_source_ids,
-                validate_relation_weight,
-            )
-
-            def _normalize_custom_kg_entity_name(value: Any, *, field: str) -> str:
-                if not isinstance(value, str):
-                    raise ValueError(f"Custom KG {field} must be a string")
-                normalized_value = normalize_entity_name(value)
-                if not normalized_value:
-                    raise ValueError(
-                        f"Custom KG {field} cannot be empty after normalization"
-                    )
-                return normalized_value
-
-            # Validate and canonicalize the complete identifier set before
-            # chunks or graph objects are written. Copies keep the caller's
-            # custom_kg payload unchanged.
-            normalized_entities: list[dict[str, Any]] = []
-            for index, entity_data in enumerate(custom_kg.get("entities", [])):
-                normalized_entity_data = dict(entity_data)
-                normalized_entity_data["entity_name"] = (
-                    _normalize_custom_kg_entity_name(
-                        entity_data["entity_name"],
-                        field=f"entities[{index}].entity_name",
-                    )
+        # The eighth admin writer (issue #3899 R3): a public graph writer that
+        # takes only per-key locks and has no router busy check, so without the
+        # gate it reproduces the mid-flow reload discard through a documented
+        # hole. The gate covers the graph writes AND the commit in the finally.
+        async with self._admin_write_gate("ainsert_custom_kg"):
+            update_storage = False
+            # The cancellation this call is unwinding on, if any. Recorded by
+            # the handler below rather than read from ``sys.exc_info()`` in the
+            # ``finally``: on the SUCCESS path that call returns whatever
+            # exception an enclosing frame happens to be handling, and stamping
+            # a stranger's cancellation would put this flush's durability claim
+            # on an operation that has nothing to do with it.
+            interrupted: BaseException | None = None
+            try:
+                from lightrag.utils_graph import (
+                    relation_evidence_source_ids,
+                    validate_relation_weight,
                 )
-                normalized_entities.append(normalized_entity_data)
 
-            normalized_relationships: list[dict[str, Any]] = []
-            for index, relationship_data in enumerate(
-                custom_kg.get("relationships", [])
-            ):
-                normalized_relationship_data = dict(relationship_data)
-                normalized_relationship_data["src_id"] = (
-                    _normalize_custom_kg_entity_name(
-                        relationship_data["src_id"],
-                        field=f"relationships[{index}].src_id",
+                def _normalize_custom_kg_entity_name(value: Any, *, field: str) -> str:
+                    if not isinstance(value, str):
+                        raise ValueError(f"Custom KG {field} must be a string")
+                    normalized_value = normalize_entity_name(value)
+                    if not normalized_value:
+                        raise ValueError(
+                            f"Custom KG {field} cannot be empty after normalization"
+                        )
+                    return normalized_value
+
+                # Validate and canonicalize the complete identifier set before
+                # chunks or graph objects are written. Copies keep the caller's
+                # custom_kg payload unchanged.
+                normalized_entities: list[dict[str, Any]] = []
+                for index, entity_data in enumerate(custom_kg.get("entities", [])):
+                    normalized_entity_data = dict(entity_data)
+                    normalized_entity_data["entity_name"] = (
+                        _normalize_custom_kg_entity_name(
+                            entity_data["entity_name"],
+                            field=f"entities[{index}].entity_name",
+                        )
                     )
-                )
-                normalized_relationship_data["tgt_id"] = (
-                    _normalize_custom_kg_entity_name(
-                        relationship_data["tgt_id"],
-                        field=f"relationships[{index}].tgt_id",
-                    )
-                )
-                # Compared after normalization, because the normalized values
-                # are the ones written as the graph edge below: two spellings
-                # that canonicalize to the same name are the same self-loop.
-                # Extraction drops self-loops (operate.py) and amerge_entities
-                # refuses to form one, so accepting them here would make this
-                # the only path that puts src == tgt into the graph.
-                if (
-                    normalized_relationship_data["src_id"]
-                    == normalized_relationship_data["tgt_id"]
+                    normalized_entities.append(normalized_entity_data)
+
+                normalized_relationships: list[dict[str, Any]] = []
+                for index, relationship_data in enumerate(
+                    custom_kg.get("relationships", [])
                 ):
-                    raise ValueError(
-                        f"Custom KG relationships[{index}] is a self-loop on "
-                        f"'{normalized_relationship_data['src_id']}': src_id and "
-                        "tgt_id must be different entities"
+                    normalized_relationship_data = dict(relationship_data)
+                    normalized_relationship_data["src_id"] = (
+                        _normalize_custom_kg_entity_name(
+                            relationship_data["src_id"],
+                            field=f"relationships[{index}].src_id",
+                        )
                     )
-                source_id = relationship_data.get("source_id", "")
-                # This is still a custom-KG alias rather than the graph edge's
-                # persisted source_id. Validate its shape now, but defer the
-                # evidence floor until chunk_to_source_map resolves the alias.
-                relation_evidence_source_ids(source_id)
-                normalized_relationship_data["source_id"] = source_id
-                normalized_relationship_data["weight"] = validate_relation_weight(
-                    relationship_data.get("weight", 1.0),
-                    "",
-                    context=f"Custom KG relationships[{index}]",
-                )
-                normalized_relationships.append(normalized_relationship_data)
-
-            # Insert chunks into vector storage
-            all_chunks_data: dict[str, dict[str, str]] = {}
-            chunk_to_source_map: dict[str, str] = {}
-
-            def _build_custom_kg_chunks() -> None:
-                """Encode and assemble every custom-KG chunk in one hop.
-
-                ``self.tokenizer`` is shared with the chunking executor, and
-                this entry point is gated by neither max_parallel_insert nor the
-                pipeline busy flag, so leaving the loop here would let it encode
-                concurrently with a document being chunked.
-                """
-                for chunk_data in custom_kg.get("chunks", []):
-                    chunk_content = sanitize_text_for_encoding(chunk_data["content"])
-                    source_id = chunk_data["source_id"]
-                    file_path = normalize_document_file_path(
-                        chunk_data.get("file_path", "custom_kg")
+                    normalized_relationship_data["tgt_id"] = (
+                        _normalize_custom_kg_entity_name(
+                            relationship_data["tgt_id"],
+                            field=f"relationships[{index}].tgt_id",
+                        )
                     )
-                    tokens = len(self.tokenizer.encode(chunk_content))
-                    chunk_order_index = (
-                        0
-                        if "chunk_order_index" not in chunk_data.keys()
-                        else chunk_data["chunk_order_index"]
+                    # Compared after normalization, because the normalized values
+                    # are the ones written as the graph edge below: two spellings
+                    # that canonicalize to the same name are the same self-loop.
+                    # Extraction drops self-loops (operate.py) and amerge_entities
+                    # refuses to form one, so accepting them here would make this
+                    # the only path that puts src == tgt into the graph.
+                    if (
+                        normalized_relationship_data["src_id"]
+                        == normalized_relationship_data["tgt_id"]
+                    ):
+                        raise ValueError(
+                            f"Custom KG relationships[{index}] is a self-loop on "
+                            f"'{normalized_relationship_data['src_id']}': src_id and "
+                            "tgt_id must be different entities"
+                        )
+                    source_id = relationship_data.get("source_id", "")
+                    # This is still a custom-KG alias rather than the graph edge's
+                    # persisted source_id. Validate its shape now, but defer the
+                    # evidence floor until chunk_to_source_map resolves the alias.
+                    relation_evidence_source_ids(source_id)
+                    normalized_relationship_data["source_id"] = source_id
+                    normalized_relationship_data["weight"] = validate_relation_weight(
+                        relationship_data.get("weight", 1.0),
+                        "",
+                        context=f"Custom KG relationships[{index}]",
                     )
-                    chunk_id = compute_mdhash_id(chunk_content, prefix="chunk-")
+                    normalized_relationships.append(normalized_relationship_data)
 
-                    chunk_entry = {
-                        "content": chunk_content,
-                        "source_id": source_id,
-                        "tokens": tokens,
-                        "chunk_order_index": chunk_order_index,
-                        "full_doc_id": full_doc_id
-                        if full_doc_id is not None
-                        else source_id,
-                        "file_path": file_path,
-                        "status": DocStatus.PROCESSED,
-                    }
-                    all_chunks_data[chunk_id] = chunk_entry
-                    chunk_to_source_map[source_id] = chunk_id
+                # Insert chunks into vector storage
+                all_chunks_data: dict[str, dict[str, str]] = {}
+                chunk_to_source_map: dict[str, str] = {}
 
-            await run_in_chunking_executor(_build_custom_kg_chunks)
+                def _build_custom_kg_chunks() -> None:
+                    """Encode and assemble every custom-KG chunk in one hop.
 
-            # Validate the source IDs that will actually be persisted. Custom
-            # KG relationships refer to chunk aliases, and even a historical
-            # no-source placeholder can be a real alias that resolves to a
-            # chunk hash. This second pass must run before the chunk upserts
-            # below so an invalid mapped relation leaves every storage clean.
-            for index, relationship_data in enumerate(normalized_relationships):
-                source_alias = relationship_data["source_id"]
-                source_id = (
-                    chunk_to_source_map.get(source_alias, "UNKNOWN")
-                    if source_alias
-                    else ""
-                )
-                relationship_data["source_id"] = source_id
-                relationship_data["weight"] = validate_relation_weight(
-                    relationship_data["weight"],
-                    source_id,
-                    context=f"Custom KG relationships[{index}]",
-                )
+                    ``self.tokenizer`` is shared with the chunking executor, and
+                    this entry point is gated by neither max_parallel_insert nor the
+                    pipeline busy flag, so leaving the loop here would let it encode
+                    concurrently with a document being chunked.
+                    """
+                    for chunk_data in custom_kg.get("chunks", []):
+                        chunk_content = sanitize_text_for_encoding(
+                            chunk_data["content"]
+                        )
+                        source_id = chunk_data["source_id"]
+                        file_path = normalize_document_file_path(
+                            chunk_data.get("file_path", "custom_kg")
+                        )
+                        tokens = len(self.tokenizer.encode(chunk_content))
+                        chunk_order_index = (
+                            0
+                            if "chunk_order_index" not in chunk_data.keys()
+                            else chunk_data["chunk_order_index"]
+                        )
+                        chunk_id = compute_mdhash_id(chunk_content, prefix="chunk-")
 
-            if all_chunks_data:
-                update_storage = True
-                await asyncio.gather(
-                    self.chunks_vdb.upsert(all_chunks_data),
-                    self.text_chunks.upsert(all_chunks_data),
-                )
-
-            # Keep the last declaration for each entity_name so batch backends
-            # preserve the old serial upsert semantics deterministically.
-            deduped_entities: dict[str, dict[str, Any]] = {}
-            for entity_data in normalized_entities:
-                entity_name = entity_data["entity_name"]
-                deduped_entities.pop(entity_name, None)
-                deduped_entities[entity_name] = entity_data
-
-            # Insert entities into knowledge graph (batch for performance)
-            all_entities_data: list[dict[str, str]] = []
-            entity_nodes: list[tuple[str, dict[str, str]]] = []
-            for entity_data in deduped_entities.values():
-                entity_name = entity_data["entity_name"]
-                entity_type = entity_data.get("entity_type", "UNKNOWN")
-                description = entity_data.get("description", "No description provided")
-                source_chunk_id = entity_data.get("source_id", "UNKNOWN")
-                source_id = chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
-                file_path = normalize_document_file_path(
-                    entity_data.get("file_path", "custom_kg")
-                )
-
-                if source_id == "UNKNOWN":
-                    logger.warning(
-                        f"Entity '{entity_name}' has an UNKNOWN source_id. Please check the source mapping."
-                    )
-
-                node_data: dict[str, str] = {
-                    "entity_id": entity_name,
-                    "entity_type": entity_type,
-                    "description": description,
-                    "source_id": source_id,
-                    "file_path": file_path,
-                    "created_at": int(time.time()),
-                }
-                entity_nodes.append((entity_name, node_data))
-                node_data_copy = dict(node_data)
-                node_data_copy["entity_name"] = entity_name
-                all_entities_data.append(node_data_copy)
-                update_storage = True
-
-            # Relationship storage is undirected, so keep only the last update
-            # for each endpoint pair regardless of order.
-            deduped_relationships: dict[tuple[str, str], dict[str, Any]] = {}
-            for relationship_data in normalized_relationships:
-                src_id = relationship_data["src_id"]
-                tgt_id = relationship_data["tgt_id"]
-                relation_key = tuple(sorted((src_id, tgt_id)))
-                deduped_relationships.pop(relation_key, None)
-                deduped_relationships[relation_key] = relationship_data
-
-            # Coarse-grained keyed lock covering every entity name and every
-            # relationship endpoint this batch will write. Keys collide with
-            # the per-entity and sorted([src, tgt]) edge locks held by the
-            # doc-ingest pipeline (operate.py:_locked_process_entity_name and
-            # _locked_process_edges) in the same namespace, so a concurrent
-            # insert_custom_kg waits behind an in-flight document ingest
-            # rather than racing it. Two concurrent custom-KG inserts that
-            # touch overlapping entities likewise mutually exclude here.
-            # An empty batch skips the lock entirely — nothing to serialise on.
-            lock_key_set: set[str] = {entity_name for entity_name, _ in entity_nodes}
-            for relationship_data in deduped_relationships.values():
-                lock_key_set.add(relationship_data["src_id"])
-                lock_key_set.add(relationship_data["tgt_id"])
-
-            workspace = self.workspace or ""
-            namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
-
-            async def _do_graph_and_vdb_writes() -> None:
-                # Construct and verify the entity VDB payload BEFORE the
-                # first graph mutation below (entity_nodes batch upsert): if
-                # truncation fails (a deterministic, non-retryable
-                # content-shape problem), nothing has been written yet. The
-                # actual VDB upsert I/O still happens after all graph writes,
-                # at the end of this function. Skipped entirely when there is
-                # nothing to insert (e.g. a chunks-only custom_kg) —
-                # _build_global_config is real work callers with no
-                # entities/relationships should not pay for. Shared with the
-                # relationship VDB payload built further below in this same
-                # function, so it is built at most once per call.
-                global_config: dict[str, Any] | None = None
-                data_for_entities_vdb: dict[str, Any] = {}
-                if all_entities_data or deduped_relationships:
-                    global_config = self._build_global_config()
-                if all_entities_data:
-                    data_for_entities_vdb = {
-                        compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
-                            "content": _truncate_vdb_content(
-                                dp["entity_name"] + "\n" + dp["description"],
-                                global_config,
-                                f"entity:{dp['entity_name']}",
-                            ),
-                            "entity_name": dp["entity_name"],
-                            "source_id": dp["source_id"],
-                            "description": dp["description"],
-                            "entity_type": dp["entity_type"],
-                            "file_path": dp.get("file_path", "custom_kg"),
+                        chunk_entry = {
+                            "content": chunk_content,
+                            "source_id": source_id,
+                            "tokens": tokens,
+                            "chunk_order_index": chunk_order_index,
+                            "full_doc_id": full_doc_id
+                            if full_doc_id is not None
+                            else source_id,
+                            "file_path": file_path,
+                            "status": DocStatus.PROCESSED,
                         }
-                        for dp in all_entities_data
-                    }
+                        all_chunks_data[chunk_id] = chunk_entry
+                        chunk_to_source_map[source_id] = chunk_id
 
-                # Batch insert entities (reduces N serial awaits to 1).
-                # Writing entity_nodes here (before the relationship-endpoint
-                # discovery below) means has_nodes_batch naturally sees them,
-                # so a relationship endpoint that is also one of this batch's
-                # own explicit entities is never mistaken for a missing node.
-                if entity_nodes:
-                    await self.chunk_entity_relation_graph.upsert_nodes_batch(
-                        entity_nodes
+                await run_in_chunking_executor(_build_custom_kg_chunks)
+
+                # Validate the source IDs that will actually be persisted. Custom
+                # KG relationships refer to chunk aliases, and even a historical
+                # no-source placeholder can be a real alias that resolves to a
+                # chunk hash. This second pass must run before the chunk upserts
+                # below so an invalid mapped relation leaves every storage clean.
+                for index, relationship_data in enumerate(normalized_relationships):
+                    source_alias = relationship_data["source_id"]
+                    source_id = (
+                        chunk_to_source_map.get(source_alias, "UNKNOWN")
+                        if source_alias
+                        else ""
+                    )
+                    relationship_data["source_id"] = source_id
+                    relationship_data["weight"] = validate_relation_weight(
+                        relationship_data["weight"],
+                        source_id,
+                        context=f"Custom KG relationships[{index}]",
                     )
 
-                # Insert relationships into knowledge graph (batch for performance)
-                all_relationships_data: list[dict[str, str]] = []
-                edge_list: list[tuple[str, str, dict[str, str]]] = []
+                if all_chunks_data:
+                    update_storage = True
+                    await asyncio.gather(
+                        self.chunks_vdb.upsert(all_chunks_data),
+                        self.text_chunks.upsert(all_chunks_data),
+                    )
 
-                # Batch check which relationship endpoints exist (1 await instead of 2M)
-                needed_node_ids: set[str] = set()
-                for relationship_data in deduped_relationships.values():
-                    needed_node_ids.add(relationship_data["src_id"])
-                    needed_node_ids.add(relationship_data["tgt_id"])
+                # Keep the last declaration for each entity_name so batch backends
+                # preserve the old serial upsert semantics deterministically.
+                deduped_entities: dict[str, dict[str, Any]] = {}
+                for entity_data in normalized_entities:
+                    entity_name = entity_data["entity_name"]
+                    deduped_entities.pop(entity_name, None)
+                    deduped_entities[entity_name] = entity_data
 
-                existing_nodes = await self.chunk_entity_relation_graph.has_nodes_batch(
-                    list(needed_node_ids)
-                )
-
-                # Create missing nodes in batch
-                missing_nodes: list[tuple[str, dict[str, str]]] = []
-                for relationship_data in deduped_relationships.values():
-                    src_id = relationship_data["src_id"]
-                    tgt_id = relationship_data["tgt_id"]
-                    source_id = relationship_data["source_id"]
+                # Insert entities into knowledge graph (batch for performance)
+                all_entities_data: list[dict[str, str]] = []
+                entity_nodes: list[tuple[str, dict[str, str]]] = []
+                for entity_data in deduped_entities.values():
+                    entity_name = entity_data["entity_name"]
+                    entity_type = entity_data.get("entity_type", "UNKNOWN")
+                    description = entity_data.get(
+                        "description", "No description provided"
+                    )
+                    source_chunk_id = entity_data.get("source_id", "UNKNOWN")
+                    source_id = chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
                     file_path = normalize_document_file_path(
-                        relationship_data.get("file_path", "custom_kg")
+                        entity_data.get("file_path", "custom_kg")
                     )
 
                     if source_id == "UNKNOWN":
                         logger.warning(
-                            f"Relationship from '{src_id}' to '{tgt_id}' has an UNKNOWN source_id. Please check the source mapping."
+                            f"Entity '{entity_name}' has an UNKNOWN source_id. Please check the source mapping."
                         )
 
-                    for need_insert_id in [src_id, tgt_id]:
-                        if need_insert_id not in existing_nodes:
-                            missing_nodes.append(
-                                (
-                                    need_insert_id,
-                                    {
-                                        "entity_id": need_insert_id,
-                                        "source_id": source_id,
-                                        "description": "UNKNOWN",
-                                        "entity_type": "UNKNOWN",
-                                        "file_path": file_path,
-                                        "created_at": int(time.time()),
-                                    },
-                                )
-                            )
-                            existing_nodes.add(need_insert_id)
-
-                    normalized_src_id, normalized_tgt_id = sorted((src_id, tgt_id))
-
-                    edge_data = {
-                        "weight": relationship_data["weight"],
-                        "description": relationship_data["description"],
-                        "keywords": relationship_data["keywords"],
+                    node_data: dict[str, str] = {
+                        "entity_id": entity_name,
+                        "entity_type": entity_type,
+                        "description": description,
                         "source_id": source_id,
                         "file_path": file_path,
                         "created_at": int(time.time()),
                     }
-                    edge_list.append((src_id, tgt_id, edge_data))
+                    entity_nodes.append((entity_name, node_data))
+                    node_data_copy = dict(node_data)
+                    node_data_copy["entity_name"] = entity_name
+                    all_entities_data.append(node_data_copy)
+                    update_storage = True
 
-                    all_relationships_data.append(
-                        {
-                            "src_id": normalized_src_id,
-                            "tgt_id": normalized_tgt_id,
+                # Relationship storage is undirected, so keep only the last update
+                # for each endpoint pair regardless of order.
+                deduped_relationships: dict[tuple[str, str], dict[str, Any]] = {}
+                for relationship_data in normalized_relationships:
+                    src_id = relationship_data["src_id"]
+                    tgt_id = relationship_data["tgt_id"]
+                    relation_key = tuple(sorted((src_id, tgt_id)))
+                    deduped_relationships.pop(relation_key, None)
+                    deduped_relationships[relation_key] = relationship_data
+
+                # Coarse-grained keyed lock covering every entity name and every
+                # relationship endpoint this batch will write. Keys collide with
+                # the per-entity and sorted([src, tgt]) edge locks held by the
+                # doc-ingest pipeline (operate.py:_locked_process_entity_name and
+                # _locked_process_edges) in the same namespace, so a concurrent
+                # insert_custom_kg waits behind an in-flight document ingest
+                # rather than racing it. Two concurrent custom-KG inserts that
+                # touch overlapping entities likewise mutually exclude here.
+                # An empty batch skips the lock entirely — nothing to serialise on.
+                lock_key_set: set[str] = {
+                    entity_name for entity_name, _ in entity_nodes
+                }
+                for relationship_data in deduped_relationships.values():
+                    lock_key_set.add(relationship_data["src_id"])
+                    lock_key_set.add(relationship_data["tgt_id"])
+
+                workspace = self.workspace or ""
+                namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+
+                async def _do_graph_and_vdb_writes() -> None:
+                    # Construct and verify the entity VDB payload BEFORE the
+                    # first graph mutation below (entity_nodes batch upsert): if
+                    # truncation fails (a deterministic, non-retryable
+                    # content-shape problem), nothing has been written yet. The
+                    # actual VDB upsert I/O still happens after all graph writes,
+                    # at the end of this function. Skipped entirely when there is
+                    # nothing to insert (e.g. a chunks-only custom_kg) —
+                    # _build_global_config is real work callers with no
+                    # entities/relationships should not pay for. Shared with the
+                    # relationship VDB payload built further below in this same
+                    # function, so it is built at most once per call.
+                    global_config: dict[str, Any] | None = None
+                    data_for_entities_vdb: dict[str, Any] = {}
+                    if all_entities_data or deduped_relationships:
+                        global_config = self._build_global_config()
+                    if all_entities_data:
+                        data_for_entities_vdb = {
+                            compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
+                                "content": _truncate_vdb_content(
+                                    dp["entity_name"] + "\n" + dp["description"],
+                                    global_config,
+                                    f"entity:{dp['entity_name']}",
+                                ),
+                                "entity_name": dp["entity_name"],
+                                "source_id": dp["source_id"],
+                                "description": dp["description"],
+                                "entity_type": dp["entity_type"],
+                                "file_path": dp.get("file_path", "custom_kg"),
+                            }
+                            for dp in all_entities_data
+                        }
+
+                    # Batch insert entities (reduces N serial awaits to 1).
+                    # Writing entity_nodes here (before the relationship-endpoint
+                    # discovery below) means has_nodes_batch naturally sees them,
+                    # so a relationship endpoint that is also one of this batch's
+                    # own explicit entities is never mistaken for a missing node.
+                    if entity_nodes:
+                        await self.chunk_entity_relation_graph.upsert_nodes_batch(
+                            entity_nodes
+                        )
+
+                    # Insert relationships into knowledge graph (batch for performance)
+                    all_relationships_data: list[dict[str, str]] = []
+                    edge_list: list[tuple[str, str, dict[str, str]]] = []
+
+                    # Batch check which relationship endpoints exist (1 await instead of 2M)
+                    needed_node_ids: set[str] = set()
+                    for relationship_data in deduped_relationships.values():
+                        needed_node_ids.add(relationship_data["src_id"])
+                        needed_node_ids.add(relationship_data["tgt_id"])
+
+                    existing_nodes = (
+                        await self.chunk_entity_relation_graph.has_nodes_batch(
+                            list(needed_node_ids)
+                        )
+                    )
+
+                    # Create missing nodes in batch
+                    missing_nodes: list[tuple[str, dict[str, str]]] = []
+                    for relationship_data in deduped_relationships.values():
+                        src_id = relationship_data["src_id"]
+                        tgt_id = relationship_data["tgt_id"]
+                        source_id = relationship_data["source_id"]
+                        file_path = normalize_document_file_path(
+                            relationship_data.get("file_path", "custom_kg")
+                        )
+
+                        if source_id == "UNKNOWN":
+                            logger.warning(
+                                f"Relationship from '{src_id}' to '{tgt_id}' has an UNKNOWN source_id. Please check the source mapping."
+                            )
+
+                        for need_insert_id in [src_id, tgt_id]:
+                            if need_insert_id not in existing_nodes:
+                                missing_nodes.append(
+                                    (
+                                        need_insert_id,
+                                        {
+                                            "entity_id": need_insert_id,
+                                            "source_id": source_id,
+                                            "description": "UNKNOWN",
+                                            "entity_type": "UNKNOWN",
+                                            "file_path": file_path,
+                                            "created_at": int(time.time()),
+                                        },
+                                    )
+                                )
+                                existing_nodes.add(need_insert_id)
+
+                        normalized_src_id, normalized_tgt_id = sorted((src_id, tgt_id))
+
+                        edge_data = {
+                            "weight": relationship_data["weight"],
                             "description": relationship_data["description"],
                             "keywords": relationship_data["keywords"],
                             "source_id": source_id,
-                            "weight": relationship_data["weight"],
                             "file_path": file_path,
                             "created_at": int(time.time()),
                         }
-                    )
+                        edge_list.append((src_id, tgt_id, edge_data))
 
-                # Construct and verify the relationship VDB payload BEFORE
-                # the graph mutations below (missing-node + edge batch
-                # upserts): if truncation fails, nothing has been written
-                # yet. The actual VDB upsert I/O still happens after all
-                # graph writes, at the end of this function. Reuses the
-                # entity-side global_config built above via closure — that
-                # guard (`all_entities_data or deduped_relationships`)
-                # already covers this branch, since non-empty
-                # all_relationships_data implies non-empty
-                # deduped_relationships.
-                data_for_rels_vdb: dict[str, Any] = {}
-                if all_relationships_data:
-                    data_for_rels_vdb = {
-                        compute_mdhash_id(dp["src_id"] + dp["tgt_id"], prefix="rel-"): {
-                            "src_id": dp["src_id"],
-                            "tgt_id": dp["tgt_id"],
-                            "source_id": dp["source_id"],
-                            "content": _truncate_vdb_content(
-                                f"{dp['keywords']}\t{dp['src_id']}\n{dp['tgt_id']}\n{dp['description']}",
-                                global_config,
-                                f"relation:{dp['src_id']}-{dp['tgt_id']}",
-                            ),
-                            "keywords": dp["keywords"],
-                            "description": dp["description"],
-                            "weight": dp["weight"],
-                            "file_path": dp.get("file_path", "custom_kg"),
+                        all_relationships_data.append(
+                            {
+                                "src_id": normalized_src_id,
+                                "tgt_id": normalized_tgt_id,
+                                "description": relationship_data["description"],
+                                "keywords": relationship_data["keywords"],
+                                "source_id": source_id,
+                                "weight": relationship_data["weight"],
+                                "file_path": file_path,
+                                "created_at": int(time.time()),
+                            }
+                        )
+
+                    # Construct and verify the relationship VDB payload BEFORE
+                    # the graph mutations below (missing-node + edge batch
+                    # upserts): if truncation fails, nothing has been written
+                    # yet. The actual VDB upsert I/O still happens after all
+                    # graph writes, at the end of this function. Reuses the
+                    # entity-side global_config built above via closure — that
+                    # guard (`all_entities_data or deduped_relationships`)
+                    # already covers this branch, since non-empty
+                    # all_relationships_data implies non-empty
+                    # deduped_relationships.
+                    data_for_rels_vdb: dict[str, Any] = {}
+                    if all_relationships_data:
+                        data_for_rels_vdb = {
+                            compute_mdhash_id(
+                                dp["src_id"] + dp["tgt_id"], prefix="rel-"
+                            ): {
+                                "src_id": dp["src_id"],
+                                "tgt_id": dp["tgt_id"],
+                                "source_id": dp["source_id"],
+                                "content": _truncate_vdb_content(
+                                    f"{dp['keywords']}\t{dp['src_id']}\n{dp['tgt_id']}\n{dp['description']}",
+                                    global_config,
+                                    f"relation:{dp['src_id']}-{dp['tgt_id']}",
+                                ),
+                                "keywords": dp["keywords"],
+                                "description": dp["description"],
+                                "weight": dp["weight"],
+                                "file_path": dp.get("file_path", "custom_kg"),
+                            }
+                            for dp in all_relationships_data
                         }
-                        for dp in all_relationships_data
-                    }
 
-                # Batch insert missing placeholder nodes
-                if missing_nodes:
-                    await self.chunk_entity_relation_graph.upsert_nodes_batch(
-                        missing_nodes
+                    # Batch insert missing placeholder nodes
+                    if missing_nodes:
+                        await self.chunk_entity_relation_graph.upsert_nodes_batch(
+                            missing_nodes
+                        )
+
+                    # Batch insert edges
+                    if edge_list:
+                        await self.chunk_entity_relation_graph.upsert_edges_batch(
+                            edge_list
+                        )
+
+                    legacy_rel_ids_to_delete = sorted(
+                        {
+                            rel_id
+                            for dp in all_relationships_data
+                            for rel_id in make_relation_vdb_ids(
+                                dp["src_id"], dp["tgt_id"]
+                            )[1:]
+                        }
                     )
 
-                # Batch insert edges
-                if edge_list:
-                    await self.chunk_entity_relation_graph.upsert_edges_batch(edge_list)
+                    # Parallel VDB upserts (was serial in original)
+                    await asyncio.gather(
+                        self.entities_vdb.upsert(data_for_entities_vdb),
+                        self.relationships_vdb.upsert(data_for_rels_vdb),
+                    )
 
-                legacy_rel_ids_to_delete = sorted(
-                    {
-                        rel_id
-                        for dp in all_relationships_data
-                        for rel_id in make_relation_vdb_ids(dp["src_id"], dp["tgt_id"])[
-                            1:
-                        ]
-                    }
-                )
+                    if legacy_rel_ids_to_delete:
+                        await self.relationships_vdb.delete(legacy_rel_ids_to_delete)
 
-                # Parallel VDB upserts (was serial in original)
-                await asyncio.gather(
-                    self.entities_vdb.upsert(data_for_entities_vdb),
-                    self.relationships_vdb.upsert(data_for_rels_vdb),
-                )
-
-                if legacy_rel_ids_to_delete:
-                    await self.relationships_vdb.delete(legacy_rel_ids_to_delete)
-
-            if lock_key_set:
-                if entity_nodes or deduped_relationships:
-                    update_storage = True
-                async with get_storage_keyed_lock(
-                    sorted(lock_key_set),
-                    namespace=namespace,
-                    enable_logging=False,
-                ):
+                if lock_key_set:
+                    if entity_nodes or deduped_relationships:
+                        update_storage = True
+                    async with get_storage_keyed_lock(
+                        sorted(lock_key_set),
+                        namespace=namespace,
+                        enable_logging=False,
+                    ):
+                        await _do_graph_and_vdb_writes()
+                else:
+                    # No entities, no relationships — nothing to serialise on.
                     await _do_graph_and_vdb_writes()
-            else:
-                # No entities, no relationships — nothing to serialise on.
-                await _do_graph_and_vdb_writes()
 
-        except Exception as e:
-            logger.error(f"Error in ainsert_custom_kg: {e}")
-            raise
-        finally:
-            if update_storage:
-                await self._insert_done_with_cleanup()
+            except Exception as e:
+                logger.error(f"Error in ainsert_custom_kg: {e}")
+                raise
+            except BaseException as exc:
+                # A cancellation -- the hold ceiling's, a disconnected client's.
+                # Recorded, never handled: the flush below has to know it is
+                # running under one. ``except Exception`` above cannot see it.
+                interrupted = exc
+                raise
+            finally:
+                if update_storage:
+                    # This runs while a cancellation may already be propagating
+                    # (the hold ceiling's, a disconnected client's). The flush
+                    # still happens: the writes above are in memory, so it is
+                    # the OWED commit finishing, exactly as
+                    # ``_finish_deferring_cancellation`` lets an in-flight one
+                    # finish rather than tearing it apart.
+                    #
+                    # What must not happen is the caller then being told nothing
+                    # landed. This commit STARTS after the cancellation was
+                    # delivered, so no cancellation is pending for
+                    # ``_wait_deferring_cancellation`` to withhold and stamp,
+                    # and ``_AdminHoldCeiling`` would report "no commit of its
+                    # own is known to have completed" over a custom KG that is
+                    # on disk. Stamp the very exception that is propagating --
+                    # only after the flush returns, so the claim is true.
+                    await self._insert_done_with_cleanup()
+                    if interrupted is not None:
+                        mark_cancellation_deferred(interrupted)
 
     def query(
         self,
@@ -6530,6 +6901,512 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             action=_terminal_release,
                         )
 
+    # ------------------------------------------------------------------
+    # Admin-write gate (issue #3899)
+    # ------------------------------------------------------------------
+
+    def _admin_write_gate_required(self) -> bool:
+        """Whether this instance's graph storage needs the admin-write gate.
+
+        Decided by the graph storage's class-level ``requires_single_writer``
+        declaration and by nothing else. Only the graph storage can lose an
+        uncommitted mutation to a peer commit: ``NanoVectorDBStorage`` and
+        ``FaissVectorDBStorage`` replay their pending buffers over a reloaded
+        snapshot, ``JsonKVStorage`` / ``JsonDocStatusStorage`` have no reload
+        path at all (their data is a shared Manager mapping), and every
+        server-backed store has row/transaction-level concurrency of its own.
+        So a server-backed graph store combined with file-backed KV or vector
+        storages runs ungated -- serializing it workspace-wide would be a
+        throughput regression for no correctness gain.
+        """
+        return bool(
+            getattr(
+                type(self.chunk_entity_relation_graph), "requires_single_writer", False
+            )
+        )
+
+    def _admin_write_hold_ceiling(self) -> float:
+        """The effective hold ceiling, never ``None``.
+
+        ``__post_init__`` resolves the field for every real instance, so this
+        normally just returns it. The fallback covers an instance built without
+        it -- ``LightRAG.__new__(LightRAG)`` test rigs, or an attribute reset to
+        ``None`` at runtime -- which would otherwise reach
+        ``loop.call_later(None, ...)`` and fail with ``delay must not be None``,
+        an error naming nothing that would help. It repeats the same derivation,
+        so a fully built instance cannot take a different value through it.
+        """
+        configured = getattr(self, "admin_write_max_hold_seconds", None)
+        if configured is not None:
+            return configured
+        return _default_admin_write_hold_seconds(
+            getattr(self, "default_embedding_timeout", DEFAULT_EMBEDDING_TIMEOUT)
+        )
+
+    def _validate_admin_write_bounds(self) -> None:
+        """Refuse a hold ceiling that cannot survive one embedding round-trip.
+
+        Called from ``__post_init__`` once the graph storage exists, and ONLY
+        when ``_admin_write_gate_required()`` -- a server-backed graph store
+        never takes the gate, so it must not be refused startup over a knob it
+        does not use.
+
+        The relation was documented in ``env.example`` and enforced nowhere. A
+        ceiling below the embedding timeout stops every admin write that
+        reaches the embedder, and stops it at a point where a commit may
+        already have landed -- the one failure mode this whole gate works to
+        report honestly. Only an EXPLICIT ceiling can get here: the derived
+        default is ``6x`` the same instance's timeout, so it cannot.
+
+        **Not checked here: ``acquire timeout <= ceiling``.** An earlier
+        revision warned on it, reasoning that the ceiling releases the admin
+        lock first so any longer wait is wasted. That reasoning is wrong, and
+        the warning pushed operators toward shorter timeouts and avoidable
+        409s. The admin lock is taken BEFORE the ceiling starts (the
+        ``pipeline_status`` fetch and the reservation acquire run inside the
+        lock and outside the ceiling) and released AFTER it ends, and a
+        cancellation-resistant commit runs to completion past the expiry --
+        measured at 5.01s of lock hold under a 1s ceiling. So the lock is
+        always held longer than the ceiling, by an amount no static comparison
+        can bound, and a longer acquire timeout genuinely does let a queued
+        write through. Do not reinstate the check.
+        """
+        if not self._admin_write_gate_required():
+            return
+        if self.admin_write_max_hold_seconds < self.default_embedding_timeout:
+            raise ValueError(
+                "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS "
+                f"({self.admin_write_max_hold_seconds:g}s) must be at least the "
+                f"embedding timeout ({self.default_embedding_timeout:g}s): the "
+                "embedding round-trip runs inside the admin-write hold, so a "
+                "lower ceiling stops every knowledge-graph edit that reaches "
+                "the embedder -- possibly after its commit has already landed. "
+                "Raise the ceiling (at least "
+                f"{ADMIN_WRITE_HOLD_EMBEDDING_MULTIPLIER:g}x the embedding "
+                "timeout is recommended, which is what leaving it unset gives "
+                "you) or lower EMBEDDING_TIMEOUT."
+            )
+
+    def _admin_write_lock_namespace(self) -> str:
+        workspace = self.workspace or ""
+        if workspace:
+            return f"{workspace}:{ADMIN_WRITE_LOCK_NAMESPACE_SUFFIX}"
+        return ADMIN_WRITE_LOCK_NAMESPACE_SUFFIX
+
+    @asynccontextmanager
+    async def _admin_write_gate(self, operation: str):
+        """Serialize an admin graph write against its peers and the pipeline.
+
+        Wraps the body of every public admin graph writer -- the seven
+        ``utils_graph`` flows (``adelete_by_entity``, ``adelete_by_relation``,
+        ``aedit_entity``, ``aedit_relation``, ``acreate_entity``,
+        ``acreate_relation``, ``amerge_entities``) and ``ainsert_custom_kg`` --
+        and is a no-op unless ``_admin_write_gate_required()``.
+
+        Why (issue #3899): ``NetworkXStorage`` reloads the whole graph from disk
+        whenever a peer commit lands, and a reload discards this process's
+        uncommitted in-memory mutations. Every admin flow reaches the graph
+        several times per request (a rename upserts, then reads edges, then
+        upserts again), so a peer commit landing between two of those calls
+        silently drops the mutations already applied; the commit that follows
+        succeeds without them. Two peers can do that: another admin write, and
+        the document pipeline (whose in-memory merge results an admin commit
+        discards the same way, leaving documents marked PROCESSED with their
+        entities missing -- and nothing heals that). Both are removed here by
+        restoring the *single writer per workspace* invariant the storage
+        already asserts, rather than by teaching the reload to survive:
+        replaying graph payloads over a newer snapshot would drop the evidence
+        a peer accumulated and republish a stale ``weight``, breaking the
+        relation-weight contract at exactly the moment nothing can notice.
+
+        Two halves, one fixed acquisition order::
+
+            admin lock (WAITS)  ->  admin reservation (REFUSES)  ->  per-key locks
+
+        1. **The admin lock** -- ``get_storage_keyed_lock(["admin"],
+           namespace=f"{workspace}:GraphAdmin")``, cross-process like every
+           keyed lock. Serializes admin writes against each other by
+           *queueing* them: a second admin write waits up to
+           ``ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT`` and is refused only on expiry,
+           with ``ADMIN_WRITE_LOCK_BUSY_PREFIX`` (HTTP 409). Taken FIRST,
+           because the reservation below refuses without waiting -- taken the
+           other way round the second concurrent admin write would be refused
+           and the queue would never form. Taken OUTSIDE the per-entity keys,
+           which the ``utils_graph`` functions acquire inside their own body:
+           ``amerge_entities`` takes several keys at once, and the reverse
+           order deadlocks. The pipeline never takes the admin lock, so no
+           cycle is introduced. Wrapping at this method level is what makes the
+           order automatic for any ``utils_graph`` helper added later -- do not
+           acquire the admin lock anywhere inside ``utils_graph``.
+        2. **The pipeline ``busy`` reservation** -- ``acquire_reservation`` with
+           ``owner_kind="admin"`` and ``flags={"busy": True}``, refusing on
+           ``busy`` (a processing loop or a destructive job) and ``scanning``
+           with ``ADMIN_WRITE_PIPELINE_BUSY_PREFIX`` (HTTP 409, distinguishable
+           from the lock refusal by its leading phrase). It does NOT set
+           ``destructive_busy``: an admin write drops no storage and removes no
+           input file, so enqueue stays allowed. While held it defers a
+           pipeline *start* -- ``acquire_processing_reservation``'s ``busy`` arm
+           reduces the start to a sticky auto-rescan request in the workspace
+           ingress mailbox -- and a running pipeline still refuses the admin
+           write, as the router's ``check_pipeline_busy_or_raise`` already did
+           (kept as an early 409 that fails before any embedding work).
+
+        Both halves cover mutate AND commit, embedding round-trip included; a
+        lock around the commit alone would leave the mid-flow reload open, which
+        is the whole defect. The hold is bounded by ``admin_write_max_hold_seconds``
+        (``_AdminHoldCeiling``): an admin holder of ``busy`` fences ingestion
+        for as long as it runs, and dead-owner reclaim covers a dead process,
+        not a hung one. A ceiling that fires cannot tear a commit apart -- the
+        admin flows run their commit-plus-cleanup regions under
+        ``_finish_deferring_cancellation``, and ``commit_in_storage_io``
+        finishes the file write and its publication hook regardless.
+
+        **Accepted residue of the ceiling.** Precisely because a commit is
+        allowed to finish, an operation the ceiling stops may have written
+        durably while its caller is told it failed. That is unavoidable for any
+        cancellation-based bound (``asyncio.timeout`` has it too), so it is
+        reported rather than hidden: ``_AdminHoldCeiling`` reads the stamp the
+        uncancellable regions leave on a withheld cancellation whose write
+        committed and says whether a commit was in flight, and neither of its messages claims
+        the operation wrote nothing -- a multi-step flow commits more than once.
+        Recovery is to re-read the object; a blind retry is what turns this into
+        "entity already exists" or a re-applied edit. Beyond that, what the
+        ceiling can leave behind is the crash residue issue #3838 documents.
+
+        **Release-time drive.** A pipeline start turned away during the hold
+        left ``auto_rescan_pending`` armed in the mailbox, and that flag is
+        consumed only by a ``busy`` holder's quiescence decision -- which an
+        admin holder never runs. Left alone, the request would be stranded and
+        its document would sit PENDING until the next upload or scan. So after
+        both halves are released this reads the flag (read-only, non-consuming)
+        and, if set, drives the queue once in a background task
+        (``_schedule_deferred_pipeline_drive``); the drive's own
+        ``acquire_processing_reservation`` consumes the flag. The drive is
+        skipped when this task is being cancelled, leaving the flag armed for
+        the next scan or upload to honour -- the same choice
+        ``run_scanning_process`` makes.
+
+        Crash semantics: ``kind="admin"`` is in
+        ``_RERUNNABLE_RESERVATION_KINDS``, so a worker killed mid-edit has its
+        reservation reclaimed by the next acquire without fencing the workspace
+        (``recovery_required``) -- an admin write is re-runnable, and the
+        residue it leaves is the documented #3838 one.
+
+        ``pipeline_status`` not bootstrapped (a test rig without
+        ``initialize_storages``) means there is no pipeline to exclude, so only
+        the admin lock is taken.
+        """
+        if not self._admin_write_gate_required():
+            yield
+            return
+
+        workspace = self.workspace or ""
+        admin_lock = get_storage_keyed_lock(
+            [ADMIN_WRITE_LOCK_KEY],
+            namespace=self._admin_write_lock_namespace(),
+            enable_logging=False,
+        )
+        # WAIT for a peer admin write, bounded. ``_KeyedLockContext.__aenter__``
+        # rolls back partially acquired keys under a shield on cancellation, so
+        # a timeout here leaks nothing. ``asyncio.timeout`` (3.11+) runs the
+        # acquire in THIS task, so an acquisition that lands in the same tick
+        # as the expiry is either kept or rolled back -- never completed in a
+        # wrapper task whose result the timeout then throws away; ``wait_for``
+        # is the 3.10 fallback.
+        try:
+            timeout_cm = getattr(asyncio, "timeout", None)
+            if timeout_cm is not None:
+                async with timeout_cm(ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT):
+                    await admin_lock.__aenter__()
+            else:  # pragma: no cover - Python 3.10 only
+                await asyncio.wait_for(
+                    admin_lock.__aenter__(), timeout=ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT
+                )
+        except asyncio.TimeoutError:
+            raise AdminWriteGateRefusedError(
+                f"{ADMIN_WRITE_LOCK_BUSY_PREFIX}: `{operation}` waited "
+                f"{ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT:g}s for the workspace admin "
+                "lock held by another entity/relation edit. Retry once that edit "
+                "has finished.",
+                fence="admin_lock",
+            ) from None
+
+        # Generated BEFORE any await so the ``finally`` can release by owner
+        # even if the acquire below is cancelled at its lock exit.
+        token = uuid.uuid4().hex
+        reserved = False
+        cancelled = False
+        # Whether the body actually ran. Only then can this operation own
+        # uncommitted graph mutations -- and only then is the single-writer
+        # invariant established, so that only then may they be given up.
+        entered_body = False
+        try:
+            try:
+                pipeline_status = await get_namespace_data(
+                    "pipeline_status", workspace=workspace
+                )
+            except PipelineNotInitializedError:
+                pipeline_status = None
+            if pipeline_status is not None:
+                pipeline_status_lock = get_namespace_lock(
+                    "pipeline_status", workspace=workspace
+                )
+                # Set before the acquire: a cancellation at its lock exit must
+                # still reach the owner-checked release below.
+                reserved = True
+                result = await acquire_reservation(
+                    pipeline_status,
+                    pipeline_status_lock,
+                    owner_key="busy_owner",
+                    owner=token,
+                    owner_kind="admin",
+                    flags={"busy": True},
+                    reject_when=(
+                        (
+                            "busy",
+                            f"{ADMIN_WRITE_PIPELINE_BUSY_PREFIX}. Wait for the "
+                            "running job to finish before editing the knowledge "
+                            "graph.",
+                        ),
+                        (
+                            "scanning",
+                            f"{ADMIN_WRITE_PIPELINE_BUSY_PREFIX}. A document scan "
+                            "is in progress; wait for it to complete before "
+                            "editing the knowledge graph.",
+                        ),
+                    ),
+                )
+                if not result.acquired:
+                    # The slot is somebody else's: we never held it, so there is
+                    # nothing to release and -- more to the point -- no pipeline
+                    # start can have been deferred by a hold we do not have. Clear
+                    # the flag so the ``finally`` skips the release-time drive
+                    # instead of driving the queue on a write that never ran.
+                    reserved = False
+                    raise AdminWriteGateRefusedError(
+                        result.message, conflict=result.conflict, fence=result.fence
+                    )
+            async with _AdminHoldCeiling(
+                self._admin_write_hold_ceiling(), f"Admin write `{operation}`"
+            ):
+                entered_body = True
+                yield
+        except (asyncio.CancelledError, AdminWriteHoldExceededError) as exc:
+            # The one exit the operation's own handlers never see: every admin
+            # flow guards its body with ``except Exception``, which cannot catch
+            # a ``CancelledError``, so a write killed between its graph mutation
+            # and its commit leaves that mutation in the process-wide in-memory
+            # graph with nothing owing anything about it. Give it up here, while
+            # the admin lock and the reservation are still held so no other
+            # writer can be mid-mutation -- otherwise the release-time drive or
+            # the next unrelated admin write commits it, and an operation
+            # reported as failed becomes durable after the fact.
+            #
+            # ONLY once the body ran. The graph is process-wide and shared with
+            # the pipeline, and the "no other writer" clause above is exactly
+            # what the reservation buys: before it, a cancellation here (waiting
+            # on ``get_namespace_data`` or the reservation lock, with the
+            # PIPELINE holding ``busy``) would condemn the pipeline's own
+            # in-flight mutations, which then vanish through a reload that is
+            # deliberately exempt from the dirty-graph backstop -- its batch
+            # commits successfully WITHOUT the changes it made.
+            if entered_body:
+                self._discard_uncommitted_graph_mutations(operation)
+            # Only a real cancellation suppresses the release-time drive:
+            # driving the pipeline from a cancelled task would start work
+            # nobody is waiting for, and the mailbox flag is sticky so the next
+            # scan or upload picks it up. A ceiling expiry is a completed
+            # failure of THIS write, not of the caller, so it still drives.
+            #
+            # Catching the cancellation out here rather than around the body
+            # also covers the acquire: a cancellation landing at the
+            # reservation lock's exit can leave ``busy`` ours, which is why
+            # ``reserved`` is set before the acquire.
+            cancelled = isinstance(exc, asyncio.CancelledError)
+            raise
+        finally:
+            try:
+                if reserved:
+                    # Owner-checked and cancellation-resistant: a no-op if the
+                    # acquire was cancelled at its lock exit without taking the
+                    # slot, or if the slot was reclaimed from us. A refusal never
+                    # gets here -- it clears ``reserved`` above.
+                    await release_owned_reservation(
+                        workspace,
+                        owner_key="busy_owner",
+                        token=token,
+                        action=_release_admin_busy,
+                    )
+            finally:
+                await admin_lock.__aexit__(None, None, None)
+            if reserved and not cancelled:
+                await self._drive_pipeline_if_deferred(workspace)
+
+    def _discard_uncommitted_graph_mutations(self, operation: str) -> None:
+        """Give up graph mutations an interrupted admin write left unpublished.
+
+        Called from the gate's cancellation exit only, and deliberately: every
+        other way out of the body ran the flow's own ``except Exception``
+        handlers, whose per-path residues are decided and documented where they
+        happen. A cancellation runs none of them.
+
+        Synchronous all the way down (see
+        :meth:`BaseGraphStorage.discard_uncommitted_mutations`), so it cannot be
+        interrupted by a second cancellation the way an ``await`` here could.
+        Unconditional: the base method is a no-op returning ``False``, so the
+        backends with nothing to give up need no test of their own here.
+
+        Never raises. It runs while a cancellation or the ceiling's error is
+        already propagating, and swallowing that to report a bookkeeping
+        failure would lose the reason the operation actually failed.
+        """
+        graph = getattr(self, "chunk_entity_relation_graph", None)
+        if graph is None:
+            return
+        try:
+            graph.discard_uncommitted_mutations(
+                f"admin write `{operation}` was interrupted before its commit"
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.error(
+                f"Failed to discard uncommitted graph mutations after the "
+                f"interrupted admin write `{operation}`: {e}"
+            )
+
+    async def _drive_pipeline_if_deferred(self, workspace: str) -> None:
+        """Start the release-time queue drive when the hold turned a start away.
+
+        Read-only on the mailbox: ``counts()["auto_rescan_pending"]`` does not
+        consume the flag, so a drive that never runs (a failure here, or a
+        cancelled one) leaves it armed for the next scan or upload. Any error
+        is logged, never raised -- the admin write already succeeded or failed
+        on its own terms.
+
+        Backgrounded on an event loop that outlives this call, AWAITED under a
+        synchronous wrapper -- see :data:`_SYNC_WRAPPER_DRIVES_INLINE` for why
+        a background task there is not merely ineffective but harmful. So a
+        synchronous ``create_entity`` / ``edit_relation`` / ... blocks until the
+        queue is drained, and only when a pipeline start was actually deferred
+        during its hold.
+        """
+        try:
+            ingress = await get_pipeline_ingress(workspace)
+            if not ingress.counts().get("auto_rescan_pending"):
+                return
+        except Exception as e:
+            logger.error(
+                f"[{workspace}] Could not read the pipeline ingress after an "
+                f"admin write; a deferred pipeline start, if any, stays armed "
+                f"for the next scan or upload: {e}"
+            )
+            return
+        if _SYNC_WRAPPER_DRIVES_INLINE.get():
+            await self._deferred_pipeline_drive(workspace)
+            return
+        self._schedule_deferred_pipeline_drive(workspace)
+
+    async def _deferred_pipeline_drive(self, workspace: str) -> None:
+        """Drive the document queue once. Never raises into the admin result.
+
+        The admin write has already finished on its own terms by the time this
+        runs, so a failure here is logged and swallowed. A cancellation still
+        propagates: the mailbox flag is re-armed by
+        ``apipeline_process_enqueue_documents``'s own bookkeeping if it had
+        consumed one, and the caller (a shutdown, or ``finalize_storages``)
+        must not be told the drive completed.
+        """
+        try:
+            await self.apipeline_process_enqueue_documents()
+        except asyncio.CancelledError:
+            logger.info(
+                f"[{workspace}] Deferred pipeline drive after an admin write "
+                "was cancelled; the queued request stays armed for the next "
+                "scan or upload."
+            )
+            raise
+        except Exception as e:
+            logger.error(
+                f"[{workspace}] Deferred pipeline drive after an admin write "
+                f"failed: {e}"
+            )
+
+    def _schedule_deferred_pipeline_drive(self, workspace: str) -> asyncio.Task | None:
+        """Drive the document queue once, in the background.
+
+        The admin request handler must return promptly, so the drive is not
+        awaited. The task is held by a strong reference
+        (``_ADMIN_RELEASE_DRIVE_TASKS`` plus this instance's own set, both
+        discarded by a done-callback) so it cannot be garbage-collected
+        mid-run, logs its own failures, and is cancelled -- not awaited -- by
+        ``finalize_storages``. Returns ``None`` when no loop can run it (loop
+        closed or shutting down); the mailbox flag stays armed in that case.
+
+        ONLY for a loop that outlives this call, and the synchronous wrappers
+        set :data:`_SYNC_WRAPPER_DRIVES_INLINE` to take the inline path instead.
+        What an SDK caller of the ``a*`` methods gets depends on how their loop
+        is driven, and only one shape is harmful (measured, not reasoned):
+
+        * a loop that keeps running, or ``asyncio.run(main())`` with further
+          awaits after the edit -- the drive completes;
+        * ``asyncio.run`` where the edit is the last step, or is followed
+          straight by ``finalize_storages`` -- the drive is CANCELLED in flight.
+          ``asyncio.run`` cancels pending tasks rather than draining them, and
+          ``finalize_storages`` cancels these ones itself. Benign either way:
+          the pipeline's own cleanup releases ``busy`` and the sticky
+          auto-rescan request stays armed for the next scan or upload;
+        * a hand-managed loop stopped and restarted with repeated
+          ``loop.run_until_complete`` and never finalized -- the task advances
+          only while the loop happens to run, so it can take the ``busy``
+          reservation and then park. Dead-owner reclaim cannot clear a live
+          pid. That is the stranded case, it is not a supported pattern, and it
+          is what the inline path removes for the synchronous wrappers.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        if loop.is_closed():
+            return None
+
+        task = loop.create_task(
+            self._deferred_pipeline_drive(workspace),
+            name=f"lightrag-admin-release-drive:{workspace}",
+        )
+        _ADMIN_RELEASE_DRIVE_TASKS.add(task)
+        drives = self._admin_release_drives()
+        drives.add(task)
+
+        def _done(t: asyncio.Task) -> None:
+            _ADMIN_RELEASE_DRIVE_TASKS.discard(t)
+            drives.discard(t)
+
+        task.add_done_callback(_done)
+        return task
+
+    def _admin_release_drives(self) -> set[asyncio.Task]:
+        """This instance's live release-time drives (created lazily: the
+        attribute must not become a dataclass field)."""
+        drives = self.__dict__.get("_admin_release_drive_tasks")
+        if drives is None:
+            drives = set()
+            self.__dict__["_admin_release_drive_tasks"] = drives
+        return drives
+
+    async def _cancel_admin_release_drives(self) -> None:
+        """Cancel and join this instance's pending release-time drives.
+
+        Called from ``finalize_storages``: a drive still running at shutdown
+        is skipped, and its mailbox flag stays armed for the next run.
+        """
+        drives = list(self._admin_release_drives())
+        for task in drives:
+            task.cancel()
+        for task in drives:
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
     async def _raise_if_recovery_required(self) -> None:
         """Refuse a graph/data mutation while the workspace is fenced for
         recovery (a worker died mid custom_chunks/delete/clear, possibly leaving
@@ -6573,14 +7450,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         from lightrag.utils_graph import adelete_by_entity
 
-        return await adelete_by_entity(
-            self.chunk_entity_relation_graph,
-            self.entities_vdb,
-            self.relationships_vdb,
-            entity_name,
-            entity_chunks_storage=self.entity_chunks,
-            relation_chunks_storage=self.relation_chunks,
-        )
+        async with self._admin_write_gate("adelete_by_entity"):
+            return await adelete_by_entity(
+                self.chunk_entity_relation_graph,
+                self.entities_vdb,
+                self.relationships_vdb,
+                entity_name,
+                entity_chunks_storage=self.entity_chunks,
+                relation_chunks_storage=self.relation_chunks,
+            )
 
     def delete_by_entity(self, entity_name: str) -> DeletionResult:
         """Synchronously delete an entity and all its relationships.
@@ -6614,13 +7492,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         from lightrag.utils_graph import adelete_by_relation
 
-        return await adelete_by_relation(
-            self.chunk_entity_relation_graph,
-            self.relationships_vdb,
-            source_entity,
-            target_entity,
-            relation_chunks_storage=self.relation_chunks,
-        )
+        async with self._admin_write_gate("adelete_by_relation"):
+            return await adelete_by_relation(
+                self.chunk_entity_relation_graph,
+                self.relationships_vdb,
+                source_entity,
+                target_entity,
+                relation_chunks_storage=self.relation_chunks,
+            )
 
     def delete_by_relation(
         self, source_entity: str, target_entity: str
@@ -6749,17 +7628,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         from lightrag.utils_graph import aedit_entity
 
-        return await aedit_entity(
-            self.chunk_entity_relation_graph,
-            self.entities_vdb,
-            self.relationships_vdb,
-            entity_name,
-            updated_data,
-            allow_rename,
-            allow_merge,
-            self.entity_chunks,
-            self.relation_chunks,
-        )
+        async with self._admin_write_gate("aedit_entity"):
+            return await aedit_entity(
+                self.chunk_entity_relation_graph,
+                self.entities_vdb,
+                self.relationships_vdb,
+                entity_name,
+                updated_data,
+                allow_rename,
+                allow_merge,
+                self.entity_chunks,
+                self.relation_chunks,
+            )
 
     def edit_entity(
         self,
@@ -6800,15 +7680,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         from lightrag.utils_graph import aedit_relation
 
-        return await aedit_relation(
-            self.chunk_entity_relation_graph,
-            self.entities_vdb,
-            self.relationships_vdb,
-            source_entity,
-            target_entity,
-            updated_data,
-            self.relation_chunks,
-        )
+        async with self._admin_write_gate("aedit_relation"):
+            return await aedit_relation(
+                self.chunk_entity_relation_graph,
+                self.entities_vdb,
+                self.relationships_vdb,
+                source_entity,
+                target_entity,
+                updated_data,
+                self.relation_chunks,
+            )
 
     def edit_relation(
         self, source_entity: str, target_entity: str, updated_data: dict[str, Any]
@@ -6838,16 +7719,17 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         from lightrag.utils_graph import acreate_entity
 
-        return await acreate_entity(
-            self.chunk_entity_relation_graph,
-            self.entities_vdb,
-            self.relationships_vdb,
-            entity_name,
-            entity_data,
-            before_create=self._migrate_chunk_tracking_before_creation,
-            entity_chunks_storage=self.entity_chunks,
-            relation_chunks_storage=self.relation_chunks,
-        )
+        async with self._admin_write_gate("acreate_entity"):
+            return await acreate_entity(
+                self.chunk_entity_relation_graph,
+                self.entities_vdb,
+                self.relationships_vdb,
+                entity_name,
+                entity_data,
+                before_create=self._migrate_chunk_tracking_before_creation,
+                entity_chunks_storage=self.entity_chunks,
+                relation_chunks_storage=self.relation_chunks,
+            )
 
     def create_entity(
         self, entity_name: str, entity_data: dict[str, Any]
@@ -6881,16 +7763,17 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         from lightrag.utils_graph import acreate_relation
 
-        return await acreate_relation(
-            self.chunk_entity_relation_graph,
-            self.entities_vdb,
-            self.relationships_vdb,
-            source_entity,
-            target_entity,
-            relation_data,
-            before_create=self._migrate_chunk_tracking_before_creation,
-            relation_chunks_storage=self.relation_chunks,
-        )
+        async with self._admin_write_gate("acreate_relation"):
+            return await acreate_relation(
+                self.chunk_entity_relation_graph,
+                self.entities_vdb,
+                self.relationships_vdb,
+                source_entity,
+                target_entity,
+                relation_data,
+                before_create=self._migrate_chunk_tracking_before_creation,
+                relation_chunks_storage=self.relation_chunks,
+            )
 
     def create_relation(
         self, source_entity: str, target_entity: str, relation_data: dict[str, Any]
@@ -6937,17 +7820,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         from lightrag.utils_graph import amerge_entities
 
-        return await amerge_entities(
-            self.chunk_entity_relation_graph,
-            self.entities_vdb,
-            self.relationships_vdb,
-            source_entities,
-            target_entity,
-            merge_strategy,
-            target_entity_data,
-            self.entity_chunks,
-            self.relation_chunks,
-        )
+        async with self._admin_write_gate("amerge_entities"):
+            return await amerge_entities(
+                self.chunk_entity_relation_graph,
+                self.entities_vdb,
+                self.relationships_vdb,
+                source_entities,
+                target_entity,
+                merge_strategy,
+                target_entity_data,
+                self.entity_chunks,
+                self.relation_chunks,
+            )
 
     def merge_entities(
         self,
