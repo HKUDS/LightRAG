@@ -1686,8 +1686,11 @@ backoff — 98 s at the default) plus one whole-graph GraphML commit (~17 s at
 200k nodes, since `write_nx_graph` rewrites the entire graph however small the
 edit was), so ~115 s; the remainder is headroom for the edges an edit touches.
 
-Setting the ceiling *below* `EMBEDDING_TIMEOUT` is refused at startup, and an
-acquire timeout above the ceiling warns. Prefer erring high: a ceiling that is
+The ceiling is resolved per `LightRAG` instance from that instance's
+`default_embedding_timeout`, not from the environment at import, so a direct
+`LightRAG(default_embedding_timeout=300)` is followed without any environment
+variable. Setting it *below* the embedding timeout is refused at startup.
+Prefer erring high: a ceiling that is
 too high only defers ingestion, and a deferred start is sticky in the ingress
 mailbox so it self-heals, whereas one that is too low kills edits whose commit
 may already have landed.
@@ -1698,6 +1701,14 @@ should wait before being told to retry. Deriving one from the other would make
 them equal — which would park an interactive edit for the full worst case
 instead of returning the actionable 409. When the edit ahead runs long, the
 queue is *meant* to degrade to fast failure.
+
+An acquire timeout *above* the ceiling is not wasted, either. The admin lock is
+taken before the ceiling starts (the `pipeline_status` fetch and the reservation
+acquire run inside the lock and outside the ceiling) and released after it ends,
+and a cancellation-resistant commit runs to completion past the expiry — a 1 s
+ceiling was measured holding the lock for 5.01 s. So the lock always outlives
+the ceiling by an amount no static comparison can bound, and a queued write can
+still be rewarded for waiting.
 
 **A 500 from that ceiling does not mean the edit was undone.** The ceiling stops
 the operation by cancelling it, and an admin write withholds a cancellation while

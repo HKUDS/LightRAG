@@ -281,14 +281,22 @@ ADMIN_WRITE_HOLD_FLOOR_SECONDS: float = 180.0
 ADMIN_WRITE_HOLD_EMBEDDING_MULTIPLIER: float = 6.0
 
 
-def _default_admin_write_hold_seconds() -> float:
-    """Default hold ceiling, derived from the deployment's embedding timeout.
+def _default_admin_write_hold_seconds(embedding_timeout: float) -> float:
+    """Default hold ceiling for an embedding timeout of ``embedding_timeout``.
 
     The embedding round-trip runs INSIDE the hold, so a fixed ceiling and a
-    configurable ``EMBEDDING_TIMEOUT`` drift apart the moment an operator raises
+    configurable embedding timeout drift apart the moment an operator raises
     the latter: every embedding retry would then be killed by a ceiling that was
     sized for the old timeout. Deriving it keeps that impossible by construction
     rather than by documentation.
+
+    Takes the timeout as an ARGUMENT rather than reading ``EMBEDDING_TIMEOUT``
+    itself, because the timeout is per-instance (``default_embedding_timeout``,
+    which a direct ``LightRAG(...)`` caller may pass without touching the
+    environment) while a module-level constant is per-process. Reading the
+    environment here made the two disagree for exactly that caller, and the
+    disagreement surfaced as a startup refusal on a configuration that is
+    perfectly legal.
 
     What one hold has to cover, and where ``6x`` comes from::
 
@@ -312,26 +320,19 @@ def _default_admin_write_hold_seconds() -> float:
     commit may ALREADY have landed (see ``_AdminHoldCeiling``), which does not.
     ``AGENTS.md`` *Consistency without transactions* decides that direction.
     """
-    embedding_timeout = get_env_value(
-        "EMBEDDING_TIMEOUT", DEFAULT_EMBEDDING_TIMEOUT, int
-    )
     return max(
         ADMIN_WRITE_HOLD_FLOOR_SECONDS,
         ADMIN_WRITE_HOLD_EMBEDDING_MULTIPLIER * embedding_timeout,
     )
 
 
-# Ceiling on how long one admin write may hold both gates. While it holds the
-# pipeline ``busy`` reservation it DEFERS every pipeline start in the workspace,
-# so an unbounded hold -- an embedding endpoint that hangs -- would fence
-# ingestion; dead-owner reclaim does not cover that, because it detects a dead
-# process, not a hung one. On expiry the operation fails loud (500) and the
-# gate's ``finally`` releases both halves. Must be >= the deployment's embedding
-# client timeout (``EMBEDDING_TIMEOUT``), since that round-trip runs inside the
-# hold -- which the default guarantees and ``__post_init__`` enforces for an
-# explicit override. Overridable with ``LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS``.
-ADMIN_WRITE_MAX_HOLD_SECONDS: float = get_env_value(
-    "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS", _default_admin_write_hold_seconds(), float
+# The EXPLICIT hold-ceiling override, or None when the operator set none. Not
+# the effective ceiling: that is per-instance (``admin_write_max_hold_seconds``,
+# resolved in ``__post_init__``), because the embedding timeout it is derived
+# from is per-instance too. A module-level effective ceiling is what let an
+# instance run with a ceiling sized for a different instance's timeout.
+ADMIN_WRITE_MAX_HOLD_SECONDS_OVERRIDE: float | None = get_env_value(
+    "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS", None, float
 )
 
 # Strong references to the release-time queue drives (see
@@ -964,6 +965,30 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     default_embedding_timeout: int = field(
         default=get_env_value("EMBEDDING_TIMEOUT", DEFAULT_EMBEDDING_TIMEOUT, int)
     )
+
+    admin_write_max_hold_seconds: float | None = field(
+        default=ADMIN_WRITE_MAX_HOLD_SECONDS_OVERRIDE
+    )
+    """Ceiling on how long ONE admin graph write may hold both halves of
+    ``_admin_write_gate``; ``None`` (the default) derives it from this
+    instance's ``default_embedding_timeout``.
+
+    While an admin write holds the pipeline ``busy`` reservation it DEFERS every
+    pipeline start in the workspace, so an unbounded hold -- an embedding
+    endpoint that hangs -- would fence ingestion; dead-owner reclaim does not
+    cover that, because it detects a dead process, not a hung one. On expiry the
+    operation fails loud (500) and the gate's ``finally`` releases both halves.
+
+    Per-instance rather than a module constant BECAUSE the embedding timeout it
+    is derived from is per-instance: ``LightRAG(default_embedding_timeout=300)``
+    is legal without touching the environment, and a process-wide ceiling could
+    not follow it. Set explicitly here or through
+    ``LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS``; an explicit value below the
+    embedding timeout is refused in ``__post_init__``.
+
+    Applies only where the graph storage declares ``requires_single_writer``
+    (``NetworkXStorage``); other backends never take the gate.
+    """
 
     # LLM Configuration
     # ---
@@ -1602,6 +1627,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             raise ValueError(
                 "MAX_PENDING_DOCUMENTS must be >= 0 (0 disables admission "
                 f"control); got {self.max_pending_documents}"
+            )
+
+        # Resolve the admin-write hold ceiling against THIS instance's embedding
+        # timeout. Unconditional (not gated on the graph backend) so the
+        # attribute is always a number a caller can read; whether it is ever
+        # USED is decided by ``_admin_write_gate_required()``.
+        if self.admin_write_max_hold_seconds is None:
+            self.admin_write_max_hold_seconds = _default_admin_write_hold_seconds(
+                self.default_embedding_timeout
             )
 
         # Embedding hard-fallback overlap: 0 disables it; negative is a
@@ -6885,54 +6919,66 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             )
         )
 
+    def _admin_write_hold_ceiling(self) -> float:
+        """The effective hold ceiling, never ``None``.
+
+        ``__post_init__`` resolves the field for every real instance, so this
+        normally just returns it. The fallback covers an instance built without
+        it -- ``LightRAG.__new__(LightRAG)`` test rigs, or an attribute reset to
+        ``None`` at runtime -- which would otherwise reach
+        ``loop.call_later(None, ...)`` and fail with ``delay must not be None``,
+        an error naming nothing that would help. It repeats the same derivation,
+        so a fully built instance cannot take a different value through it.
+        """
+        configured = getattr(self, "admin_write_max_hold_seconds", None)
+        if configured is not None:
+            return configured
+        return _default_admin_write_hold_seconds(
+            getattr(self, "default_embedding_timeout", DEFAULT_EMBEDDING_TIMEOUT)
+        )
+
     def _validate_admin_write_bounds(self) -> None:
-        """Check the two admin-write time bounds against each other at startup.
+        """Refuse a hold ceiling that cannot survive one embedding round-trip.
 
         Called from ``__post_init__`` once the graph storage exists, and ONLY
         when ``_admin_write_gate_required()`` -- a server-backed graph store
-        never takes the gate, so it must not be refused startup over knobs it
+        never takes the gate, so it must not be refused startup over a knob it
         does not use.
 
-        Both relations were documented in ``env.example`` and enforced nowhere,
-        which is how a misconfiguration reached the request path instead of the
-        boot log:
+        The relation was documented in ``env.example`` and enforced nowhere. A
+        ceiling below the embedding timeout stops every admin write that
+        reaches the embedder, and stops it at a point where a commit may
+        already have landed -- the one failure mode this whole gate works to
+        report honestly. Only an EXPLICIT ceiling can get here: the derived
+        default is ``6x`` the same instance's timeout, so it cannot.
 
-        1. ``ceiling >= embedding timeout`` is FATAL. The embedding round-trip
-           runs inside the hold, so a ceiling below it kills every admin write
-           that reaches the embedder -- and kills it at a point where a commit
-           may already have landed, which is the one failure mode this whole
-           gate works to report honestly. The derived default cannot violate
-           this; only an explicit ``LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS``
-           can, so refusing is refusing a hand-written mistake.
-        2. ``acquire timeout <= ceiling`` is a WARNING, not fatal. Waiting
-           longer than a holder can possibly hold is merely pointless -- the
-           ceiling kills the holder first, so the extra patience buys the waiter
-           nothing. Nothing is unsafe, so nothing is refused.
+        **Not checked here: ``acquire timeout <= ceiling``.** An earlier
+        revision warned on it, reasoning that the ceiling releases the admin
+        lock first so any longer wait is wasted. That reasoning is wrong, and
+        the warning pushed operators toward shorter timeouts and avoidable
+        409s. The admin lock is taken BEFORE the ceiling starts (the
+        ``pipeline_status`` fetch and the reservation acquire run inside the
+        lock and outside the ceiling) and released AFTER it ends, and a
+        cancellation-resistant commit runs to completion past the expiry --
+        measured at 5.01s of lock hold under a 1s ceiling. So the lock is
+        always held longer than the ceiling, by an amount no static comparison
+        can bound, and a longer acquire timeout genuinely does let a queued
+        write through. Do not reinstate the check.
         """
         if not self._admin_write_gate_required():
             return
-        if ADMIN_WRITE_MAX_HOLD_SECONDS < self.default_embedding_timeout:
+        if self.admin_write_max_hold_seconds < self.default_embedding_timeout:
             raise ValueError(
                 "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS "
-                f"({ADMIN_WRITE_MAX_HOLD_SECONDS:g}s) must be at least the "
+                f"({self.admin_write_max_hold_seconds:g}s) must be at least the "
                 f"embedding timeout ({self.default_embedding_timeout:g}s): the "
                 "embedding round-trip runs inside the admin-write hold, so a "
                 "lower ceiling stops every knowledge-graph edit that reaches "
                 "the embedder -- possibly after its commit has already landed. "
                 "Raise the ceiling (at least "
                 f"{ADMIN_WRITE_HOLD_EMBEDDING_MULTIPLIER:g}x the embedding "
-                "timeout is recommended, which is the default) or lower "
-                "EMBEDDING_TIMEOUT."
-            )
-        if ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT > ADMIN_WRITE_MAX_HOLD_SECONDS:
-            logger.warning(
-                "LIGHTRAG_ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT "
-                f"({ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT:g}s) exceeds "
-                "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS "
-                f"({ADMIN_WRITE_MAX_HOLD_SECONDS:g}s), so a queued knowledge "
-                "graph edit can wait longer than the edit ahead of it is even "
-                "allowed to run. The extra wait buys nothing -- the hold "
-                "ceiling releases the lock first."
+                "timeout is recommended, which is what leaving it unset gives "
+                "you) or lower EMBEDDING_TIMEOUT."
             )
 
     def _admin_write_lock_namespace(self) -> str:
@@ -7001,7 +7047,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Both halves cover mutate AND commit, embedding round-trip included; a
         lock around the commit alone would leave the mid-flow reload open, which
-        is the whole defect. The hold is bounded by ``ADMIN_WRITE_MAX_HOLD_SECONDS``
+        is the whole defect. The hold is bounded by ``admin_write_max_hold_seconds``
         (``_AdminHoldCeiling``): an admin holder of ``busy`` fences ingestion
         for as long as it runs, and dead-owner reclaim covers a dead process,
         not a hung one. A ceiling that fires cannot tear a commit apart -- the
@@ -7135,7 +7181,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         result.message, conflict=result.conflict, fence=result.fence
                     )
             async with _AdminHoldCeiling(
-                ADMIN_WRITE_MAX_HOLD_SECONDS, f"Admin write `{operation}`"
+                self._admin_write_hold_ceiling(), f"Admin write `{operation}`"
             ):
                 entered_body = True
                 yield

@@ -516,7 +516,7 @@ class NetworkXStorage(BaseGraphStorage):
           once the gate releases; a pipeline already running refuses the
           admin write with 409, as the router's snapshot check already did
           and still does (kept as an early refusal before any embedding
-          work). The hold is bounded by ``ADMIN_WRITE_MAX_HOLD_SECONDS``.
+          work). The hold is bounded by ``admin_write_max_hold_seconds``.
 
         Why the admin lock of issue #3838 R3 is back after being dropped
         (issue #3899): the drop argued that, with the #3854 fence, the losing

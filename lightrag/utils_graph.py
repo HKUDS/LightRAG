@@ -596,7 +596,7 @@ async def adelete_by_entity(
     ``busy`` reservation: a pipeline start is deferred until this write
     commits, a running pipeline refuses this write with 409). The gate is taken
     BEFORE the per-entity keyed locks below and must not be re-acquired here.
-    A hold longer than ``ADMIN_WRITE_MAX_HOLD_SECONDS`` fails the operation
+    A hold longer than ``admin_write_max_hold_seconds`` fails the operation
     (500) and releases both. Server-backed graph stores run this ungated. See
     ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
@@ -794,7 +794,7 @@ async def adelete_by_relation(
     ``busy`` reservation: a pipeline start is deferred until this write
     commits, a running pipeline refuses this write with 409). The gate is taken
     BEFORE the per-entity keyed locks below and must not be re-acquired here.
-    A hold longer than ``ADMIN_WRITE_MAX_HOLD_SECONDS`` fails the operation
+    A hold longer than ``admin_write_max_hold_seconds`` fails the operation
     (500) and releases both. Server-backed graph stores run this ungated. See
     ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
@@ -1608,7 +1608,7 @@ async def aedit_entity(
     ``busy`` reservation: a pipeline start is deferred until this write
     commits, a running pipeline refuses this write with 409). The gate is taken
     BEFORE the per-entity keyed locks below and must not be re-acquired here.
-    A hold longer than ``ADMIN_WRITE_MAX_HOLD_SECONDS`` fails the operation
+    A hold longer than ``admin_write_max_hold_seconds`` fails the operation
     (500) and releases both. Server-backed graph stores run this ungated. See
     ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
@@ -1881,7 +1881,7 @@ async def aedit_relation(
     ``busy`` reservation: a pipeline start is deferred until this write
     commits, a running pipeline refuses this write with 409). The gate is taken
     BEFORE the per-entity keyed locks below and must not be re-acquired here.
-    A hold longer than ``ADMIN_WRITE_MAX_HOLD_SECONDS`` fails the operation
+    A hold longer than ``admin_write_max_hold_seconds`` fails the operation
     (500) and releases both. Server-backed graph stores run this ungated. See
     ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
@@ -2324,7 +2324,7 @@ async def acreate_entity(
     ``busy`` reservation: a pipeline start is deferred until this write
     commits, a running pipeline refuses this write with 409). The gate is taken
     BEFORE the per-entity keyed locks below and must not be re-acquired here.
-    A hold longer than ``ADMIN_WRITE_MAX_HOLD_SECONDS`` fails the operation
+    A hold longer than ``admin_write_max_hold_seconds`` fails the operation
     (500) and releases both. Server-backed graph stores run this ungated. See
     ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
@@ -2521,7 +2521,7 @@ async def acreate_relation(
     ``busy`` reservation: a pipeline start is deferred until this write
     commits, a running pipeline refuses this write with 409). The gate is taken
     BEFORE the per-entity keyed locks below and must not be re-acquired here.
-    A hold longer than ``ADMIN_WRITE_MAX_HOLD_SECONDS`` fails the operation
+    A hold longer than ``admin_write_max_hold_seconds`` fails the operation
     (500) and releases both. Server-backed graph stores run this ungated. See
     ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
@@ -3471,7 +3471,7 @@ async def amerge_entities(
     ``busy`` reservation: a pipeline start is deferred until this write
     commits, a running pipeline refuses this write with 409). The gate is taken
     BEFORE the per-entity keyed locks below and must not be re-acquired here.
-    A hold longer than ``ADMIN_WRITE_MAX_HOLD_SECONDS`` fails the operation
+    A hold longer than ``admin_write_max_hold_seconds`` fails the operation
     (500) and releases both. Server-backed graph stores run this ungated. See
     ``docs/ProgramingWithCore.md`` for the accepted residue.
     """

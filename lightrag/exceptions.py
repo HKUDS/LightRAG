@@ -221,7 +221,7 @@ ADMIN_WRITE_PIPELINE_BUSY_PREFIX = "Pipeline is busy with another operation"
 
 
 class AdminWriteHoldExceededError(TimeoutError):
-    """An admin graph write ran past ``ADMIN_WRITE_MAX_HOLD_SECONDS`` and was
+    """An admin graph write ran past ``admin_write_max_hold_seconds`` and was
     stopped (issue #3899 R2.3).
 
     While an admin write holds the pipeline ``busy`` reservation it defers every
