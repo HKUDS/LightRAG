@@ -558,10 +558,19 @@ class NumberingResolver:
                 n -= value
         return result
 
+    #: Above this count, _to_letter degrades to the plain decimal string
+    #: instead of a repeated-letter label. Output length is n // 26, and n
+    #: comes from an attacker-controlled w:start (see _parse_numbering_xml,
+    #: parsed with no upper bound) -- without this cap a single crafted
+    #: numbering.xml value can force a multi-gigabyte allocation from a few
+    #: bytes of XML. Same order of magnitude as _to_roman's 4000 cutoff;
+    #: at the cap the output is still only ~385 characters.
+    _MAX_LETTER_COUNT = 10_000
+
     @staticmethod
     def _to_letter(n: int, *, upper: bool = False) -> str:
         """Convert an integer to the repeated-letter numbering used by Word."""
-        if n <= 0:
+        if n <= 0 or n > NumberingResolver._MAX_LETTER_COUNT:
             return str(n)
         base = ord("A" if upper else "a")
         letter = chr(base + (n - 1) % 26)
