@@ -218,7 +218,7 @@ def test_descriptor_is_exact_partitioned_and_single_statement():
     assert DOC_STATUS_TABLE_NAME in descriptor.sql
     assert "PRIMARY KEY (workspace, id)" in descriptor.sql
     assert "LOGICAL PARTITION BY LIST (workspace)" in descriptor.sql
-    assert "orientation = 'row'" in descriptor.sql
+    assert "orientation = 'row,column'" in descriptor.sql
     assert "status text NOT NULL" in descriptor.sql
     assert "created_at timestamptz NOT NULL" in descriptor.sql
     assert "metadata jsonb NOT NULL" in descriptor.sql
@@ -226,6 +226,8 @@ def test_descriptor_is_exact_partitioned_and_single_statement():
     assert descriptor.sql.count(";") == 0
     assert "BEGIN" not in descriptor.sql.upper()
     assert "COMMIT" not in descriptor.sql.upper()
+    assert "hologres.hg_table_properties" in descriptor.postcondition_sql
+    assert "property_value = 'row,column'" in descriptor.postcondition_sql
     assert descriptor.postcondition_args[0:2] == (
         CONFIG.schema,
         DOC_STATUS_TABLE_NAME,

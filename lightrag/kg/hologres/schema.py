@@ -321,6 +321,23 @@ class SchemaApplication:
     resumed: bool
 
 
+def _orientation_postcondition(expected_orientation: str) -> str:
+    """Return a postcondition fragment asserting the table's orientation.
+
+    Reuses the ``$1``/``$2`` schema and table-name arguments every table
+    postcondition already binds, so a pre-existing table with a different
+    storage orientation fails closed and must be rebuilt offline.
+    """
+
+    return (
+        " AND COALESCE(("
+        f"SELECT property_value = '{expected_orientation}' "
+        "FROM hologres.hg_table_properties "
+        "WHERE table_namespace = $1 AND table_name = $2 "
+        "AND property_key = 'orientation'), false)"
+    )
+
+
 def bootstrap_descriptors(schema: str) -> tuple[SchemaDescriptor, SchemaDescriptor]:
     """Return the narrowly scoped descriptors that create the ledger itself.
 
@@ -366,13 +383,14 @@ def bootstrap_descriptors(schema: str) -> tuple[SchemaDescriptor, SchemaDescript
             "created_at timestamptz NOT NULL, "
             "updated_at timestamptz NOT NULL, "
             "PRIMARY KEY (component, version, step, descriptor_name)"
-            ") WITH (orientation = 'row')"
+            ") WITH (orientation = 'row,column')"
         ),
         postcondition_sql=(
             "SELECT EXISTS ("
             "SELECT 1 FROM pg_catalog.pg_class c "
             "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
             "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r')"
+            + _orientation_postcondition("row,column")
         ),
         postcondition_args=(validated, LEDGER_TABLE_NAME),
         replay_safe=True,
@@ -429,6 +447,7 @@ def kv_schema_descriptors(schema: str) -> tuple[SchemaDescriptor]:
         "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r' "
         "AND p.contype = 'p' AND NOT a.attisdropped"
         "), '[]'::jsonb) = $4::jsonb"
+        + _orientation_postcondition("row,column")
     )
     descriptor = SchemaDescriptor(
         name="shared_table",
@@ -444,7 +463,7 @@ def kv_schema_descriptors(schema: str) -> tuple[SchemaDescriptor]:
             "updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP, "
             "PRIMARY KEY (workspace, namespace, id)"
             ") LOGICAL PARTITION BY LIST (workspace) "
-            "WITH (orientation = 'row', distribution_key = 'namespace,id')"
+            "WITH (orientation = 'row,column', distribution_key = 'namespace,id')"
         ),
         postcondition_sql=postcondition_sql,
         postcondition_args=(
@@ -515,7 +534,7 @@ def doc_status_schema_descriptors(schema: str) -> tuple[SchemaDescriptor]:
         "ON a.attrelid = c.oid AND a.attnum = key.attnum "
         "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r' "
         "AND p.contype = 'p' AND NOT a.attisdropped"
-        "), '[]'::jsonb) = $4::jsonb"
+        "), '[]'::jsonb) = $4::jsonb" + _orientation_postcondition("row,column")
     )
     descriptor = SchemaDescriptor(
         name="shared_table",
@@ -542,7 +561,7 @@ def doc_status_schema_descriptors(schema: str) -> tuple[SchemaDescriptor]:
             "extra jsonb NOT NULL DEFAULT '{}'::jsonb, "
             "PRIMARY KEY (workspace, id)"
             ") LOGICAL PARTITION BY LIST (workspace) "
-            "WITH (orientation = 'row', distribution_key = 'id', "
+            "WITH (orientation = 'row,column', distribution_key = 'id', "
             "clustering_key = 'status,created_at,id,content_hash,file_path')"
         ),
         postcondition_sql=postcondition_sql,
@@ -643,6 +662,7 @@ def vector_schema_descriptors(
         "= 'Cosine' FROM hologres.hg_table_properties "
         "WHERE table_namespace = $1 AND table_name = $2 "
         "AND property_key = 'vectors'), false)"
+        + _orientation_postcondition("column")
     )
     descriptor = SchemaDescriptor(
         name="shared_table",
@@ -677,11 +697,11 @@ def vector_schema_descriptors(
 def graph_schema_descriptors(schema: str) -> tuple[SchemaDescriptor, SchemaDescriptor]:
     """Return the fixed two-table descriptors for the Hologres graph store.
 
-    Both tables use the live-proven Hologres DDL: row orientation, LOGICAL
-    PARTITION BY LIST on workspace, and a composite primary key that doubles
-    as the clustering index for adjacency lookups. There is no foreign key
-    between the tables (Hologres does not enforce them), so edge/node
-    consistency is owned by the storage layer.
+    Both tables use the live-proven Hologres DDL: row-column hybrid
+    orientation, LOGICAL PARTITION BY LIST on workspace, and a composite
+    primary key that doubles as the clustering index for adjacency lookups.
+    There is no foreign key between the tables (Hologres does not enforce
+    them), so edge/node consistency is owned by the storage layer.
     """
 
     validated = _validated_schema(schema)
@@ -717,7 +737,7 @@ def graph_schema_descriptors(schema: str) -> tuple[SchemaDescriptor, SchemaDescr
         "ON a.attrelid = c.oid AND a.attnum = p.conkey[gs.ordinality] "
         "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r' "
         "AND p.contype = 'p' AND NOT a.attisdropped"
-        "), '[]'::jsonb) = $4::jsonb"
+        "), '[]'::jsonb) = $4::jsonb" + _orientation_postcondition("row,column")
     )
 
     nodes_expected_columns = json.dumps(
@@ -747,7 +767,7 @@ def graph_schema_descriptors(schema: str) -> tuple[SchemaDescriptor, SchemaDescr
             "updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP, "
             "PRIMARY KEY (workspace, namespace, id)"
             ") LOGICAL PARTITION BY LIST (workspace) "
-            "WITH (orientation = 'row', distribution_key = 'namespace,id')"
+            "WITH (orientation = 'row,column', distribution_key = 'namespace,id')"
         ),
         postcondition_sql=postcondition_sql,
         postcondition_args=(
@@ -788,7 +808,7 @@ def graph_schema_descriptors(schema: str) -> tuple[SchemaDescriptor, SchemaDescr
             "updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP, "
             "PRIMARY KEY (workspace, namespace, src_id, tgt_id)"
             ") LOGICAL PARTITION BY LIST (workspace) "
-            "WITH (orientation = 'row', distribution_key = 'namespace,src_id')"
+            "WITH (orientation = 'row,column', distribution_key = 'namespace,src_id')"
         ),
         postcondition_sql=postcondition_sql,
         postcondition_args=(

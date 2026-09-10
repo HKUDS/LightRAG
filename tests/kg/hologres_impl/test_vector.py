@@ -233,6 +233,7 @@ def test_vector_descriptor_is_dimension_specific_and_carries_frozen_hgraph_index
     assert "contype = 'c'" not in descriptor.postcondition_sql
     assert "hologres.hg_table_properties" in descriptor.postcondition_sql
     assert "property_key = 'vectors'" in descriptor.postcondition_sql
+    assert "property_value = 'column'" in descriptor.postcondition_sql
     assert "= 'HGraph'" in descriptor.postcondition_sql
     assert "= 'Cosine'" in descriptor.postcondition_sql
 

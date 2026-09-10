@@ -552,7 +552,7 @@ def test_manager_rejects_invalid_schema_identifiers():
 # --------------------------------------------------------------------------
 
 
-def test_ledger_descriptor_is_row_oriented_shared_and_unpartitioned():
+def test_ledger_descriptor_is_hybrid_oriented_shared_and_unpartitioned():
     schema_descriptor, ledger_descriptor = bootstrap_descriptors(SCHEMA)
 
     assert 'CREATE SCHEMA IF NOT EXISTS "lightrag_probe"' in schema_descriptor.sql
@@ -561,7 +561,7 @@ def test_ledger_descriptor_is_row_oriented_shared_and_unpartitioned():
     )
     assert LEDGER_TABLE_NAME == "lightrag_hologres_schema_ledger"
     assert "CREATE TABLE IF NOT EXISTS" in ledger_descriptor.sql
-    assert "orientation = 'row'" in ledger_descriptor.sql
+    assert "orientation = 'row,column'" in ledger_descriptor.sql
     assert "PARTITION BY" not in ledger_descriptor.sql.upper()
     assert "workspace" not in ledger_descriptor.sql
     for column in (

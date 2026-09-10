@@ -835,6 +835,8 @@ class GraphProbeClient:
         self.statements[descriptor] = (sql, values, None)
         if descriptor == "probe.graph.collation":
             return "C"
+        if descriptor == "probe.graph.orientation":
+            return "row,column"
         if descriptor == "probe.graph.nodes.merge.verify":
             return '{"keep":"x","step":2}'
         if descriptor == "probe.graph.degree":
@@ -894,6 +896,8 @@ async def test_graph_probe_freezes_partition_and_adjacency_contracts():
         "probe.marker.verify",
         "probe.graph.nodes.create",
         "probe.marker.verify",
+        "probe.graph.orientation",
+        "probe.marker.verify",
         "probe.graph.edges.create",
         "probe.marker.verify",
         "probe.graph.nodes.insert",
@@ -925,7 +929,8 @@ async def test_graph_probe_freezes_partition_and_adjacency_contracts():
     assert edges_replay_safe is False
     assert "LOGICAL PARTITION BY LIST (workspace)" in nodes_create_sql
     assert "LOGICAL PARTITION BY LIST (workspace)" in edges_create_sql
-    assert "orientation = 'row'" in nodes_create_sql
+    assert "orientation = 'row,column'" in nodes_create_sql
+    assert "orientation = 'row,column'" in edges_create_sql
     assert "COLLATE" not in nodes_create_sql
     assert "COLLATE" not in edges_create_sql
 
@@ -959,6 +964,9 @@ class MismatchGraphProbeClient(GraphProbeClient):
         if descriptor == "probe.graph.collation" and self.stage == "collation":
             self.events.append(descriptor)
             return "en_US.utf8"
+        if descriptor == "probe.graph.orientation" and self.stage == "orientation":
+            self.events.append(descriptor)
+            return "row"
         if descriptor == "probe.graph.nodes.merge.verify" and self.stage == "merge":
             self.events.append(descriptor)
             return '{"step":2}'
@@ -988,6 +996,7 @@ class MismatchGraphProbeClient(GraphProbeClient):
     ("stage", "detail_code"),
     [
         ("collation", "graph_collation_mismatch"),
+        ("orientation", "graph_orientation_mismatch"),
         ("merge", "graph_merge_semantics_mismatch"),
         ("order", "graph_order_mismatch"),
     ],
@@ -1072,6 +1081,7 @@ class SuccessfulProbeClient:
             "probe.marker.verify": self.owner_token,
             "probe.reconnect.verify": 1,
             "probe.graph.collation": "C",
+            "probe.graph.orientation": "row,column",
             "probe.graph.nodes.merge.verify": {"keep": "x", "step": 2},
             "probe.graph.degree": 3,
             "probe.graph.pairs": 2,

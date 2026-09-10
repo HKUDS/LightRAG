@@ -642,8 +642,9 @@ async def _probe_graph_partition_adjacency(
     """Freeze the graph-table contract live: LOGICAL PARTITION + adjacency plan.
 
     The first result covers ProbeKind.LOGICAL_PARTITION (partitioned DDL is
-    accepted, workspace isolation holds, jsonb ``||`` merge-upsert semantics,
-    and bytewise "C" ordering that matches Python code-point comparison). The
+    accepted with row-column hybrid orientation persisted in the catalog,
+    workspace isolation holds, jsonb ``||`` merge-upsert semantics, and
+    bytewise "C" ordering that matches Python code-point comparison). The
     second covers ProbeKind.GRAPH_ADJACENCY_EXPLAIN (self-loop-counts-twice
     degree, generate_series pair-batch matching, undirected adjacency UNION,
     and an EXPLAIN proving the workspace partition filter prunes the scan).
@@ -697,10 +698,21 @@ async def _probe_graph_partition_adjacency(
             "updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP, "
             "PRIMARY KEY (workspace, namespace, id)"
             ") LOGICAL PARTITION BY LIST (workspace) "
-            "WITH (orientation = 'row', distribution_key = 'namespace,id')",
+            "WITH (orientation = 'row,column', distribution_key = 'namespace,id')",
             descriptor="probe.graph.nodes.create",
             replay_safe=False,
         )
+        await verify_ownership()
+        orientation = await client.fetch_value(
+            "SELECT property_value FROM hologres.hg_table_properties "
+            "WHERE table_namespace = $1 AND table_name = $2 "
+            "AND property_key = 'orientation'",
+            schema,
+            nodes_table,
+            descriptor="probe.graph.orientation",
+        )
+        if orientation != "row,column":
+            return _partition_failed("graph_orientation_mismatch")
         await verify_ownership()
         await client.execute_one(
             f"CREATE TABLE {qualified_edges} ("
@@ -712,7 +724,7 @@ async def _probe_graph_partition_adjacency(
             "updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP, "
             "PRIMARY KEY (workspace, namespace, src_id, tgt_id)"
             ") LOGICAL PARTITION BY LIST (workspace) "
-            "WITH (orientation = 'row', distribution_key = 'namespace,src_id')",
+            "WITH (orientation = 'row,column', distribution_key = 'namespace,src_id')",
             descriptor="probe.graph.edges.create",
             replay_safe=False,
         )

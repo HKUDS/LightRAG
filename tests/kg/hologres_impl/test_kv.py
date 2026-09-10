@@ -695,7 +695,7 @@ def test_storage_repr_hides_injected_config_and_client_secrets():
 # ---------------------------------------------------------------------------
 
 
-def test_kv_descriptor_pins_logical_row_table_and_exact_catalog_postcondition():
+def test_kv_descriptor_pins_logical_hybrid_table_and_exact_catalog_postcondition():
     (descriptor,) = kv_schema_descriptors("lightrag_test_kv")
 
     assert KV_TABLE_NAME == "lightrag_hologres_kv"
@@ -713,7 +713,7 @@ def test_kv_descriptor_pins_logical_row_table_and_exact_catalog_postcondition():
         "updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP",
         "PRIMARY KEY (workspace, namespace, id)",
         "LOGICAL PARTITION BY LIST (workspace)",
-        "orientation = 'row'",
+        "orientation = 'row,column'",
         "distribution_key = 'namespace,id'",
     ):
         assert definition in descriptor.sql
@@ -733,6 +733,8 @@ def test_kv_descriptor_pins_logical_row_table_and_exact_catalog_postcondition():
     assert "WITH ORDINALITY" in postcondition
     assert "contype = 'p'" in postcondition
     assert "count(*)" in postcondition
+    assert "hologres.hg_table_properties" in postcondition
+    assert "property_value = 'row,column'" in postcondition
     assert descriptor.postcondition_args[:2] == (
         "lightrag_test_kv",
         KV_TABLE_NAME,
