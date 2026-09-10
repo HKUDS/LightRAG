@@ -20,6 +20,7 @@ STORAGE_IMPLEMENTATIONS = {
             "MemgraphStorage",
             "OpenSearchGraphStorage",
             "HologresGraphStorage",
+            "HologresAGEGraphStorage",
         ],
         "required_methods": ["upsert_node", "upsert_edge"],
     },
@@ -145,6 +146,12 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
         "HOLOGRES_PASSWORD",
         "HOLOGRES_DATABASE",
     ],
+    "HologresAGEGraphStorage": [
+        "HOLOGRES_HOST",
+        "HOLOGRES_USER",
+        "HOLOGRES_PASSWORD",
+        "HOLOGRES_DATABASE",
+    ],
 }
 
 # Storage implementation module mapping
@@ -180,6 +187,7 @@ STORAGES = {
     "HologresVectorStorage": ".kg.hologres.vector",
     "HologresDocStatusStorage": ".kg.hologres.doc_status",
     "HologresGraphStorage": ".kg.hologres.graph",
+    "HologresAGEGraphStorage": ".kg.hologres.graph_age",
 }
 
 

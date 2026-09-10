@@ -20,6 +20,10 @@ _BACKENDS = {
     "DOC_STATUS_STORAGE": "HologresDocStatusStorage",
 }
 
+# Both graph backends register for GRAPH_STORAGE; the AGE variant is selected
+# explicitly and falls back to the two-table one when its probe fails.
+_GRAPH_VARIANTS = ("HologresGraphStorage", "HologresAGEGraphStorage")
+
 _REQUIRED_ENV_VARS = [
     "HOLOGRES_HOST",
     "HOLOGRES_USER",
@@ -29,7 +33,8 @@ _REQUIRED_ENV_VARS = [
 
 
 @pytest.mark.parametrize(
-    ("storage_type", "storage_name"), sorted(_BACKENDS.items())
+    ("storage_type", "storage_name"),
+    sorted(_BACKENDS.items()) + [("GRAPH_STORAGE", "HologresAGEGraphStorage")],
 )
 def test_backend_is_registered_for_its_storage_type(storage_type, storage_name):
     verify_storage_implementation(storage_type, storage_name)
@@ -39,6 +44,7 @@ def test_backend_is_registered_for_its_storage_type(storage_type, storage_name):
     ("storage_type", "storage_name"),
     [
         ("KV_STORAGE", "HologresGraphStorage"),
+        ("KV_STORAGE", "HologresAGEGraphStorage"),
         ("VECTOR_STORAGE", "HologresKVStorage"),
         ("GRAPH_STORAGE", "HologresDocStatusStorage"),
         ("DOC_STATUS_STORAGE", "HologresVectorStorage"),
@@ -51,7 +57,10 @@ def test_backend_is_rejected_for_a_mismatched_storage_type(
         verify_storage_implementation(storage_type, storage_name)
 
 
-@pytest.mark.parametrize("storage_name", sorted(_BACKENDS.values()))
+@pytest.mark.parametrize(
+    "storage_name",
+    sorted(set(_BACKENDS.values()) | set(_GRAPH_VARIANTS)),
+)
 def test_backend_requires_the_connection_env_vars(storage_name, monkeypatch):
     assert STORAGE_ENV_REQUIREMENTS[storage_name] == _REQUIRED_ENV_VARS
 
@@ -70,6 +79,7 @@ def test_backend_requires_the_connection_env_vars(storage_name, monkeypatch):
         ("HologresKVStorage", "lightrag.kg.hologres.kv"),
         ("HologresVectorStorage", "lightrag.kg.hologres.vector"),
         ("HologresGraphStorage", "lightrag.kg.hologres.graph"),
+        ("HologresAGEGraphStorage", "lightrag.kg.hologres.graph_age"),
         ("HologresDocStatusStorage", "lightrag.kg.hologres.doc_status"),
     ],
 )
