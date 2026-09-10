@@ -4477,8 +4477,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         doc_llm_cache_ids: list[str],
         error_message: str | None = None,
         failed: bool,
+        cache_gap: tuple[int, int] | None = None,
     ) -> dict[str, Any]:
         """Persist deletion retry metadata and return the updated status record.
+
+        ``cache_gap`` is ``(chunks_without_refs, chunks_examined)`` from the
+        cache-id collection step. It is persisted as
+        ``deletion_llm_cache_gap`` whenever chunks without references were
+        seen, for the same reason the cache ids are: once the purge has
+        removed the chunk rows, a retry can no longer examine them, and the
+        notice that a requested cache deletion is incomplete would otherwise
+        be lost with the attempt that observed it. An unprovided or all-clear
+        gap leaves the stored value alone.
 
         Re-reads the record first, and writes only the fields it changes. The
         caller's ``doc_status_data`` is a snapshot taken before deletion began,
@@ -4526,6 +4536,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         updated_metadata = dict(metadata)
         if retry_cache_ids:
             updated_metadata["deletion_llm_cache_ids"] = retry_cache_ids
+        if cache_gap is not None and cache_gap[0] > 0:
+            updated_metadata["deletion_llm_cache_gap"] = {
+                "chunks_without_refs": cache_gap[0],
+                "chunks_examined": cache_gap[1],
+            }
         updated_metadata["last_deletion_attempt_at"] = datetime.now(
             timezone.utc
         ).isoformat()
@@ -5858,6 +5873,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # be reported as incomplete instead of as an unqualified success.
         chunks_examined_for_cache = 0
         chunks_without_cache_refs = 0
+        persisted_cache_gap: tuple[int, int] | None = None
         incomplete_cache_notice: str | None = None
         deletion_stage = "initializing"
         doc_status_data: dict[str, Any] | None = None
@@ -6008,6 +6024,28 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     )
                 )
             )
+            # A prior attempt that still saw the chunk rows may have recorded
+            # how many carried no cache reference; see
+            # ``_update_delete_retry_state``. Malformed values are ignored —
+            # this is diagnostics, never a reason to refuse the deletion.
+            raw_cache_gap = metadata.get("deletion_llm_cache_gap")
+            if isinstance(raw_cache_gap, dict):
+                gap_without = raw_cache_gap.get("chunks_without_refs")
+                gap_examined = raw_cache_gap.get("chunks_examined")
+                if (
+                    isinstance(gap_without, int)
+                    and isinstance(gap_examined, int)
+                    and not isinstance(gap_without, bool)
+                    and not isinstance(gap_examined, bool)
+                    and 0 < gap_without <= gap_examined
+                ):
+                    persisted_cache_gap = (gap_without, gap_examined)
+                else:
+                    logger.warning(
+                        "Ignoring malformed deletion_llm_cache_gap on document %s: %r",
+                        doc_id,
+                        raw_cache_gap,
+                    )
             # Order-preserving dedup so chunk_ids stays a list and satisfies the
             # storage delete contract (``delete(ids: list[str])``); a set view is
             # built below for membership/intersection checks. Staged chunks of
@@ -6176,7 +6214,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             f"Failed to collect LLM cache ids for document {doc_id}: {cache_collect_error}"
                         ) from cache_collect_error
 
-                if doc_llm_cache_ids:
+                # A retry that runs after the purge already removed the chunk
+                # rows examines nothing, so it inherits the gap the attempt
+                # that still saw the rows recorded. A live count always wins.
+                if chunks_examined_for_cache == 0 and persisted_cache_gap:
+                    chunks_without_cache_refs, chunks_examined_for_cache = (
+                        persisted_cache_gap
+                    )
+
+                # Persist before anything is deleted: the cache ids because a
+                # retry needs them for cleanup, the gap because a retry can no
+                # longer measure it once the chunk rows are gone.
+                if doc_llm_cache_ids or chunks_without_cache_refs:
                     try:
                         doc_status_data = await self._update_delete_retry_state(
                             doc_id,
@@ -6184,10 +6233,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             deletion_stage=deletion_stage,
                             doc_llm_cache_ids=doc_llm_cache_ids,
                             failed=False,
+                            cache_gap=(
+                                chunks_without_cache_refs,
+                                chunks_examined_for_cache,
+                            ),
                         )
                     except Exception as status_write_error:
                         logger.error(
-                            "Failed to persist LLM cache IDs for document %s to retry state: %s",
+                            "Failed to persist LLM cache retry state for document %s: %s",
                             doc_id,
                             status_write_error,
                         )
@@ -6199,9 +6252,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             else "deletion not yet started"
                         )
                         raise Exception(
-                            f"Failed to persist LLM cache IDs for document {doc_id} "
+                            f"Failed to persist LLM cache retry state for document {doc_id} "
                             f"({attempt_context}): {status_write_error}"
                         ) from status_write_error
+                if doc_llm_cache_ids:
                     logger.info(
                         "Collected %d LLM cache entries for document %s",
                         len(doc_llm_cache_ids),
@@ -6382,6 +6436,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         doc_llm_cache_ids=doc_llm_cache_ids,
                         error_message=error_message,
                         failed=True,
+                        cache_gap=(
+                            chunks_without_cache_refs,
+                            chunks_examined_for_cache,
+                        ),
                     )
             except Exception as status_update_error:
                 logger.error(
@@ -6415,6 +6473,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         doc_llm_cache_ids=doc_llm_cache_ids,
                         error_message=error_message,
                         failed=True,
+                        cache_gap=(
+                            chunks_without_cache_refs,
+                            chunks_examined_for_cache,
+                        ),
                     )
             except Exception as status_update_error:
                 logger.error(

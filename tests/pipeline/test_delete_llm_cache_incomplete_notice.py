@@ -14,6 +14,11 @@ cache deletion was incomplete, and how many chunks had nothing to follow. The
 notice is limited to documents whose extraction actually ran: a
 ``process_options='!'`` document never wrote cache rows, so its reference-less
 chunks are expected.
+
+The gap is measured while the chunk rows still exist. A purge that fails after
+removing them leaves a retry with nothing to count, so the count is persisted
+in the deletion retry metadata next to the cache ids and inherited by the
+retry, which must still qualify its success.
 """
 
 from __future__ import annotations
@@ -255,5 +260,66 @@ async def test_no_notice_for_a_document_whose_extraction_never_ran(tmp_path):
         assert result.status == "success", result.message
         assert "incomplete" not in result.message
         assert not any("incomplete" in m for m in await _history(rag))
+    finally:
+        await rag.finalize_storages()
+
+
+def _fail_once(monkeypatch, obj, attr: str, exc_message: str) -> None:
+    """Wrap an async method to raise on its first call only."""
+    calls = {"n": 0}
+    original = getattr(obj, attr)
+
+    async def wrapper(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError(exc_message)
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(obj, attr, wrapper)
+
+
+@pytest.mark.asyncio
+async def test_notice_survives_a_retry_after_the_chunk_rows_are_gone(
+    tmp_path, monkeypatch
+):
+    """A retry that can no longer examine the chunks inherits the recorded gap.
+
+    Fail the purge at the relation-anchor delete, which runs AFTER the chunk
+    rows are removed. The retry's own count is then zero — ``get_by_ids``
+    returns nothing — so it must fall back to what the first attempt persisted
+    and still report the cache deletion as incomplete.
+    """
+    rag = await _build_rag(tmp_path)
+    try:
+        doc_id = await _ingest(rag)
+        chunk_ids = await _chunk_ids(rag, doc_id)
+        (attached_cache_id,) = await _attach_cache_rows(rag, chunk_ids[:1])
+
+        _fail_once(
+            monkeypatch, rag.full_relations, "delete", "relations anchor delete boom"
+        )
+        first = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=True)
+        assert first.status == "fail", first.message
+        assert first.status_code == 500
+
+        # Nothing is left to re-examine: the purge removed the chunk rows...
+        assert all(row is None for row in await rag.text_chunks.get_by_ids(chunk_ids))
+        # ...but the gap was persisted next to the cache ids before it ran.
+        row = await rag.doc_status.get_by_id(doc_id)
+        assert row["metadata"]["deletion_llm_cache_gap"] == {
+            "chunks_without_refs": 1,
+            "chunks_examined": 2,
+        }
+        assert row["metadata"]["deletion_llm_cache_ids"] == [attached_cache_id]
+
+        monkeypatch.undo()
+        second = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=True)
+
+        assert second.status == "success", second.message
+        assert "LLM cache deletion is incomplete" in second.message
+        assert "1 of 2 chunks carried no llm_cache_list references" in second.message
+        assert await rag.llm_response_cache.get_by_id(attached_cache_id) is None
+        assert await rag.doc_status.get_by_id(doc_id) is None
+        assert any("LLM cache deletion is incomplete" in m for m in await _history(rag))
     finally:
         await rag.finalize_storages()
