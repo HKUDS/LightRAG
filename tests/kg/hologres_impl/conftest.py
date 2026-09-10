@@ -178,7 +178,8 @@ async def _cleanup_live_schema(client, schema):
     relations = await _fetch_cleanup_catalog(
         client,
         validated_schema,
-        "SELECT c.relname, c.relkind FROM pg_catalog.pg_class c "
+        "SELECT c.relname, c.relkind::text AS relkind "
+        "FROM pg_catalog.pg_class c "
         "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
         "WHERE n.nspname = $1 "
         "AND c.relkind IN ('v', 'm', 'f', 'i', 'I', 'S', 'p', 'r', 'c') "
@@ -193,7 +194,7 @@ async def _cleanup_live_schema(client, schema):
     routines = await _fetch_cleanup_catalog(
         client,
         validated_schema,
-        "SELECT p.proname, p.prokind, "
+        "SELECT p.proname, p.prokind::text AS prokind, "
         "pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_args "
         "FROM pg_catalog.pg_proc p "
         "JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace "
@@ -209,7 +210,8 @@ async def _cleanup_live_schema(client, schema):
     standalone_types = await _fetch_cleanup_catalog(
         client,
         validated_schema,
-        "SELECT t.typname, t.typtype FROM pg_catalog.pg_type t "
+        "SELECT t.typname, t.typtype::text AS typtype "
+        "FROM pg_catalog.pg_type t "
         "JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace "
         "WHERE n.nspname = $1 "
         "AND t.typtype IN ('e', 'd', 'r') "

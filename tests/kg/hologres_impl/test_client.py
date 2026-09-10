@@ -294,10 +294,12 @@ async def test_pool_hooks_execute_reset_as_separate_guarded_statements(base_envi
     statements = [sql for sql, _args, _timeout in connection.executed]
     assert statements == [
         'SET search_path TO "LightRAG_1"',
+        "SET hg_experimental_enable_fixed_plan_expression = on",
         "SELECT pg_advisory_unlock_all()",
         "CLOSE ALL",
-        "UNLISTEN *",
         "RESET ALL",
+        "RESET application_name",
+        "SET hg_experimental_enable_fixed_plan_expression = on",
     ]
     assert all(";" not in statement for statement in statements)
     assert "setup" in captured

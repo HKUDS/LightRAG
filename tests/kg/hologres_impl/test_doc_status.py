@@ -467,14 +467,14 @@ async def test_upsert_is_bounded_replay_safe_and_preserves_created_at_sql(ready_
     await storage.upsert(payload)
 
     writes = calls_for(client, "doc_status.upsert")
-    assert len(writes) == 2
+    assert len(writes) == 205
     assert all(call["kwargs"]["replay_safe"] is True for call in writes)
     assert all("created_at = EXCLUDED.created_at" not in call["sql"] for call in writes)
     assert all(call["values"][0] == storage.workspace for call in writes)
-    assert sum(len(json.loads(call["values"][1])) for call in writes) == 205
+    assert {call["values"][1] for call in writes} == {f"doc-{i}" for i in range(205)}
 
 
-async def test_upsert_rejects_one_record_larger_than_the_payload_bound(
+async def test_upsert_inserts_large_record_without_byte_limit_check(
     ready_storage, monkeypatch
 ):
     import lightrag.kg.hologres.doc_status as module
@@ -487,9 +487,9 @@ async def test_upsert_rejects_one_record_larger_than_the_payload_bound(
         if key not in {"id", "extra"}
     }
 
-    with pytest.raises(HologresDocStatusError, match="batch limit"):
-        await storage.upsert({"doc-large": oversized})
-    assert not calls_for(client, "doc_status.upsert")
+    await storage.upsert({"doc-large": oversized})
+    writes = calls_for(client, "doc_status.upsert")
+    assert len(writes) == 1
 
 
 async def test_nullable_chunks_list_round_trips_as_jsonb_null(ready_storage):
@@ -504,8 +504,8 @@ async def test_nullable_chunks_list_round_trips_as_jsonb_null(ready_storage):
     await storage.upsert({"doc-null-chunks": nullable})
 
     write = calls_for(client, "doc_status.upsert")[-1]
-    assert json.loads(write["values"][1])[0]["chunks_list"] is None
-    assert "COALESCE(incoming.chunks_list, 'null'::jsonb)" in write["sql"]
+    assert json.loads(write["values"][11]) is None
+    assert "chunks_list = EXCLUDED.chunks_list" in write["sql"]
 
     client.handlers["doc_status.read.one"] = {
         **row("doc-null-chunks"),

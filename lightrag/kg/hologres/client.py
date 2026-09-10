@@ -76,8 +76,9 @@ _EXPLAIN_ANALYZE_TOKENS = frozenset({"ANALYZE", "ANALYSE"})
 _RESET_STATEMENTS = (
     "SELECT pg_advisory_unlock_all()",
     "CLOSE ALL",
-    "UNLISTEN *",
     "RESET ALL",
+    "RESET application_name",
+    "SET hg_experimental_enable_fixed_plan_expression = on",
 )
 _T = TypeVar("_T")
 
@@ -536,6 +537,13 @@ class HologresClient:
                 validate_single_statement(statement)
                 await connection.execute(
                     statement, timeout=self.config.command_timeout
+                )
+                guc_statement = (
+                    "SET hg_experimental_enable_fixed_plan_expression = on"
+                )
+                validate_single_statement(guc_statement)
+                await connection.execute(
+                    guc_statement, timeout=self.config.command_timeout
                 )
 
             async def reset(connection: Any) -> None:

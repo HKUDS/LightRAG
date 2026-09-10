@@ -51,6 +51,44 @@ def _deterministic_json(value: Any) -> str:
         raise HologresKVError("Hologres KV input is invalid") from None
 
 
+_FULL_DOCS_PROTECTED = (
+    "sidecar_location",
+    "parse_format",
+    "content_hash",
+    "process_options",
+    "parse_engine",
+    "chunk_options",
+)
+
+
+def _protected_key_usable(payload: dict[str, Any], key: str) -> bool:
+    if key not in payload:
+        return False
+    value = payload[key]
+    if value is None:
+        return False
+    if key == "chunk_options":
+        return value != {}
+    return value != "" and value != '""'
+
+
+def _merge_full_docs_payload(
+    existing: dict[str, Any] | None, new: dict[str, Any]
+) -> dict[str, Any]:
+    protected_set = set(_FULL_DOCS_PROTECTED)
+    if existing is not None:
+        merged = {k: v for k, v in existing.items() if k not in protected_set}
+    else:
+        merged = {}
+    merged.update({k: v for k, v in new.items() if k not in protected_set})
+    for key in _FULL_DOCS_PROTECTED:
+        if _protected_key_usable(new, key):
+            merged[key] = new[key]
+        elif existing is not None and key in existing:
+            merged[key] = existing[key]
+    return merged
+
+
 def _decode_payload(payload: Any) -> dict[str, Any]:
     try:
         if isinstance(payload, str):
@@ -241,13 +279,12 @@ class HologresKVStorage(BaseKVStorage):
             return []
         client, table = self._ready()
         sql = (
-            "SELECT requested.ordinality, stored.payload "
-            "FROM unnest($3::text[]) WITH ORDINALITY "
-            "AS requested(id, ordinality) "
+            "SELECT idx AS ordinality, stored.payload "
+            "FROM generate_series(1, $3::int) AS idx "
             f"LEFT JOIN {table} AS stored "
             "ON stored.workspace = $1 AND stored.namespace = $2 "
-            "AND stored.id = requested.id "
-            "ORDER BY requested.ordinality"
+            "AND stored.id = ($4::text[])[idx] "
+            "ORDER BY idx"
         )
         result: list[dict[str, Any] | None] = []
         for chunk in _chunks(ids, _ID_CHUNK_SIZE):
@@ -256,6 +293,7 @@ class HologresKVStorage(BaseKVStorage):
                     sql,
                     self.workspace,
                     self.namespace,
+                    len(chunk),
                     list(chunk),
                     descriptor="kv.read.batch",
                 )
@@ -353,80 +391,46 @@ class HologresKVStorage(BaseKVStorage):
             chunks.append(current_json)
 
         client, table = self._ready()
-        if self.namespace == NameSpace.KV_STORE_FULL_DOCS:
+        is_full_docs = self.namespace == NameSpace.KV_STORE_FULL_DOCS
+        if is_full_docs:
             descriptor = "kv.upsert.full_docs"
-            sql = self._full_docs_upsert_sql(table)
         else:
             descriptor = "kv.upsert.replace"
-            sql = (
-                f"INSERT INTO {table} AS current "
-                "(workspace, namespace, id, payload, updated_at) "
-                "SELECT $1, $2, entries.key, entries.value, CURRENT_TIMESTAMP "
-                "FROM jsonb_each($3::jsonb) AS entries(key, value) "
-                "ON CONFLICT (workspace, namespace, id) DO UPDATE SET "
-                "payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP"
-            )
+        sql = (
+            f"INSERT INTO {table} AS current "
+            "(workspace, namespace, id, payload, updated_at) "
+            "SELECT $1, $2, unnest($3::text[]), "
+            "unnest($4::jsonb[]), CURRENT_TIMESTAMP "
+            "ON CONFLICT (workspace, namespace, id) DO UPDATE SET "
+            "payload = EXCLUDED.payload, "
+            "updated_at = CURRENT_TIMESTAMP"
+        )
         for payload_json in chunks:
+            payload_dict = json.loads(payload_json)
+            keys = list(payload_dict.keys())
+            if is_full_docs:
+                existing = await self.get_by_ids(keys)
+                for idx, (key, existing_payload) in enumerate(
+                    zip(keys, existing)
+                ):
+                    payload_dict[key] = _merge_full_docs_payload(
+                        existing_payload, payload_dict[key]
+                    )
+            values = [
+                _deterministic_json(payload_dict[k]) for k in keys
+            ]
             try:
                 await client.execute_one(
                     sql,
                     self.workspace,
                     self.namespace,
-                    payload_json,
+                    keys,
+                    values,
                     descriptor=descriptor,
                     replay_safe=True,
                 )
             except Exception:
                 raise HologresKVError("Hologres KV upsert failed") from None
-
-    @staticmethod
-    def _full_docs_upsert_sql(table: str) -> str:
-        protected = (
-            "sidecar_location",
-            "parse_format",
-            "content_hash",
-            "process_options",
-            "parse_engine",
-            "chunk_options",
-        )
-        protected_array = ", ".join(f"'{key}'" for key in protected)
-
-        def usable_protected(source: str) -> str:
-            values: list[str] = []
-            for key in protected[:-1]:
-                values.append(
-                    "CASE WHEN "
-                    f"{source} ? '{key}' "
-                    f"AND {source} -> '{key}' <> 'null'::jsonb "
-                    f"AND {source} -> '{key}' <> '\"\"'::jsonb "
-                    f"THEN jsonb_build_object('{key}', {source} -> '{key}') "
-                    "ELSE '{}'::jsonb END"
-                )
-            key = protected[-1]
-            values.append(
-                "CASE WHEN "
-                f"{source} ? '{key}' "
-                f"AND {source} -> '{key}' <> 'null'::jsonb "
-                f"AND {source} -> '{key}' <> '{{}}'::jsonb "
-                f"THEN jsonb_build_object('{key}', {source} -> '{key}') "
-                "ELSE '{}'::jsonb END"
-            )
-            return " || ".join(values)
-
-        insert_values = usable_protected("entries.value")
-        update_values = usable_protected("EXCLUDED.payload")
-        return (
-            f"INSERT INTO {table} AS current "
-            "(workspace, namespace, id, payload, updated_at) "
-            "SELECT $1, $2, entries.key, "
-            f"(entries.value - ARRAY[{protected_array}]) || {insert_values}, "
-            "CURRENT_TIMESTAMP "
-            "FROM jsonb_each($3::jsonb) AS entries(key, value) "
-            "ON CONFLICT (workspace, namespace, id) DO UPDATE SET "
-            "payload = current.payload || "
-            f"(EXCLUDED.payload - ARRAY[{protected_array}]) || {update_values}, "
-            "updated_at = CURRENT_TIMESTAMP"
-        )
 
     async def delete(self, ids: list[str]) -> None:
         if not ids:

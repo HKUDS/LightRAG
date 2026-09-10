@@ -581,11 +581,11 @@ class HologresDocStatusStorage(DocStatusStorage):
             return []
         client, table = self._ready()
         sql = (
-            "SELECT requested.ordinality, requested.id AS requested_id, "
+            "SELECT g.idx AS ordinality, ($2::text[])[g.idx] AS requested_id, "
             f"stored.{_FULL_COLUMNS.replace(', ', ', stored.')} "
-            "FROM unnest($2::text[]) WITH ORDINALITY AS requested(id, ordinality) "
+            "FROM generate_series(1, $3::int) AS g(idx) "
             f"LEFT JOIN {table} AS stored ON stored.workspace = $1 "
-            "AND stored.id = requested.id ORDER BY requested.ordinality"
+            "AND stored.id = ($2::text[])[g.idx] ORDER BY g.idx"
         )
         result: list[dict[str, Any] | None] = []
         for chunk in _chunks(ids, _ID_CHUNK_SIZE):
@@ -594,6 +594,7 @@ class HologresDocStatusStorage(DocStatusStorage):
                     sql,
                     self.workspace,
                     list(chunk),
+                    len(chunk),
                     descriptor="doc_status.read.ordered_batch",
                 )
             except Exception:
@@ -634,29 +635,6 @@ class HologresDocStatusStorage(DocStatusStorage):
             self._normalize_complete_input(identifier, value)
             for identifier, value in data.items()
         ]
-        payloads: list[str] = []
-        current: list[dict[str, Any]] = []
-        current_json = ""
-        for record in records:
-            single_json = _deterministic_json([record])
-            if len(single_json.encode("utf-8")) > _UPSERT_BYTE_LIMIT:
-                raise HologresDocStatusError(
-                    "Hologres DocStatus record exceeds the upsert batch limit"
-                )
-            candidate = [*current, record]
-            candidate_json = _deterministic_json(candidate)
-            if current and (
-                len(current) >= _UPSERT_RECORD_LIMIT
-                or len(candidate_json.encode("utf-8")) > _UPSERT_BYTE_LIMIT
-            ):
-                payloads.append(current_json)
-                current = [record]
-                current_json = single_json
-            else:
-                current = candidate
-                current_json = candidate_json
-        if current:
-            payloads.append(current_json)
 
         client, table = self._ready()
         sql = (
@@ -664,18 +642,8 @@ class HologresDocStatusStorage(DocStatusStorage):
             "workspace, id, status, created_at, updated_at, file_path, track_id, "
             "content_hash, content_summary, content_length, chunks_count, "
             "chunks_list, error_msg, metadata, multimodal_processed, extra) "
-            "SELECT $1, incoming.id, incoming.status, "
-            "incoming.created_at::timestamptz, incoming.updated_at::timestamptz, "
-            "incoming.file_path, incoming.track_id, incoming.content_hash, "
-            "incoming.content_summary, incoming.content_length, "
-            "incoming.chunks_count, "
-            "COALESCE(incoming.chunks_list, 'null'::jsonb), incoming.error_msg, "
-            "incoming.metadata, incoming.multimodal_processed, incoming.extra "
-            "FROM jsonb_to_recordset($2::jsonb) AS incoming("
-            "id text, status text, created_at text, updated_at text, file_path text, "
-            "track_id text, content_hash text, content_summary text, "
-            "content_length bigint, chunks_count integer, chunks_list jsonb, "
-            "error_msg text, metadata jsonb, multimodal_processed boolean, extra jsonb) "
+            "VALUES ($1, $2, $3, $4::timestamptz, $5::timestamptz, "
+            "$6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) "
             "ON CONFLICT (workspace, id) DO UPDATE SET "
             "status = EXCLUDED.status, updated_at = EXCLUDED.updated_at, "
             "file_path = EXCLUDED.file_path, track_id = EXCLUDED.track_id, "
@@ -684,14 +652,31 @@ class HologresDocStatusStorage(DocStatusStorage):
             "content_length = EXCLUDED.content_length, "
             "chunks_count = EXCLUDED.chunks_count, chunks_list = EXCLUDED.chunks_list, "
             "error_msg = EXCLUDED.error_msg, metadata = EXCLUDED.metadata, "
-            "multimodal_processed = EXCLUDED.multimodal_processed, extra = EXCLUDED.extra"
+            "multimodal_processed = EXCLUDED.multimodal_processed, "
+            "extra = EXCLUDED.extra"
         )
-        for payload in payloads:
+        for record in records:
             try:
                 await client.execute_one(
                     sql,
                     self.workspace,
-                    payload,
+                    record["id"],
+                    record["status"],
+                    datetime.fromisoformat(record["created_at"]),
+                    datetime.fromisoformat(record["updated_at"]),
+                    record["file_path"],
+                    record.get("track_id"),
+                    record.get("content_hash"),
+                    record.get("content_summary", ""),
+                    record.get("content_length"),
+                    record.get("chunks_count"),
+                    _deterministic_json(
+                        record.get("chunks_list"),
+                    ),
+                    record.get("error_msg"),
+                    _deterministic_json(record.get("metadata", {})),
+                    record.get("multimodal_processed"),
+                    _deterministic_json(record.get("extra", {})),
                     descriptor="doc_status.upsert",
                     replay_safe=True,
                 )
@@ -1133,11 +1118,11 @@ class HologresDocStatusStorage(DocStatusStorage):
             return {}
         client, table = self._ready()
         sql = (
-            "SELECT requested.ordinality, requested.id AS requested_id, "
+            "SELECT g.idx AS ordinality, ($2::text[])[g.idx] AS requested_id, "
             f"stored.{_SCHEDULING_COLUMNS.replace(', ', ', stored.')} "
-            "FROM unnest($2::text[]) WITH ORDINALITY AS requested(id, ordinality) "
+            "FROM generate_series(1, $3::int) AS g(idx) "
             f"LEFT JOIN {table} AS stored ON stored.workspace = $1 "
-            "AND stored.id = requested.id ORDER BY requested.ordinality"
+            "AND stored.id = ($2::text[])[g.idx] ORDER BY g.idx"
         )
         result: dict[str, DocSchedulingRecord] = {}
         for chunk in _chunks(unique_ids, _ID_CHUNK_SIZE):
@@ -1146,6 +1131,7 @@ class HologresDocStatusStorage(DocStatusStorage):
                     sql,
                     self.workspace,
                     list(chunk),
+                    len(chunk),
                     descriptor="doc_status.read.scheduling_batch",
                 )
             except Exception:
@@ -1200,11 +1186,11 @@ class HologresDocStatusStorage(DocStatusStorage):
             return {}
         client, table = self._ready()
         sql = (
-            "SELECT requested.ordinality, requested.id AS requested_id, "
+            "SELECT g.idx AS ordinality, ($2::text[])[g.idx] AS requested_id, "
             f"stored.{_FULL_COLUMNS.replace(', ', ', stored.')} "
-            "FROM unnest($2::text[]) WITH ORDINALITY AS requested(id, ordinality) "
+            "FROM generate_series(1, $3::int) AS g(idx) "
             f"LEFT JOIN {table} AS stored ON stored.workspace = $1 "
-            "AND stored.id = requested.id ORDER BY requested.ordinality"
+            "AND stored.id = ($2::text[])[g.idx] ORDER BY g.idx"
         )
         result: dict[str, DocProcessingStatus] = {}
         for chunk in _chunks(unique_ids, _ID_CHUNK_SIZE):
@@ -1213,6 +1199,7 @@ class HologresDocStatusStorage(DocStatusStorage):
                     sql,
                     self.workspace,
                     list(chunk),
+                    len(chunk),
                     descriptor="doc_status.read.full_batch",
                 )
             except Exception:

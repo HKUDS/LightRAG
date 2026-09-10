@@ -844,7 +844,7 @@ async def test_ordered_batch_read_preserves_duplicates_missing_positions_and_chu
                 if item == "missing"
                 else json.dumps({"id": item}, separators=(",", ":")),
             }
-            for ordinal, item in enumerate(values[2], start=1)
+            for ordinal, item in enumerate(values[3], start=1)
         ]
 
     client.handlers["kv.read.batch"] = rows
@@ -860,8 +860,8 @@ async def test_ordered_batch_read_preserves_duplicates_missing_positions_and_chu
     assert result[0] == {"id": "id-0"}
     assert result[-1] == {"id": "id-1000"}
     chunk_calls = calls_for(client, "kv.read.batch")[-2:]
-    assert [len(call["values"][2]) for call in chunk_calls] == [1000, 1]
-    assert [item for call in chunk_calls for item in call["values"][2]] == identifiers
+    assert [call["values"][2] for call in chunk_calls] == [1000, 1]
+    assert [item for call in chunk_calls for item in call["values"][3]] == identifiers
 
     before = len(client.calls)
     assert await storage.get_by_ids([]) == []
@@ -964,8 +964,10 @@ async def test_generic_upsert_sends_complete_objects_in_replay_safe_replacement_
     assert call["method"] == "execute_one"
     assert call["kwargs"]["replay_safe"] is True
     assert call["values"][:2] == (storage.workspace, storage.namespace)
-    assert json.loads(call["values"][2]) == data
-    assert "jsonb_each($3::jsonb)" in call["sql"]
+    sent = dict(zip(call["values"][2], call["values"][3]))
+    assert {k: json.loads(v) for k, v in sent.items()} == data
+    assert "unnest($3::text[])" in call["sql"]
+    assert "unnest($4::jsonb[])" in call["sql"]
     assert "payload = EXCLUDED.payload" in call["sql"]
     assert "updated_at = CURRENT_TIMESTAMP" in call["sql"]
     for secret in ("workspace-secret", "id-secret", "payload-secret"):
@@ -978,6 +980,14 @@ async def test_generic_upsert_sends_complete_objects_in_replay_safe_replacement_
 
 async def test_full_docs_upsert_sql_pins_every_protected_merge_rule(ready_storage):
     client = CallClient()
+
+    def batch_rows(_sql, values, _kwargs):
+        return [
+            {"ordinality": ordinal, "payload": None}
+            for ordinal, _item in enumerate(values[3], start=1)
+        ]
+
+    client.handlers["kv.read.batch"] = batch_rows
     storage = await ready_storage(client, namespace=NameSpace.KV_STORE_FULL_DOCS)
 
     await storage.upsert(
@@ -998,37 +1008,21 @@ async def test_full_docs_upsert_sql_pins_every_protected_merge_rule(ready_storag
     )
 
     (call,) = calls_for(client, "kv.upsert.full_docs")
-    sql = call["sql"]
     assert call["kwargs"]["replay_safe"] is True
-    assert "current.payload ||" in sql
-    assert "entries.value - ARRAY[" in sql
-    assert "EXCLUDED.payload - ARRAY[" in sql
-    for key in (
-        "sidecar_location",
-        "parse_format",
-        "content_hash",
-        "process_options",
-        "parse_engine",
-        "chunk_options",
-    ):
-        assert key in sql
-    for key in (
-        "sidecar_location",
-        "parse_format",
-        "content_hash",
-        "process_options",
-        "parse_engine",
-    ):
-        assert f"EXCLUDED.payload ? '{key}'" in sql
-        assert f"EXCLUDED.payload -> '{key}' <> 'null'::jsonb" in sql
-        assert f"EXCLUDED.payload -> '{key}' <> '\"\"'::jsonb" in sql
-    assert "EXCLUDED.payload ? 'chunk_options'" in sql
-    assert "EXCLUDED.payload -> 'chunk_options' <> 'null'::jsonb" in sql
-    assert "EXCLUDED.payload -> 'chunk_options' <> '{}'::jsonb" in sql
-    assert "jsonb_build_object" in sql
-    assert "'content'" not in sql
-    assert "'doc_name'" not in sql
-    assert "'file_path'" not in sql
+    assert "payload = EXCLUDED.payload" in call["sql"]
+    assert "unnest($3::text[])" in call["sql"]
+    assert "unnest($4::jsonb[])" in call["sql"]
+    sent_payload = json.loads(call["values"][3][0])
+    assert sent_payload["content"] == ""
+    assert sent_payload["doc_name"] == ""
+    assert sent_payload["file_path"] == ""
+    assert sent_payload["new_key"] == "new-value"
+    assert sent_payload["content_hash"] == "hash"
+    assert sent_payload["parse_engine"] == "engine"
+    assert "sidecar_location" not in sent_payload
+    assert "parse_format" not in sent_payload
+    assert "process_options" not in sent_payload
+    assert "chunk_options" not in sent_payload
 
 
 async def test_upsert_keeps_empty_tracking_and_anchor_payloads(ready_storage):
@@ -1042,7 +1036,8 @@ async def test_upsert_keeps_empty_tracking_and_anchor_payloads(ready_storage):
     await storage.upsert(data)
 
     (call,) = calls_for(client, "kv.upsert.replace")
-    assert json.loads(call["values"][2]) == data
+    sent = dict(zip(call["values"][2], call["values"][3]))
+    assert {k: json.loads(v) for k, v in sent.items()} == data
 
 
 async def test_upsert_chunks_at_200_records_and_four_mib_with_oversized_progress(
@@ -1053,21 +1048,28 @@ async def test_upsert_chunks_at_200_records_and_four_mib_with_oversized_progress
 
     await storage.upsert({f"id-{index}": {"value": index} for index in range(201)})
     count_calls = calls_for(client, "kv.upsert.replace")
-    assert [len(json.loads(call["values"][2])) for call in count_calls] == [200, 1]
+    assert [len(call["values"][2]) for call in count_calls] == [200, 1]
 
     client.calls.clear()
     large = "x" * (2 * 1024 * 1024 + 100)
     await storage.upsert({"first": {"value": large}, "second": {"value": large}})
     size_calls = calls_for(client, "kv.upsert.replace")
     assert len(size_calls) == 2
-    assert all(len(call["values"][2].encode("utf-8")) <= 4 * 1024 * 1024 for call in size_calls)
+    assert all(
+        sum(len(v.encode("utf-8")) for v in call["values"][3])
+        <= 4 * 1024 * 1024
+        for call in size_calls
+    )
 
     client.calls.clear()
     oversized = "x" * (4 * 1024 * 1024 + 1)
     await storage.upsert({"oversized": {"value": oversized}})
     oversized_calls = calls_for(client, "kv.upsert.replace")
     assert len(oversized_calls) == 1
-    assert len(oversized_calls[0]["values"][2].encode("utf-8")) > 4 * 1024 * 1024
+    assert (
+        sum(len(v.encode("utf-8")) for v in oversized_calls[0]["values"][3])
+        > 4 * 1024 * 1024
+    )
 
 
 @pytest.mark.parametrize(
@@ -1189,7 +1191,7 @@ async def test_every_crud_call_uses_restricted_methods_fixed_descriptors_and_bou
     def batch_rows(_sql, values, _kwargs):
         return [
             {"ordinality": index, "payload": None}
-            for index, _item in enumerate(values[2], start=1)
+            for index, _item in enumerate(values[3], start=1)
         ]
 
     client.handlers.update(
