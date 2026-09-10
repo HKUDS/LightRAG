@@ -333,9 +333,15 @@ class _AdminHoldCeiling:
     ``asyncio.timeout`` (3.11+) cancels the same way and rewrites the same
     exception unconditionally, which is exactly the distinction it cannot make;
     that is why this stays a context manager of its own rather than delegating.
-    On 3.10 there is no ``uncancel``, so an external cancel that lands in the
-    same tick as the expiry is reported as the expiry -- a misreport of the
-    cause, never a lost release: the gate's ``finally`` runs either way.
+    Its BOOKKEEPING is borrowed, though: ``__aenter__`` records
+    ``task.cancelling()`` and ``__aexit__`` rewrites only while
+    ``task.uncancel()`` returns to that baseline. Without the baseline, a
+    shutdown or client-disconnect cancel arriving in the same window as the
+    expiry would be swallowed -- ``uncancel()`` would drop it and the task would
+    carry on as if it had never been cancelled. On 3.10 neither API exists, so
+    there the ceiling still reports such a cancel as its own expiry: a misreport
+    of the cause, never a lost release, since the gate's ``finally`` runs either
+    way.
     """
 
     def __init__(self, seconds: float, what: str) -> None:
@@ -344,6 +350,7 @@ class _AdminHoldCeiling:
         self._task: asyncio.Task | None = None
         self._handle: asyncio.TimerHandle | None = None
         self._expired = False
+        self._cancelling = 0
 
     def _expire(self) -> None:
         self._expired = True
@@ -352,6 +359,12 @@ class _AdminHoldCeiling:
 
     async def __aenter__(self) -> "_AdminHoldCeiling":
         self._task = asyncio.current_task()
+        # The count of cancellations already requested on this task before the
+        # timer could add one of its own. ``__aexit__`` compares against it to
+        # tell "my expiry" from "my expiry AND somebody else's cancel". Absent
+        # on 3.10, where the whole mechanism is unavailable.
+        cancelling = getattr(self._task, "cancelling", None)
+        self._cancelling = cancelling() if cancelling is not None else 0
         self._handle = asyncio.get_running_loop().call_later(
             self._seconds, self._expire
         )
@@ -363,8 +376,13 @@ class _AdminHoldCeiling:
         if not self._expired or exc_type is not asyncio.CancelledError:
             return False
         uncancel = getattr(self._task, "uncancel", None)
-        if uncancel is not None:
-            uncancel()
+        if uncancel is not None and uncancel() > self._cancelling:
+            # Our expiry is not the only cancellation outstanding: something
+            # else -- a shutdown, a disconnected client, an outer timeout --
+            # also cancelled this task. ``uncancel()`` above consumed OUR
+            # request; theirs still stands, and rewriting the exception here
+            # would swallow it and let the task run on. Propagate unchanged.
+            return False
         preamble = (
             f"{self._what} exceeded the admin-write hold ceiling of "
             f"{self._seconds:g}s (LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS) and was "
@@ -6955,17 +6973,27 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     ),
                 )
                 if not result.acquired:
+                    # The slot is somebody else's: we never held it, so there is
+                    # nothing to release and -- more to the point -- no pipeline
+                    # start can have been deferred by a hold we do not have. Clear
+                    # the flag so the ``finally`` skips the release-time drive
+                    # instead of driving the queue on a write that never ran.
+                    reserved = False
                     raise AdminWriteGateRefusedError(
                         result.message, conflict=result.conflict, fence=result.fence
                     )
-            try:
-                async with _AdminHoldCeiling(
-                    ADMIN_WRITE_MAX_HOLD_SECONDS, f"Admin write `{operation}`"
-                ):
-                    yield
-            except asyncio.CancelledError:
-                cancelled = True
-                raise
+            async with _AdminHoldCeiling(
+                ADMIN_WRITE_MAX_HOLD_SECONDS, f"Admin write `{operation}`"
+            ):
+                yield
+        except asyncio.CancelledError:
+            # Covers the acquire as well as the body: a cancellation landing at
+            # the reservation lock's exit can leave ``busy`` ours (which is why
+            # ``reserved`` is set before the acquire), and driving the pipeline
+            # from a cancelled task would only start work nobody is waiting for.
+            # The mailbox flag is sticky, so the next scan or upload picks it up.
+            cancelled = True
+            raise
         finally:
             try:
                 if reserved:

@@ -289,6 +289,133 @@ async def test_release_drive_is_skipped_on_cancellation_and_flag_stays_armed(
             pass
 
 
+@pytest.mark.asyncio
+async def test_a_refused_admin_write_drives_nothing(rag, monkeypatch):
+    """The reservation was somebody else's, so no start was ever deferred.
+
+    ``reserved`` is set BEFORE the acquire (a cancellation at its lock exit must
+    still reach the release), which means a refusal has to clear it again --
+    otherwise the write that never ran drives the queue on its way out, from a
+    task that is already raising HTTP 409 at its caller.
+    """
+    drives: list[str] = []
+
+    async def _spy(self, workspace):
+        drives.append(workspace)
+
+    monkeypatch.setattr(LightRAG, "_drive_pipeline_if_deferred", _spy)
+    ingress = await get_pipeline_ingress(rag.workspace)
+    # A start IS pending, so a drive would have real work to do: only the
+    # refusal keeps it from running.
+    ingress.request_auto_rescan()
+
+    status, lock = await _status_handles(rag)
+    async with lock:
+        status.update(
+            {"busy": True, "busy_owner": {"token": "p", "kind": "processing"}}
+        )
+    try:
+        with pytest.raises(AdminWriteGateRefusedError):
+            await _create_alice(rag)
+    finally:
+        async with lock:
+            status.update({"busy": False, "busy_owner": None})
+
+    assert drives == []
+    # Still armed for whoever legitimately holds the pipeline next.
+    assert ingress.counts()["auto_rescan_pending"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_cancellation_during_the_acquire_drives_nothing(rag, monkeypatch):
+    """The cancellation window covers the reservation, not just the body.
+
+    A cancel landing at the reservation lock's exit can leave ``busy`` ours,
+    which is exactly why ``reserved`` is set before the acquire. The drive that
+    keys off it must therefore be suppressed for that window too: a cancelled
+    admin write must not start a processing run on its way out.
+    """
+    drives: list[str] = []
+
+    async def _spy(self, workspace):
+        drives.append(workspace)
+
+    monkeypatch.setattr(LightRAG, "_drive_pipeline_if_deferred", _spy)
+
+    async def _cancel_inside_the_acquire(*args, **kwargs):
+        asyncio.current_task().cancel()
+        await asyncio.sleep(0)  # deliver it while the acquire is in flight
+        raise AssertionError("unreachable: the cancellation is delivered above")
+
+    monkeypatch.setattr(
+        lightrag_module, "acquire_reservation", _cancel_inside_the_acquire
+    )
+    ingress = await get_pipeline_ingress(rag.workspace)
+    ingress.request_auto_rescan()
+
+    with pytest.raises(asyncio.CancelledError):
+        await _create_alice(rag)
+
+    assert drives == []
+    assert ingress.counts()["auto_rescan_pending"] is True
+    status, _lock = await _status_handles(rag)
+    assert status["busy"] is False and status["busy_owner"] is None
+    async with asyncio.timeout(2):
+        async with get_storage_keyed_lock(
+            ["admin"], namespace=f"{rag.workspace}:GraphAdmin"
+        ):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_an_external_cancel_alongside_the_expiry_is_not_swallowed():
+    """The ceiling rewrites ITS cancellation, never somebody else's.
+
+    ``uncancel()`` without a baseline drops whatever cancellation is
+    outstanding, so a shutdown or a disconnected client arriving in the same
+    window as the expiry would be consumed and the task would run on as if it
+    had never been cancelled. Compared against ``cancelling()`` at entry, only
+    the ceiling's own request is consumed.
+    """
+    if not hasattr(asyncio.Task, "uncancel"):  # pragma: no cover - 3.10 only
+        pytest.skip("uncancel()/cancelling() require Python 3.11+")
+
+    ceilings: list[object] = []
+    entered = asyncio.Event()
+
+    async def _body():
+        # A ceiling far in the future: the expiry below is fired by hand, so
+        # the two cancellations are guaranteed to land in the same window.
+        async with lightrag_module._AdminHoldCeiling(3600, "Admin write `x`") as c:
+            ceilings.append(c)
+            entered.set()
+            await asyncio.sleep(3600)
+
+    task = asyncio.ensure_future(_body())
+    await entered.wait()
+    ceilings[0]._expire()  # the timer fires ...
+    task.cancel()  # ... and something else cancels us too
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_a_lone_expiry_is_still_reported_as_the_ceiling():
+    """The companion of the test above: with nothing else outstanding, the
+    expiry is still rewritten into the loud, actionable error."""
+    entered = asyncio.Event()
+
+    async def _body():
+        async with lightrag_module._AdminHoldCeiling(0.05, "Admin write `x`"):
+            entered.set()
+            await asyncio.sleep(3600)
+
+    with pytest.raises(AdminWriteHoldExceededError):
+        await _body()
+    assert entered.is_set()
+
+
 # ---------------------------------------------------------------------------
 # R2.1 -- a running or scanning pipeline still refuses the admin write
 # ---------------------------------------------------------------------------

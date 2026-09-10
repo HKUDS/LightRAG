@@ -2965,8 +2965,12 @@ async def _wait_deferring_cancellation(
     An incoming stamp is never cleared. The second call in
     ``_bounded_submit_impl`` passes the same instance for the commit hook: the
     write already succeeded and IS durable, so a failing hook must not retract
-    that. Cancelling ``future`` ITSELF still propagates immediately: it did not
-    run to completion and we must not pretend it did.
+    that -- and when the cancel arrived only during that failing hook, so that
+    no call here ever saw a successful future, ``_bounded_submit_impl`` stamps
+    it itself. This function judges the future it was given; only the caller
+    knows what the operation as a whole committed. Cancelling ``future`` ITSELF
+    still propagates immediately: it did not run to completion and we must not
+    pretend it did.
     """
     while not future.done():
         try:
@@ -3108,6 +3112,18 @@ async def _bounded_submit_impl(
         )
         if not commit_future.cancelled():
             commit_exc = commit_future.exception()
+
+    if pending_cancel is not None and _completed_successfully(async_future):
+        # The stamp describes the OPERATION's durability, not one future's
+        # outcome. ``_wait_deferring_cancellation`` can only see the future it
+        # was handed, so the case "the write landed, the cancel arrived during
+        # the commit hook, and the HOOK failed" would leave the cancellation
+        # unstamped -- and every reader of the stamp (the ceiling's message,
+        # ``NetworkXStorage.index_done_callback``) would then treat a durable
+        # write as one that never happened, which is what the stamp exists to
+        # prevent. The write succeeded here, so say so; the hook's failure is
+        # logged just below.
+        setattr(pending_cancel, _DEFERRED_PAST_CANCEL_ATTR, True)
 
     if pending_cancel is not None:
         # The caller gets CancelledError, so nobody will ever see these.

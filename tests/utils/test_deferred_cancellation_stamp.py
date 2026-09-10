@@ -21,7 +21,11 @@ import asyncio
 
 import pytest
 
+from concurrent.futures import ThreadPoolExecutor
+
 from lightrag.utils import (
+    CommitBookkeepingError,
+    _bounded_submit_impl,
     _wait_deferring_cancellation,
     cancellation_was_deferred,
 )
@@ -167,3 +171,112 @@ async def test_a_plain_cancellation_at_a_suspension_point_is_not_stamped():
 def test_cancellation_was_deferred_is_false_for_anything_else():
     assert cancellation_was_deferred(RuntimeError("boom")) is False
     assert cancellation_was_deferred(asyncio.CancelledError()) is False
+
+
+# ---------------------------------------------------------------------------
+# The stamp describes the OPERATION, which only ``_bounded_submit_impl`` knows
+# ---------------------------------------------------------------------------
+
+
+async def _run_bounded(fn, on_committed):
+    """Submit ``fn`` through ``_bounded_submit_impl`` and cancel the caller
+    once the commit hook has started -- the window the stamp has to cover."""
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        semaphore = asyncio.Semaphore(1)
+        hook_started = asyncio.Event()
+
+        async def _hook():
+            hook_started.set()
+            await asyncio.sleep(0.05)
+            return await on_committed()
+
+        task = asyncio.ensure_future(
+            _bounded_submit_impl(
+                executor,
+                semaphore,
+                fn,
+                (),
+                {},
+                wait_for_completion=True,
+                on_committed=_hook,
+            )
+        )
+        await hook_started.wait()
+        task.cancel()
+        return task
+    finally:
+        executor.shutdown(wait=True)
+
+
+@pytest.mark.asyncio
+async def test_a_write_that_landed_is_stamped_even_when_its_commit_hook_fails():
+    """The write is on disk; only its publication failed.
+
+    ``_wait_deferring_cancellation`` judges the future it was handed, and in
+    this ordering neither call ever sees a successful one: the write finished
+    before the cancel arrived (so that call withheld nothing), and the hook the
+    cancel DID cross then raised. The operation is nonetheless durable, so
+    ``_bounded_submit_impl`` stamps on its behalf -- otherwise the ceiling's
+    message and ``NetworkXStorage.index_done_callback`` both treat a durable
+    write as one that never happened.
+    """
+    written = []
+
+    def _write():
+        written.append("landed")
+        return "result"
+
+    async def _publish():
+        raise RuntimeError("could not flip the reload flags")
+
+    task = await _run_bounded(_write, _publish)
+
+    with pytest.raises(asyncio.CancelledError) as excinfo:
+        await task
+    assert written == ["landed"]
+    assert cancellation_was_deferred(excinfo.value) is True
+
+
+@pytest.mark.asyncio
+async def test_a_write_that_RAISED_is_still_not_stamped():
+    """The mirror case, unchanged: ``fn`` raising means nothing was persisted,
+    the hook never runs, and the cancellation must carry no claim of
+    durability."""
+
+    def _write():
+        raise OSError(28, "No space left on device")
+
+    async def _publish():  # pragma: no cover - must never run
+        raise AssertionError("the commit hook must not run after a failed write")
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        semaphore = asyncio.Semaphore(1)
+
+        async def _region():
+            future = asyncio.ensure_future(
+                _bounded_submit_impl(
+                    executor,
+                    semaphore,
+                    _write,
+                    (),
+                    {},
+                    wait_for_completion=True,
+                    on_committed=_publish,
+                )
+            )
+            await asyncio.sleep(0)
+            return future
+
+        task = await _region()
+        task.cancel()
+        with pytest.raises(BaseException) as excinfo:
+            await task
+    finally:
+        executor.shutdown(wait=True)
+
+    # Either the cancellation won the race or the write error did; whichever
+    # surfaced, no durability may be claimed.
+    assert cancellation_was_deferred(excinfo.value) is False
+    assert not isinstance(excinfo.value, CommitBookkeepingError)
