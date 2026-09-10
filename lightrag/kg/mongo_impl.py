@@ -89,6 +89,11 @@ DEFAULT_MONGO_UPSERT_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024  # 16MB
 DEFAULT_MONGO_UPSERT_MAX_RECORDS_PER_BATCH = 128
 DEFAULT_MONGO_DELETE_MAX_RECORDS_PER_BATCH = 1000
 
+# get_edges_batch's own $or chunk size, matching postgres_impl.get_edges_batch's
+# batch_size default -- a fixed safety cap for query size, not an operator-tuned
+# knob like the env-var-driven limits above, so it isn't one.
+_GET_EDGES_BATCH_CHUNK_SIZE = 500
+
 # MongoDB duplicate-key error code, raised when an upsert insert races the
 # unique edge-endpoint index (another writer inserted the same edge first).
 _DUPLICATE_KEY_CODE = 11000
@@ -1805,6 +1810,13 @@ class MongoGraphStorage(BaseGraphStorage):
     async def create_edge_indexes_and_migrate_if_not_exists(self) -> None:
         """Create the compound unique edge-endpoint index, migrating legacy edges first.
 
+        Also ensures the ``source_node_id``/``target_node_id`` single-field
+        indexes that back ``node_degree``/``node_degrees_batch``/
+        ``get_node_edges``/``get_nodes_edges_batch`` exist, independently of
+        the migration below and on every call (idempotent) — so an
+        already-migrated deployment still picks them up. Best-effort: unlike
+        the migration, a failure there is logged and does not abort startup.
+
         Fail-fast one-time migration (mirrors the OpenSearch canonical-id work):
 
           1. dedupe legacy reciprocal duplicate docs, **merging the full relation
@@ -1836,7 +1848,52 @@ class MongoGraphStorage(BaseGraphStorage):
 
         indexes_cursor = await self.edge_collection.list_indexes()
         existing_indexes = await indexes_cursor.to_list(length=None)
-        if any(idx.get("name") == index_name for idx in existing_indexes):
+        existing_index_names = {idx.get("name", "") for idx in existing_indexes}
+        # Fields already covered by a single-field index. Index options are not
+        # inspected: a hand-added collation or partial index the planner can't
+        # use for these lookups would still skip creation below.
+        single_field_indexed = {
+            next(iter(idx["key"]))
+            for idx in existing_indexes
+            if isinstance(idx.get("key"), dict) and len(idx["key"]) == 1
+        }
+
+        # Best-effort only -- these two indexes are a performance optimization,
+        # not required for correctness (unlike the compound migration below).
+        # Check by field, not by our own name: an index on the same field can
+        # already exist under a different name (e.g. Mongo's own default
+        # "source_node_id_1", from a DBA-added index), and creating a
+        # same-field index under a new name raises IndexKeySpecsConflict.
+        # Catch PyMongoError too (e.g. a restricted service account without
+        # createIndex privilege) so a failure here logs and moves on instead
+        # of aborting initialize()/startup, mirroring the doc-status index
+        # creation above.
+        source_index_name = f"{workspace_prefix}source_node_id"
+        target_index_name = f"{workspace_prefix}target_node_id"
+        if "source_node_id" not in single_field_indexed:
+            try:
+                await self.edge_collection.create_index(
+                    [("source_node_id", 1)], name=source_index_name
+                )
+            except PyMongoError as e:
+                logger.warning(
+                    f"[{self.workspace}] Could not create source_node_id index on "
+                    f"{self._edge_collection_name}: {e}. Queries filtering by "
+                    "source_node_id will fall back to a collection scan."
+                )
+        if "target_node_id" not in single_field_indexed:
+            try:
+                await self.edge_collection.create_index(
+                    [("target_node_id", 1)], name=target_index_name
+                )
+            except PyMongoError as e:
+                logger.warning(
+                    f"[{self.workspace}] Could not create target_node_id index on "
+                    f"{self._edge_collection_name}: {e}. Queries filtering by "
+                    "target_node_id will fall back to a collection scan."
+                )
+
+        if index_name in existing_index_names:
             logger.info(
                 f"[{self.workspace}] Edge collection {self._edge_collection_name} "
                 f"already on canonical edge endpoints; skipping migration"
@@ -2256,6 +2313,88 @@ class MongoGraphStorage(BaseGraphStorage):
             ) + doc.get("degree")
 
         return merged_results
+
+    async def edge_degrees_batch(
+        self, edge_pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], int]:
+        """
+        Calculate the combined degree for each edge (sum of the source and target node degrees)
+        in batch using the already implemented node_degrees_batch.
+
+        Args:
+            edge_pairs: List of (source_node_id, target_node_id) tuples
+
+        Returns:
+            Dictionary mapping edge tuples to their combined degrees
+        """
+        if not edge_pairs:
+            return {}
+
+        # Node degrees are already batched; sum them locally instead of
+        # issuing one edge_degree() round-trip per pair.
+        node_ids = {node_id for pair in edge_pairs for node_id in pair}
+        degrees = await self.node_degrees_batch(list(node_ids))
+
+        result = {}
+        for src_id, tgt_id in edge_pairs:
+            result[(src_id, tgt_id)] = degrees.get(src_id, 0) + degrees.get(tgt_id, 0)
+        return result
+
+    async def get_edges_batch(
+        self, pairs: list[dict[str, str]]
+    ) -> dict[tuple[str, str], dict]:
+        """
+        Retrieve edge properties for multiple (src, tgt) pairs in one query.
+
+        Args:
+            pairs: List of dictionaries, e.g. [{"src": "node1", "tgt": "node2"}, ...]
+
+        Returns:
+            A dictionary mapping existing (src, tgt) tuples to their edge
+            properties. Missing pairs are omitted.
+        """
+        if not pairs:
+            return {}
+
+        # Map canonical (edge_lo, edge_hi) back to the requested (src, tgt)
+        # direction, since multiple requested pairs can share one canonical edge.
+        canonical_to_requested: dict[tuple[str, str], list[tuple[str, str]]] = {}
+        for pair in pairs:
+            src_id = pair["src"]
+            tgt_id = pair["tgt"]
+            canonical = _canonical_edge_endpoints(src_id, tgt_id)
+            canonical_to_requested.setdefault(canonical, []).append((src_id, tgt_id))
+
+        # Chunk the $or by record count, same shape as remove_edges' delete
+        # chunking, so a large batch (e.g. purging a document with many
+        # relations) stays under the 16MB query limit instead of building one
+        # unbounded $or; endpoints are bounded id strings, so a count cap is
+        # enough. A fixed cap (matching postgres_impl.get_edges_batch's own
+        # batch_size default), not remove_edges' env-tunable delete cap --
+        # this is a query-size safety net, not an operator-tuned knob.
+        canonical_pairs = list(canonical_to_requested)
+
+        result = {}
+        for i in range(0, len(canonical_pairs), _GET_EDGES_BATCH_CHUNK_SIZE):
+            cursor = self.edge_collection.find(
+                {
+                    "$or": [
+                        {"edge_lo": edge_lo, "edge_hi": edge_hi}
+                        for edge_lo, edge_hi in canonical_pairs[
+                            i : i + _GET_EDGES_BATCH_CHUNK_SIZE
+                        ]
+                    ]
+                }
+            )
+            async for doc in cursor:
+                doc.pop("_id", None)
+                canonical = (doc["edge_lo"], doc["edge_hi"])
+                # Independent dict per requested direction: two requested pairs
+                # can share one canonical edge, and callers (e.g. purge) mutate
+                # the per-pair dict in place, so it must not be the same object.
+                for src_id, tgt_id in canonical_to_requested.get(canonical, []):
+                    result[(src_id, tgt_id)] = dict(doc)
+        return result
 
     async def get_nodes_edges_batch(
         self, node_ids: list[str]
