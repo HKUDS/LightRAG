@@ -78,6 +78,27 @@ from lightrag.utils import logger
 PREFACE_HEADING = "Preface/Uncategorized"
 CONTENT_LIST_FILENAME = "content_list.json"
 
+# MinerU item types whose payload IS plain text: an empty one is layout noise
+# (a blank running head, a heading the model could not read), not information
+# the builder failed to map. Everything else that reaches the text fallback
+# without usable text is a structural item — a picture-like type or a payload
+# shape the dispatch does not know yet — and gets a debug breadcrumb.
+# ``text`` / ``list`` / ``code`` / ``equation`` / ``table`` / the drawing types
+# and ``page_number`` never reach the fallback: they have their own branch.
+_KNOWN_EMPTY_TYPES = frozenset(
+    {
+        "title",
+        "section_header",
+        "header",
+        "footer",
+        "ref_text",
+        "aside_text",
+        "page_footnote",
+        "phonetic",
+        "discarded",
+    }
+)
+
 
 class MinerUIRBuilder:
     """Stateless except for env-driven config. Reusable across calls."""
@@ -386,6 +407,13 @@ class MinerUIRBuilder:
             # not leak their page_idx into the current block.
             if _append_text(_coerce_text(item)):
                 _record_position(item)
+            elif item_type not in _KNOWN_EMPTY_TYPES:
+                logger.debug(
+                    "[mineru_ir_builder] dropping item with no usable text "
+                    "(type=%s, page_idx=%s)",
+                    item_type,
+                    item.get("page_idx"),
+                )
 
         _flush_block()
 

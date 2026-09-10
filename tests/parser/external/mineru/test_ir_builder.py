@@ -3,11 +3,30 @@
 from __future__ import annotations
 
 import json
+import logging
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
 from lightrag.parser.external.mineru import MinerUIRBuilder
+from lightrag.utils import logger as lightrag_logger
+
+
+@contextmanager
+def _captured_logs(caplog, level):
+    """Capture lightrag logger records.
+
+    The lightrag logger sets ``propagate = False``, so caplog cannot see it
+    unless propagation is re-enabled for the duration of the call.
+    """
+    original_propagate = lightrag_logger.propagate
+    lightrag_logger.propagate = True
+    try:
+        with caplog.at_level(level, logger=lightrag_logger.name):
+            yield
+    finally:
+        lightrag_logger.propagate = original_propagate
 
 
 def _write_bundle(tmp_path: Path, content_list: list[dict]) -> Path:
@@ -516,6 +535,38 @@ def test_adapter_empty_table_dropped(tmp_path: Path) -> None:
     joined = "\n".join(b.content_template for b in ir.blocks)
     assert "TBL:" not in joined
     assert "kept" in joined
+
+
+@pytest.mark.offline
+def test_adapter_logs_structural_item_dropped_without_text(
+    tmp_path: Path, caplog
+) -> None:
+    """An item the dispatch does not know and that carries no usable text is
+    lost without a trace — that is how the dropped ``chart`` items stayed
+    invisible. Leave a debug breadcrumb for those, but not for text-typed
+    items whose emptiness is ordinary layout noise.
+    """
+    raw = _write_bundle(
+        tmp_path,
+        [
+            # Picture-like type the dispatch does not handle: worth a log line.
+            {"type": "header_image", "img_path": "images/logo.png", "page_idx": 3},
+            # Blank running head: expected to be empty, must stay silent.
+            {"type": "header", "text": "", "page_idx": 3},
+        ],
+    )
+    with _captured_logs(caplog, logging.DEBUG):
+        MinerUIRBuilder().normalize_from_workdir(raw, document_name="h.pdf")
+
+    # The record set is deduplicated: caplog sees each record twice (own
+    # handler + propagated to root), which says nothing about the log call.
+    messages = {
+        r.getMessage() for r in caplog.records if "no usable text" in r.getMessage()
+    }
+    assert messages == {
+        "[mineru_ir_builder] dropping item with no usable text "
+        "(type=header_image, page_idx=3)"
+    }
 
 
 @pytest.mark.offline
