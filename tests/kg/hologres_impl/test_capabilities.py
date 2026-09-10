@@ -820,6 +820,245 @@ async def test_hgraph_probe_classifies_malformed_stage_results(
     )
 
 
+class GraphProbeClient:
+    def __init__(self):
+        self.events = []
+        self.statements = {}
+
+    async def execute_one(self, sql, *values, descriptor, replay_safe=False):
+        self.events.append(descriptor)
+        self.statements[descriptor] = (sql, values, replay_safe)
+        return "OK"
+
+    async def fetch_value(self, sql, *values, descriptor):
+        self.events.append(descriptor)
+        self.statements[descriptor] = (sql, values, None)
+        if descriptor == "probe.graph.collation":
+            return "C"
+        if descriptor == "probe.graph.nodes.merge.verify":
+            return '{"keep":"x","step":2}'
+        if descriptor == "probe.graph.degree":
+            return 3
+        if descriptor == "probe.graph.pairs":
+            return 2
+        raise AssertionError(f"Unexpected value fetch: {descriptor}")
+
+    async def fetch_all(self, sql, *values, descriptor):
+        self.events.append(descriptor)
+        self.statements[descriptor] = (sql, values, None)
+        if descriptor == "probe.graph.nodes.order":
+            return [{"id": "B"}, {"id": "_x"}, {"id": "a"}]
+        if descriptor == "probe.graph.adjacency":
+            return [{"nid": "B"}, {"nid": "_x"}]
+        if descriptor == "probe.graph.explain":
+            return [
+                {"QUERY PLAN": "Seq Scan on lightrag_test_gedges"},
+                {"QUERY PLAN": "Partition Filter: (workspace = 'w1')"},
+            ]
+        raise AssertionError(f"Unexpected row fetch: {descriptor}")
+
+
+async def _run_graph_probe(client):
+    async def verify_ownership():
+        client.events.append("probe.marker.verify")
+
+    return await hologres_capabilities._probe_graph_partition_adjacency(
+        client,
+        "lightrag_test_graph_probe",
+        "lightrag_test_gnodes",
+        "lightrag_test_gedges",
+        verify_ownership,
+    )
+
+
+@pytest.mark.asyncio
+async def test_graph_probe_freezes_partition_and_adjacency_contracts():
+    client = GraphProbeClient()
+
+    partition, adjacency = await _run_graph_probe(client)
+
+    assert partition == ProbeResult(
+        kind=ProbeKind.LOGICAL_PARTITION,
+        status=ProbeStatus.PASSED,
+        blocking=True,
+        detail_code="logical_partition_semantics_frozen",
+    )
+    assert adjacency == ProbeResult(
+        kind=ProbeKind.GRAPH_ADJACENCY_EXPLAIN,
+        status=ProbeStatus.PASSED,
+        blocking=True,
+        detail_code="graph_adjacency_plan_partition_pruned",
+    )
+    assert client.events == [
+        "probe.graph.collation",
+        "probe.marker.verify",
+        "probe.graph.nodes.create",
+        "probe.marker.verify",
+        "probe.graph.edges.create",
+        "probe.marker.verify",
+        "probe.graph.nodes.insert",
+        "probe.marker.verify",
+        "probe.graph.nodes.merge",
+        "probe.marker.verify",
+        "probe.graph.nodes.merge.verify",
+        "probe.marker.verify",
+        "probe.graph.nodes.order",
+        "probe.marker.verify",
+        "probe.graph.edges.insert",
+        "probe.marker.verify",
+        "probe.graph.degree",
+        "probe.marker.verify",
+        "probe.graph.pairs",
+        "probe.marker.verify",
+        "probe.graph.adjacency",
+        "probe.marker.verify",
+        "probe.graph.explain",
+    ]
+
+    nodes_create_sql, _values, nodes_replay_safe = client.statements[
+        "probe.graph.nodes.create"
+    ]
+    edges_create_sql, _values, edges_replay_safe = client.statements[
+        "probe.graph.edges.create"
+    ]
+    assert nodes_replay_safe is False
+    assert edges_replay_safe is False
+    assert "LOGICAL PARTITION BY LIST (workspace)" in nodes_create_sql
+    assert "LOGICAL PARTITION BY LIST (workspace)" in edges_create_sql
+    assert "orientation = 'row'" in nodes_create_sql
+    assert "COLLATE" not in nodes_create_sql
+    assert "COLLATE" not in edges_create_sql
+
+    for descriptor in (
+        "probe.graph.nodes.insert",
+        "probe.graph.nodes.merge",
+        "probe.graph.edges.insert",
+    ):
+        assert client.statements[descriptor][2] is True
+
+    merge_sql = client.statements["probe.graph.nodes.merge"][0]
+    assert "current.properties || EXCLUDED.properties" in merge_sql
+
+    pairs_sql = client.statements["probe.graph.pairs"][0]
+    assert "generate_series(1, $5::int)" in pairs_sql
+    assert "unnest($3::text[], $4" not in pairs_sql
+
+    explain_sql = client.statements["probe.graph.explain"][0]
+    assert explain_sql.startswith("EXPLAIN SELECT")
+
+    for sql, _values, _replay_safe in client.statements.values():
+        assert ";" not in sql
+
+
+class MismatchGraphProbeClient(GraphProbeClient):
+    def __init__(self, stage):
+        super().__init__()
+        self.stage = stage
+
+    async def fetch_value(self, sql, *values, descriptor):
+        if descriptor == "probe.graph.collation" and self.stage == "collation":
+            self.events.append(descriptor)
+            return "en_US.utf8"
+        if descriptor == "probe.graph.nodes.merge.verify" and self.stage == "merge":
+            self.events.append(descriptor)
+            return '{"step":2}'
+        if descriptor == "probe.graph.degree" and self.stage == "degree":
+            self.events.append(descriptor)
+            return 2
+        if descriptor == "probe.graph.pairs" and self.stage == "pairs":
+            self.events.append(descriptor)
+            return 1
+        return await super().fetch_value(sql, *values, descriptor=descriptor)
+
+    async def fetch_all(self, sql, *values, descriptor):
+        if descriptor == "probe.graph.nodes.order" and self.stage == "order":
+            self.events.append(descriptor)
+            return [{"id": "a"}, {"id": "B"}, {"id": "_x"}]
+        if descriptor == "probe.graph.adjacency" and self.stage == "adjacency":
+            self.events.append(descriptor)
+            return [{"nid": "B"}, {"nid": "_x"}, {"nid": "leaked"}]
+        if descriptor == "probe.graph.explain" and self.stage == "explain":
+            self.events.append(descriptor)
+            return [{"QUERY PLAN": "Seq Scan on lightrag_test_gedges"}]
+        return await super().fetch_all(sql, *values, descriptor=descriptor)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stage", "detail_code"),
+    [
+        ("collation", "graph_collation_mismatch"),
+        ("merge", "graph_merge_semantics_mismatch"),
+        ("order", "graph_order_mismatch"),
+    ],
+)
+async def test_graph_probe_fails_partition_and_skips_adjacency_on_mismatch(
+    stage, detail_code
+):
+    client = MismatchGraphProbeClient(stage)
+
+    partition, adjacency = await _run_graph_probe(client)
+
+    assert partition == ProbeResult(
+        kind=ProbeKind.LOGICAL_PARTITION,
+        status=ProbeStatus.FAILED,
+        blocking=True,
+        detail_code=detail_code,
+    )
+    assert adjacency == ProbeResult(
+        kind=ProbeKind.GRAPH_ADJACENCY_EXPLAIN,
+        status=ProbeStatus.NOT_RUN,
+        blocking=True,
+        detail_code="graph_tables_unavailable",
+    )
+    assert "probe.graph.edges.insert" not in client.events
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stage", "detail_code"),
+    [
+        ("degree", "graph_degree_mismatch"),
+        ("pairs", "graph_pair_batch_mismatch"),
+        ("adjacency", "graph_adjacency_mismatch"),
+        ("explain", "graph_adjacency_plan_mismatch"),
+    ],
+)
+async def test_graph_probe_keeps_partition_pass_when_adjacency_stage_fails(
+    stage, detail_code
+):
+    client = MismatchGraphProbeClient(stage)
+
+    partition, adjacency = await _run_graph_probe(client)
+
+    assert partition.status is ProbeStatus.PASSED
+    assert adjacency == ProbeResult(
+        kind=ProbeKind.GRAPH_ADJACENCY_EXPLAIN,
+        status=ProbeStatus.FAILED,
+        blocking=True,
+        detail_code=detail_code,
+    )
+
+
+class OwnershipLossGraphProbeClient(GraphProbeClient):
+    async def execute_one(self, sql, *values, descriptor, replay_safe=False):
+        if descriptor == "probe.graph.edges.insert":
+            raise HologresProbeError(
+                "ownership lost", leaked_objects=("lightrag_test_graph_probe",)
+            )
+        return await super().execute_one(
+            sql, *values, descriptor=descriptor, replay_safe=replay_safe
+        )
+
+
+@pytest.mark.asyncio
+async def test_graph_probe_reraises_ownership_errors_instead_of_classifying():
+    client = OwnershipLossGraphProbeClient()
+
+    with pytest.raises(HologresProbeError):
+        await _run_graph_probe(client)
+
+
 class SuccessfulProbeClient:
     def __init__(self):
         self.writes = []
@@ -832,11 +1071,25 @@ class SuccessfulProbeClient:
             "probe.schema.preflight": False,
             "probe.marker.verify": self.owner_token,
             "probe.reconnect.verify": 1,
+            "probe.graph.collation": "C",
+            "probe.graph.nodes.merge.verify": {"keep": "x", "step": 2},
+            "probe.graph.degree": 3,
+            "probe.graph.pairs": 2,
         }
         return results[descriptor]
 
     async def fetch_one(self, sql, *values, descriptor):
         return {"payload": {"step": 2}, "tags": ["beta", "gamma"]}
+
+    async def fetch_all(self, sql, *values, descriptor):
+        results = {
+            "probe.graph.nodes.order": [{"id": "B"}, {"id": "_x"}, {"id": "a"}],
+            "probe.graph.adjacency": [{"nid": "B"}, {"nid": "_x"}],
+            "probe.graph.explain": [
+                {"QUERY PLAN": "Partition Filter: (workspace = 'w1')"}
+            ],
+        }
+        return results[descriptor]
 
     async def execute_one(self, sql, *values, descriptor, replay_safe=False):
         if descriptor == "probe.marker.insert":
@@ -865,23 +1118,27 @@ async def test_initial_probes_do_not_replay_nonidempotent_create_ddl():
     replay_safety = dict(client.writes)
     assert any(result.kind is ProbeKind.HGRAPH for result in report.results)
     failures = {result.kind: result for result in report.blocking_failures}
-    assert set(failures) == {
-        ProbeKind.HGRAPH,
-        ProbeKind.LOGICAL_PARTITION,
-        ProbeKind.GRAPH_ADJACENCY_EXPLAIN,
-    }
+    assert set(failures) == {ProbeKind.HGRAPH}
     assert failures[ProbeKind.HGRAPH].status is ProbeStatus.FAILED
     assert failures[ProbeKind.HGRAPH].detail_code == "hgraph_probe_failed"
-    assert failures[ProbeKind.LOGICAL_PARTITION].status is ProbeStatus.NOT_RUN
-    assert failures[ProbeKind.GRAPH_ADJACENCY_EXPLAIN].status is ProbeStatus.NOT_RUN
+    passed = {result.kind: result for result in report.results}
+    assert passed[ProbeKind.LOGICAL_PARTITION].status is ProbeStatus.PASSED
+    assert passed[ProbeKind.GRAPH_ADJACENCY_EXPLAIN].status is ProbeStatus.PASSED
     assert replay_safety["probe.schema.create"] is False
     assert replay_safety["probe.marker.create"] is False
     assert replay_safety["probe.marker.insert"] is False
     assert replay_safety["probe.basic.create"] is False
     assert replay_safety["probe.hgraph.create"] is False
+    assert replay_safety["probe.graph.nodes.create"] is False
+    assert replay_safety["probe.graph.edges.create"] is False
     assert replay_safety["probe.hgraph.insert"] is True
+    assert replay_safety["probe.graph.nodes.insert"] is True
+    assert replay_safety["probe.graph.nodes.merge"] is True
+    assert replay_safety["probe.graph.edges.insert"] is True
     assert replay_safety["probe.basic.drop"] is True
     assert replay_safety["probe.hgraph.drop"] is True
+    assert replay_safety["probe.graph.edges.drop"] is True
+    assert replay_safety["probe.graph.nodes.drop"] is True
     assert replay_safety["probe.marker.drop"] is True
     assert replay_safety["probe.schema.drop"] is True
     assert client.reconnect_count == 1

@@ -43,6 +43,8 @@ LEDGER_TABLE_NAME = "lightrag_hologres_schema_ledger"
 KV_TABLE_NAME = "lightrag_hologres_kv"
 DOC_STATUS_TABLE_NAME = "lightrag_hologres_doc_status"
 VECTOR_TABLE_NAME = "lightrag_hologres_vectors"
+GRAPH_NODES_TABLE_NAME = "lightrag_hologres_graph_nodes"
+GRAPH_EDGES_TABLE_NAME = "lightrag_hologres_graph_edges"
 
 _MAX_ERROR_SUMMARY = 200
 _NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -670,6 +672,134 @@ def vector_schema_descriptors(
         replay_safe=True,
     )
     return (descriptor,)
+
+
+def graph_schema_descriptors(schema: str) -> tuple[SchemaDescriptor, SchemaDescriptor]:
+    """Return the fixed two-table descriptors for the Hologres graph store.
+
+    Both tables use the live-proven Hologres DDL: row orientation, LOGICAL
+    PARTITION BY LIST on workspace, and a composite primary key that doubles
+    as the clustering index for adjacency lookups. There is no foreign key
+    between the tables (Hologres does not enforce them), so edge/node
+    consistency is owned by the storage layer.
+    """
+
+    validated = _validated_schema(schema)
+    qualified_nodes = quote_qualified_identifier(validated, GRAPH_NODES_TABLE_NAME)
+    qualified_edges = quote_qualified_identifier(validated, GRAPH_EDGES_TABLE_NAME)
+    postcondition_sql = (
+        "SELECT "
+        "(SELECT count(*) = 1 FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r') "
+        "AND COALESCE(("
+        "SELECT jsonb_agg(jsonb_build_array(a.attname, t.typname, a.attnotnull) "
+        "ORDER BY a.attnum) FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid "
+        "JOIN pg_catalog.pg_type t ON t.oid = a.atttypid "
+        "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r' "
+        "AND a.attnum > 0 AND NOT a.attisdropped"
+        "), '[]'::jsonb) = $3::jsonb "
+        "AND (SELECT count(*) = 1 FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "JOIN pg_catalog.pg_constraint p ON p.conrelid = c.oid "
+        "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r' "
+        "AND p.contype = 'p') "
+        "AND COALESCE(("
+        "SELECT jsonb_agg(a.attname ORDER BY gs.ordinality) "
+        "FROM pg_catalog.pg_class c "
+        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+        "JOIN pg_catalog.pg_constraint p ON p.conrelid = c.oid "
+        "CROSS JOIN LATERAL generate_series(1, array_length(p.conkey, 1)) "
+        "AS gs(ordinality) "
+        "JOIN pg_catalog.pg_attribute a "
+        "ON a.attrelid = c.oid AND a.attnum = p.conkey[gs.ordinality] "
+        "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'r' "
+        "AND p.contype = 'p' AND NOT a.attisdropped"
+        "), '[]'::jsonb) = $4::jsonb"
+    )
+
+    nodes_expected_columns = json.dumps(
+        [
+            ["workspace", "text", True],
+            ["namespace", "text", True],
+            ["id", "text", True],
+            ["properties", "jsonb", True],
+            ["updated_at", "timestamptz", True],
+        ],
+        separators=(",", ":"),
+    )
+    nodes_expected_primary_key = json.dumps(
+        ["workspace", "namespace", "id"], separators=(",", ":")
+    )
+    nodes_descriptor = SchemaDescriptor(
+        name="nodes_table",
+        component="graph",
+        version=1,
+        step=1,
+        sql=(
+            f"CREATE TABLE IF NOT EXISTS {qualified_nodes} ("
+            "workspace text NOT NULL, "
+            "namespace text NOT NULL, "
+            "id text NOT NULL, "
+            "properties jsonb NOT NULL, "
+            "updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+            "PRIMARY KEY (workspace, namespace, id)"
+            ") LOGICAL PARTITION BY LIST (workspace) "
+            "WITH (orientation = 'row', distribution_key = 'namespace,id')"
+        ),
+        postcondition_sql=postcondition_sql,
+        postcondition_args=(
+            validated,
+            GRAPH_NODES_TABLE_NAME,
+            nodes_expected_columns,
+            nodes_expected_primary_key,
+        ),
+        replay_safe=True,
+    )
+
+    edges_expected_columns = json.dumps(
+        [
+            ["workspace", "text", True],
+            ["namespace", "text", True],
+            ["src_id", "text", True],
+            ["tgt_id", "text", True],
+            ["properties", "jsonb", True],
+            ["updated_at", "timestamptz", True],
+        ],
+        separators=(",", ":"),
+    )
+    edges_expected_primary_key = json.dumps(
+        ["workspace", "namespace", "src_id", "tgt_id"], separators=(",", ":")
+    )
+    edges_descriptor = SchemaDescriptor(
+        name="edges_table",
+        component="graph",
+        version=1,
+        step=2,
+        sql=(
+            f"CREATE TABLE IF NOT EXISTS {qualified_edges} ("
+            "workspace text NOT NULL, "
+            "namespace text NOT NULL, "
+            "src_id text NOT NULL, "
+            "tgt_id text NOT NULL, "
+            "properties jsonb NOT NULL, "
+            "updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+            "PRIMARY KEY (workspace, namespace, src_id, tgt_id)"
+            ") LOGICAL PARTITION BY LIST (workspace) "
+            "WITH (orientation = 'row', distribution_key = 'namespace,src_id')"
+        ),
+        postcondition_sql=postcondition_sql,
+        postcondition_args=(
+            validated,
+            GRAPH_EDGES_TABLE_NAME,
+            edges_expected_columns,
+            edges_expected_primary_key,
+        ),
+        replay_safe=True,
+    )
+    return (nodes_descriptor, edges_descriptor)
 
 
 def claim_statement(schema: str) -> str:

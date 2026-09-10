@@ -632,6 +632,280 @@ async def _probe_hgraph(
         )
 
 
+async def _probe_graph_partition_adjacency(
+    client: HologresClient,
+    schema: str,
+    nodes_table: str,
+    edges_table: str,
+    verify_ownership: Callable[[], Awaitable[None]],
+) -> tuple[ProbeResult, ProbeResult]:
+    """Freeze the graph-table contract live: LOGICAL PARTITION + adjacency plan.
+
+    The first result covers ProbeKind.LOGICAL_PARTITION (partitioned DDL is
+    accepted, workspace isolation holds, jsonb ``||`` merge-upsert semantics,
+    and bytewise "C" ordering that matches Python code-point comparison). The
+    second covers ProbeKind.GRAPH_ADJACENCY_EXPLAIN (self-loop-counts-twice
+    degree, generate_series pair-batch matching, undirected adjacency UNION,
+    and an EXPLAIN proving the workspace partition filter prunes the scan).
+    """
+
+    qualified_nodes = quote_qualified_identifier(schema, nodes_table)
+    qualified_edges = quote_qualified_identifier(schema, edges_table)
+    adjacency_not_run = _result(
+        ProbeKind.GRAPH_ADJACENCY_EXPLAIN,
+        ProbeStatus.NOT_RUN,
+        "graph_tables_unavailable",
+    )
+
+    def _partition_failed(detail_code: str) -> tuple[ProbeResult, ProbeResult]:
+        return (
+            _result(ProbeKind.LOGICAL_PARTITION, ProbeStatus.FAILED, detail_code),
+            adjacency_not_run,
+        )
+
+    workspace = "lightrag_probe_w1"
+    other_workspace = "lightrag_probe_w2"
+    namespace = "graph"
+    # Ids chosen so bytewise ("C") order differs from any case-insensitive or
+    # locale order: 'B' (0x42) < '_x' (0x5F) < 'a' (0x61).
+    ids = ["B", "_x", "a"]
+
+    adjacency_sql = (
+        f"SELECT tgt_id AS nid FROM {qualified_edges} "
+        "WHERE workspace = $1 AND namespace = $2 AND src_id = $3 "
+        "UNION "
+        f"SELECT src_id AS nid FROM {qualified_edges} "
+        "WHERE workspace = $1 AND namespace = $2 AND tgt_id = $3"
+    )
+
+    try:
+        collation = await client.fetch_value(
+            "SELECT datcollate FROM pg_database "
+            "WHERE datname = current_database()",
+            descriptor="probe.graph.collation",
+        )
+        if collation != "C":
+            return _partition_failed("graph_collation_mismatch")
+
+        await verify_ownership()
+        await client.execute_one(
+            f"CREATE TABLE {qualified_nodes} ("
+            "workspace text NOT NULL, "
+            "namespace text NOT NULL, "
+            "id text NOT NULL, "
+            "properties jsonb NOT NULL, "
+            "updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+            "PRIMARY KEY (workspace, namespace, id)"
+            ") LOGICAL PARTITION BY LIST (workspace) "
+            "WITH (orientation = 'row', distribution_key = 'namespace,id')",
+            descriptor="probe.graph.nodes.create",
+            replay_safe=False,
+        )
+        await verify_ownership()
+        await client.execute_one(
+            f"CREATE TABLE {qualified_edges} ("
+            "workspace text NOT NULL, "
+            "namespace text NOT NULL, "
+            "src_id text NOT NULL, "
+            "tgt_id text NOT NULL, "
+            "properties jsonb NOT NULL, "
+            "updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+            "PRIMARY KEY (workspace, namespace, src_id, tgt_id)"
+            ") LOGICAL PARTITION BY LIST (workspace) "
+            "WITH (orientation = 'row', distribution_key = 'namespace,src_id')",
+            descriptor="probe.graph.edges.create",
+            replay_safe=False,
+        )
+
+        await verify_ownership()
+        await client.execute_one(
+            f"INSERT INTO {qualified_nodes} (workspace, namespace, id, properties) "
+            "VALUES ($1, $2, $3, $4::jsonb), ($1, $2, $5, $6::jsonb), "
+            "($1, $2, $7, $8::jsonb), ($9, $2, $3, $4::jsonb) "
+            "ON CONFLICT (workspace, namespace, id) "
+            "DO UPDATE SET properties = EXCLUDED.properties",
+            workspace,
+            namespace,
+            ids[0],
+            '{"keep":"x","step":1}',
+            ids[1],
+            '{"step":1}',
+            ids[2],
+            '{"step":1}',
+            other_workspace,
+            descriptor="probe.graph.nodes.insert",
+            replay_safe=True,
+        )
+
+        # jsonb || merge-upsert: the omitted "keep" key must survive.
+        await verify_ownership()
+        await client.execute_one(
+            f"INSERT INTO {qualified_nodes} AS current "
+            "(workspace, namespace, id, properties) "
+            "VALUES ($1, $2, $3, $4::jsonb) "
+            "ON CONFLICT (workspace, namespace, id) "
+            "DO UPDATE SET properties = current.properties "
+            "|| EXCLUDED.properties",
+            workspace,
+            namespace,
+            ids[0],
+            '{"step":2}',
+            descriptor="probe.graph.nodes.merge",
+            replay_safe=True,
+        )
+        await verify_ownership()
+        merged = await client.fetch_value(
+            f"SELECT properties FROM {qualified_nodes} "
+            "WHERE workspace = $1 AND namespace = $2 AND id = $3",
+            workspace,
+            namespace,
+            ids[0],
+            descriptor="probe.graph.nodes.merge.verify",
+        )
+        if isinstance(merged, str):
+            try:
+                merged = json.loads(merged)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return _partition_failed("graph_merge_semantics_mismatch")
+        if merged != {"keep": "x", "step": 2}:
+            return _partition_failed("graph_merge_semantics_mismatch")
+
+        # Workspace isolation plus bytewise ordering in one query.
+        await verify_ownership()
+        ordered_rows = await client.fetch_all(
+            f"SELECT id FROM {qualified_nodes} "
+            "WHERE workspace = $1 AND namespace = $2 ORDER BY id",
+            workspace,
+            namespace,
+            descriptor="probe.graph.nodes.order",
+        )
+        try:
+            ordered_ids = [row["id"] for row in ordered_rows]
+        except (KeyError, TypeError):
+            return _partition_failed("graph_order_mismatch")
+        if ordered_ids != sorted(ids):
+            return _partition_failed("graph_order_mismatch")
+
+        partition_result = _result(
+            ProbeKind.LOGICAL_PARTITION,
+            ProbeStatus.PASSED,
+            "logical_partition_semantics_frozen",
+        )
+    except HologresProbeError:
+        raise
+    except Exception:
+        return _partition_failed("graph_probe_failed")
+
+    def _adjacency_failed(detail_code: str) -> tuple[ProbeResult, ProbeResult]:
+        return (
+            partition_result,
+            _result(
+                ProbeKind.GRAPH_ADJACENCY_EXPLAIN, ProbeStatus.FAILED, detail_code
+            ),
+        )
+
+    try:
+        await verify_ownership()
+        await client.execute_one(
+            f"INSERT INTO {qualified_edges} "
+            "(workspace, namespace, src_id, tgt_id, properties) "
+            "VALUES ($1, $2, $3, $4, $5::jsonb), ($1, $2, $4, $6, $5::jsonb), "
+            "($1, $2, $3, $3, $5::jsonb), ($7, $2, $3, $4, $5::jsonb) "
+            "ON CONFLICT (workspace, namespace, src_id, tgt_id) "
+            "DO UPDATE SET properties = EXCLUDED.properties",
+            workspace,
+            namespace,
+            ids[0],
+            ids[1],
+            '{"weight":1}',
+            ids[2],
+            other_workspace,
+            descriptor="probe.graph.edges.insert",
+            replay_safe=True,
+        )
+
+        # Degree of 'B' in w1: edge (B,_x) once + self-loop (B,B) twice = 3.
+        await verify_ownership()
+        degree = await client.fetch_value(
+            "SELECT count(*) FROM ("
+            f"SELECT src_id AS id FROM {qualified_edges} "
+            "WHERE workspace = $1 AND namespace = $2 AND src_id = $3 "
+            "UNION ALL "
+            f"SELECT tgt_id AS id FROM {qualified_edges} "
+            "WHERE workspace = $1 AND namespace = $2 AND tgt_id = $3"
+            ") sub",
+            workspace,
+            namespace,
+            ids[0],
+            descriptor="probe.graph.degree",
+        )
+        if isinstance(degree, bool) or degree != 3:
+            return _adjacency_failed("graph_degree_mismatch")
+
+        # Pair-batch matching via generate_series array subscripts (the
+        # live-proven substitute for multi-argument UNNEST).
+        await verify_ownership()
+        matched = await client.fetch_value(
+            f"SELECT count(*) FROM {qualified_edges} e "
+            "JOIN (SELECT ($3::text[])[g.idx] AS src, ($4::text[])[g.idx] AS tgt "
+            "FROM generate_series(1, $5::int) AS g(idx)) p "
+            "ON p.src = e.src_id AND p.tgt = e.tgt_id "
+            "WHERE e.workspace = $1 AND e.namespace = $2",
+            workspace,
+            namespace,
+            [ids[0], ids[1]],
+            [ids[1], ids[2]],
+            2,
+            descriptor="probe.graph.pairs",
+        )
+        if isinstance(matched, bool) or matched != 2:
+            return _adjacency_failed("graph_pair_batch_mismatch")
+
+        # Undirected adjacency of 'B' in w1: {_x (outgoing), B (self-loop)}.
+        # The w2 copy of edge (B, _x) must not leak in.
+        await verify_ownership()
+        neighbour_rows = await client.fetch_all(
+            adjacency_sql,
+            workspace,
+            namespace,
+            ids[0],
+            descriptor="probe.graph.adjacency",
+        )
+        try:
+            neighbours = {row["nid"] for row in neighbour_rows}
+        except (KeyError, TypeError):
+            return _adjacency_failed("graph_adjacency_mismatch")
+        if neighbours != {ids[0], ids[1]}:
+            return _adjacency_failed("graph_adjacency_mismatch")
+
+        await verify_ownership()
+        raw_plan_rows = await client.fetch_all(
+            f"EXPLAIN {adjacency_sql}",
+            workspace,
+            namespace,
+            ids[0],
+            descriptor="probe.graph.explain",
+        )
+        plan_text = "\n".join(
+            str(value) for row in raw_plan_rows for value in row.values()
+        )
+        if "Partition Filter" not in plan_text:
+            return _adjacency_failed("graph_adjacency_plan_mismatch")
+
+        return (
+            partition_result,
+            _result(
+                ProbeKind.GRAPH_ADJACENCY_EXPLAIN,
+                ProbeStatus.PASSED,
+                "graph_adjacency_plan_partition_pruned",
+            ),
+        )
+    except HologresProbeError:
+        raise
+    except Exception:
+        return _adjacency_failed("graph_probe_failed")
+
+
 async def _verify_probe_ownership(
     client: HologresClient,
     schema: str,
@@ -722,6 +996,8 @@ async def run_initial_isolated_probes(
     owner_token = uuid.uuid4().hex
     table = f"lightrag_test_basic_{uuid.uuid4().hex}"
     hgraph_table = f"lightrag_test_hgraph_{uuid.uuid4().hex}"
+    graph_nodes_table = f"lightrag_test_gnodes_{uuid.uuid4().hex}"
+    graph_edges_table = f"lightrag_test_gedges_{uuid.uuid4().hex}"
     qualified_schema = quote_qualified_identifier(guarded_schema)
     qualified_marker = quote_qualified_identifier(guarded_schema, marker_table)
     try:
@@ -781,6 +1057,16 @@ async def run_initial_isolated_probes(
                 client, guarded_schema, hgraph_table, verify_ownership
             )
         )
+        await verify_ownership()
+        results.extend(
+            await _probe_graph_partition_adjacency(
+                client,
+                guarded_schema,
+                graph_nodes_table,
+                graph_edges_table,
+                verify_ownership,
+            )
+        )
     finally:
         await _cleanup_owned_probe_schema(
             client,
@@ -790,6 +1076,8 @@ async def run_initial_isolated_probes(
             (
                 (table, "probe.basic.drop"),
                 (hgraph_table, "probe.hgraph.drop"),
+                (graph_edges_table, "probe.graph.edges.drop"),
+                (graph_nodes_table, "probe.graph.nodes.drop"),
             ),
         )
 

@@ -22,6 +22,7 @@ from lightrag.kg.hologres.capabilities import (
 )
 from lightrag.kg.hologres.client import quote_qualified_identifier
 from lightrag.kg.hologres.doc_status import HologresDocStatusStorage
+from lightrag.kg.hologres.graph import HologresGraphStorage
 from lightrag.kg.hologres.kv import HologresKVStorage
 from lightrag.kg.hologres.schema import (
     LEDGER_TABLE_NAME,
@@ -29,6 +30,7 @@ from lightrag.kg.hologres.schema import (
     SchemaDescriptor,
     SchemaState,
     doc_status_schema_descriptors,
+    graph_schema_descriptors,
     kv_schema_descriptors,
     vector_schema_descriptors,
 )
@@ -53,6 +55,18 @@ async def test_initial_hologres_capabilities(hologres_live_client):
     assert isolated_report.supports(ProbeKind.SINGLE_AUTOCOMMIT_DDL)
     assert isolated_report.supports(ProbeKind.ASYNCPG_SETUP_RESET_BINDINGS)
     assert isolated_report.supports(ProbeKind.JSONB_ON_CONFLICT_ARRAYS_RECONNECT)
+    assert isolated_report.supports(ProbeKind.LOGICAL_PARTITION)
+    assert isolated_report.supports(ProbeKind.GRAPH_ADJACENCY_EXPLAIN)
+    assert isolated_report.blocking_failures == ()
+    by_kind = {result.kind: result for result in isolated_report.results}
+    assert (
+        by_kind[ProbeKind.LOGICAL_PARTITION].detail_code
+        == "logical_partition_semantics_frozen"
+    )
+    assert (
+        by_kind[ProbeKind.GRAPH_ADJACENCY_EXPLAIN].detail_code
+        == "graph_adjacency_plan_partition_pruned"
+    )
     hgraph_result = next(
         result
         for result in isolated_report.results
@@ -843,6 +857,227 @@ async def test_hologres_vector_catalog_crud_and_live_similarity_query(
             None,
         ]
         assert (await isolated.get_by_id("identical"))["content"] == "isolated"
+    finally:
+        for storage in initialized:
+            try:
+                await storage.drop()
+            finally:
+                await storage.finalize()
+
+
+def _live_graph_storage(client, *, workspace):
+    return HologresGraphStorage(
+        namespace=NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION,
+        workspace=workspace,
+        global_config={"max_graph_nodes": 1000},
+        embedding_func=None,
+        config=client.config,
+        client=client,
+    )
+
+
+async def test_hologres_graph_two_table_contract(hologres_live_client):
+    client, schema = hologres_live_client
+    suffix = uuid.uuid4().hex
+    primary = _live_graph_storage(
+        client, workspace=f"lightrag_test_graph_a_{suffix}"
+    )
+    isolated = _live_graph_storage(
+        client, workspace=f"lightrag_test_graph_b_{suffix}"
+    )
+    initialized = []
+
+    try:
+        for storage in (primary, isolated):
+            await storage.initialize()
+            initialized.append(storage)
+
+        for descriptor in graph_schema_descriptors(schema):
+            assert (
+                await client.fetch_value(
+                    descriptor.postcondition_sql,
+                    *descriptor.postcondition_args,
+                    descriptor="live.graph.catalog",
+                )
+                is True
+            )
+
+        # Node upsert MERGES properties and forces entity_id = node id.
+        await primary.upsert_node(
+            "Alice", {"entity_id": "stale", "description": "first", "keep": "x"}
+        )
+        await primary.upsert_node(
+            "Alice", {"entity_id": "Alice", "description": "second"}
+        )
+        assert await primary.get_node("Alice") == {
+            "entity_id": "Alice",
+            "description": "second",
+            "keep": "x",
+        }
+
+        await primary.upsert_nodes_batch(
+            [
+                ("Bob", {"entity_id": "Bob", "kind": "person"}),
+                ("Carol", {"entity_id": "Carol"}),
+                ("Bob", {"entity_id": "Bob", "kind": "engineer"}),
+            ]
+        )
+        assert (await primary.get_node("Bob"))["kind"] == "engineer"
+        assert await primary.has_nodes_batch(["Alice", "Bob", "Ghost"]) == {
+            "Alice",
+            "Bob",
+        }
+        assert await primary.get_nodes_batch(["Carol", "Ghost"]) == {
+            "Carol": {"entity_id": "Carol"}
+        }
+
+        # Edge upsert REPLACES properties and stores the canonical order.
+        await primary.upsert_edge("Bob", "Alice", {"weight": 1, "note": "ab"})
+        assert await primary.get_edge("Bob", "Alice") == {"weight": 1, "note": "ab"}
+        await primary.upsert_edge("Alice", "Bob", {"weight": 2})
+        assert await primary.get_edge("Bob", "Alice") == {"weight": 2}
+        assert await primary.has_edge("Alice", "Bob") is True
+
+        await primary.upsert_edge("Alice", "Alice", {"loop": True})
+        # Missing endpoints are auto-created as entity_id-only stubs.
+        await primary.upsert_edge("Alice", "Zed", {"weight": 1})
+        assert await primary.get_node("Zed") == {"entity_id": "Zed"}
+        await primary.upsert_edges_batch(
+            [("Carol", "Bob", {"w": 1}), ("Bob", "Carol", {"w": 9})]
+        )
+        assert await primary.get_edge("Carol", "Bob") == {"w": 9}
+
+        # A self-loop counts twice in degree but appears once in adjacency.
+        assert await primary.node_degree("Alice") == 4
+        assert await primary.edge_degree("Alice", "Bob") == 6
+        assert await primary.node_degrees_batch(["Alice", "Bob", "Ghost"]) == {
+            "Alice": 4,
+            "Bob": 2,
+            "Ghost": 0,
+        }
+        assert await primary.get_node_edges("Alice") == [
+            ("Alice", "Alice"),
+            ("Alice", "Bob"),
+            ("Alice", "Zed"),
+        ]
+        assert await primary.get_node_edges("Ghost") is None
+        assert await primary.get_nodes_edges_batch(["Alice", "Bob"]) == {
+            "Alice": [("Alice", "Alice"), ("Alice", "Bob"), ("Alice", "Zed")],
+            "Bob": [("Bob", "Alice"), ("Bob", "Carol")],
+        }
+        assert await primary.get_edges_batch(
+            [{"src": "Bob", "tgt": "Alice"}, {"src": "Alice", "tgt": "Ghost"}]
+        ) == {("Bob", "Alice"): {"weight": 2}}
+
+        # Workspace isolation plus bytewise ("C") ordering on the live server.
+        await isolated.upsert_nodes_batch(
+            [
+                ("a", {"entity_id": "a"}),
+                ("B", {"entity_id": "B"}),
+                ("_x", {"entity_id": "_x"}),
+                ("100%_sure", {"entity_id": "100%_sure"}),
+                ("100abc", {"entity_id": "100abc"}),
+            ]
+        )
+        assert await isolated.get_node("Alice") is None
+        assert await isolated.get_all_edges() == []
+        assert await isolated.get_popular_labels(limit=3) == ["100%_sure", "100abc", "B"]
+        assert await isolated.get_all_labels() == [
+            "100%_sure",
+            "100abc",
+            "B",
+            "_x",
+            "a",
+        ]
+        # LIKE wildcards in the query are escaped, so '%'/'_' match literally.
+        assert await isolated.search_labels("100%_s") == ["100%_sure"]
+
+        assert await primary.get_all_labels() == ["Alice", "Bob", "Carol", "Zed"]
+        assert await primary.get_popular_labels(limit=2) == ["Alice", "Bob"]
+        assert await primary.search_labels("alice") == ["Alice"]
+        assert await primary.search_labels("nomatch") == []
+
+        all_nodes = await primary.get_all_nodes()
+        assert [node["id"] for node in all_nodes] == [
+            "Alice",
+            "Bob",
+            "Carol",
+            "Zed",
+        ]
+        assert all(node["entity_id"] == node["id"] for node in all_nodes)
+        assert [
+            (edge["source"], edge["target"]) for edge in await primary.get_all_edges()
+        ] == [
+            ("Alice", "Alice"),
+            ("Alice", "Bob"),
+            ("Alice", "Zed"),
+            ("Bob", "Carol"),
+        ]
+
+        # Knowledge graph: seed pinned first, ranked by depth/degree/id.
+        one_hop = await primary.get_knowledge_graph(
+            "Alice", max_depth=1, max_nodes=10
+        )
+        assert [node.id for node in one_hop.nodes] == ["Alice", "Bob", "Zed"]
+        assert one_hop.is_truncated is False
+        assert [(edge.source, edge.target) for edge in one_hop.edges] == [
+            ("Alice", "Alice"),
+            ("Alice", "Bob"),
+            ("Alice", "Zed"),
+        ]
+        assert all(edge.type == "DIRECTED" for edge in one_hop.edges)
+        assert all(
+            edge.id == f"{edge.source}-{edge.target}" for edge in one_hop.edges
+        )
+
+        two_hop = await primary.get_knowledge_graph(
+            "Alice", max_depth=2, max_nodes=10
+        )
+        assert {node.id for node in two_hop.nodes} == {
+            "Alice",
+            "Bob",
+            "Carol",
+            "Zed",
+        }
+        assert two_hop.is_truncated is False
+
+        truncated = await primary.get_knowledge_graph(
+            "Alice", max_depth=2, max_nodes=2
+        )
+        assert [node.id for node in truncated.nodes] == ["Alice", "Bob"]
+        assert truncated.is_truncated is True
+
+        wildcard = await primary.get_knowledge_graph("*", max_nodes=10)
+        assert [node.id for node in wildcard.nodes] == [
+            "Alice",
+            "Bob",
+            "Carol",
+            "Zed",
+        ]
+        assert wildcard.is_truncated is False
+
+        missing = await primary.get_knowledge_graph("Ghost")
+        assert missing.nodes == [] and missing.edges == []
+        assert missing.is_truncated is False
+
+        # Deletions: edges always go before their nodes.
+        await primary.remove_edges([("Bob", "Alice")])
+        assert await primary.has_edge("Alice", "Bob") is False
+        assert await primary.has_node("Bob") is True
+        await primary.delete_node("Zed")
+        assert await primary.has_node("Zed") is False
+        assert await primary.has_edge("Alice", "Zed") is False
+        await primary.remove_nodes(["Carol"])
+        assert await primary.get_node_edges("Bob") == []
+        assert await primary.node_degree("Alice") == 2
+
+        assert await primary.drop() == {
+            "status": "success",
+            "message": "data dropped",
+        }
+        assert await primary.get_all_labels() == []
+        assert await primary.get_all_edges() == []
+        assert await isolated.get_node("a") == {"entity_id": "a"}
     finally:
         for storage in initialized:
             try:
