@@ -37,10 +37,11 @@ jobs:
       # between CI and the lockfile). offline-storage/offline-llm bring the
       # mock-target libraries (qdrant-client, pymongo, anthropic, boto3, ...)
       # the offline suite constructs data classes from; the pytest extra brings
-      # pytest/pytest-asyncio/httpx2. Without them importorskip silently skips.
+      # pytest/pytest-asyncio/httpx2. The steiner extra exercises the optional
+      # context selector rather than skipping its backend-dependent tests.
       run: >-
         uv sync --frozen --python ${{ matrix.python-version }}
-        --extra api --extra offline-storage --extra offline-llm --extra pytest
+        --extra api --extra offline-storage --extra offline-llm --extra pytest --extra steiner
 
     - name: Run offline tests
       # Run only tests marked as 'offline' (no external dependencies);
