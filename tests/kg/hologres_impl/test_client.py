@@ -354,6 +354,88 @@ def test_stream_copy_available_requires_config_and_a_passed_probe(base_environme
 
 
 @pytest.mark.asyncio
+async def test_call_age_procedure_runs_only_the_fixed_whitelisted_statements(
+    base_environment,
+):
+    connection = DataConnection()
+    client = HologresClient(
+        HologresConfig.from_env(base_environment), pool=DataPool(connection)
+    )
+
+    await client.call_age_procedure(
+        "create_graph", "lightrag_age_ws", descriptor="age.graph.create"
+    )
+    await client.call_age_procedure(
+        "create_vlabel", "lightrag_age_ws", "Entity", descriptor="age.vlabel"
+    )
+    await client.call_age_procedure(
+        "create_elabel", "lightrag_age_ws", "DIRECTED", descriptor="age.elabel"
+    )
+    await client.call_age_procedure(
+        "drop_graph", "lightrag_age_ws", True, descriptor="age.graph.drop"
+    )
+
+    assert connection.executed == [
+        ("CALL ag_catalog.hg_age_create_graph($1)", ("lightrag_age_ws",), 19.0),
+        (
+            "CALL ag_catalog.hg_age_create_vlabel($1, $2)",
+            ("lightrag_age_ws", "Entity"),
+            19.0,
+        ),
+        (
+            "CALL ag_catalog.hg_age_create_elabel($1, $2)",
+            ("lightrag_age_ws", "DIRECTED"),
+            19.0,
+        ),
+        (
+            "CALL ag_catalog.hg_age_drop_graph($1, $2)",
+            ("lightrag_age_ws", True),
+            19.0,
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("procedure", "values"),
+    [
+        ("create_schema", ("lightrag_age_ws",)),
+        ("create_graph", ()),
+        ("create_graph", ("lightrag_age_ws", "extra")),
+        ("drop_graph", ("lightrag_age_ws",)),
+    ],
+    ids=["unknown", "missing", "extra", "drop_missing_cascade"],
+)
+async def test_call_age_procedure_rejects_unknown_names_and_arity_before_the_pool(
+    base_environment, procedure, values
+):
+    pool = DataPool(DataConnection())
+    client = HologresClient(HologresConfig.from_env(base_environment), pool=pool)
+
+    with pytest.raises(HologresSqlError):
+        await client.call_age_procedure(
+            procedure, *values, descriptor="age.lifecycle"
+        )
+
+    assert pool.acquire_count == 0
+
+
+@pytest.mark.asyncio
+async def test_general_sql_surface_still_forbids_call_statements(base_environment):
+    pool = DataPool(DataConnection())
+    client = HologresClient(HologresConfig.from_env(base_environment), pool=pool)
+
+    with pytest.raises(HologresSqlError):
+        await client.execute_one(
+            "CALL ag_catalog.hg_age_create_graph($1)",
+            "lightrag_age_ws",
+            descriptor="age.escape",
+        )
+
+    assert pool.acquire_count == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "failure",
     [RuntimeError("pool initialization failed"), asyncio.CancelledError()],
@@ -390,6 +472,8 @@ async def test_pool_hooks_execute_reset_as_separate_guarded_statements(base_envi
     await client.open()
 
     statements = [sql for sql, _args, _timeout in connection.executed]
+    # RESET ALL clears the session search_path, so reset must replay it last
+    # to restore the pool-wide connection invariant.
     assert statements == [
         'SET search_path TO "LightRAG_1"',
         "SET hg_experimental_enable_fixed_plan_expression = on",
@@ -398,10 +482,38 @@ async def test_pool_hooks_execute_reset_as_separate_guarded_statements(base_envi
         "RESET ALL",
         "RESET application_name",
         "SET hg_experimental_enable_fixed_plan_expression = on",
+        'SET search_path TO "LightRAG_1"',
     ]
     assert all(";" not in statement for statement in statements)
     assert "setup" in captured
     assert "reset" in captured
+
+
+@pytest.mark.asyncio
+async def test_pool_hooks_append_ag_catalog_to_search_path_when_age_enabled(
+    base_environment,
+):
+    connection = DataConnection()
+
+    async def pool_factory(**kwargs):
+        await kwargs["setup"](connection)
+        await kwargs["reset"](connection)
+        return DataPool(connection)
+
+    client = HologresClient(
+        HologresConfig.from_env(
+            {**base_environment, "HOLOGRES_AGE_SEARCH_PATH": "true"}
+        ),
+        pool_factory=pool_factory,
+    )
+    await client.open()
+
+    statements = [sql for sql, _args, _timeout in connection.executed]
+    # Hologres rejects a multi-name search_path, so the AGE client's
+    # sessions run on ag_catalog alone.
+    expected = "SET search_path TO ag_catalog"
+    assert statements[0] == expected
+    assert statements[-1] == expected
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ from enum import Enum
 import json
 import math
 import re
+from typing import Any
 import uuid
 
 from .client import (
@@ -1198,6 +1199,255 @@ async def prove_stream_copy_capability(
                 )
     probed = await _probe_production_stream_copy(client, config.schema)
     return CapabilityReport(version=report.version, results=(*report.results, probed))
+
+
+_AGE_NODE_LABEL = "Entity"
+_AGE_EDGE_LABEL = "DIRECTED"
+_AGE_PROBE_DESCRIPTION = "it's a \"tricky\" \\ value; with 中文"
+_AGE_EXTENSION_SQL = (
+    "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'age')"
+)
+_AGE_GRAPH_NAMESPACE_SQL = (
+    "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)"
+)
+
+
+def _age_cypher_statement(
+    graph: str, query: str, columns: str, *, bind_params: bool = False
+) -> str:
+    params = ", $1" if bind_params else ""
+    return (
+        f"SELECT * FROM ag_catalog.cypher('{validate_identifier(graph)}', "
+        f"$lightrag_age$ {query} $lightrag_age${params}) AS ({columns})"
+    )
+
+
+async def _exercise_age_graph_contract(
+    client: HologresClient,
+    graph: str,
+    verify_ownership: Callable[[], Awaitable[None]],
+    descriptor_prefix: str,
+) -> ProbeResult:
+    """Freeze the Hologres AGE contract on an owned disposable graph.
+
+    Labels must be pre-created, writes are single clauses without RETURN or
+    edge variables, property literals are escaped into the cypher text, reads
+    use the protocol-bound third cypher() parameter, and matches with property
+    filters resolve agtype operators only through the ag_catalog search_path.
+    """
+
+    def _failed(detail_code: str) -> ProbeResult:
+        return _result(ProbeKind.AGE, ProbeStatus.FAILED, detail_code)
+
+    await verify_ownership()
+    await client.call_age_procedure(
+        "create_vlabel",
+        graph,
+        _AGE_NODE_LABEL,
+        descriptor=f"{descriptor_prefix}.vlabel",
+        replay_safe=False,
+    )
+    await verify_ownership()
+    await client.call_age_procedure(
+        "create_elabel",
+        graph,
+        _AGE_EDGE_LABEL,
+        descriptor=f"{descriptor_prefix}.elabel",
+        replay_safe=False,
+    )
+    await verify_ownership()
+    await client.fetch_all(
+        _age_cypher_statement(
+            graph,
+            "CREATE (n:Entity {name: 'alpha', "
+            "description: 'it\\'s a \"tricky\" \\\\ value; with 中文'})",
+            "result ag_catalog.agtype",
+        ),
+        descriptor=f"{descriptor_prefix}.node.alpha",
+        operation_kind=OperationKind.WRITE,
+        replay_safe=False,
+    )
+    await verify_ownership()
+    await client.fetch_all(
+        _age_cypher_statement(
+            graph,
+            "CREATE (n:Entity {name: 'beta'})",
+            "result ag_catalog.agtype",
+        ),
+        descriptor=f"{descriptor_prefix}.node.beta",
+        operation_kind=OperationKind.WRITE,
+        replay_safe=False,
+    )
+    await verify_ownership()
+    await client.fetch_all(
+        _age_cypher_statement(
+            graph,
+            "MATCH (a:Entity {name: 'alpha'}), (b:Entity {name: 'beta'}) "
+            "CREATE (a)-[:DIRECTED {weight: 2.5}]->(b)",
+            "result ag_catalog.agtype",
+        ),
+        descriptor=f"{descriptor_prefix}.edge",
+        operation_kind=OperationKind.WRITE,
+        replay_safe=False,
+    )
+
+    def _decode_single(rows: Any) -> Any:
+        materialized = list(rows)
+        if len(materialized) != 1:
+            return None
+        value = materialized[0][0]
+        if not isinstance(value, str):
+            return None
+        try:
+            return json.loads(value)
+        except ValueError:
+            return None
+
+    await verify_ownership()
+    literal_read = await client.fetch_all(
+        _age_cypher_statement(
+            graph,
+            "MATCH (n:Entity) WHERE n.name = 'alpha' RETURN properties(n)",
+            "props ag_catalog.agtype",
+        ),
+        descriptor=f"{descriptor_prefix}.roundtrip",
+    )
+    properties = _decode_single(literal_read)
+    if not isinstance(properties, dict) or properties.get("name") != "alpha":
+        return _failed("age_property_roundtrip_mismatch")
+    if properties.get("description") != _AGE_PROBE_DESCRIPTION:
+        return _failed("age_property_roundtrip_mismatch")
+
+    await verify_ownership()
+    bound_read = await client.fetch_all(
+        _age_cypher_statement(
+            graph,
+            "MATCH (n:Entity) WHERE n.name = $name RETURN properties(n)",
+            "props ag_catalog.agtype",
+            bind_params=True,
+        ),
+        '{"name": "alpha"}',
+        descriptor=f"{descriptor_prefix}.bind",
+    )
+    if _decode_single(bound_read) != properties:
+        return _failed("age_bind_parameter_mismatch")
+
+    await verify_ownership()
+    degree_rows = await client.fetch_all(
+        _age_cypher_statement(
+            graph,
+            "MATCH (n:Entity {name: 'alpha'}) "
+            "OPTIONAL MATCH (n)-[r:DIRECTED]-() RETURN count(r)",
+            "degree ag_catalog.agtype",
+        ),
+        descriptor=f"{descriptor_prefix}.degree",
+    )
+    if _decode_single(degree_rows) != 1:
+        return _failed("age_undirected_degree_mismatch")
+
+    await verify_ownership()
+    await client.fetch_all(
+        _age_cypher_statement(
+            graph,
+            "MATCH (n:Entity {name: 'beta'}) DETACH DELETE n",
+            "result ag_catalog.agtype",
+        ),
+        descriptor=f"{descriptor_prefix}.delete",
+        operation_kind=OperationKind.WRITE,
+        replay_safe=True,
+    )
+    await verify_ownership()
+    count_rows = await client.fetch_all(
+        _age_cypher_statement(
+            graph,
+            "MATCH (n:Entity) RETURN count(n)",
+            "remaining ag_catalog.agtype",
+        ),
+        descriptor=f"{descriptor_prefix}.count",
+    )
+    if _decode_single(count_rows) != 1:
+        return _failed("age_delete_count_mismatch")
+    return _result(
+        ProbeKind.AGE, ProbeStatus.PASSED, "age_graph_semantics_frozen"
+    )
+
+
+async def _probe_age_graph(
+    client: HologresClient,
+    graph: str,
+    verify_ownership: Callable[[], Awaitable[None]],
+    descriptor_prefix: str,
+) -> ProbeResult:
+    """Probe the AGE contract on a disposable graph, always cleaning up.
+
+    The cleanup checks the graph's namespace instead of trusting the create
+    outcome, so an unknown-outcome create is still dropped, and a failed drop
+    is reported with a distinct detail code because a leaked graph is a whole
+    leaked schema.
+    """
+
+    def _failed(detail_code: str) -> ProbeResult:
+        return _result(ProbeKind.AGE, ProbeStatus.FAILED, detail_code)
+
+    await verify_ownership()
+    try:
+        installed = await client.fetch_value(
+            _AGE_EXTENSION_SQL, descriptor=f"{descriptor_prefix}.extension"
+        )
+    except Exception:
+        return _failed("age_graph_probe_failed")
+    if not installed:
+        return _failed("age_extension_missing")
+
+    try:
+        await verify_ownership()
+        await client.call_age_procedure(
+            "create_graph",
+            graph,
+            descriptor=f"{descriptor_prefix}.graph.create",
+            replay_safe=False,
+        )
+        result = await _exercise_age_graph_contract(
+            client, graph, verify_ownership, descriptor_prefix
+        )
+    except HologresProbeError as error:
+        raise HologresProbeError(
+            str(error), leaked_objects=(*error.leaked_objects, graph)
+        ) from None
+    except Exception:
+        result = _failed("age_graph_probe_failed")
+    try:
+        exists = await client.fetch_value(
+            _AGE_GRAPH_NAMESPACE_SQL,
+            graph,
+            descriptor=f"{descriptor_prefix}.graph.check",
+        )
+        if exists:
+            await client.call_age_procedure(
+                "drop_graph",
+                graph,
+                True,
+                descriptor=f"{descriptor_prefix}.graph.drop",
+                replay_safe=False,
+            )
+    except Exception:
+        return _failed("age_graph_probe_cleanup_failed")
+    return result
+
+
+async def probe_age_graph_capability(client: HologresClient) -> ProbeResult:
+    """Prove the AGE contract for production use on a disposable graph.
+
+    This never raises and requires a client whose pool keeps ag_catalog on the
+    search_path (agtype operators resolve only through it), which is why the
+    probe runs on the AGE backend's dedicated client instead of joining
+    run_initial_isolated_probes.
+    """
+
+    graph = f"lightrag_test_age_{uuid.uuid4().hex}"
+    return await _probe_age_graph(
+        client, graph, _no_ownership_check, "capability.age"
+    )
 
 
 async def _verify_probe_ownership(

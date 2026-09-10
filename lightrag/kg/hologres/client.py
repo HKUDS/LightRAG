@@ -86,6 +86,16 @@ _T = TypeVar("_T")
 # pays an extra intro prepare round-trip per call.
 STREAM_COPY_MIN_ROWS = 32
 
+# Hologres replaces AGE's SELECT-form graph DDL with CALL procedures; CALL is
+# forbidden on the general SQL surface, so the AGE lifecycle runs only these
+# fixed statements with every argument bound.
+_AGE_PROCEDURES: dict[str, tuple[str, int]] = {
+    "create_graph": ("CALL ag_catalog.hg_age_create_graph($1)", 1),
+    "create_vlabel": ("CALL ag_catalog.hg_age_create_vlabel($1, $2)", 2),
+    "create_elabel": ("CALL ag_catalog.hg_age_create_elabel($1, $2)", 2),
+    "drop_graph": ("CALL ag_catalog.hg_age_drop_graph($1, $2)", 2),
+}
+
 
 def validate_identifier(identifier: str) -> str:
     """Validate one unquoted PostgreSQL identifier component."""
@@ -534,13 +544,21 @@ class HologresClient:
             if self._pool is not None:
                 return
 
-            async def setup(connection: Any) -> None:
-                statement = (
+            if self.config.age_search_path:
+                # Hologres rejects a multi-name search_path, so the AGE
+                # client's sessions resolve agtype operators through
+                # ag_catalog alone; this client never touches ordinary
+                # schema tables.
+                search_path_statement = "SET search_path TO ag_catalog"
+            else:
+                search_path_statement = (
                     f"SET search_path TO {quote_identifier(self.config.schema)}"
                 )
-                validate_single_statement(statement)
+
+            async def setup(connection: Any) -> None:
+                validate_single_statement(search_path_statement)
                 await connection.execute(
-                    statement, timeout=self.config.command_timeout
+                    search_path_statement, timeout=self.config.command_timeout
                 )
                 guc_statement = (
                     "SET hg_experimental_enable_fixed_plan_expression = on"
@@ -551,7 +569,9 @@ class HologresClient:
                 )
 
             async def reset(connection: Any) -> None:
-                for statement in _RESET_STATEMENTS:
+                # RESET ALL clears the session search_path, so it is replayed
+                # last to restore the pool-wide connection invariant.
+                for statement in (*_RESET_STATEMENTS, search_path_statement):
                     validate_single_statement(statement)
                     await connection.execute(
                         statement, timeout=self.config.command_timeout
@@ -881,6 +901,35 @@ class HologresClient:
         return await self._run(
             OperationKind.WRITE,
             run_stream_copy,
+            descriptor=descriptor,
+            replay_safe=replay_safe,
+        )
+
+    async def call_age_procedure(
+        self,
+        procedure: str,
+        *values: Any,
+        descriptor: str,
+        replay_safe: bool = False,
+    ) -> Any:
+        """Run one whitelisted AGE graph lifecycle procedure with bound values."""
+
+        specification = _AGE_PROCEDURES.get(procedure)
+        if specification is None:
+            raise HologresSqlError("Unknown AGE lifecycle procedure")
+        statement, arity = specification
+        if len(values) != arity:
+            raise HologresSqlError("AGE lifecycle procedure arity mismatch")
+        command_timeout = self.config.command_timeout
+
+        async def run_call(connection: Any) -> Any:
+            return await connection.execute(
+                statement, *values, timeout=command_timeout
+            )
+
+        return await self._run(
+            OperationKind.WRITE,
+            run_call,
             descriptor=descriptor,
             replay_safe=replay_safe,
         )

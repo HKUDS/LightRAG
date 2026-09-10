@@ -20,6 +20,7 @@ from lightrag.base import (
 from lightrag.kg.hologres.capabilities import (
     ProbeKind,
     ProbeStatus,
+    probe_age_graph_capability,
     probe_production_capabilities,
     prove_stream_copy_capability,
     run_initial_isolated_probes,
@@ -216,6 +217,30 @@ async def test_stream_copy_bulk_upserts_round_trip_on_live_hologres(
             finally:
                 await storage.finalize()
         await enabled_client.close()
+
+
+async def test_age_graph_capability_probe_on_live_hologres(hologres_live_client):
+    client, schema = hologres_live_client
+    del schema
+    age_client = HologresClient(
+        HologresConfig.from_env(
+            {**os.environ, "HOLOGRES_AGE_SEARCH_PATH": "true"}
+        )
+    )
+    await age_client.open()
+    try:
+        result = await probe_age_graph_capability(age_client)
+
+        assert result.status is ProbeStatus.PASSED, result.detail_code
+        assert result.detail_code == "age_graph_semantics_frozen"
+        leaked = await client.fetch_value(
+            "SELECT count(*) FROM pg_namespace "
+            "WHERE nspname LIKE 'lightrag_test_age_%'",
+            descriptor="live.age.leak_check",
+        )
+        assert leaked == 0
+    finally:
+        await age_client.close()
 
 
 async def test_resumable_schema_management(hologres_live_client):

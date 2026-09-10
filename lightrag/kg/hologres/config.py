@@ -164,6 +164,7 @@ class HologresConfig:
     statement_cache_size: int = 100
     ssl_mode: str = "prefer"
     stream_copy_enabled: bool = False
+    age_search_path: bool = False
 
     def __post_init__(self) -> None:
         """Validate direct construction and normalize canonical field values."""
@@ -240,6 +241,9 @@ class HologresConfig:
             ),
             "stream_copy_enabled": _validate_boolean_value(
                 self.stream_copy_enabled, "HOLOGRES_STREAM_COPY_ENABLED"
+            ),
+            "age_search_path": _validate_boolean_value(
+                self.age_search_path, "HOLOGRES_AGE_SEARCH_PATH"
             ),
         }
         if validated["pool_max_size"] < validated["pool_min_size"]:
@@ -343,6 +347,9 @@ class HologresConfig:
             stream_copy_enabled=_boolean(
                 source, "HOLOGRES_STREAM_COPY_ENABLED", False
             ),
+            age_search_path=_boolean(
+                source, "HOLOGRES_AGE_SEARCH_PATH", False
+            ),
         )
 
     def __repr__(self) -> str:
@@ -364,5 +371,6 @@ class HologresConfig:
             f"retry_backoff={self.retry_backoff}, "
             f"statement_cache_size={self.statement_cache_size}, "
             f"ssl_mode={self.ssl_mode!r}, "
-            f"stream_copy_enabled={self.stream_copy_enabled})"
+            f"stream_copy_enabled={self.stream_copy_enabled}, "
+            f"age_search_path={self.age_search_path})"
         )

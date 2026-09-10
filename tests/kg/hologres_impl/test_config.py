@@ -26,6 +26,7 @@ def test_config_reads_valid_hologres_environment_and_redacts_password():
             "HOLOGRES_CONNECTION_RETRIES": "3",
             "HOLOGRES_RETRY_BACKOFF": "0.25",
             "HOLOGRES_STREAM_COPY_ENABLED": "yes",
+            "HOLOGRES_AGE_SEARCH_PATH": "yes",
             "POSTGRES_PASSWORD": "must-not-be-read",
         }
     )
@@ -45,6 +46,7 @@ def test_config_reads_valid_hologres_environment_and_redacts_password():
     assert config.connection_retries == 3
     assert config.retry_backoff == 0.25
     assert config.stream_copy_enabled is True
+    assert config.age_search_path is True
     assert "example.hologres.aliyuncs.com" not in repr(config)
     assert "test_user" not in repr(config)
     assert "top-secret-password" not in repr(config)
@@ -131,6 +133,8 @@ def _direct_config(**updates):
         {"ssl_mode": 1},
         {"stream_copy_enabled": "true"},
         {"stream_copy_enabled": 1},
+        {"age_search_path": "true"},
+        {"age_search_path": 1},
     ],
 )
 def test_direct_construction_cannot_bypass_configuration_validation(updates):

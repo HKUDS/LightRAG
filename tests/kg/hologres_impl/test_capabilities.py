@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import json
 import re
 from types import SimpleNamespace
 
@@ -1582,6 +1583,278 @@ async def test_stream_copy_proof_records_failures_and_still_drops_without_raisin
     assert result.status is ProbeStatus.FAILED
     assert result.detail_code == "stream_copy_probe_failed"
     assert client.events[-1] == "capability.streamcopy.drop"
+
+
+_AGE_PROBE_PROPS = json.dumps(
+    {
+        "name": "alpha",
+        "description": hologres_capabilities._AGE_PROBE_DESCRIPTION,
+    },
+    ensure_ascii=False,
+)
+
+
+class AgeProbeClient:
+    def __init__(self):
+        self.events = []
+        self.statements = {}
+        self.procedures = []
+
+    async def fetch_value(self, sql, *values, descriptor):
+        self.events.append(descriptor)
+        self.statements[descriptor] = (sql, values, None)
+        if descriptor.endswith(".extension"):
+            return True
+        if descriptor.endswith(".graph.check"):
+            return True
+        raise AssertionError(f"Unexpected value fetch: {descriptor}")
+
+    async def call_age_procedure(
+        self, procedure, *values, descriptor, replay_safe=False
+    ):
+        self.events.append(descriptor)
+        self.procedures.append((procedure, values, replay_safe))
+        return "CALL"
+
+    async def fetch_all(
+        self, sql, *values, descriptor, operation_kind=None, replay_safe=None
+    ):
+        self.events.append(descriptor)
+        self.statements[descriptor] = (sql, values, replay_safe)
+        if descriptor.endswith(".roundtrip") or descriptor.endswith(".bind"):
+            return [(_AGE_PROBE_PROPS,)]
+        if descriptor.endswith(".degree") or descriptor.endswith(".count"):
+            return [("1",)]
+        return []
+
+
+@pytest.mark.asyncio
+async def test_age_probe_freezes_graph_lifecycle_and_frozen_contract():
+    client = AgeProbeClient()
+
+    result = await hologres_capabilities.probe_age_graph_capability(client)
+
+    assert result == ProbeResult(
+        kind=ProbeKind.AGE,
+        status=ProbeStatus.PASSED,
+        blocking=False,
+        detail_code="age_graph_semantics_frozen",
+    )
+    assert client.events == [
+        "capability.age.extension",
+        "capability.age.graph.create",
+        "capability.age.vlabel",
+        "capability.age.elabel",
+        "capability.age.node.alpha",
+        "capability.age.node.beta",
+        "capability.age.edge",
+        "capability.age.roundtrip",
+        "capability.age.bind",
+        "capability.age.degree",
+        "capability.age.delete",
+        "capability.age.count",
+        "capability.age.graph.check",
+        "capability.age.graph.drop",
+    ]
+
+    (create, vlabel, elabel, drop) = client.procedures
+    graph = create[1][0]
+    assert re.fullmatch(r"lightrag_test_age_[0-9a-f]{32}", graph)
+    assert create == ("create_graph", (graph,), False)
+    assert vlabel == ("create_vlabel", (graph, "Entity"), False)
+    assert elabel == ("create_elabel", (graph, "DIRECTED"), False)
+    assert drop == ("drop_graph", (graph, True), False)
+
+    alpha_sql, _values, alpha_replay = client.statements["capability.age.node.alpha"]
+    assert alpha_replay is False
+    assert alpha_sql == (
+        f"SELECT * FROM ag_catalog.cypher('{graph}', "
+        "$lightrag_age$ CREATE (n:Entity {name: 'alpha', "
+        "description: 'it\\'s a \"tricky\" \\\\ value; with 中文'}) "
+        "$lightrag_age$) AS (result ag_catalog.agtype)"
+    )
+    edge_sql, _values, edge_replay = client.statements["capability.age.edge"]
+    assert edge_replay is False
+    assert "CREATE (a)-[:DIRECTED {weight: 2.5}]->(b)" in edge_sql
+    assert "[r:" not in edge_sql
+
+    bind_sql, bind_values, _safe = client.statements["capability.age.bind"]
+    assert bind_sql.endswith(
+        "$lightrag_age$, $1) AS (props ag_catalog.agtype)"
+    )
+    assert bind_values == ('{"name": "alpha"}',)
+
+    delete_sql, _values, delete_replay = client.statements["capability.age.delete"]
+    assert "DETACH DELETE n" in delete_sql
+    assert delete_replay is True
+
+    check_sql, check_values, _safe = client.statements["capability.age.graph.check"]
+    assert check_values == (graph,)
+    assert "pg_namespace" in check_sql
+
+
+@pytest.mark.asyncio
+async def test_age_probe_missing_extension_fails_closed_without_graph_creation():
+    class MissingExtensionClient(AgeProbeClient):
+        async def fetch_value(self, sql, *values, descriptor):
+            self.events.append(descriptor)
+            if descriptor.endswith(".extension"):
+                return False
+            raise AssertionError(f"Unexpected value fetch: {descriptor}")
+
+    client = MissingExtensionClient()
+
+    result = await hologres_capabilities.probe_age_graph_capability(client)
+
+    assert result.status is ProbeStatus.FAILED
+    assert result.detail_code == "age_extension_missing"
+    assert client.procedures == []
+
+
+class MismatchAgeProbeClient(AgeProbeClient):
+    def __init__(self, stage):
+        super().__init__()
+        self.stage = stage
+
+    async def fetch_all(
+        self, sql, *values, descriptor, operation_kind=None, replay_safe=None
+    ):
+        if descriptor.endswith(".roundtrip") and self.stage == "roundtrip":
+            self.events.append(descriptor)
+            return [('{"name": "alpha", "description": "wrong"}',)]
+        if descriptor.endswith(".bind") and self.stage == "bind":
+            self.events.append(descriptor)
+            return [('{"name": "alpha"}',)]
+        if descriptor.endswith(".degree") and self.stage == "degree":
+            self.events.append(descriptor)
+            return [("2",)]
+        if descriptor.endswith(".count") and self.stage == "count":
+            self.events.append(descriptor)
+            return [("2",)]
+        return await super().fetch_all(
+            sql,
+            *values,
+            descriptor=descriptor,
+            operation_kind=operation_kind,
+            replay_safe=replay_safe,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stage", "detail_code"),
+    [
+        ("roundtrip", "age_property_roundtrip_mismatch"),
+        ("bind", "age_bind_parameter_mismatch"),
+        ("degree", "age_undirected_degree_mismatch"),
+        ("count", "age_delete_count_mismatch"),
+    ],
+)
+async def test_age_probe_classifies_stage_mismatches_and_still_drops(
+    stage, detail_code
+):
+    client = MismatchAgeProbeClient(stage)
+
+    result = await hologres_capabilities.probe_age_graph_capability(client)
+
+    assert result.status is ProbeStatus.FAILED
+    assert result.detail_code == detail_code
+    assert client.events[-1] == "capability.age.graph.drop"
+
+
+@pytest.mark.asyncio
+async def test_age_probe_classifies_execution_failures_and_still_drops():
+    class FailingWriteClient(AgeProbeClient):
+        async def fetch_all(
+            self, sql, *values, descriptor, operation_kind=None, replay_safe=None
+        ):
+            if descriptor.endswith(".node.alpha"):
+                self.events.append(descriptor)
+                raise RuntimeError("cypher write rejected")
+            return await super().fetch_all(
+                sql,
+                *values,
+                descriptor=descriptor,
+                operation_kind=operation_kind,
+                replay_safe=replay_safe,
+            )
+
+    client = FailingWriteClient()
+
+    result = await hologres_capabilities.probe_age_graph_capability(client)
+
+    assert result.status is ProbeStatus.FAILED
+    assert result.detail_code == "age_graph_probe_failed"
+    assert client.events[-1] == "capability.age.graph.drop"
+
+
+@pytest.mark.asyncio
+async def test_age_probe_reports_leaked_graph_cleanup_with_a_distinct_code():
+    class FailingDropClient(AgeProbeClient):
+        async def call_age_procedure(
+            self, procedure, *values, descriptor, replay_safe=False
+        ):
+            if procedure == "drop_graph":
+                self.events.append(descriptor)
+                raise RuntimeError("drop rejected")
+            return await super().call_age_procedure(
+                procedure, *values, descriptor=descriptor, replay_safe=replay_safe
+            )
+
+    client = FailingDropClient()
+
+    result = await hologres_capabilities.probe_age_graph_capability(client)
+
+    assert result.status is ProbeStatus.FAILED
+    assert result.detail_code == "age_graph_probe_cleanup_failed"
+
+
+@pytest.mark.asyncio
+async def test_age_probe_drops_after_an_unknown_outcome_graph_create():
+    class FailingCreateClient(AgeProbeClient):
+        async def call_age_procedure(
+            self, procedure, *values, descriptor, replay_safe=False
+        ):
+            if procedure == "create_graph":
+                self.events.append(descriptor)
+                raise RuntimeError("create outcome unknown")
+            return await super().call_age_procedure(
+                procedure, *values, descriptor=descriptor, replay_safe=replay_safe
+            )
+
+    client = FailingCreateClient()
+
+    result = await hologres_capabilities.probe_age_graph_capability(client)
+
+    assert result.status is ProbeStatus.FAILED
+    assert result.detail_code == "age_graph_probe_failed"
+    assert client.events[-2:] == [
+        "capability.age.graph.check",
+        "capability.age.graph.drop",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_age_probe_reraises_ownership_errors_with_the_graph_as_leaked():
+    client = AgeProbeClient()
+    calls = {"count": 0}
+
+    async def verify_ownership():
+        calls["count"] += 1
+        if calls["count"] >= 3:
+            raise HologresProbeError(
+                "ownership lost", leaked_objects=("lightrag_test_probe",)
+            )
+
+    with pytest.raises(HologresProbeError) as exc_info:
+        await hologres_capabilities._probe_age_graph(
+            client, "lightrag_test_age_owned", verify_ownership, "probe.age"
+        )
+
+    assert exc_info.value.leaked_objects == (
+        "lightrag_test_probe",
+        "lightrag_test_age_owned",
+    )
 
 
 class CreateFailureProductionStreamCopyClient(ProductionStreamCopyClient):
