@@ -54,6 +54,28 @@ _HF_INFERENCE_EXECUTOR = None
 _HF_INFERENCE_EXECUTOR_GUARD = threading.Lock()
 
 
+def _reset_hf_inference_executor_after_fork() -> None:
+    """A forked child (e.g. a gunicorn pre-fork worker) inherits a copy of
+    the parent's ThreadPoolExecutor object, but fork() only carries the
+    calling thread into the child -- the pool's own worker thread does not
+    exist there. Submitting through the stale executor would hang forever
+    (the job sits queued with no live worker to pick it up). The guard lock
+    is just as unsafe to inherit: if fork happens while some other thread
+    holds it, the child sees it permanently locked, since only the forking
+    thread survives to ever release it. Reset both so the next call in the
+    child lazily builds a fresh executor and lock instead.
+    """
+    global _HF_INFERENCE_EXECUTOR, _HF_INFERENCE_EXECUTOR_GUARD
+    _HF_INFERENCE_EXECUTOR = None
+    _HF_INFERENCE_EXECUTOR_GUARD = threading.Lock()
+
+
+# os.fork() (and therefore os.register_at_fork) doesn't exist on Windows --
+# there is no post-fork state to repair there.
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_hf_inference_executor_after_fork)
+
+
 def _get_hf_inference_executor() -> ThreadPoolExecutor:
     """Return the process-wide worker used for local HF inference."""
     global _HF_INFERENCE_EXECUTOR

@@ -12,6 +12,7 @@ sibling hf tests in this directory.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import threading
 import types
@@ -81,6 +82,31 @@ def test_hf_inference_executor_works_across_successive_event_loops(hf_module):
 
     assert asyncio.run(run_once()) == "ok"
     assert asyncio.run(run_once()) == "ok"
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="fork() is POSIX-only")
+def test_inference_executor_resets_after_fork(hf_module):
+    """A forked child (e.g. a gunicorn pre-fork worker) inherits a COPY of
+    the parent's ThreadPoolExecutor object and its guard lock, but fork()
+    only carries the calling thread into the child -- the pool's own
+    worker thread (and, if some other thread held the guard lock at fork
+    time, the thread that would release it) do not exist there. Submitting
+    through the stale executor would hang forever. os.register_at_fork
+    must reset both so the child lazily builds a fresh pair."""
+    hf_module._get_hf_inference_executor()
+    assert hf_module._HF_INFERENCE_EXECUTOR is not None
+
+    pid = os.fork()
+    if pid == 0:
+        # Child: exit immediately via os._exit so control never returns to
+        # pytest's own machinery here (fixture teardown, etc. must run
+        # exactly once, in the parent only).
+        ok = hf_module._HF_INFERENCE_EXECUTOR is None
+        os._exit(0 if ok else 1)
+
+    _, status = os.waitpid(pid, 0)
+    assert os.WIFEXITED(status)
+    assert os.WEXITSTATUS(status) == 0
 
 
 def test_cancelled_queued_hf_inference_does_not_run(hf_module):
