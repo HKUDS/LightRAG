@@ -4804,6 +4804,19 @@ async def kg_query(
 
     # Handle cache
     answer_cache_kv = _answer_cache_kv(query_param, hashing_kv)
+    retrieval_config = (
+        text_chunks_db.global_config if text_chunks_db is not None else global_config
+    )
+    retrieval_cache_args = ()
+    if (
+        "related_chunk_number" in retrieval_config
+        or "kg_chunk_pick_method" in retrieval_config
+    ):
+        retrieval_cache_args = (
+            "\n<kg_chunk_selection>\n",
+            retrieval_config.get("related_chunk_number", DEFAULT_RELATED_CHUNK_NUMBER),
+            retrieval_config.get("kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD),
+        )
     args_hash = compute_args_hash(
         _ANSWER_CACHE_POLICY_VERSION,
         query_param.mode,
@@ -4827,6 +4840,7 @@ async def kg_query(
         effective_user_prompt.text,
         query_param.enable_rerank,
         global_config.get("enable_content_headings", False),
+        *retrieval_cache_args,
         *(("\n<system_prompt>\n", system_prompt) if system_prompt else ()),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
@@ -4873,6 +4887,12 @@ async def kg_query(
                 "enable_rerank": query_param.enable_rerank,
                 "enable_content_headings": global_config.get(
                     "enable_content_headings", False
+                ),
+                "related_chunk_number": retrieval_config.get(
+                    "related_chunk_number", DEFAULT_RELATED_CHUNK_NUMBER
+                ),
+                "kg_chunk_pick_method": retrieval_config.get(
+                    "kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD
                 ),
             }
             await save_to_cache(
