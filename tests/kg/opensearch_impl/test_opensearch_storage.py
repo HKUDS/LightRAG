@@ -870,6 +870,30 @@ class TestKVStorageBatching:
         )
 
     @pytest.mark.asyncio
+    async def test_drops_do_not_require_an_initialized_lock(
+        self, global_config, embed_func
+    ):
+        """Both drops run before ``initialize()`` assigns ``_flush_lock``.
+
+        They are called from best-effort cleanup paths that swallow
+        exceptions, so ``async with None`` would not surface as a failure --
+        it would silently leave the buffers intact.
+        """
+        s = self._make(global_config, embed_func)
+        assert s._flush_lock is None
+        s._pending_upserts["k1"] = {"content": "x"}
+        s._pending_kv_deletes.add("gone")
+
+        await s.drop_pending_upserts()
+        assert not s._pending_upserts
+        assert s._pending_kv_deletes == {"gone"}
+
+        s._pending_upserts["k2"] = {"content": "y"}
+        await s.drop_pending_index_ops()
+        assert not s._pending_upserts
+        assert not s._pending_kv_deletes
+
+    @pytest.mark.asyncio
     async def test_drop_pending_upserts_keeps_the_buffered_deletes(
         self, global_config, embed_func, mock_client
     ):

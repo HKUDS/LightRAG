@@ -1562,6 +1562,15 @@ class OpenSearchKVStorage(BaseKVStorage):
 
     async def drop_pending_index_ops(self) -> None:
         """Discard buffered upserts/deletes (pipeline aborting on error)."""
+        # ``_flush_lock`` is assigned in ``initialize()``. Before that the
+        # instance is unreachable by any other coroutine, so there is nothing
+        # to serialise against and the buffers are cleared directly; taking
+        # ``async with None`` would raise AttributeError instead, on a path
+        # whose callers swallow it. Mirrors ``NanoVectorDBStorage``.
+        if self._flush_lock is None:
+            self._pending_upserts.clear()
+            self._pending_kv_deletes.clear()
+            return
         async with self._flush_lock:
             self._pending_upserts.clear()
             self._pending_kv_deletes.clear()
@@ -1573,6 +1582,9 @@ class OpenSearchKVStorage(BaseKVStorage):
         pending upsert for the same id before recording the tombstone -- so
         clearing one leaves the other exactly as it was.
         """
+        if self._flush_lock is None:  # see drop_pending_index_ops
+            self._pending_upserts.clear()
+            return
         async with self._flush_lock:
             self._pending_upserts.clear()
 
@@ -6444,6 +6456,15 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
 
     async def drop_pending_index_ops(self) -> None:
         """Discard buffered upserts/deletes (pipeline aborting on error)."""
+        # ``_flush_lock`` is assigned in ``initialize()``. Before that the
+        # instance is unreachable by any other coroutine, so there is nothing
+        # to serialise against and the buffers are cleared directly; taking
+        # ``async with None`` would raise AttributeError instead, on a path
+        # whose callers swallow it. Mirrors ``NanoVectorDBStorage``.
+        if self._flush_lock is None:
+            self._pending_vector_docs.clear()
+            self._pending_vector_deletes.clear()
+            return
         async with self._flush_lock:
             self._pending_vector_docs.clear()
             self._pending_vector_deletes.clear()
