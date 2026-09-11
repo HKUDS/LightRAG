@@ -323,7 +323,7 @@ class BaseVectorStorage(StorageNameSpace, ABC):
 
         Multi-worker note:
             Backends that buffer writes in process memory (e.g.
-            OpenSearchVectorDBStorage as of #3043) keep the buffer
+            OpenSearchVectorDBStorage) keep the buffer
             process-local. In a multi-worker deployment (e.g.
             lightrag-gunicorn) other workers will not observe these writes
             until the writing worker has called index_done_callback().
@@ -544,12 +544,12 @@ class BaseKVStorage(StorageNameSpace, ABC):
             reconstructs one -- ``OpenSearchKVStorage`` with a
             ``scripted_upsert`` bulk action, ``RedisKVStorage`` with a Lua
             script that reads a bounded prefix and writes in the same step --
-            rather than reading whole values back. See issue #3870.
+            rather than reading whole values back.
 
         Multi-worker note:
             Backends that buffer writes in process memory (e.g.
-            OpenSearchKVStorage as of the KV-batching change derived from
-            #2822) keep the buffer process-local. In a multi-worker
+            OpenSearchKVStorage, since its KV writes were batched) keep the
+            buffer process-local. In a multi-worker
             deployment (e.g. lightrag-gunicorn) other workers will not
             observe these writes until the writing worker has called
             index_done_callback(). Callers that depend on cross-worker
@@ -592,7 +592,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
     embedding_func: EmbeddingFunc
 
     # Whether this backend can lose an uncommitted in-memory mutation when a
-    # peer commit makes it reload (issue #3899). ``True`` means the backend
+    # peer commit makes it reload. ``True`` means the backend
     # holds the whole graph in process memory, commits it as one unit, and has
     # no pending buffer or redo log to replay over a reloaded snapshot -- so
     # concurrent writers on one workspace must be serialized above it.
@@ -1041,7 +1041,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         admit in traversal order. A new backend should rank its levels where
         its query language makes that free, and is under no obligation to
         reshape a traversal to achieve it.
-        This is the resolution of issue #3612, not an outstanding gap in it.
+        This is a resolved decision, not an outstanding gap.
 
         **Known deviation -- PGGraphStorage (Apache AGE)** ranks the ``*`` view
         on ``degree DESC, v.id ASC``, the internal vertex id, not the label.
@@ -1062,7 +1062,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         ``max_nodes``, so an entity whose in- and out-degree both fall outside
         their respective top-N never reaches the ranking however high its
         undirected degree is, and terms aggregations are count-approximate
-        across shards. Tracked in issue #3613; it needs a storage-shape change,
+        across shards. Not addressed; it needs a storage-shape change,
         not an ordering one.
 
         This constrains WHICH nodes survive truncation, not the order of

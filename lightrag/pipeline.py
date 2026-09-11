@@ -1104,8 +1104,8 @@ class _PipelineMixin:
             }
             if content_data.get("content_hash"):
                 base["content_hash"] = content_data["content_hash"]
-            # Stamp the KG write-progress marker at BIRTH (issue #3400
-            # fail-closed purge). A brand-new row provably owns nothing in the
+            # Stamp the KG write-progress marker at BIRTH, for the
+            # fail-closed purge. A brand-new row provably owns nothing in the
             # graph, and every pre-merge state a document can fail in —
             # PENDING, PARSING, ANALYZING, PROCESSING-before-merge — inherits
             # that fact by carry-over. This is what lets deletion clean up a
@@ -2851,8 +2851,8 @@ class _PipelineMixin:
         ``_reset_failed_page`` and scan's ``_confirm_full_docs_absent``.
         """
         # Documents carrying a custom-chunk patch journal belong to an
-        # in-flight or failed ainsert_custom_chunks operation (issue #3400
-        # Phase 3). Ordinary pipeline processing must not touch them: a reset
+        # in-flight or failed ainsert_custom_chunks operation. Ordinary
+        # pipeline processing must not touch them: a reset
         # would strip the journal and rebuild the whole document, discarding
         # the operation's recovery anchor. They are resumed by the SDK caller
         # (same call) or rolled back by /documents/scan.
@@ -5534,7 +5534,7 @@ class _PipelineMixin:
                     # upsert, so writing PROCESSED first opens a crash window
                     # where the status is durable but the graph/vector/chunk
                     # data is not — a false PROCESSED that recovery can never
-                    # detect (issue #3400: status is the commit record).
+                    # detect (status is the commit record).
                     await self._insert_done()
 
                     # A sibling document's flush error may have aborted the
@@ -5720,7 +5720,7 @@ class _PipelineMixin:
         # back stale IDs.
         #
         # Persist that reset together with retiring the purge journal, in one
-        # targeted write (issue #3400). In-memory-only was not enough: the
+        # targeted write. In-memory-only was not enough: the
         # stored chunks_list kept pointing at chunks this purge just deleted,
         # so a crash here left the row advertising them. Retiring the journal
         # in the SAME write is what keeps the two consistent — a surviving
@@ -5766,7 +5766,7 @@ class _PipelineMixin:
         Returning silently instead would let the merge proceed with the
         stored marker still ``pre_graph``: the graph gets written, and if the
         anchors are later lost, that stale marker is a false proof licensing
-        a purge to skip graph cleanup — the exact defect of issue #3400.
+        a purge to skip graph cleanup — the exact defect fail-closed prevents.
         """
         stored = await require_doc_status_record(
             self.doc_status, doc_id, purpose="advance kg_write_state"
@@ -6654,7 +6654,7 @@ class _PipelineMixin:
                     # authoritative LaTeX.  An otherwise valid response (name +
                     # description) must therefore not fail a whole document
                     # just because the model renamed or dropped that one field
-                    # (#3502).  Resolution order:
+                    #  Resolution order:
                     #   1. ``equation`` — the schema field, normalized as the
                     #      equation_analysis prompt requires (delimiters and
                     #      ``\tag{...}`` stripped, align→aligned, Markdown /

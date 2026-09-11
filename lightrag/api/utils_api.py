@@ -218,7 +218,12 @@ def check_env_file():
     env_path = ".env"
 
     if not os.path.exists(env_path):
-        warning_msg = "Warning: Startup directory must contain .env file for multi-instance support."
+        warning_msg = (
+            "Warning: No .env file found in the current directory. "
+            "If you are running multiple LightRAG instances, each instance's "
+            "startup directory must have its own .env file so their configurations "
+            "stay isolated."
+        )
         ASCIIColors.yellow(warning_msg)
 
         # Check if running in interactive terminal

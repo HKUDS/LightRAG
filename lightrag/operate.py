@@ -145,7 +145,7 @@ class KGRebuildReport:
 
     Known degradation semantics: a degraded relationship preserves its stored
     ``weight`` as-is — without per-chunk extraction cache the rolled-back
-    chunk's weight contribution cannot be subtracted (#3399 precision is
+    chunk's weight contribution cannot be subtracted (precision is
     restored only by a full reprocess). The degradation is recorded in the
     persisted ``kg_recovery_warnings`` so operators can identify affected
     aggregates.
@@ -2389,7 +2389,7 @@ def _combine_descriptions_dedup(
     Stored fragments come first (preserving prior order), then new fragments not
     already present. Deduplicating across stored *and* new (not only within the
     new batch) prevents a re-extracted description from appending a duplicate
-    fragment on every reprocess or resume (issue #3367); it also collapses any
+    fragment on every reprocess or resume; it also collapses any
     legacy duplicate fragments already stored. Returns the combined list and the
     count of surviving stored fragments, used for accurate merge accounting.
 
@@ -2600,7 +2600,7 @@ async def _merge_nodes_then_upsert(
         sorted_descriptions = [dp["description"] for dp in sorted_nodes]
 
         # Combine stored and new descriptions, deduplicating across both so a
-        # re-extracted description does not accumulate on reprocess (issue #3367)
+        # re-extracted description does not accumulate on reprocess
         description_list, already_fragment = _combine_descriptions_dedup(
             already_description, sorted_descriptions
         )
@@ -2959,7 +2959,7 @@ async def _merge_edges_then_upsert(
         # can be re-fed while it is already reflected in already_weights (the
         # stored scalar), so only sum weights of edges whose source_id is NOT
         # already stored -- otherwise weight double-counts and grows 1 -> 2 -> 3
-        # per reprocess (the #3367 sibling of description accumulation).
+        # per reprocess (the sibling of description accumulation).
         # Genuinely new sources still add their weight, preserving legitimate
         # multi-document growth.
         #
@@ -3036,7 +3036,7 @@ async def _merge_edges_then_upsert(
         sorted_descriptions = [dp["description"] for dp in sorted_edges]
 
         # Combine stored and new descriptions, deduplicating across both so a
-        # re-extracted description does not accumulate on reprocess (issue #3367)
+        # re-extracted description does not accumulate on reprocess
         description_list, already_fragment = _combine_descriptions_dedup(
             already_description, sorted_descriptions
         )
@@ -3479,7 +3479,7 @@ def collect_kg_merge_candidates(
 ) -> tuple[set[str], set[tuple[str, str]]]:
     """Derive the full candidate entity/relation superset a merge may touch.
 
-    Recovery anchor for issue #3400: before any graph/vector/tracking
+    Write-ahead recovery anchor: before any graph/vector/tracking
     mutation, the caller must be able to persist a durable candidate set in
     ``full_entities`` / ``full_relations`` so a later purge/retry can discover
     every object the merge might have written. The superset therefore
@@ -3535,7 +3535,7 @@ async def merge_nodes_and_edges(
 ) -> None:
     """Merge extracted entities/relations into the KG behind write-ahead anchors.
 
-    Phase order (issue #3400 — discoverability before mutation):
+    Phase order (discoverability before mutation):
     0. Phase 0: Persist the full candidate superset to ``full_entities`` /
        ``full_relations`` and flush both BEFORE any graph mutation, so a
        crash mid-merge always leaves a durable recovery anchor that purge /
@@ -3663,7 +3663,7 @@ async def merge_nodes_and_edges(
         pipeline_status["latest_message"] = log_message
         append_pipeline_history(pipeline_status, log_message)
 
-    # ===== Phase 0: write-ahead recovery indexes (issue #3400) =====
+    # ===== Phase 0: write-ahead recovery indexes =====
     # Persist the candidate superset BEFORE any graph/vector/tracking
     # mutation. Candidates are a superset, not proof of existence: purge
     # verifies ownership per candidate and skips absent objects. Empty rows
@@ -3800,7 +3800,7 @@ async def merge_nodes_and_edges(
 
         # Execute entity tasks; on any failure every sibling is cancelled and
         # drained before the first exception propagates (no background writes
-        # survive failure handling — issue #3400).
+        # survive failure handling).
         processed_entities = []
         if entity_tasks:
             processed_entities = await wait_tasks_with_drain(
@@ -3923,7 +3923,7 @@ async def merge_nodes_and_edges(
         # graph mutation. The historical post-merge "Phase 3" write — which
         # derived the rows from in-memory merge results and swallowed its own
         # exceptions — is gone: a merge whose anchors cannot be persisted no
-        # longer mutates the graph at all (issue #3400).
+        # longer mutates the graph at all.
 
     finally:
         # On EVERY exit — the inter-phase await points (sleep(0) yields,
@@ -3973,7 +3973,7 @@ async def extract_entities(
     stage_tally = TokenLimitTruncationTally()
 
     # Chunks whose LLM cache write was skipped because the chunk could not
-    # carry the reference to it (issue #3833). A set, not a tally: there is no
+    # carry the reference to it. A set, not a tally: there is no
     # per-stage breakdown to report and nothing is persisted — see
     # _publish_cache_skip_summary below.
     cache_skip_chunks: set[str] = set()
@@ -4153,7 +4153,7 @@ async def extract_entities(
 
             ``use_llm_func_with_cache`` skips the cache write when the chunk
             could not carry the reference to it, so a row is never left
-            unreachable (issue #3833). That is the safe direction, but it means
+            unreachable. That is the safe direction, but it means
             the extraction cache silently stopped working for this document —
             the next run re-calls the LLM for these chunks. Reported on the
             same discipline as truncation above: every occurrence to the server
@@ -4366,7 +4366,7 @@ async def extract_entities(
 
         # No end-of-chunk cache-key attach here, by design. Each extract cache
         # row is attached to this chunk BEFORE it is written, inside
-        # use_llm_func_with_cache (issue #3833) — see the reference-before-row
+        # use_llm_func_with_cache — see the reference-before-row
         # note there for the invariant and its accepted residue. Collecting the
         # keys in memory and attaching them once at the end is precisely what
         # orphaned this chunk's rows when a sibling's exception cancelled this

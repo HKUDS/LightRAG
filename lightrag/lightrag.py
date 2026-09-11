@@ -229,7 +229,7 @@ load_dotenv(dotenv_path=".env", override=False)
 _SyncResultT = TypeVar("_SyncResultT")
 
 # ---------------------------------------------------------------------------
-# Admin-write gate (issue #3899)
+# Admin-write gate
 # ---------------------------------------------------------------------------
 #
 # The eight public admin graph writers (``adelete_by_entity``,
@@ -484,7 +484,7 @@ class _AdminHoldCeiling:
         ) from None
 
 
-# Ordered purge journal phases (issue #3400). Index = how much destructive work
+# Ordered purge journal phases. Index = how much destructive work
 # is already persisted, so a resumed purge can skip exactly that much:
 #   prepared          — proof verified, journal durable, NOTHING deleted yet
 #   derived_committed — graph/vector/tracking contributions repaired or removed
@@ -2041,7 +2041,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     async def finalize_storages(self):
         """Asynchronously finalize the storages with improved error handling"""
         self._shutdown_parser_executor()
-        # A release-time queue drive (issue #3899) still running at shutdown is
+        # A release-time queue drive still running at shutdown is
         # cancelled, not awaited: its auto-rescan flag stays armed in the
         # mailbox for the next run to honour.
         await self._cancel_admin_release_drives()
@@ -2249,7 +2249,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     ) -> None:
         """Insert caller-chunked content as a journaled, recoverable operation.
 
-        Issue #3400 Phase 3 semantics — one invocation is one incremental
+        Custom-chunk operation semantics — one invocation is one incremental
         operation with a durable journal in ``doc_status.metadata``:
 
         - Target document absent → **create** mode: the document is created
@@ -2282,8 +2282,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         pipeline_status = None
         pipeline_status_lock = None
         # Set when the operation fails after acquiring busy: the finally then
-        # discards partial buffers instead of flushing them (issue #3400:
-        # failure finalization must not persist partial work).
+        # discards partial buffers instead of flushing them
+        # (failure finalization must not persist partial work).
         op_failed = False
         try:
             # Clean input texts
@@ -2387,7 +2387,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 raise RuntimeError(reservation.message)
 
             # Per-document keyed lock: only one custom-chunk operation may be
-            # active for a document (issue #3400 §2.5). The busy reservation
+            # active for a document (the purge-recovery contract). The busy reservation
             # already serializes writers globally; the keyed lock preserves
             # correctness if that global policy is ever relaxed.
             doc_lock_namespace = (
@@ -2938,7 +2938,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     try:
                         if op_failed:
                             # Failure path: do NOT blind-flush partial work
-                            # (issue #3400 root cause 6). Persist what is
+                            # (the purge-recovery contract). Persist what is
                             # valuable (the LLM cache — handled inside the
                             # discard helper) and drop the partial buffers;
                             # the journal anchors whatever immediate-write
@@ -2965,7 +2965,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             # error still propagates after this — so the queued
                             # docs are not stranded. A pending cancellation makes
                             # this await re-raise immediately, deferring the
-                            # drain to the next trigger (#3400).
+                            # drain to the next trigger.
                             try:
                                 await self.apipeline_process_enqueue_documents(
                                     _holding_busy=True, token=token
@@ -3091,7 +3091,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         ``full_entities`` / ``full_relations`` rows — the base document keeps
         owning its previously committed contributions — so the patch
         candidates are unioned in and both rows flushed via the narrow
-        barrier (issue #3400 Phase 3, commit step).
+        barrier (the write-ahead barrier's commit step).
         """
         entity_row = await self.full_entities.get_by_id(doc_id) or {}
         union_names = set(entity_row.get("entity_names") or []) | set(entity_names)
@@ -3125,7 +3125,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         pipeline_status: dict | None = None,
         pipeline_status_lock: Any | None = None,
     ) -> dict[str, Any]:
-        """Roll back every failed/stale custom-chunk operation (issue #3400 P4).
+        """Roll back every failed/stale custom-chunk operation.
 
         The administrative escape hatch invoked at the start of
         ``/documents/scan``: while the SDK caller owns roll-forward (repeating
@@ -3748,7 +3748,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     async def _flush_storages(self, storages: list) -> None:
         """Flush the given storage instances — a narrow, named flush barrier.
 
-        Failure paths and write-ahead barriers (issue #3400) must be able to
+        Failure paths and write-ahead barriers must be able to
         flush a specific subset of storages (e.g. only the two recovery
         indexes) instead of the unconditional all-storage ``_insert_done``,
         which on a partially-failed operation would blindly flush partial
@@ -3889,7 +3889,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         evidence sources. Explicit weights may boost that baseline; omit the
         relationship ``source_id`` to use a fractional source-less weight.
 
-        .. warning:: (issue #3400 Phase 5 — direct-writer audit)
+        .. warning:: (direct-writer audit)
            This path is OUTSIDE the document-level recovery guarantee. It has
            no durable operation journal and does not prewrite
            ``full_entities`` / ``full_relations`` recovery anchors, so a
@@ -3904,7 +3904,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # like the other SDK mutations, before touching any storage.
         await self._raise_if_recovery_required()
 
-        # The eighth admin writer (issue #3899 R3): a public graph writer that
+        # The eighth admin writer: a public graph writer that
         # takes only per-key locks and has no router busy check, so without the
         # gate it reproduces the mid-flow reload discard through a documented
         # hole. The gate covers the graph writes AND the commit in the finally.
@@ -4856,8 +4856,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         and the purge that runs in between writes its journal into
         ``metadata`` through a targeted update — so upserting the whole stale
         snapshot would silently clobber that journal, which is precisely what
-        keeps the retry from being refused for missing recovery anchors
-        (issue #3400).
+        keeps the retry from being refused for missing recovery anchors.
 
         For the same reason the re-read must never silently fall back to that
         snapshot. Strict where the backend supports it, so a read failure
@@ -5115,7 +5114,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     ) -> _PurgeRecoveryProof:
         """Decide whether a whole-document purge is allowed to delete anything.
 
-        Fail-closed precondition for issue #3400. A purge discovers what a
+        Fail-closed precondition for whole-document purge. A purge discovers what a
         document contributed to the shared graph from its write-ahead anchors;
         without them the reverse lookup (graph ``source_id`` → ``text_chunks``
         → ``full_doc_id``) is impossible once the chunks are gone. So rather
@@ -5282,7 +5281,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # licenses deleting its chunks while skipping the graph — so inferring
         # one from observable state would turn a transient inconsistency (a
         # chunks_list that is momentarily empty) into a durable licence to
-        # reproduce issue #3400 the moment the chunks reappear. This decision
+        # reproduce the silent-skip defect the moment the chunks reappear. This decision
         # is re-evaluated against live state on every call and grants nothing
         # beyond the call, which is why it is safe where a backfill is not.
         if (
@@ -5461,7 +5460,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         pipeline_status: dict,
         pipeline_status_lock: Any,
     ) -> KGRebuildReport:
-        """Candidate-driven purge/rebuild primitive (issue #3400).
+        """Candidate-driven purge/rebuild primitive.
 
         Shared by whole-document purge (normal deletion / retry) and, in later
         phases, custom-chunk patch rollback. Candidates are a recovery
@@ -5627,9 +5626,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             proof is None or not proof.phase_at_least(KG_PURGE_PHASE_ANCHORS_PENDING)
         ):
             # Deleted only AFTER every derived graph/vector/tracking contribution
-            # has been repaired or removed AND flushed (issue #3400: unsafe
-            # destructive ordering). A failure before this point leaves the
-            # chunks in place, so graph objects never reference deleted chunks.
+            # has been repaired or removed AND flushed. The INVERSE order --
+            # dropping the chunks first -- is the unsafe one: it strands graph
+            # objects referencing chunks that no longer exist, and the anchors
+            # that would say what to clean up are gone with them. See
+            # docs/design/PurgeRecoveryContract.md. A failure before this point
+            # leaves the chunks in place, so graph objects never reference
+            # deleted chunks.
             try:
                 await self.chunks_vdb.delete(chunk_ids)
                 await self.text_chunks.delete(chunk_ids)
@@ -5721,7 +5724,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         nothing to clean" (the caller established that), while ``None`` means
         "resolve from this document's anchor rows". The caller is responsible
         for having proven that the anchors are readable — passing ``None`` with
-        absent anchors is exactly the silent-skip bug of issue #3400.
+        absent anchors is exactly the silent-skip bug this fails closed against.
 
         ``extra_candidate_*`` are unioned in after that resolution, for objects
         the anchor rows cannot name yet (an in-flight custom-chunk patch
@@ -5828,7 +5831,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 graph_sources: list[str] = []
                 if self.entity_chunks:
                     stored_chunks = await self.entity_chunks.get_by_id(node_label)
-                    # NOTE(#3609): this deliberately keeps truthiness semantics and
+                    # NOTE: this deliberately keeps truthiness semantics and
                     # does NOT distinguish a present-but-empty tracking row from an
                     # absent one. Here an empty `existing_sources` falls back to the
                     # graph `source_id` below; treating a present-empty row as
@@ -5900,7 +5903,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 if self.relation_chunks:
                     storage_key = make_relation_chunk_key(src, tgt)
                     stored_chunks = await self.relation_chunks.get_by_id(storage_key)
-                    # NOTE(#3609): as with the entity branch above, truthiness is
+                    # NOTE: as with the entity branch above, truthiness is
                     # kept here on purpose — a present-but-empty relation tracking
                     # row falls back to the graph `source_id` rather than being
                     # treated as authoritative "tracks no chunks". Changing that is a
@@ -6231,7 +6234,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # main flow (probe ``has_work()`` → handoff or release).  A concurrent
         # enqueue can commit mailbox work the instant the reservation lock is
         # released, so an unconditional early release in that window would
-        # strand it (PR #3467 review round 2).
+        # strand it.
         try:
             # Pre-arm ownership before acquire so cancellation after the atomic
             # update cannot leak this token's reservation (the finally is
@@ -6372,7 +6375,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # Order-preserving dedup so chunk_ids stays a list and satisfies the
             # storage delete contract (``delete(ids: list[str])``); a set view is
             # built below for membership/intersection checks. Staged chunks of
-            # an unfinished custom-chunk operation (issue #3400 Phase 3) live
+            # an unfinished custom-chunk operation live
             # only in the journal until commit unions them into chunks_list —
             # include them so deleting the document also cleans the staging.
             journal = metadata.get(CUSTOM_CHUNK_PATCH_METADATA_KEY)
@@ -6397,7 +6400,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             if not chunk_ids:
                 logger.warning(f"No chunks found for document {doc_id}")
 
-                # Fail closed before touching anything (issue #3400). This
+                # Fail closed before touching anything. This
                 # branch used to delete doc_status + full_docs and report
                 # success WITHOUT looking at the graph at all — so a document
                 # whose anchors still named live entities was reported deleted
@@ -6570,7 +6573,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # 4. Purge every KG contribution of this document, then its chunks.
             #
             # Delegated to the shared primitive rather than reimplemented here
-            # (issue #3400). Two things follow from that:
+            # Two things follow from that:
             #
             #  * The primitive refuses to start without a recovery proof, so a
             #    document whose anchors were lost fails closed with a 409
@@ -6902,7 +6905,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         )
 
     # ------------------------------------------------------------------
-    # Admin-write gate (issue #3899)
+    # Admin-write gate
     # ------------------------------------------------------------------
 
     def _admin_write_gate_required(self) -> bool:
@@ -6998,103 +7001,51 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         """Serialize an admin graph write against its peers and the pipeline.
 
         Wraps the body of every public admin graph writer -- the seven
-        ``utils_graph`` flows (``adelete_by_entity``, ``adelete_by_relation``,
-        ``aedit_entity``, ``aedit_relation``, ``acreate_entity``,
-        ``acreate_relation``, ``amerge_entities``) and ``ainsert_custom_kg`` --
-        and is a no-op unless ``_admin_write_gate_required()``.
-
-        Why (issue #3899): ``NetworkXStorage`` reloads the whole graph from disk
-        whenever a peer commit lands, and a reload discards this process's
-        uncommitted in-memory mutations. Every admin flow reaches the graph
-        several times per request (a rename upserts, then reads edges, then
-        upserts again), so a peer commit landing between two of those calls
-        silently drops the mutations already applied; the commit that follows
-        succeeds without them. Two peers can do that: another admin write, and
-        the document pipeline (whose in-memory merge results an admin commit
-        discards the same way, leaving documents marked PROCESSED with their
-        entities missing -- and nothing heals that). Both are removed here by
-        restoring the *single writer per workspace* invariant the storage
-        already asserts, rather than by teaching the reload to survive:
-        replaying graph payloads over a newer snapshot would drop the evidence
-        a peer accumulated and republish a stale ``weight``, breaking the
-        relation-weight contract at exactly the moment nothing can notice.
+        ``utils_graph`` flows plus ``ainsert_custom_kg``. A no-op unless
+        ``_admin_write_gate_required()``, i.e. unless the graph storage's class
+        declares ``requires_single_writer`` (``NetworkXStorage`` only).
 
         Two halves, one fixed acquisition order::
 
             admin lock (WAITS)  ->  admin reservation (REFUSES)  ->  per-key locks
 
-        1. **The admin lock** -- ``get_storage_keyed_lock(["admin"],
-           namespace=f"{workspace}:GraphAdmin")``, cross-process like every
-           keyed lock. Serializes admin writes against each other by
-           *queueing* them: a second admin write waits up to
-           ``ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT`` and is refused only on expiry,
-           with ``ADMIN_WRITE_LOCK_BUSY_PREFIX`` (HTTP 409). Taken FIRST,
-           because the reservation below refuses without waiting -- taken the
-           other way round the second concurrent admin write would be refused
-           and the queue would never form. Taken OUTSIDE the per-entity keys,
-           which the ``utils_graph`` functions acquire inside their own body:
-           ``amerge_entities`` takes several keys at once, and the reverse
-           order deadlocks. The pipeline never takes the admin lock, so no
-           cycle is introduced. Wrapping at this method level is what makes the
-           order automatic for any ``utils_graph`` helper added later -- do not
-           acquire the admin lock anywhere inside ``utils_graph``.
-        2. **The pipeline ``busy`` reservation** -- ``acquire_reservation`` with
-           ``owner_kind="admin"`` and ``flags={"busy": True}``, refusing on
-           ``busy`` (a processing loop or a destructive job) and ``scanning``
-           with ``ADMIN_WRITE_PIPELINE_BUSY_PREFIX`` (HTTP 409, distinguishable
-           from the lock refusal by its leading phrase). It does NOT set
-           ``destructive_busy``: an admin write drops no storage and removes no
-           input file, so enqueue stays allowed. While held it defers a
-           pipeline *start* -- ``acquire_processing_reservation``'s ``busy`` arm
-           reduces the start to a sticky auto-rescan request in the workspace
-           ingress mailbox -- and a running pipeline still refuses the admin
-           write, as the router's ``check_pipeline_busy_or_raise`` already did
-           (kept as an early 409 that fails before any embedding work).
+        The admin lock queues a peer admin write for up to
+        ``ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT``, then refuses with 409. The
+        reservation takes the pipeline's ``busy`` flag as ``kind="admin"`` and
+        refuses immediately on ``busy`` / ``scanning``, also 409; the two are
+        told apart by the leading phrase of the message. Both cover mutate AND
+        commit, embedding round-trip included -- a lock around the commit alone
+        would leave the mid-flow reload open, which is the whole defect.
 
-        Both halves cover mutate AND commit, embedding round-trip included; a
-        lock around the commit alone would leave the mid-flow reload open, which
-        is the whole defect. The hold is bounded by ``admin_write_max_hold_seconds``
-        (``_AdminHoldCeiling``): an admin holder of ``busy`` fences ingestion
-        for as long as it runs, and dead-owner reclaim covers a dead process,
-        not a hung one. A ceiling that fires cannot tear a commit apart -- the
-        admin flows run their commit-plus-cleanup regions under
-        ``_finish_deferring_cancellation``, and ``commit_in_storage_io``
-        finishes the file write and its publication hook regardless.
+        Rules for anyone extending this:
 
-        **Accepted residue of the ceiling.** Precisely because a commit is
-        allowed to finish, an operation the ceiling stops may have written
-        durably while its caller is told it failed. That is unavoidable for any
-        cancellation-based bound (``asyncio.timeout`` has it too), so it is
-        reported rather than hidden: ``_AdminHoldCeiling`` reads the stamp the
-        uncancellable regions leave on a withheld cancellation whose write
-        committed and says whether a commit was in flight, and neither of its messages claims
-        the operation wrote nothing -- a multi-step flow commits more than once.
-        Recovery is to re-read the object; a blind retry is what turns this into
-        "entity already exists" or a re-applied edit. Beyond that, what the
-        ceiling can leave behind is the crash residue issue #3838 documents.
+        * **Never acquire the admin lock inside ``lightrag/utils_graph.py``.**
+          Wrapping at this level is what keeps the order automatic for any
+          helper added later, and the per-entity keys must stay INSIDE it --
+          ``amerge_entities`` takes several at once and the reverse order
+          deadlocks.
+        * The lock is taken first on purpose: the reservation refuses without
+          waiting, so the other order would refuse the second concurrent admin
+          write instead of queueing it.
+        * A pipeline start deferred during the hold is driven once on release;
+          a cancellation exit gives up the operation's unpublished graph
+          mutations. Both are handled below, in the ``except`` and ``finally``.
 
-        **Release-time drive.** A pipeline start turned away during the hold
-        left ``auto_rescan_pending`` armed in the mailbox, and that flag is
-        consumed only by a ``busy`` holder's quiescence decision -- which an
-        admin holder never runs. Left alone, the request would be stranded and
-        its document would sit PENDING until the next upload or scan. So after
-        both halves are released this reads the flag (read-only, non-consuming)
-        and, if set, drives the queue once in a background task
-        (``_schedule_deferred_pipeline_drive``); the drive's own
-        ``acquire_processing_reservation`` consumes the flag. The drive is
-        skipped when this task is being cancelled, leaving the flag armed for
-        the next scan or upload to honour -- the same choice
-        ``run_scanning_process`` makes.
-
-        Crash semantics: ``kind="admin"`` is in
-        ``_RERUNNABLE_RESERVATION_KINDS``, so a worker killed mid-edit has its
-        reservation reclaimed by the next acquire without fencing the workspace
-        (``recovery_required``) -- an admin write is re-runnable, and the
-        residue it leaves is the documented #3838 one.
+        **Accepted residue.** The hold ceiling stops a write by cancelling it,
+        and a commit already in flight is allowed to finish, so an operation
+        reported as failed may have written durably. It is reported rather than
+        hidden (``_AdminHoldCeiling`` reads the deferred-cancellation stamp and
+        says which case happened); recovery is to re-read the object, and a
+        blind retry is what turns this into "entity already exists".
 
         ``pipeline_status`` not bootstrapped (a test rig without
         ``initialize_storages``) means there is no pipeline to exclude, so only
         the admin lock is taken.
+
+        **Full contract: ``docs/design/PipelineConcurrencyContract.md``** --
+        why each half exists, what the reservation does and does not set, crash
+        semantics, and the release-time drive obligation including why a
+        synchronous wrapper must await it.
         """
         if not self._admin_write_gate_required():
             yield

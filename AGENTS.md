@@ -64,6 +64,18 @@ LightRAG writes to independent stores — graph, KV, vector, doc-status — with
 - Every accepted residue is **written down** with its reason and recovery path, next to the code or in the relevant contract. An undocumented residue is a defect; a documented one is a decision.
 - This licenses nothing for **silent failure**. A durable write must never be reported as one that did not happen, and a failure must never be swallowed: fail loud, then let the documented residue heal.
 
+### File-backed storage contracts
+
+**Full contracts: [docs/design/NetworkXSingleWriterContract.md](docs/design/NetworkXSingleWriterContract.md) — read it before touching `lightrag/kg/networkx_impl.py` or any caller of `index_done_callback` on the graph store; [docs/design/FileBackedSnapshotContract.md](docs/design/FileBackedSnapshotContract.md) — read it before touching `lightrag/kg/nano_vector_db_impl.py`, `lightrag/kg/faiss_impl.py`, `lightrag/kg/json_kv_impl.py`, `lightrag/kg/json_doc_status_impl.py` or `lightrag/kg/file_fingerprint.py`.**
+
+Five storages keep their data in memory and publish it by rewriting a whole file, and **they do not share one model** — `JsonKVStorage` and `JsonDocStatusStorage` are the odd ones out and the contracts say so at length. Read the right one before assuming.
+
+- **All five**: a commit publishes the WHOLE namespace, so any writer's flush also publishes every other writer's pending mutation there, half-finished ones included. All five are supported for **small-scale testing and validation only**; no change to them may be justified by write throughput.
+- **`NetworkXStorage`, `NanoVectorDBStorage`, `FaissVectorDBStorage`** keep one in-memory copy per process and reconcile by reloading the file. Visibility rests on a **two-channel fence**: the file's own `(st_mtime_ns, st_size)` (authoritative, state) OR-ed with the `storage_updated` flag (accelerator, a consumable event). Both are permanent — their blind spots do not overlap.
+- Those three diverge on a write conflict, and the reason is in the contracts: the graph store **declines** the commit (it has no buffer to replay, and graph payloads are accumulate-over-read), the vector stores **reload and replay** their pending buffers and redo logs. Do not reopen reload-then-replay for the graph store without addressing the accumulate-over-read argument.
+- **`JsonKVStorage` and `JsonDocStatusStorage` use none of that.** Their data is a `Manager().dict()` every worker shares, so a mutation is visible everywhere immediately and there is nothing to reload — adding a `_get_*` entry method would be wrong. Their `storage_updated` flag means the OPPOSITE of the other three's: `True` is "dirty data still to flush", never "fresher data on disk to reload". Do not read it as a peer notification. `JsonDocStatusStorage` reimplements this protocol rather than inheriting it, so a change to one of the pair is almost always a change the other needs too; where they diverge is the flush trigger — doc-status writes that change scheduling state flush synchronously because doc-status is the pipeline's recovery anchor.
+- `NetworkXStorage` is the only storage that declares `requires_single_writer`, which is what puts the admin flows under `LightRAG._admin_write_gate`.
+
 ### Pipeline concurrency contract
 
 **Full contract: [docs/design/PipelineConcurrencyContract.md](docs/design/PipelineConcurrencyContract.md) — read it before touching `lightrag/pipeline.py`, `lightrag/kg/pipeline_ingress.py`, `pipeline_status` fields, or any `/documents/*` endpoint.**
@@ -342,6 +354,17 @@ See `env.example` for comprehensive template.
 
 ### Language
 Comments, backend code, log messages, and Git commit messages in English. Frontend uses i18next for multi-language support.
+
+### Docstrings and comments
+
+Docstrings state the **rules**: what a caller must do, what it must not do, and the gotchas it will otherwise be caught by. The **mechanism** — how it works, the accepted residues, and the alternatives already rejected — goes in `docs/design/` with a pointer from the docstring. A docstring that has grown into a design document is the thing this separates: it buries the code, and the same facts in two places drift apart.
+
+Two rules are enforced by `tests/test_docstring_budget.py` rather than by review, because both are properties of the tree rather than of any one change:
+
+- **No docstring over 80 lines** (100 for a class). The limit is generous on purpose — it catches a document, not a thorough docstring.
+- **No source line may cite a GitHub issue number.** The referent does not survive a fork, so a comment saying something is "documented in #NNNN" leaves nothing that documents it. Name the thing instead ("the two-channel fence"), or move the content into `docs/design/` and cite that. Never delete such a reference bare — migrate what it pointed at first.
+
+A third test requires every `docs/**.md` path named in the package to resolve; nothing imports those strings, so a typo is otherwise silent.
 
 ### Python
 - Follow PEP 8 with 4-space indentation
