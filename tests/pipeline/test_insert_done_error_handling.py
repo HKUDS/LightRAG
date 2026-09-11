@@ -897,3 +897,47 @@ async def test_a_declined_epilogue_commit_is_recorded_too(tmp_path, monkeypatch)
         assert rag._chunk_reference_commit_failed is True
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_clearing_the_cache_holds_the_fence_across_the_drop(tmp_path):
+    """``drop`` commits after releasing its own namespace lock, so a writer's
+    attach+write fits in the gap and the drop's commit publishes the row."""
+    from lightrag.utils import get_extract_cache_fence
+
+    rag = await _make_rag(tmp_path)
+    try:
+        order: list = []
+        in_the_gap = asyncio.Event()
+
+        class _DroppableCache:
+            namespace = "llm_response_cache"
+
+            async def drop(self):
+                # Stands for drop's lock-released window before its commit.
+                in_the_gap.set()
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                order.append("drop")
+                return {"status": "success"}
+
+            async def index_done_callback(self):
+                order.append("drop_commit")
+
+            async def finalize(self):
+                return None
+
+        rag.llm_response_cache = _DroppableCache()
+
+        async def _concurrent_writer():
+            await in_the_gap.wait()
+            async with get_extract_cache_fence(rag.text_chunks):
+                order.append("writer")
+
+        writer = asyncio.create_task(_concurrent_writer())
+        await rag.aclear_cache()
+        await writer
+
+        assert order.index("writer") > order.index("drop_commit"), order
+    finally:
+        await rag.finalize_storages()

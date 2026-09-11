@@ -5176,14 +5176,31 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             return
 
         try:
-            # Clear all cache using drop method
-            success = await self.llm_response_cache.drop()
-            if success:
-                logger.info("Cleared all cache")
-            else:
-                logger.warning("Failed to clear all cache")
+            # Under the fence for the whole drop, not just the flush after it.
+            # ``JsonKVStorage.drop`` clears under its namespace lock, RELEASES
+            # it, and only then commits; an extraction attaching and writing in
+            # that gap has its row published by the drop's own commit while the
+            # reference stays in memory.
+            #
+            # This does NOT make clearing the cache safe during ingestion --
+            # it still wipes rows that in-flight chunks already reference, and
+            # ``drop`` requires the caller to hold the pipeline ``busy``
+            # reservation, which this path does not. That is tracked separately
+            # (folding this into the destructive clear endpoint); the fence
+            # only keeps the publish from straddling a writer's pair.
+            async with (
+                get_extract_cache_fence(self.text_chunks)
+                if self.text_chunks is not None
+                else nullcontext()
+            ):
+                # Clear all cache using drop method
+                success = await self.llm_response_cache.drop()
+                if success:
+                    logger.info("Cleared all cache")
+                else:
+                    logger.warning("Failed to clear all cache")
 
-            await self.llm_response_cache.index_done_callback()
+                await self.llm_response_cache.index_done_callback()
 
         except Exception as e:
             logger.error(f"Error while clearing cache: {e}")
