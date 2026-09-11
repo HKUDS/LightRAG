@@ -1566,6 +1566,16 @@ class OpenSearchKVStorage(BaseKVStorage):
             self._pending_upserts.clear()
             self._pending_kv_deletes.clear()
 
+    async def drop_pending_upserts(self) -> None:
+        """Discard buffered upserts, KEEPING the buffered deletes.
+
+        The two sets are disjoint by construction -- ``delete`` pops any
+        pending upsert for the same id before recording the tombstone -- so
+        clearing one leaves the other exactly as it was.
+        """
+        async with self._flush_lock:
+            self._pending_upserts.clear()
+
     async def index_done_callback(self) -> None:
         """Flush pending KV ops and refresh the index for search visibility.
 

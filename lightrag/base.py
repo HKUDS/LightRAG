@@ -221,6 +221,24 @@ class StorageNameSpace(ABC):
         """
         return None
 
+    async def drop_pending_upserts(self) -> None:
+        """Discard buffered UPSERTS, keeping buffered deletes.
+
+        The narrow counterpart of ``drop_pending_index_ops``, for a caller
+        that has to abandon writes without abandoning deletions. A buffered
+        delete is a tombstone some already-returned operation promised: the
+        document deletion path flushes with a plain ``_insert_done`` for
+        exactly that reason, and reports success after logging a flush error,
+        so a dropped tombstone leaves rows on disk with nothing left to find
+        them and no retry.
+
+        Backends whose buffer cannot separate the two keep the default no-op:
+        doing nothing is the safe answer, since the caller falls back to
+        deferring the writes rather than dropping a deletion. Only
+        ``OpenSearchKVStorage`` overrides it today.
+        """
+        return None
+
     @abstractmethod
     async def drop(self) -> dict[str, str]:
         """Drop all data from storage and clean up resources

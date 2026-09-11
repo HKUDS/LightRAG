@@ -105,6 +105,7 @@ class _SpyStorage:
         self._recorder = recorder if recorder is not None else []
         self.index_done_calls = 0
         self.drop_calls = 0
+        self.drop_upsert_calls = 0
 
     async def index_done_callback(self):
         self.index_done_calls += 1
@@ -116,6 +117,12 @@ class _SpyStorage:
     async def drop_pending_index_ops(self):
         self.drop_calls += 1
         self._recorder.append((self.label, "drop"))
+        if self._drop_error is not None:
+            raise self._drop_error
+
+    async def drop_pending_upserts(self):
+        self.drop_upsert_calls += 1
+        self._recorder.append((self.label, "drop_upserts"))
         if self._drop_error is not None:
             raise self._drop_error
 
@@ -843,9 +850,12 @@ async def test_a_permanent_chunk_failure_quarantines_the_buffered_cache_rows(
         with pytest.raises(IndexFlushError):
             await rag._insert_done()
 
-        assert cache.drop_calls == 1, (
+        assert cache.drop_upsert_calls == 1, (
             "the orphaned cache rows stayed buffered for the next pair commit "
             "to publish"
+        )
+        assert cache.drop_calls == 0, (
+            "the quarantine took the buffered cache DELETES with the upserts"
         )
         assert cache.index_done_calls == 0
     finally:
@@ -874,7 +884,7 @@ async def test_the_epilogue_records_its_own_failed_chunk_commit(tmp_path, monkey
 
         assert committed is False
         assert rag._chunk_reference_commit_failed is True
-        assert cache.drop_calls == 1
+        assert cache.drop_upsert_calls == 1
     finally:
         await rag.finalize_storages()
 
@@ -939,5 +949,35 @@ async def test_clearing_the_cache_holds_the_fence_across_the_drop(tmp_path):
         await writer
 
         assert order.index("writer") > order.index("drop_commit"), order
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_the_quarantine_keeps_buffered_cache_deletions(tmp_path, monkeypatch):
+    """A cache tombstone is a promise an already-returned deletion made.
+
+    ``adelete_by_doc_id(delete_llm_cache=True)`` buffers the deletes and
+    flushes with a plain ``_insert_done`` precisely so they are not discarded;
+    that path reports success after merely LOGGING a flush error. A quarantine
+    that took the deletes with the upserts would leave the cache rows holding
+    the document prompt on disk, with the chunk rows that name them already
+    gone and no retry anywhere.
+    """
+    rag = await _make_rag(tmp_path)
+    try:
+        rec: list = []
+        chunks, cache, other = _bind_cache_pair_spies(
+            rag, rec, chunks_flush_error=RuntimeError("index refresh failed")
+        )
+        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
+
+        with pytest.raises(IndexFlushError):
+            await rag._insert_done()
+
+        assert ("llm_cache", "drop") not in rec, (
+            "the buffered cache deletions were discarded along with the upserts"
+        )
+        assert ("llm_cache", "drop_upserts") in rec
     finally:
         await rag.finalize_storages()

@@ -3817,7 +3817,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
           and raises only for the rest. The reference is gone for good, so the
           buffered cache rows naming it can never become reachable — deferring
           them only postpones publishing an orphan, which the next successful
-          pair commit would do. They are dropped instead.
+          pair commit would do. Their UPSERTS are dropped instead; buffered
+          deletes are kept, being tombstones an already-returned deletion
+          promised.
         * On a snapshot backend (`JsonKVStorage`) the drop is a base-class
           no-op and the references are still in the shared dict, so the flag's
           deferral is the mechanism that works: the next pair commit publishes
@@ -3832,9 +3834,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         if self.llm_response_cache is None:
             return
         try:
-            await cast(
-                StorageNameSpace, self.llm_response_cache
-            ).drop_pending_index_ops()
+            # Upserts ONLY. ``drop_pending_index_ops`` would take the buffered
+            # DELETES with them, and a cache tombstone is a promise some
+            # already-returned operation made: ``adelete_by_doc_id`` with
+            # ``delete_llm_cache=True`` buffers them, flushes with a plain
+            # ``_insert_done`` precisely so they are not discarded, and reports
+            # success after logging a flush error. Dropping one there would
+            # leave the rows this whole ordering exists to make deletable on
+            # disk with nothing left to find them. Backends that cannot
+            # separate the two do nothing and fall back to deferral.
+            await cast(StorageNameSpace, self.llm_response_cache).drop_pending_upserts()
         except Exception as e:
             logger.error(f"Failed to quarantine pending LLM cache rows: {e}")
         else:

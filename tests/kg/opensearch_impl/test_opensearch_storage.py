@@ -870,6 +870,30 @@ class TestKVStorageBatching:
         )
 
     @pytest.mark.asyncio
+    async def test_drop_pending_upserts_keeps_the_buffered_deletes(
+        self, global_config, embed_func, mock_client
+    ):
+        """The narrow drop, for a caller abandoning writes but not deletions.
+
+        A buffered delete is a tombstone an already-returned operation
+        promised: ``adelete_by_doc_id(delete_llm_cache=True)`` buffers them and
+        the deletion path reports success after merely logging a flush error,
+        so discarding one leaves rows on disk with nothing left to find them.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.upsert({"k1": {"content": "x"}})
+            await s.delete(["gone-1", "gone-2"])
+            assert s._pending_upserts
+            assert s._pending_kv_deletes == {"gone-1", "gone-2"}
+
+            await s.drop_pending_upserts()
+
+            assert not s._pending_upserts
+            assert s._pending_kv_deletes == {"gone-1", "gone-2"}
+
+    @pytest.mark.asyncio
     async def test_repeated_kv_upserts_flush_in_single_bulk_call(
         self, global_config, embed_func, mock_client
     ):
