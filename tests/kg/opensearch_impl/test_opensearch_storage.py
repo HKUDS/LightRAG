@@ -231,6 +231,7 @@ def _make_client():
                 "status_counts": {"buckets": []},
                 "src": {"buckets": []},
                 "tgt": {"buckets": []},
+                "degrees": {"buckets": []},
                 "source_degrees": {"ids": {"buckets": []}},
                 "target_degrees": {"ids": {"buckets": []}},
             },
@@ -240,6 +241,20 @@ def _make_client():
     client.create_pit = AsyncMock(return_value={"pit_id": "mock_pit_id_123"})
     client.delete_pit = AsyncMock()
     return client
+
+
+def _degree_buckets(src_buckets, tgt_buckets):
+    """The `endpoints` aggregation's answer for the graph a stub describes as
+    separate source/target buckets: one bucket per entity holding undirected
+    degree, count descending. Lets a stub state the edges once and answer
+    either aggregation shape (see issue #3613)."""
+    merged: dict[str, int] = {}
+    for bucket in [*src_buckets, *tgt_buckets]:
+        merged[bucket["key"]] = merged.get(bucket["key"], 0) + bucket["doc_count"]
+    return [
+        {"key": key, "doc_count": count}
+        for key, count in sorted(merged.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
 
 
 def _mget_by_ids_side_effect(node_sources: dict[str, dict]):
@@ -2307,6 +2322,7 @@ class TestGraphStorage:
                     "status_counts": {"buckets": []},
                     "src": {"buckets": []},
                     "tgt": {"buckets": []},
+                    "degrees": {"buckets": []},
                 },
             }
         )
@@ -3212,6 +3228,15 @@ class TestGraphStorage:
                         ]
                     },
                     "tgt": {"buckets": [{"key": "A", "doc_count": 3}]},
+                    "degrees": {
+                        "buckets": _degree_buckets(
+                            [
+                                {"key": "A", "doc_count": 5},
+                                {"key": "B", "doc_count": 2},
+                            ],
+                            [{"key": "A", "doc_count": 3}],
+                        )
+                    },
                     "status_counts": {"buckets": []},
                 },
             }
@@ -3234,6 +3259,12 @@ class TestGraphStorage:
                     "aggregations": {
                         "src": {"buckets": [{"key": "A", "doc_count": 1}]},
                         "tgt": {"buckets": [{"key": "B", "doc_count": 1}]},
+                        "degrees": {
+                            "buckets": _degree_buckets(
+                                [{"key": "A", "doc_count": 1}],
+                                [{"key": "B", "doc_count": 1}],
+                            )
+                        },
                         "status_counts": {"buckets": []},
                     },
                 },
@@ -3604,6 +3635,7 @@ class TestGraphPPLDetection:
                     "status_counts": {"buckets": []},
                     "src": {"buckets": []},
                     "tgt": {"buckets": []},
+                    "degrees": {"buckets": []},
                 },
             }
         )
@@ -3963,6 +3995,7 @@ class TestVectorStorage:
                     "status_counts": {"buckets": []},
                     "src": {"buckets": []},
                     "tgt": {"buckets": []},
+                    "degrees": {"buckets": []},
                 },
             }
         )
@@ -3995,6 +4028,7 @@ class TestVectorStorage:
                     "status_counts": {"buckets": []},
                     "src": {"buckets": []},
                     "tgt": {"buckets": []},
+                    "degrees": {"buckets": []},
                 },
             }
         )
@@ -4020,6 +4054,7 @@ class TestVectorStorage:
                     "status_counts": {"buckets": []},
                     "src": {"buckets": []},
                     "tgt": {"buckets": []},
+                    "degrees": {"buckets": []},
                 },
             }
         )
@@ -5399,6 +5434,7 @@ class TestGraphReadContract:
             "aggregations": {
                 "src": {"buckets": src_buckets},
                 "tgt": {"buckets": tgt_buckets},
+                "degrees": {"buckets": _degree_buckets(src_buckets, tgt_buckets)},
                 "status_counts": {"buckets": []},
             },
         }
