@@ -5134,7 +5134,7 @@ async def update_chunk_cache_list(
     text_chunks_storage: "BaseKVStorage",
     cache_keys: list[str],
     cache_scenario: str = "batch_update",
-) -> None:
+) -> bool:
     """Update chunk's llm_cache_list with the given cache keys
 
     Args:
@@ -5142,33 +5142,51 @@ async def update_chunk_cache_list(
         text_chunks_storage: Text chunks storage instance
         cache_keys: List of cache keys to add to the list
         cache_scenario: Description of the cache scenario for logging
+
+    Returns:
+        True when the reference is durable: the keys are now on the chunk row,
+        were already there, or there was nothing to record. False when it could
+        not be recorded -- the chunk row is missing, or the read/write failed.
+
+        Never raises. A caller that must not create an unreachable cache row
+        checks this BEFORE writing the row; see the reference-before-row note
+        in ``use_llm_func_with_cache``.
     """
     if not cache_keys:
-        return
+        return True
 
     try:
         chunk_data = await text_chunks_storage.get_by_id(chunk_id)
-        if chunk_data:
-            # Ensure llm_cache_list exists
-            if "llm_cache_list" not in chunk_data:
-                chunk_data["llm_cache_list"] = []
+        if not chunk_data:
+            # Not a silent no-op: the caller may be about to write a cache row
+            # whose only reachable reference would have been this one.
+            logger.warning(
+                f"Cannot record cache references on missing chunk {chunk_id} ({cache_scenario})"
+            )
+            return False
 
-            # Add cache keys to the list if not already present
-            existing_keys = set(chunk_data["llm_cache_list"])
-            new_keys = [key for key in cache_keys if key not in existing_keys]
+        # Ensure llm_cache_list exists
+        if "llm_cache_list" not in chunk_data:
+            chunk_data["llm_cache_list"] = []
 
-            if new_keys:
-                chunk_data["llm_cache_list"].extend(new_keys)
+        # Add cache keys to the list if not already present
+        existing_keys = set(chunk_data["llm_cache_list"])
+        new_keys = [key for key in cache_keys if key not in existing_keys]
 
-                # Update the chunk in storage
-                await text_chunks_storage.upsert({chunk_id: chunk_data})
-                logger.debug(
-                    f"Updated chunk {chunk_id} with {len(new_keys)} cache keys ({cache_scenario})"
-                )
+        if new_keys:
+            chunk_data["llm_cache_list"].extend(new_keys)
+
+            # Update the chunk in storage
+            await text_chunks_storage.upsert({chunk_id: chunk_data})
+            logger.debug(
+                f"Updated chunk {chunk_id} with {len(new_keys)} cache keys ({cache_scenario})"
+            )
+        return True
     except Exception as e:
         logger.warning(
             f"Failed to update chunk {chunk_id} with cache references on {cache_scenario}: {e}"
         )
+        return False
 
 
 class TruncatedResponse(str):
@@ -5464,6 +5482,7 @@ async def use_llm_func_with_cache(
     response_format: Any | None = None,
     entity_extraction: bool = False,
     llm_cache_identity: Any | None = None,
+    text_chunks_storage: "BaseKVStorage | None" = None,
 ) -> tuple[str, int]:
     """Call LLM function with cache support and text sanitization
 
@@ -5494,6 +5513,12 @@ async def use_llm_func_with_cache(
             ``response_format`` directly.
         llm_cache_identity: Non-secret model/provider identity used to partition
             cache entries across role model, binding, or host changes.
+        text_chunks_storage: Storage holding the owning chunk. When given
+            together with ``chunk_id``, the cache key is attached to that chunk
+            BEFORE the cache row is written, so a row can never outlive the only
+            reference that reaches it (issue #3833). Omit it -- as the parse
+            stage and the summary path do, having no owning chunk -- to keep the
+            legacy order and the ``cache_keys_collector`` batch instead.
 
     Returns:
         tuple[str, int]: (LLM response text, timestamp)
@@ -5550,6 +5575,22 @@ async def use_llm_func_with_cache(
         # Generate cache key for this LLM call
         cache_key = generate_cache_key("default", cache_type, arg_hash)
 
+        async def _record_reference(scenario: str) -> bool:
+            """Make this chunk's reference to ``cache_key`` durable.
+
+            Returns True when the caller may write the row: either the
+            reference is recorded, or the caller opted out of the invariant by
+            not naming an owning chunk (parse stage, summaries).
+            """
+            if chunk_id is None or text_chunks_storage is None:
+                return True
+            return await update_chunk_cache_list(
+                chunk_id,
+                text_chunks_storage,
+                [cache_key],
+                scenario,
+            )
+
         cached_result = await handle_cache(
             llm_response_cache,
             arg_hash,
@@ -5561,6 +5602,15 @@ async def use_llm_func_with_cache(
             content, timestamp = cached_result
             logger.debug(f"Found cache for {arg_hash}")
             statistic_data["llm_cache"] += 1
+
+            # Re-attach on a hit. The row predates this call, so ordering is
+            # moot here; this is the re-ingest self-heal. Stage 1 re-upserts
+            # the chunk row and the business value is replaced wholesale
+            # (see JsonKVStorage.upsert), so a second ingest of the same
+            # document arrives with llm_cache_list emptied while the rows it
+            # named still exist. A failure here is logged, not fatal: it fails
+            # to repair an orphan rather than creating one.
+            await _record_reference(f"{cache_type}_cache_hit")
 
             # Add cache key to collector if provided
             if cache_keys_collector is not None:
@@ -5595,14 +5645,51 @@ async def use_llm_func_with_cache(
         # Generate timestamp for cache miss (LLM call completion time)
         current_timestamp = int(time.time())
 
+        # Reference-before-row (issue #3833). An extract cache row carries the
+        # chunk text verbatim plus the entities pulled from it, and the ONLY
+        # thing that ever reaches it again is the owning chunk's
+        # llm_cache_list. Writing the row first and attaching afterwards left
+        # an unreachable row whenever the gap was cut short: a sibling chunk's
+        # exception cancelling this task through extract_entities'
+        # FIRST_EXCEPTION wait, a hard kill, or a swallowed storage error in
+        # the attach. Attaching first cannot lose the row, only the reference.
+        #
+        # ACCEPTED RESIDUE (the flip): a reference to a row that was never
+        # written. Every reader tolerates it -- adelete_by_doc_id and
+        # _rollback_one_custom_chunk_patch pass the ids to
+        # llm_response_cache.delete(), where a missing id is a no-op, and
+        # _get_cached_extraction_results (also used by the chunk-tracking
+        # repair tool) drops None entries from its batch get. It heals on the
+        # next ingest of the document, which rewrites llm_cache_list from
+        # scratch.
+        #
+        # NOT closed by this ordering: the re-ingest window. Stage 1 replaces
+        # the chunk row's business value wholesale, emptying llm_cache_list
+        # while the rows it named still exist; the hit branch above
+        # re-attaches, but a kill between the two orphans every extract row of
+        # that document. Also unchanged: summary, smartheading and analysis
+        # rows, which carry no chunk reference at all and need the operator GC
+        # of issue #3833.
         if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
             if res_truncated:
                 # Do not persist truncated extraction output: a cached partial
                 # payload would be replayed on every later run, even when a
                 # larger token budget would have completed the extraction.
+                # Nothing is attached either, so no reference is left dangling.
                 logger.warning(
                     f"Skipping LLM cache write for truncated {cache_type} response "
                     f"(finish_reason=length, chunk_id={chunk_id})"
+                )
+            # ``save_to_cache`` is a no-op on falsy content, so attaching for an
+            # empty response would leave a reference to a row that is never
+            # written. Its other two no-ops cannot happen here: hashing_kv is
+            # non-None inside this branch, and a streaming response would
+            # already have failed the ``len(res)`` above.
+            elif res and not await _record_reference(f"{cache_type}_cache_write"):
+                logger.warning(
+                    f"Skipping LLM cache write for {cache_type} response: could not "
+                    f"record its reference on chunk {chunk_id}. The result is "
+                    "returned; it will be recomputed on the next run."
                 )
             else:
                 await save_to_cache(

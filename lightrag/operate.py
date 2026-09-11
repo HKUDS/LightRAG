@@ -43,7 +43,6 @@ from lightrag.utils import (
     get_env_value,
     get_llm_cache_identity,
     serialize_llm_cache_identity,
-    update_chunk_cache_list,
     remove_think_tags,
     pick_by_weighted_polling,
     pick_by_vector_similarity,
@@ -4125,9 +4124,6 @@ async def extract_entities(
             else ""
         )
 
-        # Create cache keys collector for batch processing
-        cache_keys_collector = []
-
         def _report_truncation(result: str, stage: str) -> None:
             if not is_truncated_response(result):
                 return
@@ -4191,7 +4187,7 @@ async def extract_entities(
             llm_response_cache=llm_response_cache,
             cache_type="extract",
             chunk_id=chunk_key,
-            cache_keys_collector=cache_keys_collector,
+            text_chunks_storage=text_chunks_storage,
             response_format=({"type": "json_object"} if use_json_extraction else None),
             llm_cache_identity=get_llm_cache_identity(global_config, "extract"),
         )
@@ -4267,7 +4263,7 @@ async def extract_entities(
                 history_messages=history,
                 cache_type="extract",
                 chunk_id=chunk_key,
-                cache_keys_collector=cache_keys_collector,
+                text_chunks_storage=text_chunks_storage,
                 response_format=(
                     {"type": "json_object"} if use_json_extraction else None
                 ),
@@ -4333,31 +4329,18 @@ async def extract_entities(
                     maybe_edges[edge_key] = list(glean_edge_list)
                 await _cooperative_yield(i, every=8)
 
-        # Batch update chunk's llm_cache_list with all collected cache keys.
+        # No end-of-chunk cache-key attach here, by design. Each extract cache
+        # row is attached to this chunk BEFORE it is written, inside
+        # use_llm_func_with_cache (issue #3833) — see the reference-before-row
+        # note there for the invariant and its accepted residue. Collecting the
+        # keys in memory and attaching them once at the end is precisely what
+        # orphaned this chunk's rows when a sibling's exception cancelled this
+        # task, when the process died, or when the attach itself failed.
         #
-        # Ordered BEFORE the validator on purpose. The rows are already
-        # written durably, but their keys live only in the in-memory
-        # cache_keys_collector until this call attaches them to the chunk, and
-        # recovery (_rollback_one_custom_chunk_patch) reaches cache rows
-        # exclusively through a chunk's llm_cache_list. A validator that raises
-        # exits the chunk here, so a key never attached is a row nothing can
-        # reach again — orphaned even after /documents/scan rolls the operation
-        # back. Ordering is all this buys, NOT durability: this call swallows
-        # storage errors, and a sibling cancelled by the FIRST_EXCEPTION path
-        # never reaches its own call. Both leave the same orphan; closing that
-        # off needs recovery to find rows by the `chunk_id` they already carry
-        # (issue #3833), not more ordering here.
-        #
-        # Nothing after this point adds keys: the collector is filled by the
-        # extraction and gleaning calls above, and the multimodal injection
-        # below builds records from sidecar metadata without calling the LLM.
-        if cache_keys_collector and text_chunks_storage:
-            await update_chunk_cache_list(
-                chunk_key,
-                text_chunks_storage,
-                cache_keys_collector,
-                "entity_extraction",
-            )
+        # Nothing here needs to re-attach them: the extraction and gleaning
+        # calls above have each already recorded their own key, and the
+        # multimodal injection below builds records from sidecar metadata
+        # without calling the LLM.
 
         # Optional extraction-quality hook: the last word on what the LLM
         # extracted from this chunk. Caller-facing contract, including why core
