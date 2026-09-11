@@ -294,7 +294,7 @@ def test_every_contract_section_pointer_resolves():
                 )
 
     assert not unnamed, (
-        "These files point at *a section* of \"the contract doc\" without naming "
+        'These files point at *a section* of "the contract doc" without naming '
         "which document that is:\n  "
         + "\n  ".join(sorted(set(unnamed)))
         + "\n\nName the docs/design/<Name>.md path somewhere in the same file, "
