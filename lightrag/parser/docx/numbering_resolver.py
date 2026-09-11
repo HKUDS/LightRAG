@@ -36,8 +36,8 @@ class NumberingResolver:
     FORMAT_CONVERTERS = {
         "decimal": lambda n: str(n),
         # Word repeats a letter after each alphabet: a...z, aa...zz, aaa...
-        "lowerLetter": lambda n: chr(ord("a") + (n - 1) % 26) * ((n - 1) // 26 + 1),
-        "upperLetter": lambda n: chr(ord("A") + (n - 1) % 26) * ((n - 1) // 26 + 1),
+        "lowerLetter": lambda n: NumberingResolver._to_alpha(n),
+        "upperLetter": lambda n: NumberingResolver._to_alpha(n).upper(),
         "lowerRoman": lambda n: NumberingResolver._to_roman(n).lower(),
         "upperRoman": lambda n: NumberingResolver._to_roman(n),
         "chineseCounting": lambda n: NumberingResolver._to_chinese(n),
@@ -62,6 +62,8 @@ class NumberingResolver:
     #: table exists to make the event FINDABLE: a real document that gets there
     #: is the evidence needed to implement the right one.
     LIMITED_DOMAIN_FORMATS = {
+        "lowerLetter": 78,
+        "upperLetter": 78,
         "chineseCounting": 99,
         "chineseCountingThousand": 99,
         "japaneseCounting": 99,
@@ -375,6 +377,7 @@ class NumberingResolver:
         Returns:
             Rendered label string (e.g., "1.1", "a)", "第一章") or empty string
         """
+        self.last_label_format: str | None = None
         try:
             pPr = para_element.find(f"{{{NSMAP['w']}}}pPr")
             if pPr is None:
@@ -495,6 +498,8 @@ class NumberingResolver:
 
             # Format the label using lvlText template
             label = self._format_label(num_id, ilvl, levels)
+            if label:
+                self.last_label_format = levels[ilvl]["numFmt"]
 
             # Update tracking state for next paragraph
             self.last_numId = num_id
@@ -531,6 +536,17 @@ class NumberingResolver:
             return result
         except Exception:
             return ""
+
+    @staticmethod
+    def _to_alpha(n: int) -> str:
+        """Render Word's repeated letters within the classifier's 1-78 domain.
+
+        Check before multiplying: an untrusted DOCX startOverride can be a
+        32-bit integer, which must not allocate a label proportional to it.
+        """
+        if not 1 <= n <= 78:
+            return str(n)
+        return chr(ord("a") + (n - 1) % 26) * ((n - 1) // 26 + 1)
 
     @staticmethod
     def _to_roman(n: int) -> str:

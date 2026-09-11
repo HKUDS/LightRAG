@@ -264,6 +264,7 @@ class NumberingClassification:
     ordinal: int | None = None  # parsed ordinal value, when parseable
     raw_level: int | None = None  # MultiLevelNum: dot count + 1
     top_ordinal: int | None = None  # MultiLevelNum: leading component value
+    automatic_alpha: bool = False  # explicit DOCX numFmt wins over Roman heuristics
 
     @property
     def priority(self) -> int:
@@ -334,7 +335,9 @@ def _parse_latin_ordinal(text: str) -> int | None:
     return parse_alpha_ordinal(text)
 
 
-def classify_numbering(text: str) -> NumberingClassification | None:
+def classify_numbering(
+    text: str, *, numbering_format: str | None = None
+) -> NumberingClassification | None:
     """Classify the leading numbering of a paragraph (first hit wins).
 
     Returns None when no pattern matches OR when the matched styleKey does
@@ -343,8 +346,11 @@ def classify_numbering(text: str) -> NumberingClassification | None:
     """
     if not text:
         return None
+    automatic_alpha = numbering_format in ("lowerLetter", "upperLetter")
     multi_level_shape = _P_MULTI_LEVEL_SHAPE.match(text) is not None
     for style_key, pattern in _MATCH_ORDER:
+        if automatic_alpha and style_key == ROMAN_NUM:
+            continue
         if multi_level_shape and style_key != MULTI_LEVEL_NUM:
             # A multi-level opener is claimed by MultiLevelNum exclusively;
             # if its full rule rejected the text, the paragraph is body.
@@ -375,6 +381,7 @@ def classify_numbering(text: str) -> NumberingClassification | None:
             ordinal=ordinal,
             raw_level=raw_level,
             top_ordinal=top_ordinal,
+            automatic_alpha=automatic_alpha,
         )
     return None
 
@@ -399,6 +406,7 @@ def reclassify_single_char_romans(
             item is not None
             and item.style_key == EN_ALPHA
             and item.label_text in _SINGLE_ROMAN_CHARS
+            and not item.automatic_alpha
         ):
             out.append(
                 replace(
