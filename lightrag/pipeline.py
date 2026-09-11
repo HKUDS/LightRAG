@@ -5927,17 +5927,24 @@ class _PipelineMixin:
         # the permanently-failed operation from its buffer before raising
         # (``OpenSearchKVStorage._flush_pending_kv_ops``), so flushing again
         # finds an empty buffer and reports success while the reference is
-        # gone for good. Trust the exception over the retry.
+        # gone for good. Trust the recorded failure over the retry.
+        #
+        # ``_chunk_reference_commit_failed`` is the durable half of the check:
+        # the exception is only one of several gathered flush results and need
+        # not be the one that propagated here, so a text_chunks failure can
+        # reach this epilogue wearing another namespace's name.
         chunk_namespace = getattr(self.text_chunks, "final_namespace", None) or getattr(
             self.text_chunks, "namespace", ""
         )  # the same spelling _flush_storages puts into IndexFlushError
-        if isinstance(error, IndexFlushError) and error.namespace == chunk_namespace:
+        if self._chunk_reference_commit_failed or (
+            isinstance(error, IndexFlushError) and error.namespace == chunk_namespace
+        ):
             logger.error(
                 "Chunk cache references did not land after %s for d-id %s: "
                 "%s. Deferring the LLM cache commit so the pair stays together.",
                 stage_label,
                 doc_id,
-                error,
+                error if error is not None else "an earlier chunk commit failed",
             )
             return False
         try:

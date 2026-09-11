@@ -1236,6 +1236,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         init=False,
         repr=False,
     )
+    # A text_chunks commit has failed and no ordered pair commit has succeeded
+    # since. Set and cleared in ``_flush_storages``; read by the failure
+    # epilogue and the aborting-batch cleanup, which must NOT trust their own
+    # retry of that namespace. See *LLM extraction cache reachability* in
+    # ``docs/design/PurgeRecoveryContract.md``.
+    _chunk_reference_commit_failed: bool = field(
+        default=False,
+        init=False,
+        repr=False,
+    )
 
     # Storages Management
     # ---
@@ -3734,8 +3744,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # they are recomputed on the next run. An unreachable row holding
         # document text is not. See *LLM extraction cache reachability* in the
         # contract doc, ``docs/design/PurgeRecoveryContract.md``.
-        references_committed = True
-        if self.text_chunks is not None:
+        # Captured BEFORE the flush below: that flush is itself a retry of a
+        # buffer the backend may have drained when it dropped the failed
+        # operation, so it can report success over a reference that is gone.
+        references_committed = not self._chunk_reference_commit_failed
+        if self.text_chunks is not None and references_committed:
             try:
                 committed = await cast(
                     StorageNameSpace, self.text_chunks
@@ -3744,11 +3757,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             except Exception as e:
                 logger.error(f"Failed to persist chunk cache references on abort: {e}")
                 references_committed = False
-            if not references_committed:
-                logger.error(
-                    "Skipping the LLM cache flush on abort: its chunk references "
-                    "did not land, and this cleanup drops both buffers next"
-                )
+        if not references_committed:
+            logger.error(
+                "Skipping the LLM cache flush on abort: a chunk-reference commit "
+                "failed in this batch and this cleanup drops both buffers next. "
+                "Cached results from healthy documents in the batch are lost with "
+                "it and recomputed on the next run"
+            )
 
         for storage_inst in self._index_storages():
             if skip_enqueue_owned and (
@@ -3829,6 +3844,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         "pending mutation"
                     )
             except Exception as e:
+                if storage_inst is self.text_chunks:
+                    # Sticky, because the failure does not survive in anything
+                    # else. A per-item backend DROPS a permanently-failed
+                    # operation from its buffer before raising, so every later
+                    # retry of this namespace finds an empty buffer and reports
+                    # success -- the failure epilogue's and the aborting-batch
+                    # cleanup's alike. The exception cannot carry it either: it
+                    # is only one of several gathered results and need not be
+                    # the one that propagates. Cleared in
+                    # _flush_cache_after_references, the one place that proves
+                    # the pair is consistent again.
+                    self._chunk_reference_commit_failed = True
                 namespace = getattr(storage_inst, "final_namespace", None) or getattr(
                     storage_inst, "namespace", ""
                 )
@@ -3855,6 +3882,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # ``docs/design/PurgeRecoveryContract.md``.
             await _flush_one(self.text_chunks)
             await _flush_one(self.llm_response_cache)
+            # Both landed, in order: the namespaces are consistent again and
+            # the sticky failure above is retired. The ONLY clearer -- a
+            # standalone text_chunks flush elsewhere proves nothing, since it
+            # may be retrying a buffer the backend already drained.
+            self._chunk_reference_commit_failed = False
 
         pending = [inst for inst in storages if inst is not None]
         # Identity, never ``in``: the storage classes are dataclasses, so ``==``
@@ -3885,6 +3917,27 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             for exc in errors:
                 if isinstance(exc, asyncio.CancelledError):
                     raise exc
+            # Report the text_chunks failure preferentially. The chained pair
+            # is appended after the other tasks, so gather would otherwise put
+            # an unrelated namespace first and relegate the reference failure
+            # to a log line -- which is the one an operator has to act on,
+            # since it is the one that stops the cache from being committed.
+            # Diagnostics only: the gate reads the sticky flag above, not this.
+            chunk_namespace = (
+                getattr(self.text_chunks, "final_namespace", None)
+                or getattr(self.text_chunks, "namespace", "")
+                if self.text_chunks is not None
+                else None
+            )
+            errors.sort(
+                key=lambda exc: (
+                    not (
+                        isinstance(exc, IndexFlushError)
+                        and chunk_namespace is not None
+                        and exc.namespace == chunk_namespace
+                    )
+                )
+            )
             for extra in errors[1:]:
                 logger.error(f"Additional index flush failure: {extra}")
             raise errors[0]

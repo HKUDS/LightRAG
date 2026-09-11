@@ -678,3 +678,92 @@ async def test_discard_skips_the_cache_flush_when_references_fail(
         )
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_chunk_commit_is_remembered_across_the_cleanup(
+    tmp_path, monkeypatch, caplog
+):
+    """The cleanup must not re-read a buffer the backend already drained.
+
+    OpenSearch removes a permanently-failed operation before raising, so the
+    cleanup's own retry of text_chunks returns normally over a reference that
+    is gone. Without the recorded failure it would then publish the cache rows.
+    """
+    rag = await _make_rag(tmp_path)
+    try:
+        rec: list = []
+        chunks, cache, other = _bind_cache_pair_spies(
+            rag, rec, chunks_flush_error=RuntimeError("permanent bulk failure")
+        )
+        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
+
+        with pytest.raises(IndexFlushError):
+            await rag._insert_done()
+
+        # The backend dropped the failed op: a retry now reports success.
+        chunks._flush_error = None
+
+        with caplog.at_level("ERROR", logger="lightrag"):
+            await rag._discard_pending_index_ops()
+
+        assert cache.index_done_calls == 0, (
+            "the cleanup trusted its own retry of a drained buffer and "
+            "published cache rows behind a dropped reference"
+        )
+        assert any(
+            "a chunk-reference commit failed in this batch" in rec_.message
+            for rec_ in caplog.records
+        )
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_the_chunk_failure_is_reported_over_an_unrelated_one(
+    tmp_path, monkeypatch
+):
+    """gather appends the chained pair last, so the chunk failure would rank
+    second on its own — and it is the one an operator has to act on."""
+    rag = await _make_rag(tmp_path)
+    try:
+        rec: list = []
+        chunks, cache, other = _bind_cache_pair_spies(
+            rag, rec, chunks_flush_error=RuntimeError("chunk store is down")
+        )
+        chunks.namespace = "text_chunks"
+        other._flush_error = RuntimeError("an unrelated vdb is down")
+        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
+
+        with pytest.raises(IndexFlushError) as excinfo:
+            await rag._insert_done()
+
+        assert excinfo.value.namespace == "text_chunks", excinfo.value
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_an_ordered_pair_commit_retires_the_recorded_failure(
+    tmp_path, monkeypatch
+):
+    """Only both flushes landing in order proves the namespaces agree again."""
+    rag = await _make_rag(tmp_path)
+    try:
+        rec: list = []
+        chunks, cache, other = _bind_cache_pair_spies(
+            rag, rec, chunks_flush_error=RuntimeError("transient outage")
+        )
+        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
+
+        with pytest.raises(IndexFlushError):
+            await rag._insert_done()
+        assert rag._chunk_reference_commit_failed is True
+
+        chunks._flush_error = None
+        await rag._insert_done()
+
+        assert rag._chunk_reference_commit_failed is False
+        assert cache.index_done_calls == 1
+    finally:
+        await rag.finalize_storages()
