@@ -1,16 +1,17 @@
 # File-Backed Snapshot Contract
 
 Read this before changing `lightrag/kg/nano_vector_db_impl.py`,
-`lightrag/kg/faiss_impl.py`, `lightrag/kg/json_kv_impl.py`, or
-`lightrag/kg/file_fingerprint.py`.
+`lightrag/kg/faiss_impl.py`, `lightrag/kg/json_kv_impl.py`,
+`lightrag/kg/json_doc_status_impl.py`, or `lightrag/kg/file_fingerprint.py`.
 
-Three storages keep their data in process memory and persist it by rewriting a
+Four storages keep their data in process memory and persist it by rewriting a
 whole file. Two of them — `NanoVectorDBStorage` and `FaissVectorDBStorage` —
-share one design and are documented together here. The third, `JsonKVStorage`,
-uses a *fundamentally different* cross-process model and is covered in its own
-section; compare carefully before changing either side.
+share one design and are documented together here. The other two,
+`JsonKVStorage` and `JsonDocStatusStorage`, use a *fundamentally different*
+cross-process model and are covered in their own section; compare carefully
+before changing either side.
 
-The graph store, `NetworkXStorage`, is the fourth file-backed storage and the
+The graph store, `NetworkXStorage`, is the fifth file-backed storage and the
 one that behaves differently on a write conflict. Its contract is
 [NetworkXSingleWriterContract.md](NetworkXSingleWriterContract.md), and the
 comparison between the two is
@@ -18,7 +19,7 @@ comparison between the two is
 
 ## Scope
 
-All four file-backed storages are supported for **small-scale testing and
+All five file-backed storages are supported for **small-scale testing and
 validation only**. Production deployments run server-backed storages. The cost
 of a whole-file rewrite is therefore not a consideration, and no change to these
 files may be justified by — or blocked on — it.
@@ -389,10 +390,22 @@ else's commit. Unlike the graph store these classes lose nothing to it (a peer
 commit is reloaded and the buffers replayed on top), but the *timing* is still
 not the caller's to choose.
 
-## `JsonKVStorage` — shared in-memory state, no reload path
+## `JsonKVStorage` and `JsonDocStatusStorage` — shared in-memory state, no reload path
 
-This class uses a fundamentally different cross-process model from the three
-above, which keep one in-memory copy per process and reconcile via file reloads.
+These two classes use a fundamentally different cross-process model from the
+three above, which keep one in-memory copy per process and reconcile via file
+reloads.
+
+`JsonDocStatusStorage` does not inherit from `JsonKVStorage` — it reimplements
+the same protocol against the same `shared_storage` primitives
+(`get_namespace_data`, `try_initialize_namespace`, `set_all_update_flags`,
+`clear_all_update_flags`). Everything below therefore describes both, and a
+change to one of them is almost always a change the other needs too. Where they
+deliberately diverge is called out where it arises: the flush trigger in
+[the commit trigger section](#commit-trigger-deferred-for-kv-immediate-for-doc-status),
+the prep-outside-the-lock note under [Lock scope](#lock-scope-1), and the wider
+read surface under
+[Caveats](#caveats-vs-the-file-backed-implementations).
 
 ### Storage model
 
@@ -436,20 +449,45 @@ Commit (`index_done_callback`):
    for the *other* processes to do; the clear is just a "the dirty data has been
    persisted" signal.
 
+### Commit trigger: deferred for KV, immediate for doc-status
+
+The protocol above is identical in both classes; *when* the flush fires is not.
+
+`JsonKVStorage` defers every ordinary write. `upsert` and `delete` mutate shared
+memory and raise the dirty flag only; the disk write happens at the pipeline's
+batched `_insert_done()`. Its one extra flush is in `finalize`, and only for
+`*_cache` namespaces: those churn throughout query and extract without the
+pipeline necessarily ending at a commit point, so a shutdown flush is what keeps
+the next run from re-paying for cached LLM calls.
+
+`JsonDocStatusStorage` flushes synchronously from every write that changes a
+document's scheduling state: `upsert`, `update_doc_status_fields`, and the
+source-conflict repair each `await self.index_done_callback()` before returning.
+Doc-status is the ingest pipeline's recovery anchor — if the process dies after
+an in-memory upsert but before the next batch commit, the document must still be
+on disk as PENDING/PROCESSING, or the next run has no record that it was ever
+enqueued. Its `delete` stays deferred, because losing a deletion leaves a row
+that the next purge or rescan removes again — the harmless direction under
+[*Consistency without transactions*](../../AGENTS.md).
+
+`drop` flushes synchronously in both: it is the one write whose entire point is
+that the empty state is durable.
+
 ### Lock scope
 
 Unlike the file-backed classes, which only lock reload/commit critical sections,
-this class **holds `_storage_lock` over every `self._data` access** — read or
+these classes **hold `_storage_lock` over every `self._data` access** — read or
 write — because the underlying `Manager().dict()` is not free-threaded across
 processes.
 
 Two places intentionally do work outside the lock for latency reasons:
 
-* `upsert` performs its per-key timestamp prep loop inside the lock but yields to
-  the event loop via `_cooperative_yield` between keys (safe: `NamespaceLock` is
-  non-reentrant, so siblings blocked on it stay blocked).
-* `JsonDocStatusStorage.upsert` prepares its caller-supplied dict outside the
-  lock — it only mutates the input, not the shared store.
+* `JsonKVStorage.upsert` performs its per-key timestamp prep loop inside the
+  lock but yields to the event loop via `_cooperative_yield` between keys (safe:
+  `NamespaceLock` is non-reentrant, so siblings blocked on it stay blocked).
+* `JsonDocStatusStorage.upsert` prepares its caller-supplied dict (the
+  `chunks_list` default) entirely outside the lock — it only mutates the input,
+  not the shared store — and yields the same way while doing it.
 
 ### Commit granularity — a commit publishes the whole namespace
 
@@ -481,24 +519,32 @@ subsequent re-flushes are no-ops.
 
 ### Caveats vs the file-backed implementations
 
-* **No reload path.** If something writes to the on-disk file out of band, this
-  class will not pick it up until restart. The file is only ever written by
+* **No reload path.** If something writes to the on-disk file out of band,
+  neither class will pick it up until restart. The file is only ever written by
   `index_done_callback` and read once in `initialize`.
 * **No `_get_*` entry method.** Adding one would be wrong — there is nothing to
   "get fresher than", since the in-memory state is already the shared,
   authoritative view.
+* **Reads must not leak the proxy.** `JsonDocStatusStorage`'s read side
+  (`get_docs_by_statuses`, `get_docs_by_track_id`, `get_docs_paginated`,
+  `get_doc_by_file_path`, …) is much wider than `JsonKVStorage`'s, and every
+  method of it follows the same template: take `_storage_lock`, scan
+  `self._data`, then `deepcopy` the row or convert it into a
+  `DocProcessingStatus` before returning. Returning a live reference into the
+  `Manager().dict()` proxy would hand the caller a value another process can
+  mutate underneath it.
 * **`write_json` may sanitize.** If sanitization happens, the on-disk JSON
   differs from what was in memory; the callback re-reads the cleaned file back
   into `self._data` under the same lock so the shared view stays consistent with
   disk.
 
-Because nothing here can discard an uncommitted write, this class carries no
+Because nothing here can discard an uncommitted write, neither class carries a
 `requires_single_writer` capability flag — see
 [the admin write paths](NetworkXSingleWriterContract.md#admin-write-paths).
 
 ### Non-pipeline write paths
 
-* `drop` — destructive, **not** serialized by this storage class. Currently
+* `drop` — destructive, **not** serialized by either storage class. Currently
   gated by the API layer (`/documents/clear`); any new caller must hold the
   pipeline `busy` reservation.
 * `upsert` / `delete` invoked from non-pipeline admin flows (cache management,

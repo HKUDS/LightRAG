@@ -271,27 +271,38 @@ def test_every_contract_section_pointer_resolves():
     assert by_document, "no contract documents found — the check would pass vacuously"
 
     dangling = []
+    unnamed = []
     for path in _python_files():
         flat = _flattened(path)
         named = re.findall(r"docs/design/(\w+\.md)", flat)
-        # A file that names none falls back to every contract: weaker, but the
-        # alternative is refusing to check it at all.
-        headings = (
-            set().union(*(by_document.get(doc, set()) for doc in named))
-            if named
-            else set().union(*by_document.values())
-        )
+        # A file that names NO contract path is the defect itself, not a case to
+        # wave through. "The contract doc" is shorthand for a path the file is
+        # expected to carry somewhere; without it the reader has nowhere to go.
+        # An earlier version pooled every contract's headings as a fallback, and
+        # that is exactly how ``json_doc_status_impl.py`` passed while saying
+        # "see the contract doc" about a document that did not cover it at all.
+        headings = set().union(*(by_document.get(doc, set()) for doc in named))
 
         for match in _CONTRACT_POINTER.finditer(flat):
             name = (match.group(1) or match.group(2)).strip().rstrip(".,;:")
-            if name.lower() not in headings:
-                where = "/".join(sorted(set(named))) or "any contract"
+            if not named:
+                unnamed.append(f"{path.relative_to(_REPO_ROOT)} -> *{name}*")
+            elif name.lower() not in headings:
                 dangling.append(
-                    f"{path.relative_to(_REPO_ROOT)} -> *{name}* (not in {where})"
+                    f"{path.relative_to(_REPO_ROOT)} -> *{name}* "
+                    f"(not in {'/'.join(sorted(set(named)))})"
                 )
 
+    assert not unnamed, (
+        "These files point at *a section* of \"the contract doc\" without naming "
+        "which document that is:\n  "
+        + "\n  ".join(sorted(set(unnamed)))
+        + "\n\nName the docs/design/<Name>.md path somewhere in the same file, "
+        "so the pointer resolves for a reader and for this check."
+    )
     assert not dangling, (
-        "These pointers name a section no contract document contains:\n  "
+        "These pointers name a section their contract document does not "
+        "contain:\n  "
         + "\n  ".join(sorted(set(dangling)))
         + "\n\nA renamed section leaves the pointer looking valid. Retarget it, "
         "or restore the name in docs/design/."
