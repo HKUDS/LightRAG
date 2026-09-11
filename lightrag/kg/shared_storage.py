@@ -2182,12 +2182,13 @@ _INTERNAL_PIPELINE_STATUS_FIELDS = (
 # Every other kind (custom_chunks / delete / clear) may have half-committed and
 # is fenced with ``recovery_required`` instead of being cleared for re-run.
 #
-# ``admin`` (issue #3899 R2.2) MUST stay here: an admin write holds ``busy`` for
+# ``admin`` MUST stay here: an admin write holds ``busy`` for
 # seconds, and a worker killed inside it would otherwise fence the whole
 # workspace with a 503 clearable only through ``/documents/recovery/force_reset``
 # -- worse than the lost-write defect the reservation exists to remove. What a
-# crash mid-edit leaves behind is the residue issue #3838 R5/R6 already document
-# and order (a tracking row without its graph object, repaired offline).
+# crash mid-edit leaves behind is the residue the graph store's contract
+# already documents: a tracking row without its graph object, harmless to
+# queries and repaired offline with the chunk-tracking rebuild tool.
 _RERUNNABLE_RESERVATION_KINDS = frozenset({"processing", "scan", "admin"})
 
 
@@ -2275,10 +2276,11 @@ def make_owner_record(token: str, kind: str) -> Dict[str, Any]:
     * ``processing`` / ``scan`` — re-runnable: in-flight docs sit in doc_status
       and are reset to PENDING / retried, so a dead owner's slot is simply
       cleared (see :data:`_RERUNNABLE_RESERVATION_KINDS`).
-    * ``admin`` — an admin graph write (``LightRAG._admin_write_gate``, issue
-      #3899) holding ``busy`` so a pipeline start is deferred for its duration.
+    * ``admin`` — an admin graph write (the admin-write gate,
+      ``LightRAG._admin_write_gate``) holding ``busy`` so a pipeline start is
+      deferred for its duration.
       Re-runnable: the caller repeats the edit, and a crash mid-edit leaves
-      only the documented #3838 crash residue. A dead admin owner is reclaimed
+      only the documented crash residue. A dead admin owner is reclaimed
       through the ``busy_owner`` branch, which also clears the manual-freeze
       fields -- correct, not incidental: the freeze is only ever set by a
       processing run that already holds ``busy``, which cannot coexist with an

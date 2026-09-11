@@ -1809,14 +1809,14 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
 
     ``busy`` is set by the processing loop, by destructive jobs
     (``/documents/clear`` / per-doc delete), AND by an admin graph write
-    itself (issue #3899). The first two concurrently write the same graph
+    itself. The first two concurrently write the same graph
     storages that these endpoints mutate, so a 409 here mirrors the
     existing UI guard and tells clients to wait.
 
     **An ``admin`` holder is exempt, and the exemption is load-bearing.**
     Refusing on the raw flag would refuse the second concurrent REST admin
     write before it ever reaches the workspace admin lock, so the bounded
-    QUEUEING that lock provides (issue #3899 R1.5) would exist only for
+    QUEUEING that lock provides would exist only for
     direct SDK callers, and the client would be told to wait for document
     ingestion when what is actually ahead of it is another UI edit. Letting
     it through costs nothing: the core gate takes the admin lock, waits for
@@ -1830,7 +1830,7 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
     request open -- embedding round-trip included -- for the pipeline to
     start inside; the per-edge/-node keyed locks do not close that, since
     the pipeline and an admin write lock different keys. The window is
-    closed in the core instead (issue #3899): ``LightRAG._admin_write_gate``
+    closed in the core instead: ``LightRAG._admin_write_gate``
     takes the pipeline ``busy`` reservation (``kind="admin"``) for the
     duration of every admin write, deferring a pipeline start until the
     write commits, and refuses with its own 409 when the pipeline is
@@ -3713,9 +3713,10 @@ async def run_scanning_process(
             pass
 
         # Roll back failed/stale custom-chunk operations FIRST, while the
-        # classification phase still holds ``scanning_exclusive`` (issue
-        # #3400 Phase 4). Discovery is storage-driven — SDK operations may
-        # have no scan-visible input file — and a failed rollback keeps the
+        # classification phase still holds ``scanning_exclusive`` (see
+        # docs/design/PurgeRecoveryContract.md for the rollback ordering).
+        # Discovery is storage-driven — SDK operations may have no
+        # scan-visible input file — and a failed rollback keeps the
         # journal/FAILED row for the next scan without aborting this one.
         if pipeline_status is not None and pipeline_status_lock is not None:
             try:
@@ -6934,7 +6935,7 @@ def create_document_routes(
         NOT repair anything; it only drops the fence (and any lingering
         reservation flags), re-opening a possibly-inconsistent workspace. Requires
         ``confirm=true``. A true idempotent replay of the interrupted operation is
-        a separate concern (core atomicity / #3400).
+        a separate concern (core atomicity).
 
         It ALSO cancels the workspace's queued manual retry requests, and that is
         load-bearing rather than housekeeping: a sticky un-ACKed request makes

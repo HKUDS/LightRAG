@@ -43,7 +43,7 @@ Manual e2e checklist (not testable with fakes): real AGE builds the edge
 ``source``/``target`` ids via ``(agtype_access_operator(...))::text``;
 whether that cast can carry agtype quoting into the id strings can only be
 answered against a live AGE instance (cf. the lossy agtype-quote-strip
-work in #3587, same territory). If it ever does, the failure mode here is
+work, same territory). If it ever does, the failure mode here is
 fail-closed — endpoint ids diverge, verification aborts and compensates —
 not silent loss.
 

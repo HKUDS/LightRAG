@@ -4086,7 +4086,7 @@ def truncate_list_by_token_size(
 
     Counts the real serialized text — every item's ``key(item)`` joined by
     ``separator`` — so the separator's own tokens are part of the budget
-    (the previous per-item-only count silently missed them; see #3559).
+    (the previous per-item-only count silently missed them).
     Never partially truncates an item: the result is always "keep the first
     K complete items, drop the rest", never a half-rendered item.
 
@@ -4585,7 +4585,7 @@ async def wait_tasks_with_drain(
     Concurrent multi-store writers (entity/relation merge, rebuild) must never
     leave a sibling task writing in the background after a failure — a failed
     ``gather``/``wait`` does not by itself imply the other write tasks stopped
-    (issue #3400, "incomplete async failure coordination").
+    ("incomplete async failure coordination").
 
     Behavior:
       - All tasks succeed: returns their results (completion order).
@@ -5217,8 +5217,7 @@ def empty_length_truncated_hint(
     identically. This is the structurally-broken case, not "ran a bit long":
     generation stopped before producing a single content token, so there is
     nothing to salvage and nothing to cache — the caller raises rather than
-    returning "" and letting the document be indexed as an empty graph
-    (issue #3601 gap 4).
+    returning "" and letting the document be indexed as an empty graph.
 
     ``budget_hint`` names the provider's own output-budget knob, since that is
     the actionable part and only the binding knows it.
@@ -6930,7 +6929,7 @@ def has_chunk_tracking_row(stored_data: Any) -> bool:
     caller fall back to the graph object's ``source_id`` — a truncated view that
     can still name chunks a previous purge already pruned (see
     ``compute_incremental_chunk_ids``); reseeding a present-but-empty row from
-    it resurrects stale attribution (issue #3609).
+    it resurrects stale attribution.
     """
 
     return isinstance(stored_data, dict) and isinstance(
@@ -7100,7 +7099,7 @@ def fix_tuple_delimiter_corruption(
         record,
     )
 
-    # Fix: <|#|>| -> <|#|>  ( this is a fix for: <|#|| -> <|#|> )
+    # Fix: <|#|>| -> <|#|>  (this is a fix for: <|#|| -> <|#|>)
     record = re.sub(
         rf"<\|{escaped_delimiter_core}\|>\|",
         tuple_delimiter,

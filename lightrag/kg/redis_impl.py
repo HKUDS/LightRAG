@@ -675,7 +675,7 @@ class RedisKVStorage(BaseKVStorage):
         """Write KV rows, preserving each row's original ``create_time``.
 
         ``create_time`` is the moment the row was FIRST created; only
-        ``update_time`` may move afterwards (issue #3870). Redis cannot read
+        ``update_time`` may move afterwards. Redis cannot read
         one JSON field, so the value is written ``create_time``-first and the
         previous timestamp is recovered from a bounded prefix.
 

@@ -319,8 +319,8 @@ async def _run_chunked_async_bulk(
 
 # Painless script behind every KV upsert. It reproduces MongoDB's
 # ``$setOnInsert`` semantics for ``create_time`` ON THE SERVER, so a
-# replacement upsert never has to read the stored row back first (issue
-# #3870 -- a client-side read-modify-write cost one extra HTTP round trip per
+# replacement upsert never has to read the stored row back first (a
+# client-side read-modify-write cost one extra HTTP round trip per
 # ``upsert()`` call, and this backend is deliberately called with many small
 # batches):
 #   * document missing -> ``_KV_UPSERT_ACTION_UPSERT`` becomes the starting
@@ -385,7 +385,7 @@ _EDGE_ID_CANONICAL_META_FLAG = "edge_id_canonical_v1"
 # deliberately a detection mechanism and not a renaming scheme: renaming the
 # index (e.g. by appending a hash of the workspace) would force a migration on
 # every existing deployment, including the overwhelming majority that never
-# collide. See issue #3827.
+# collide.
 _WORKSPACE_META_KEY = "lightrag_workspace"
 _FINAL_NAMESPACE_META_KEY = "lightrag_final_namespace"
 # Both keys identify the owner: the joined ``{workspace}_{namespace}`` is
@@ -917,8 +917,8 @@ class OpenSearchKVStorage(BaseKVStorage):
         # Pending writes are flushed via _flush_pending_kv_ops() during
         # index_done_callback() / finalize(). Buffering many small upsert()
         # invocations into a single async_bulk roundtrip avoids the per-call
-        # HTTP overhead profiled in issue #2785; the lock-everywhere model
-        # mirrors what #3043 introduced for OpenSearchVectorDBStorage.
+        # HTTP overhead profiled for the deferred-embedding work; the lock-everywhere model
+        # mirrors what was introduced for OpenSearchVectorDBStorage.
         self._pending_upserts: dict[str, dict[str, Any]] = {}
         self._pending_kv_deletes: set[str] = set()
         # Namespace-keyed lock (multi-process aware) is assigned in
@@ -1007,7 +1007,7 @@ class OpenSearchKVStorage(BaseKVStorage):
         # Verify the index we just created (or attached to) is ours. The
         # workspace-to-index-name mapping is lossy, so a differently-named
         # workspace can resolve to this same index -- fail fast instead of
-        # silently sharing its data. See issue #3827.
+        # silently sharing its data.
         await _claim_index_for_workspace(
             self.client, self._index_name, self.workspace, self.final_namespace
         )
@@ -1379,7 +1379,7 @@ class OpenSearchKVStorage(BaseKVStorage):
             # Residue: a read served from the buffer (get_by_id / get_by_ids)
             # reports this estimate, so an update of a row that already exists
             # on the server shows the write time until the next flush, when the
-            # stored value wins. Same shape as before issue #3870's fix; it
+            # stored value wins. Same shape as before the read-modify-write fix; it
             # heals at flush and never reaches storage.
             doc_data["create_time"] = current_time
             source = {k: v for k, v in doc_data.items() if k != "_id"}
@@ -1424,7 +1424,7 @@ class OpenSearchKVStorage(BaseKVStorage):
         script preserves the stored ``create_time`` while replacing the
         business value, which is how this backend meets the
         ``BaseKVStorage.upsert`` contract without reading rows back
-        client-side (issue #3870). ``retry_on_conflict`` lets the server
+        client-side. ``retry_on_conflict`` lets the server
         resolve concurrent updates of one id instead of failing the item.
 
         Concurrency contract: the entire flush runs under ``_flush_lock``;
@@ -1840,7 +1840,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         # Verify the index we just created (or attached to) is ours. The
         # workspace-to-index-name mapping is lossy, so a differently-named
         # workspace can resolve to this same index -- fail fast instead of
-        # silently sharing its data. See issue #3827.
+        # silently sharing its data.
         await _claim_index_for_workspace(
             self.client, self._index_name, self.workspace, self.final_namespace
         )
@@ -3628,7 +3628,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
         # Runs before _migrate_edges_to_canonical_id_if_needed (see
         # initialize) so a colliding deployment never reindexes another
-        # workspace's edges. See issue #3827.
+        # workspace's edges.
         for index_name in (self._nodes_index, self._edges_index):
             await _claim_index_for_workspace(
                 self.client, index_name, self.workspace, self.final_namespace
@@ -5179,7 +5179,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 # buckets happened to come back.
                 #
                 # Exact WITHIN degree_map, which is itself approximate, so the
-                # ranking on this backend is too (#3613). Each aggregation above
+                # ranking on this backend is too. Each aggregation above
                 # returns only its own top max_nodes buckets, so an entity whose
                 # in- and out-degree each fall outside their respective top-N
                 # never reaches this sort however high its undirected degree is;
@@ -5932,7 +5932,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         self._max_batch_size = self.global_config["embedding_batch_num"]
         # Pending writes are flushed via _flush_pending_vector_ops() during
         # index_done_callback() / finalize(). This batches many small upsert()
-        # invocations into a single async_bulk roundtrip. See issue #2785.
+        # invocations into a single async_bulk roundtrip.
         self._pending_vector_docs: dict[str, _PendingVectorDoc] = {}
         self._pending_vector_deletes: set[str] = set()
         # Namespace-keyed lock (multi-process safe) is initialised in
@@ -6072,7 +6072,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         # Verify the index we just created (or attached to) is ours. The
         # workspace-to-index-name mapping is lossy, so a differently-named
         # workspace can resolve to this same index -- fail fast instead of
-        # silently sharing its data. See issue #3827.
+        # silently sharing its data.
         await _claim_index_for_workspace(
             self.client, self._index_name, self.workspace, self.final_namespace
         )
