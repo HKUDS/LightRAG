@@ -94,6 +94,12 @@ DEFAULT_MONGO_DELETE_MAX_RECORDS_PER_BATCH = 1000
 # knob like the env-var-driven limits above, so it isn't one.
 _GET_EDGES_BATCH_CHUNK_SIZE = 500
 
+# node_degrees_batch's own $in chunk size -- same query-size safety cap as
+# above, kept as its own constant rather than shared since the two methods'
+# per-entry BSON size differs ($in of bare id strings vs $or of two-field
+# edge_lo/edge_hi dicts).
+_NODE_DEGREES_BATCH_CHUNK_SIZE = 500
+
 # MongoDB duplicate-key error code, raised when an upsert insert races the
 # unique edge-endpoint index (another writer inserted the same edge first).
 _DUPLICATE_KEY_CODE = 11000
@@ -104,13 +110,14 @@ _DUPLICATE_KEY_CODE = 11000
 _EDGE_MIGRATION_PROGRESS_INTERVAL = 50_000
 
 # Ceiling on how many same-depth candidates get a degree lookup before the
-# max_nodes cap in the bidirectional BFS. node_degrees_batch binds the whole
-# list into two `$in` arrays, and one hub can put 100k neighbours in a single
-# level -- an array that size inflates the command document and forces the
-# planner through a huge index-bounds list for a ranking that only decides the
-# order of candidates max_nodes will mostly discard anyway. (Deliberately not
-# shared with the OpenSearch constant of the same value: that one is derived
-# from index.max_terms_count / search.max_buckets, this one from $in size.)
+# max_nodes cap in the bidirectional BFS. node_degrees_batch itself chunks
+# its $in queries (see _NODE_DEGREES_BATCH_CHUNK_SIZE), so this cap is no
+# longer about the 16MB/planner-index-bounds hazard that chunking now handles
+# for every caller -- it stays because one hub can put 100k neighbours in a
+# single level, and degree-ranking every one of them costs round trips for an
+# outcome max_nodes will mostly discard anyway.
+# (Deliberately not shared with the OpenSearch constant of the same value:
+# that one is derived from index.max_terms_count / search.max_buckets.)
 _GRAPH_DEGREE_RANK_MAX_CANDIDATES = 8192
 
 
@@ -1870,6 +1877,23 @@ class MongoGraphStorage(BaseGraphStorage):
         # creation above.
         source_index_name = f"{workspace_prefix}source_node_id"
         target_index_name = f"{workspace_prefix}target_node_id"
+        if (
+            "source_node_id" not in single_field_indexed
+            or "target_node_id" not in single_field_indexed
+        ):
+            # create_index() awaits the build's commit, and this runs inside
+            # get_data_init_lock, so the first startup after upgrading onto
+            # this code blocks here until the build finishes -- on a
+            # collection with tens of millions of edges that can look like a
+            # hang rather than a one-time index build. Logged unconditionally
+            # (not just on a slow-build heuristic) since there's no cheap way
+            # to know the collection size in advance.
+            logger.info(
+                f"[{self.workspace}] Creating source_node_id/target_node_id "
+                f"indexes on {self._edge_collection_name}; this may take a "
+                "while on large collections and blocks startup until it "
+                "completes"
+            )
         if "source_node_id" not in single_field_indexed:
             try:
                 await self.edge_collection.create_index(
@@ -2286,31 +2310,44 @@ class MongoGraphStorage(BaseGraphStorage):
         # merge the outbound and inbound results with the same "_id" and sum the "degree"
         merged_results = {}
 
-        # Outbound degrees
-        outbound_pipeline = [
-            {"$match": {"source_node_id": {"$in": node_ids}}},
-            {"$group": {"_id": "$source_node_id", "degree": {"$sum": 1}}},
-        ]
+        # Chunk the $in list so one hub with a huge neighbor set (an
+        # unbounded caller, e.g. edge_degrees_batch below) can't inflate a
+        # single command document past MongoDB's 16MB limit or force the
+        # planner through a huge index-bounds list -- the same hazard
+        # _GRAPH_DEGREE_RANK_MAX_CANDIDATES caps at the BFS call site, fixed
+        # here at the shared primitive so every caller is covered, not just
+        # that one. Deduped first so repeated ids in the input don't waste
+        # chunks. Each id lands in exactly one chunk, so outbound-then-inbound
+        # per chunk is safe: no id's degree is ever split across chunks.
+        unique_node_ids = list(dict.fromkeys(node_ids))
+        for i in range(0, len(unique_node_ids), _NODE_DEGREES_BATCH_CHUNK_SIZE):
+            chunk = unique_node_ids[i : i + _NODE_DEGREES_BATCH_CHUNK_SIZE]
 
-        cursor = await self.edge_collection.aggregate(
-            outbound_pipeline, allowDiskUse=True
-        )
-        async for doc in cursor:
-            merged_results[doc.get("_id")] = doc.get("degree")
+            # Outbound degrees
+            outbound_pipeline = [
+                {"$match": {"source_node_id": {"$in": chunk}}},
+                {"$group": {"_id": "$source_node_id", "degree": {"$sum": 1}}},
+            ]
 
-        # Inbound degrees
-        inbound_pipeline = [
-            {"$match": {"target_node_id": {"$in": node_ids}}},
-            {"$group": {"_id": "$target_node_id", "degree": {"$sum": 1}}},
-        ]
+            cursor = await self.edge_collection.aggregate(
+                outbound_pipeline, allowDiskUse=True
+            )
+            async for doc in cursor:
+                merged_results[doc.get("_id")] = doc.get("degree")
 
-        cursor = await self.edge_collection.aggregate(
-            inbound_pipeline, allowDiskUse=True
-        )
-        async for doc in cursor:
-            merged_results[doc.get("_id")] = merged_results.get(
-                doc.get("_id"), 0
-            ) + doc.get("degree")
+            # Inbound degrees
+            inbound_pipeline = [
+                {"$match": {"target_node_id": {"$in": chunk}}},
+                {"$group": {"_id": "$target_node_id", "degree": {"$sum": 1}}},
+            ]
+
+            cursor = await self.edge_collection.aggregate(
+                inbound_pipeline, allowDiskUse=True
+            )
+            async for doc in cursor:
+                merged_results[doc.get("_id")] = merged_results.get(
+                    doc.get("_id"), 0
+                ) + doc.get("degree")
 
         return merged_results
 

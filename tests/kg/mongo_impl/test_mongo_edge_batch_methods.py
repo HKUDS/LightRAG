@@ -1,9 +1,10 @@
 """Read-path contract MongoGraphStorage shares with the other graph backends
-for the two batch methods BaseGraphStorage declares an override contract for
-(``lightrag/base.py``): ``edge_degrees_batch`` and ``get_edges_batch``.
-Mirrors ``tests/kg/neo4j_impl/test_neo4j_graph_read_contract.py`` — a real
-storage instance, only the low-level driver/collection faked, asserting on
-the actual query issued and the result shape.
+for the batch methods BaseGraphStorage declares an override contract for
+(``lightrag/base.py``): ``node_degrees_batch``, ``edge_degrees_batch``, and
+``get_edges_batch``. Mirrors
+``tests/kg/neo4j_impl/test_neo4j_graph_read_contract.py`` — a real storage
+instance, only the low-level driver/collection faked, asserting on the
+actual query issued and the result shape.
 """
 
 from collections import Counter
@@ -55,6 +56,22 @@ def _make_edge_aggregate_side_effect(edges: list[dict]):
     return _aggregate
 
 
+def _make_edge_find_side_effect(docs: list[dict]):
+    """Mock ``edge_collection.find`` for ``get_edges_batch``'s
+    ``$or``-of-``(edge_lo, edge_hi)`` query, returning only the docs whose
+    canonical endpoints appear in *that specific call's* ``$or`` clauses --
+    unlike a static ``return_value``, this actually simulates a chunked call
+    only seeing its own chunk's matches, so a test can tell chunk-scoped
+    attribution apart from "every call happens to get everything back"."""
+
+    def _find(query, *args, **kwargs):
+        wanted = {(c["edge_lo"], c["edge_hi"]) for c in query["$or"]}
+        matches = [d for d in docs if (d["edge_lo"], d["edge_hi"]) in wanted]
+        return _AsyncCursor(matches)
+
+    return _find
+
+
 def _make_storage():
     s = MongoGraphStorage.__new__(MongoGraphStorage)
     s.workspace = "test"
@@ -66,6 +83,77 @@ def _make_storage():
     # the real pymongo async driver); only iterating the cursor is awaited.
     s.edge_collection.find = Mock()
     return s
+
+
+class TestNodeDegreesBatch:
+    @pytest.mark.asyncio
+    async def test_sums_outbound_and_inbound_degree(self):
+        s = _make_storage()
+        edges = [
+            {"source_node_id": "A", "target_node_id": "B"},
+            {"source_node_id": "A", "target_node_id": "C"},
+            {"source_node_id": "D", "target_node_id": "A"},
+        ]
+        s.edge_collection.aggregate = AsyncMock(
+            side_effect=_make_edge_aggregate_side_effect(edges)
+        )
+
+        result = await s.node_degrees_batch(["A"])
+
+        # A: 2 outbound (A->B, A->C) + 1 inbound (D->A) = 3.
+        assert result == {"A": 3}
+
+    @pytest.mark.asyncio
+    async def test_issues_two_aggregate_calls_when_ids_fit_in_one_chunk(self):
+        s = _make_storage()
+        s.edge_collection.aggregate = AsyncMock(
+            side_effect=_make_edge_aggregate_side_effect([])
+        )
+
+        await s.node_degrees_batch(["A", "B", "C"])
+
+        assert s.edge_collection.aggregate.await_count == 2  # outbound + inbound
+
+    @pytest.mark.asyncio
+    async def test_chunks_in_when_ids_exceed_the_chunk_size(self):
+        """A large node_ids list must not build one unbounded $in -- the
+        hazard node_degrees_batch's own docstring/comment documents (a hub
+        entity can put 100k+ neighbours in a single lookup), and the same
+        16MB-query-limit concern get_edges_batch chunks its $or for."""
+        s = _make_storage()
+        node_ids = [f"n{i}" for i in range(5)]
+        edges = [{"source_node_id": nid, "target_node_id": "sink"} for nid in node_ids]
+        s.edge_collection.aggregate = AsyncMock(
+            side_effect=_make_edge_aggregate_side_effect(edges)
+        )
+
+        with patch("lightrag.kg.mongo_impl._NODE_DEGREES_BATCH_CHUNK_SIZE", 2):
+            result = await s.node_degrees_batch(node_ids)
+
+        # 5 ids / chunk size 2 => 3 chunks => 2 aggregate calls each => 6.
+        assert s.edge_collection.aggregate.await_count == 6
+        for call in s.edge_collection.aggregate.await_args_list:
+            pipeline = call.args[0]
+            match = pipeline[0]["$match"]
+            field = next(iter(match))
+            assert len(match[field]["$in"]) <= 2
+        assert result == {nid: 1 for nid in node_ids}
+
+    @pytest.mark.asyncio
+    async def test_dedupes_ids_before_chunking(self):
+        """Repeated ids in the input must not waste chunks -- the same
+        node_id showing up twice (e.g. as both an edge source and target
+        elsewhere in the caller's set) is deduped before chunking."""
+        s = _make_storage()
+        s.edge_collection.aggregate = AsyncMock(
+            side_effect=_make_edge_aggregate_side_effect([])
+        )
+
+        with patch("lightrag.kg.mongo_impl._NODE_DEGREES_BATCH_CHUNK_SIZE", 2):
+            await s.node_degrees_batch(["A", "A", "A"])
+
+        # 1 unique id fits in one chunk of size 2 => 2 calls, not 4 (3/2 rounded up).
+        assert s.edge_collection.aggregate.await_count == 2
 
 
 class TestEdgeDegreesBatch:
@@ -235,13 +323,19 @@ class TestGetEdgesBatch:
         s = _make_storage()
         pairs = [{"src": f"n{i}", "tgt": f"n{i + 1}"} for i in range(5)]
         docs = []
-        for p in pairs:
+        for i, p in enumerate(pairs):
             lo, hi = _canonical_edge_endpoints(p["src"], p["tgt"])
-            docs.append({"edge_lo": lo, "edge_hi": hi, "weight": 1.0})
-        # Every call gets the full doc set back; canonical_to_requested still
-        # maps each returned doc only to the pairs actually requested in that
-        # chunk, so no cross-chunk doc leaks into the wrong pair.
-        s.edge_collection.find.return_value = _AsyncCursor(docs)
+            # A per-pair-unique value (not a shared constant like 1.0) lets
+            # the assertions below tell "the right doc landed on the right
+            # pair" apart from "some doc landed on every pair".
+            docs.append({"edge_lo": lo, "edge_hi": hi, "weight": float(i)})
+        # side_effect (not a static return_value) filters to only the docs
+        # whose canonical endpoints appear in *that call's* $or -- a real
+        # MongoDB find() would only return matches for the filter it was
+        # given, so a chunked call only ever sees its own chunk's docs. This
+        # is what actually exercises "does chunking attribute results
+        # correctly", not just "does the final count come out right".
+        s.edge_collection.find = Mock(side_effect=_make_edge_find_side_effect(docs))
 
         with patch("lightrag.kg.mongo_impl._GET_EDGES_BATCH_CHUNK_SIZE", 2):
             result = await s.get_edges_batch(pairs)
@@ -250,7 +344,10 @@ class TestGetEdgesBatch:
         assert s.edge_collection.find.call_count == 3
         for call in s.edge_collection.find.call_args_list:
             assert len(call.args[0]["$or"]) <= 2
-        assert len(result) == 5
+        # Every pair resolved, each to its own doc's weight -- not just any
+        # doc's weight, and not missing any (proves no cross-chunk bleed).
+        for i, p in enumerate(pairs):
+            assert result[(p["src"], p["tgt"])]["weight"] == float(i)
 
     @pytest.mark.asyncio
     async def test_single_find_call_when_pairs_fit_in_one_chunk(self):
