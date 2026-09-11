@@ -392,8 +392,8 @@ _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     # in-flight/failed ainsert_custom_chunks operation. Must survive every
     # status transition until the operation commits or is rolled back.
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
-    # KG write-progress marker and whole-document purge journal (
-    # fail-closed purge). Both are load-bearing recovery state, not display
+    # KG write-progress marker and whole-document purge journal, both read by
+    # the fail-closed purge. Both are load-bearing recovery state, not display
     # fields: ``kg_write_state`` is the proof that lets a purge clean up an
     # anchor-less document that never reached the graph, and ``kg_purge`` is
     # what distinguishes "anchors already deleted by a purge that got that far"

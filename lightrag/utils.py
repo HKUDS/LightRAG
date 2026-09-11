@@ -7100,7 +7100,7 @@ def fix_tuple_delimiter_corruption(
         record,
     )
 
-    # Fix: <|#|>| -> <|#|>  ( this is a fix for: <|#|| -> <|#|> )
+    # Fix: <|#|>| -> <|#|>  (this is a fix for: <|#|| -> <|#|>)
     record = re.sub(
         rf"<\|{escaped_delimiter_core}\|>\|",
         tuple_delimiter,

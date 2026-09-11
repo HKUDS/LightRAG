@@ -371,8 +371,8 @@ PARSER_ENGINE_NATIVE = "native"
 PARSER_ENGINE_MINERU = "mineru"
 PARSER_ENGINE_DOCLING = "docling"
 PARSED_DIR_NAME = "__parsed__"  # Dir for parsed files (renamed from __enqueued__)
-# Reserved doc_status.metadata key holding the custom-chunk patch journal
-# (the write-progress marker). While present, the document has an in-flight or
+# Reserved doc_status.metadata key holding the custom-chunk patch journal.
+# While present, the document has an in-flight or
 # failed ainsert_custom_chunks operation: the pipeline must NOT process the
 # row as ordinary ingestion, resets must NOT strip it, and deletion must
 # include its staged chunk IDs. Lives here (not utils_pipeline) so that

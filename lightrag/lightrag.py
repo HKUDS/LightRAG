@@ -2282,8 +2282,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         pipeline_status = None
         pipeline_status_lock = None
         # Set when the operation fails after acquiring busy: the finally then
-        # discards partial buffers instead of flushing them (
-        # failure finalization must not persist partial work).
+        # discards partial buffers instead of flushing them
+        # (failure finalization must not persist partial work).
         op_failed = False
         try:
             # Clean input texts

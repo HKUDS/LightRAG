@@ -276,3 +276,62 @@ def test_every_contract_section_pointer_resolves():
         + "\n\nA renamed section leaves the pointer looking valid. Retarget it, "
         "or restore the name in docs/design/."
     )
+
+
+# A parenthetical that opens with whitespace. In prose this is always a typo,
+# and the shape it usually takes is a parenthetical whose subject was edited
+# away -- "(issue #3400: unsafe" becoming "( unsafe", or worse, "(\n# Phase 3)",
+# which keeps its parentheses balanced while naming nothing.
+_GUTTED_PARENTHETICAL = re.compile(r"\(\s+[^()]{0,60}?\)")
+
+
+def _prose(path: pathlib.Path) -> list[str]:
+    """Comment blocks and docstrings, each flattened; no code.
+
+    Code is excluded deliberately -- ``foo( x )`` is a formatting question ruff
+    already owns, and mentions like ``vars()`` would otherwise dominate.
+    """
+    source = path.read_text(encoding="utf-8")
+    blocks: list[str] = []
+    run: list[str] = []
+    for line in source.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            run.append(stripped.lstrip("#").strip())
+        elif run:
+            blocks.append(" ".join(run))
+            run = []
+    if run:
+        blocks.append(" ".join(run))
+
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            doc = ast.get_docstring(node, clean=True)
+            if doc:
+                blocks.append(re.sub(r"\s+", " ", doc))
+    return blocks
+
+
+def test_no_prose_parenthetical_opens_with_whitespace():
+    """Catches a parenthetical whose subject was edited away.
+
+    Removing 214 issue references from comments produced this twice, and
+    neither round of checks found it: a balance check passes (the parentheses
+    are still matched) and a line-oriented search misses it (the damage
+    straddles a line break). Flattening first, and looking at the shape rather
+    than the count, is what catches it.
+    """
+    gutted = []
+    for path in _python_files():
+        for block in _prose(path):
+            for match in _GUTTED_PARENTHETICAL.finditer(block):
+                gutted.append(f"{path.relative_to(_REPO_ROOT)}: {match.group(0)!r}")
+
+    assert not gutted, (
+        "These parentheticals open with whitespace, which in prose means the "
+        "subject was edited away:\n  "
+        + "\n  ".join(sorted(set(gutted)))
+        + "\n\nRestore what the parenthetical was naming, or drop it."
+    )

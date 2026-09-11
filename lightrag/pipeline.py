@@ -1104,8 +1104,8 @@ class _PipelineMixin:
             }
             if content_data.get("content_hash"):
                 base["content_hash"] = content_data["content_hash"]
-            # Stamp the KG write-progress marker at BIRTH (
-            # fail-closed purge). A brand-new row provably owns nothing in the
+            # Stamp the KG write-progress marker at BIRTH, for the
+            # fail-closed purge. A brand-new row provably owns nothing in the
             # graph, and every pre-merge state a document can fail in —
             # PENDING, PARSING, ANALYZING, PROCESSING-before-merge — inherits
             # that fact by carry-over. This is what lets deletion clean up a
@@ -2851,8 +2851,8 @@ class _PipelineMixin:
         ``_reset_failed_page`` and scan's ``_confirm_full_docs_absent``.
         """
         # Documents carrying a custom-chunk patch journal belong to an
-        # in-flight or failed ainsert_custom_chunks operation (
-        # Phase 3). Ordinary pipeline processing must not touch them: a reset
+        # in-flight or failed ainsert_custom_chunks operation. Ordinary
+        # pipeline processing must not touch them: a reset
         # would strip the journal and rebuild the whole document, discarding
         # the operation's recovery anchor. They are resumed by the SDK caller
         # (same call) or rolled back by /documents/scan.
