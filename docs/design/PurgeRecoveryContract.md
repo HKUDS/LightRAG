@@ -1,6 +1,6 @@
 # Purge Recovery Contract
 
-Read this before changing `_purge_kg_contributions`, `adelete_by_doc_id`, `merge_nodes_and_edges` Phase 0 anchors, the `kg_write_state` / `kg_purge` doc-status metadata, the metadata carry-over whitelists in `lightrag/utils_pipeline.py`, or `compute_incremental_chunk_ids`. Summary in [AGENTS.md](../../AGENTS.md#purge-recovery-contract).
+Read this before changing `_purge_kg_contributions`, `adelete_by_doc_id`, `merge_nodes_and_edges` Phase 0 anchors, the `kg_write_state` / `kg_purge` doc-status metadata, the metadata carry-over whitelists in `lightrag/utils_pipeline.py`, `compute_incremental_chunk_ids`, or the cache write ordering in `use_llm_func_with_cache` / `update_chunk_cache_list`. Summary in [AGENTS.md](../../AGENTS.md#purge-recovery-contract).
 
 The KG is shared across documents, so "what did this document contribute?" can only be answered from the per-document **write-ahead recovery anchors** (`full_entities` / `full_relations`, written and flushed in `merge_nodes_and_edges` Phase 0 *before* the first graph mutation). The reverse lookup — graph `source_id` → `text_chunks` → `full_doc_id` — is not a fallback, because purge deletes those chunks.
 
@@ -36,6 +36,30 @@ The offline remedy for a document with no proof is `audit_kg_integrity(..., appl
 Relation chunk tracking is the authoritative chunk list, so the no-source placeholders must never be written into it.
 
 A tracking row whose graph object is gone is not repairable one row at a time: `BaseKVStorage` has no enumeration API, so nothing can sweep for it. The operator remedy is the offline `lightrag-repair-chunk-tracking` tool, run only after every writer for the workspace has stopped. It replaces one or both namespaces from current graph keys, retains authoritative rows for live objects (including rename/merge/manual-create results), and supplements them from cached extraction results. It never seeds from graph `source_id`, whose reuse is precisely the provenance downgrade this section forbids. It is ungated, unlike `_migrate_chunk_tracking_storage`, which only fires on an empty namespace. See [ProgramingWithCore.md → Repairing chunk tracking](../ProgramingWithCore.md#repairing-chunk-tracking).
+
+## LLM extraction cache reachability
+
+An extraction cache row (`cache_type="extract"`) stores the prompt that produced it — which embeds the chunk text verbatim — together with the entities and relations extracted from it. Nothing indexes those rows by document: the only thing that ever reaches one again is the owning chunk's `llm_cache_list`. That list is therefore an attribution carrier in the sense of the governing invariant above, and `adelete_by_doc_id(delete_llm_cache=True)` is the promise that rests on it.
+
+> **A cache row is written only if a reference to it is already durable on the owning chunk.**
+
+The row and the reference are two writes with no transaction between them, so the ordering does not remove the intermediate state, it only chooses which one survives. Writing the row first and attaching afterwards left an unreachable row whenever the gap was cut short — a sibling chunk's exception cancelling the task through `extract_entities`' `FIRST_EXCEPTION` wait, a hard kill, or a storage failure inside the attach, which is swallowed and only logged. Attaching first can lose the reference but never the row.
+
+When the reference cannot be recorded the cache write is **skipped** rather than performed anyway: a lost cache entry is recomputed on the next run, while an unreachable row holding document text is permanent. Extraction caching therefore depends on `text_chunks` being writable, and that degradation is reported rather than silent — `extract_entities` publishes the first occurrence plus one end-of-stage aggregate to `pipeline_status`, on the same discipline as token-limit truncation, because an unwritable chunk store skips on every chunk of the document and one line each would evict the rest of the run from the bounded history ring.
+
+### Accepted residue
+
+| State | Why it is accepted |
+|---|---|
+| A reference to a row that was never written — a crash between the attach and the write, or a `save_to_cache` that no-ops on empty content | Harmless in direction, and every reader already tolerates it: `adelete_by_doc_id` and `_rollback_one_custom_chunk_patch` pass the ids to `llm_response_cache.delete()`, where a missing id is a no-op, and `_get_cached_extraction_results` (also used by the chunk-tracking repair tool) drops `None` entries from its batch get. It goes away with the chunk row itself. |
+
+Dangling references already occur independently of this ordering: two chunks whose prompts are byte-identical share one cache row, so deleting one document leaves the other's reference dangling.
+
+### Not closed by the ordering
+
+A resume purge deletes a document's chunk rows — and with them every reference to its cache rows — before re-chunking, and deliberately does not touch `llm_response_cache`. Re-extraction hits those rows and the cache-hit branch re-attaches them to the freshly written chunk rows, so the loop closes on its own; a run that dies in between leaves them unreferenced until the next attempt.
+
+Reprocessing under **changed** chunking never closes it at all: the chunk text differs, so the old prompts are never reissued and no hit occurs. That is unreachable by any ordering — the prompt is gone. Reclaiming those rows needs an operator-invoked sweep that deletes cache rows whose owning chunk no longer exists, which is also the only thing that can reach `summary`, `smartheading` and multimodal analysis rows: they carry no chunk reference in the first place.
 
 ## Merge and rename failure model
 

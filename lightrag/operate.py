@@ -4152,10 +4152,9 @@ async def extract_entities(
             """The extraction cache is off for this chunk; say so out loud.
 
             ``use_llm_func_with_cache`` skips the cache write when the chunk
-            could not carry the reference to it, so a row is never left
-            unreachable. That is the safe direction, but it means
-            the extraction cache silently stopped working for this document —
-            the next run re-calls the LLM for these chunks. Reported on the
+            could not carry the reference to it. That is the safe direction,
+            but it means the extraction cache silently stopped working for this
+            document — the next run re-calls the LLM for these chunks. Reported on the
             same discipline as truncation above: every occurrence to the server
             log, the first one plus an end-of-stage aggregate to the bounded
             pipeline-status ring. Synchronous and non-raising, per the
@@ -4366,16 +4365,13 @@ async def extract_entities(
 
         # No end-of-chunk cache-key attach here, by design. Each extract cache
         # row is attached to this chunk BEFORE it is written, inside
-        # use_llm_func_with_cache — see the reference-before-row
-        # note there for the invariant and its accepted residue. Collecting the
-        # keys in memory and attaching them once at the end is precisely what
-        # orphaned this chunk's rows when a sibling's exception cancelled this
-        # task, when the process died, or when the attach itself failed.
-        #
-        # Nothing here needs to re-attach them: the extraction and gleaning
-        # calls above have each already recorded their own key, and the
-        # multimodal injection below builds records from sidecar metadata
-        # without calling the LLM.
+        # use_llm_func_with_cache; collecting the keys in memory and attaching
+        # them once at the end is precisely what orphaned them. See *LLM
+        # extraction cache reachability* in the contract doc,
+        # docs/design/PurgeRecoveryContract.md. Nothing here needs to re-attach:
+        # the extraction and gleaning calls above have each recorded their own
+        # key, and the multimodal injection below builds records from sidecar
+        # metadata without calling the LLM.
 
         # Optional extraction-quality hook: the last word on what the LLM
         # extracted from this chunk. Caller-facing contract, including why core

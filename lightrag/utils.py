@@ -5149,8 +5149,9 @@ async def update_chunk_cache_list(
         not be recorded -- the chunk row is missing, or the read/write failed.
 
         Never raises. A caller that must not create an unreachable cache row
-        checks this BEFORE writing the row; see the reference-before-row note
-        in ``use_llm_func_with_cache``.
+        checks this BEFORE writing the row -- see *LLM extraction cache
+        reachability* in the contract doc,
+        ``docs/design/PurgeRecoveryContract.md``.
     """
     if not cache_keys:
         return True
@@ -5516,7 +5517,10 @@ async def use_llm_func_with_cache(
         text_chunks_storage: Storage holding the owning chunk. When given
             together with ``chunk_id``, the cache key is attached to that chunk
             BEFORE the cache row is written, so a row can never outlive the only
-            reference that reaches it. Omit it -- as the parse
+            reference that reaches it, and the write is skipped when the
+            reference cannot be recorded -- see *LLM extraction cache
+            reachability* in the contract doc,
+            ``docs/design/PurgeRecoveryContract.md``. Omit it -- as the parse
             stage and the summary path do, having no owning chunk -- to keep the
             legacy order and the ``cache_keys_collector`` batch instead.
         on_cache_skipped: Called with ``cache_type`` when the cache write was
@@ -5611,14 +5615,10 @@ async def use_llm_func_with_cache(
             statistic_data["llm_cache"] += 1
 
             # Re-attach on a hit. The row predates this call, so ordering is
-            # moot here; this is the reprocess self-heal, and it is what keeps
-            # a reprocessed document's cache rows reachable. A resume purge
-            # DELETES the chunk rows (and with them the only references to
-            # those rows) before re-chunking, while deliberately leaving
-            # llm_response_cache alone; re-extraction then hits these rows and
-            # this call points the freshly written chunk row back at them.
-            # A failure here is logged, not fatal: it fails to repair an orphan
-            # rather than creating one.
+            # moot here; this is the reprocess self-heal that re-points a
+            # rewritten chunk row at rows the purge orphaned. A failure is
+            # logged, not fatal: it fails to repair an orphan rather than
+            # creating one.
             await _record_reference(f"{cache_type}_cache_hit")
 
             # Add cache key to collector if provided
@@ -5654,37 +5654,12 @@ async def use_llm_func_with_cache(
         # Generate timestamp for cache miss (LLM call completion time)
         current_timestamp = int(time.time())
 
-        # Reference-before-row. An extract cache row carries the
-        # chunk text verbatim plus the entities pulled from it, and the ONLY
-        # thing that ever reaches it again is the owning chunk's
-        # llm_cache_list. Writing the row first and attaching afterwards left
-        # an unreachable row whenever the gap was cut short: a sibling chunk's
-        # exception cancelling this task through extract_entities'
-        # FIRST_EXCEPTION wait, a hard kill, or a swallowed storage error in
-        # the attach. Attaching first cannot lose the row, only the reference.
-        #
-        # ACCEPTED RESIDUE (the flip): a reference to a row that was never
-        # written. Every reader tolerates it -- adelete_by_doc_id and
-        # _rollback_one_custom_chunk_patch pass the ids to
-        # llm_response_cache.delete(), where a missing id is a no-op, and
-        # _get_cached_extraction_results (also used by the chunk-tracking
-        # repair tool) drops None entries from its batch get. It goes away with
-        # the chunk row itself -- on a reprocess, which deletes it, or when the
-        # document is deleted.
-        #
-        # NOT closed by this ordering: the reprocess window. A resume purge
-        # deletes a document's chunk rows -- and with them every reference to
-        # its cache rows -- before re-chunking, and deliberately does not touch
-        # llm_response_cache. The hit branch above re-attaches during
-        # re-extraction, so the loop closes on its own, but a run that dies in
-        # between leaves those rows unreferenced. Reprocessing under CHANGED
-        # chunking never closes it at all: the chunk text differs, so the old
-        # prompts are never reissued and no hit occurs. That is unreachable by
-        # any ordering -- the prompt is gone. Reclaiming those rows needs an
-        # operator-invoked sweep that deletes cache rows whose owning chunk no
-        # longer exists, which is also the only thing that can reach summary,
-        # smartheading and analysis rows -- they carry no chunk reference in
-        # the first place.
+        # An extract cache row is reachable only through the owning chunk's
+        # llm_cache_list, so the reference is recorded BEFORE the row is
+        # written: attaching first can lose the reference, which every reader
+        # tolerates, while writing first lost the row itself. The residues and
+        # what this ordering does not close are in
+        # *LLM extraction cache reachability* in the contract doc.
         if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
             if res_truncated:
                 # Do not persist truncated extraction output: a cached partial
@@ -5695,6 +5670,7 @@ async def use_llm_func_with_cache(
                     f"Skipping LLM cache write for truncated {cache_type} response "
                     f"(finish_reason=length, chunk_id={chunk_id})"
                 )
+            # Attach BEFORE the write, never after -- the ordering rule above.
             # ``save_to_cache`` is a no-op on falsy content, so attaching for an
             # empty response would leave a reference to a row that is never
             # written. Its other two no-ops cannot happen here: hashing_kv is
