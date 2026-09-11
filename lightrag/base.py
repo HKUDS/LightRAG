@@ -548,8 +548,8 @@ class BaseKVStorage(StorageNameSpace, ABC):
 
         Multi-worker note:
             Backends that buffer writes in process memory (e.g.
-            OpenSearchKVStorage as of the KV-batching change derived from
-            and others) keep the buffer process-local. In a multi-worker
+            OpenSearchKVStorage, since its KV writes were batched) keep the
+            buffer process-local. In a multi-worker
             deployment (e.g. lightrag-gunicorn) other workers will not
             observe these writes until the writing worker has called
             index_done_callback(). Callers that depend on cross-worker

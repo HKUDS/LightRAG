@@ -135,7 +135,7 @@ class JsonKVStorage(BaseKVStorage):
         """Flush dirty in-memory state to disk and clear all dirty flags.
 
         Commit point in the shared-memory protocol (see the contract doc,
-        *Cross-process sync protocol*). Steps:
+        *Reversed flag semantics*). Steps:
             1. Under ``_storage_lock``, check this process's
                ``storage_updated.value``. If ``False``, nothing to do —
                return.

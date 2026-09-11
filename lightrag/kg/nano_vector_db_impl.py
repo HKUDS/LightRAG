@@ -345,8 +345,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         is called once per id at flush time (``_flush_pending_locked`` during
         ``index_done_callback`` / ``finalize``). This coalesces repeated
         upserts of the same id and many small upsert calls into a single
-        embedding pass (see the contract doc, *Deferred-embedding protocol*,
-        ).
+        embedding pass (see the contract doc, *Deferred-embedding protocol*).
 
         Persistence:
             Changes live only in this process's memory until the next

@@ -319,8 +319,8 @@ async def _run_chunked_async_bulk(
 
 # Painless script behind every KV upsert. It reproduces MongoDB's
 # ``$setOnInsert`` semantics for ``create_time`` ON THE SERVER, so a
-# replacement upsert never has to read the stored row back first (issue
-# A client-side read-modify-write cost one extra HTTP round trip per
+# replacement upsert never has to read the stored row back first (a
+# client-side read-modify-write cost one extra HTTP round trip per
 # ``upsert()`` call, and this backend is deliberately called with many small
 # batches):
 #   * document missing -> ``_KV_UPSERT_ACTION_UPSERT`` becomes the starting

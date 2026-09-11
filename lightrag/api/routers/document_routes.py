@@ -3713,9 +3713,10 @@ async def run_scanning_process(
             pass
 
         # Roll back failed/stale custom-chunk operations FIRST, while the
-        # classification phase still holds ``scanning_exclusive`` (issue
-        # the purge-recovery contract). Discovery is storage-driven — SDK operations may
-        # have no scan-visible input file — and a failed rollback keeps the
+        # classification phase still holds ``scanning_exclusive`` (see
+        # docs/design/PurgeRecoveryContract.md for the rollback ordering).
+        # Discovery is storage-driven — SDK operations may have no
+        # scan-visible input file — and a failed rollback keeps the
         # journal/FAILED row for the next scan without aborting this one.
         if pipeline_status is not None and pipeline_status_lock is not None:
             try:

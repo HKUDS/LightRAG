@@ -254,21 +254,41 @@ def test_every_contract_section_pointer_resolves():
     # prose that cross-references it, so the pointer still "resolved" while
     # pointing at a section that no longer exists. A pointer names a section, so
     # it is sections it has to be checked against.
-    headings = {
-        re.sub(r"[`*]", "", heading).strip().lower()
+    #
+    # Scoped to the contract the FILE names, not to every contract at once. A
+    # module cites one document -- "the contract doc" is shorthand for the path
+    # in its own docstring -- so pooling the headings would let a pointer
+    # resolve against a sibling contract that the reader is not being sent to.
+    by_document = {
+        path.name: {
+            re.sub(r"[`*]", "", heading).strip().lower()
+            for heading in re.findall(
+                r"^#{2,4}\s+(.+)$", path.read_text(encoding="utf-8"), re.M
+            )
+        }
         for path in sorted((_REPO_ROOT / "docs" / "design").glob("*.md"))
-        for heading in re.findall(
-            r"^#{2,4}\s+(.+)$", path.read_text(encoding="utf-8"), re.M
-        )
     }
-    assert headings, "no contract headings found — the check would pass vacuously"
+    assert by_document, "no contract documents found — the check would pass vacuously"
 
     dangling = []
     for path in _python_files():
-        for match in _CONTRACT_POINTER.finditer(_flattened(path)):
+        flat = _flattened(path)
+        named = re.findall(r"docs/design/(\w+\.md)", flat)
+        # A file that names none falls back to every contract: weaker, but the
+        # alternative is refusing to check it at all.
+        headings = (
+            set().union(*(by_document.get(doc, set()) for doc in named))
+            if named
+            else set().union(*by_document.values())
+        )
+
+        for match in _CONTRACT_POINTER.finditer(flat):
             name = (match.group(1) or match.group(2)).strip().rstrip(".,;:")
             if name.lower() not in headings:
-                dangling.append(f"{path.relative_to(_REPO_ROOT)} -> *{name}*")
+                where = "/".join(sorted(set(named))) or "any contract"
+                dangling.append(
+                    f"{path.relative_to(_REPO_ROOT)} -> *{name}* (not in {where})"
+                )
 
     assert not dangling, (
         "These pointers name a section no contract document contains:\n  "

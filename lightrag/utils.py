@@ -5217,8 +5217,7 @@ def empty_length_truncated_hint(
     identically. This is the structurally-broken case, not "ran a bit long":
     generation stopped before producing a single content token, so there is
     nothing to salvage and nothing to cache — the caller raises rather than
-    returning "" and letting the document be indexed as an empty graph
-    .
+    returning "" and letting the document be indexed as an empty graph.
 
     ``budget_hint`` names the provider's own output-budget knob, since that is
     the actionable part and only the binding knows it.

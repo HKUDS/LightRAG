@@ -2885,8 +2885,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         estimable size here — ``content`` and ``source_id`` are each capped
         only by MILVUS_MAX_VARCHAR_BYTES — so the record cap is used alone.
         That cap is a heuristic rather than a byte-level guarantee; a page
-        that still overflows is caught and bisected by ``_query_rows_by_ids``
-        .
+        that still overflows is caught and bisected by
+        ``_query_rows_by_ids``.
         """
         if not includes_vector:
             return MILVUS_QUERY_MAX_RECORDS_PER_BATCH
