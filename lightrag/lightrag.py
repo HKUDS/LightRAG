@@ -189,6 +189,7 @@ from lightrag.utils import (
     check_storage_env_vars,
     generate_track_id,
     get_content_summary,
+    get_extract_cache_fence,
     convert_to_user_format,
     logger,
     make_relation_vdb_ids,
@@ -3880,8 +3881,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # than a serialised commit. See *LLM extraction cache
             # reachability* in the contract doc,
             # ``docs/design/PurgeRecoveryContract.md``.
-            await _flush_one(self.text_chunks)
-            await _flush_one(self.llm_response_cache)
+            # Fence out the extraction writers for the duration of the pair.
+            # Chaining orders the two COMMITS; it does not stop a concurrent
+            # document from attaching and writing in the gap between them,
+            # which on a snapshot-at-commit backend publishes a cache row whose
+            # reference postdates the chunk snapshot. The writer side is in
+            # ``use_llm_func_with_cache``; the lock and why an in-process one
+            # suffices are in ``get_extract_cache_fence``.
+            async with get_extract_cache_fence(self.text_chunks):
+                await _flush_one(self.text_chunks)
+                await _flush_one(self.llm_response_cache)
             # Both landed, in order: the namespaces are consistent again and
             # the sticky failure above is retired. The ONLY clearer -- a
             # standalone text_chunks flush elsewhere proves nothing, since it

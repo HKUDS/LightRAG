@@ -767,3 +767,55 @@ async def test_an_ordered_pair_commit_retires_the_recorded_failure(
         assert cache.index_done_calls == 1
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_a_concurrent_writer_cannot_land_between_the_two_flushes(
+    tmp_path, monkeypatch
+):
+    """Chaining orders the commits; the fence keeps writers out of the gap.
+
+    On a backend that publishes a snapshot taken at commit time, a document
+    attaching and writing between the two flushes gets its cache row into the
+    cache snapshot while the chunk snapshot predates its reference. The writer
+    here stands for another in-flight document: it must be observed to finish
+    only after BOTH flushes, never between them.
+    """
+    from lightrag.utils import get_extract_cache_fence
+
+    rag = await _make_rag(tmp_path)
+    try:
+        rec: list = []
+        chunks, cache, other = _bind_cache_pair_spies(rag, rec)
+        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
+
+        in_the_gap = asyncio.Event()
+
+        original_chunk_flush = chunks.index_done_callback
+
+        async def _flush_then_yield():
+            await original_chunk_flush()
+            # The gap: hand the loop to the writer before the cache flush.
+            in_the_gap.set()
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        chunks.index_done_callback = _flush_then_yield
+
+        async def _concurrent_writer():
+            await in_the_gap.wait()
+            async with get_extract_cache_fence(rag.text_chunks):
+                rec.append(("writer", "attach+write"))
+
+        writer = asyncio.create_task(_concurrent_writer())
+        await rag._insert_done()
+        await writer
+
+        assert rec.index(("writer", "attach+write")) > rec.index(
+            ("llm_cache", "flush")
+        ), (
+            "a writer attached and wrote inside the commit pair: its cache row "
+            "is in the cache snapshot, its reference is not in the chunk one"
+        )
+    finally:
+        await rag.finalize_storages()

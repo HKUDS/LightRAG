@@ -5472,6 +5472,35 @@ def _reject_empty_truncated_response(
     raise EmptyTruncatedResponseError(message)
 
 
+def get_extract_cache_fence(text_chunks_storage) -> asyncio.Lock:
+    """Mutual exclusion between an extract cache attach+write and its commit.
+
+    Hold it around the ``update_chunk_cache_list`` / ``save_to_cache`` pair, and
+    around the chained ``text_chunks`` -> ``llm_response_cache`` commit in
+    ``LightRAG._flush_storages``. Without it the commit pair can straddle a
+    writer's pair on a backend that publishes a snapshot taken at commit time,
+    so the cache snapshot carries a row whose reference postdates the chunk
+    snapshot.
+
+    A plain ``asyncio.Lock``, NOT a cross-process one, and that is load-bearing:
+    extract cache rows are written only by the ingestion pipeline, which runs in
+    exactly one process per workspace (the ``busy`` reservation in *Pipeline
+    concurrency contract*, ``docs/design/PipelineConcurrencyContract.md``).
+    Other processes write only query-cache rows, which name no owning chunk and
+    need no reference. Relaxing that exclusivity silently un-fences this.
+
+    Lives on the storage instance rather than in a module registry so its
+    lifetime is the storage's, and so both sides reach the same object without
+    agreeing on a key. Created lazily with no await in between, so two
+    coroutines cannot build two locks.
+    """
+    fence = getattr(text_chunks_storage, "_extract_cache_fence", None)
+    if fence is None:
+        fence = asyncio.Lock()
+        text_chunks_storage._extract_cache_fence = fence
+    return fence
+
+
 async def use_llm_func_with_cache(
     user_prompt: str,
     use_llm_func: callable,
@@ -5665,7 +5694,7 @@ async def use_llm_func_with_cache(
         # that makes it durable is the failure epilogue's, not this function's.
         # The residues, both layers and what this ordering does not close are in
         # *LLM extraction cache reachability* in the contract doc.
-        if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
+        async def _attach_then_write() -> None:
             if res_truncated:
                 # Do not persist truncated extraction output: a cached partial
                 # payload would be replayed on every later run, even when a
@@ -5706,6 +5735,17 @@ async def use_llm_func_with_cache(
                 # Add cache key to collector if provided
                 if cache_keys_collector is not None:
                     cache_keys_collector.append(cache_key)
+
+        if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
+            if chunk_id is not None and text_chunks_storage is not None:
+                # Fence the pair against the commit that publishes both
+                # namespaces; see ``get_extract_cache_fence``. Callers that
+                # name no owning chunk need no reference, so they need no
+                # fence either.
+                async with get_extract_cache_fence(text_chunks_storage):
+                    await _attach_then_write()
+            else:
+                await _attach_then_write()
 
         return res, current_timestamp
 
