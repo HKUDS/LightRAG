@@ -248,9 +248,16 @@ class AdminWriteHoldExceededError(TimeoutError):
     than assume the operation is undone; retrying blind can hit "already exists"
     or re-apply an edit that is already durable. Reporting it any other way would
     break ``AGENTS.md`` *Consistency without transactions*: a durable write must
-    never be reported as one that did not happen. What the stopped operation can
-    leave behind beyond that is the crash residue the graph store's contract documents for admin
-    writes.
+    never be reported as one that did not happen.
+
+    Beyond a committed step, a stopped admin write leaves what a hard process
+    exit inside one leaves: a chunk-tracking row whose graph object never became
+    durable -- harmless to queries, never inherited as evidence by a later
+    object, and repairable offline with the chunk-tracking rebuild tool. The
+    mirror state, a graph object durable without its tracking row, is the
+    forbidden one and the write paths order themselves to keep it out of reach.
+    The graph store's contract doc covers this under *Accepted residue (crash)*:
+    ``docs/design/NetworkXSingleWriterContract.md``.
     """
 
 
