@@ -59,11 +59,25 @@ _KNOWN_OVERSIZED: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
-# CSS colours in the inline WebUI template, not issue references.
-_COLOUR_LINE = re.compile(
-    r"(background|border-color|color)\s*:\s*#[0-9a-fA-F]{3,8}|greys \(#"
-)
-_ISSUE_REF = re.compile(r"#\d{3,5}\b")
+# A BARE ``#NNNN``, which resolves against whatever repository the reader
+# happens to be in. Two deliberate narrowings, both about keeping the rule
+# simple enough to be reliable rather than maximally broad:
+#
+# * **Qualified references are exempt** (the ``[\w/]`` lookbehind).
+#   ``HKUDS/RAG-Anything#73`` names its repository, so it resolves from a fork
+#   exactly as it does here -- it is a real citation, and the thing this rule
+#   protects against is a referent that disappears, not a ``#`` character.
+# * **Four to five digits.** This repository's issue numbers passed 1000 long
+#   ago and every one of the 214 references removed in this series was
+#   four-digit, so a shorter number is not a reference here and a rule that
+#   chased one would only add false positives. The upper bound is what keeps
+#   CSS hex colours out without a content heuristic: every colour in the tree
+#   is six hex digits (``#020617``, ``#111827``), a length no issue number
+#   will reach for a very long time, and five digits is not a valid colour at
+#   all. An earlier revision matched 3-5 digits and needed a fragile
+#   "is this line a CSS declaration?" test alongside it; the bound alone is
+#   both simpler and stricter.
+_ISSUE_REF = re.compile(r"(?<![\w/])#\d{4,5}\b")
 
 
 def _python_files() -> list[pathlib.Path]:
@@ -135,8 +149,6 @@ def test_no_source_file_cites_a_github_issue():
         for lineno, line in enumerate(
             path.read_text(encoding="utf-8").splitlines(), start=1
         ):
-            if _COLOUR_LINE.search(line):
-                continue
             if _ISSUE_REF.search(line):
                 rel = path.relative_to(_REPO_ROOT)
                 offenders.append(f"{rel}:{lineno}: {line.strip()[:90]}")
@@ -144,9 +156,10 @@ def test_no_source_file_cites_a_github_issue():
     assert not offenders, (
         "These lines cite a GitHub issue number:\n  "
         + "\n  ".join(offenders)
-        + "\n\nAn issue number does not survive a fork. Name the thing instead "
-        "('the two-channel fence'), or move the content into docs/design/ and "
-        "cite that."
+        + "\n\nA bare issue number does not survive a fork. Name the thing "
+        "instead ('the two-channel fence'), or move the content into "
+        "docs/design/ and cite that. A reference qualified by its repository "
+        "('HKUDS/RAG-Anything#73') is fine and is not matched."
     )
 
 
@@ -167,3 +180,37 @@ def test_every_documentation_path_named_in_the_package_exists():
     assert not missing, "Documentation paths that do not resolve:\n  " + "\n  ".join(
         missing
     )
+
+
+@pytest.mark.parametrize(
+    "line, matched, why",
+    [
+        ("the gate (issue #3899) raises", True, "bare four-digit reference"),
+        ("see #12345 for the detail", True, "bare five-digit reference"),
+        ("# NOTE(#3609): truthiness is kept", True, "bare, inside parentheses"),
+        (
+            "its record is intact (HKUDS/RAG-Anything#73).",
+            False,
+            "qualified by repository: resolves from a fork",
+        ),
+        (
+            "see HKUDS/RAG-Anything#4567 for the upstream fix",
+            False,
+            "qualified, and four digits: still not a bare reference",
+        ),
+        ("            background: #020617;", False, "six-digit CSS colour"),
+        ("            border-color: #334155;", False, "CSS colour with letters"),
+        ("greys (#505050 / #3b4151) on every title", False, "colours in prose"),
+        ("# step #1 of the flow", False, "an ordinal, not a reference"),
+    ],
+)
+def test_what_counts_as_a_bare_issue_reference(line, matched, why):
+    """The boundaries of ``_ISSUE_REF``, each with the case it stands for.
+
+    A detector for this has to be simple enough to trust, which means its
+    exclusions are decisions rather than accidents: a qualified reference is
+    exempt because it survives a fork, and a six-digit number is a colour
+    because this repository's issue numbers will not reach that length for a
+    long time. Both are load-bearing and neither is visible from the pattern.
+    """
+    assert bool(_ISSUE_REF.search(line)) is matched, why
