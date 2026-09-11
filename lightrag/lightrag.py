@@ -5056,7 +5056,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
                 await self._record_chunk_reference_commit_failure("query-path flush")
                 return
-            if committed is False or self._chunk_reference_commit_failed:
+            if committed is False:
+                # A DECLINED commit discarded the mutation, so the references
+                # are not on disk either -- recorded like every other failed
+                # chunk commit, or the next ordered commit retries an empty
+                # buffer, reports success and publishes the row.
+                await self._record_chunk_reference_commit_failure(
+                    "query-path commit declined"
+                )
+            if self._chunk_reference_commit_failed:
                 logger.error(
                     "Skipping the query cache commit: chunk references are not on "
                     "disk, so it would publish extract rows nothing can reach"

@@ -310,7 +310,12 @@ async def test_a_concurrent_writer_cannot_land_inside_the_epilogue_pair(tmp_path
         rag.text_chunks.index_done_callback = _flush_then_yield
 
         async def _concurrent_writer():
-            await in_the_gap.wait()
+            # Bounded: without the ordering the gap never opens, and an
+            # unbounded wait would HANG the run instead of failing it.
+            try:
+                await asyncio.wait_for(in_the_gap.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                pass
             async with get_extract_cache_fence(rag.text_chunks):
                 order.append("writer")
 
@@ -318,6 +323,110 @@ async def test_a_concurrent_writer_cannot_land_inside_the_epilogue_pair(tmp_path
         await _run_epilogue(rag, "doc-fenced")
         await writer
 
+        assert "llm_response_cache" in order, order
         assert order.index("writer") > order.index("llm_response_cache"), order
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_a_stage_boundary_flush_commits_references_first(tmp_path):
+    """Every stage boundary gets the ordering, not just the failure epilogue.
+
+    A cache commit publishes the WHOLE namespace rather than this stage's
+    rows, so a smart-heading or multimodal flush would otherwise publish
+    extract rows that a concurrently-running document has only buffered
+    references for.
+    """
+    rag = await _build_rag(tmp_path)
+    try:
+        order: list[str] = []
+        _record_commits(rag, order)
+
+        await rag._persist_llm_response_cache_best_effort(
+            stage_label="multimodal analyze", doc_id="doc-stage"
+        )
+
+        assert order == ["text_chunks", "llm_response_cache"], order
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_a_stage_boundary_flush_defers_when_references_fail(tmp_path):
+    """Same suppression as the epilogue: no cache row ahead of its reference."""
+    rag = await _build_rag(tmp_path)
+    try:
+        order: list[str] = []
+        _record_commits(rag, order, chunks_fail=True)
+
+        await rag._persist_llm_response_cache_best_effort(
+            stage_label="smart-heading parse", doc_id="doc-stage-fail"
+        )
+
+        assert order == ["text_chunks"], order
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_a_stage_boundary_flush_holds_the_fence(tmp_path):
+    """The pair is fenced wherever it runs, so a writer cannot straddle it."""
+    from lightrag.utils import get_extract_cache_fence
+
+    rag = await _build_rag(tmp_path)
+    try:
+        order: list[str] = []
+        _record_commits(rag, order)
+        in_the_gap = asyncio.Event()
+        tagged_chunk_flush = rag.text_chunks.index_done_callback
+
+        async def _flush_then_yield():
+            result = await tagged_chunk_flush()
+            in_the_gap.set()
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            return result
+
+        rag.text_chunks.index_done_callback = _flush_then_yield
+
+        async def _concurrent_writer():
+            # Bounded: if the ordering is removed the gap never opens, and an
+            # unbounded wait would HANG the run instead of failing it.
+            try:
+                await asyncio.wait_for(in_the_gap.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                pass
+            async with get_extract_cache_fence(rag.text_chunks):
+                order.append("writer")
+
+        writer = asyncio.create_task(_concurrent_writer())
+        await rag._persist_llm_response_cache_best_effort(
+            stage_label="multimodal analyze", doc_id="doc-stage-fence"
+        )
+        await writer
+
+        assert "llm_response_cache" in order, order
+        assert order.index("writer") > order.index("llm_response_cache"), order
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_a_declined_query_path_commit_is_recorded(tmp_path):
+    """A DECLINED chunk commit on the query path must stick, not skip once.
+
+    Skipping only this commit would let the next ordered one retry an empty
+    buffer, report success, and publish the row the decline made unreachable.
+    """
+    rag = await _build_rag(tmp_path)
+    try:
+        order: list[str] = []
+        _record_commits(rag, order, chunks_decline=True)
+
+        await rag._query_done()
+
+        assert order == ["text_chunks"], order
+        assert rag._chunk_reference_commit_failed is True
     finally:
         await rag.finalize_storages()

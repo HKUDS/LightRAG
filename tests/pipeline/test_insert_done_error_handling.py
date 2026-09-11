@@ -810,7 +810,12 @@ async def test_a_concurrent_writer_cannot_land_between_the_two_flushes(
         chunks.index_done_callback = _flush_then_yield
 
         async def _concurrent_writer():
-            await in_the_gap.wait()
+            # Bounded: without the fix the gap never opens, and an unbounded
+            # wait would HANG the run instead of failing it.
+            try:
+                await asyncio.wait_for(in_the_gap.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                pass
             async with get_extract_cache_fence(rag.text_chunks):
                 rec.append(("writer", "attach+write"))
 
@@ -818,6 +823,7 @@ async def test_a_concurrent_writer_cannot_land_between_the_two_flushes(
         await rag._insert_done()
         await writer
 
+        assert ("llm_cache", "flush") in rec, rec
         assert rec.index(("writer", "attach+write")) > rec.index(
             ("llm_cache", "flush")
         ), (
@@ -940,7 +946,12 @@ async def test_clearing_the_cache_holds_the_fence_across_the_drop(tmp_path):
         rag.llm_response_cache = _DroppableCache()
 
         async def _concurrent_writer():
-            await in_the_gap.wait()
+            # Bounded: without the fix the gap never opens, and an unbounded
+            # wait would HANG the run instead of failing it.
+            try:
+                await asyncio.wait_for(in_the_gap.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                pass
             async with get_extract_cache_fence(rag.text_chunks):
                 order.append("writer")
 
@@ -948,6 +959,7 @@ async def test_clearing_the_cache_holds_the_fence_across_the_drop(tmp_path):
         await rag.aclear_cache()
         await writer
 
+        assert "drop_commit" in order, order
         assert order.index("writer") > order.index("drop_commit"), order
     finally:
         await rag.finalize_storages()
