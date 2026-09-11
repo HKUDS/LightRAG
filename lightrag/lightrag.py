@@ -3721,6 +3721,26 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Best-effort throughout: a flush/clear failure is logged, not raised,
         so cleanup never masks the original abort cause.
         """
+        # Reference before row, one last time, and BEFORE the loop: the loop
+        # reaches text_chunks first and only DROPS its buffer, so a flush
+        # placed beside the cache flush below would find nothing left. Commit
+        # the chunk rows carrying this batch's llm_cache_list entries first, or
+        # the cache flush publishes rows whose only reference is in a buffer
+        # this cleanup is about to discard.
+        #
+        # Unlike the failure epilogue this does NOT suppress the cache flush
+        # when the references do not land: there the cache is deferred to the
+        # next commit, here the buffer is dropped immediately after, so
+        # suppressing would permanently lose LLM work that is expensive to
+        # recompute. That ranks above the dangling row -- see *LLM extraction
+        # cache reachability* in the contract doc,
+        # ``docs/design/PurgeRecoveryContract.md``.
+        if self.text_chunks is not None:
+            try:
+                await cast(StorageNameSpace, self.text_chunks).index_done_callback()
+            except Exception as e:
+                logger.error(f"Failed to persist chunk cache references on abort: {e}")
+
         for storage_inst in self._index_storages():
             if skip_enqueue_owned and (
                 storage_inst is self.full_docs or storage_inst is self.doc_status
@@ -3760,6 +3780,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         ``CancelledError`` propagates as-is. A flush that returns an explicit
         ``False`` -- a DECLINED commit, which discards the pending mutation --
         counts as a failure here; see ``_flush_one``.
+
+        The one exception to "every flush runs" is ``llm_response_cache``, which
+        is chained AFTER ``text_chunks`` and therefore skipped when that one
+        fails -- deliberately, and only a deferral: both buffers keep their
+        pending state for the next commit, and the aborting-batch cleanup in
+        ``_discard_pending_index_ops`` flushes the cache before dropping it.
         """
 
         async def _flush_one(storage_inst) -> None:
@@ -3806,8 +3832,40 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # the abort decision, and a second failing sibling would surface as a
         # "Task exception was never retrieved" warning. Collecting all results
         # first makes teardown deterministic and lets us report every failure.
+        async def _flush_cache_after_references() -> None:
+            # Reference before row, applied at the commit layer. An extract
+            # cache row is reachable only through the owning chunk's
+            # llm_cache_list, so committing the cache while the chunk rows are
+            # still buffered can strand a row holding document text: on
+            # OpenSearch a permanent bulk failure DROPS the chunk operation
+            # before raising, so the reference is not even retained for a
+            # retry. Chaining just this pair keeps every other namespace
+            # concurrent, so the ordering costs one flush of latency rather
+            # than a serialised commit. See *LLM extraction cache
+            # reachability* in the contract doc,
+            # ``docs/design/PurgeRecoveryContract.md``.
+            await _flush_one(self.text_chunks)
+            await _flush_one(self.llm_response_cache)
+
+        pending = [inst for inst in storages if inst is not None]
+        # Identity, never ``in``: the storage classes are dataclasses, so ``==``
+        # compares fields and two distinct namespaces can compare equal.
+        chain_pair = (
+            self.text_chunks is not None
+            and any(inst is self.text_chunks for inst in pending)
+            and self.llm_response_cache is not None
+            and any(inst is self.llm_response_cache for inst in pending)
+        )
+        if chain_pair:
+            pending = [
+                inst
+                for inst in pending
+                if inst is not self.text_chunks and inst is not self.llm_response_cache
+            ]
+
         results = await asyncio.gather(
-            *[_flush_one(inst) for inst in storages if inst is not None],
+            *[_flush_one(inst) for inst in pending],
+            *([_flush_cache_after_references()] if chain_pair else []),
             return_exceptions=True,
         )
         errors = [r for r in results if isinstance(r, BaseException)]

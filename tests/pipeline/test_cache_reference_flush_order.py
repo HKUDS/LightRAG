@@ -32,6 +32,7 @@ import pytest
 
 from lightrag import LightRAG
 from lightrag.base import DocProcessingStatus, DocStatus
+from lightrag.exceptions import IndexFlushError
 from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 from lightrag.parser.registry import parser_specs_snapshot
 from lightrag.pipeline import _BatchRunContext
@@ -115,7 +116,9 @@ def _record_commits(
     _wrap(rag.llm_response_cache, "llm_response_cache", False, False)
 
 
-async def _run_epilogue(rag: LightRAG, doc_id: str) -> None:
+async def _run_epilogue(
+    rag: LightRAG, doc_id: str, error: BaseException | None = None
+) -> None:
     pipeline_status = await get_namespace_data(
         "pipeline_status", workspace=rag.workspace
     )
@@ -137,7 +140,7 @@ async def _run_epilogue(rag: LightRAG, doc_id: str) -> None:
         doc_id=doc_id,
         status_doc=_make_status_doc(doc_id),
         file_path=f"{doc_id}.txt",
-        error=RuntimeError("a sibling chunk exploded"),
+        error=error or RuntimeError("a sibling chunk exploded"),
         stage_label="extract",
         current_file_number=1,
         total_files=1,
@@ -219,5 +222,61 @@ async def test_a_declined_reference_commit_also_suppresses_the_cache_commit(tmp_
         await _run_epilogue(rag, "doc-declined")
 
         assert order == ["text_chunks"], order
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_an_index_flush_error_on_chunks_suppresses_without_retrying(tmp_path):
+    """A flush the backend already gave up on must not be re-read as success.
+
+    ``OpenSearchKVStorage._flush_pending_kv_ops`` DROPS a permanently-failed
+    bulk operation from its buffer before raising, so calling
+    ``index_done_callback`` again finds an empty buffer and returns normally
+    while the chunk reference is gone for good. The epilogue must believe the
+    exception that brought it here, not the retry.
+    """
+    rag = await _build_rag(tmp_path)
+    try:
+        order: list[str] = []
+        _record_commits(rag, order)
+        namespace = (
+            getattr(rag.text_chunks, "final_namespace", None)
+            or rag.text_chunks.namespace
+        )
+
+        await _run_epilogue(
+            rag,
+            "doc-flusherror",
+            error=IndexFlushError(
+                "OpenSearchKVStorage", namespace, RuntimeError("permanent bulk failure")
+            ),
+        )
+
+        assert order == [], (
+            "the epilogue retried a flush the backend had already discarded, "
+            "then committed the cache rows behind a reference that is gone"
+        )
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_an_index_flush_error_on_another_namespace_does_not_suppress(tmp_path):
+    """Only a text_chunks flush failure is evidence the references did not land."""
+    rag = await _build_rag(tmp_path)
+    try:
+        order: list[str] = []
+        _record_commits(rag, order)
+
+        await _run_epilogue(
+            rag,
+            "doc-othernamespace",
+            error=IndexFlushError(
+                "OpenSearchVectorStorage", "entities", RuntimeError("unrelated")
+            ),
+        )
+
+        assert order == ["text_chunks", "llm_response_cache"], order
     finally:
         await rag.finalize_storages()

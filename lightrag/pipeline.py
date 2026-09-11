@@ -5902,11 +5902,14 @@ class _PipelineMixin:
         *,
         stage_label: str,
         doc_id: str,
+        error: BaseException | None = None,
     ) -> bool:
         """Commit the chunk rows carrying this document's cache references.
 
         Returns False when the commit did not land — the caller's signal NOT to
-        commit the LLM cache afterwards. See *LLM extraction cache
+        commit the LLM cache afterwards. Pass the exception that triggered the
+        epilogue as ``error``: a flush this epilogue cannot redo is reported
+        through it, not through the retry below. See *LLM extraction cache
         reachability* in the contract doc,
         ``docs/design/PurgeRecoveryContract.md``.
 
@@ -5919,6 +5922,24 @@ class _PipelineMixin:
         """
         if self.text_chunks is None:
             return True
+        # A retry cannot see a failure the backend already discarded. When the
+        # aborting flush was text_chunks' own, a per-item backend has dropped
+        # the permanently-failed operation from its buffer before raising
+        # (``OpenSearchKVStorage._flush_pending_kv_ops``), so flushing again
+        # finds an empty buffer and reports success while the reference is
+        # gone for good. Trust the exception over the retry.
+        chunk_namespace = getattr(self.text_chunks, "final_namespace", None) or getattr(
+            self.text_chunks, "namespace", ""
+        )  # the same spelling _flush_storages puts into IndexFlushError
+        if isinstance(error, IndexFlushError) and error.namespace == chunk_namespace:
+            logger.error(
+                "Chunk cache references did not land after %s for d-id %s: "
+                "%s. Deferring the LLM cache commit so the pair stays together.",
+                stage_label,
+                doc_id,
+                error,
+            )
+            return False
         try:
             committed = await self.text_chunks.index_done_callback()
         except Exception as persist_error:
@@ -6095,6 +6116,7 @@ class _PipelineMixin:
         if await self._persist_chunk_cache_references_best_effort(
             stage_label=f"{stage_label} failure",
             doc_id=doc_id,
+            error=error,
         ):
             await self._persist_llm_response_cache_best_effort(
                 stage_label=f"{stage_label} failure",

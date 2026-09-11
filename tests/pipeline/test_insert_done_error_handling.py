@@ -553,3 +553,124 @@ async def test_insert_done_accepts_none_and_true(tmp_path, monkeypatch, flush_re
         assert spies[0].index_done_calls == 1
     finally:
         await rag.finalize_storages()
+
+
+# ---------------------------------------------------------------------------
+# Reference-before-row at the commit layer
+#
+# An extract cache row is reachable only through the owning chunk's
+# llm_cache_list, so text_chunks is chained AHEAD of llm_response_cache instead
+# of gathered beside it. See *LLM extraction cache reachability* in
+# docs/design/PurgeRecoveryContract.md.
+# ---------------------------------------------------------------------------
+
+
+def _bind_cache_pair_spies(rag, recorder, *, chunks_flush_error=None):
+    chunks = _SpyStorage(
+        "text_chunks", recorder=recorder, flush_error=chunks_flush_error
+    )
+    cache = _SpyStorage("llm_cache", recorder=recorder)
+    other = _SpyStorage("other_vdb", recorder=recorder)
+    rag.text_chunks = chunks
+    rag.llm_response_cache = cache
+    return chunks, cache, other
+
+
+@pytest.mark.asyncio
+async def test_insert_done_commits_chunk_references_before_cache_rows(
+    tmp_path, monkeypatch
+):
+    """The pair is ordered; everything else still flushes concurrently."""
+    rag = await _make_rag(tmp_path)
+    try:
+        rec: list = []
+        # Cache first in the list, to prove the ordering comes from the chain
+        # rather than from _index_storages' declaration order.
+        chunks, cache, other = _bind_cache_pair_spies(rag, rec)
+        monkeypatch.setattr(rag, "_index_storages", lambda: [cache, other, chunks])
+
+        await rag._insert_done()
+
+        assert rec.index(("text_chunks", "flush")) < rec.index(("llm_cache", "flush"))
+        assert other.index_done_calls == 1
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_insert_done_skips_the_cache_flush_when_chunks_fail(
+    tmp_path, monkeypatch
+):
+    """A failed chunk flush must not be followed by the rows it would strand.
+
+    On OpenSearch a permanent bulk failure DROPS the chunk operation before
+    raising, so a cache row committed beside it has no reference left at all.
+    """
+    rag = await _make_rag(tmp_path)
+    try:
+        rec: list = []
+        chunks, cache, other = _bind_cache_pair_spies(
+            rag, rec, chunks_flush_error=RuntimeError("permanent bulk failure")
+        )
+        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
+
+        with pytest.raises(IndexFlushError):
+            await rag._insert_done()
+
+        assert cache.index_done_calls == 0, (
+            "the cache rows were committed behind a chunk flush that failed"
+        )
+        # Unrelated namespaces are unaffected: only the pair is serialised.
+        assert other.index_done_calls == 1
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_discard_flushes_chunk_references_before_the_cache(tmp_path, monkeypatch):
+    """The aborting-batch cleanup obeys the same order — and it must, here more
+    than anywhere: the loop only DROPS text_chunks, so a reference not committed
+    before the cache flush is discarded outright."""
+    rag = await _make_rag(tmp_path)
+    try:
+        rec: list = []
+        chunks, cache, other = _bind_cache_pair_spies(rag, rec)
+        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
+
+        await rag._discard_pending_index_ops()
+
+        assert rec.index(("text_chunks", "flush")) < rec.index(("llm_cache", "flush"))
+        assert rec.index(("text_chunks", "flush")) < rec.index(("text_chunks", "drop"))
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_discard_still_flushes_the_cache_when_references_fail(
+    tmp_path, monkeypatch, caplog
+):
+    """Here a suppressed cache flush is a permanent loss, not a deferral.
+
+    The buffer is dropped immediately after, so refusing to flush would throw
+    away LLM work that is expensive to recompute — which ranks above the
+    dangling row. The failure epilogue makes the opposite call because there
+    the pair survives for the next commit.
+    """
+    rag = await _make_rag(tmp_path)
+    try:
+        rec: list = []
+        chunks, cache, other = _bind_cache_pair_spies(
+            rag, rec, chunks_flush_error=RuntimeError("chunk store is down")
+        )
+        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
+
+        with caplog.at_level("ERROR", logger="lightrag"):
+            await rag._discard_pending_index_ops()
+
+        assert cache.index_done_calls == 1
+        assert any(
+            "Failed to persist chunk cache references on abort" in rec_.message
+            for rec_ in caplog.records
+        )
+    finally:
+        await rag.finalize_storages()
