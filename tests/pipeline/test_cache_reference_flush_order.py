@@ -84,22 +84,35 @@ def _make_status_doc(doc_id: str) -> DocProcessingStatus:
     )
 
 
-def _record_commits(rag: LightRAG, order: list[str], *, chunks_fail: bool = False):
-    """Tag each storage's ``index_done_callback`` so the commit order is visible."""
+def _record_commits(
+    rag: LightRAG,
+    order: list[str],
+    *,
+    chunks_fail: bool = False,
+    chunks_decline: bool = False,
+):
+    """Tag each storage's ``index_done_callback`` so the commit order is visible.
 
-    def _wrap(storage, label: str, fail: bool):
+    ``chunks_decline`` returns an explicit ``False`` instead of raising: the
+    other way a commit does not land, where the storage reloaded a newer
+    snapshot and discarded the pending mutation.
+    """
+
+    def _wrap(storage, label: str, fail: bool, decline: bool):
         original = storage.index_done_callback
 
         async def _tagged():
             order.append(label)
             if fail:
                 raise RuntimeError(f"{label} commit is down")
+            if decline:
+                return False
             return await original()
 
         storage.index_done_callback = _tagged
 
-    _wrap(rag.text_chunks, "text_chunks", chunks_fail)
-    _wrap(rag.llm_response_cache, "llm_response_cache", False)
+    _wrap(rag.text_chunks, "text_chunks", chunks_fail, chunks_decline)
+    _wrap(rag.llm_response_cache, "llm_response_cache", False, False)
 
 
 async def _run_epilogue(rag: LightRAG, doc_id: str) -> None:
@@ -185,5 +198,26 @@ async def test_the_failed_status_row_is_still_written(tmp_path):
         status = row["status"]
         assert (status.value if hasattr(status, "value") else str(status)) == "failed"
         assert "a sibling chunk exploded" in row["error_msg"]
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_a_declined_reference_commit_also_suppresses_the_cache_commit(tmp_path):
+    """A DECLINED commit discarded the mutation, so the references are not on disk.
+
+    ``index_done_callback`` returning an explicit ``False`` is the other way a
+    commit fails to land — the storage reloaded a newer snapshot and dropped the
+    pending write. Identity, not truthiness: backends that commit normally
+    return ``None``, which must not read as a decline.
+    """
+    rag = await _build_rag(tmp_path)
+    try:
+        order: list[str] = []
+        _record_commits(rag, order, chunks_decline=True)
+
+        await _run_epilogue(rag, "doc-declined")
+
+        assert order == ["text_chunks"], order
     finally:
         await rag.finalize_storages()

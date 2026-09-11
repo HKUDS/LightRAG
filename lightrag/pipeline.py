@@ -6088,8 +6088,10 @@ class _PipelineMixin:
         # cache alone would put a row on disk whose only reference stayed in
         # memory, which is the unreachable row that ordering exists to prevent.
         # A reference commit that did not land therefore suppresses the cache
-        # commit: a lost cache entry is recomputed on the next run, an
-        # unreachable row holding document text is permanent.
+        # commit -- which defers it rather than dropping it: both stores keep
+        # the pending state for the next all-storage commit, which carries the
+        # pair. Worst case is a cache entry recomputed on the next run, against
+        # an unreachable row holding document text, which is permanent.
         if await self._persist_chunk_cache_references_best_effort(
             stage_label=f"{stage_label} failure",
             doc_id=doc_id,
@@ -6100,9 +6102,10 @@ class _PipelineMixin:
             )
         else:
             logger.error(
-                "Skipping the LLM cache commit after %s for d-id %s: its chunk "
+                "Deferring the LLM cache commit after %s for d-id %s: its chunk "
                 "references are not on disk, and a cache row that outlives them "
-                "cannot be found again",
+                "cannot be found again. Both stay in memory for the next "
+                "all-storage commit, which carries them together",
                 stage_label,
                 doc_id,
             )
