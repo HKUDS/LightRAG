@@ -94,11 +94,16 @@ DEFAULT_MONGO_DELETE_MAX_RECORDS_PER_BATCH = 1000
 # knob like the env-var-driven limits above, so it isn't one.
 _GET_EDGES_BATCH_CHUNK_SIZE = 500
 
-# node_degrees_batch's own $in chunk size -- same query-size safety cap as
-# above, kept as its own constant rather than shared since the two methods'
-# per-entry BSON size differs ($in of bare id strings vs $or of two-field
-# edge_lo/edge_hi dicts).
-_NODE_DEGREES_BATCH_CHUNK_SIZE = 500
+# node_degrees_batch's own $in chunk size -- kept as its own constant rather
+# than sharing _GET_EDGES_BATCH_CHUNK_SIZE since the two methods' per-entry
+# BSON size differs enough to matter: a bare id string costs far less than
+# get_edges_batch's two-field edge_lo/edge_hi dict, so the same query-size
+# budget affords a much larger chunk here. Matched to
+# _GRAPH_DEGREE_RANK_MAX_CANDIDATES (this module's already-accepted safe
+# candidate-set size for a BFS level) rather than picked independently, so
+# that already-bounded caller stays at 2 round trips (one chunk) instead of
+# being re-split by an unrelated, smaller cap.
+_NODE_DEGREES_BATCH_CHUNK_SIZE = 8192
 
 # MongoDB duplicate-key error code, raised when an upsert insert races the
 # unique edge-endpoint index (another writer inserted the same edge first).
@@ -111,11 +116,12 @@ _EDGE_MIGRATION_PROGRESS_INTERVAL = 50_000
 
 # Ceiling on how many same-depth candidates get a degree lookup before the
 # max_nodes cap in the bidirectional BFS. node_degrees_batch itself chunks
-# its $in queries (see _NODE_DEGREES_BATCH_CHUNK_SIZE), so this cap is no
-# longer about the 16MB/planner-index-bounds hazard that chunking now handles
-# for every caller -- it stays because one hub can put 100k neighbours in a
-# single level, and degree-ranking every one of them costs round trips for an
-# outcome max_nodes will mostly discard anyway.
+# its $in queries at this same size (see _NODE_DEGREES_BATCH_CHUNK_SIZE), so
+# this call site always fits in exactly one chunk -- 2 round trips, same as
+# before chunking existed, not multiplied by an unrelated smaller cap. The
+# ceiling itself still earns its keep: one hub can put 100k+ neighbours in a
+# single level, and without it every one of them would get degree-ranked (in
+# several chunks) for an outcome max_nodes will mostly discard anyway.
 # (Deliberately not shared with the OpenSearch constant of the same value:
 # that one is derived from index.max_terms_count / search.max_buckets.)
 _GRAPH_DEGREE_RANK_MAX_CANDIDATES = 8192
@@ -2317,8 +2323,7 @@ class MongoGraphStorage(BaseGraphStorage):
         # _GRAPH_DEGREE_RANK_MAX_CANDIDATES caps at the BFS call site, fixed
         # here at the shared primitive so every caller is covered, not just
         # that one. Deduped first so repeated ids in the input don't waste
-        # chunks. Each id lands in exactly one chunk, so outbound-then-inbound
-        # per chunk is safe: no id's degree is ever split across chunks.
+        # chunks.
         unique_node_ids = list(dict.fromkeys(node_ids))
         for i in range(0, len(unique_node_ids), _NODE_DEGREES_BATCH_CHUNK_SIZE):
             chunk = unique_node_ids[i : i + _NODE_DEGREES_BATCH_CHUNK_SIZE]
@@ -2333,7 +2338,9 @@ class MongoGraphStorage(BaseGraphStorage):
                 outbound_pipeline, allowDiskUse=True
             )
             async for doc in cursor:
-                merged_results[doc.get("_id")] = doc.get("degree")
+                merged_results[doc.get("_id")] = merged_results.get(
+                    doc.get("_id"), 0
+                ) + doc.get("degree")
 
             # Inbound degrees
             inbound_pipeline = [
