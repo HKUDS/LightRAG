@@ -46,6 +46,7 @@ _MAX_CLASS_DOCSTRING_LINES = 100
 #
 # This list may SHRINK and must never grow: a new entry means a new design
 # document was written into a docstring, which is the thing being prevented.
+# ``_KNOWN_OVERSIZED_SIZE`` below is what makes that mechanical.
 _KNOWN_OVERSIZED: frozenset[tuple[str, str]] = frozenset(
     {
         ("lightrag/api/routers/graph_routes.py", "update_entity"),
@@ -58,6 +59,16 @@ _KNOWN_OVERSIZED: frozenset[tuple[str, str]] = frozenset(
         ("lightrag/tools/source_conflict_repair.py", "<module>"),
     }
 )
+
+# The list's own length, asserted below. Without it the allowlist is an
+# unguarded opt-out: the limit test SKIPS anything listed, so appending one
+# tuple silences a fresh 160-line docstring and every test still passes --
+# measured, not assumed. Nothing in a repository can stop a committer from
+# editing two lines instead of one; what this buys is that growing the list
+# cannot happen as a quiet append, because it also has to move a number whose
+# comment says what moving it means.
+_KNOWN_OVERSIZED_SIZE = 8
+
 
 # A BARE ``#NNNN``, which resolves against whatever repository the reader
 # happens to be in. Two deliberate narrowings, both about keeping the rule
@@ -140,6 +151,26 @@ def test_the_known_oversized_list_does_not_go_stale():
     assert not stale, (
         "These are no longer oversized; drop them from _KNOWN_OVERSIZED:\n  "
         + "\n  ".join(f"{path}:{name}" for path, name in stale)
+    )
+
+
+def test_the_known_oversized_list_is_a_ratchet():
+    """Growing the allowlist must be a deliberate edit, not a list append.
+
+    The staleness test above makes entries removable; it does nothing about
+    adding them, and the limit test skips whatever is listed. So the
+    "may shrink, never grow" rule was a promise in a comment: one appended
+    tuple opts a new design-document docstring out of the budget with every
+    test still green.
+    """
+    assert len(_KNOWN_OVERSIZED) == _KNOWN_OVERSIZED_SIZE, (
+        f"_KNOWN_OVERSIZED holds {len(_KNOWN_OVERSIZED)} entries but "
+        f"_KNOWN_OVERSIZED_SIZE says {_KNOWN_OVERSIZED_SIZE}.\n\n"
+        "Shrinking the list: lower the number, and thank you.\n"
+        "Growing it: you are opting a docstring out of the budget rather than "
+        "moving its reasoning to docs/design/. Do that instead — and if the "
+        "entry is genuinely unavoidable, raise the number in the same commit "
+        "so the opt-out is visible in the diff."
     )
 
 

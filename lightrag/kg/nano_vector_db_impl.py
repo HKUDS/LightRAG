@@ -722,8 +722,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
             # `storage_updated` only makes this process reload the file it just
             # wrote. The hook also keeps its redo logs when it fails here, so if
             # an unnotified peer saves its older snapshot over these rows first,
-            # the next flush replays them back rather than losing them (the file channel is
-            # the fence gap itself; this only makes it recoverable).
+            # the next flush replays them back rather than losing them. The gap
+            # is the fence's own, and it takes BOTH halves missing: this failure
+            # silences the notification channel, and the file channel still
+            # closes it unless the replaced file happens to read as unchanged
+            # (the tick collision). The redo log does not close the gap; it
+            # makes it recoverable. See the contract doc, *Accepted residues*.
             log_without_raising(
                 logger.error,
                 f"[{self.workspace}] Vector data for {self.namespace} was saved "
