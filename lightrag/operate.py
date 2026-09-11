@@ -3972,6 +3972,12 @@ async def extract_entities(
     # Extraction-scoped truncation tally; see _publish_truncation_summary below.
     stage_tally = TokenLimitTruncationTally()
 
+    # Chunks whose LLM cache write was skipped because the chunk could not
+    # carry the reference to it (issue #3833). A set, not a tally: there is no
+    # per-stage breakdown to report and nothing is persisted — see
+    # _publish_cache_skip_summary below.
+    cache_skip_chunks: set[str] = set()
+
     # Optional per-chunk extraction-quality hook; None leaves the pipeline
     # unchanged. See the call site in _process_single_content below.
     kg_extraction_validator = global_config.get("kg_extraction_validator")
@@ -4142,6 +4148,33 @@ async def extract_entities(
                     f"reported as one summary at the end of extraction"
                 )
 
+        def _report_cache_skip(cache_type: str) -> None:
+            """The extraction cache is off for this chunk; say so out loud.
+
+            ``use_llm_func_with_cache`` skips the cache write when the chunk
+            could not carry the reference to it, so a row is never left
+            unreachable (issue #3833). That is the safe direction, but it means
+            the extraction cache silently stopped working for this document —
+            the next run re-calls the LLM for these chunks. Reported on the
+            same discipline as truncation above: every occurrence to the server
+            log, the first one plus an end-of-stage aggregate to the bounded
+            pipeline-status ring. Synchronous and non-raising, per the
+            ``on_cache_skipped`` contract.
+            """
+            location = f"chunk {chunk_key} in {file_path}"
+            logger.warning(
+                f"LLM {cache_type} cache write skipped for {location}: its cache "
+                f"reference could not be recorded on the chunk"
+            )
+            first = not cache_skip_chunks
+            cache_skip_chunks.add(chunk_key)
+            if first:
+                status_logger.log(
+                    f"Warning: LLM cache write skipped for {location} because its "
+                    f"cache reference could not be recorded; further occurrences "
+                    f"are reported as one summary at the end of extraction"
+                )
+
         if use_json_extraction:
             # JSON mode: use JSON prompts and pass entity_extraction flag to LLM provider.
             # The local must be bound explicitly: the text-mode branch below
@@ -4188,6 +4221,7 @@ async def extract_entities(
             cache_type="extract",
             chunk_id=chunk_key,
             text_chunks_storage=text_chunks_storage,
+            on_cache_skipped=_report_cache_skip,
             response_format=({"type": "json_object"} if use_json_extraction else None),
             llm_cache_identity=get_llm_cache_identity(global_config, "extract"),
         )
@@ -4264,6 +4298,7 @@ async def extract_entities(
                 cache_type="extract",
                 chunk_id=chunk_key,
                 text_chunks_storage=text_chunks_storage,
+                on_cache_skipped=_report_cache_skip,
                 response_format=(
                     {"type": "json_object"} if use_json_extraction else None
                 ),
@@ -4491,6 +4526,27 @@ async def extract_entities(
         if truncation_tally is not None:
             truncation_tally.absorb(stage_tally)
 
+    def _publish_cache_skip_summary() -> None:
+        """Publish one aggregated line for chunks whose cache write was skipped.
+
+        Called from the same ``finally`` as _publish_truncation_summary and
+        under the same rules: exactly once, on every exit, await-free so it is
+        safe inside a cancellation unwind, a no-op when nothing was skipped.
+        Nothing is handed upward — unlike truncation this is not recorded on
+        the document, because the trigger is an unwritable text_chunks storage
+        rather than a property of the document's content.
+        """
+        if not cache_skip_chunks:
+            return
+        cache_skip_message = (
+            f"Warning: LLM cache writes were skipped for {len(cache_skip_chunks)} "
+            f"of {total_chunks} chunks during entity extraction because their "
+            f"cache references could not be recorded; those extraction results "
+            f"were not cached and will be recomputed on the next run"
+        )
+        logger.warning(cache_skip_message)
+        status_logger.log(cache_skip_message)
+
     # Get max async tasks limit from global_config
     chunk_max_async = global_config.get("llm_model_max_async", 4)
     semaphore = asyncio.Semaphore(chunk_max_async)
@@ -4589,6 +4645,7 @@ async def extract_entities(
         # persisted FAILED with no llm_truncation for responses that had
         # already been recorded. Await-free, called exactly once.
         _publish_truncation_summary()
+        _publish_cache_skip_summary()
 
     # If all tasks completed successfully, chunk_results already contains the results
     # Return the chunk_results for later processing in merge_nodes_and_edges

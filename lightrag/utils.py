@@ -5483,6 +5483,7 @@ async def use_llm_func_with_cache(
     entity_extraction: bool = False,
     llm_cache_identity: Any | None = None,
     text_chunks_storage: "BaseKVStorage | None" = None,
+    on_cache_skipped: Callable[[str], None] | None = None,
 ) -> tuple[str, int]:
     """Call LLM function with cache support and text sanitization
 
@@ -5519,6 +5520,13 @@ async def use_llm_func_with_cache(
             reference that reaches it (issue #3833). Omit it -- as the parse
             stage and the summary path do, having no owning chunk -- to keep the
             legacy order and the ``cache_keys_collector`` batch instead.
+        on_cache_skipped: Called with ``cache_type`` when the cache write was
+            skipped because the reference could not be recorded, i.e. caching is
+            effectively off for this call. Lets the caller surface that to the
+            operator instead of leaving it in the server log. Must be
+            synchronous and must not raise: the extraction path publishes its
+            summary from an await-free ``finally`` that also runs during a
+            cancellation unwind.
 
     Returns:
         tuple[str, int]: (LLM response text, timestamp)
@@ -5604,12 +5612,14 @@ async def use_llm_func_with_cache(
             statistic_data["llm_cache"] += 1
 
             # Re-attach on a hit. The row predates this call, so ordering is
-            # moot here; this is the re-ingest self-heal. Stage 1 re-upserts
-            # the chunk row and the business value is replaced wholesale
-            # (see JsonKVStorage.upsert), so a second ingest of the same
-            # document arrives with llm_cache_list emptied while the rows it
-            # named still exist. A failure here is logged, not fatal: it fails
-            # to repair an orphan rather than creating one.
+            # moot here; this is the reprocess self-heal, and it is what keeps
+            # a reprocessed document's cache rows reachable. A resume purge
+            # DELETES the chunk rows (and with them the only references to
+            # those rows) before re-chunking, while deliberately leaving
+            # llm_response_cache alone; re-extraction then hits these rows and
+            # this call points the freshly written chunk row back at them.
+            # A failure here is logged, not fatal: it fails to repair an orphan
+            # rather than creating one.
             await _record_reference(f"{cache_type}_cache_hit")
 
             # Add cache key to collector if provided
@@ -5659,17 +5669,21 @@ async def use_llm_func_with_cache(
         # _rollback_one_custom_chunk_patch pass the ids to
         # llm_response_cache.delete(), where a missing id is a no-op, and
         # _get_cached_extraction_results (also used by the chunk-tracking
-        # repair tool) drops None entries from its batch get. It heals on the
-        # next ingest of the document, which rewrites llm_cache_list from
-        # scratch.
+        # repair tool) drops None entries from its batch get. It goes away with
+        # the chunk row itself -- on a reprocess, which deletes it, or when the
+        # document is deleted.
         #
-        # NOT closed by this ordering: the re-ingest window. Stage 1 replaces
-        # the chunk row's business value wholesale, emptying llm_cache_list
-        # while the rows it named still exist; the hit branch above
-        # re-attaches, but a kill between the two orphans every extract row of
-        # that document. Also unchanged: summary, smartheading and analysis
-        # rows, which carry no chunk reference at all and need the operator GC
-        # of issue #3833.
+        # NOT closed by this ordering: the reprocess window. A resume purge
+        # deletes a document's chunk rows -- and with them every reference to
+        # its cache rows -- before re-chunking, and deliberately does not touch
+        # llm_response_cache. The hit branch above re-attaches during
+        # re-extraction, so the loop closes on its own, but a run that dies in
+        # between leaves those rows unreferenced. Reprocessing under CHANGED
+        # chunking never closes it at all: the chunk text differs, so the old
+        # prompts are never reissued and no hit occurs. That is unreachable by
+        # any ordering -- the prompt is gone -- and belongs to the operator GC
+        # of issue #3833, along with summary, smartheading and analysis rows,
+        # which carry no chunk reference in the first place.
         if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
             if res_truncated:
                 # Do not persist truncated extraction output: a cached partial
@@ -5691,6 +5705,10 @@ async def use_llm_func_with_cache(
                     f"record its reference on chunk {chunk_id}. The result is "
                     "returned; it will be recomputed on the next run."
                 )
+                # Caching is effectively off for this call. Hand that to the
+                # caller so it reaches the operator, not just the server log.
+                if on_cache_skipped is not None:
+                    on_cache_skipped(cache_type)
             else:
                 await save_to_cache(
                     llm_response_cache,
