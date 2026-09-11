@@ -35,8 +35,9 @@ class NumberingResolver:
     # (not chineseCounting), which is why both are mapped here.
     FORMAT_CONVERTERS = {
         "decimal": lambda n: str(n),
-        "lowerLetter": lambda n: chr(ord("a") + (n - 1) % 26),
-        "upperLetter": lambda n: chr(ord("A") + (n - 1) % 26),
+        # Word repeats a letter after each alphabet: a...z, aa...zz, aaa...
+        "lowerLetter": lambda n: chr(ord("a") + (n - 1) % 26) * ((n - 1) // 26 + 1),
+        "upperLetter": lambda n: chr(ord("A") + (n - 1) % 26) * ((n - 1) // 26 + 1),
         "lowerRoman": lambda n: NumberingResolver._to_roman(n).lower(),
         "upperRoman": lambda n: NumberingResolver._to_roman(n),
         "chineseCounting": lambda n: NumberingResolver._to_chinese(n),

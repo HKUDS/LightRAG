@@ -178,6 +178,36 @@ def _label(r: NumberingResolver, count: int) -> str:
     return r._format_label("100", 0, r.abstract_nums["10"])
 
 
+@pytest.mark.parametrize("num_fmt", ["lowerLetter", "upperLetter"])
+@pytest.mark.parametrize("lvl_text", ["%1.", "(%1)", "%1)"])
+def test_letter_labels_preserve_ordinals_after_first_alphabet(num_fmt, lvl_text):
+    from lightrag.parser.docx.smart_heading.style_key import classify_numbering
+
+    resolver = _fmt_resolver(num_fmt, lvl_text)
+    for count in range(1, 79):
+        label = resolver.get_label(_para(num_id="100", ilvl=0))
+        # Check alphabet boundaries and the next label. Roman-looking labels
+        # such as II retain the classifier's existing Roman precedence.
+        if count not in {1, 26, 27, 28, 52, 53, 78}:
+            continue
+        match = classify_numbering(f"{label} Heading")
+        assert match is not None
+        assert match.ordinal == count
+        if count in {1, 26, 27, 28, 52, 53, 78}:
+            letters = {
+                1: "a",
+                26: "z",
+                27: "aa",
+                28: "bb",
+                52: "zz",
+                53: "aaa",
+                78: "zzz",
+            }[count]
+            if num_fmt == "upperLetter":
+                letters = letters.upper()
+            assert label == lvl_text.replace("%1", letters)
+
+
 # The counting families all render 一/二/十/十一/… — [MS-DOCX] gives
 # japaneseCounting as 一,二,三 and chineseCounting / taiwaneseCounting as
 # 一 (1) / 十 (10). Chinese-locale Word writes 一二三 auto-numbering as
