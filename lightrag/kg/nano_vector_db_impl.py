@@ -160,8 +160,8 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # under _storage_lock by _flush_pending_locked().
         self._pending_upserts: dict[str, _PendingNanoDoc] = {}
         # Ids queued for removal, applied in one batched client.delete() by
-        # _flush_pending_locked (see *Deferred-delete protocol* in the class
-        # docstring). NanoVectorDB.delete() rebuilds the whole matrix per
+        # _flush_pending_locked (see *Deferred-delete protocol* in the
+        # contract doc). NanoVectorDB.delete() rebuilds the whole matrix per
         # call, and the merge stage deletes once per relation, so deferring
         # turns O(relations) full-matrix copies into one per flush.
         self._pending_deletes: set[str] = set()
@@ -323,7 +323,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         NanoVectorDB has no incremental sync API — the reload is
         unconditionally a full file reload.
 
-        Under the *Single writer* invariant (see the contract doc), the
+        Under the *Concurrency invariants* single-writer rule (contract doc), the
         reload branch never fires in the writer process: the writer
         resets its own flag at the end of every ``index_done_callback``.
         The branch exists for readers.
@@ -437,8 +437,8 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # One batched delete before the upserts materialize: one matrix copy
         # per flush instead of one per relation, and a deleted-then-reinserted
         # id keeps only the new row. The queue survives until a save persists
-        # the removal, so a failed save can replay it (see the class
-        # docstring); ids that matched nothing have nothing to persist.
+        # the removal, so a failed save can replay it (see the contract
+        # doc); ids that matched nothing have nothing to persist.
         if self._pending_deletes or self._unsaved_deletes:
             queued = len(self._pending_deletes)
             storage = getattr(self._client, "_NanoVectorDB__storage")

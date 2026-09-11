@@ -811,8 +811,8 @@ class NetworkXStorage(BaseGraphStorage):
         (synchronous networkx ops + the single-writer invariant, held by the
         pipeline ``busy`` gate or ``LightRAG._admin_write_gate``).
 
-        Validates before mutating: see *Attribute validation* in the class
-        docstring.
+        Validates before mutating: see *Attribute validation* in the
+        contract doc.
         """
         graph = await self._get_graph()
         # Validate *after* the only await, so the check and the mutation are one
@@ -833,8 +833,8 @@ class NetworkXStorage(BaseGraphStorage):
 
         Correctness relies on the *Lock scope* invariant in the contract doc.
 
-        Validates before mutating: see *Attribute validation* in the class
-        docstring.
+        Validates before mutating: see *Attribute validation* in the
+        contract doc.
         """
         graph = await self._get_graph()
         # See upsert_node: checked after the await, mutated with none in between.
@@ -932,8 +932,8 @@ class NetworkXStorage(BaseGraphStorage):
             a subsequent ``index_done_callback``. Callers outside the
             pipeline must persist explicitly.
 
-        Gating depends on the caller — see ``delete_node`` and class
-        docstring *Non-pipeline write paths*.
+        Gating depends on the caller — see ``delete_node`` and
+        *Admin write paths* in the contract doc.
 
         Args:
             nodes: List of node IDs to be deleted
@@ -952,8 +952,8 @@ class NetworkXStorage(BaseGraphStorage):
             a subsequent ``index_done_callback``. Callers outside the
             pipeline must persist explicitly.
 
-        Gating depends on the caller — see ``delete_node`` and class
-        docstring *Non-pipeline write paths*.
+        Gating depends on the caller — see ``delete_node`` and
+        *Admin write paths* in the contract doc.
 
         Args:
             edges: List of edges to be deleted, each edge is a (source, target) tuple
@@ -1467,8 +1467,8 @@ class NetworkXStorage(BaseGraphStorage):
             # it. Arming storage_updated instead -- as this did before
             # -- was an RPC to the very manager whose outage may be why
             # the reload just failed, and it needed a whole failure
-            # path of its own. See *Recovery reload* in the class
-            # docstring for the rest of the reasoning, including why
+            # path of its own. See *Recovery reload* in the contract
+            # doc for the rest of the reasoning, including why
             # the fingerprint is NOT invalidated here: the save failed,
             # so the file is untouched and the recorded fingerprint
             # still describes it correctly.
@@ -1496,9 +1496,9 @@ class NetworkXStorage(BaseGraphStorage):
               on. Two tests, per *Cross-process sync protocol*.
 
               The ``storage_updated.value`` half is permanently ``False`` in
-              the writer while the single-writer invariant holds (class
-              docstring, invariant 1 -- the pipeline gate plus the admin-write
-              gate), so it is defensive scaffolding for a
+              the writer while the single-writer invariant holds (the
+              contract doc's invariant 1 -- the pipeline gate plus the
+              admin-write gate), so it is defensive scaffolding for a
               writer that bypasses both.
 
               The fingerprint half is **not** — it is live in production.

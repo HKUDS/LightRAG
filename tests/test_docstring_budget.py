@@ -214,3 +214,65 @@ def test_what_counts_as_a_bare_issue_reference(line, matched, why):
     long time. Both are load-bearing and neither is visible from the pattern.
     """
     assert bool(_ISSUE_REF.search(line)) is matched, why
+
+
+# A pointer written as ``see *Section name* in the contract doc``. The phrase is
+# a convention this repository introduced along with docs/design/, so matching
+# on it is unambiguous -- it is never ordinary prose.
+#
+# ``(?<!\*)`` / ``(?!\*)`` keep **bold emphasis** out. These docstrings use one
+# asterisk for a section reference and two for emphasis, and without the guards
+# the inner pair of ``**Not pipeline-gated**`` reads as a section name -- a false
+# positive on a line that also carries a perfectly good pointer beside it.
+_CONTRACT_POINTER = re.compile(
+    r"(?<!\*)\*([A-Z][^*\n]{2,60}?)\*(?!\*)[^.]{0,80}?contract doc|"
+    r"contract doc[^.]{0,80}?(?<!\*)\*([A-Z][^*\n]{2,60}?)\*(?!\*)"
+)
+
+
+def _flattened(path: pathlib.Path) -> str:
+    """File text with wrapped comment and docstring lines joined.
+
+    Pointers wrap. Five of them rotted through a rename in this series and a
+    line-oriented search found none of them, because every one was split as
+    ``in the class`` / ``docstring`` across two lines.
+    """
+    joined = re.sub(r"\n\s*(#\s*)?", " ", path.read_text(encoding="utf-8"))
+    return re.sub(r"\s+", " ", joined)
+
+
+def test_every_contract_section_pointer_resolves():
+    """``see *X* in the contract doc`` must name something a reader can find.
+
+    The paths were already checked; the SECTION names were not, and a rename
+    inside a contract leaves the pointer looking valid while sending the reader
+    nowhere. That is worse than no pointer: it reads as a promise the tree does
+    not keep.
+    """
+    # HEADINGS, not the whole text. A first attempt matched anywhere in the
+    # document and was useless: renaming a heading leaves the old wording in the
+    # prose that cross-references it, so the pointer still "resolved" while
+    # pointing at a section that no longer exists. A pointer names a section, so
+    # it is sections it has to be checked against.
+    headings = {
+        re.sub(r"[`*]", "", heading).strip().lower()
+        for path in sorted((_REPO_ROOT / "docs" / "design").glob("*.md"))
+        for heading in re.findall(
+            r"^#{2,4}\s+(.+)$", path.read_text(encoding="utf-8"), re.M
+        )
+    }
+    assert headings, "no contract headings found — the check would pass vacuously"
+
+    dangling = []
+    for path in _python_files():
+        for match in _CONTRACT_POINTER.finditer(_flattened(path)):
+            name = (match.group(1) or match.group(2)).strip().rstrip(".,;:")
+            if name.lower() not in headings:
+                dangling.append(f"{path.relative_to(_REPO_ROOT)} -> *{name}*")
+
+    assert not dangling, (
+        "These pointers name a section no contract document contains:\n  "
+        + "\n  ".join(sorted(set(dangling)))
+        + "\n\nA renamed section leaves the pointer looking valid. Retarget it, "
+        "or restore the name in docs/design/."
+    )

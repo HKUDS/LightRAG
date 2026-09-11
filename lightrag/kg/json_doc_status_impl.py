@@ -397,7 +397,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                ``set_all_update_flags`` to mark every process dirty.
             3. Await ``index_done_callback`` for an immediate flush.
 
-        See ``JsonKVStorage`` class docstring for the shared-memory +
+        See ``JsonKVStorage`` and the contract doc for the shared-memory +
         dirty-flag protocol that underpins step 2.
         """
         if not data:
@@ -1227,7 +1227,7 @@ class JsonDocStatusStorage(DocStatusStorage):
             ``drop`` is destructive and **not** serialized by this
             storage class. The caller must hold the pipeline ``busy``
             reservation (the ``/documents/clear`` endpoint does this)
-            before invoking it. See class docstring,
+            before invoking it. See the contract doc,
             *Non-pipeline write paths*.
 
         Returns:

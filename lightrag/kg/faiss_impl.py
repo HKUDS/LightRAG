@@ -370,7 +370,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         sync API — the reload is unconditionally a full reload of both
         files via ``_reload_index_from_disk_locked``.
 
-        Under the *Single writer* invariant (see the contract doc), the
+        Under the *Concurrency invariants* single-writer rule (contract doc), the
         reload branch never fires in the writer process: the writer
         resets its own flag at the end of every ``index_done_callback``.
         The branch exists for readers.
@@ -1160,8 +1160,8 @@ class FaissVectorDBStorage(BaseVectorStorage):
         index has more vectors than the meta describes. The
         ``index < meta`` direction is covered by
         ``test_faiss_meta_inconsistency``; the ``index > meta`` direction is
-        a known gap (logged on reload, not auto-repaired) — see class
-        docstring *Storage model*.
+        a known gap (logged on reload, not auto-repaired) — see
+        *Storage model* in the contract doc.
 
         Both writes run in the storage-IO pool rather than on the event loop:
         together they rewrite the entire index and the entire metadata file, so
