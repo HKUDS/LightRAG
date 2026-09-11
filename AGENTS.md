@@ -85,6 +85,16 @@ LightRAG writes to independent stores — graph, KV, vector, doc-status — with
 - Chunk tracking (`entity_chunks` / `relation_chunks`) outranks graph `source_id`; code folding a `source_id` delta back into tracking must append genuine additions only.
 - Merge and rename apply *Consistency without transactions* above: [the failure model](docs/design/PurgeRecoveryContract.md#merge-and-rename-failure-model) lists their ordering invariants, accepted residues and already-rejected remedies. Read it before reordering `_merge_entities_impl` or the rename branch of `_edit_entity_impl`.
 
+### Runtime configuration propagation contract
+
+**Full contract: [docs/design/RuntimeConfigPropagationContract.md](docs/design/RuntimeConfigPropagationContract.md) — read it before touching `lightrag/addon_params.py`, `lightrag/llm_roles.py`, `lightrag/kg/shared_storage.py`, or runtime configuration hot-swap paths.**
+
+- Cross-worker propagation in multi-worker deployments is partitioned into two namespaces: `addon_params` (workspace-scoped) and `role_llm` + `max_async` (process-wide, `workspace=""`).
+- Publishing is explicit (`apublish_runtime_config()`, `aupdate_llm_role_config(..., publish=True)`) with monotonic versions ordered under keyed locks; workers never push implicitly.
+- Workers evaluate and apply updates at bounded execution boundaries (HTTP requests, document boundaries, and a 250ms debounced SDK check).
+- `get_global_concurrency_limit()` reads a worker-local cache refreshed by update flags to ensure zero live Manager IPC on slot acquisition.
+- Secrets (`_SECRET_MARKERS`) are scrubbed prior to publishing; credentials resolve locally. Worker apply failures roll back atomically without advancing `applied_version`.
+
 ### Relation weight contract
 
 **Full contract: [docs/ProgramingWithCore.md](docs/ProgramingWithCore.md#relation-weight-contract)** — keep it synchronized with the core API docstrings, REST graph documentation, and custom-KG examples whenever relation write behavior changes.
