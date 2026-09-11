@@ -5897,6 +5897,42 @@ class _PipelineMixin:
         async with pipeline_status_lock:
             return bool(pipeline_status.get("cancellation_requested", False))
 
+    async def _persist_chunk_cache_references_best_effort(
+        self,
+        *,
+        stage_label: str,
+        doc_id: str,
+    ) -> bool:
+        """Commit the chunk rows carrying this document's cache references.
+
+        Returns False when the commit did not land — the caller's signal NOT to
+        commit the LLM cache afterwards. See *LLM extraction cache
+        reachability* in the contract doc,
+        ``docs/design/PurgeRecoveryContract.md``.
+
+        Runs for every stage epilogue, not just the extract one that can hold
+        chunk references. At the parse stage there is nothing of this
+        document's to commit, so the cost is one no-op flush; suppressing the
+        cache commit there can only happen when ``text_chunks`` is already
+        failing, and it costs a recomputable cache entry. Both are cheaper than
+        a stage whitelist that has to stay correct as stages move.
+        """
+        if self.text_chunks is None:
+            return True
+        try:
+            committed = await self.text_chunks.index_done_callback()
+        except Exception as persist_error:
+            logger.error(
+                "Failed to persist chunk cache references after %s for d-id %s: %s",
+                stage_label,
+                doc_id,
+                persist_error,
+            )
+            return False
+        # An explicit False is a DECLINED commit: the mutation was discarded,
+        # so the references are not on disk either.
+        return committed is not False
+
     async def _persist_llm_response_cache_best_effort(
         self,
         *,
@@ -5991,8 +6027,9 @@ class _PipelineMixin:
         """Common epilogue for an extract / merge stage failure.
 
         Logs the error (or cancellation), cancels any pending stage tasks,
-        flushes the LLM response cache, and writes a FAILED status row that
-        preserves the failed chunks snapshot and processing-time metadata.
+        commits the chunk cache references and then the LLM response cache (in
+        that order — see below), and writes a FAILED status row that preserves
+        the failed chunks snapshot and processing-time metadata.
         """
         if isinstance(error, PipelineCancelledException):
             cancel_label = self._cancellation_label(pipeline_status.copy())
@@ -6045,10 +6082,30 @@ class _PipelineMixin:
             if task and not task.done():
                 task.cancel()
 
-        await self._persist_llm_response_cache_best_effort(
+        # Reference before row, applied at the flush layer. On a deferred KV
+        # backend ``upsert`` only reaches shared memory, so the ordering the
+        # write path establishes becomes durable only here — and committing the
+        # cache alone would put a row on disk whose only reference stayed in
+        # memory, which is the unreachable row that ordering exists to prevent.
+        # A reference commit that did not land therefore suppresses the cache
+        # commit: a lost cache entry is recomputed on the next run, an
+        # unreachable row holding document text is permanent.
+        if await self._persist_chunk_cache_references_best_effort(
             stage_label=f"{stage_label} failure",
             doc_id=doc_id,
-        )
+        ):
+            await self._persist_llm_response_cache_best_effort(
+                stage_label=f"{stage_label} failure",
+                doc_id=doc_id,
+            )
+        else:
+            logger.error(
+                "Skipping the LLM cache commit after %s for d-id %s: its chunk "
+                "references are not on disk, and a cache row that outlives them "
+                "cannot be found again",
+                stage_label,
+                doc_id,
+            )
 
         failed_chunks_list, failed_chunks_count = failed_chunks_snapshot
         await self._upsert_doc_status_transition(

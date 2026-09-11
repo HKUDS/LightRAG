@@ -41,9 +41,18 @@ A tracking row whose graph object is gone is not repairable one row at a time: `
 
 An extraction cache row (`cache_type="extract"`) stores the prompt that produced it — which embeds the chunk text verbatim — together with the entities and relations extracted from it. Nothing indexes those rows by document: the only thing that ever reaches one again is the owning chunk's `llm_cache_list`. That list is therefore an attribution carrier in the sense of the governing invariant above, and `adelete_by_doc_id(delete_llm_cache=True)` is the promise that rests on it.
 
-> **A cache row is written only if a reference to it is already durable on the owning chunk.**
+> **The reference is always recorded before the row, and committed before the row.**
 
 The row and the reference are two writes with no transaction between them, so the ordering does not remove the intermediate state, it only chooses which one survives. Writing the row first and attaching afterwards left an unreachable row whenever the gap was cut short — a sibling chunk's exception cancelling the task through `extract_entities`' `FIRST_EXCEPTION` wait, a hard kill, or a storage failure inside the attach, which is swallowed and only logged. Attaching first can lose the reference but never the row.
+
+The rule has to hold at **both** layers, because on a deferred KV backend they are not the same event:
+
+| Layer | On an immediate-write backend (PG, Redis, Mongo, OpenSearch) | On a deferred one (`JsonKVStorage`, the default) |
+|---|---|---|
+| write | `update_chunk_cache_list` returns only after the reference is durable, so `save_to_cache` can never outlive it | `upsert` reaches shared memory only; the return orders the two writes but proves nothing about disk |
+| commit | `index_done_callback` is a cheap no-op | `index_done_callback` is the commit point, so the **commit order is what makes the write order durable** |
+
+That second row is why `_finalize_doc_failure` commits `text_chunks` before `llm_response_cache`, and skips the second when the first did not land. Committing the cache alone — which the narrow `_persist_llm_response_cache_best_effort` did on its own — puts a row on disk whose only reference is still in memory, and the next crash strands it: the extract-stage epilogue runs on exactly the sibling-cancellation path this ordering exists for. A suppressed cache commit costs a re-run of the LLM; an unreachable row holding document text is permanent.
 
 When the reference cannot be recorded the cache write is **skipped** rather than performed anyway: a lost cache entry is recomputed on the next run, while an unreachable row holding document text is permanent. Extraction caching therefore depends on `text_chunks` being writable, and that degradation is reported rather than silent — `extract_entities` publishes the first occurrence plus one end-of-stage aggregate to `pipeline_status`, on the same discipline as token-limit truncation, because an unwritable chunk store skips on every chunk of the document and one line each would evict the rest of the run from the bounded history ring.
 

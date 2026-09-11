@@ -5144,9 +5144,12 @@ async def update_chunk_cache_list(
         cache_scenario: Description of the cache scenario for logging
 
     Returns:
-        True when the reference is durable: the keys are now on the chunk row,
-        were already there, or there was nothing to record. False when it could
-        not be recorded -- the chunk row is missing, or the read/write failed.
+        True when the keys are recorded on the chunk row, were already there,
+        or there was nothing to record. False when they could not be recorded
+        -- the chunk row is missing, or the read/write failed. True means
+        RECORDED, not yet durable: on a deferred KV backend the upsert reaches
+        shared memory only, and the commit order is what makes the ordering
+        durable.
 
         Never raises. A caller that must not create an unreachable cache row
         checks this BEFORE writing the row -- see *LLM extraction cache
@@ -5516,9 +5519,9 @@ async def use_llm_func_with_cache(
             cache entries across role model, binding, or host changes.
         text_chunks_storage: Storage holding the owning chunk. When given
             together with ``chunk_id``, the cache key is attached to that chunk
-            BEFORE the cache row is written, so a row can never outlive the only
-            reference that reaches it, and the write is skipped when the
-            reference cannot be recorded -- see *LLM extraction cache
+            BEFORE the cache row is written, so the row is never ordered ahead
+            of the only reference that reaches it, and the write is skipped
+            when the reference cannot be recorded -- see *LLM extraction cache
             reachability* in the contract doc,
             ``docs/design/PurgeRecoveryContract.md``. Omit it -- as the parse
             stage and the summary path do, having no owning chunk -- to keep the
@@ -5587,7 +5590,7 @@ async def use_llm_func_with_cache(
         cache_key = generate_cache_key("default", cache_type, arg_hash)
 
         async def _record_reference(scenario: str) -> bool:
-            """Make this chunk's reference to ``cache_key`` durable.
+            """Record this chunk's reference to ``cache_key``.
 
             Returns True when the caller may write the row: either the
             reference is recorded, or the caller opted out of the invariant by
@@ -5657,8 +5660,10 @@ async def use_llm_func_with_cache(
         # An extract cache row is reachable only through the owning chunk's
         # llm_cache_list, so the reference is recorded BEFORE the row is
         # written: attaching first can lose the reference, which every reader
-        # tolerates, while writing first lost the row itself. The residues and
-        # what this ordering does not close are in
+        # tolerates, while writing first lost the row itself. On a deferred KV
+        # backend this only orders the two writes in memory -- the commit order
+        # that makes it durable is the failure epilogue's, not this function's.
+        # The residues, both layers and what this ordering does not close are in
         # *LLM extraction cache reachability* in the contract doc.
         if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
             if res_truncated:
