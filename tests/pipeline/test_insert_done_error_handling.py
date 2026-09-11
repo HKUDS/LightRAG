@@ -676,9 +676,12 @@ async def test_discard_skips_the_cache_flush_when_references_fail(
 
         assert cache.index_done_calls == 0, (
             "cache rows were published behind references that did not commit, "
-            "and the next lines drop both buffers"
+            "and the next lines drop the buffer"
         )
-        assert cache.drop_calls == 1
+        # Upserts only: the buffered DELETES are tombstones a completed
+        # deletion promised, covered by its own test below.
+        assert cache.drop_upsert_calls == 1
+        assert cache.drop_calls == 0
         assert any(
             "Failed to persist chunk cache references on abort" in rec_.message
             for rec_ in caplog.records
@@ -991,5 +994,60 @@ async def test_the_quarantine_keeps_buffered_cache_deletions(tmp_path, monkeypat
             "the buffered cache deletions were discarded along with the upserts"
         )
         assert ("llm_cache", "drop_upserts") in rec
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_abort_cleanup_keeps_cache_tombstones_when_references_fail(
+    tmp_path, monkeypatch
+):
+    """The second unconditional drop site, and the one with no recovery path.
+
+    A completed ``adelete_by_doc_id(delete_llm_cache=True)`` can leave its
+    tombstone buffered when the final ``_insert_done`` hit a ``text_chunks``
+    flush error — that path reports success after merely logging it. If an
+    aborting batch then discards the tombstone, the document, its status and
+    its chunks are already gone, so the cache row holding the prompt has
+    nothing left that can ever reach it.
+    """
+    rag = await _make_rag(tmp_path)
+    try:
+        rec: list = []
+        chunks, cache, other = _bind_cache_pair_spies(
+            rag, rec, chunks_flush_error=RuntimeError("chunk store is down")
+        )
+        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
+
+        await rag._discard_pending_index_ops()
+
+        assert cache.index_done_calls == 0, "the cache was flushed behind failed refs"
+        assert cache.drop_calls == 0, (
+            "the buffered cache DELETES were discarded on an aborting batch, "
+            "and a completed deletion has no way to reissue them"
+        )
+        assert cache.drop_upsert_calls == 1
+        # Every other namespace still gets the full drop.
+        assert other.drop_calls == 1
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_abort_cleanup_drops_everything_when_references_commit(
+    tmp_path, monkeypatch
+):
+    """The narrowing applies only to the failed-reference case."""
+    rag = await _make_rag(tmp_path)
+    try:
+        rec: list = []
+        chunks, cache, other = _bind_cache_pair_spies(rag, rec)
+        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
+
+        await rag._discard_pending_index_ops()
+
+        assert cache.index_done_calls == 1
+        assert cache.drop_calls == 1
+        assert cache.drop_upsert_calls == 0
     finally:
         await rag.finalize_storages()

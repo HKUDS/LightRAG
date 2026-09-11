@@ -3798,7 +3798,26 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     except Exception as e:
                         logger.error(f"Failed to persist LLM cache on abort: {e}")
                 try:
-                    await cast(StorageNameSpace, storage_inst).drop_pending_index_ops()
+                    if storage_inst is self.llm_response_cache and (
+                        not references_committed
+                    ):
+                        # The cache was NOT flushed just above, so its buffer
+                        # still holds both kinds of op -- and a buffered delete
+                        # is a tombstone an already-returned
+                        # ``adelete_by_doc_id(delete_llm_cache=True)``
+                        # promised. That path reports success after merely
+                        # logging a flush error, and by now the document, its
+                        # status and its chunks are gone, so discarding the
+                        # tombstone leaves the row holding the document prompt
+                        # with no recovery path at all. Drop only what this
+                        # cleanup means to drop.
+                        await cast(
+                            StorageNameSpace, storage_inst
+                        ).drop_pending_upserts()
+                    else:
+                        await cast(
+                            StorageNameSpace, storage_inst
+                        ).drop_pending_index_ops()
                 except Exception as e:
                     logger.error(
                         f"Failed to discard pending ops on "
