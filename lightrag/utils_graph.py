@@ -1240,7 +1240,10 @@ async def _edit_entity_impl(
                 # migrating it verbatim is the whole job. There is deliberately
                 # no reseed-from-source_id arm here: an absent row cannot reach
                 # this branch, and reseeding one that could would be the stale
-                # reseed this ordering exists to prevent.
+                # source_id reseed -- the graph's ``source_id`` is a
+                # KEEP-truncated view that can still name chunks a previous
+                # purge pruned, so seeding a row from it resurrects stale
+                # attribution (see ``has_authoritative_chunk_ids``).
                 updated_chunk_ids = [
                     cid for cid in stored_data.get("chunk_ids", []) if cid
                 ]

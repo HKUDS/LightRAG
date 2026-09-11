@@ -5626,9 +5626,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             proof is None or not proof.phase_at_least(KG_PURGE_PHASE_ANCHORS_PENDING)
         ):
             # Deleted only AFTER every derived graph/vector/tracking contribution
-            # has been repaired or removed AND flushed (unsafe
-            # destructive ordering). A failure before this point leaves the
-            # chunks in place, so graph objects never reference deleted chunks.
+            # has been repaired or removed AND flushed. The INVERSE order --
+            # dropping the chunks first -- is the unsafe one: it strands graph
+            # objects referencing chunks that no longer exist, and the anchors
+            # that would say what to clean up are gone with them. See
+            # docs/design/PurgeRecoveryContract.md. A failure before this point
+            # leaves the chunks in place, so graph objects never reference
+            # deleted chunks.
             try:
                 await self.chunks_vdb.delete(chunk_ids)
                 await self.text_chunks.delete(chunk_ids)
