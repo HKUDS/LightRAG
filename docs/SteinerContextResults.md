@@ -1,5 +1,7 @@
 # Measured results and readiness
 
+These are **historical measurements of the initial PR revision**, commit `32913da1ad05ecbc8da38e666b860ccd45b3fac0`. They used chunk reranking disabled and the old five-arm diagnostic. They do not represent a reranking-enabled LightRAG deployment. See the [review follow-up](SteinerContextReview.md) for the revised six-arm evaluator and its current verification status.
+
 The prototype works, but these results do not establish that SteinerPy improves real answer quality. No real model was configured or called. All answer-quality fields in the diagnostic runs are null.
 
 ## Four hand-authored diagnostic questions
@@ -43,7 +45,7 @@ Run the included real-QA driver on a fixed existing LightRAG index and held-out 
 
 The prototype is ready for feedback on the integration and experiment design. These measurements do not establish a production benefit.
 
-Reproduction: run the two commands below from this branch after installing the dependencies listed in [the prototype guide](SteinerContextPrototype.md).
+Historical reproduction: use the initial PR commit above and its dependency instructions, then run the two commands below. The current branch's ablation command instead runs the revised six-arm experiment with chunk reranking enabled.
 
 ```bash
 .venv/bin/python -m lightrag.evaluation.steiner_ablation --repeats 5 --budgets 1200 1600

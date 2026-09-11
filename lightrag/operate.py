@@ -4806,7 +4806,10 @@ async def kg_query(
     answer_cache_kv = _answer_cache_kv(query_param, hashing_kv)
     selection_cache_args = ()
     selection_config = global_config.get("addon_params", {}).get("context_selection", {})
-    if selection_config.get("strategy", "rank") != "rank":
+    if (
+        selection_config.get("strategy", "rank") != "rank"
+        or selection_config.get("prize_source", "ordering") != "ordering"
+    ):
         # Include the actual prompt as the heuristic/fallback may select
         # different records. Keep the historical rank cache key unchanged.
         selection_cache_args = (
@@ -5452,6 +5455,7 @@ async def _apply_token_truncation(
     search_result: dict[str, Any],
     query_param: QueryParam,
     global_config: dict[str, str],
+    query: str | None = None,
 ) -> dict[str, Any]:
     """
     Apply token-based truncation to entities and relations for LLM efficiency.
@@ -5541,7 +5545,10 @@ async def _apply_token_truncation(
 
     selection_config = global_config.get("addon_params", {}).get("context_selection", {})
     selection_metadata = None
-    if selection_config.get("strategy", "rank") != "rank":
+    if (
+        selection_config.get("strategy", "rank") != "rank"
+        or selection_config.get("prize_source", "ordering") != "ordering"
+    ):
         from lightrag.steiner_context import select_context
 
         # Use exactly the same serialized records as the default path.
@@ -5558,6 +5565,8 @@ async def _apply_token_truncation(
             max_entity_tokens,
             max_relation_tokens,
             selection_config,
+            query=query,
+            rerank_func=global_config.get("rerank_model_func"),
         )
     else:
         # Apply token-based truncation
@@ -6045,6 +6054,7 @@ async def _build_query_context(
         search_result,
         query_param,
         text_chunks_db.global_config,
+        query=query,
     )
 
     # Stage 3: Merge chunks using filtered entities/relations

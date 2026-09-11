@@ -17,24 +17,28 @@ from typing import Any
 
 import networkx as nx
 
-from lightrag.utils import logger, truncate_list_by_token_size
+from lightrag.utils import logger, normalize_rerank_result, truncate_list_by_token_size
 
 
 @dataclass(frozen=True)
 class SelectionOptions:
     strategy: str = "steiner_soft"
+    prize_source: str = "ordering"
     connectivity_bonus: float = 0.15
     max_candidates: int = 120
     multipliers: tuple[float, ...] = (0.5, 1.0, 2.0)
 
     def __post_init__(self) -> None:
         if self.strategy not in {
+            "rank",
             "relevance",
             "soft_greedy",
             "steiner_soft",
             "steiner_hard",
         }:
             raise ValueError(f"Unknown context selection strategy: {self.strategy}")
+        if self.prize_source not in {"ordering", "rerank_score"}:
+            raise ValueError(f"Unknown prize source: {self.prize_source}")
         if not math.isfinite(self.connectivity_bonus) or self.connectivity_bonus < 0:
             raise ValueError("connectivity_bonus must be finite and non-negative")
         if not isinstance(self.max_candidates, int) or self.max_candidates < 1:
@@ -43,6 +47,57 @@ class SelectionOptions:
             not math.isfinite(x) or x <= 0 for x in self.multipliers
         ):
             raise ValueError("multipliers must contain finite positive values")
+
+
+def check_budget(used: tuple[int, int], budgets: tuple[int, int]) -> None:
+    """Enforce the query-path invariant even under python -O."""
+    if any(count > budget for count, budget in zip(used, budgets)):
+        raise ValueError(
+            f"Context selection exceeded token budgets: {used} > {budgets}"
+        )
+
+
+async def rerank_records(entities, relations, query, rerank_func):
+    """Score every record once; never substitute retrieval order for bad scores.
+
+    Scores travel separately from context records: they cost no prompt tokens
+    and cannot overwrite source attribution. Require non-negative scores;
+    callers using logits must explicitly configure their provider transform.
+    """
+    if not query or not callable(rerank_func):
+        raise ValueError(
+            "rerank_score requires a query and configured rerank_model_func"
+        )
+    documents = [f"{r['entity']}\n{r.get('description', '')}" for r in entities] + [
+        f"{r['entity1']} -- {r['entity2']}\n{r.get('description', '')}"
+        for r in relations
+    ]
+    if not documents:
+        return entities, relations, [], 0.0
+    started = perf_counter()
+    results = await rerank_func(query=query, documents=documents, top_n=len(documents))
+    elapsed = (perf_counter() - started) * 1000
+    scores = {}
+    if not isinstance(results, list):
+        raise TypeError("KG reranker must return index/relevance_score results")
+    for result in results:
+        row, error = normalize_rerank_result(result, len(documents))
+        if error or row["index"] in scores or row["relevance_score"] < 0:
+            raise ValueError(f"Invalid or duplicate KG rerank score: {error or result}")
+        scores[row["index"]] = row["relevance_score"]
+    if len(scores) != len(documents):
+        raise ValueError(
+            "KG reranker must score every candidate (no partial top_n results)"
+        )
+    ne = len(entities)
+    order_e = sorted(range(ne), key=lambda i: (-scores[i], i))
+    order_r = sorted(range(ne, len(documents)), key=lambda i: (-scores[i], i))
+    return (
+        [entities[i] for i in order_e],
+        [relations[i - ne] for i in order_r],
+        [scores[i] for i in order_e + order_r],
+        elapsed,
+    )
 
 
 def record_graph(entities: list[dict], relations: list[dict]) -> nx.Graph:
@@ -81,6 +136,7 @@ def pcst_proposal(
     multiplier: float,
     *,
     exact: bool = False,
+    diagnostics: list[dict] | None = None,
 ) -> set[int]:
     """SteinerPy heuristic for utility(S) - multiplier * cost(S).
 
@@ -114,6 +170,22 @@ def pcst_proposal(
     solution = DirectedPrizeCollectingProblem(
         directed, node_prizes=node_prizes, root=root
     ).get_solution(exact=exact)
+    if diagnostics is not None:
+        gap = solution.gap
+        # SteinerPy reports (primal - dual_bound) / max(1, abs(primal))
+        # for its penalized minimization problem. This certifies only this
+        # proposal, not token-budget repair or answer correctness.
+        lower = solution.objective - gap * max(1.0, abs(solution.objective))
+        diagnostics.append(
+            {
+                "multiplier": multiplier,
+                "pcst_objective": solution.objective,
+                "pcst_relative_gap": gap if math.isfinite(gap) else None,
+                "lagrangian_upper_bound": sum(node_prizes.values()) - lower
+                if math.isfinite(lower)
+                else None,
+            }
+        )
     nodes = set(solution.selected_nodes)
     return {i for i in graph if 2 * i + 1 in nodes}
 
@@ -125,21 +197,37 @@ def _select_sync(
     entity_budget: int,
     relation_budget: int,
     options: SelectionOptions,
+    rerank_scores: list[float] | None = None,
 ) -> tuple[list[dict], list[dict], dict]:
     started = perf_counter()
     ne = len(entities)
     records = entities + relations
     budgets = (max(0, entity_budget), max(0, relation_budget))
     graph = record_graph(entities, relations)
-    # _get_node_data's "rank" is degree, NOT query relevance. Numerical vector
-    # scores have been discarded; use the same upstream order for every arm.
-    prizes = [
-        1 / math.sqrt(i + 1) for rows in (entities, relations) for i in range(len(rows))
-    ]
+    # The ordering proxy mixes vector retrieval and degree-based local edges.
+    # It is an ordering control, not a calibrated query-relevance estimate.
+    if options.prize_source == "rerank_score":
+        if rerank_scores is None or len(rerank_scores) != len(records):
+            raise ValueError("A rerank_score prize is required for every record")
+        if any(not math.isfinite(x) or x < 0 for x in rerank_scores):
+            raise ValueError("Rerank prizes must be finite and non-negative")
+        prizes = list(rerank_scores)
+    else:
+        prizes = [
+            1 / math.sqrt(i + 1)
+            for rows in (entities, relations)
+            for i in range(len(rows))
+        ]
     rendered = [json.dumps(row, ensure_ascii=False) for row in records]
     costs = [len(tokenizer.encode(row + "\n")) for row in rendered]
     normalized = [cost / max(1, budgets[int(i >= ne)]) for i, cost in enumerate(costs)]
-    beta = 0.0 if options.strategy == "relevance" else options.connectivity_bonus
+    # beta is a fraction of the largest prize, not an absolute provider score.
+    # Raw rerank_score values (not ranks) remain the B-arm prizes.
+    beta = (
+        0.0
+        if options.strategy in {"rank", "relevance"}
+        else options.connectivity_bonus * max(prizes, default=0.0)
+    )
 
     adjacency = {i: set(graph[i]) for i in graph}
 
@@ -199,16 +287,22 @@ def _select_sync(
         )
         baseline.update(range(offset, offset + len(prefix)))
 
-    if len(records) > options.max_candidates:
-        logger.warning("Context selection used rank fallback: candidate_limit")
+    fallback = options.strategy != "rank" and len(records) > options.max_candidates
+    if options.strategy == "rank" or fallback:
+        if fallback:
+            logger.warning(
+                "Context selection used same-prize rank fallback: candidate_limit"
+            )
         used = counts(baseline)
+        check_budget(used, budgets)
         return (
             [row for i, row in enumerate(entities) if i in baseline],
             [row for i, row in enumerate(relations, ne) if i in baseline],
             {
                 "strategy": options.strategy,
                 "executed_strategy": "rank",
-                "fallback_reason": "candidate_limit",
+                "fallback_reason": "candidate_limit" if fallback else None,
+                "score_source": options.prize_source,
                 "candidate_count": len(records),
                 "selected_count": len(baseline),
                 "entity_tokens": used[0],
@@ -227,6 +321,7 @@ def _select_sync(
     seeds = [set(), baseline]
     solver_calls = 0
     solver_ms = 0.0
+    proposals = []
     if options.strategy in {"steiner_soft", "steiner_hard"} and eligible:
         # Scale the grid to the observed relevance/token density. This is
         # fixed before evaluation and never uses answer labels.
@@ -236,7 +331,12 @@ def _select_sync(
         for multiplier in options.multipliers:
             t0 = perf_counter()
             proposed = pcst_proposal(
-                candidate_graph, prizes, normalized, beta, scale * multiplier
+                candidate_graph,
+                prizes,
+                normalized,
+                beta,
+                scale * multiplier,
+                diagnostics=proposals,
             )
             solver_ms += (perf_counter() - t0) * 1000
             solver_calls += 1
@@ -327,12 +427,14 @@ def _select_sync(
         key=lambda s: (value(s), -sum(counts(s)), tuple(-i for i in sorted(s))),
     )
     used = counts(selected)
-    assert all(x <= b for x, b in zip(used, budgets))
+    check_budget(used, budgets)
     diagnostics = {
         "strategy": options.strategy,
         "executed_strategy": options.strategy,
         "fallback_reason": None,
-        "score_source": "inverse_sqrt_retrieval_position",
+        "score_source": options.prize_source,
+        "prize_max": max(prizes, default=0.0),
+        "effective_connectivity_bonus": beta,
         "candidate_count": len(records),
         "selected_count": len(selected),
         "entity_tokens": used[0],
@@ -342,6 +444,7 @@ def _select_sync(
         "baseline_utility": value(baseline),
         "solver_calls": solver_calls,
         "solver_ms": solver_ms,
+        "proposals": proposals,
         "worker_ms": (perf_counter() - started) * 1000,
     }
     return (
@@ -358,6 +461,9 @@ async def select_context(
     entity_budget: int,
     relation_budget: int,
     config: dict,
+    *,
+    query: str | None = None,
+    rerank_func: Any = None,
 ) -> tuple[list[dict], list[dict], dict]:
     """Run CPU work off the event loop; input size is capped, not wall time.
 
@@ -365,7 +471,13 @@ async def select_context(
     Do not advertise an asyncio timeout as cancellation of this worker.
     """
     options = SelectionOptions(**config)
-    return await asyncio.to_thread(
+    prizes = None
+    kg_rerank_ms = 0.0
+    if options.prize_source == "rerank_score":
+        entities, relations, prizes, kg_rerank_ms = await rerank_records(
+            entities, relations, query, rerank_func
+        )
+    selected_e, selected_r, diagnostics = await asyncio.to_thread(
         _select_sync,
         entities,
         relations,
@@ -373,4 +485,7 @@ async def select_context(
         entity_budget,
         relation_budget,
         options,
+        prizes,
     )
+    diagnostics["kg_rerank_ms"] = kg_rerank_ms
+    return selected_e, selected_r, diagnostics

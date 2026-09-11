@@ -37,11 +37,10 @@ jobs:
       # between CI and the lockfile). offline-storage/offline-llm bring the
       # mock-target libraries (qdrant-client, pymongo, anthropic, boto3, ...)
       # the offline suite constructs data classes from; the pytest extra brings
-      # pytest/pytest-asyncio/httpx2. The steiner extra exercises the optional
-      # context selector rather than skipping its backend-dependent tests.
+      # pytest/pytest-asyncio/httpx2.
       run: >-
         uv sync --frozen --python ${{ matrix.python-version }}
-        --extra api --extra offline-storage --extra offline-llm --extra pytest --extra steiner
+        --extra api --extra offline-storage --extra offline-llm --extra pytest
 
     - name: Run offline tests
       # Run only tests marked as 'offline' (no external dependencies);
@@ -58,3 +57,22 @@ jobs:
           .pytest_cache/
           test-results.xml
         retention-days: 7
+
+  steiner-tests:
+    name: Optional SteinerPy Tests
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/setup-python@v7
+      with:
+        python-version: '3.12'
+    - uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: true
+    - name: Install optional selector dependencies (locked)
+      run: uv sync --frozen --python 3.12 --extra pytest --extra steiner
+    - name: Run optional selector and evaluation tests
+      run: >-
+        uv run --no-sync pytest tests/evaluation/test_steiner_context.py
+        tests/evaluation/test_steiner_review.py -m offline -v --tb=short

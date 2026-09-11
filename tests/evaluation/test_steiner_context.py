@@ -6,7 +6,6 @@ import itertools
 import json
 import random
 import sys
-from argparse import Namespace
 from types import SimpleNamespace
 
 import networkx as nx
@@ -14,6 +13,7 @@ import pytest
 import tiktoken
 
 from lightrag import QueryParam, operate
+from lightrag.constants import DEFAULT_MIN_RERANK_SCORE
 from lightrag.evaluation import steiner_ablation
 from lightrag.evaluation.steiner_ablation import (
     ARMS,
@@ -45,7 +45,8 @@ def config():
         "kg_chunk_pick_method": "WEIGHT",
         "related_chunk_number": 5,
         "enable_content_headings": False,
-        "min_rerank_score": 0.0,
+        "min_rerank_score": DEFAULT_MIN_RERANK_SCORE,
+        "rerank_model_func": steiner_ablation.demo_rerank,
     }
 
 
@@ -94,7 +95,7 @@ async def test_exact_serialized_budgets_and_immutable_input(config, arm, budgets
             max_entity_tokens=budgets[0],
             max_relation_tokens=budgets[1],
             max_total_tokens=1600,
-            enable_rerank=False,
+            enable_rerank=True,
         ),
         config,
         arm,
@@ -120,7 +121,7 @@ async def test_isolate_survives_and_its_source_reaches_final_prompt(config):
         max_entity_tokens=100,
         max_relation_tokens=90,
         max_total_tokens=1600,
-        enable_rerank=False,
+        enable_rerank=True,
     )
     soft = await run_context(
         rag, snapshot, case["question"], param, config, "steiner_soft", 0.15, 120
@@ -159,7 +160,7 @@ async def test_pipeline_uses_filtered_originals_and_reports_selection(
             max_entity_tokens=100,
             max_relation_tokens=90,
             max_total_tokens=1600,
-            enable_rerank=False,
+            enable_rerank=True,
         ),
     )
     assert "remote access code is amber" in result.context
@@ -261,7 +262,8 @@ async def test_live_driver_writes_paired_answers_and_finalizes(
     )
     dataset = tmp_path / "qa.json"
     dataset.write_text(json.dumps([case]))
-    args = Namespace(
+    args = steiner_ablation.argument_parser().parse_args([])
+    vars(args).update(
         seed=3866,
         encoding="cl100k_base",
         factory="steiner_test_factory:make_rag",
@@ -273,7 +275,12 @@ async def test_live_driver_writes_paired_answers_and_finalizes(
         chunk_top_k=10,
         entity_budget=100,
         relation_budget=90,
-        rerank=False,
+        index_id="contract-test-index",
+        answer_model_id="scripted-test-answer",
+        rerank_model_id="lexical-test-double",
+        smoke_test=True,
+        concurrency=[1, 2],
+        load_repeats=1,
         repeats=1,
         beta=0.15,
         max_candidates=120,
@@ -283,9 +290,13 @@ async def test_live_driver_writes_paired_answers_and_finalizes(
         json.loads(line)
         for line in (args.output / "results.jsonl").read_text().splitlines()
     ]
-    assert len(rows) == len(calls) == 5
+    quality = [row for row in rows if row["phase"] == "quality"]
+    load = [row for row in rows if row["phase"] == "load"]
+    assert len(quality) == len(calls) == 6
+    assert {row["concurrency"] for row in load} == {1, 2}
+    assert all("stages1_4_closed_loop" in row["latency_scope"] for row in load)
     assert finished == [True]
-    assert all(row["answer_token_f1"] == 1 for row in rows)
+    assert all(row["answer_token_f1"] == 1 for row in quality)
     assert {row["max_total_tokens"] for row in rows} == {1600}
     assert all(row["input_tokens"] <= 1600 for row in rows)
 

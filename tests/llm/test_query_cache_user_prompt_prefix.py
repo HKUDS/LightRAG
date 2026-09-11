@@ -206,6 +206,11 @@ async def test_context_selection_partitions_answer_cache(stub_query_context):
     cfg["addon_params"]["context_selection"] = {"strategy": "rank"}
     await _run_kg(param, cfg, cache)
     assert model.calls == 3
+    # B0 changes the context even though it still uses prefix truncation.
+    cfg["addon_params"]["context_selection"]["prize_source"] = "rerank_score"
+    await _run_kg(param, cfg, cache)
+    await _run_kg(param, cfg, cache)
+    assert model.calls == 4
 
 
 # ---------------------------------------------------------------------------
