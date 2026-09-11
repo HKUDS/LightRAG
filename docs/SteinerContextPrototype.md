@@ -40,7 +40,7 @@ This is **record coherence**, not a guarantee that all selected entities are con
 
 There are two distinct prize sources. `ordering` uses `1/sqrt(position)` separately for entities and relations. It is an **ordering control**, not a calibrated relevance measure: the hybrid list interleaves sources and local relation ordering uses degree/support. `rerank_score` scores every candidate's name/endpoints and description using the configured `rerank_model_func`, orders each record type by descending score, and uses the numerical scores themselves as prizes in both packing arms. It does not convert them back to rank. All B arms use the same model as downstream chunk reranking.
 
-The scoring adapter must return a finite non-negative `relevance_score` for every input index, exactly once. Partial, duplicate, negative and non-finite scores fail explicitly; logits require an explicit provider transform. Scores are held outside serialized context and original source records. No score threshold removes KG candidates: the existing `min_rerank_score` applies to downstream text chunks.
+Every returned index must be unique and valid, with a finite non-negative `relevance_score`. Providers may cap the returned list: records without a returned score are excluded from the KG candidate set, including an entirely unscored entity/relation type. An empty result selects no KG records. No ordering-based scores are invented for the tail. Duplicate, invalid, negative and non-finite scores still fail explicitly; logits require an explicit provider transform. Diagnostics report input, scored and unscored candidate counts, and the evaluator summarizes the excluded count. The candidate cap applies after this filtering. Scores are held outside serialized context and original source records. No score threshold removes KG candidates: the existing `min_rerank_score` applies to downstream text chunks.
 
 `connectivity_bonus` is now a dimensionless coefficient: beta equals that coefficient times the largest candidate prize, for either prize source. Thus 0.15 means 15% of the highest prize per forest link, and multiplying all scores by a positive constant leaves the objective's relative scale unchanged. This is a stated scale convention, not evidence that 0.15 is calibrated or useful. Choose it on separate development questions, freeze it before the held-out run, and include zero as a sensitivity control.
 
@@ -102,7 +102,9 @@ rag = LightRAG(
 await rag.initialize_storages()
 ```
 
-Configure this at construction so storage snapshots receive it. Use `rank` with `prize_source="ordering"` or omit the setting for the baseline. Set `prize_source="rerank_score"` with a configured `rerank_model_func` for B0 (`rank`), B1 (`relevance`), or B2 (`steiner_soft`). Per-query diagnostics are in `raw_data["metadata"]["context_selection"]`. Unknown options and missing optional dependencies raise explicit errors.
+Configure this at construction so storage snapshots receive it. Use `rank` with `prize_source="ordering"` or omit the setting for the baseline. Set `prize_source="rerank_score"` with a configured `rerank_model_func` for B0 (`rank`), B1 (`relevance`), or B2 (`steiner_soft`). Per-query diagnostics are in `raw_data["metadata"]["context_selection"]`. Unknown options and missing optional dependencies raise explicit errors. Configuring `prize_source="rerank_score"` without a callable `rerank_model_func` is rejected during construction/config refresh, before storage creation. The legacy chunk-only configuration retains its existing warning/pass-through contract; opting into KG score prizes requires a model because those prizes define the optimization objective.
+
+A query with `enable_rerank=False` skips both KG and chunk reranker calls. The configured selector runs with ordering prizes for that query, explicitly reporting `requested_prize_source="rerank_score"`, `score_source="ordering"` and `rerank_disabled=true`. This query-level opt-out is not a B-arm measurement; the six-arm evaluator requires reranking on.
 
 ## Evaluation design
 
@@ -154,7 +156,7 @@ Save the rows as a JSON array, then run:
 
 Those are this revision's production budget defaults. Supply additional total limits as a predeclared sensitivity study. The same caps apply to all six arms. The runner checks the rendered system prompt plus question against the total cap and checks the exact serialized entity/relation counts independently. Provider message framing and output tokens are outside that input-budget convention. Realized input and answer tokens are reported separately. Equal caps do not imply equal realized usage.
 
-The factory must configure the same embeddings that built the index. Model and index identifiers, dataset SHA-256, source-code hashes and runtime versions are saved. `--smoke-test` permits smaller live datasets but labels their output as smoke tests. A missing/failed reranker, incomplete scores, wrong default threshold, or enabled response cache prevents a valid live comparison. No factory means **synthetic inputs with a lexical test double and no generated answers**; it never substitutes for a real model study.
+The factory must configure the same embeddings that built the index. Model and index identifiers, dataset SHA-256, source-code hashes and runtime versions are saved. `--smoke-test` permits smaller live datasets but labels their output as smoke tests. A missing/failed reranker, invalid returned scores, wrong default threshold, or enabled response cache prevents a valid live comparison. A provider-capped KG response is allowed, with the unscored tail excluded and reported; use identical provider settings for all B arms. No factory means **synthetic inputs with a lexical test double and no generated answers**; it never substitutes for a real model study.
 
 ### Timing and net rerank load
 
@@ -190,3 +192,17 @@ The objective rewards structural coherence, which need not correlate with answer
 * [Contributor proposal, SteinerPy #28](https://github.com/berendmarkhorst/SteinerPy/issues/28)
 * [Inspected LightRAG retrieval code](https://github.com/HKUDS/LightRAG/blob/d964d92b1018c27983d1dcf6ca19ebbaebeb262e/lightrag/operate.py)
 * [Inspected SteinerPy directed PCST implementation](https://github.com/berendmarkhorst/SteinerPy/blob/9d8cde91bb99029bc956b1a94d54bba865ffc58e/steinerpy/objects.py)
+
+## Evaluation prerequisites and upstream ordering fix
+
+The maintainers are handling [#3917](https://github.com/HKUDS/LightRAG/issues/3917): stage-2 ordering must reach the filtered original records used for chunk quotas. This PR deliberately does not work around that upstream bug. Rebase on their fix and then run the real-index comparison; the existing smoke artifact predates it and is only instrumentation evidence. The maintainers have offered to run the held-out study on their configured index after the fix, subject to their internal confirmation. A real hosted-provider compatibility check remains part of that run; unit tests of capped responses are not a live-service validation.
+
+The tokenizer-based tests marked `offline` do not call model services, but `cl100k_base` needs its encoding file cached first. In a network-enabled setup step, use the **same** cache directory that the test environment will receive:
+
+```bash
+export TIKTOKEN_CACHE_DIR="$PWD/.cache/tiktoken"
+mkdir -p "$TIKTOKEN_CACHE_DIR"
+.venv/bin/python -c 'import tiktoken; tiktoken.get_encoding("cl100k_base")'
+```
+
+Preserve/copy that directory into an offline runner and set `TIKTOKEN_CACHE_DIR` there before invoking pytest. With an empty cache and blocked downloads, these tests cannot run offline. This dependency should be prepared before measuring latency as well.

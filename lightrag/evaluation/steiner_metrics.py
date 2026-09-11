@@ -54,7 +54,9 @@ class RerankMeter:
                         )
                     indices.add(normalized["index"])
                 expected = min(len(documents), top_n) if top_n else len(documents)
-                if len(indices) < expected:
+                # KG scoring explicitly excludes a provider-capped tail. The
+                # chunk path still cannot silently use an unscored fallback.
+                if stage != "kg" and len(indices) < expected:
                     raise ValueError(
                         "Reranker returned fewer scored records than requested"
                     )
@@ -123,6 +125,9 @@ def summarize(rows):
             item[key + "_mean"] = statistics.mean(values) if values else None
         item["fallback_rate"] = statistics.mean(
             bool(x["selection"].get("fallback_reason")) for x in group
+        )
+        item["unscored_candidate_count_mean"] = statistics.mean(
+            x["selection"].get("unscored_candidate_count", 0) for x in group
         )
         item["rerank"] = {
             stage: {

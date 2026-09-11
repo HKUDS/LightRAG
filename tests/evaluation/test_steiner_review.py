@@ -12,7 +12,7 @@ import networkx as nx
 import pytest
 import tiktoken
 
-from lightrag import QueryParam, operate
+from lightrag import LightRAG, QueryParam, operate
 from lightrag.constants import DEFAULT_MIN_RERANK_SCORE
 from lightrag.evaluation.steiner_ablation import (
     FACTORIAL_ARMS,
@@ -160,8 +160,6 @@ async def test_b_fallback_still_uses_scored_prefix(config):
 @pytest.mark.parametrize(
     "results",
     [
-        [],
-        [{"index": 0, "relevance_score": 0.2}],
         [{"index": 0, "relevance_score": 0.2}] * 2,
         [
             {"index": 0, "relevance_score": float("nan")},
@@ -170,7 +168,7 @@ async def test_b_fallback_still_uses_scored_prefix(config):
         [{"index": 0, "relevance_score": -0.1}, {"index": 1, "relevance_score": 0.2}],
     ],
 )
-async def test_missing_duplicate_nonfinite_negative_scores_fail(config, results):
+async def test_duplicate_nonfinite_negative_scores_fail(config, results):
     async def scores(**kwargs):
         return results
 
@@ -185,6 +183,130 @@ async def test_missing_duplicate_nonfinite_negative_scores_fail(config, results)
             query="q",
             rerank_func=scores,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strategy", ["rank", "relevance", "steiner_soft"])
+async def test_query_opt_out_skips_kg_and_chunk_reranker(config, strategy):
+    if strategy == "steiner_soft":
+        pytest.importorskip("steinerpy")
+
+    calls = []
+
+    async def forbidden(**kwargs):
+        calls.append(kwargs)
+        raise AssertionError("Disabled reranker must never be called")
+
+    config["rerank_model_func"] = forbidden
+    config["addon_params"] = {
+        "context_selection": {"strategy": strategy, "prize_source": "rerank_score"}
+    }
+    snapshot, _ = demo_snapshot(demo_cases()[0], config)
+    result = await operate._apply_token_truncation(
+        snapshot, QueryParam(enable_rerank=False), config, query="question"
+    )
+    assert result["selection_metadata"]["score_source"] == "ordering"
+    assert result["selection_metadata"]["rerank_disabled"] is True
+    assert result["selection_metadata"]["kg_rerank_ms"] == 0
+    # The full pipeline's downstream stage receives the same disabled flag.
+    from lightrag.utils import process_chunks_unified
+
+    chunks = [{"content": "source"}]
+    output = await process_chunks_unified(
+        "question", chunks, QueryParam(enable_rerank=False), config
+    )
+    assert [row["content"] for row in output] == ["source"]
+    assert not calls
+
+
+@pytest.mark.parametrize("provider", [None, "not-callable"])
+def test_missing_kg_reranker_rejected_before_storage_creation(tmp_path, provider):
+    directory = tmp_path / "must-not-exist"
+    with pytest.raises(ValueError, match="configuration time"):
+        LightRAG(
+            working_dir=str(directory),
+            rerank_model_func=provider,
+            addon_params={
+                "context_selection": {
+                    "strategy": "rank",
+                    "prize_source": "rerank_score",
+                }
+            },
+        )
+    assert not directory.exists()
+
+
+def test_config_validation_accepts_reranker_without_importing_steinerpy(
+    config, monkeypatch
+):
+    import builtins
+
+    original = builtins.__import__
+
+    def checked(name, *args, **kwargs):
+        if name == "steinerpy":
+            raise AssertionError("B0 configuration must not require SteinerPy")
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", checked)
+    # Exercise the same config refresh used by construction and addon edits,
+    # without creating storage objects or model queues in a unit test.
+    rag = object.__new__(LightRAG)
+    rag._addon_params = {
+        "context_selection": {"strategy": "rank", "prize_source": "rerank_score"}
+    }
+    rag.rerank_model_func = demo_rerank
+    rag._refresh_addon_params_cache()
+    rag.rerank_model_func = None
+    with pytest.raises(ValueError, match="configuration time"):
+        rag._refresh_addon_params_cache()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("returned", [[], [{"index": 1, "relevance_score": 0.9}]])
+async def test_provider_cap_excludes_unscored_entities_and_relations(config, returned):
+    async def capped(**kwargs):
+        assert kwargs["top_n"] == 3
+        return returned
+
+    entities = [{"entity": "A"}, {"entity": "B"}]
+    relations = [{"entity1": "A", "entity2": "B"}]
+    selected, edges, metadata = await select_context(
+        entities,
+        relations,
+        config["tokenizer"],
+        1000,
+        1000,
+        {"strategy": "rank", "prize_source": "rerank_score"},
+        query="q",
+        rerank_func=capped,
+    )
+    assert selected == ([entities[1]] if returned else [])
+    assert edges == []
+    assert metadata["input_candidate_count"] == 3
+    assert metadata["unscored_candidate_count"] == 3 - len(returned)
+
+
+@pytest.mark.asyncio
+async def test_capped_kg_provider_is_valid_in_evaluator(config):
+    async def capped(*, documents, top_n, **kwargs):
+        return [{"index": 0, "relevance_score": 0.9}]
+
+    config["rerank_model_func"] = capped
+    snapshot, rag = demo_snapshot(demo_cases()[0], config)
+    result = await run_context(
+        rag,
+        snapshot,
+        "question",
+        QueryParam(chunk_top_k=1, max_total_tokens=1600),
+        config,
+        "B0",
+        0.15,
+        120,
+    )
+    assert result["selection"]["unscored_candidate_count"] == 3
+    assert result["rerank_calls"][0]["returned"] == 1
+    assert result["rerank"]["kg"]["documents"] == 4
 
 
 @pytest.mark.asyncio

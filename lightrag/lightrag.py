@@ -1205,6 +1205,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         ]
 
     def _refresh_addon_params_cache(self) -> None:
+        selection_config = self._addon_params.get("context_selection", {})
+        if selection_config:
+            from lightrag.steiner_context import SelectionOptions
+
+            options = SelectionOptions(**selection_config)
+            if options.prize_source == "rerank_score" and not callable(
+                self.rerank_model_func
+            ):
+                raise ValueError(
+                    "context_selection.prize_source='rerank_score' requires "
+                    "a callable rerank_model_func at configuration time"
+                )
         summary_language = self._addon_params.get("language", DEFAULT_SUMMARY_LANGUAGE)
         if not isinstance(summary_language, str) or not summary_language.strip():
             summary_language = DEFAULT_SUMMARY_LANGUAGE

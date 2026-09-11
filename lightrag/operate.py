@@ -4805,7 +4805,9 @@ async def kg_query(
     # Handle cache
     answer_cache_kv = _answer_cache_kv(query_param, hashing_kv)
     selection_cache_args = ()
-    selection_config = global_config.get("addon_params", {}).get("context_selection", {})
+    selection_config = global_config.get("addon_params", {}).get(
+        "context_selection", {}
+    )
     if (
         selection_config.get("strategy", "rank") != "rank"
         or selection_config.get("prize_source", "ordering") != "ordering"
@@ -5543,7 +5545,9 @@ async def _apply_token_truncation(
         f"Before truncation: {len(entities_context)} entities, {len(relations_context)} relations"
     )
 
-    selection_config = global_config.get("addon_params", {}).get("context_selection", {})
+    selection_config = global_config.get("addon_params", {}).get(
+        "context_selection", {}
+    )
     selection_metadata = None
     if (
         selection_config.get("strategy", "rank") != "rank"
@@ -5567,6 +5571,7 @@ async def _apply_token_truncation(
             selection_config,
             query=query,
             rerank_func=global_config.get("rerank_model_func"),
+            enable_rerank=query_param.enable_rerank,
         )
     else:
         # Apply token-based truncation
@@ -6103,7 +6108,9 @@ async def _build_query_context(
         raw_data["metadata"] = {}
 
     if "selection_metadata" in truncation_result:
-        raw_data["metadata"]["context_selection"] = truncation_result["selection_metadata"]
+        raw_data["metadata"]["context_selection"] = truncation_result[
+            "selection_metadata"
+        ]
 
     # Update keywords while preserving existing metadata
     raw_data["metadata"]["keywords"] = {

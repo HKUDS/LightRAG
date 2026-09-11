@@ -1,4 +1,4 @@
-"""Experimental, opt-in SteinerPy context selection (LightRAG #3866).
+"""Experimental, opt-in SteinerPy context selection (HKUDS/LightRAG#3866).
 
 Records remain independently selectable. A selected entity and an incident
 relation earn a forest connectivity bonus; absent endpoints earn no bonus.
@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from time import perf_counter
 from typing import Any
@@ -58,7 +58,7 @@ def check_budget(used: tuple[int, int], budgets: tuple[int, int]) -> None:
 
 
 async def rerank_records(entities, relations, query, rerank_func):
-    """Score every record once; never substitute retrieval order for bad scores.
+    """Keep valid returned scores; exclude the unscored tail of capped providers.
 
     Scores travel separately from context records: they cost no prompt tokens
     and cannot overwrite source attribution. Require non-negative scores;
@@ -85,13 +85,9 @@ async def rerank_records(entities, relations, query, rerank_func):
         if error or row["index"] in scores or row["relevance_score"] < 0:
             raise ValueError(f"Invalid or duplicate KG rerank score: {error or result}")
         scores[row["index"]] = row["relevance_score"]
-    if len(scores) != len(documents):
-        raise ValueError(
-            "KG reranker must score every candidate (no partial top_n results)"
-        )
     ne = len(entities)
-    order_e = sorted(range(ne), key=lambda i: (-scores[i], i))
-    order_r = sorted(range(ne, len(documents)), key=lambda i: (-scores[i], i))
+    order_e = sorted((i for i in scores if i < ne), key=lambda i: (-scores[i], i))
+    order_r = sorted((i for i in scores if i >= ne), key=lambda i: (-scores[i], i))
     return (
         [entities[i] for i in order_e],
         [relations[i - ne] for i in order_r],
@@ -464,6 +460,7 @@ async def select_context(
     *,
     query: str | None = None,
     rerank_func: Any = None,
+    enable_rerank: bool = True,
 ) -> tuple[list[dict], list[dict], dict]:
     """Run CPU work off the event loop; input size is capped, not wall time.
 
@@ -471,6 +468,12 @@ async def select_context(
     Do not advertise an asyncio timeout as cancellation of this worker.
     """
     options = SelectionOptions(**config)
+    requested_prize_source = options.prize_source
+    # Query-level opt-out disables KG and chunk reranking together. Preserve
+    # the selector but explicitly use the ordering control, without a call.
+    if not enable_rerank and options.prize_source == "rerank_score":
+        options = replace(options, prize_source="ordering")
+    original_count = len(entities) + len(relations)
     prizes = None
     kg_rerank_ms = 0.0
     if options.prize_source == "rerank_score":
@@ -488,4 +491,10 @@ async def select_context(
         prizes,
     )
     diagnostics["kg_rerank_ms"] = kg_rerank_ms
+    diagnostics["requested_prize_source"] = requested_prize_source
+    diagnostics["rerank_disabled"] = not enable_rerank
+    diagnostics["input_candidate_count"] = original_count
+    diagnostics["unscored_candidate_count"] = (
+        original_count - len(entities) - len(relations)
+    )
     return selected_e, selected_r, diagnostics
