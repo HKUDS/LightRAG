@@ -94,6 +94,7 @@ from lightrag.parser.routing import (
     resolve_stored_document_parser_engine,
 )
 from lightrag.utils import (
+    get_extract_cache_fence,
     CacheData,
     _serialize_cache_variant,
     compute_args_hash,
@@ -5956,10 +5957,18 @@ class _PipelineMixin:
                 doc_id,
                 persist_error,
             )
+            await self._record_chunk_reference_commit_failure(
+                f"{stage_label} epilogue flush failed"
+            )
             return False
         # An explicit False is a DECLINED commit: the mutation was discarded,
         # so the references are not on disk either.
-        return committed is not False
+        if committed is False:
+            await self._record_chunk_reference_commit_failure(
+                f"{stage_label} epilogue commit declined"
+            )
+            return False
+        return True
 
     async def _persist_llm_response_cache_best_effort(
         self,
@@ -6120,16 +6129,27 @@ class _PipelineMixin:
         # the pending state for the next all-storage commit, which carries the
         # pair. Worst case is a cache entry recomputed on the next run, against
         # an unreachable row holding document text, which is permanent.
-        if await self._persist_chunk_cache_references_best_effort(
-            stage_label=f"{stage_label} failure",
-            doc_id=doc_id,
-            error=error,
-        ):
-            await self._persist_llm_response_cache_best_effort(
-                stage_label=f"{stage_label} failure",
-                doc_id=doc_id,
+        # Fenced, like the all-storage pair in ``_flush_storages``: this is a
+        # second commit pair, and a sibling document can otherwise attach and
+        # write between its two flushes. Acquiring can WAIT here -- the
+        # ``task.cancel()`` above does not await the cancelled tasks, so one of
+        # them may still hold the fence -- but it cannot deadlock: a cancelled
+        # task raises at its next await and ``async with`` releases on the way
+        # out.
+        async with get_extract_cache_fence(self.text_chunks):
+            references_committed = (
+                await self._persist_chunk_cache_references_best_effort(
+                    stage_label=f"{stage_label} failure",
+                    doc_id=doc_id,
+                    error=error,
+                )
             )
-        else:
+            if references_committed:
+                await self._persist_llm_response_cache_best_effort(
+                    stage_label=f"{stage_label} failure",
+                    doc_id=doc_id,
+                )
+        if not references_committed:
             logger.error(
                 "Deferring the LLM cache commit after %s for d-id %s: its chunk "
                 "references are not on disk, and a cache row that outlives them "

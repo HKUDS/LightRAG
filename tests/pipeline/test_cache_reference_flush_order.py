@@ -280,3 +280,44 @@ async def test_an_index_flush_error_on_another_namespace_does_not_suppress(tmp_p
         assert order == ["text_chunks", "llm_response_cache"], order
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_a_concurrent_writer_cannot_land_inside_the_epilogue_pair(tmp_path):
+    """The epilogue is a second commit pair and takes the same fence.
+
+    A sibling document attaching and writing between its two flushes would put
+    its cache row in the cache snapshot while the chunk snapshot predates its
+    reference — the same hole the all-storage pair closes.
+    """
+    from lightrag.utils import get_extract_cache_fence
+
+    rag = await _build_rag(tmp_path)
+    try:
+        order: list[str] = []
+        _record_commits(rag, order)
+        in_the_gap = asyncio.Event()
+
+        tagged_chunk_flush = rag.text_chunks.index_done_callback
+
+        async def _flush_then_yield():
+            result = await tagged_chunk_flush()
+            in_the_gap.set()
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            return result
+
+        rag.text_chunks.index_done_callback = _flush_then_yield
+
+        async def _concurrent_writer():
+            await in_the_gap.wait()
+            async with get_extract_cache_fence(rag.text_chunks):
+                order.append("writer")
+
+        writer = asyncio.create_task(_concurrent_writer())
+        await _run_epilogue(rag, "doc-fenced")
+        await writer
+
+        assert order.index("writer") > order.index("llm_response_cache"), order
+    finally:
+        await rag.finalize_storages()

@@ -819,3 +819,81 @@ async def test_a_concurrent_writer_cannot_land_between_the_two_flushes(
         )
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_a_permanent_chunk_failure_quarantines_the_buffered_cache_rows(
+    tmp_path, monkeypatch
+):
+    """Deferring is not enough when the reference can never land.
+
+    A per-item backend raises only for PERMANENT failures, and removes the
+    operation from its buffer first. The cache rows naming that reference can
+    therefore never become reachable, so the next successful pair commit would
+    publish orphans. They are dropped instead.
+    """
+    rag = await _make_rag(tmp_path)
+    try:
+        rec: list = []
+        chunks, cache, other = _bind_cache_pair_spies(
+            rag, rec, chunks_flush_error=RuntimeError("permanent bulk failure")
+        )
+        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
+
+        with pytest.raises(IndexFlushError):
+            await rag._insert_done()
+
+        assert cache.drop_calls == 1, (
+            "the orphaned cache rows stayed buffered for the next pair commit "
+            "to publish"
+        )
+        assert cache.index_done_calls == 0
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_the_epilogue_records_its_own_failed_chunk_commit(tmp_path, monkeypatch):
+    """The epilogue's standalone flush is a chunk commit like any other.
+
+    Without recording it, the aborting-batch cleanup that follows reads an
+    unset flag, retries the drained buffer, and publishes what the epilogue
+    had just withheld.
+    """
+    rag = await _make_rag(tmp_path)
+    try:
+        rec: list = []
+        chunks, cache, other = _bind_cache_pair_spies(
+            rag, rec, chunks_flush_error=RuntimeError("chunk store is down")
+        )
+        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
+
+        committed = await rag._persist_chunk_cache_references_best_effort(
+            stage_label="extract failure", doc_id="doc-epilogue"
+        )
+
+        assert committed is False
+        assert rag._chunk_reference_commit_failed is True
+        assert cache.drop_calls == 1
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_a_declined_epilogue_commit_is_recorded_too(tmp_path, monkeypatch):
+    """A DECLINED commit discarded the mutation; the references are not on disk."""
+    rag = await _make_rag(tmp_path)
+    try:
+        rec: list = []
+        chunks, cache, other = _bind_cache_pair_spies(rag, rec)
+        chunks._flush_result = False
+        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
+
+        committed = await rag._persist_chunk_cache_references_best_effort(
+            stage_label="extract failure", doc_id="doc-declined"
+        )
+
+        assert committed is False
+        assert rag._chunk_reference_commit_failed is True
+    finally:
+        await rag.finalize_storages()
