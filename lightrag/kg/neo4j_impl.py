@@ -63,7 +63,7 @@ READ_RETRY = retry(
 )
 
 
-# @final (removed per request in Issue #3130)
+# @final (removed per request)
 @dataclass
 class Neo4JStorage(BaseGraphStorage):
     # Lucene query-syntax reserved characters. The full-text query parser

@@ -20,7 +20,7 @@ from .document_routes import check_pipeline_busy_or_raise
 def _gate_refusal_to_http(exc: PipelineReservationConflictError) -> HTTPException:
     """Map a core-level admin-write gate refusal to the HTTP status it means.
 
-    ``LightRAG._admin_write_gate`` (issue #3899) raises
+    ``LightRAG._admin_write_gate`` raises
     ``AdminWriteGateRefusedError`` -- a ``PipelineReservationConflictError`` --
     when an admin write cannot proceed: another admin write held the workspace
     admin lock past its acquire timeout, or the pipeline holds ``busy`` /
@@ -50,7 +50,7 @@ def _hold_exceeded_to_http(
     retried. A client does not read server logs, so a blind retry into "entity
     already exists" or a re-applied edit is exactly what it would do next.
 
-    500, not 503 or 504: the operation failed loud (issue #3899 R2.3), and a
+    500, not 503 or 504: the operation failed loud, and a
     retry-suggesting status is the wrong signal for a write that may already be
     durable.
 

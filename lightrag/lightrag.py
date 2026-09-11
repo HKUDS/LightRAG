@@ -484,7 +484,7 @@ class _AdminHoldCeiling:
         ) from None
 
 
-# Ordered purge journal phases (issue #3400). Index = how much destructive work
+# Ordered purge journal phases. Index = how much destructive work
 # is already persisted, so a resumed purge can skip exactly that much:
 #   prepared          — proof verified, journal durable, NOTHING deleted yet
 #   derived_committed — graph/vector/tracking contributions repaired or removed
@@ -2249,7 +2249,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     ) -> None:
         """Insert caller-chunked content as a journaled, recoverable operation.
 
-        Issue #3400 Phase 3 semantics — one invocation is one incremental
+        Custom-chunk operation semantics — one invocation is one incremental
         operation with a durable journal in ``doc_status.metadata``:
 
         - Target document absent → **create** mode: the document is created
@@ -2282,7 +2282,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         pipeline_status = None
         pipeline_status_lock = None
         # Set when the operation fails after acquiring busy: the finally then
-        # discards partial buffers instead of flushing them (issue #3400:
+        # discards partial buffers instead of flushing them (
         # failure finalization must not persist partial work).
         op_failed = False
         try:
@@ -2387,7 +2387,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 raise RuntimeError(reservation.message)
 
             # Per-document keyed lock: only one custom-chunk operation may be
-            # active for a document (issue #3400 §2.5). The busy reservation
+            # active for a document (the purge-recovery contract). The busy reservation
             # already serializes writers globally; the keyed lock preserves
             # correctness if that global policy is ever relaxed.
             doc_lock_namespace = (
@@ -2938,7 +2938,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     try:
                         if op_failed:
                             # Failure path: do NOT blind-flush partial work
-                            # (issue #3400 root cause 6). Persist what is
+                            # (the purge-recovery contract). Persist what is
                             # valuable (the LLM cache — handled inside the
                             # discard helper) and drop the partial buffers;
                             # the journal anchors whatever immediate-write
@@ -2965,7 +2965,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             # error still propagates after this — so the queued
                             # docs are not stranded. A pending cancellation makes
                             # this await re-raise immediately, deferring the
-                            # drain to the next trigger (#3400).
+                            # drain to the next trigger.
                             try:
                                 await self.apipeline_process_enqueue_documents(
                                     _holding_busy=True, token=token
@@ -3091,7 +3091,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         ``full_entities`` / ``full_relations`` rows — the base document keeps
         owning its previously committed contributions — so the patch
         candidates are unioned in and both rows flushed via the narrow
-        barrier (issue #3400 Phase 3, commit step).
+        barrier (the write-ahead barrier's commit step).
         """
         entity_row = await self.full_entities.get_by_id(doc_id) or {}
         union_names = set(entity_row.get("entity_names") or []) | set(entity_names)
@@ -3125,7 +3125,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         pipeline_status: dict | None = None,
         pipeline_status_lock: Any | None = None,
     ) -> dict[str, Any]:
-        """Roll back every failed/stale custom-chunk operation (issue #3400 P4).
+        """Roll back every failed/stale custom-chunk operation.
 
         The administrative escape hatch invoked at the start of
         ``/documents/scan``: while the SDK caller owns roll-forward (repeating
@@ -3748,7 +3748,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     async def _flush_storages(self, storages: list) -> None:
         """Flush the given storage instances — a narrow, named flush barrier.
 
-        Failure paths and write-ahead barriers (issue #3400) must be able to
+        Failure paths and write-ahead barriers must be able to
         flush a specific subset of storages (e.g. only the two recovery
         indexes) instead of the unconditional all-storage ``_insert_done``,
         which on a partially-failed operation would blindly flush partial
@@ -3889,7 +3889,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         evidence sources. Explicit weights may boost that baseline; omit the
         relationship ``source_id`` to use a fractional source-less weight.
 
-        .. warning:: (issue #3400 Phase 5 — direct-writer audit)
+        .. warning:: (direct-writer audit)
            This path is OUTSIDE the document-level recovery guarantee. It has
            no durable operation journal and does not prewrite
            ``full_entities`` / ``full_relations`` recovery anchors, so a
@@ -4856,8 +4856,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         and the purge that runs in between writes its journal into
         ``metadata`` through a targeted update — so upserting the whole stale
         snapshot would silently clobber that journal, which is precisely what
-        keeps the retry from being refused for missing recovery anchors
-        (issue #3400).
+        keeps the retry from being refused for missing recovery anchors.
 
         For the same reason the re-read must never silently fall back to that
         snapshot. Strict where the backend supports it, so a read failure
@@ -5115,7 +5114,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     ) -> _PurgeRecoveryProof:
         """Decide whether a whole-document purge is allowed to delete anything.
 
-        Fail-closed precondition for issue #3400. A purge discovers what a
+        Fail-closed precondition for whole-document purge. A purge discovers what a
         document contributed to the shared graph from its write-ahead anchors;
         without them the reverse lookup (graph ``source_id`` → ``text_chunks``
         → ``full_doc_id``) is impossible once the chunks are gone. So rather
@@ -5282,7 +5281,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # licenses deleting its chunks while skipping the graph — so inferring
         # one from observable state would turn a transient inconsistency (a
         # chunks_list that is momentarily empty) into a durable licence to
-        # reproduce issue #3400 the moment the chunks reappear. This decision
+        # reproduce the silent-skip defect the moment the chunks reappear. This decision
         # is re-evaluated against live state on every call and grants nothing
         # beyond the call, which is why it is safe where a backfill is not.
         if (
@@ -5461,7 +5460,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         pipeline_status: dict,
         pipeline_status_lock: Any,
     ) -> KGRebuildReport:
-        """Candidate-driven purge/rebuild primitive (issue #3400).
+        """Candidate-driven purge/rebuild primitive.
 
         Shared by whole-document purge (normal deletion / retry) and, in later
         phases, custom-chunk patch rollback. Candidates are a recovery
@@ -5627,7 +5626,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             proof is None or not proof.phase_at_least(KG_PURGE_PHASE_ANCHORS_PENDING)
         ):
             # Deleted only AFTER every derived graph/vector/tracking contribution
-            # has been repaired or removed AND flushed (issue #3400: unsafe
+            # has been repaired or removed AND flushed (unsafe
             # destructive ordering). A failure before this point leaves the
             # chunks in place, so graph objects never reference deleted chunks.
             try:
@@ -5721,7 +5720,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         nothing to clean" (the caller established that), while ``None`` means
         "resolve from this document's anchor rows". The caller is responsible
         for having proven that the anchors are readable — passing ``None`` with
-        absent anchors is exactly the silent-skip bug of issue #3400.
+        absent anchors is exactly the silent-skip bug this fails closed against.
 
         ``extra_candidate_*`` are unioned in after that resolution, for objects
         the anchor rows cannot name yet (an in-flight custom-chunk patch
@@ -5828,7 +5827,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 graph_sources: list[str] = []
                 if self.entity_chunks:
                     stored_chunks = await self.entity_chunks.get_by_id(node_label)
-                    # NOTE(#3609): this deliberately keeps truthiness semantics and
+                    # NOTE: this deliberately keeps truthiness semantics and
                     # does NOT distinguish a present-but-empty tracking row from an
                     # absent one. Here an empty `existing_sources` falls back to the
                     # graph `source_id` below; treating a present-empty row as
@@ -5900,7 +5899,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 if self.relation_chunks:
                     storage_key = make_relation_chunk_key(src, tgt)
                     stored_chunks = await self.relation_chunks.get_by_id(storage_key)
-                    # NOTE(#3609): as with the entity branch above, truthiness is
+                    # NOTE: as with the entity branch above, truthiness is
                     # kept here on purpose — a present-but-empty relation tracking
                     # row falls back to the graph `source_id` rather than being
                     # treated as authoritative "tracks no chunks". Changing that is a
@@ -6231,7 +6230,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # main flow (probe ``has_work()`` → handoff or release).  A concurrent
         # enqueue can commit mailbox work the instant the reservation lock is
         # released, so an unconditional early release in that window would
-        # strand it (PR #3467 review round 2).
+        # strand it.
         try:
             # Pre-arm ownership before acquire so cancellation after the atomic
             # update cannot leak this token's reservation (the finally is
@@ -6372,7 +6371,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # Order-preserving dedup so chunk_ids stays a list and satisfies the
             # storage delete contract (``delete(ids: list[str])``); a set view is
             # built below for membership/intersection checks. Staged chunks of
-            # an unfinished custom-chunk operation (issue #3400 Phase 3) live
+            # an unfinished custom-chunk operation live
             # only in the journal until commit unions them into chunks_list —
             # include them so deleting the document also cleans the staging.
             journal = metadata.get(CUSTOM_CHUNK_PATCH_METADATA_KEY)
@@ -6397,7 +6396,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             if not chunk_ids:
                 logger.warning(f"No chunks found for document {doc_id}")
 
-                # Fail closed before touching anything (issue #3400). This
+                # Fail closed before touching anything. This
                 # branch used to delete doc_status + full_docs and report
                 # success WITHOUT looking at the graph at all — so a document
                 # whose anchors still named live entities was reported deleted
@@ -6570,7 +6569,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # 4. Purge every KG contribution of this document, then its chunks.
             #
             # Delegated to the shared primitive rather than reimplemented here
-            # (issue #3400). Two things follow from that:
+            # Two things follow from that:
             #
             #  * The primitive refuses to start without a recovery proof, so a
             #    document whose anchors were lost fails closed with a 409

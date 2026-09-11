@@ -542,99 +542,24 @@ class FaissVectorDBStorage(BaseVectorStorage):
     async def delete(self, ids: list[str]):
         """Delete vectors for the provided custom IDs.
 
-        Deletes are **deferred**: each id is queued in
-        ``self._pending_deletes`` (cancelling any pending upsert for it) and
-        every queued id is applied in one batched index rebuild by
-        ``_flush_pending_locked``. The entity/relation merge stage deletes the
-        stale forward/reverse rows once per relation, and an eager delete
-        rebuilt the whole ``IndexFlatIP`` per call — deferring turns that into
-        one rebuild per flush (the same change made on Nano, and
-        the contract the Qdrant / PostgreSQL / Milvus / MongoDB / OpenSearch
-        buffers already document).
+        Deletes are **deferred**: each id is queued in ``self._pending_deletes``
+        (cancelling any pending upsert for it) and every queued id is applied in
+        one batched index rebuild by ``_flush_pending_locked``. An eager delete
+        rebuilt the whole ``IndexFlatIP`` per call, and the merge stage deletes
+        once per relation.
 
-        Deferring also keeps a delete from being lost across writers: the
-        removal used to be applied to ``self._index`` while still unsaved,
-        and because ``index_done_callback`` reloads from disk unconditionally
-        when another process has committed — a reload that *replaces*
-        ``self._index`` / ``self._id_to_meta`` — the row could silently
-        reappear. A queued id is applied *after* that reload, so it survives.
+        Deferring also keeps a delete from being lost across writers: a removal
+        applied to ``self._index`` while still unsaved could silently reappear
+        when ``index_done_callback`` reloaded a peer's commit. A queued id is
+        applied AFTER that reload, so it survives.
 
-        Two buffers, because the flush and the save can fail independently
-        (the same protocol Nano documents):
+        Ids that match no row are a no-op, not an error -- the by-id contract
+        every backend implements, and the one purge relies on.
 
-            * ``_pending_deletes`` — queued, not applied to the index yet.
-            * ``_unsaved_deletes`` — applied to the index but not yet on
-              disk, kept as ``id -> {fingerprints of the removed rows}``.
-              This is a redo log, not a pending buffer.
-
-        The redo log exists because a removal that reached ``self._index``
-        can still be undone: if the save fails, the next
-        ``index_done_callback``'s unconditional reload replaces the in-memory
-        state with the on-disk snapshot and the row returns. Replaying the
-        log after that reload removes it again, so the reload stays lossless
-        for deletes. (Upserts carry the mirror log: the flush moves its docs
-        from ``_pending_upserts`` into the ``_unsaved_upserts`` redo log
-        rather than dropping them, so a materialized-but-unsaved upsert is
-        replayed after the same reload; see the deferred-embedding protocol
-        above. A removal request evicts the id's redo entry
-        — ``delete`` / ``delete_entity_relation`` — or the replay would
-        resurrect the row the removal just took out.)
-
-        A replay matches on the row, not on the id alone. Ids are content
-        hashes, so another writer can publish a *new* row under an id we
-        removed, and deleting by id would destroy it. The log therefore
-        stores the ``_row_fingerprint`` of every row it removed — a set per
-        id, because a legacy / corrupt store can hold several rows under one
-        id and ``delete`` removes all of them (see
-        ``_find_faiss_ids_by_custom_id``) — and a replay removes only rows
-        that still match one of them. The two buffers are scoped
-        differently on purpose: ``_pending_deletes`` holds a *request* — the
-        flush removes whatever row carries that id, the by-id contract purge
-        relies on — while ``_unsaved_deletes`` holds a *record* of a removal
-        that already happened, so replaying it must not remove a row that
-        has since taken the id's place.
-
-        **Boundary of that guarantee.** Successor preservation is only as
-        sharp as content-based identity, and the case it has to resolve is a
-        successor *identical* in content to the row removed.
-        ``__created_at__`` does not break that tie — ``upsert`` stamps
-        ``int(time.time())``, so a rewrite inside the same second carries the
-        same timestamp — but ``__write_seq__`` does: every ``upsert`` stamps
-        its own token into the record (see ``write_seq``), so a successor
-        written by another writer, or by us, fingerprints differently and the
-        replay preserves it. What remains is a row written before the token
-        existed, which no content-based identity can tell from the row we
-        deleted, so the replay removes it — a case that already presupposes
-        the *Single writer* invariant above being violated (see class
-        docstring, *Concurrency invariants*).
-
-        The read-your-writes paths mirror both rules: a queued id reads as
-        absent, while a logged one hides only the row the entry names — a
-        replacement the replay would preserve stays readable. An ``upsert``
-        cancels a *queued* delete for the same id but never touches the redo
-        log: the buffered row may be discarded by an aborting batch before
-        it materializes, and dropping the entry then would leave the reload
-        nothing to replay. Ids that matched no row are not logged at all.
-        The log is cleared once a save lands; an aborting batch keeps it
-        (``drop_pending_index_ops`` discards buffered work, not removals
-        that already reached the index). ``delete_entity_relation`` stays
-        eager — it is off the merge hot path — but its removals are
-        applied-and-unsaved just the same, so they are recorded in the log
-        too. Both buffers are in-memory only: they are dropped by ``drop``
-        and lost on a crash before the flush.
-
-        Persistence:
-            Queued ids are in-memory only: they land on the index at the next
-            ``index_done_callback`` / ``finalize`` flush and are lost on a
-            crash before it. Cross-process visibility requires the flush.
-
-        Errors propagate to the caller at flush time — Faiss delete is
-        destructive enough that document deletion / status updates must not
-        proceed if the vectors were not actually removed. (This intentionally
-        diverges from Nano, whose delete swallows + logs.)
-
-        Args:
-            ids: List of custom IDs to be deleted.
+        The two-buffer split (``_pending_deletes`` is a request, scoped by id;
+        ``_unsaved_deletes`` is a record of a removal that happened, scoped by
+        row version), the replay ordering rules and the read-your-writes
+        behaviour are in ``docs/design/FileBackedSnapshotContract.md``.
         """
         if not ids:
             return

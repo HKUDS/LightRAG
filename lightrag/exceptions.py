@@ -66,7 +66,7 @@ class APITimeoutError(APIConnectionError):
 class EmptyTruncatedResponseError(RuntimeError):
     """A token-limit-truncated LLM response that carried nothing usable.
 
-    Two raise surfaces share it (issue #3601 gap 4):
+    Two raise surfaces share it:
 
     - the provider bindings (OpenAI/Gemini), when the response is empty and
       the finish reason is the output token limit;
@@ -195,10 +195,10 @@ class PipelineReservationConflictError(RuntimeError):
 class AdminWriteGateRefusedError(PipelineReservationConflictError):
     """The workspace admin-write gate refused an admin graph write (→ HTTP 409).
 
-    Raised by ``LightRAG._admin_write_gate`` (issue #3899) on a graph storage
+    Raised by ``LightRAG._admin_write_gate`` on a graph storage
     that declares ``requires_single_writer``, in exactly two situations, each
     with its own stable leading phrase so a client can tell them apart from the
-    ``detail`` text alone (issue #3899 R1.6 -- text, not a machine-readable code,
+    ``detail`` text alone (text, not a machine-readable code,
     is the contract):
 
     * ``ADMIN_WRITE_LOCK_BUSY_PREFIX`` -- another admin write held the
@@ -222,7 +222,7 @@ ADMIN_WRITE_PIPELINE_BUSY_PREFIX = "Pipeline is busy with another operation"
 
 class AdminWriteHoldExceededError(TimeoutError):
     """An admin graph write ran past ``admin_write_max_hold_seconds`` and was
-    stopped (issue #3899 R2.3).
+    stopped.
 
     While an admin write holds the pipeline ``busy`` reservation it defers every
     pipeline start in its workspace, so the hold is bounded. Expiry is a loud
@@ -249,7 +249,7 @@ class AdminWriteHoldExceededError(TimeoutError):
     or re-apply an edit that is already durable. Reporting it any other way would
     break ``AGENTS.md`` *Consistency without transactions*: a durable write must
     never be reported as one that did not happen. What the stopped operation can
-    leave behind beyond that is the crash residue issue #3838 documents for admin
+    leave behind beyond that is the crash residue the graph store's contract documents for admin
     writes.
     """
 
@@ -258,7 +258,7 @@ class GraphMutationsDiscardedError(RuntimeError):
     """``NetworkXStorage.index_done_callback`` refused to commit because a reload
     discarded uncommitted in-memory mutations earlier in this process.
 
-    The fail-loud backstop of issue #3899 R4. A reload that replaces a *dirty*
+    The fail-loud backstop. A reload that replaces a *dirty*
     graph (one holding mutations no commit has published) loses those
     mutations; the reload itself stays correct and does not raise -- the
     coroutine that triggered it may be an innocent reader -- and instead arms a
@@ -362,7 +362,7 @@ class SourceConflictPrimaryUnusableError(ValueError):
 class RecoveryAnchorMissingError(RuntimeError):
     """A destructive KG purge has no recovery proof, so it refused to start.
 
-    Issue #3400: a whole-document purge discovers what a document contributed
+    A whole-document purge discovers what a document contributed
     to the shared knowledge graph from its write-ahead recovery anchors
     (``full_entities`` / ``full_relations``). Without them the reverse lookup
     is impossible — it runs graph ``source_id`` → ``text_chunks`` →
@@ -419,7 +419,7 @@ class RecoveryAnchorMissingError(RuntimeError):
 class KGPurgeOperationConflictError(RuntimeError):
     """A resumed purge does not match the journal already on the document.
 
-    Issue #3400: a whole-document purge journals its progress in
+    A whole-document purge journals its progress in
     ``doc_status.metadata.kg_purge`` so a retry can resume instead of redoing
     the expensive candidate re-analysis and rebuild — and so it can tell
     "anchors were legitimately deleted by a purge that got that far" from

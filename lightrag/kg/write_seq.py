@@ -1,7 +1,7 @@
 """Per-write ordering token for the file-backed vector stores.
 
 ``NanoVectorDBStorage`` and ``FaissVectorDBStorage`` keep a redo log of
-materialized-but-unsaved upserts (issue #3688). After a reload the flush has to
+materialized-but-unsaved upserts. After a reload the flush has to
 decide, for every logged row, whether the row a *foreign* writer committed
 under the same (content-hash) id meanwhile is newer than the logged one: a
 strictly newer row must be left alone (it is a completed reprocess), an older
