@@ -2316,17 +2316,18 @@ class MongoGraphStorage(BaseGraphStorage):
         # merge the outbound and inbound results with the same "_id" and sum the "degree"
         merged_results = {}
 
-        # Chunk the $in list so one hub with a huge neighbor set (an
-        # unbounded caller, e.g. edge_degrees_batch below) can't inflate a
-        # single command document past MongoDB's 16MB limit or force the
-        # planner through a huge index-bounds list -- the same hazard
+        # Chunk the $in list so one hub with a huge neighbor set (an unbounded
+        # caller, e.g. edge_degrees_batch below) can't inflate a single command
+        # document past MongoDB's 16MB limit or force the planner through a
+        # huge index-bounds list -- the same hazard
         # _GRAPH_DEGREE_RANK_MAX_CANDIDATES caps at the BFS call site, fixed
-        # here at the shared primitive so every caller is covered, not just
-        # that one. Deduped first so repeated ids in the input don't waste
-        # chunks.
+        # here at the shared primitive so every caller is covered. Each chunk
+        # merges into merged_results as a whole, via a fresh local dict, so
+        # it's correct regardless of dedupe or how ids are split across chunks.
         unique_node_ids = list(dict.fromkeys(node_ids))
         for i in range(0, len(unique_node_ids), _NODE_DEGREES_BATCH_CHUNK_SIZE):
             chunk = unique_node_ids[i : i + _NODE_DEGREES_BATCH_CHUNK_SIZE]
+            chunk_degrees = {}
 
             # Outbound degrees
             outbound_pipeline = [
@@ -2338,9 +2339,7 @@ class MongoGraphStorage(BaseGraphStorage):
                 outbound_pipeline, allowDiskUse=True
             )
             async for doc in cursor:
-                merged_results[doc.get("_id")] = merged_results.get(
-                    doc.get("_id"), 0
-                ) + doc.get("degree")
+                chunk_degrees[doc.get("_id")] = doc.get("degree")
 
             # Inbound degrees
             inbound_pipeline = [
@@ -2352,9 +2351,11 @@ class MongoGraphStorage(BaseGraphStorage):
                 inbound_pipeline, allowDiskUse=True
             )
             async for doc in cursor:
-                merged_results[doc.get("_id")] = merged_results.get(
+                chunk_degrees[doc.get("_id")] = chunk_degrees.get(
                     doc.get("_id"), 0
                 ) + doc.get("degree")
+
+            merged_results.update(chunk_degrees)
 
         return merged_results
 
