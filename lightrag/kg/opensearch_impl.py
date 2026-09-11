@@ -4028,25 +4028,56 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             raise
 
     async def node_degree(self, node_id: str) -> int:
-        """Count the number of edges connected to a node."""
+        """Count the edge endpoints a node occupies.
+
+        Degree counts endpoint occurrences, so a self-loop counts twice
+        (``BaseGraphStorage.node_degree``, NetworkX ``graph.degree()``). The
+        ``should`` query counts DOCUMENTS, and a self-loop is one document
+        satisfying both branches -- so the loops are counted again to make up
+        the second endpoint. Without that, this method disagreed with this
+        class's own ``node_degrees_batch`` and ``get_popular_labels``, which
+        aggregate per endpoint field and have always counted a self-loop twice.
+
+        Still the count API rather than a search or a delegation to
+        ``node_degrees_batch`` (``test_node_degree_uses_count_api`` pins that
+        choice): counting is cheaper than the aggregation search, and the two
+        counts issue concurrently, so the second one costs no extra latency.
+        ``mongo_impl.node_degree`` resolves the identical problem the identical
+        way.
+        """
         if not self._indices_ready:
             return 0
         try:
             await self._refresh_graph_indices_if_dirty(refresh_edges=True)
-            response = await self.client.count(
-                index=self._edges_index,
-                body={
-                    "query": {
-                        "bool": {
-                            "should": [
-                                {"term": {"source_node_id": node_id}},
-                                {"term": {"target_node_id": node_id}},
-                            ]
+            touching, self_loops = await asyncio.gather(
+                self.client.count(
+                    index=self._edges_index,
+                    body={
+                        "query": {
+                            "bool": {
+                                "should": [
+                                    {"term": {"source_node_id": node_id}},
+                                    {"term": {"target_node_id": node_id}},
+                                ]
+                            }
                         }
-                    }
-                },
+                    },
+                ),
+                self.client.count(
+                    index=self._edges_index,
+                    body={
+                        "query": {
+                            "bool": {
+                                "filter": [
+                                    {"term": {"source_node_id": node_id}},
+                                    {"term": {"target_node_id": node_id}},
+                                ]
+                            }
+                        }
+                    },
+                ),
             )
-            return response.get("count", 0)
+            return touching.get("count", 0) + self_loops.get("count", 0)
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
@@ -4293,7 +4324,13 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     async def get_nodes_edges_batch(
         self, node_ids: list[str]
     ) -> dict[str, list[tuple[str, str]]]:
-        """Batch-fetch edge tuples for multiple nodes."""
+        """Batch-fetch edge tuples for multiple nodes.
+
+        A self-loop appears ONCE: one hit satisfies both endpoint branches of
+        the ``should`` query, and listing it from each would report one edge as
+        two (``BaseGraphStorage.get_node_edges``, and this class's own
+        ``get_node_edges``, which returns it once).
+        """
         result = {nid: [] for nid in node_ids}
         if not self._indices_ready:
             return result
@@ -4334,7 +4371,10 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         tgt = hit["_source"]["target_node_id"]
                         if src in result:
                             result[src].append((src, tgt))
-                        if tgt in result:
+                        # A self-loop was already listed by the source branch
+                        # above, so skip it here -- one edge, one tuple. Same
+                        # guard as pgtable_impl.get_nodes_edges_batch.
+                        if tgt in result and tgt != src:
                             result[tgt].append((src, tgt))
                     search_after = hits[-1]["sort"]
                     if len(hits) < 10000:

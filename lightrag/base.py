@@ -663,6 +663,33 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
         Returns:
             The number of edges connected to the node
+
+        **A self-loop counts TWICE**, matching NetworkX ``graph.degree()`` — the
+        reference this contract is defined against. Degree counts endpoint
+        *occurrences*, not edge rows, and a self-loop occupies both endpoints of
+        its own edge. The same rule binds ``node_degrees_batch``,
+        ``edge_degree``, ``edge_degrees_batch`` and ``get_popular_labels``: a
+        backend whose scalar and batch paths disagree ranks the same node
+        differently depending on which method a caller reaches for.
+
+        This is written down because it is exactly the kind of rule a backend
+        re-derives from its own query shape and gets wrong: a document store
+        that counts *documents* matching ``source == id OR target == id``
+        naturally counts a self-loop once, while the same backend's grouped
+        aggregation over each endpoint field counts it twice.
+
+        LightRAG's own writers never create a self-loop
+        (``_reject_self_loop_relation`` in ``lightrag/utils_graph.py`` states
+        where each ingress drops it), so this governs graphs imported from
+        another backend and direct storage-API use.
+
+        Pinned by tests for ``networkx``, ``pgtable``, ``mongo`` and
+        ``opensearch``. NOT pinned for the Cypher backends (``neo4j``,
+        ``memgraph``), whose degree comes from a single undirected
+        ``(n)-[r]-()`` match: whether that yields one row or two for a
+        self-loop needs checking against a live server, which no offline test
+        here can do. Treat them as unverified against this rule rather than
+        as compliant.
         """
 
     @abstractmethod
@@ -725,6 +752,13 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         ``get_nodes_edges_batch`` cannot express the middle case (it returns a
         dict of lists) and flattens ``None`` to ``[]`` by design; callers that
         need the distinction must use this single-node form.
+
+        **A self-loop is ONE edge and appears ONCE**, here and in
+        ``get_nodes_edges_batch`` — the opposite of the degree rule on
+        :meth:`node_degree`, and deliberately so: this method lists edges,
+        degree counts endpoints. A backend that walks its outbound and inbound
+        matches separately must skip the second occurrence of ``src == tgt``,
+        or it reports one edge twice.
         """
 
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
