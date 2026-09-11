@@ -52,7 +52,7 @@
     "graphology-layout-forceatlas2": "^0.10.1",
     "graphology-layout-noverlap": "^0.4.2",
     "i18next": "^26.4.2",
-    "katex": "^0.18.5",
+    "katex": "^0.18.7",
     "lucide-react": "^1.40.0",
     "mermaid": "^11.17.2",
     "minisearch": "^7.2.0",
