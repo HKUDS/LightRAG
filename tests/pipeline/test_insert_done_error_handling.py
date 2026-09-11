@@ -646,15 +646,15 @@ async def test_discard_flushes_chunk_references_before_the_cache(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_discard_still_flushes_the_cache_when_references_fail(
+async def test_discard_skips_the_cache_flush_when_references_fail(
     tmp_path, monkeypatch, caplog
 ):
-    """Here a suppressed cache flush is a permanent loss, not a deferral.
+    """Losing the cached results is the accepted side of this trade.
 
-    The buffer is dropped immediately after, so refusing to flush would throw
-    away LLM work that is expensive to recompute — which ranks above the
-    dangling row. The failure epilogue makes the opposite call because there
-    the pair survives for the next commit.
+    They are recomputed on the next run. A cache row published here behind a
+    reference that just failed to commit — with both buffers dropped on the
+    very next lines — is an unreachable row holding document text, which is
+    permanent.
     """
     rag = await _make_rag(tmp_path)
     try:
@@ -667,7 +667,11 @@ async def test_discard_still_flushes_the_cache_when_references_fail(
         with caplog.at_level("ERROR", logger="lightrag"):
             await rag._discard_pending_index_ops()
 
-        assert cache.index_done_calls == 1
+        assert cache.index_done_calls == 0, (
+            "cache rows were published behind references that did not commit, "
+            "and the next lines drop both buffers"
+        )
+        assert cache.drop_calls == 1
         assert any(
             "Failed to persist chunk cache references on abort" in rec_.message
             for rec_ in caplog.records

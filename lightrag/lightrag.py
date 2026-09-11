@@ -3728,18 +3728,27 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # the cache flush publishes rows whose only reference is in a buffer
         # this cleanup is about to discard.
         #
-        # Unlike the failure epilogue this does NOT suppress the cache flush
-        # when the references do not land: there the cache is deferred to the
-        # next commit, here the buffer is dropped immediately after, so
-        # suppressing would permanently lose LLM work that is expensive to
-        # recompute. That ranks above the dangling row -- see *LLM extraction
-        # cache reachability* in the contract doc,
-        # ``docs/design/PurgeRecoveryContract.md``.
+        # When that commit does not land, the cache flush below is skipped:
+        # here the buffer is dropped straight after, so the cached LLM results
+        # are lost rather than deferred -- an accepted inconsistency, because
+        # they are recomputed on the next run. An unreachable row holding
+        # document text is not. See *LLM extraction cache reachability* in the
+        # contract doc, ``docs/design/PurgeRecoveryContract.md``.
+        references_committed = True
         if self.text_chunks is not None:
             try:
-                await cast(StorageNameSpace, self.text_chunks).index_done_callback()
+                committed = await cast(
+                    StorageNameSpace, self.text_chunks
+                ).index_done_callback()
+                references_committed = committed is not False
             except Exception as e:
                 logger.error(f"Failed to persist chunk cache references on abort: {e}")
+                references_committed = False
+            if not references_committed:
+                logger.error(
+                    "Skipping the LLM cache flush on abort: its chunk references "
+                    "did not land, and this cleanup drops both buffers next"
+                )
 
         for storage_inst in self._index_storages():
             if skip_enqueue_owned and (
@@ -3749,7 +3758,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 # to avoid racing a concurrent enqueue; direct callers pass
                 # skip_enqueue_owned=False so a poisoned full_docs op is cleared.
                 continue
-            if storage_inst is self.llm_response_cache:
+            if storage_inst is self.llm_response_cache and references_committed:
                 # Persist what can still be written, then fall through to drop
                 # whatever could not (a poisoned item) so it cannot wedge the
                 # next batch.
