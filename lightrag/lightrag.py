@@ -229,7 +229,7 @@ load_dotenv(dotenv_path=".env", override=False)
 _SyncResultT = TypeVar("_SyncResultT")
 
 # ---------------------------------------------------------------------------
-# Admin-write gate (issue #3899)
+# Admin-write gate
 # ---------------------------------------------------------------------------
 #
 # The eight public admin graph writers (``adelete_by_entity``,
@@ -2041,7 +2041,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     async def finalize_storages(self):
         """Asynchronously finalize the storages with improved error handling"""
         self._shutdown_parser_executor()
-        # A release-time queue drive (issue #3899) still running at shutdown is
+        # A release-time queue drive still running at shutdown is
         # cancelled, not awaited: its auto-rescan flag stays armed in the
         # mailbox for the next run to honour.
         await self._cancel_admin_release_drives()
@@ -3904,7 +3904,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # like the other SDK mutations, before touching any storage.
         await self._raise_if_recovery_required()
 
-        # The eighth admin writer (issue #3899 R3): a public graph writer that
+        # The eighth admin writer: a public graph writer that
         # takes only per-key locks and has no router busy check, so without the
         # gate it reproduces the mid-flow reload discard through a documented
         # hole. The gate covers the graph writes AND the commit in the finally.
@@ -6902,7 +6902,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         )
 
     # ------------------------------------------------------------------
-    # Admin-write gate (issue #3899)
+    # Admin-write gate
     # ------------------------------------------------------------------
 
     def _admin_write_gate_required(self) -> bool:
@@ -6998,103 +6998,51 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         """Serialize an admin graph write against its peers and the pipeline.
 
         Wraps the body of every public admin graph writer -- the seven
-        ``utils_graph`` flows (``adelete_by_entity``, ``adelete_by_relation``,
-        ``aedit_entity``, ``aedit_relation``, ``acreate_entity``,
-        ``acreate_relation``, ``amerge_entities``) and ``ainsert_custom_kg`` --
-        and is a no-op unless ``_admin_write_gate_required()``.
-
-        Why (issue #3899): ``NetworkXStorage`` reloads the whole graph from disk
-        whenever a peer commit lands, and a reload discards this process's
-        uncommitted in-memory mutations. Every admin flow reaches the graph
-        several times per request (a rename upserts, then reads edges, then
-        upserts again), so a peer commit landing between two of those calls
-        silently drops the mutations already applied; the commit that follows
-        succeeds without them. Two peers can do that: another admin write, and
-        the document pipeline (whose in-memory merge results an admin commit
-        discards the same way, leaving documents marked PROCESSED with their
-        entities missing -- and nothing heals that). Both are removed here by
-        restoring the *single writer per workspace* invariant the storage
-        already asserts, rather than by teaching the reload to survive:
-        replaying graph payloads over a newer snapshot would drop the evidence
-        a peer accumulated and republish a stale ``weight``, breaking the
-        relation-weight contract at exactly the moment nothing can notice.
+        ``utils_graph`` flows plus ``ainsert_custom_kg``. A no-op unless
+        ``_admin_write_gate_required()``, i.e. unless the graph storage's class
+        declares ``requires_single_writer`` (``NetworkXStorage`` only).
 
         Two halves, one fixed acquisition order::
 
             admin lock (WAITS)  ->  admin reservation (REFUSES)  ->  per-key locks
 
-        1. **The admin lock** -- ``get_storage_keyed_lock(["admin"],
-           namespace=f"{workspace}:GraphAdmin")``, cross-process like every
-           keyed lock. Serializes admin writes against each other by
-           *queueing* them: a second admin write waits up to
-           ``ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT`` and is refused only on expiry,
-           with ``ADMIN_WRITE_LOCK_BUSY_PREFIX`` (HTTP 409). Taken FIRST,
-           because the reservation below refuses without waiting -- taken the
-           other way round the second concurrent admin write would be refused
-           and the queue would never form. Taken OUTSIDE the per-entity keys,
-           which the ``utils_graph`` functions acquire inside their own body:
-           ``amerge_entities`` takes several keys at once, and the reverse
-           order deadlocks. The pipeline never takes the admin lock, so no
-           cycle is introduced. Wrapping at this method level is what makes the
-           order automatic for any ``utils_graph`` helper added later -- do not
-           acquire the admin lock anywhere inside ``utils_graph``.
-        2. **The pipeline ``busy`` reservation** -- ``acquire_reservation`` with
-           ``owner_kind="admin"`` and ``flags={"busy": True}``, refusing on
-           ``busy`` (a processing loop or a destructive job) and ``scanning``
-           with ``ADMIN_WRITE_PIPELINE_BUSY_PREFIX`` (HTTP 409, distinguishable
-           from the lock refusal by its leading phrase). It does NOT set
-           ``destructive_busy``: an admin write drops no storage and removes no
-           input file, so enqueue stays allowed. While held it defers a
-           pipeline *start* -- ``acquire_processing_reservation``'s ``busy`` arm
-           reduces the start to a sticky auto-rescan request in the workspace
-           ingress mailbox -- and a running pipeline still refuses the admin
-           write, as the router's ``check_pipeline_busy_or_raise`` already did
-           (kept as an early 409 that fails before any embedding work).
+        The admin lock queues a peer admin write for up to
+        ``ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT``, then refuses with 409. The
+        reservation takes the pipeline's ``busy`` flag as ``kind="admin"`` and
+        refuses immediately on ``busy`` / ``scanning``, also 409; the two are
+        told apart by the leading phrase of the message. Both cover mutate AND
+        commit, embedding round-trip included -- a lock around the commit alone
+        would leave the mid-flow reload open, which is the whole defect.
 
-        Both halves cover mutate AND commit, embedding round-trip included; a
-        lock around the commit alone would leave the mid-flow reload open, which
-        is the whole defect. The hold is bounded by ``admin_write_max_hold_seconds``
-        (``_AdminHoldCeiling``): an admin holder of ``busy`` fences ingestion
-        for as long as it runs, and dead-owner reclaim covers a dead process,
-        not a hung one. A ceiling that fires cannot tear a commit apart -- the
-        admin flows run their commit-plus-cleanup regions under
-        ``_finish_deferring_cancellation``, and ``commit_in_storage_io``
-        finishes the file write and its publication hook regardless.
+        Rules for anyone extending this:
 
-        **Accepted residue of the ceiling.** Precisely because a commit is
-        allowed to finish, an operation the ceiling stops may have written
-        durably while its caller is told it failed. That is unavoidable for any
-        cancellation-based bound (``asyncio.timeout`` has it too), so it is
-        reported rather than hidden: ``_AdminHoldCeiling`` reads the stamp the
-        uncancellable regions leave on a withheld cancellation whose write
-        committed and says whether a commit was in flight, and neither of its messages claims
-        the operation wrote nothing -- a multi-step flow commits more than once.
-        Recovery is to re-read the object; a blind retry is what turns this into
-        "entity already exists" or a re-applied edit. Beyond that, what the
-        ceiling can leave behind is the crash residue issue #3838 documents.
+        * **Never acquire the admin lock inside ``lightrag/utils_graph.py``.**
+          Wrapping at this level is what keeps the order automatic for any
+          helper added later, and the per-entity keys must stay INSIDE it --
+          ``amerge_entities`` takes several at once and the reverse order
+          deadlocks.
+        * The lock is taken first on purpose: the reservation refuses without
+          waiting, so the other order would refuse the second concurrent admin
+          write instead of queueing it.
+        * A pipeline start deferred during the hold is driven once on release;
+          a cancellation exit gives up the operation's unpublished graph
+          mutations. Both are handled below, in the ``except`` and ``finally``.
 
-        **Release-time drive.** A pipeline start turned away during the hold
-        left ``auto_rescan_pending`` armed in the mailbox, and that flag is
-        consumed only by a ``busy`` holder's quiescence decision -- which an
-        admin holder never runs. Left alone, the request would be stranded and
-        its document would sit PENDING until the next upload or scan. So after
-        both halves are released this reads the flag (read-only, non-consuming)
-        and, if set, drives the queue once in a background task
-        (``_schedule_deferred_pipeline_drive``); the drive's own
-        ``acquire_processing_reservation`` consumes the flag. The drive is
-        skipped when this task is being cancelled, leaving the flag armed for
-        the next scan or upload to honour -- the same choice
-        ``run_scanning_process`` makes.
-
-        Crash semantics: ``kind="admin"`` is in
-        ``_RERUNNABLE_RESERVATION_KINDS``, so a worker killed mid-edit has its
-        reservation reclaimed by the next acquire without fencing the workspace
-        (``recovery_required``) -- an admin write is re-runnable, and the
-        residue it leaves is the documented #3838 one.
+        **Accepted residue.** The hold ceiling stops a write by cancelling it,
+        and a commit already in flight is allowed to finish, so an operation
+        reported as failed may have written durably. It is reported rather than
+        hidden (``_AdminHoldCeiling`` reads the deferred-cancellation stamp and
+        says which case happened); recovery is to re-read the object, and a
+        blind retry is what turns this into "entity already exists".
 
         ``pipeline_status`` not bootstrapped (a test rig without
         ``initialize_storages``) means there is no pipeline to exclude, so only
         the admin lock is taken.
+
+        **Full contract: ``docs/design/PipelineConcurrencyContract.md``** --
+        why each half exists, what the reservation does and does not set, crash
+        semantics, and the release-time drive obligation including why a
+        synchronous wrapper must await it.
         """
         if not self._admin_write_gate_required():
             yield
