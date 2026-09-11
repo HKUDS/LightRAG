@@ -64,14 +64,6 @@ LightRAG writes to independent stores — graph, KV, vector, doc-status — with
 - Every accepted residue is **written down** with its reason and recovery path, next to the code or in the relevant contract. An undocumented residue is a defect; a documented one is a decision.
 - This licenses nothing for **silent failure**. A durable write must never be reported as one that did not happen, and a failure must never be swallowed: fail loud, then let the documented residue heal.
 
-**Where the reasoning lives.** Docstrings state the rules, the obligations on
-callers and the gotchas; the mechanism, the accepted residues and the
-already-rejected alternatives go in `docs/design/`. Two rules are enforced by
-`tests/test_docstring_budget.py` rather than by review: no docstring may exceed
-80 lines (100 for a class), and no source line may cite a GitHub issue number —
-the referent does not survive a fork, so name the thing or move the content into
-`docs/design/` and cite that.
-
 ### File-backed storage contracts
 
 **Full contracts: [docs/design/NetworkXSingleWriterContract.md](docs/design/NetworkXSingleWriterContract.md) — read it before touching `lightrag/kg/networkx_impl.py` or any caller of `index_done_callback` on the graph store; [docs/design/FileBackedSnapshotContract.md](docs/design/FileBackedSnapshotContract.md) — read it before touching `lightrag/kg/nano_vector_db_impl.py`, `lightrag/kg/faiss_impl.py`, `lightrag/kg/json_kv_impl.py` or `lightrag/kg/file_fingerprint.py`.**
@@ -360,6 +352,17 @@ See `env.example` for comprehensive template.
 
 ### Language
 Comments, backend code, log messages, and Git commit messages in English. Frontend uses i18next for multi-language support.
+
+### Docstrings and comments
+
+Docstrings state the **rules**: what a caller must do, what it must not do, and the gotchas it will otherwise be caught by. The **mechanism** — how it works, the accepted residues, and the alternatives already rejected — goes in `docs/design/` with a pointer from the docstring. A docstring that has grown into a design document is the thing this separates: it buries the code, and the same facts in two places drift apart.
+
+Two rules are enforced by `tests/test_docstring_budget.py` rather than by review, because both are properties of the tree rather than of any one change:
+
+- **No docstring over 80 lines** (100 for a class). The limit is generous on purpose — it catches a document, not a thorough docstring.
+- **No source line may cite a GitHub issue number.** The referent does not survive a fork, so a comment saying something is "documented in #NNNN" leaves nothing that documents it. Name the thing instead ("the two-channel fence"), or move the content into `docs/design/` and cite that. Never delete such a reference bare — migrate what it pointed at first.
+
+A third test requires every `docs/**.md` path named in the package to resolve; nothing imports those strings, so a typo is otherwise silent.
 
 ### Python
 - Follow PEP 8 with 4-space indentation
