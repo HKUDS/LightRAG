@@ -1,4 +1,4 @@
-"""The file half of the file-backed storages' cross-process fence (#3854).
+"""The file half of the file-backed storages' cross-process fence.
 
 ``NetworkXStorage``, ``NanoVectorDBStorage`` and ``FaissVectorDBStorage`` all
 coordinate through a file plus a ``storage_updated`` flag distributed by
