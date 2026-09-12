@@ -6142,9 +6142,19 @@ def create_document_routes(
             # Prepare final result message
             final_message = ""
             if errors:
+                # Name the collected errors, not just their existence. This
+                # message is the only channel the caller has: the WebUI
+                # surfaces it verbatim, so a bare "some errors" tells the
+                # operator to retry without saying what to retry -- whether
+                # the LLM cache is still there, which storage kept its rows,
+                # or which input files would not unlink. The list is bounded
+                # (at most one entry per storage plus the file-count,
+                # __parsed__ and cache lines), so it is reported in full:
+                # truncating it risks hiding the one entry that matters.
                 final_message = (
                     f"Cleared documents with some errors. Deleted "
                     f"{deleted_files_count} files.{parsed_dir_message}{cache_cleared_message}"
+                    f" Errors: {'; '.join(errors)}"
                 )
                 status = "partial_success"
             else:

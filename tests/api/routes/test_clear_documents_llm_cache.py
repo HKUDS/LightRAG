@@ -169,6 +169,24 @@ async def test_llm_cache_drop_failure_degrades_to_partial_success(tmp_path):
     assert "Cleared the LLM response cache." not in response.message
 
 
+async def test_partial_success_names_the_cache_failure(tmp_path):
+    """``message`` is the only channel the caller has -- the WebUI surfaces it
+    verbatim -- so a failure that left the LLM cache in place must say so, and
+    say why. A bare "some errors" tells the operator to retry without saying
+    what to retry."""
+    workspace = f"clear-cache-named-{uuid4().hex[:8]}"
+    await _init_workspace(workspace)
+
+    rag = _ClearRag(workspace, cache_error=RuntimeError("cache backend down"))
+    endpoint = _clear_endpoint(rag, tmp_path)
+
+    response = await endpoint(clear_llm_cache=True)
+
+    assert response.status == "partial_success"
+    assert "LLM response cache" in response.message
+    assert "cache backend down" in response.message
+
+
 async def test_standalone_clear_cache_route_is_gone(tmp_path):
     """It cleared the whole cache with no concurrency control at all; the
     capability lives on the destructive clear now."""
