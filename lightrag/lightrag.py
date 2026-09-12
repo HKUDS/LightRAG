@@ -5230,10 +5230,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         once when nothing is dirty, but ``OpenSearchKVStorage`` refreshes the
         index unconditionally after the flush, so this adds one refresh round
         trip on ``text_chunks`` -- usually the largest index -- to EVERY query.
-        Narrowing it means skipping the pair when the cache buffer holds no
-        reference-carrying row, which needs a backend answer a snapshot store
-        cannot give; see the residue table in
-        ``docs/design/PurgeRecoveryContract.md``.
+        Two ways to narrow it, both deferred and both written up under *What
+        the OpenSearch KV refresh actually protects* in
+        ``docs/design/PurgeRecoveryContract.md``: skip the pair when the cache
+        buffer holds no reference-carrying row (this call site only), or skip
+        the REFRESH when the flush wrote nothing (every caller, but it changes
+        the storage's visibility semantics).
 
         Non-raising for the chunk half: a query must not fail over a commit it
         did not ask for. A chunk failure is recorded, and the recording
