@@ -1923,6 +1923,7 @@ class PostgreSQLDB:
             ("process_options", "TEXT NULL"),
             ("chunk_options", "JSONB NULL DEFAULT '{}'::jsonb"),
             ("parse_engine", "TEXT NULL"),
+            ("document_date", "VARCHAR(10) NULL"),
         ]
         try:
             existing = await self.query(
@@ -2477,7 +2478,7 @@ class PostgreSQLDB:
 
         # Migrate LIGHTRAG_DOC_FULL to add pipeline-derived fields used by the
         # JSON storage parity: sidecar_location / parse_format / content_hash /
-        # process_options / chunk_options / parse_engine
+        # process_options / chunk_options / parse_engine / document_date
         try:
             await self._migrate_doc_full_add_pipeline_fields()
         except Exception as e:
@@ -3212,6 +3213,8 @@ class PGKVStorage(BaseKVStorage):
             if not isinstance(chunk_options, dict):
                 chunk_options = {}
             response["chunk_options"] = chunk_options
+            if response.get("document_date") is None:
+                response.pop("document_date", None)
 
         # Special handling for LLM cache to ensure compatibility with _get_cached_extraction_results
         if response and is_namespace(
@@ -3389,6 +3392,8 @@ class PGKVStorage(BaseKVStorage):
                 if not isinstance(chunk_options, dict):
                     chunk_options = {}
                 result["chunk_options"] = chunk_options
+                if result.get("document_date") is None:
+                    result.pop("document_date", None)
 
         # Special handling for LLM cache to ensure compatibility with _get_cached_extraction_results
         if results and is_namespace(
@@ -3556,15 +3561,15 @@ class PGKVStorage(BaseKVStorage):
             for i, (k, v) in enumerate(data.items(), start=1):
                 # Tuple order must match SQL: (id, content, doc_name, workspace,
                 #   sidecar_location, parse_format, content_hash, process_options,
-                #   chunk_options, parse_engine)
+                #   chunk_options, parse_engine, document_date)
                 #
-                # All pipeline-derived fields pass through untouched so the
-                # SQL-level COALESCE guard in upsert_doc_full can distinguish
-                # "caller did not supply" (None/'') from "caller supplied a
-                # real value". The 'raw' default for parse_format is provided
-                # by the column DDL on initial insert; do NOT default it here
-                # or the COALESCE guard never triggers on subsequent partial
-                # writes.
+                # Pipeline-derived fields pass through untouched. Except for
+                # document_date, the SQL-level COALESCE guards treat None/''
+                # as "no value" and preserve the stored value. The 'raw'
+                # default for parse_format is provided by the column DDL on
+                # initial insert; do NOT default it here or the guard never
+                # triggers on subsequent partial writes. document_date uses a
+                # separate protocol: None preserves, but '' explicitly clears.
                 batch_values.append(
                     (
                         k,
@@ -3577,6 +3582,7 @@ class PGKVStorage(BaseKVStorage):
                         v.get("process_options"),
                         json.dumps(v.get("chunk_options") or {}),
                         v.get("parse_engine"),
+                        v.get("document_date"),
                     )
                 )
                 await _cooperative_yield(i)
@@ -9548,6 +9554,7 @@ TABLES = {
                     process_options TEXT NULL,
                     chunk_options JSONB NULL DEFAULT '{}'::jsonb,
                     parse_engine TEXT NULL,
+                    document_date VARCHAR(10) NULL,
                     create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_DOC_FULL_PK PRIMARY KEY (workspace, id)
@@ -9707,7 +9714,8 @@ SQL_TEMPLATES = {
                                 content_hash,
                                 process_options,
                                 COALESCE(chunk_options, '{}'::jsonb) as chunk_options,
-                                parse_engine
+                                parse_engine,
+                                document_date
                                 FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id=$2
                             """,
     "get_by_id_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
@@ -9731,7 +9739,8 @@ SQL_TEMPLATES = {
                                  content_hash,
                                  process_options,
                                  COALESCE(chunk_options, '{}'::jsonb) as chunk_options,
-                                 parse_engine
+                                 parse_engine,
+                                 document_date
                                  FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id = ANY($2)
                             """,
     "get_by_ids_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
@@ -9799,10 +9808,13 @@ SQL_TEMPLATES = {
     # a default-bearing caller is treated as "no value, preserve existing".
     # For chunk_options (JSONB) we treat NULL or the empty-object literal as
     # "no value, preserve existing".
+    # document_date is caller-managed: None preserves, '' clears, a date sets.
+    # Normalize '' to NULL on insert, but use the original $11 on conflict to
+    # distinguish a clear from an omitted date (both become NULL in EXCLUDED).
     "upsert_doc_full": """INSERT INTO LIGHTRAG_DOC_FULL (id, content, doc_name, workspace,
                             sidecar_location, parse_format, content_hash,
-                            process_options, chunk_options, parse_engine)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                            process_options, chunk_options, parse_engine, document_date)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF(CAST($11 AS TEXT), ''))
                         ON CONFLICT (workspace,id) DO UPDATE
                            SET content = EXCLUDED.content,
                                doc_name = EXCLUDED.doc_name,
@@ -9832,6 +9844,10 @@ SQL_TEMPLATES = {
                                    NULLIF(EXCLUDED.parse_engine, ''),
                                    LIGHTRAG_DOC_FULL.parse_engine
                                ),
+                               document_date = CASE
+                                   WHEN $11 IS NULL THEN LIGHTRAG_DOC_FULL.document_date
+                                   ELSE EXCLUDED.document_date
+                               END,
                                update_time = CURRENT_TIMESTAMP
                        """,
     "upsert_llm_response_cache": """INSERT INTO LIGHTRAG_LLM_CACHE(workspace,id,original_prompt,return_value,chunk_id,cache_type,queryparam)
@@ -9951,6 +9967,7 @@ SQL_TEMPLATES = {
               SELECT id,
                      content,
                      file_path,
+                     full_doc_id,
                      EXTRACT(EPOCH FROM create_time)::BIGINT AS created_at
               FROM {table_name}
               WHERE workspace = $1

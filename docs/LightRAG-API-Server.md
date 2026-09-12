@@ -912,6 +912,14 @@ Each storage type offers multiple implementations. By default, LightRAG Server u
 | GRAPH_STORAGE | `NetworkXStorage`, `Neo4JStorage`, `PGTableGraphStorage`, `PGGraphStorage`, `MongoGraphStorage`, `MemgraphStorage`, `OpenSearchGraphStorage` |
 | DOC_STATUS_STORAGE | `JsonDocStatusStorage`, `RedisDocStatusStorage`, `PGDocStatusStorage`, `MongoDocStatusStorage`, `OpenSearchDocStatusStorage` |
 
+The four rows are separate storage roles used together; the implementations
+listed within each row are alternatives for that one role. `text_chunks` in KV
+storage supports chunk lookup by ID, while `chunks_vdb` in vector storage
+performs similarity search. For the vector role, `NanoVectorDBStorage` is the
+default local implementation and `PGVectorStorage` is its PostgreSQL
+alternative. Likewise, `JsonKVStorage` and `PGKVStorage` are alternatives for
+the KV role.
+
 For production deployments, PostgreSQL (recommended), MongoDB, or OpenSearch can provide all four storage types through a single backend. You can also select a specialized database for each storage type, such as Milvus or Qdrant for vector storage and Neo4j or Memgraph for graph storage.
 
 **PostgreSQL Graph Storage — prefer `PGTableGraphStorage`:** For new PostgreSQL deployments, `PGTableGraphStorage` is the recommended `GRAPH_STORAGE` implementation and supersedes `PGGraphStorage`. It keeps the entity-relation graph in ordinary tables — JSONB properties plus B-tree indexes — instead of going through Apache AGE, which brings two practical advantages:
@@ -1227,7 +1235,10 @@ memo.[native-R!].docx
 notes.[-R].md
 ```
 
-The `/documents/upload` and `/documents/scan` paths honor filename hints and `LIGHTRAG_PARSER`. The `/documents/text` and `/documents/texts` endpoints insert already-provided text and currently use fixed chunking on the server path.
+The `/documents/upload` and `/documents/scan` paths honor filename hints and
+`LIGHTRAG_PARSER`. The `/documents/text` and `/documents/texts` endpoints
+instead accept a `chunking` request object with `strategy` and
+strategy-specific `params`; omitting it selects `fixed_token`.
 
 ### Processing Options
 
@@ -1276,6 +1287,73 @@ You can test the API endpoints using the provided curl commands or through the S
 5. Trigger document scan if new files are put into the inputs directory
 
 The `/health` endpoint reports operational state and selected configuration, including role LLM configuration, LLM/embedding/rerank queue status, workspace/storage workspace mapping, VLM enablement, rerank enablement, and pipeline busy/scanning/destructive status. It always returns HTTP 200 so it stays usable as a liveness probe, but the configuration and operational diagnostics are returned **only to authenticated callers** (valid JWT or `X-API-Key`). Unauthenticated callers receive only liveness signals (`status`, `auth_mode`, `core_version`, `api_version`, `pipeline_busy`/`pipeline_active`, and the WebUI title/availability fields — all of which are also exposed by the unauthenticated `/auth-status` endpoint or are plain booleans). Provide credentials to retrieve the full payload, e.g. `curl -H "X-API-Key: <key>" http://localhost:9621/health`.
+
+### Optional Document Date Context
+
+Document ingestion can include an optional caller-supplied fact date. This is
+the date when the document's facts apply (its as-of date), not the time when
+LightRAG uploads or indexes the document. Accepted formats are `YYYY`,
+`YYYY-MM`, and `YYYY-MM-DD`. Omit the field when the document has no meaningful
+fact date; existing requests that omit it keep their previous behavior.
+
+An explicit empty string is also accepted, including in multipart forms and
+individual batch entries. For a newly accepted document, omission, JSON
+`null`, and `""` all produce an undated record. These endpoints deduplicate
+existing documents and do not edit their dates, so `""` is not a REST
+date-clear operation. Low-level storage upsert behavior is backend-specific;
+see the [Core SDK guide](ProgramingWithCore.md#insert).
+
+| Endpoint | Optional field | Request encoding |
+| --- | --- | --- |
+| `/documents/text` | `document_date` | JSON string |
+| `/documents/texts` | `document_dates` | JSON array aligned one-to-one with `texts` |
+| `/documents/upload` | `document_date` | Multipart form field |
+
+For a batch request, `document_dates` must contain the same number of entries as
+`texts`. Each position supplies the date for the text at the same position; use
+`null` for an individual document without a date:
+
+```json
+{
+  "texts": [
+    "Organization structure in 2018...",
+    "Notes without one meaningful date..."
+  ],
+  "file_sources": ["organization-2018.txt", "notes.txt"],
+  "document_dates": ["2018", null]
+}
+```
+
+For file upload, send the date beside the file in the multipart body:
+
+```bash
+curl -X POST "http://localhost:9621/documents/upload" \
+  -H "X-API-Key: <key>" \
+  -F "file=@organization-2018.pdf" \
+  -F "document_date=2018-10-01"
+```
+
+#### Query response
+
+`POST /query/data` returns retrieved text chunks in `data.chunks`:
+
+| Field | Presence | Meaning |
+| --- | --- | --- |
+| `reference_id` | Always present | Citation identifier matching an item in `data.references` |
+| `content` | Always present | Retrieved chunk text |
+| `file_path` | Always present | Source document path |
+| `chunk_id` | Always present | Identifier of the retrieved chunk |
+| `document_date` | Optional | Source document's fact date, preserving the supplied `YYYY`, `YYYY-MM`, or `YYYY-MM-DD` precision |
+
+For documents without a fact date, `document_date` is omitted rather than
+returned as `null`.
+
+The date is persisted on the `full_docs` record instead of being duplicated in
+persisted chunks. During retrieval, LightRAG uses each chunk's internal
+`full_doc_id` to batch-load the corresponding full-document records and
+attaches their dates only to the in-memory result chunks. Any storage adapter
+returning chunks must therefore preserve this ownership key. `full_doc_id` is
+internal and is not included in the public `/query/data` chunk object.
 
 ## Asynchronous Document Indexing with Progress Tracking
 

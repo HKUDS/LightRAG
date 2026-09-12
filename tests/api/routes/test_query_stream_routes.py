@@ -107,6 +107,32 @@ class TestQueryRouteJsonOnly:
         ), "/query route must exist and accept POST"
 
 
+class TestQueryDataOpenAPI:
+    """The structured query schema must document optional date enrichment."""
+
+    def test_chunk_schema_exposes_document_date_without_internal_linkage(self):
+        client = _build_client()
+        response = client.get("/openapi.json")
+        assert response.status_code == 200
+
+        content = response.json()["paths"]["/query/data"]["post"]["responses"]["200"][
+            "content"
+        ]["application/json"]
+        chunk_schema = content["schema"]["properties"]["data"]["properties"]["chunks"][
+            "items"
+        ]
+        properties = chunk_schema["properties"]
+
+        assert properties["document_date"]["type"] == "string"
+        assert "YYYY-MM-DD" in properties["document_date"]["description"]
+        assert "document_date" not in chunk_schema.get("required", [])
+        assert "full_doc_id" not in properties
+
+        example_chunk = content["examples"]["naive_mode"]["value"]["data"]["chunks"][0]
+        assert example_chunk["document_date"] == "2018-10-01"
+        assert "full_doc_id" not in example_chunk
+
+
 class TestQueryStreamRoute:
     """The /query/stream endpoint must serve application/x-ndjson."""
 
