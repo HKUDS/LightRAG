@@ -900,6 +900,12 @@ class OpenSearchKVStorage(BaseKVStorage):
     client: AsyncOpenSearch = field(default=None)
     _index_name: str = field(default="", init=False)
     _index_ready: bool = field(default=False, init=False)
+    # Refresh bookkeeping: a flush that issues writes bumps the write
+    # generation, a successful refresh records the generation it covered, and
+    # a refresh is owed exactly while the two differ. ``index_done_callback``
+    # states why this is a pair of counters and not one dirty bool.
+    _write_generation: int = field(default=0, init=False)
+    _refreshed_generation: int = field(default=0, init=False)
 
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
         super().__init__(
@@ -960,7 +966,18 @@ class OpenSearchKVStorage(BaseKVStorage):
                 self._index_ready = True
 
     def _mark_index_missing(self):
-        """Mark the KV index as unavailable for subsequent read short-circuiting."""
+        """Mark the KV index as unavailable for subsequent read short-circuiting.
+
+        Deliberately does NOT touch the refresh counters. Most callers are
+        read paths that know nothing about what this process's commits owe:
+        one can observe ``index_not_found`` while a streaming bulk is still in
+        flight, and that bulk auto-creates the index and goes on writing rows.
+        Settling the debt here would leave those rows outside every
+        search-based reader with nothing in this process to retry it. A debt
+        that outlives its index costs one redundant refresh once the index is
+        recreated -- the same over-count ``_flush_pending_kv_ops`` already
+        accepts when it bumps the generation before the bulk.
+        """
         self._index_ready = False
 
     async def _create_index_if_not_exists(self):
@@ -1065,7 +1082,13 @@ class OpenSearchKVStorage(BaseKVStorage):
     async def _iter_raw_docs(
         self, batch_size: int = 1000
     ) -> AsyncIterator[list[dict[str, Any]]]:
-        """Yield raw OpenSearch hits using PIT + search_after pagination."""
+        """Yield raw OpenSearch hits using PIT + search_after pagination.
+
+        Refreshes before opening the PIT: the point-in-time freezes the view
+        for the whole scan, so a row that is written but not yet in a
+        searchable segment when it opens is missed by every page.
+        """
+        await self._refresh_for_search()
         if not self._index_ready:
             return
 
@@ -1486,6 +1509,14 @@ class OpenSearchKVStorage(BaseKVStorage):
                 for doc_id, source in pending_upserts.items()
             ]
 
+            # Bumped BEFORE the bulk and never conditioned on its outcome:
+            # async_bulk streams chunks, so a transport error can raise with
+            # earlier chunks already written, and the permanent-failure raise
+            # at the end of this method follows a partially successful bulk
+            # too. Over-counting costs one refresh -- what this storage did
+            # unconditionally until now -- while under-counting leaves written
+            # rows outside every search-based reader with nothing to retry it.
+            self._write_generation += 1
             try:
                 log_prefix = f"[{self.workspace}] {self.namespace} flush:"
                 del_success, del_failed = await _run_chunked_async_bulk(
@@ -1620,15 +1651,26 @@ class OpenSearchKVStorage(BaseKVStorage):
         async with self._flush_lock:
             return bool(self._pending_upserts)
 
-    async def index_done_callback(self) -> None:
-        """Flush pending KV ops and refresh the index for search visibility.
+    async def _refresh_for_search(self) -> None:
+        """Publish prior writes to a search-based read of this index.
 
-        Flush runs first so a previously-missing index gets recreated by
-        ``_flush_pending_kv_ops`` (via ``_ensure_index_ready``) before any
-        buffered writes are abandoned. The refresh step is skipped only
-        when the index is still not ready after the flush attempt.
+        Call this from every reader that goes through ``search`` / ``count``
+        rather than ``mget`` by ``_id``; a GET by id consults the translog and
+        is real time, so the point reads never need it. Refreshing where the
+        search happens rather than at every commit is what lets
+        ``index_done_callback`` skip an idle namespace, and it makes the
+        guarantee STRONGER at the two sites that have it: a refresh publishes
+        the index, so these readers now also see writes from processes whose
+        own commits this one can know nothing about.
+
+        Best effort by contract. A failure is logged and swallowed, leaving the
+        caller the pre-refresh view -- what every one of these readers got
+        unconditionally before. It must never turn a read into an error.
+
+        It must not settle the commit path's refresh debt either: those
+        counters record what this storage's own commits owe, and a best-effort
+        call must not retire an obligation on their behalf.
         """
-        await self._flush_pending_kv_ops()
         if not self._index_ready:
             return
         try:
@@ -1637,7 +1679,58 @@ class OpenSearchKVStorage(BaseKVStorage):
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return
+            logger.warning(
+                f"[{self.workspace}] Refresh before a search read of "
+                f"{self._index_name} failed; reading a possibly stale view: {e}"
+            )
+
+    async def index_done_callback(self) -> None:
+        """Flush pending KV ops, and refresh only when this storage owes one.
+
+        Flush runs first so a previously-missing index gets recreated by
+        ``_flush_pending_kv_ops`` (via ``_ensure_index_ready``) before any
+        buffered writes are abandoned. The refresh is then owed exactly while
+        ``_write_generation`` runs ahead of ``_refreshed_generation``, so a
+        commit of an idle namespace is a full no-op rather than a broadcast
+        round trip that publishes nothing of this process's.
+
+        Three rules, and a change here must keep all three:
+
+        * **Settle the debt only after a refresh returns.** A raise leaves the
+          counters apart so the next commit retries. Clearing on a path that
+          did not refresh strands written rows outside every search-based
+          reader, with nothing in this process that would ever notice. The
+          missing-index short-circuit below is that rule, not an exception to
+          it: it returns without refreshing, so the debt stands and is paid
+          once the index is back.
+        * **Never gate on what THIS call's flush wrote.** The debt belongs to
+          the storage, not the call: a commit with an empty buffer must still
+          refresh when an earlier refresh failed. That compensation is the one
+          thing the old unconditional refresh was really providing.
+        * **Sample the generation before the refresh, record it after.** A
+          concurrent flush that lands mid-refresh may or may not be covered by
+          it, so recording the sampled value leaves the debt standing and the
+          next commit refreshes again. Recording the live counter instead
+          would retire a write this refresh never saw -- which is why one
+          dirty bool is not enough.
+
+        Readers that need to see writes through ``search`` refresh at their own
+        call site instead (``is_empty``, ``_iter_raw_docs``); what that moves
+        and what it costs is in *What the OpenSearch KV refresh actually
+        protects*, ``docs/design/PurgeRecoveryContract.md``.
+        """
+        await self._flush_pending_kv_ops()
+        owed = self._write_generation
+        if not self._index_ready or owed == self._refreshed_generation:
+            return
+        try:
+            await self.client.indices.refresh(index=self._index_name)
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return
             raise
+        self._refreshed_generation = owed
 
     async def is_empty(self) -> bool:
         """Return True if the index (plus pending buffer) contains no docs.
@@ -1647,12 +1740,19 @@ class OpenSearchKVStorage(BaseKVStorage):
         returned True" case. Pending deletes alone are not enough to flip
         the answer because we cannot tell whether other persisted rows
         survive without flushing.
+
+        ``count`` is search-based, so it refreshes first. The answer decides
+        whether ``_migrate_chunk_tracking_storage`` runs a migration at
+        startup, which makes a stale read the expensive direction here.
         """
         async with self._flush_lock:
             if self._pending_upserts:
                 return False
             index_ready = self._index_ready
         if not index_ready:
+            return True
+        await self._refresh_for_search()
+        if not self._index_ready:
             return True
         try:
             response = await self.client.count(index=self._index_name)
