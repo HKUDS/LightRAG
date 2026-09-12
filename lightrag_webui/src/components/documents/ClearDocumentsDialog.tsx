@@ -95,38 +95,45 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
       // separate endpoint that clears it without one.
       const result = await clearDocuments(clearCacheOption)
 
-      // `partial_success` means the documents WERE cleared -- some storage,
-      // some input file or the opted-in cache drop reported an error, and the
-      // server names them in `message`. Only `busy` (nothing ran) and `fail`
-      // (every storage drop failed) leave the documents in place. Treating
-      // partial_success as a failure would keep the dialog open over a stale
-      // list, telling the user the documents are still there when they are
-      // not -- so it refreshes and closes like a success, with the errors
-      // surfaced as a warning instead of a success toast.
+      // `busy` means nothing ran and `fail` means every storage drop failed,
+      // so in both the documents are untouched and the list on screen is
+      // still accurate: report and stop.
       if (result.status !== 'success' && result.status !== 'partial_success') {
         toast.error(t('documentPanel.clearDocuments.failed', { message: result.message }))
         setConfirmText('')
         return
       }
 
-      if (result.status === 'partial_success') {
-        toast.warning(
-          t('documentPanel.clearDocuments.partialSuccess', { message: result.message })
-        )
-      } else {
-        toast.success(
-          clearCacheOption
-            ? t('documentPanel.clearDocuments.successWithCache')
-            : t('documentPanel.clearDocuments.success')
-        )
-      }
-
-      // Refresh document list if provided
+      // Past this point at least one storage was dropped, so the list on
+      // screen is stale whatever else happened -- refresh it before deciding
+      // what to do with the dialog.
       if (onDocumentsCleared) {
         onDocumentsCleared().catch(console.error)
       }
 
-      // Close dialog after all operations succeed
+      // `partial_success` does NOT prove the documents are gone. The server
+      // returns it whenever any drop, input file or the opted-in cache drop
+      // reported an error while at least one drop succeeded -- so a failed
+      // `doc_status` or `full_docs` drop lands here with document rows still
+      // in place. Neither claim it succeeded nor close over it: the list is
+      // refreshed behind the warning, and the dialog stays open so a retry is
+      // one confirmation away rather than a reopen. The server names what
+      // failed in `message`.
+      if (result.status === 'partial_success') {
+        toast.warning(
+          t('documentPanel.clearDocuments.partialSuccess', { message: result.message })
+        )
+        setConfirmText('')
+        return
+      }
+
+      toast.success(
+        clearCacheOption
+          ? t('documentPanel.clearDocuments.successWithCache')
+          : t('documentPanel.clearDocuments.success')
+      )
+
+      // Close the dialog only on an unqualified success.
       handleOpenChange(false)
     } catch (err) {
       toast.error(t('documentPanel.clearDocuments.error', { error: errorMessage(err) }))

@@ -87,11 +87,10 @@ describe('ClearDocumentsDialog', () => {
     expect('clearCache' in realApiModule).toBe(false)
   })
 
-  // The documents ARE gone on partial_success -- a storage, an input file or
-  // the opted-in cache drop reported an error. Reporting that as a failed
-  // clear leaves the dialog open over a list that no longer reflects the
-  // server, telling the user their documents survived when they did not.
-  test('refreshes and closes on partial_success', async () => {
+  // At least one storage was dropped, so the list on screen is stale
+  // whatever else failed. Not refreshing would leave the user looking at
+  // documents the server no longer has.
+  test('refreshes on partial_success', async () => {
     nextResult = {
       status: 'partial_success',
       message: 'Cleared documents with some errors. Deleted 0 files.'
@@ -100,6 +99,28 @@ describe('ClearDocumentsDialog', () => {
     await openAndConfirm({ checkCache: true })
 
     await waitFor(() => expect(onDocumentsCleared).toHaveBeenCalledTimes(1))
+  })
+
+  // ...but partial_success does NOT prove the documents are gone: the server
+  // returns it whenever one drop failed and another succeeded, so a failed
+  // `doc_status` or `full_docs` drop lands here with rows still in place.
+  // Closing over that would present an unfinished destructive operation as
+  // finished.
+  test('keeps the dialog open on partial_success so a retry is one step', async () => {
+    nextResult = {
+      status: 'partial_success',
+      message: 'Cleared documents with some errors. Deleted 0 files.'
+    }
+
+    await openAndConfirm({ checkCache: true })
+
+    await waitFor(() => expect(onDocumentsCleared).toHaveBeenCalledTimes(1))
+    expect(screen.queryAllByPlaceholderText(/type yes to confirm/i).length).toBe(1)
+  })
+
+  test('closes only on an unqualified success', async () => {
+    await openAndConfirm({ checkCache: false })
+
     await waitFor(() =>
       expect(screen.queryAllByPlaceholderText(/type yes to confirm/i).length).toBe(0)
     )

@@ -16,6 +16,10 @@ from lightrag.lightrag import LightRAG
 pytestmark = pytest.mark.offline
 
 
+async def _raising_commit():
+    raise RuntimeError("post-drop bookkeeping failed")
+
+
 class _CacheStorage:
     def __init__(self, drop_result=None, drop_error: Exception | None = None):
         self.drop_result = drop_result or {"status": "success", "message": "dropped"}
@@ -44,12 +48,28 @@ class _FakeRag:
         self.text_chunks = None
 
 
-async def test_aclear_cache_commits_on_a_successful_drop():
+async def test_aclear_cache_leaves_the_commit_to_drop():
+    """``BaseKVStorage.drop`` requires the implementation to persist
+    immediately, so there is no second commit to make -- and none to fail. A
+    redundant ``index_done_callback`` here could report a cache that is
+    durably cleared as one that was not."""
     cache = _CacheStorage()
     await _FakeRag(cache).aclear_cache()
 
     assert cache.drop_calls == 1
-    assert cache.commit_calls == 1
+    assert cache.commit_calls == 0
+
+
+async def test_a_durable_drop_is_never_reported_as_failed():
+    """The mirror of the misreport below: a storage whose own post-drop
+    bookkeeping is unhappy must not turn a cleared cache into a failure the
+    caller reports to the operator."""
+    cache = _CacheStorage()
+    cache.index_done_callback = _raising_commit  # type: ignore[method-assign]
+
+    await _FakeRag(cache).aclear_cache()  # must not raise
+
+    assert cache.drop_calls == 1
 
 
 async def test_aclear_cache_raises_when_drop_reports_an_error():
@@ -58,8 +78,6 @@ async def test_aclear_cache_raises_when_drop_reports_an_error():
     with pytest.raises(RuntimeError, match="backend down"):
         await _FakeRag(cache).aclear_cache()
 
-    # The commit is skipped: there is nothing to publish, and reporting the
-    # flush as done would compound the misreport.
     assert cache.commit_calls == 0
 
 

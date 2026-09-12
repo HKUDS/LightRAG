@@ -952,9 +952,21 @@ async def test_clearing_the_cache_holds_the_fence_across_the_drop(tmp_path):
             async def drop(self):
                 # Stands for drop's lock-released window before its commit.
                 in_the_gap.set()
-                await asyncio.sleep(0)
-                await asyncio.sleep(0)
+                # A real sleep rather than a bare yield: the writer has to get
+                # a genuine chance to take an UNCONTENDED fence here, or the
+                # test would pass for want of scheduling rather than because
+                # the fence held. With the fence in place the writer blocks
+                # for this whole window; without it, it wins the race.
+                await asyncio.sleep(0.05)
                 order.append("drop")
+                # ``BaseKVStorage.drop`` requires the implementation to
+                # persist immediately, and ``JsonKVStorage.drop`` does it
+                # exactly here -- inside its own drop, after releasing the
+                # namespace lock. ``aclear_cache`` adds no second commit of
+                # its own (one would be redundant, and propagating ITS failure
+                # would report a durably cleared cache as a failed one), so
+                # the publish point the fence has to cover is this one.
+                await self.index_done_callback()
                 return {"status": "success"}
 
             async def index_done_callback(self):

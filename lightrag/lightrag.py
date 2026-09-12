@@ -5474,19 +5474,26 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             else nullcontext()
         ):
             result = await self.llm_response_cache.drop()
-            # ``drop`` reports a non-raising failure as {"status": "error"};
-            # the dict is truthy either way, so check the status rather than
-            # the return value. Raise instead of logging: the caller decides
-            # what a half-cleared cache means for its operation, and a drop
-            # reported as done while rows remain is exactly the silent
-            # failure this must not produce.
-            if isinstance(result, dict) and result.get("status") != "success":
-                raise RuntimeError(
-                    "Failed to clear the LLM response cache: "
-                    f"{result.get('message', 'unknown error')}"
-                )
 
-            await self.llm_response_cache.index_done_callback()
+        # ``drop``'s own result is the whole answer, and no commit follows it.
+        # ``BaseKVStorage.drop`` requires the implementation to persist
+        # immediately (``JsonKVStorage.drop`` calls ``index_done_callback``
+        # itself, inside its try, so a commit failure is already reported as
+        # {"status": "error"}). A second commit here would be redundant, and
+        # propagating ITS failure would report a cache that is durably cleared
+        # as one that was not -- the misreport *Consistency without
+        # transactions* rules out.
+        #
+        # A non-raising failure comes back as {"status": "error"}; the dict is
+        # truthy either way, so check the status rather than the return value.
+        # Raise instead of logging: the caller decides what a half-cleared
+        # cache means for its operation, and a drop reported as done while
+        # rows remain is the mirror silent failure.
+        if isinstance(result, dict) and result.get("status") != "success":
+            raise RuntimeError(
+                "Failed to clear the LLM response cache: "
+                f"{result.get('message', 'unknown error')}"
+            )
 
         logger.info("Cleared all cache")
 
