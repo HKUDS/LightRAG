@@ -1504,6 +1504,384 @@ class TestKVStorageBatching:
 
 
 # ---------------------------------------------------------------------------
+# KV refresh gating
+# ---------------------------------------------------------------------------
+
+
+class TestKVRefreshGating:
+    """The commit-side refresh is owed, not unconditional (issue #3923).
+
+    ``index_done_callback`` used to refresh on every call, including a commit
+    of an idle namespace that published nothing of this process's. The gate
+    replaces that with a debt: a flush that issues writes owes a refresh, and
+    only a refresh that returned settles it. The two readers that go through
+    ``search`` refresh at their own call site instead.
+    """
+
+    def _make(self, global_config, embed_func, workspace="test"):
+        return OpenSearchKVStorage(
+            namespace="text_chunks",
+            global_config=global_config,
+            embedding_func=embed_func,
+            workspace=workspace,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_commit_that_wrote_refreshes(
+        self, global_config, embed_func, mock_client
+    ):
+        """Baseline: the gate must not cost the refresh a real write needs."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"k1": {"content": "v1"}})
+                await s.index_done_callback()
+                assert mock_client.indices.refresh.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_an_idle_commit_does_not_refresh(
+        self, global_config, embed_func, mock_client
+    ):
+        """The saving itself: a commit with an empty buffer is a full no-op.
+
+        This is what makes the ordered ``text_chunks`` -> ``llm_response_cache``
+        pair free on the query path, where a query-only worker never has a
+        chunk operation buffered.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"k1": {"content": "v1"}})
+                await s.index_done_callback()
+                assert mock_client.indices.refresh.await_count == 1
+
+                # Nothing buffered since: no bulk, and no refresh either.
+                await s.index_done_callback()
+                await s.index_done_callback()
+                assert mock_client.indices.refresh.await_count == 1
+                assert mock_bulk.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failed_refresh_is_retried_by_the_next_idle_commit(
+        self, global_config, embed_func, mock_client
+    ):
+        """The compensation the unconditional refresh was really providing.
+
+        The rows are written by the time the refresh runs, so a refresh that
+        raises leaves them outside every search-based reader. Gating on what
+        THIS call's flush wrote would strand them: the buffer is empty on every
+        later commit, so nothing would ever retry it. The debt belongs to the
+        storage, and only a refresh that returned settles it.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                mock_client.indices.refresh = AsyncMock(
+                    side_effect=OpenSearchException("transient refresh failure")
+                )
+                await s.upsert({"k1": {"content": "v1"}})
+                with pytest.raises(OpenSearchException):
+                    await s.index_done_callback()
+                # The write landed; the refresh did not.
+                assert mock_bulk.await_count == 1
+
+                mock_client.indices.refresh = AsyncMock()
+                # An IDLE commit -- nothing buffered -- must still pay the debt.
+                await s.index_done_callback()
+                assert mock_client.indices.refresh.await_count == 1
+                assert mock_bulk.await_count == 1
+
+                # And once paid, it is not paid twice.
+                await s.index_done_callback()
+                assert mock_client.indices.refresh.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_write_landing_during_a_refresh_is_refreshed_again(
+        self, global_config, embed_func, mock_client
+    ):
+        """Sample the generation before the refresh, record it after.
+
+        A flush that lands while the refresh is in flight may or may not be
+        covered by it. Recording the live counter afterwards would retire a
+        write this refresh never saw -- which is exactly what a single dirty
+        bool cleared after the call would do.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+
+                refresh_entered = asyncio.Event()
+                release_refresh = asyncio.Event()
+
+                async def blocking_refresh(**kwargs):
+                    refresh_entered.set()
+                    await release_refresh.wait()
+
+                mock_client.indices.refresh = AsyncMock(side_effect=blocking_refresh)
+
+                await s.upsert({"k1": {"content": "v1"}})
+                commit = asyncio.create_task(s.index_done_callback())
+                await refresh_entered.wait()
+
+                # A second document's writes land while the refresh is running.
+                await s.upsert({"k2": {"content": "v2"}})
+                await s._flush_pending_kv_ops()
+
+                release_refresh.set()
+                await commit
+                assert mock_client.indices.refresh.await_count == 1
+
+                # The debt from the mid-refresh write still stands, so the next
+                # commit refreshes even though nothing is buffered.
+                await s.index_done_callback()
+                assert mock_client.indices.refresh.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_flush_that_raised_still_owes_a_refresh(
+        self, global_config, embed_func, mock_client
+    ):
+        """A bulk that raises may have written its earlier chunks.
+
+        ``async_bulk`` streams, so a transport error is not evidence that
+        nothing landed -- which is why the generation is bumped BEFORE the
+        bulk rather than from its reported success count. Counting instead
+        would owe nothing here, and the rows the bulk did write would stay
+        outside every search-based reader once the aborting pipeline discards
+        the buffer that would otherwise have resent them.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.side_effect = OpenSearchException("bulk died mid-stream")
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"k1": {"content": "v1"}})
+                with pytest.raises(OpenSearchException):
+                    await s.index_done_callback()
+                assert mock_client.indices.refresh.await_count == 0
+
+                # The pipeline aborts and drops the buffer, so nothing is left
+                # to resend the rows that did land. The debt must survive that.
+                await s.drop_pending_index_ops()
+                mock_bulk.side_effect = None
+                mock_bulk.return_value = (0, [])
+                await s.index_done_callback()
+                assert mock_client.indices.refresh.await_count == 1
+                assert mock_bulk.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_missing_index_defers_the_debt_rather_than_settling_it(
+        self, global_config, embed_func, mock_client
+    ):
+        """A missing index is not a receipt: the debt is paid once it is back.
+
+        ``_mark_index_missing`` is reached from a dozen call sites and most are
+        read paths, which cannot know whether a streaming bulk is still
+        landing rows -- so none of them may retire the commit path's
+        obligation. While the index is gone nothing is refreshed at all (the
+        readiness check short-circuits ahead of the debt check), and the first
+        commit that finds it back pays the debt once. That single over-count
+        is the one the flush's generation bump already accepts.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                mock_client.indices.refresh = AsyncMock(
+                    side_effect=OpenSearchException("transient refresh failure")
+                )
+                await s.upsert({"k1": {"content": "v1"}})
+                with pytest.raises(OpenSearchException):
+                    await s.index_done_callback()
+
+                await s.drop()
+                mock_client.indices.refresh = AsyncMock()
+
+                # Index gone: the commit refreshes nothing, but the counters
+                # stay apart.
+                await s.index_done_callback()
+                assert mock_client.indices.refresh.await_count == 0
+
+                # Index back, buffer still empty: the deferred debt is paid,
+                # and paid only once.
+                await s._ensure_index_ready()
+                await s.index_done_callback()
+                await s.index_done_callback()
+                assert mock_client.indices.refresh.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_read_seeing_a_missing_index_does_not_settle_the_debt(
+        self, global_config, embed_func, mock_client
+    ):
+        """A read path cannot know what a streaming bulk is still writing.
+
+        ``get_by_id`` releases ``_flush_lock`` before its mget, so its
+        ``index_not_found`` can land while a flush's bulk is in flight -- and
+        that bulk auto-creates the index and goes on writing rows. If the read
+        settled the debt on the commit path's behalf, those rows would never
+        be refreshed by this process: the generation was bumped before the
+        bulk, and the buffer is empty on every later commit, so nothing would
+        notice. Only the reader's own view is invalidated here.
+        """
+        mget_entered = asyncio.Event()
+        release_mget = asyncio.Event()
+        bulk_entered = asyncio.Event()
+        release_bulk = asyncio.Event()
+
+        async def blocking_missing_mget(**kwargs):
+            mget_entered.set()
+            await release_mget.wait()
+            raise NotFoundError(404, "index_not_found_exception", {})
+
+        mock_client.mget = AsyncMock(side_effect=blocking_missing_mget)
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+
+                async def blocking_bulk(*args, **kwargs):
+                    bulk_entered.set()
+                    await release_bulk.wait()
+                    return (1, [])
+
+                mock_bulk.side_effect = blocking_bulk
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"k1": {"content": "v1"}})
+
+                # The read is past the lock and awaiting its mget.
+                read = asyncio.create_task(s.get_by_id("absent-id"))
+                await mget_entered.wait()
+
+                # The flush bumps the generation and its bulk starts writing.
+                commit = asyncio.create_task(s.index_done_callback())
+                await bulk_entered.wait()
+
+                # The index goes missing under the reader mid-bulk.
+                release_mget.set()
+                assert await read is None
+                assert s._index_ready is False
+
+                release_bulk.set()
+                await commit
+                # Index unavailable: this commit refreshes nothing.
+                assert mock_client.indices.refresh.await_count == 0
+
+                # The rows the bulk wrote recreated the index, so the deferred
+                # debt must still be there to pay.
+                await s._ensure_index_ready()
+                await s.index_done_callback()
+                assert mock_client.indices.refresh.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_is_empty_refreshes_before_counting(
+        self, global_config, embed_func, mock_client
+    ):
+        """``count`` is search-based, so the read publishes first.
+
+        The answer decides whether ``_migrate_chunk_tracking_storage`` runs a
+        migration at startup. Refreshing here is strictly stronger than the
+        commit-side refresh it replaces: it publishes the index, so it covers
+        writes from processes this one knows nothing about.
+        """
+        order: list[str] = []
+
+        async def record_refresh(**kwargs):
+            order.append("refresh")
+
+        async def record_count(**kwargs):
+            order.append("count")
+            return {"count": 0}
+
+        mock_client.indices.refresh = AsyncMock(side_effect=record_refresh)
+        mock_client.count = AsyncMock(side_effect=record_count)
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            assert await s.is_empty() is True
+            assert order == ["refresh", "count"]
+
+    @pytest.mark.asyncio
+    async def test_is_empty_survives_a_failed_refresh(
+        self, global_config, embed_func, mock_client
+    ):
+        """Best effort: a failed refresh degrades to the pre-refresh view.
+
+        It must never turn the read into an error -- that is what the reader
+        got unconditionally before this refresh existed.
+        """
+        mock_client.indices.refresh = AsyncMock(
+            side_effect=OpenSearchException("refresh unavailable")
+        )
+        mock_client.count = AsyncMock(return_value={"count": 3})
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            assert await s.is_empty() is False
+            mock_client.count.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_is_empty_reports_empty_when_the_refresh_finds_no_index(
+        self, global_config, embed_func, mock_client
+    ):
+        """A missing index is a confirmed-empty answer, not a count attempt."""
+        mock_client.indices.refresh = AsyncMock(
+            side_effect=NotFoundError(404, "index_not_found_exception", {})
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            assert await s.is_empty() is True
+            mock_client.count.assert_not_awaited()
+            assert s._index_ready is False
+
+    @pytest.mark.asyncio
+    async def test_iter_raw_docs_refreshes_before_opening_the_pit(
+        self, global_config, embed_func, mock_client
+    ):
+        """The PIT freezes the view, so an unrefreshed row is missed by every page."""
+        order: list[str] = []
+
+        async def record_refresh(**kwargs):
+            order.append("refresh")
+
+        async def record_create_pit(**kwargs):
+            order.append("create_pit")
+            return {"pit_id": "pit-1"}
+
+        mock_client.indices.refresh = AsyncMock(side_effect=record_refresh)
+        mock_client.create_pit = AsyncMock(side_effect=record_create_pit)
+        mock_client.search = AsyncMock(return_value={"hits": {"hits": []}})
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            async for _ in s._iter_raw_docs(batch_size=10):
+                pass
+            assert order[:2] == ["refresh", "create_pit"]
+
+
+# ---------------------------------------------------------------------------
 # DocStatus Storage
 # ---------------------------------------------------------------------------
 
