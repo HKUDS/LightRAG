@@ -5444,6 +5444,17 @@ async def _apply_token_truncation(
 ) -> dict[str, Any]:
     """
     Apply token-based truncation to entities and relations for LLM efficiency.
+
+    Returns ``entities_context`` / ``relations_context`` (the records handed to
+    the prompt) plus ``filtered_entities`` / ``filtered_relations`` (the matching
+    original records handed to chunk selection).
+
+    Ordering rule for any selector added here: the ``*_context`` lists are this
+    stage's output and the only importance ranking downstream sees. The
+    ``filtered_*`` lists MUST follow that same order -- stage 3 attributes a
+    shared chunk to the earlier-positioned record and allocates chunk quota by
+    list position -- so a selector that reorders must not leave the
+    ``filtered_*`` lists in stage-1 retrieval order.
     """
     tokenizer = global_config.get("tokenizer")
     if not tokenizer:
@@ -5484,8 +5495,11 @@ async def _apply_token_truncation(
         if isinstance(created_at, (int, float)):
             created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
 
-        # Store mapping from entity name to original data
-        entity_id_to_original[entity_name] = entity
+        # Store mapping from entity name to original data.
+        # First occurrence wins: the filtered rebuild below resolves records
+        # through this map, and duplicate names must keep the record that was
+        # retrieved first.
+        entity_id_to_original.setdefault(entity_name, entity)
 
         entities_context.append(
             {
@@ -5510,9 +5524,10 @@ async def _apply_token_truncation(
         else:
             entity1, entity2 = relation.get("src_id"), relation.get("tgt_id")
 
-        # Store mapping from relation pair to original data
+        # Store mapping from relation pair to original data.
+        # First occurrence wins, for the same reason as entities above.
         relation_key = (entity1, entity2)
-        relation_id_to_original[relation_key] = relation
+        relation_id_to_original.setdefault(relation_key, relation)
 
         relations_context.append(
             {
@@ -5567,34 +5582,39 @@ async def _apply_token_truncation(
         f"After truncation: {len(entities_context)} entities, {len(relations_context)} relations"
     )
 
-    # Create filtered original data based on truncated context
+    # Create filtered original data based on truncated context.
+    #
+    # Walk the *_context lists (this stage's own output order) and resolve each
+    # record through the pre-truncation maps. Stage 2's order is the single
+    # source of truth for downstream importance: stage 3 deduplicates chunk
+    # attribution by first occurrence and hands the list to
+    # pick_by_weighted_polling, whose quota decreases with list position. Do NOT
+    # rebuild these by filtering final_entities / final_relations -- that
+    # reimposes stage-1 retrieval order and silently discards any reordering a
+    # stage-2 selector (e.g. a reranker) performed.
     filtered_entities = []
     filtered_entity_id_to_original = {}
-    if entities_context:
-        final_entity_names = {e["entity"] for e in entities_context}
-        seen_nodes = set()
-        for entity in final_entities:
-            name = entity.get("entity_name")
-            if name in final_entity_names and name not in seen_nodes:
-                filtered_entities.append(entity)
-                filtered_entity_id_to_original[name] = entity
-                seen_nodes.add(name)
+    for entity_context in entities_context:
+        name = entity_context.get("entity")
+        if name in filtered_entity_id_to_original:
+            continue
+        original = entity_id_to_original.get(name)
+        if original is None:
+            continue
+        filtered_entities.append(original)
+        filtered_entity_id_to_original[name] = original
 
     filtered_relations = []
     filtered_relation_id_to_original = {}
-    if relations_context:
-        final_relation_pairs = {(r["entity1"], r["entity2"]) for r in relations_context}
-        seen_edges = set()
-        for relation in final_relations:
-            src, tgt = relation.get("src_id"), relation.get("tgt_id")
-            if src is None or tgt is None:
-                src, tgt = relation.get("src_tgt", (None, None))
-
-            pair = (src, tgt)
-            if pair in final_relation_pairs and pair not in seen_edges:
-                filtered_relations.append(relation)
-                filtered_relation_id_to_original[pair] = relation
-                seen_edges.add(pair)
+    for relation_context in relations_context:
+        pair = (relation_context.get("entity1"), relation_context.get("entity2"))
+        if pair in filtered_relation_id_to_original:
+            continue
+        original = relation_id_to_original.get(pair)
+        if original is None:
+            continue
+        filtered_relations.append(original)
+        filtered_relation_id_to_original[pair] = original
 
     return {
         "entities_context": entities_context,
