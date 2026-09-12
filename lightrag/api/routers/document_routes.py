@@ -5771,7 +5771,9 @@ def create_document_routes(
                     "Also drop the whole LLM response cache. Off by default: "
                     "the cache survives a clear so re-adding the same "
                     "documents can reuse the extraction results already paid "
-                    "for."
+                    "for. Honored only when every storage drop succeeds; a "
+                    "partial drop preserves the cache, since the surviving "
+                    "documents would otherwise repay every extraction call."
                 )
             ),
         ] = False,
@@ -5783,7 +5785,8 @@ def create_document_routes(
         It uses the storage drop methods to properly clean up all data and removes all files
         from the input directory. The __parsed__ directory is preserved unless
         delete_parsed_files=True is passed, and the LLM response cache is preserved
-        unless clear_llm_cache=True is passed.
+        unless clear_llm_cache=True is passed AND every storage drop succeeded
+        (a partial drop preserves it either way -- see below).
 
         **Clearing the LLM cache is only available here**, folded into this
         endpoint rather than exposed as its own route, because
@@ -5795,6 +5798,13 @@ def create_document_routes(
         ``llm_cache_list`` naming rows that no longer exist. Running it here
         puts it inside the destructive reservation that already refuses while
         the pipeline is busy, and leaves one destructive path to reason about.
+
+        For the same reason the cache drop is skipped whenever ANY storage
+        drop failed, not only when they all did: a surviving ``text_chunks``
+        row still names its cache rows through ``llm_cache_list`` and its
+        document can still be reprocessed, so clearing the cache beside it
+        inflicts exactly the harm above on whatever survived. The response
+        says the cache was preserved and why; re-run the clear to remove it.
 
         Top-level input files are always deleted unconditionally: a later
         /documents/scan would otherwise re-enqueue them. The __parsed__
@@ -6034,17 +6044,40 @@ def create_document_routes(
             # endpoint so it inherits the destructive reservation that
             # ``llm_response_cache.drop()`` requires its caller to hold.
             #
-            # After the storage drops, not before: on a total drop failure
-            # the early return above aborts and the cache is still intact, so
-            # the documents that survived keep the extraction results they
-            # paid for. The reverse order would burn them for nothing. The
-            # residue the chosen order accepts is the mirror one -- a cache
-            # drop that fails after the documents are gone leaves cache rows
-            # no chunk references any more. They are unreachable rather than
-            # dangling, cost only storage, and the next clear (or a re-add of
-            # the same content, which re-keys onto them) disposes of them.
+            # After the storage drops, and only when EVERY one of them
+            # succeeded -- not merely when they did not all fail. A surviving
+            # ``text_chunks`` row still names its cache rows through
+            # ``llm_cache_list``, and its document can still be reprocessed,
+            # so dropping the cache next to it would both break those
+            # references en masse and re-bill every extraction call the
+            # document already paid for. That is the exact harm this endpoint
+            # exists to prevent; a partial drop is not a licence to inflict it
+            # on whatever survived.
+            #
+            # So the cache is preserved whenever any storage drop failed, and
+            # the operator re-runs the clear. That residue is the acceptable
+            # direction under *Consistency without transactions*: retaining
+            # rows that could have been dropped costs only storage and is
+            # disposed of by the next clear, while burning them loses paid-for
+            # work outright. The response says which happened.
+            #
+            # The mirror residue, when every drop DID succeed but the cache
+            # drop itself fails, is likewise harmless: the cache rows are then
+            # unreachable rather than dangling -- no chunk row survives to
+            # name them -- and the next clear, or a re-add of the same content
+            # that re-keys onto them, disposes of them.
             cache_cleared_message = ""
-            if clear_llm_cache:
+            if clear_llm_cache and storage_error_count > 0:
+                cache_cleared_message = (
+                    " LLM cache preserved: a storage drop failed, and the "
+                    "surviving documents would have to repay every extraction "
+                    "call. Re-run the clear to remove it."
+                )
+                append_pipeline_history(
+                    pipeline_status,
+                    "Skipped the LLM cache drop: a storage drop failed",
+                )
+            elif clear_llm_cache:
                 append_pipeline_history(
                     pipeline_status, "Starting to clear the LLM response cache"
                 )

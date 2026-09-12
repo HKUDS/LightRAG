@@ -34,12 +34,29 @@ class _NoopStorage:
         return {"status": "success", "message": "data dropped"}
 
 
+class _FailingStorage:
+    namespace = "failing"
+
+    async def drop(self):
+        return {"status": "error", "message": "backend refused the drop"}
+
+
 class _ClearRag:
-    def __init__(self, workspace: str, cache_error: Exception | None = None):
+    def __init__(
+        self,
+        workspace: str,
+        cache_error: Exception | None = None,
+        failing_chunks: bool = False,
+    ):
         self.workspace = workspace
         storage = _NoopStorage()
         storage.workspace = workspace
-        self.text_chunks = storage
+        if failing_chunks:
+            chunks = _FailingStorage()
+            chunks.workspace = workspace
+            self.text_chunks = chunks
+        else:
+            self.text_chunks = storage
         self.full_docs = storage
         self.full_entities = storage
         self.full_relations = storage
@@ -201,3 +218,43 @@ async def test_standalone_clear_cache_route_is_gone(tmp_path):
 
     assert "/clear_cache" not in paths
     assert "clear_cache" not in names
+
+
+async def test_a_partial_storage_drop_preserves_the_llm_cache(tmp_path):
+    """A surviving ``text_chunks`` row still names its cache rows through
+    ``llm_cache_list``, and its document can still be reprocessed. Dropping
+    the cache beside it would break those references en masse and re-bill
+    every extraction call the document already paid for -- the exact harm
+    folding this capability in here exists to prevent. Guarding only the
+    TOTAL-failure case would inflict it on whatever survived."""
+    workspace = f"clear-cache-partial-drop-{uuid4().hex[:8]}"
+    await _init_workspace(workspace)
+
+    rag = _ClearRag(workspace, failing_chunks=True)
+    endpoint = _clear_endpoint(rag, tmp_path)
+
+    response = await endpoint(clear_llm_cache=True)
+
+    assert response.status == "partial_success"
+    assert rag.aclear_cache_calls == 0
+    assert "LLM cache preserved" in response.message
+    # The operator has to be told it is still there, and what to do about it.
+    assert "Re-run the clear" in response.message
+
+
+async def test_the_preserved_cache_is_dropped_once_every_storage_succeeds(tmp_path):
+    """The residue heals: the skip is a deferral, not a refusal."""
+    workspace = f"clear-cache-partial-retry-{uuid4().hex[:8]}"
+    await _init_workspace(workspace)
+
+    failing = _ClearRag(workspace, failing_chunks=True)
+    endpoint = _clear_endpoint(failing, tmp_path)
+    assert (await endpoint(clear_llm_cache=True)).status == "partial_success"
+    assert failing.aclear_cache_calls == 0
+
+    healthy = _ClearRag(workspace)
+    endpoint = _clear_endpoint(healthy, tmp_path)
+    response = await endpoint(clear_llm_cache=True)
+
+    assert response.status == "success"
+    assert healthy.aclear_cache_calls == 1
