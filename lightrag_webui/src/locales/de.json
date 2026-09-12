@@ -63,7 +63,7 @@
       "timeout": "Löschvorgang hat das Zeitlimit überschritten, bitte versuchen Sie es erneut",
       "success": "Dokumente erfolgreich gelöscht",
       "successWithCache": "Dokumente und LLM-Cache erfolgreich gelöscht",
-      "partialSuccess": "Dokumente mit einigen Fehlern gelöscht:\n{{message}}",
+      "partialSuccess": "Löschvorgang mit Fehlern abgeschlossen:\n{{message}}",
       "failed": "Dokumente löschen fehlgeschlagen:\n{{message}}",
       "error": "Dokumente löschen fehlgeschlagen:\n{{error}}"
     },

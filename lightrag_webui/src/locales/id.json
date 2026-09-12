@@ -63,7 +63,7 @@
       "timeout": "Waktu operasi pembersihan habis, coba lagi",
       "success": "Dokumen berhasil dibersihkan",
       "successWithCache": "Dokumen dan cache LLM berhasil dibersihkan",
-      "partialSuccess": "Dokumen dibersihkan dengan beberapa kesalahan:\n{{message}}",
+      "partialSuccess": "Operasi pembersihan selesai dengan kesalahan:\n{{message}}",
       "failed": "Gagal Membersihkan Dokumen:\n{{message}}",
       "error": "Gagal Membersihkan Dokumen:\n{{error}}"
     },

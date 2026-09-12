@@ -16,7 +16,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from 'bu
 import { cleanup, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-import { renderWithProviders } from '@/test/render'
+import { renderWithProviders, testI18n } from '@/test/render'
 
 let realApiModule: Record<string, unknown>
 let ClearDocumentsDialog: typeof import('./ClearDocumentsDialog').default
@@ -106,6 +106,23 @@ describe('ClearDocumentsDialog', () => {
   // `doc_status` or `full_docs` drop lands here with rows still in place.
   // Closing over that would present an unfinished destructive operation as
   // finished.
+  // The toast must not assert the documents were cleared -- on a failed
+  // `doc_status` or `full_docs` drop they are still there.
+  test('does not claim the documents were cleared on partial_success', async () => {
+    nextResult = {
+      status: 'partial_success',
+      message: 'Cleared documents with some errors. Deleted 0 files.'
+    }
+
+    await openAndConfirm({ checkCache: true })
+
+    await waitFor(() => expect(onDocumentsCleared).toHaveBeenCalledTimes(1))
+    const partial = testI18n.t('documentPanel.clearDocuments.partialSuccess', {
+      message: ''
+    })
+    expect(/cleared|deleted|removed/i.test(partial)).toBe(false)
+  })
+
   test('keeps the dialog open on partial_success so a retry is one step', async () => {
     nextResult = {
       status: 'partial_success',
