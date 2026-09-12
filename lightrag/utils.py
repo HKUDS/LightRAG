@@ -5493,6 +5493,13 @@ def get_extract_cache_fence(text_chunks_storage) -> asyncio.Lock:
     lifetime is the storage's, and so both sides reach the same object without
     agreeing on a key. Created lazily with no await in between, so two
     coroutines cannot build two locks.
+
+    That placement carries a second precondition, alongside the one above:
+    **one ``LightRAG`` instance per workspace per process.** Two instances on
+    one workspace hold two storage objects over the same shared data, so they
+    would build two locks and fence nothing. Constructing them is neither
+    supported nor necessary — see *Writers are fenced out of the commit pair*
+    in ``docs/design/PurgeRecoveryContract.md``.
     """
     fence = getattr(text_chunks_storage, "_extract_cache_fence", None)
     if fence is None:
