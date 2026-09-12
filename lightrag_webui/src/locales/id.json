@@ -62,8 +62,7 @@
       "clearing": "Membersihkan...",
       "timeout": "Waktu operasi pembersihan habis, coba lagi",
       "success": "Dokumen berhasil dibersihkan",
-      "cacheCleared": "Cache berhasil dibersihkan",
-      "cacheClearFailed": "Gagal membersihkan cache:\n{{error}}",
+      "successWithCache": "Dokumen dan cache LLM berhasil dibersihkan",
       "failed": "Gagal Membersihkan Dokumen:\n{{message}}",
       "error": "Gagal Membersihkan Dokumen:\n{{error}}"
     },

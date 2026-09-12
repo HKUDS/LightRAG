@@ -1013,39 +1013,6 @@ class ForceResetRecoveryResponse(BaseModel):
     )
 
 
-class ClearCacheRequest(BaseModel):
-    """Request model for clearing cache
-
-    This model is kept for API compatibility but no longer accepts any parameters.
-    All cache will be cleared regardless of the request content.
-    """
-
-    model_config = ConfigDict(json_schema_extra={"example": {}})
-
-
-class ClearCacheResponse(BaseModel):
-    """Response model for cache clearing operation
-
-    Attributes:
-        status: Status of the clear operation
-        message: Detailed message describing the operation result
-    """
-
-    status: Literal["success", "fail"] = Field(
-        description="Status of the clear operation"
-    )
-    message: str = Field(description="Message describing the operation result")
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "status": "success",
-                "message": "Successfully cleared cache for modes: ['default', 'naive']",
-            }
-        }
-    )
-
-
 """Response model for document status
 
 Attributes:
@@ -5797,6 +5764,17 @@ def create_document_routes(
                 )
             ),
         ] = False,
+        clear_llm_cache: Annotated[
+            bool,
+            Query(
+                description=(
+                    "Also drop the whole LLM response cache. Off by default: "
+                    "the cache survives a clear so re-adding the same "
+                    "documents can reuse the extraction results already paid "
+                    "for."
+                )
+            ),
+        ] = False,
     ):
         """
         Clear all documents from the RAG system.
@@ -5804,7 +5782,19 @@ def create_document_routes(
         This endpoint deletes all documents, entities, relationships, and files from the system.
         It uses the storage drop methods to properly clean up all data and removes all files
         from the input directory. The __parsed__ directory is preserved unless
-        delete_parsed_files=True is passed.
+        delete_parsed_files=True is passed, and the LLM response cache is preserved
+        unless clear_llm_cache=True is passed.
+
+        **Clearing the LLM cache is only available here**, folded into this
+        endpoint rather than exposed as its own route, because
+        ``llm_response_cache.drop()`` states a caller contract it cannot enforce
+        itself: the caller must hold the pipeline ``busy`` reservation. A
+        standalone endpoint held nothing, so clearing mid-ingestion wiped the
+        extraction rows the in-flight chunks had already paid for (a later
+        reprocess re-bills every one of those LLM calls) and left those chunks'
+        ``llm_cache_list`` naming rows that no longer exist. Running it here
+        puts it inside the destructive reservation that already refuses while
+        the pipeline is busy, and leaves one destructive path to reason about.
 
         Top-level input files are always deleted unconditionally: a later
         /documents/scan would otherwise re-enqueue them. The __parsed__
@@ -6040,6 +6030,36 @@ def create_document_routes(
                 append_pipeline_history(pipeline_status, error_message)
                 return ClearDocumentsResponse(status="fail", message=error_message)
 
+            # Opt-in LLM cache drop, run here rather than from its own
+            # endpoint so it inherits the destructive reservation that
+            # ``llm_response_cache.drop()`` requires its caller to hold.
+            #
+            # After the storage drops, not before: on a total drop failure
+            # the early return above aborts and the cache is still intact, so
+            # the documents that survived keep the extraction results they
+            # paid for. The reverse order would burn them for nothing. The
+            # residue the chosen order accepts is the mirror one -- a cache
+            # drop that fails after the documents are gone leaves cache rows
+            # no chunk references any more. They are unreachable rather than
+            # dangling, cost only storage, and the next clear (or a re-add of
+            # the same content, which re-keys onto them) disposes of them.
+            cache_cleared_message = ""
+            if clear_llm_cache:
+                append_pipeline_history(
+                    pipeline_status, "Starting to clear the LLM response cache"
+                )
+                try:
+                    await rag.aclear_cache()
+                    cache_cleared_message = " Cleared the LLM response cache."
+                    append_pipeline_history(
+                        pipeline_status, "Successfully cleared the LLM response cache"
+                    )
+                except Exception as cache_error:
+                    error_msg = f"Error clearing the LLM response cache: {cache_error}"
+                    logger.error(error_msg)
+                    errors.append(error_msg)
+                    append_pipeline_history(pipeline_status, error_msg)
+
             # Log file deletion start
             append_pipeline_history(
                 pipeline_status, "Starting to delete files in input directory"
@@ -6124,13 +6144,13 @@ def create_document_routes(
             if errors:
                 final_message = (
                     f"Cleared documents with some errors. Deleted "
-                    f"{deleted_files_count} files.{parsed_dir_message}"
+                    f"{deleted_files_count} files.{parsed_dir_message}{cache_cleared_message}"
                 )
                 status = "partial_success"
             else:
                 final_message = (
                     f"All documents cleared successfully. Deleted "
-                    f"{deleted_files_count} files.{parsed_dir_message}"
+                    f"{deleted_files_count} files.{parsed_dir_message}{cache_cleared_message}"
                 )
                 status = "success"
 
@@ -6420,40 +6440,6 @@ def create_document_routes(
             # acquired (or the start helper's backstop already released it).
             if not handed_off:
                 await _release_destructive_busy(rag, destructive_token)
-
-    @router.post(
-        "/clear_cache",
-        response_model=ClearCacheResponse,
-        dependencies=[Depends(combined_auth)],
-    )
-    async def clear_cache(request: ClearCacheRequest):
-        """
-        Clear all cache data from the LLM response cache storage.
-
-        This endpoint clears all cached LLM responses regardless of mode.
-        The request body is accepted for API compatibility but is ignored.
-
-        Args:
-            request (ClearCacheRequest): The request body (ignored for compatibility).
-
-        Returns:
-            ClearCacheResponse: A response object containing the status and message.
-
-        Raises:
-            HTTPException: If an error occurs during cache clearing (500).
-        """
-        try:
-            # Call the aclear_cache method (no modes parameter)
-            await rag.aclear_cache()
-
-            # Prepare success message
-            message = "Successfully cleared all cache"
-
-            return ClearCacheResponse(status="success", message=message)
-        except Exception as e:
-            logger.error(f"Error clearing cache: {str(e)}")
-            logger.error(traceback.format_exc())
-            raise internal_server_error(e)
 
     @router.get(
         "/track_status/{track_id}",

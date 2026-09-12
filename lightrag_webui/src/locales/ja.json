@@ -62,8 +62,7 @@
       "clearing": "クリア中...",
       "timeout": "クリア操作がタイムアウトしました。もう一度お試しください",
       "success": "ドキュメントが正常にクリアされました",
-      "cacheCleared": "キャッシュが正常にクリアされました",
-      "cacheClearFailed": "キャッシュのクリアに失敗しました:\n{{error}}",
+      "successWithCache": "ドキュメントとLLMキャッシュが正常にクリアされました",
       "failed": "ドキュメントのクリアに失敗しました:\n{{message}}",
       "error": "ドキュメントのクリアに失敗しました:\n{{error}}"
     },

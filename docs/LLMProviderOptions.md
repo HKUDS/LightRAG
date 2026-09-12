@@ -318,10 +318,11 @@ cache keys stay safe to persist. The practical consequence:
   with the old value.
 
 When you need a tuning change to take effect on content that has already been
-processed, clear the relevant cache explicitly (`/documents/clear_cache`, or
-`ENABLE_LLM_CACHE=false` while experimenting on queries). Note that clearing the LLM
-cache drops the extraction cache too, which is what entity/relation rebuild after a
-document delete relies on.
+processed, clear the relevant cache explicitly
+(`DELETE /documents?clear_llm_cache=true`, or `ENABLE_LLM_CACHE=false` while
+experimenting on queries). Note that clearing the LLM cache drops the extraction cache
+too, which is what entity/relation rebuild after a document delete relies on — and that
+it rides on the destructive clear, so it takes the documents with it.
 
 ## 11. Common tasks
 

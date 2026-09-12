@@ -13,7 +13,7 @@ import Input from '@/components/ui/Input'
 import Checkbox from '@/components/ui/Checkbox'
 import { toast } from 'sonner'
 import { errorMessage } from '@/lib/utils'
-import { clearDocuments, clearCache } from '@/api/lightrag'
+import { clearDocuments } from '@/api/lightrag'
 
 import { EraserIcon, AlertTriangleIcon, Loader2Icon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -90,7 +90,10 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
     }, CLEAR_TIMEOUT)
 
     try {
-      const result = await clearDocuments()
+      // The cache drop rides along on the clear request itself so it runs
+      // inside the server's destructive reservation; there is no longer a
+      // separate endpoint that clears it without one.
+      const result = await clearDocuments(clearCacheOption)
 
       if (result.status !== 'success') {
         toast.error(t('documentPanel.clearDocuments.failed', { message: result.message }))
@@ -98,16 +101,11 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
         return
       }
 
-      toast.success(t('documentPanel.clearDocuments.success'))
-
-      if (clearCacheOption) {
-        try {
-          await clearCache()
-          toast.success(t('documentPanel.clearDocuments.cacheCleared'))
-        } catch (cacheErr) {
-          toast.error(t('documentPanel.clearDocuments.cacheClearFailed', { error: errorMessage(cacheErr) }))
-        }
-      }
+      toast.success(
+        clearCacheOption
+          ? t('documentPanel.clearDocuments.successWithCache')
+          : t('documentPanel.clearDocuments.success')
+      )
 
       // Refresh document list if provided
       if (onDocumentsCleared) {
