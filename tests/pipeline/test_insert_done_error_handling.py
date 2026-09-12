@@ -94,6 +94,8 @@ class _SpyStorage:
         flush_result=None,
         drop_error: BaseException | None = None,
         recorder: list | None = None,
+        pending_index_ops: bool = False,
+        dropped_upsert_count: int = 0,
     ):
         self.label = label
         self.namespace = namespace
@@ -103,9 +105,13 @@ class _SpyStorage:
         self._flush_result = flush_result
         self._drop_error = drop_error
         self._recorder = recorder if recorder is not None else []
+        self._pending_index_ops = pending_index_ops
+        self._dropped_upsert_count = dropped_upsert_count
         self.index_done_calls = 0
         self.drop_calls = 0
         self.drop_upsert_calls = 0
+        self.drop_upsert_cache_types: list = []
+        self.has_pending_calls = 0
 
     async def index_done_callback(self):
         self.index_done_calls += 1
@@ -120,11 +126,17 @@ class _SpyStorage:
         if self._drop_error is not None:
             raise self._drop_error
 
-    async def drop_pending_upserts(self):
+    async def drop_pending_upserts(self, *, cache_types=None) -> int:
         self.drop_upsert_calls += 1
+        self.drop_upsert_cache_types.append(cache_types)
         self._recorder.append((self.label, "drop_upserts"))
         if self._drop_error is not None:
             raise self._drop_error
+        return self._dropped_upsert_count
+
+    async def has_pending_index_ops(self) -> bool:
+        self.has_pending_calls += 1
+        return self._pending_index_ops
 
     async def finalize(self):
         # No-op: keeps finalize_storages() quiet when a spy is bound onto a
@@ -722,7 +734,7 @@ async def test_a_failed_chunk_commit_is_remembered_across_the_cleanup(
             "published cache rows behind a dropped reference"
         )
         assert any(
-            "a chunk-reference commit failed in this batch" in rec_.message
+            "this batch's chunk references are not on disk" in rec_.message.lower()
             for rec_ in caplog.records
         )
     finally:
@@ -1051,3 +1063,195 @@ async def test_abort_cleanup_drops_everything_when_references_commit(
         assert cache.drop_upsert_calls == 0
     finally:
         await rag.finalize_storages()
+
+
+# ---------------------------------------------------------------------------
+# Reference-before-row: a successful chunk commit is not always proof
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_discard_skips_the_cache_flush_when_chunk_ops_stay_buffered(
+    tmp_path, monkeypatch
+):
+    """A per-item backend retains retryable failures and returns normally.
+
+    Everywhere else that residue is accepted because the retained operations
+    replay on the next flush. This cleanup is the exception: it DROPS the
+    chunk buffer a few lines later, so nothing ever replays them. Flushing the
+    cache on that successful-looking return publishes extract rows whose only
+    reference is in the buffer about to be discarded.
+    """
+    rag = await _make_rag(tmp_path)
+    try:
+        rec: list = []
+        chunks = _SpyStorage("text_chunks", recorder=rec, pending_index_ops=True)
+        cache = _SpyStorage("llm_cache", recorder=rec, dropped_upsert_count=3)
+        rag.text_chunks = chunks
+        rag.llm_response_cache = cache
+        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache])
+
+        await rag._discard_pending_index_ops()
+
+        # The chunk commit was attempted and reported success, but operations
+        # stayed buffered -- so the cache is NOT published. Asserted first, so
+        # a regression fails on the published row rather than on a missing
+        # call to the mechanism that prevents it.
+        assert cache.index_done_calls == 0
+        # Only the upserts go, so an already-promised tombstone survives.
+        assert cache.drop_upsert_calls == 1
+        assert cache.drop_calls == 0
+        assert chunks.index_done_calls == 1
+        assert chunks.has_pending_calls == 1
+    finally:
+        rag.text_chunks = None
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_discard_still_flushes_the_cache_when_nothing_stays_buffered(
+    tmp_path, monkeypatch
+):
+    """Stability: the gate must not suppress the ordinary abort path.
+
+    Cached LLM results are expensive, so a healthy chunk commit still buys the
+    cache its final flush before the buffers are dropped.
+    """
+    rag = await _make_rag(tmp_path)
+    try:
+        rec: list = []
+        chunks = _SpyStorage("text_chunks", recorder=rec, pending_index_ops=False)
+        cache = _SpyStorage("llm_cache", recorder=rec)
+        rag.text_chunks = chunks
+        rag.llm_response_cache = cache
+        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache])
+
+        await rag._discard_pending_index_ops()
+
+        assert cache.index_done_calls == 1
+        assert rec.index(("llm_cache", "flush")) < rec.index(("llm_cache", "drop"))
+        assert cache.drop_calls == 1
+        assert cache.drop_upsert_calls == 0
+    finally:
+        rag.text_chunks = None
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_quarantine_names_only_the_reference_carrying_cache_types(tmp_path):
+    """The shared buffer also holds the query answers nobody's chunk names.
+
+    An untyped discard on a chunk-reference failure would take them too — on
+    the query path, the answer the very query that triggered it just paid an
+    LLM call for.
+    """
+    rag = await _make_rag(tmp_path)
+    try:
+        cache = _SpyStorage("llm_cache", dropped_upsert_count=2)
+        rag.llm_response_cache = cache
+
+        await rag._record_chunk_reference_commit_failure("unit test")
+
+        assert rag._chunk_reference_commit_failed is True
+        assert cache.drop_upsert_cache_types == [{"extract"}]
+        assert cache.drop_calls == 0
+    finally:
+        await rag.finalize_storages()
+
+
+# ---------------------------------------------------------------------------
+# finalize_storages — the one commit site with no next run
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_finalize_commits_the_ordered_pair_before_the_loop(tmp_path):
+    """``JsonKVStorage.finalize`` flushes ``*_cache`` and nothing else.
+
+    So without an ordered commit first, shutdown publishes the whole cache
+    namespace while a dirty ``text_chunks`` is never written at all — an
+    orphan on the default backend with no failure involved.
+    """
+    rag = await _make_rag(tmp_path)
+    rec: list = []
+    chunks = _SpyStorage("text_chunks", recorder=rec)
+    cache = _SpyStorage("llm_cache", recorder=rec)
+    rag.text_chunks = chunks
+    rag.llm_response_cache = cache
+
+    await rag.finalize_storages()
+
+    flushes = [entry for entry in rec if entry[1] == "flush"]
+    assert flushes == [("text_chunks", "flush"), ("llm_cache", "flush")]
+    # No quarantine: the references landed.
+    assert cache.drop_upsert_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_finalize_quarantines_extract_rows_when_the_chunk_commit_failed(
+    tmp_path,
+):
+    """The process is exiting, so a published orphan is permanent.
+
+    The cache's ``finalize`` flushes its buffer, which publishes the whole
+    namespace; the extract rows it holds are discarded first when the
+    references did not reach disk.
+    """
+    rag = await _make_rag(tmp_path)
+    rec: list = []
+    chunks = _SpyStorage(
+        "text_chunks", recorder=rec, flush_error=RuntimeError("chunks down")
+    )
+    cache = _SpyStorage("llm_cache", recorder=rec, dropped_upsert_count=4)
+    rag.text_chunks = chunks
+    rag.llm_response_cache = cache
+
+    await rag.finalize_storages()
+
+    # Recorded once by the failed ordered pair, once by the finalize gate;
+    # every one of them names the reference-carrying types only.
+    assert cache.drop_upsert_calls >= 1
+    assert all(names == {"extract"} for names in cache.drop_upsert_cache_types)
+    # Quarantined BEFORE the cache's own finalize, which is what publishes.
+    last_drop = len(rec) - 1 - rec[::-1].index(("llm_cache", "drop_upserts"))
+    assert ("llm_cache", "flush") not in rec[last_drop:]
+
+
+@pytest.mark.asyncio
+async def test_finalize_quarantines_when_chunk_ops_are_merely_retained(tmp_path):
+    """A successful chunk commit that retained operations is not proof here."""
+    rag = await _make_rag(tmp_path)
+    chunks = _SpyStorage("text_chunks", pending_index_ops=True)
+    cache = _SpyStorage("llm_cache", dropped_upsert_count=1)
+    rag.text_chunks = chunks
+    rag.llm_response_cache = cache
+
+    await rag.finalize_storages()
+
+    assert cache.drop_upsert_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_finalize_reports_the_residue_a_snapshot_backend_cannot_close(
+    tmp_path, caplog
+):
+    """On a snapshot backend the discard is a base-class no-op.
+
+    Nothing can be separated out of the shared dict, the process is exiting,
+    and no later run can publish the references — the one site with no heal
+    path, so it says so instead of logging a discard that did not happen.
+    """
+    rag = await _make_rag(tmp_path)
+    chunks = _SpyStorage("text_chunks", flush_error=RuntimeError("chunks down"))
+    cache = _SpyStorage("llm_cache", dropped_upsert_count=0)
+    rag.text_chunks = chunks
+    rag.llm_response_cache = cache
+
+    with caplog.at_level("ERROR", logger="lightrag"):
+        await rag.finalize_storages()
+
+    messages = [r.message for r in caplog.records]
+    assert any("nothing will heal them" in m for m in messages)
+    assert not any("discarded 0" in m for m in messages)
+    # The finalize itself still ran: it releases the backend's client.
+    assert cache.drop_upsert_calls >= 1

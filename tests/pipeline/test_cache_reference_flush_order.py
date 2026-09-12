@@ -430,3 +430,63 @@ async def test_a_declined_query_path_commit_is_recorded(tmp_path):
         assert rag._chunk_reference_commit_failed is True
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_the_query_path_retires_a_recorded_failure(tmp_path):
+    """A query-only worker has no other ordered pair to clear the record.
+
+    Under gunicorn most workers never ingest, so ``_flush_storages``' chained
+    pair never runs there. Reading the record as its gate would make this the
+    one site that can never satisfy it — it returns before the clear — so one
+    transient chunk failure suppressed every later query cache commit for the
+    life of the worker, over rows that name no chunk in the first place.
+    """
+    rag = await _build_rag(tmp_path)
+    try:
+        order: list[str] = []
+        down = {"value": True}
+        chunks_original = rag.text_chunks.index_done_callback
+        cache_original = rag.llm_response_cache.index_done_callback
+
+        async def _chunks():
+            order.append("text_chunks")
+            if down["value"]:
+                raise RuntimeError("chunk store is down")
+            return await chunks_original()
+
+        async def _cache():
+            order.append("llm_response_cache")
+            return await cache_original()
+
+        rag.text_chunks.index_done_callback = _chunks
+        rag.llm_response_cache.index_done_callback = _cache
+
+        await rag._query_done()
+        assert order == ["text_chunks"], order
+        assert rag._chunk_reference_commit_failed is True
+
+        # The chunk store recovers; the very next query commits the pair.
+        down["value"] = False
+        await rag._query_done()
+
+        assert order[-2:] == ["text_chunks", "llm_response_cache"], order
+        assert rag._chunk_reference_commit_failed is False
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_the_query_path_still_defers_on_its_own_failure(tmp_path):
+    """Stability: the gate moved to this call's outcome, it did not go away."""
+    rag = await _build_rag(tmp_path)
+    try:
+        order: list[str] = []
+        _record_commits(rag, order, chunks_fail=True)
+
+        await rag._query_done()
+
+        assert "llm_response_cache" not in order, order
+        assert rag._chunk_reference_commit_failed is True
+    finally:
+        await rag.finalize_storages()
