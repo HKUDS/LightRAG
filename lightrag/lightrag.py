@@ -2170,6 +2170,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # cancelled, not awaited: its auto-rescan flag stays armed in the
         # mailbox for the next run to honour.
         await self._cancel_admin_release_drives()
+        # These wrappers own long-lived worker and health-check tasks. Drain
+        # them while the response cache and other storages are still usable;
+        # otherwise closing an asyncio.run()/manual loop after finalize leaves
+        # their queue.get() coroutines pending on the destroyed event loop.
+        await self._shutdown_model_queues()
         if self._storages_status == StoragesStatus.INITIALIZED:
             await self._commit_cache_pair_before_finalize()
             storages = [
