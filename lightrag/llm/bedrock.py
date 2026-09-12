@@ -472,7 +472,7 @@ async def bedrock_complete_if_cache(
                 # Already a failure before this change; what was missing is the
                 # diagnosis. Name the token limit when that is the cause, so
                 # doc_status.error_msg tells the operator which knob to turn
-                # instead of just "empty content" (issue #3601 gap 4).
+                # instead of just "empty content".
                 reasoning_len = sum(
                     len(
                         (block["reasoningContent"].get("reasoningText") or {}).get(

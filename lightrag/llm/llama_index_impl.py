@@ -1,6 +1,15 @@
 import warnings
 
 import pipmaster as pm
+
+# Install required dependencies BEFORE the first llama_index import. A guard
+# placed after it never runs: the import raises ModuleNotFoundError first, so
+# the module is unimportable on exactly the machines the guard exists for.
+# Every sibling provider (ollama, anthropic, bedrock) orders it this way, and
+# tests/llm/test_provider_install_guards.py holds all of them to it.
+if not pm.is_installed("llama-index"):
+    pm.install("llama-index")
+
 from llama_index.core.llms import (
     ChatMessage,
     MessageRole,
@@ -8,10 +17,6 @@ from llama_index.core.llms import (
 )
 from typing import Any, List, Optional
 from lightrag.utils import logger
-
-# Install required dependencies
-if not pm.is_installed("llama-index"):
-    pm.install("llama-index")
 
 from llama_index.core.embeddings import BaseEmbedding
 from llama_index.core.settings import Settings as LlamaIndexSettings

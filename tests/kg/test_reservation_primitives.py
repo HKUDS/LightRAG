@@ -732,3 +732,33 @@ async def test_release_token_set_reservation_survives_fetch_cancellation(monkeyp
         assert dict(ps["pending_enqueue_tokens"]) == {}
     finally:
         finalize_share_data()
+
+
+# ---------------------------------------------------------------------------
+# reservation_owner_kind -- who holds the flag, not just that it is held
+# ---------------------------------------------------------------------------
+#
+# Public since issue #3899: `check_pipeline_busy_or_raise` has to let an
+# ``admin`` holder of ``busy`` through (that request queues on the workspace
+# admin lock instead of being refused) while still refusing a pipeline-owned
+# one. A caller reading the record's shape itself would put that knowledge
+# outside this layer, where `make_owner_record` keeps it.
+
+
+def test_reservation_owner_kind_reads_a_full_owner_record():
+    from lightrag.kg.shared_storage import make_owner_record, reservation_owner_kind
+
+    for kind in ("admin", "processing", "scan", "clear", "delete", "custom_chunks"):
+        assert reservation_owner_kind(make_owner_record("t", kind)) == kind
+
+
+def test_reservation_owner_kind_is_none_when_unidentifiable():
+    """Every one of these must read as "not exempt" at the call sites: a flag
+    whose holder cannot be identified is exactly what a fence exists for."""
+    from lightrag.kg.shared_storage import reservation_owner_kind
+
+    assert reservation_owner_kind(None) is None  # no owner at all
+    assert reservation_owner_kind("bare-token") is None  # legacy bare token
+    assert reservation_owner_kind({"token": "t"}) is None  # record with no kind
+    assert reservation_owner_kind({"token": "t", "kind": None}) is None
+    assert reservation_owner_kind(42) is None

@@ -1649,8 +1649,7 @@ def create_app(args):
 
     # Single switch for every interactive API documentation surface: /docs,
     # /docs/oauth2-redirect, /redoc, /openapi.json and the /static/swagger-ui
-    # mount. All five must stay conditioned on this one flag (issue #3666,
-    # RFC #3671) — a route audit that special-cases only the APIRoutes would
+    # mount. All five must stay conditioned on this one flag (one flag) — a route audit that special-cases only the APIRoutes would
     # diverge from the real route table.
     api_docs_enabled = bool(getattr(args, "enable_api_docs", True))
 
@@ -2583,7 +2582,7 @@ def create_app(args):
         """Fixed JSON fallback when neither the WebUI nor /docs can be served.
 
         HTTP 200 with a root_path-aware health_url, so multi-site deployments
-        behind LIGHTRAG_API_PREFIX get a correct absolute path (RFC #3671).
+        behind LIGHTRAG_API_PREFIX get a correct absolute path.
         """
         root = request.scope.get("root_path", "")
         return JSONResponse(
@@ -2929,7 +2928,7 @@ def create_app(args):
             # Sensitive runtime configuration and operational diagnostics
             # (filesystem paths, LLM/embedding provider + model + host, storage
             # backends, queue status, keyed locks, ...) are revealed only to
-            # authenticated callers — see Issue #3294. The skipped queue-status
+            # authenticated callers. The skipped queue-status
             # and keyed-lock-cleanup calls also keep unauthenticated probes cheap.
             if not authenticated:
                 return status_data

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline chunk-tracking repair tool (issue #3838, R4).
+"""Offline chunk-tracking repair tool.
 
 The tool removes orphan tracking keys by replacing ``entity_chunks`` and/or
 ``relation_chunks``. It retains authoritative rows for objects that still exist

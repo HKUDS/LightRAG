@@ -303,7 +303,7 @@ async def _persist_graph_updates(
     tracking rows the retry would then believe it still owed. Every other
     exception still propagates: those mean the flush did not happen.
 
-    Commit order (issue #3838) -- the tracking rows are committed BEFORE the
+    Commit order -- the tracking rows are committed BEFORE the
     graph, in two phases:
 
         1. ``entity_chunks_storage`` / ``relation_chunks_storage``
@@ -323,7 +323,7 @@ async def _persist_graph_updates(
     The residue the order accepts instead is the mirror one -- a tracking row
     whose object never became durable. It is the same state ``adelete_by_entity``
     already stages for and documents: harmless to queries, unable to be
-    inherited by a new object (issue #3838 R1 resets evidence on explicit
+    inherited by a new object (the explicit creation paths reset evidence on
     creation), and repairable with the offline chunk-tracking rebuild.
 
     **What this ordering does and does not buy.** It orders the *flushes issued
@@ -587,12 +587,18 @@ async def adelete_by_entity(
         entity_chunks_storage: Optional KV storage for tracking chunks that reference this entity
         relation_chunks_storage: Optional KV storage for tracking chunks that reference relations
 
-    Concurrency (issue #3838): admin writes are serialized against the document
-    pipeline (HTTP 409 while it is busy) but **not against each other**. On a
-    file-backed workspace a commit publishes the whole namespace, so two admin
-    calls running at once can publish each other's unfinished state. Call the
-    admin API one operation at a time there, or use a server-backed graph and KV
-    store. See ``docs/ProgramingWithCore.md`` for the accepted residue.
+    Concurrency: on a graph storage that declares
+    ``requires_single_writer`` (``NetworkXStorage``), the public ``LightRAG``
+    method that calls this runs it inside ``LightRAG._admin_write_gate``, which
+    serializes admin writes against each other (a workspace-wide admin lock the
+    second caller WAITS on, refused with 409 only after
+    ``ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT``) and against the document pipeline (the
+    ``busy`` reservation: a pipeline start is deferred until this write
+    commits, a running pipeline refuses this write with 409). The gate is taken
+    BEFORE the per-entity keyed locks below and must not be re-acquired here.
+    A hold longer than ``admin_write_max_hold_seconds`` fails the operation
+    (500) and releases both. Server-backed graph stores run this ungated. See
+    ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     # Use keyed lock for entity to ensure atomic graph and vector db operations.
     # The doc-ingest pipeline locks edges under sorted([src, tgt]) in this same
@@ -779,12 +785,18 @@ async def adelete_by_relation(
         target_entity: Name of the target entity
         relation_chunks_storage: Optional KV storage for tracking chunks that reference this relation
 
-    Concurrency (issue #3838): admin writes are serialized against the document
-    pipeline (HTTP 409 while it is busy) but **not against each other**. On a
-    file-backed workspace a commit publishes the whole namespace, so two admin
-    calls running at once can publish each other's unfinished state. Call the
-    admin API one operation at a time there, or use a server-backed graph and KV
-    store. See ``docs/ProgramingWithCore.md`` for the accepted residue.
+    Concurrency: on a graph storage that declares
+    ``requires_single_writer`` (``NetworkXStorage``), the public ``LightRAG``
+    method that calls this runs it inside ``LightRAG._admin_write_gate``, which
+    serializes admin writes against each other (a workspace-wide admin lock the
+    second caller WAITS on, refused with 409 only after
+    ``ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT``) and against the document pipeline (the
+    ``busy`` reservation: a pipeline start is deferred until this write
+    commits, a running pipeline refuses this write with 409). The gate is taken
+    BEFORE the per-entity keyed locks below and must not be re-acquired here.
+    A hold longer than ``admin_write_max_hold_seconds`` fails the operation
+    (500) and releases both. Server-backed graph stores run this ungated. See
+    ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     relation_str = f"{source_entity} -> {target_entity}"
     # Normalize entity order for undirected graph (ensures consistent key generation)
@@ -1110,7 +1122,7 @@ async def _edit_entity_impl(
         entity_name = new_entity_name
     else:
         # Non-rename edit: stage the tracking row grow-then-shrink around this
-        # mutation (issue #3890). The row has to be durable BEFORE the mutation
+        # mutation. The row has to be durable BEFORE the mutation
         # is issued, not merely before the flush -- on Neo4j or PostgreSQL
         # `upsert_node` is durable the moment it returns, and on NetworkX the
         # node is already in the process-wide in-memory graph, where the next
@@ -1208,7 +1220,7 @@ async def _edit_entity_impl(
 
         # Rename only. The non-rename edit stages its own row above, ahead of
         # the graph mutation; reaching this point for it would put the row's
-        # write after the mutation again, which is the defect issue #3890 fixed.
+        # write after the mutation again, which is the defect that ordering fixed.
         if is_renaming and entity_chunks_storage is not None:
             stored_data = await entity_chunks_storage.get_by_id(original_entity_name)
             # A rename always migrates the row, even when the source_id is
@@ -1228,7 +1240,10 @@ async def _edit_entity_impl(
                 # migrating it verbatim is the whole job. There is deliberately
                 # no reseed-from-source_id arm here: an absent row cannot reach
                 # this branch, and reseeding one that could would be the stale
-                # reseed issue #3609 exists to prevent.
+                # source_id reseed -- the graph's ``source_id`` is a
+                # KEEP-truncated view that can still name chunks a previous
+                # purge pruned, so seeding a row from it resurrects stale
+                # attribution (see ``has_authoritative_chunk_ids``).
                 updated_chunk_ids = [
                     cid for cid in stored_data.get("chunk_ids", []) if cid
                 ]
@@ -1332,7 +1347,7 @@ async def _edit_entity_impl(
     # success either -- same staging, and same reason, as adelete_by_entity.
     #
     # The migrated rows are written before this point on purpose: that ordering
-    # is the fix for the opposite failure (#3609), where a crash left the row
+    # is the fix for the opposite failure, where a crash left the row
     # under neither key. An orphaned new-key row is dead bookkeeping a retry
     # overwrites; a live object with no row is the bug.
     # Same staging as the merge: the migrated rows have to be on disk before the
@@ -1587,12 +1602,18 @@ async def aedit_entity(
             - "failed": Merge operation failed
             - "not_attempted": No merge was attempted (normal update/rename)
 
-    Concurrency (issue #3838): admin writes are serialized against the document
-    pipeline (HTTP 409 while it is busy) but **not against each other**. On a
-    file-backed workspace a commit publishes the whole namespace, so two admin
-    calls running at once can publish each other's unfinished state. Call the
-    admin API one operation at a time there, or use a server-backed graph and KV
-    store. See ``docs/ProgramingWithCore.md`` for the accepted residue.
+    Concurrency: on a graph storage that declares
+    ``requires_single_writer`` (``NetworkXStorage``), the public ``LightRAG``
+    method that calls this runs it inside ``LightRAG._admin_write_gate``, which
+    serializes admin writes against each other (a workspace-wide admin lock the
+    second caller WAITS on, refused with 409 only after
+    ``ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT``) and against the document pipeline (the
+    ``busy`` reservation: a pipeline start is deferred until this write
+    commits, a running pipeline refuses this write with 409). The gate is taken
+    BEFORE the per-entity keyed locks below and must not be re-acquired here.
+    A hold longer than ``admin_write_max_hold_seconds`` fails the operation
+    (500) and releases both. Server-backed graph stores run this ungated. See
+    ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     # Order matters: the empty-description check runs first so a `None`
     # description keeps reporting itself as empty (which is what it means to a
@@ -1854,12 +1875,18 @@ async def aedit_relation(
     Returns:
         Dictionary containing updated relation information
 
-    Concurrency (issue #3838): admin writes are serialized against the document
-    pipeline (HTTP 409 while it is busy) but **not against each other**. On a
-    file-backed workspace a commit publishes the whole namespace, so two admin
-    calls running at once can publish each other's unfinished state. Call the
-    admin API one operation at a time there, or use a server-backed graph and KV
-    store. See ``docs/ProgramingWithCore.md`` for the accepted residue.
+    Concurrency: on a graph storage that declares
+    ``requires_single_writer`` (``NetworkXStorage``), the public ``LightRAG``
+    method that calls this runs it inside ``LightRAG._admin_write_gate``, which
+    serializes admin writes against each other (a workspace-wide admin lock the
+    second caller WAITS on, refused with 409 only after
+    ``ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT``) and against the document pipeline (the
+    ``busy`` reservation: a pipeline start is deferred until this write
+    commits, a running pipeline refuses this write with 409). The gate is taken
+    BEFORE the per-entity keyed locks below and must not be re-acquired here.
+    A hold longer than ``admin_write_max_hold_seconds`` fails the operation
+    (500) and releases both. Server-backed graph stores run this ungated. See
+    ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     # See `aedit_entity` for the ordering rationale.
     if "description" in updated_data:
@@ -2112,8 +2139,8 @@ async def aedit_relation(
                 #    the graph and `relationships_vdb` together, with the shrink
                 #    after it -- so a failure of the vector half exited the edit
                 #    before the shrink ran, leaving the row on the staged
-                #    superset with nothing reported about it (issue #3895).
-                #    Committing the graph alone here keeps the #3889 ranking
+                #    superset with nothing reported about it.
+                #    Committing the graph alone here keeps the ranking
                 #    without needing the combined call: a declined commit raises
                 #    at this line, before the vector flush is attempted at all,
                 #    so it still outranks any vector failure -- and the wording
@@ -2127,7 +2154,7 @@ async def aedit_relation(
                 #    IDs is durable now, so the row may finally lose them.
                 #
                 #    Inside the region, and before the vector work, for the two
-                #    reasons #3892 moved the entity one. A cancellation
+                #    reasons the entity one was moved. A cancellation
                 #    delivered during the commit above is deferred to the END of
                 #    this coroutine -- `commit_in_storage_io` finishes the write
                 #    and its commit hook first -- and `CancelledError` is a
@@ -2291,12 +2318,18 @@ async def acreate_entity(
     Returns:
         Dictionary containing created entity information
 
-    Concurrency (issue #3838): admin writes are serialized against the document
-    pipeline (HTTP 409 while it is busy) but **not against each other**. On a
-    file-backed workspace a commit publishes the whole namespace, so two admin
-    calls running at once can publish each other's unfinished state. Call the
-    admin API one operation at a time there, or use a server-backed graph and KV
-    store. See ``docs/ProgramingWithCore.md`` for the accepted residue.
+    Concurrency: on a graph storage that declares
+    ``requires_single_writer`` (``NetworkXStorage``), the public ``LightRAG``
+    method that calls this runs it inside ``LightRAG._admin_write_gate``, which
+    serializes admin writes against each other (a workspace-wide admin lock the
+    second caller WAITS on, refused with 409 only after
+    ``ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT``) and against the document pipeline (the
+    ``busy`` reservation: a pipeline start is deferred until this write
+    commits, a running pipeline refuses this write with 409). The gate is taken
+    BEFORE the per-entity keyed locks below and must not be re-acquired here.
+    A hold longer than ``admin_write_max_hold_seconds`` fails the operation
+    (500) and releases both. Server-backed graph stores run this ungated. See
+    ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     _require_non_empty_description(
         entity_data.get("description"), operation="create", object_type="entity"
@@ -2385,7 +2418,7 @@ async def acreate_entity(
                 await before_create()
 
             # Write and commit the attribution row BEFORE the graph mutation
-            # (issue #3838). Ordering only the flushes is not enough: an
+            # Ordering only the flushes is not enough: an
             # immediate-write backend makes `upsert_node` durable on the spot,
             # and a deferred one leaves the node in the process-wide in-memory
             # graph, where any co-tenant flush publishes it. Both reach the
@@ -2404,7 +2437,7 @@ async def acreate_entity(
                 )
 
                 # Explicit creation starts new attribution, never inherits an
-                # orphan row from a previously deleted object (issue #3838).
+                # orphan row from a previously deleted object.
                 await entity_chunks_storage.upsert(
                     {
                         entity_name: {
@@ -2482,12 +2515,18 @@ async def acreate_relation(
     Returns:
         Dictionary containing created relation information
 
-    Concurrency (issue #3838): admin writes are serialized against the document
-    pipeline (HTTP 409 while it is busy) but **not against each other**. On a
-    file-backed workspace a commit publishes the whole namespace, so two admin
-    calls running at once can publish each other's unfinished state. Call the
-    admin API one operation at a time there, or use a server-backed graph and KV
-    store. See ``docs/ProgramingWithCore.md`` for the accepted residue.
+    Concurrency: on a graph storage that declares
+    ``requires_single_writer`` (``NetworkXStorage``), the public ``LightRAG``
+    method that calls this runs it inside ``LightRAG._admin_write_gate``, which
+    serializes admin writes against each other (a workspace-wide admin lock the
+    second caller WAITS on, refused with 409 only after
+    ``ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT``) and against the document pipeline (the
+    ``busy`` reservation: a pipeline start is deferred until this write
+    commits, a running pipeline refuses this write with 409). The gate is taken
+    BEFORE the per-entity keyed locks below and must not be re-acquired here.
+    A hold longer than ``admin_write_max_hold_seconds`` fails the operation
+    (500) and releases both. Server-backed graph stores run this ungated. See
+    ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     _require_non_empty_description(
         relation_data.get("description"), operation="create", object_type="relation"
@@ -2598,7 +2637,7 @@ async def acreate_relation(
 
             # Attribution row first, graph second -- see the same staging in
             # `acreate_entity` for why ordering the flushes alone leaves the
-            # forbidden state reachable (issue #3838).
+            # forbidden state reachable.
             if relation_chunks_storage is not None:
                 from .utils import make_relation_chunk_key
 
@@ -2608,7 +2647,7 @@ async def acreate_relation(
                 chunk_ids = relation_evidence_source_ids(source_id)
 
                 # Explicit creation starts new attribution, never inherits an
-                # orphan row from a previously deleted object (issue #3838).
+                # orphan row from a previously deleted object.
                 await relation_chunks_storage.upsert(
                     {
                         storage_key: {
@@ -2890,7 +2929,7 @@ async def _merge_entities_impl(
     # deleting the old keys: on RPC-backed KV storages each call commits
     # independently, so the reverse order opened a crash window in which every
     # migrated relation row was lost — turning curated rows absent and
-    # re-arming the stale source_id reseed (#3609). A key can be both old and
+    # re-arming the stale source_id reseed. A key can be both old and
     # new (relations already attached to an existing target keep their key),
     # so only keys outside the new key set are deleted; deleting them after
     # the upsert would drop the rows just written.
@@ -3262,7 +3301,7 @@ async def _merge_entities_impl(
     # source_id and can conclude "no remaining sources".
     #
     # The upserts above deliberately stay BEFORE this commit -- that ordering is
-    # f86ef93c's fix for the opposite failure (#3609), where the row existed
+    # f86ef93c's fix for the opposite failure, where the row existed
     # under neither key. An orphaned new-key row is dead bookkeeping and is
     # overwritten by a retry; a row that is absent while its object lives is the
     # bug. Both invariants hold with the upserts before the commit and the
@@ -3426,12 +3465,18 @@ async def amerge_entities(
     Returns:
         Dictionary containing the merged entity information
 
-    Concurrency (issue #3838): admin writes are serialized against the document
-    pipeline (HTTP 409 while it is busy) but **not against each other**. On a
-    file-backed workspace a commit publishes the whole namespace, so two admin
-    calls running at once can publish each other's unfinished state. Call the
-    admin API one operation at a time there, or use a server-backed graph and KV
-    store. See ``docs/ProgramingWithCore.md`` for the accepted residue.
+    Concurrency: on a graph storage that declares
+    ``requires_single_writer`` (``NetworkXStorage``), the public ``LightRAG``
+    method that calls this runs it inside ``LightRAG._admin_write_gate``, which
+    serializes admin writes against each other (a workspace-wide admin lock the
+    second caller WAITS on, refused with 409 only after
+    ``ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT``) and against the document pipeline (the
+    ``busy`` reservation: a pipeline start is deferred until this write
+    commits, a running pipeline refuses this write with 409). The gate is taken
+    BEFORE the per-entity keyed locks below and must not be re-acquired here.
+    A hold longer than ``admin_write_max_hold_seconds`` fails the operation
+    (500) and releases both. Server-backed graph stores run this ungated. See
+    ``docs/ProgramingWithCore.md`` for the accepted residue.
     """
     if not source_entities:
         raise ValueError("At least one source entity is required for merge")
