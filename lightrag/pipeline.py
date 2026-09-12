@@ -677,8 +677,7 @@ class _PipelineMixin:
         from_scan: bool = False,
         document_dates: list[str | None] | None = None,
     ) -> str:
-        """
-        Pipeline for Processing Documents
+        """Pipeline for processing documents.
 
         1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents
         2. Generate document initial status
@@ -744,24 +743,18 @@ class _PipelineMixin:
                 forwarded as a defence-in-depth bypass so an unexpected
                 scan-owned write inside the classification window is
                 allowed through.  External callers must leave this False.
-            document_dates: optional document-level fact dates, aligned with
-                ``input``. Each value must use ``YYYY``, ``YYYY-MM``, or
-                ``YYYY-MM-DD`` precision, or be ``None`` / ``""`` for an
-                undated insert. Existing documents are not updated. Dates are
-                persisted only on the corresponding ``full_docs`` record,
-                never on chunks.
+            document_dates: dates aligned with ``input``; each is ``YYYY``,
+                ``YYYY-MM``, ``YYYY-MM-DD``, ``None``, or ``""``. Existing
+                documents stay unchanged; dates live on ``full_docs``, never chunks.
 
         Returns:
             str: tracking ID for monitoring processing status
 
         Raises:
-            RuntimeError: if a scan is in progress (and ``from_scan`` is
-                False), or if a destructive job (clear / delete) is in
-                flight.  Concurrent indexing (``busy=True`` from the
-                processing loop) is permitted — the running loop is
-                notified via the ingress mailbox and picks up the
-                newly-enqueued doc mid-batch (feeder) or at the batch
-                boundary (quiescence decision).
+            PipelineReservationConflictError: if an exclusive scan or manual
+                retry fence, or a destructive job, blocks enqueue. Concurrent
+                indexing remains allowed. See
+                ``docs/design/PipelineConcurrencyContract.md``.
         """
         # Concurrency contract: enqueue may proceed concurrently with the
         # processing loop because (a) full_docs is upserted before
