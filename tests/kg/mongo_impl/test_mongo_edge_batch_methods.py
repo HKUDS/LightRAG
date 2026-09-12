@@ -116,10 +116,7 @@ class TestNodeDegreesBatch:
 
     @pytest.mark.asyncio
     async def test_chunks_in_when_ids_exceed_the_chunk_size(self):
-        """A large node_ids list must not build one unbounded $in -- the
-        hazard node_degrees_batch's own docstring/comment documents (a hub
-        entity can put 100k+ neighbours in a single lookup), and the same
-        16MB-query-limit concern get_edges_batch chunks its $or for."""
+        """A large node_ids list must be split across bounded $in queries."""
         s = _make_storage()
         node_ids = [f"n{i}" for i in range(5)]
         edges = [{"source_node_id": nid, "target_node_id": "sink"} for nid in node_ids]
@@ -154,6 +151,29 @@ class TestNodeDegreesBatch:
 
         # 1 unique id fits in one chunk of size 2 => 2 calls, not 4 (3/2 rounded up).
         assert s.edge_collection.aggregate.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_chunks_in_by_payload_bytes_even_under_the_count_cap(self):
+        """Long IDs must be split by payload size even below the count cap."""
+        s = _make_storage()
+        node_ids = [f"very-long-entity-id-{i:040d}" for i in range(5)]
+        edges = [{"source_node_id": nid, "target_node_id": "sink"} for nid in node_ids]
+        s.edge_collection.aggregate = AsyncMock(
+            side_effect=_make_edge_aggregate_side_effect(edges)
+        )
+
+        with patch("lightrag.kg.mongo_impl._GRAPH_BATCH_QUERY_MAX_PAYLOAD_BYTES", 80):
+            result = await s.node_degrees_batch(node_ids)
+
+        # 5 ids never trip the 8192 count cap; the byte budget forces 1 id
+        # per chunk => 5 chunks => 10 aggregate calls (outbound + inbound).
+        assert s.edge_collection.aggregate.await_count == 10
+        for call in s.edge_collection.aggregate.await_args_list:
+            pipeline = call.args[0]
+            match = pipeline[0]["$match"]
+            field = next(iter(match))
+            assert len(match[field]["$in"]) == 1
+        assert result == {nid: 1 for nid in node_ids}
 
 
 class TestEdgeDegreesBatch:
@@ -316,10 +336,7 @@ class TestGetEdgesBatch:
 
     @pytest.mark.asyncio
     async def test_chunks_or_when_pairs_exceed_the_chunk_size(self):
-        """A large pairs list must not build one unbounded $or -- same 16MB
-        query-limit concern remove_edges chunks for. Patches the module
-        constant down to 2 so the test stays small rather than needing 500+
-        pairs to exercise the real default."""
+        """A large pairs list must be split across bounded $or queries."""
         s = _make_storage()
         pairs = [{"src": f"n{i}", "tgt": f"n{i + 1}"} for i in range(5)]
         docs = []
@@ -359,3 +376,26 @@ class TestGetEdgesBatch:
 
         assert s.edge_collection.find.call_count == 1
         assert len(s.edge_collection.find.call_args.args[0]["$or"]) == 5
+
+    @pytest.mark.asyncio
+    async def test_chunks_or_by_payload_bytes_even_under_the_count_cap(self):
+        """Long endpoint IDs must be split by payload size below the count cap."""
+        s = _make_storage()
+        pairs = [
+            {"src": f"very-long-entity-id-{i:040d}", "tgt": f"other-{i:040d}"}
+            for i in range(5)
+        ]
+        docs = []
+        for i, p in enumerate(pairs):
+            lo, hi = _canonical_edge_endpoints(p["src"], p["tgt"])
+            docs.append({"edge_lo": lo, "edge_hi": hi, "weight": float(i)})
+        s.edge_collection.find = Mock(side_effect=_make_edge_find_side_effect(docs))
+
+        with patch("lightrag.kg.mongo_impl._GRAPH_BATCH_QUERY_MAX_PAYLOAD_BYTES", 200):
+            result = await s.get_edges_batch(pairs)
+
+        assert s.edge_collection.find.call_count == 5
+        for call in s.edge_collection.find.call_args_list:
+            assert len(call.args[0]["$or"]) == 1
+        for i, p in enumerate(pairs):
+            assert result[(p["src"], p["tgt"])]["weight"] == float(i)
