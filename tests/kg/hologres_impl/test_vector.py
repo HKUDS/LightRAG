@@ -17,6 +17,10 @@ from lightrag.kg.hologres.schema import (
 from lightrag.kg.hologres.vector import (
     HologresVectorError,
     HologresVectorStorage,
+    _decode_payload,
+    _deterministic_json,
+    _materialize_rows,
+    _normalize_vector,
 )
 from lightrag.namespace import NameSpace
 from lightrag.utils import compute_mdhash_id
@@ -1159,3 +1163,60 @@ def test_vector_backend_source_uses_only_restricted_client_and_no_postgres_reuse
     assert "begin;" not in lowered
     assert "commit;" not in lowered
     assert "rollback;" not in lowered
+
+
+def test_vector_helpers_decode_and_fail_closed_on_corrupt_payloads():
+    assert _decode_payload('{"a":1}') == {"a": 1}
+    assert _decode_payload({"a": 1}) == {"a": 1}
+    for corrupt in (None, 7, "{", '["a"]'):
+        with pytest.raises(HologresVectorError, match="row is corrupt"):
+            _decode_payload(corrupt)
+
+    assert _materialize_rows(
+        (row for row in [{"id": "a"}]), "response is corrupt"
+    ) == [{"id": "a"}]
+    for corrupt in (None, "rows", b"rows", {"id": "a"}, 7):
+        with pytest.raises(HologresVectorError, match="response is corrupt"):
+            _materialize_rows(corrupt, "response is corrupt")
+
+    with pytest.raises(HologresVectorError, match="input is invalid"):
+        _deterministic_json(object(), "input is invalid")
+
+
+@pytest.mark.parametrize(
+    "vector",
+    [
+        "abc",
+        {"a": 1},
+        7,
+        [True, 0.0, 0.0],
+        ["a", 0.0, 0.0],
+        [0.0, 0.0],
+        [float("nan"), 0.0, 0.0],
+        [1e100, 0.0, 0.0],
+    ],
+)
+def test_vector_normalizer_rejects_each_invalid_shape(vector):
+    with pytest.raises(HologresVectorError, match="invalid"):
+        _normalize_vector(vector, 3, "vector is invalid")
+
+
+def test_vector_normalizer_rejects_a_real_that_cannot_become_float():
+    from fractions import Fraction
+
+    with pytest.raises(HologresVectorError, match="invalid"):
+        _normalize_vector(
+            [Fraction(10**1000), 0.0, 0.0], 3, "vector is invalid"
+        )
+
+
+async def test_vector_point_read_missing_and_empty_batch_delete_are_noops(
+    ready_storage,
+):
+    storage = await ready_storage(CallClient())
+    client = storage._active_client
+    client.handlers["vector.read.one"] = None
+
+    assert await storage.get_by_id("missing") is None
+    assert await storage.get_by_ids([]) == []
+    assert await storage.delete([]) is None

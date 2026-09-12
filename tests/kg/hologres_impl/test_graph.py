@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import json
 
 import pytest
 
@@ -8,7 +9,12 @@ from lightrag.kg.hologres.config import HologresConfig
 from lightrag.kg.hologres.graph import (
     HologresGraphError,
     HologresGraphStorage,
+    _decode_properties,
+    _deterministic_json,
+    _materialize_rows,
     _payload_batches,
+    _require_int,
+    _require_str,
 )
 from lightrag.kg.hologres.schema import graph_schema_descriptors
 from lightrag.namespace import NameSpace
@@ -110,6 +116,107 @@ def ready_storage(monkeypatch):
 
 def calls_for(client, descriptor):
     return [call for call in client.calls if call["kwargs"]["descriptor"] == descriptor]
+
+
+def test_graph_decode_and_require_helpers_fail_closed():
+    assert _decode_properties('{"a":1}') == {"a": 1}
+    assert _decode_properties({"a": 1}) == {"a": 1}
+    for corrupt in (None, 7, "{", '["a"]'):
+        with pytest.raises(HologresGraphError, match="row is corrupt"):
+            _decode_properties(corrupt)
+
+    assert json.loads(_deterministic_json({"b": 2, "中文": "a"}, "invalid")) == {
+        "b": 2,
+        "中文": "a",
+    }
+    for invalid in (float("nan"), object()):
+        with pytest.raises(HologresGraphError, match="invalid"):
+            _deterministic_json(invalid, "invalid")
+
+    assert _materialize_rows(
+        (row for row in [{"id": "a"}]), "response is corrupt"
+    ) == [{"id": "a"}]
+    for corrupt in (None, "rows", b"rows", {"id": "a"}, 7):
+        with pytest.raises(HologresGraphError, match="response is corrupt"):
+            _materialize_rows(corrupt, "response is corrupt")
+
+    assert _require_str("a", "value is invalid") == "a"
+    with pytest.raises(HologresGraphError, match="value is invalid"):
+        _require_str(7, "value is invalid")
+    assert _require_int(7, "value is invalid") == 7
+    for invalid in (True, "7"):
+        with pytest.raises(HologresGraphError, match="value is invalid"):
+            _require_int(invalid, "value is invalid")
+
+
+async def test_graph_public_operations_sanitize_transport_failures(ready_storage):
+    client = CallClient()
+    for descriptor in (
+        "graph.node.exists",
+        "graph.node.read",
+        "graph.node.upsert",
+        "graph.node.exists.batch",
+        "graph.node.read.batch",
+        "graph.node.delete.edges",
+        "graph.node.delete",
+        "graph.edge.exists",
+        "graph.edge.read",
+        "graph.edge.endpoints",
+        "graph.edge.upsert",
+        "graph.edge.delete",
+        "graph.edge.read.batch",
+        "graph.edge.adjacency",
+        "graph.edge.adjacency.batch",
+        "graph.degree.node",
+        "graph.degree.batch",
+        "graph.labels.all",
+        "graph.labels.popular",
+        "graph.labels.search",
+        "graph.export.nodes",
+        "graph.export.edges",
+        "graph.kg.seed",
+        "graph.kg.hop",
+        "graph.kg.wildcard",
+        "graph.kg.edges",
+        "graph.drop.edges",
+        "graph.drop.nodes",
+    ):
+        client.handlers[descriptor] = RuntimeError(f"{descriptor}-secret")
+
+    storage = await ready_storage(client)
+    operations = [
+        lambda: storage.has_node("a"),
+        lambda: storage.get_node("a"),
+        lambda: storage.upsert_node("a", {"entity_id": "a"}),
+        lambda: storage.has_nodes_batch(["a"]),
+        lambda: storage.get_nodes_batch(["a"]),
+        lambda: storage.remove_nodes(["a"]),
+        lambda: storage.has_edge("a", "b"),
+        lambda: storage.get_edge("a", "b"),
+        lambda: storage.upsert_edge("a", "b", {"weight": 1}),
+        lambda: storage.remove_edges([("a", "b")]),
+        lambda: storage.get_edges_batch([{"src": "a", "tgt": "b"}]),
+        lambda: storage.get_node_edges("a"),
+        lambda: storage.get_nodes_edges_batch(["a"]),
+        lambda: storage.node_degree("a"),
+        lambda: storage.node_degrees_batch(["a"]),
+        lambda: storage.edge_degree("a", "b"),
+        lambda: storage.edge_degrees_batch([("a", "b")]),
+        lambda: storage.get_all_labels(),
+        lambda: storage.get_popular_labels(),
+        lambda: storage.search_labels("a"),
+        lambda: storage.get_all_nodes(),
+        lambda: storage.get_all_edges(),
+        lambda: storage.get_knowledge_graph("a", max_depth=1, max_nodes=2),
+        lambda: storage.get_knowledge_graph("*", max_nodes=2),
+        lambda: storage.drop(),
+    ]
+
+    for operation in operations:
+        result = operation()
+        with pytest.raises(HologresGraphError) as exc_info:
+            await result
+        assert "-secret" not in str(exc_info.value)
 
 
 # Construction ----------------------------------------------------------------

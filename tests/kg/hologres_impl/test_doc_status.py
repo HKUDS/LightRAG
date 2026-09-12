@@ -31,6 +31,11 @@ from lightrag.kg.hologres.config import HologresConfig
 from lightrag.kg.hologres.doc_status import (
     HologresDocStatusError,
     HologresDocStatusStorage,
+    _decode_json,
+    _deterministic_json,
+    _ID_CHUNK_SIZE,
+    _materialize_rows,
+    _parse_datetime,
 )
 from lightrag.kg.hologres.schema import (
     DOC_STATUS_TABLE_NAME,
@@ -1063,3 +1068,347 @@ def test_doc_status_source_uses_only_restricted_single_statement_client():
     assert "postgres_impl" not in lowered
     assert "advisory" not in lowered
     assert "with recursive" not in lowered
+
+
+def test_doc_status_decode_helpers_cover_valid_and_corrupt_inputs():
+    assert _materialize_rows((item for item in [{"id": "a"}]), "rows") == [
+        {"id": "a"}
+    ]
+    for corrupt in (None, "rows", b"rows", 7):
+        with pytest.raises(HologresDocStatusError, match="corrupt"):
+            _materialize_rows(corrupt, "rows")
+
+    assert json.loads(_deterministic_json({"b": 2, "中文": "a"})) == {
+        "b": 2,
+        "中文": "a",
+    }
+    for invalid in (float("nan"), object()):
+        with pytest.raises(HologresDocStatusError, match="invalid"):
+            _deterministic_json(invalid)
+
+    assert _decode_json('{"a":1}', dict, "x") == {"a": 1}
+    assert _decode_json({"a": 1}, dict, "x") == {"a": 1}
+    assert _decode_json(None, dict, "x", allow_none=True) is None
+    with pytest.raises(HologresDocStatusError, match="corrupt"):
+        _decode_json(None, dict, "x")
+    with pytest.raises(HologresDocStatusError, match="corrupt"):
+        _decode_json("[]", dict, "x")
+    with pytest.raises(HologresDocStatusError, match="corrupt"):
+        _decode_json("{", dict, "x")
+
+    naive = _parse_datetime("2026-01-01T00:00:00", "time")
+    assert naive.tzinfo == timezone.utc
+    zulu = _parse_datetime("2026-01-01T00:00:00Z", "time")
+    assert zulu.utcoffset().total_seconds() == 0
+    for invalid in (None, "", "not-time"):
+        with pytest.raises(HologresDocStatusError, match="invalid"):
+            _parse_datetime(invalid, "time")
+
+
+async def test_doc_status_environment_client_is_released_when_initialization_fails(
+    monkeypatch,
+):
+    import lightrag.kg.hologres.doc_status as module
+
+    client = CallClient()
+    releases = []
+
+    class Manager:
+        async def acquire(self, config):
+            assert config == CONFIG
+            return client
+
+        async def release(self, config, actual_client):
+            releases.append((config, actual_client))
+
+    async def failing_probe(_client):
+        raise RuntimeError("environment-secret")
+
+    monkeypatch.setattr(module, "_SHARED_CLIENTS", Manager())
+    monkeypatch.setattr(module, "probe_production_capabilities", failing_probe)
+    monkeypatch.setattr(
+        module.HologresConfig,
+        "from_env",
+        classmethod(lambda cls: CONFIG),
+    )
+    storage = make_storage(config=None, client=None)
+
+    with pytest.raises(RuntimeError, match="environment-secret"):
+        await storage.initialize()
+    assert releases == [(CONFIG, client)]
+
+    unconfigured = make_storage(client=object(), config=None)
+    with pytest.raises(HologresDocStatusError, match="configuration is unavailable"):
+        await unconfigured.initialize()
+
+    uninitialized = make_storage()
+    with pytest.raises(HologresDocStatusError, match="not initialized"):
+        await uninitialized.get_by_id("doc-a")
+
+
+async def test_doc_status_filter_keys_chunks_valid_input_and_fails_closed(
+    ready_storage,
+):
+    storage, client = ready_storage
+    assert await storage.filter_keys(set()) == set()
+
+    keys = {f"doc-{index:03d}" for index in range(_ID_CHUNK_SIZE + 1)}
+
+    def found(_sql, values, _kwargs):
+        return [
+            {"id": identifier}
+            for identifier in values[1]
+            if identifier != "doc-200"
+        ]
+
+    client.handlers["doc_status.filter"] = found
+    assert await storage.filter_keys(keys) == {"doc-200"}
+    filters = calls_for(client, "doc_status.filter")
+    assert [len(call["values"][1]) for call in filters] == [_ID_CHUNK_SIZE, 1]
+
+    client.handlers["doc_status.filter"] = RuntimeError("filter-secret")
+    with pytest.raises(HologresDocStatusError, match="key filter failed") as error:
+        await storage.filter_keys({"doc-a"})
+    assert "filter-secret" not in str(error.value)
+
+    client.handlers["doc_status.filter"] = [{"id": "not-requested"}]
+    with pytest.raises(HologresDocStatusError, match="filter response is corrupt"):
+        await storage.filter_keys({"doc-a"})
+
+
+async def test_doc_status_point_batch_and_primitive_failures(ready_storage):
+    storage, client = ready_storage
+    assert await storage.get_by_ids([]) == []
+    assert await storage.upsert({}) is None
+    assert await storage.delete([]) is None
+
+    stored = row()
+    client.handlers["doc_status.read.one"] = stored
+    assert (await storage.get_by_id("doc-a"))["file_path"] == "doc.md"
+    client.handlers["doc_status.read.one"] = None
+    assert await storage.get_by_id("missing") is None
+    client.handlers["doc_status.read.one"] = RuntimeError("point-secret")
+    with pytest.raises(HologresDocStatusError, match="point read failed"):
+        await storage.get_by_id("doc-a")
+
+    client.handlers["doc_status.read.ordered_batch"] = [
+        {"ordinality": 1, "requested_id": "doc-a", **stored}
+    ]
+    assert [item["file_path"] for item in await storage.get_by_ids(["doc-a"])] == [
+        "doc.md"
+    ]
+    client.handlers["doc_status.read.ordered_batch"] = RuntimeError("batch-secret")
+    with pytest.raises(HologresDocStatusError, match="ordered batch read failed"):
+        await storage.get_by_ids(["doc-a"])
+
+    valid = {key: value for key, value in row().items() if key not in {"id", "extra"}}
+    client.handlers.pop("doc_status.upsert", None)
+    client.handlers["doc_status.upsert"] = RuntimeError("upsert-secret")
+    with pytest.raises(HologresDocStatusError, match="upsert failed"):
+        await storage.upsert({"doc-a": valid})
+
+    client.handlers["doc_status.delete"] = RuntimeError("delete-secret")
+    with pytest.raises(HologresDocStatusError, match="delete failed"):
+        await storage.delete(["doc-a"])
+
+    client.handlers["doc_status.empty"] = RuntimeError("empty-secret")
+    with pytest.raises(HologresDocStatusError, match="emptiness check failed"):
+        await storage.is_empty()
+    client.handlers["doc_status.empty"] = "yes"
+    with pytest.raises(HologresDocStatusError, match="emptiness response is corrupt"):
+        await storage.is_empty()
+
+    client.handlers["doc_status.drop"] = RuntimeError("drop-secret")
+    with pytest.raises(HologresDocStatusError, match="drop failed"):
+        await storage.drop()
+
+
+async def test_doc_status_counts_tracks_and_lookup_helpers_cover_errors(
+    ready_storage,
+):
+    storage, client = ready_storage
+    stored = row()
+
+    client.handlers["doc_status.read.counts"] = [
+        {"status": DocStatus.PENDING.value, "count": 2}
+    ]
+    assert await storage.get_status_counts() == {
+        **{status.value: 0 for status in DocStatus},
+        DocStatus.PENDING.value: 2,
+    }
+    client.handlers["doc_status.read.counts"] = RuntimeError("counts-secret")
+    with pytest.raises(HologresDocStatusError, match="count read failed"):
+        await storage.get_status_counts()
+    client.handlers["doc_status.read.counts"] = [
+        {"status": "invalid", "count": 1}
+    ]
+    with pytest.raises(HologresDocStatusError, match="counts response is corrupt"):
+        await storage.get_status_counts()
+
+    client.handlers["doc_status.read.track"] = [stored]
+    assert set(await storage.get_docs_by_track_id("track-a")) == {"doc-a"}
+    client.handlers["doc_status.read.track"] = [dict(stored, status="invalid")]
+    assert await storage.get_docs_by_track_id("track-a") == {}
+    client.handlers["doc_status.read.track"] = RuntimeError("track-secret")
+    with pytest.raises(HologresDocStatusError, match="track read failed"):
+        await storage.get_docs_by_track_id("track-a")
+
+    client.handlers["doc_status.read.file_path"] = stored
+    assert (await storage.get_doc_by_file_path("doc.md"))["file_path"] == "doc.md"
+    client.handlers["doc_status.read.file_path"] = None
+    assert await storage.get_doc_by_file_path("missing.md") is None
+    client.handlers["doc_status.read.file_path"] = RuntimeError("path-secret")
+    with pytest.raises(HologresDocStatusError, match="file-path read failed"):
+        await storage.get_doc_by_file_path("doc.md")
+
+    assert await storage.get_doc_by_file_basename("") is None
+    assert await storage.get_doc_by_file_basename("unknown_source") is None
+    client.handlers["doc_status.read.basename"] = stored
+    basename_id, basename_raw = await storage.get_doc_by_file_basename("doc.md")
+    assert (basename_id, basename_raw["file_path"]) == ("doc-a", "doc.md")
+    client.handlers["doc_status.read.basename"] = RuntimeError("basename-secret")
+    with pytest.raises(HologresDocStatusError, match="basename read failed"):
+        await storage.get_doc_by_file_basename("doc.md")
+
+    assert await storage.get_doc_by_content_hash("") is None
+    client.handlers["doc_status.read.content_hash"] = stored
+    hash_id, hash_raw = await storage.get_doc_by_content_hash("hash-a")
+    assert (hash_id, hash_raw["content_hash"]) == ("doc-a", "hash-a")
+    client.handlers["doc_status.read.content_hash"] = None
+    assert await storage.get_doc_by_content_hash("hash-a") is None
+    client.handlers["doc_status.read.content_hash"] = RuntimeError("hash-secret")
+    with pytest.raises(HologresDocStatusError, match="content-hash read failed"):
+        await storage.get_doc_by_content_hash("hash-a")
+
+
+async def test_doc_status_pagination_normalizes_options_and_fails_closed(
+    ready_storage,
+):
+    storage, client = ready_storage
+    client.handlers["doc_status.read.paginated_count"] = 1
+    client.handlers["doc_status.read.paginated"] = [row()]
+
+    docs, total = await storage.get_docs_paginated(
+        status_filter=DocStatus.PENDING,
+        page=0,
+        page_size=1,
+        sort_field="invalid",
+        sort_direction="invalid",
+    )
+    assert total == 1
+    assert docs[0][0] == "doc-a"
+    count, read = (
+        calls_for(client, "doc_status.read.paginated_count")[-1],
+        calls_for(client, "doc_status.read.paginated")[-1],
+    )
+    assert count["values"][1] == [DocStatus.PENDING.value]
+    assert "ORDER BY updated_at DESC, id DESC" in read["sql"]
+    assert read["values"][-2:] == (10, 0)
+
+    client.handlers["doc_status.read.paginated_count"] = RuntimeError("count-secret")
+    with pytest.raises(HologresDocStatusError, match="paginated count failed"):
+        await storage.get_docs_paginated()
+    client.handlers["doc_status.read.paginated_count"] = "1"
+    with pytest.raises(HologresDocStatusError, match="count response is corrupt"):
+        await storage.get_docs_paginated()
+
+    client.handlers["doc_status.read.paginated_count"] = 1
+    client.handlers["doc_status.read.paginated"] = RuntimeError("page-secret")
+    with pytest.raises(HologresDocStatusError, match="paginated read failed"):
+        await storage.get_docs_paginated()
+    client.handlers["doc_status.read.paginated"] = [dict(row(), id=None)]
+    assert await storage.get_docs_paginated() == ([], 1)
+
+
+async def test_doc_status_scheduling_and_full_batches_validate_rows(ready_storage):
+    storage, client = ready_storage
+    stored = row()
+
+    def scheduling_rows(_sql, values, _kwargs):
+        requested = values[1]
+        return [
+            {
+                "ordinality": ordinal,
+                "requested_id": identifier,
+                **(
+                    dict(stored, id=identifier)
+                    if identifier == "doc-a"
+                    else {"id": None}
+                ),
+            }
+            for ordinal, identifier in enumerate(requested, start=1)
+        ]
+
+    client.handlers["doc_status.read.scheduling_batch"] = scheduling_rows
+    assert set(await storage.get_docs_by_ids(["doc-a", "missing", "doc-a"])) == {
+        "doc-a"
+    }
+    client.handlers["doc_status.read.scheduling_batch"] = []
+    with pytest.raises(HologresDocStatusError, match="batch response is corrupt"):
+        await storage.get_docs_by_ids(["doc-a"], strict=True)
+    client.handlers["doc_status.read.scheduling_batch"] = RuntimeError(
+        "scheduling-secret"
+    )
+    with pytest.raises(HologresDocStatusError, match="scheduling batch read failed"):
+        await storage.get_docs_by_ids(["doc-a"])
+
+    client.handlers["doc_status.read.full_batch"] = scheduling_rows
+    assert set(await storage.get_full_docs_by_ids(["doc-a", "missing", "doc-a"])) == {
+        "doc-a"
+    }
+    client.handlers["doc_status.read.full_batch"] = []
+    with pytest.raises(HologresDocStatusError, match="batch response is corrupt"):
+        await storage.get_full_docs_by_ids(["doc-a"], strict=True)
+    client.handlers["doc_status.read.full_batch"] = RuntimeError("full-secret")
+    with pytest.raises(HologresDocStatusError, match="full batch read failed"):
+        await storage.get_full_docs_by_ids(["doc-a"])
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "expected"),
+    [
+        ("status", DocStatus.FAILED, (DocStatus.FAILED.value, "")),
+        ("status", "failed", ("failed", "")),
+        (
+            "updated_at",
+            "2026-01-01T00:00:00",
+            (datetime(2026, 1, 1, tzinfo=timezone.utc), ""),
+        ),
+        ("metadata", {"a": 1}, ('{"a":1}', "::jsonb")),
+        ("chunks_list", None, ("null", "::jsonb")),
+        ("chunks_list", ["a"], ('["a"]', "::jsonb")),
+        ("content_length", 2, (2, "")),
+        ("chunks_count", None, (None, "")),
+        ("chunks_count", 2, (2, "")),
+        ("multimodal_processed", True, (True, "")),
+        ("multimodal_processed", None, (None, "")),
+        ("track_id", "track", ("track", "")),
+        ("track_id", None, (None, "")),
+    ],
+)
+def test_doc_status_update_normalizer_accepts_valid_values(
+    column, value, expected
+):
+    assert HologresDocStatusStorage._normalize_update_value(column, value) == expected
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("status", "invalid"),
+        ("updated_at", "invalid"),
+        ("metadata", []),
+        ("chunks_list", "chunk"),
+        ("content_length", None),
+        ("content_length", True),
+        ("chunks_count", True),
+        ("multimodal_processed", 1),
+        ("track_id", 3),
+        ("file_path", None),
+        ("content_summary", None),
+        ("unknown", "value"),
+    ],
+)
+def test_doc_status_update_normalizer_rejects_invalid_values(column, value):
+    with pytest.raises(ValueError, match="Invalid|Unknown"):
+        HologresDocStatusStorage._normalize_update_value(column, value)

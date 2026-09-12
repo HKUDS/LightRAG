@@ -33,7 +33,7 @@ from lightrag.kg.hologres.client import (
 from lightrag.kg.hologres.config import HologresConfig
 from lightrag.kg.hologres.doc_status import HologresDocStatusStorage
 from lightrag.kg.hologres.graph import HologresGraphStorage
-from lightrag.kg.hologres.graph_age import HologresAGEGraphStorage
+from lightrag.kg.hologres.graph_age import HologresAGEGraphStorage, _ID_CHUNK_SIZE
 from lightrag.kg.hologres.kv import HologresKVStorage
 from lightrag.kg.hologres.schema import (
     LEDGER_TABLE_NAME,
@@ -414,6 +414,74 @@ async def test_hologres_age_graph_contract(hologres_live_client):
             await cleanup_client.close()
             for item in initialized:
                 await item.finalize()
+
+
+async def test_hologres_age_graph_preserves_edges_across_hydration_chunks(
+    hologres_live_client,
+):
+    _client, _schema = hologres_live_client
+    workspace = f"agechunk{uuid.uuid4().hex[:10]}"
+    graph_name = f"lightrag_age_{workspace}"
+    storage = HologresAGEGraphStorage(
+        namespace=NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION,
+        workspace=workspace,
+        global_config={"max_graph_nodes": 1000},
+        embedding_func=None,
+        config=HologresConfig.from_env(dict(os.environ)),
+    )
+    neighbours = [f"n{index:03d}" for index in range(_ID_CHUNK_SIZE + 1)]
+    expected_edges = {("hub", neighbour) for neighbour in neighbours}
+
+    await storage.initialize()
+    try:
+        assert storage._delegate is None, "live AGE probe unexpectedly failed"
+        await storage.upsert_nodes_batch(
+            [("hub", {"entity_id": "hub"})]
+            + [
+                (neighbour, {"entity_id": neighbour})
+                for neighbour in neighbours
+            ]
+        )
+        await storage.upsert_edges_batch(
+            [
+                ("hub", neighbour, {"weight": 1})
+                for neighbour in neighbours
+            ]
+        )
+
+        graph = await storage.get_knowledge_graph(
+            "hub", max_depth=1, max_nodes=_ID_CHUNK_SIZE + 2
+        )
+
+        assert {node.id for node in graph.nodes} == {"hub", *neighbours}
+        assert graph.is_truncated is False
+        assert {(edge.source, edge.target) for edge in graph.edges} == expected_edges
+    finally:
+        await storage.drop()
+        await storage.finalize()
+
+        cleanup_client = HologresClient(
+            HologresConfig.from_env(
+                {**os.environ, "HOLOGRES_AGE_SEARCH_PATH": "true"}
+            )
+        )
+        await cleanup_client.open()
+        try:
+            graph_exists = await cleanup_client.fetch_value(
+                "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)",
+                graph_name,
+                descriptor="live.age.chunk.cleanup.check",
+            )
+            if graph_exists:
+                await cleanup_client.call_age_procedure(
+                    "drop_graph",
+                    graph_name,
+                    True,
+                    descriptor="live.age.chunk.cleanup.drop",
+                    replay_safe=False,
+                )
+        finally:
+            await cleanup_client.close()
 
 
 async def test_resumable_schema_management(hologres_live_client):
