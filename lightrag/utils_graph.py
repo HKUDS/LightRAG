@@ -3625,12 +3625,14 @@ def _merge_attributes(
         elif strategy == "keep_last":
             merged_data[key] = values[-1]
         elif strategy == "join_unique":
-            # Handle fields separated by GRAPH_FIELD_SEP
-            unique_items = set()
+            # Handle fields separated by GRAPH_FIELD_SEP.
+            # Deduplicate while preserving first-seen order: source_id ordering is
+            # meaningful downstream, where apply_source_ids_limit() truncates
+            # positionally (FIFO keeps the tail, IGNORE_NEW keeps the head).
+            unique_items = []
             for value in values:
-                items = str(value).split(GRAPH_FIELD_SEP)
-                unique_items.update(items)
-            merged_data[key] = GRAPH_FIELD_SEP.join(unique_items)
+                unique_items.extend(str(value).split(GRAPH_FIELD_SEP))
+            merged_data[key] = GRAPH_FIELD_SEP.join(dict.fromkeys(unique_items))
         elif strategy == "join_unique_comma":
             # Handle fields separated by comma, join unique items with comma
             unique_items = set()
