@@ -224,38 +224,33 @@ class StorageNameSpace(ABC):
     async def drop_pending_upserts(
         self, *, cache_types: set[str] | None = None
     ) -> int | None:
-        """Discard buffered UPSERTS, keeping buffered deletes. Returns the count.
+        """Discard buffered UPSERTS, keeping buffered deletes.
 
         The narrow counterpart of ``drop_pending_index_ops``, for a caller
-        that has to abandon writes without abandoning deletions. A buffered
-        delete is a tombstone some already-returned operation promised: the
-        document deletion path flushes with a plain ``_insert_done`` for
-        exactly that reason, and reports success after logging a flush error,
-        so a dropped tombstone leaves rows on disk with nothing left to find
-        them and no retry.
+        abandoning writes that must NOT abandon deletions: a buffered delete
+        is a tombstone some already-returned operation promised, and dropping
+        one is unrecoverable.
 
-        ``cache_types`` narrows the discard to LLM-cache rows of those types
-        (the buffer key is the flattened ``{mode}:{cache_type}:{hash}`` cache
-        key). Pass it whenever the reason to discard is reachability: only
-        ``extract`` rows are reachable solely through a chunk's
-        ``llm_cache_list``, while ``query`` / ``keywords`` rows name no chunk
-        and are the most expensive content in the namespace. ``None`` discards
-        every buffered upsert, for a caller abandoning the batch outright.
-        A key that does not parse is KEPT — it is not what the caller named.
+        ``cache_types`` restricts the discard to LLM-cache rows of those
+        types; a buffer key that does not parse as a cache key is KEPT. Pass
+        it whenever the reason to discard is reachability, so the discard
+        cannot reach rows no reference can orphan. ``None`` discards every
+        buffered upsert, for a caller abandoning the batch outright.
 
-        The return value is tri-state, and a caller MUST distinguish all three
-        before it words a log line: an ``int`` is the number discarded, and
-        ``0`` means this backend can discard but had nothing buffered --
-        nothing was lost and nothing is at risk. ``None`` means the backend
-        cannot do this at all, which is a different situation entirely: the
-        caller's writes are still pending, and its fallback is to defer them.
-        Identity, not truthiness, exactly as with ``index_done_callback``'s
-        ``False``.
+        Returns tri-state, and a caller MUST distinguish all three by
+        identity, not truthiness: an ``int`` is the number discarded, ``0``
+        means this backend can discard and had nothing buffered, and ``None``
+        means it cannot discard at all, so the caller's writes are still
+        pending and its fallback is to defer them. Reading ``0`` as ``None``
+        reports a loss that did not happen; the reverse reports safety that
+        does not hold.
 
-        Backends whose buffer cannot separate upserts from deletes keep the
-        default, returning ``None``: doing nothing is the safe answer, since
-        the caller falls back to deferring the writes rather than dropping a
-        deletion. Only ``OpenSearchKVStorage`` overrides it today.
+        Backends that cannot separate upserts from deletes keep the default
+        ``None``. Only ``OpenSearchKVStorage`` overrides it today.
+
+        Why the tombstones, the cache types and the fallback are what they
+        are: *LLM extraction cache reachability* in
+        ``docs/design/PurgeRecoveryContract.md``.
         """
         return None
 

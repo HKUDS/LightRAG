@@ -4069,14 +4069,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         pending state for the next commit, and the aborting-batch cleanup in
         ``_discard_pending_index_ops`` flushes the cache before dropping it.
 
-        ``strict_references`` is for a caller that has NO next commit --
-        ``_commit_cache_pair_before_finalize`` is the only one. It additionally
-        withholds the cache when the chunk commit RETURNED but left operations
-        buffered, which a per-item backend does for a retryable failure. Every
-        other caller must leave it False: there the retained operations replay
-        on the next flush, and tightening the runtime path would make this
-        ordering stricter than the pipeline's own PROCESSED write, which
-        acknowledges the identical buffered flush.
+        ``strict_references`` additionally withholds the cache when the chunk
+        commit RETURNED but left operations buffered. Pass it ONLY from a
+        caller that has no next commit -- ``_commit_cache_pair_before_finalize``
+        is the only one today. Every other caller must leave it False; why
+        that is not merely a conservative default is in *LLM extraction cache
+        reachability*, ``docs/design/PurgeRecoveryContract.md``.
         """
 
         async def _flush_one(storage_inst) -> None:
@@ -5257,38 +5255,22 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     async def _query_done(self):
         """Commit the query cache — ordered and fenced like every other one.
 
-        A cache commit publishes the WHOLE namespace, not this query's row, so
-        it carries whatever extract rows the ingestion pipeline has buffered.
-        Queries run in the same process as the pipeline, so an unordered one
-        here publishes rows whose references are still pending.
+        A cache commit publishes the WHOLE namespace, so this one carries
+        whatever extract rows the pipeline has buffered and must not run
+        unordered. Do not drop the chunk commit to save a round trip: it is
+        not free on every backend, and what it costs and what could narrow it
+        are under *What the OpenSearch KV refresh actually protects* in
+        ``docs/design/PurgeRecoveryContract.md``.
 
-        The extra commit is not free on every backend, and the ordering is not
-        negotiable, so know what it costs: on a snapshot backend it returns at
-        once when nothing is dirty, but ``OpenSearchKVStorage`` refreshes the
-        index unconditionally after the flush, so this adds one refresh round
-        trip on ``text_chunks`` -- usually the largest index -- to EVERY query.
-        Two ways to narrow it, both deferred and both written up under *What
-        the OpenSearch KV refresh actually protects* in
-        ``docs/design/PurgeRecoveryContract.md``: skip the pair when the cache
-        buffer holds no reference-carrying row (this call site only), or skip
-        the REFRESH when the flush wrote nothing (every caller, but it changes
-        the storage's visibility semantics).
+        Never raises over the chunk half — a query must not fail over a commit
+        it did not ask for. A failure there is recorded instead, and the
+        recording quarantines every extract cache row buffered IN THIS
+        PROCESS, not just this query's.
 
-        Non-raising for the chunk half: a query must not fail over a commit it
-        did not ask for. A chunk failure is recorded, and the recording
-        quarantines every extract cache row buffered IN THIS PROCESS -- not
-        just this query's, and not just the failing document's -- because the
-        buffer is shared and a per-item backend cannot say which reference it
-        lost. Query-answer rows are spared (they name no chunk); the extract
-        rows are recomputed on the next run.
-
-        Gated on THIS call's chunk commit and retiring the sticky failure when
-        both halves land, exactly as ``_flush_storages``' chained pair does --
-        it is the same fenced, ordered pair. A worker that only ever serves
-        queries, the ordinary case under gunicorn, runs no other pair site, so
-        a gate reading the sticky flag would return before its own clear and
-        suppress every later query cache commit for the life of the worker
-        after one transient failure.
+        Gate on THIS call's chunk commit, never on the recorded failure: this
+        site returns before its own clear, so reading the record would let one
+        transient failure suppress every later query cache commit for the life
+        of a query-only worker. Retire the record when both halves land.
         """
         if self.text_chunks is None:
             await self.llm_response_cache.index_done_callback()
