@@ -221,6 +221,69 @@ class StorageNameSpace(ABC):
         """
         return None
 
+    async def drop_pending_upserts(
+        self, *, cache_types: set[str] | None = None
+    ) -> int | None:
+        """Discard buffered UPSERTS, keeping buffered deletes.
+
+        The narrow counterpart of ``drop_pending_index_ops``, for a caller
+        abandoning writes that must NOT abandon deletions: a buffered delete
+        is a tombstone some already-returned operation promised, and dropping
+        one is unrecoverable.
+
+        ``cache_types`` restricts the discard to LLM-cache rows of those
+        types; a buffer key that does not parse as a cache key is KEPT. Pass
+        it whenever the reason to discard is reachability, so the discard
+        cannot reach rows no reference can orphan. ``None`` discards every
+        buffered upsert, for a caller abandoning the batch outright.
+
+        Returns tri-state, and a caller MUST distinguish all three by
+        identity, not truthiness: an ``int`` is the number discarded, ``0``
+        means this backend can discard and had nothing buffered, and ``None``
+        means it cannot discard at all, so the caller's writes are still
+        pending and its fallback is to defer them. Reading ``0`` as ``None``
+        reports a loss that did not happen; the reverse reports safety that
+        does not hold.
+
+        Backends that cannot separate upserts from deletes keep the default
+        ``None``. Only ``OpenSearchKVStorage`` overrides it today.
+
+        Why the tombstones, the cache types and the fallback are what they
+        are: *LLM extraction cache reachability* in
+        ``docs/design/PurgeRecoveryContract.md``.
+        """
+        return None
+
+    async def has_pending_index_ops(self) -> bool:
+        """Whether buffered upserts are still waiting for a commit.
+
+        For a caller that is about to DROP this buffer, or to publish another
+        namespace that depends on it, and must not read a successful
+        ``index_done_callback`` as proof that everything landed: a per-item
+        backend can retain retryable failures (408/429/5xx) and return
+        normally. Everywhere that residue heals on the next flush it is
+        accepted (see *LLM extraction cache reachability* in
+        ``docs/design/PurgeRecoveryContract.md``) — ask here only where the
+        buffer is about to be discarded or the process is about to exit.
+
+        "About to exit" means every commit from there on, not just the last
+        one: a shutdown that publishes a dependent namespace BEFORE a later
+        gate can quarantine it has already put the row on disk, where no
+        quarantine reaches it.
+
+        UPSERTS only. A retained tombstone carries no reference and does not
+        make another namespace's rows unreachable.
+
+        The default is ``False``, which is the truth for an immediate-write or
+        snapshot backend (no per-operation buffer, nothing to retain) and an
+        UNIMPLEMENTED answer for the deferred per-item vector storages, which
+        do buffer and do retain. Only ``OpenSearchKVStorage`` overrides it,
+        because only the KV side is asked today. Before querying this on a
+        vector storage, implement it there -- a confident ``False`` over a
+        non-empty buffer is worse than no method at all.
+        """
+        return False
+
     @abstractmethod
     async def drop(self) -> dict[str, str]:
         """Drop all data from storage and clean up resources

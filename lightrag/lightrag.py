@@ -15,7 +15,7 @@ try:
     import httpx
 except Exception:  # pragma: no cover - optional dependency
     httpx = None
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import InitVar, asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from functools import partial
@@ -189,6 +189,7 @@ from lightrag.utils import (
     check_storage_env_vars,
     generate_track_id,
     get_content_summary,
+    get_extract_cache_fence,
     convert_to_user_format,
     logger,
     make_relation_vdb_ids,
@@ -663,6 +664,18 @@ def _run_sync(
         return loop.run_until_complete(coro_factory())
     finally:
         _SYNC_WRAPPER_DRIVES_INLINE.reset(inline_token)
+
+
+# The cache types that are reachable ONLY through an owning chunk's
+# ``llm_cache_list``, and therefore the only ones a failed chunk-reference
+# commit can orphan. ``use_llm_func_with_cache`` records a reference exactly
+# when it is given a ``chunk_id``, which today is the two ``cache_type="extract"``
+# call sites in ``operate.py``; ``summary`` / ``smartheading`` / ``analysis``
+# name no chunk, and ``query`` / ``keywords`` rows hold full LLM answers that
+# no reachability rule covers. Quarantining by this set keeps the blast radius
+# of a chunk-commit failure on the rows it can actually strand. See *LLM
+# extraction cache reachability* in ``docs/design/PurgeRecoveryContract.md``.
+_REFERENCE_CARRYING_CACHE_TYPES: frozenset[str] = frozenset({"extract"})
 
 
 @final
@@ -1233,6 +1246,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     )
     _resolved_summary_language: str = field(
         default=DEFAULT_SUMMARY_LANGUAGE,
+        init=False,
+        repr=False,
+    )
+    # A text_chunks commit has failed and no ordered pair commit has succeeded
+    # since. Set and cleared in ``_flush_storages``; read by the failure
+    # epilogue and the aborting-batch cleanup, which must NOT trust their own
+    # retry of that namespace. See *LLM extraction cache reachability* in
+    # ``docs/design/PurgeRecoveryContract.md``.
+    _chunk_reference_commit_failed: bool = field(
+        default=False,
         init=False,
         repr=False,
     )
@@ -2038,14 +2061,122 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             self._parser_executor = None
         self._parser_shutdown_event = threading.Event()
 
+    async def _commit_cache_pair_before_finalize(self) -> None:
+        """Commit text_chunks then llm_response_cache, ordered, before teardown.
+
+        ``strict_references``, and this is the only caller that passes it: the
+        ordering has to withhold the cache when the chunk commit merely
+        RETURNED with operations still buffered, not only when it failed. The
+        gate before the cache's own finalize cannot cover that -- it runs after
+        this pair, and a row this pair published is already on disk where no
+        quarantine can reach it.
+
+        Best effort: a shutdown must not raise over a commit, and a failure
+        here is already recorded on the instance by ``_flush_storages`` --
+        ``_quarantine_cache_before_finalize`` reads that record next.
+        """
+        pair = [
+            inst
+            for inst in (self.text_chunks, self.llm_response_cache)
+            if inst is not None
+        ]
+        if len(pair) < 2:
+            return
+        try:
+            await self._flush_storages(pair, strict_references=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Ordered cache commit before finalize failed: {e}")
+
+    async def _quarantine_cache_before_finalize(
+        self, *, chunks_finalize_failed: bool
+    ) -> None:
+        """Discard extract cache rows the references can no longer reach.
+
+        Runs immediately before ``llm_response_cache.finalize()``, which on a
+        deferred backend flushes the buffer and thereby publishes the whole
+        namespace. The process is exiting, so there is no next run to publish
+        the references afterwards: a row published here whose reference is not
+        on disk is orphaned permanently.
+
+        Not raising and not skipping the finalize itself: ``finalize`` also
+        releases the backend's client, and skipping it would leak a connection
+        on every backend that does not need this gate at all.
+
+        The gate does NOT close on a snapshot backend, where the discard is a
+        base-class no-op. That residue is recorded in *LLM extraction cache
+        reachability*, ``docs/design/PurgeRecoveryContract.md``.
+        """
+        if self.llm_response_cache is None or self.text_chunks is None:
+            return
+        reason: str | None = None
+        if chunks_finalize_failed:
+            reason = "text_chunks.finalize() failed"
+        elif self._chunk_reference_commit_failed:
+            reason = "a chunk-reference commit failed earlier in this process"
+        else:
+            try:
+                if await cast(
+                    StorageNameSpace, self.text_chunks
+                ).has_pending_index_ops():
+                    reason = "text_chunks operations are still buffered"
+            except Exception as e:
+                logger.error(f"Failed to inspect pending chunk operations: {e}")
+        if reason is None:
+            return
+        try:
+            dropped = await cast(
+                StorageNameSpace, self.llm_response_cache
+            ).drop_pending_upserts(cache_types=set(_REFERENCE_CARRYING_CACHE_TYPES))
+        except Exception as e:
+            logger.error(f"Failed to quarantine LLM cache rows before finalize: {e}")
+            return
+        if dropped is not None:
+            # 0 here is the ordinary case: the ordered pair above already
+            # quarantined them when its chunk half failed.
+            logger.error(
+                f"Chunk references are not on disk at shutdown ({reason}); "
+                f"{dropped} buffered extract cache rows were discarded before the "
+                "final cache flush, and none is left unreachable. They are "
+                "recomputed on the next run"
+            )
+        else:
+            logger.error(
+                f"Chunk references are not on disk at shutdown ({reason}) and this "
+                "backend cannot discard the buffered extract cache rows separately. "
+                "The final cache flush may publish rows whose owning chunk rows never "
+                "reached disk; the process is exiting, so nothing will heal them. "
+                "Deleting the affected documents will not reclaim those cache rows"
+            )
+
     async def finalize_storages(self):
-        """Asynchronously finalize the storages with improved error handling"""
+        """Asynchronously finalize the storages with improved error handling.
+
+        Commits the ``text_chunks`` -> ``llm_response_cache`` pair BEFORE the
+        finalize loop, and gates the cache's own finalize on the references
+        having landed. Finalize is the one commit site with no next run to
+        heal a mistake, and it is not otherwise ordered: the loop swallows a
+        failure and carries on, and several backends flush inside
+        ``finalize()``. On the default backend the loop alone is not even a
+        failure path -- ``JsonKVStorage.finalize`` flushes ``*_cache``
+        namespaces and nothing else, so a dirty ``text_chunks`` is never
+        written while the cache publishes in full. See *LLM extraction cache
+        reachability* in ``docs/design/PurgeRecoveryContract.md``, whose
+        residue table records what this still cannot close.
+        """
         self._shutdown_parser_executor()
         # A release-time queue drive still running at shutdown is
         # cancelled, not awaited: its auto-rescan flag stays armed in the
         # mailbox for the next run to honour.
         await self._cancel_admin_release_drives()
+        # These wrappers own long-lived worker and health-check tasks. Drain
+        # them while the response cache and other storages are still usable;
+        # otherwise closing an asyncio.run()/manual loop after finalize leaves
+        # their queue.get() coroutines pending on the destroyed event loop.
+        await self._shutdown_model_queues()
         if self._storages_status == StoragesStatus.INITIALIZED:
+            await self._commit_cache_pair_before_finalize()
             storages = [
                 ("full_docs", self.full_docs),
                 ("text_chunks", self.text_chunks),
@@ -2068,6 +2199,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             for storage_name, storage in storages:
                 if storage:
                     try:
+                        if storage is self.llm_response_cache:
+                            await self._quarantine_cache_before_finalize(
+                                chunks_finalize_failed=(
+                                    "text_chunks" in failed_finalizations
+                                )
+                            )
                         await storage.finalize()
                         successful_finalizations.append(storage_name)
                         logger.debug(f"Successfully finalized {storage_name}")
@@ -3342,7 +3479,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         if cache_ids and self.llm_response_cache:
             await self.llm_response_cache.delete(cache_ids)
-            await self._flush_storages([self.llm_response_cache])
+            # text_chunks joins the flush so the pair is ordered and fenced:
+            # publishing this namespace publishes every buffered extract row,
+            # not only the ids deleted above.
+            await self._flush_storages([self.text_chunks, self.llm_response_cache])
 
         warning_rows = await self._persist_custom_chunk_recovery_warning(
             doc_id,
@@ -3711,6 +3851,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
           bad cache entry cannot re-flush and re-abort every subsequent batch
           and wedge the pipeline.
 
+        The cache's drop is ALWAYS upserts-only, on both paths: a buffered
+        cache delete is a tombstone an already-returned deletion promised, a
+        flush that returns does not prove it landed, and by the time one is
+        buffered the document it belongs to is already gone.
+
         Backends that materialize writes in memory and only persist on a
         later save (FAISS / Nano) discard just the pending buffer here and do
         NOT roll back already-materialized-but-unsaved writes: the FAILED
@@ -3721,31 +3866,201 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Best-effort throughout: a flush/clear failure is logged, not raised,
         so cleanup never masks the original abort cause.
         """
-        for storage_inst in self._index_storages():
-            if skip_enqueue_owned and (
-                storage_inst is self.full_docs or storage_inst is self.doc_status
-            ):
-                # enqueue-owned (see docstring): skipped for the file pipeline
-                # to avoid racing a concurrent enqueue; direct callers pass
-                # skip_enqueue_owned=False so a poisoned full_docs op is cleared.
-                continue
-            if storage_inst is self.llm_response_cache:
-                # Persist what can still be written, then fall through to drop
-                # whatever could not (a poisoned item) so it cannot wedge the
-                # next batch.
+        # Reference before row, one last time, and BEFORE the loop: the loop
+        # reaches text_chunks first and only DROPS its buffer, so a flush
+        # placed beside the cache flush below would find nothing left. Commit
+        # the chunk rows carrying this batch's llm_cache_list entries first, or
+        # the cache flush publishes rows whose only reference is in a buffer
+        # this cleanup is about to discard.
+        #
+        # When that commit does not land, the cache flush below is skipped:
+        # here the buffer is dropped straight after, so the cached LLM results
+        # are lost rather than deferred -- an accepted inconsistency, because
+        # they are recomputed on the next run. An unreachable row holding
+        # document text is not. See *LLM extraction cache reachability* in the
+        # contract doc, ``docs/design/PurgeRecoveryContract.md``.
+        # One fence over the whole cleanup: the pair below is the same shape
+        # as _flush_storages', and a direct caller (_insert_done_with_cleanup)
+        # can run this while the pipeline is live in the same process. The
+        # pipeline's own workers are already joined when it reaches here, so
+        # the acquire is normally uncontended.
+        async with (
+            get_extract_cache_fence(self.text_chunks)
+            if (self.text_chunks is not None)
+            else nullcontext()
+        ):
+            # Captured BEFORE the flush below: that flush is itself a retry of a
+            # buffer the backend may have drained when it dropped the failed
+            # operation, so it can report success over a reference that is gone.
+            references_committed = not self._chunk_reference_commit_failed
+            if self.text_chunks is not None and references_committed:
                 try:
-                    await cast(StorageNameSpace, storage_inst).index_done_callback()
+                    committed = await cast(
+                        StorageNameSpace, self.text_chunks
+                    ).index_done_callback()
+                    references_committed = committed is not False
+                    if (
+                        references_committed
+                        and await cast(
+                            StorageNameSpace, self.text_chunks
+                        ).has_pending_index_ops()
+                    ):
+                        # A successful return is not proof here. A per-item
+                        # backend RETAINS retryable failures (408/429/5xx),
+                        # logs a warning and returns normally -- accepted
+                        # everywhere the retained ops replay on the next
+                        # flush, but this cleanup DROPS that buffer a few
+                        # lines below, so nothing ever replays them. Treat the
+                        # retained reference as uncommitted: the cache is not
+                        # flushed and its extract rows are quarantined instead
+                        # of published over a buffer about to be discarded.
+                        references_committed = False
                 except Exception as e:
-                    logger.error(f"Failed to persist LLM cache on abort: {e}")
-            try:
-                await cast(StorageNameSpace, storage_inst).drop_pending_index_ops()
-            except Exception as e:
+                    logger.error(
+                        f"Failed to persist chunk cache references on abort: {e}"
+                    )
+                    references_committed = False
+            if not references_committed:
                 logger.error(
-                    f"Failed to discard pending ops on "
-                    f"{type(storage_inst).__name__}: {e}"
+                    "Skipping the LLM cache flush on abort: this batch's chunk "
+                    "references are not on disk (the commit failed, or it returned "
+                    "with operations still buffered) and this cleanup drops both "
+                    "buffers next. Cached results from healthy documents in the "
+                    "batch are lost with it and recomputed on the next run"
                 )
 
-    async def _flush_storages(self, storages: list) -> None:
+            for storage_inst in self._index_storages():
+                if skip_enqueue_owned and (
+                    storage_inst is self.full_docs or storage_inst is self.doc_status
+                ):
+                    # enqueue-owned (see docstring): skipped for the file pipeline
+                    # to avoid racing a concurrent enqueue; direct callers pass
+                    # skip_enqueue_owned=False so a poisoned full_docs op is cleared.
+                    continue
+                if storage_inst is self.llm_response_cache and references_committed:
+                    # Persist what can still be written, then fall through to drop
+                    # whatever could not (a poisoned item) so it cannot wedge the
+                    # next batch.
+                    try:
+                        await cast(StorageNameSpace, storage_inst).index_done_callback()
+                    except Exception as e:
+                        logger.error(f"Failed to persist LLM cache on abort: {e}")
+                try:
+                    if storage_inst is self.llm_response_cache:
+                        # The cache NEVER goes through drop_pending_index_ops:
+                        # that takes the buffered DELETES with the upserts, and
+                        # a cache tombstone is a promise an already-returned
+                        # ``adelete_by_doc_id(delete_llm_cache=True)`` made.
+                        # The flush above does not clear them either -- a
+                        # per-item backend RETAINS a retryable delete and
+                        # returns normally -- so a healthy reference commit is
+                        # no reason to drop one. By then the document, its
+                        # status and its chunks are gone, so discarding the
+                        # tombstone leaves the row holding the document prompt
+                        # with no recovery path at all.
+                        #
+                        # Which UPSERTS go still depends on the references.
+                        # Everything when they landed: the batch is being
+                        # abandoned and those rows are recomputable. Only the
+                        # reference-carrying types when they did not, because
+                        # the rest name no chunk, cannot be orphaned, and the
+                        # next cache commit publishes them.
+                        await cast(StorageNameSpace, storage_inst).drop_pending_upserts(
+                            cache_types=(
+                                None
+                                if references_committed
+                                else set(_REFERENCE_CARRYING_CACHE_TYPES)
+                            )
+                        )
+                    else:
+                        await cast(
+                            StorageNameSpace, storage_inst
+                        ).drop_pending_index_ops()
+                except Exception as e:
+                    logger.error(
+                        f"Failed to discard pending ops on "
+                        f"{type(storage_inst).__name__}: {e}"
+                    )
+
+    async def _record_chunk_reference_commit_failure(self, reason: str) -> None:
+        """Record a failed `text_chunks` commit and quarantine what it orphaned.
+
+        Two backends, two mechanisms, one trigger — call this wherever a chunk
+        commit fails, never set the flag or drop the buffer separately:
+
+        * On a per-item backend (`OpenSearchKVStorage`) a raise means the
+          operation was PERMANENTLY rejected and already removed from the
+          buffer: `_flush_pending_kv_ops` retains retryable failures silently
+          and raises only for the rest. The reference is gone for good, so the
+          buffered cache rows naming it can never become reachable — deferring
+          them only postpones publishing an orphan, which the next successful
+          pair commit would do. Their UPSERTS are dropped instead; buffered
+          deletes are kept, being tombstones an already-returned deletion
+          promised.
+        * On a snapshot backend (`JsonKVStorage`) the drop is a base-class
+          no-op and the references are still in the shared dict, so the flag's
+          deferral is the mechanism that works: the next pair commit publishes
+          both.
+
+        Best effort: a failure here is logged, never raised, so it cannot mask
+        the flush failure that brought us in. See *LLM extraction cache
+        reachability* in the contract doc,
+        ``docs/design/PurgeRecoveryContract.md``.
+        """
+        self._chunk_reference_commit_failed = True
+        if self.llm_response_cache is None:
+            return
+        try:
+            # Upserts ONLY. ``drop_pending_index_ops`` would take the buffered
+            # DELETES with them, and a cache tombstone is a promise some
+            # already-returned operation made: ``adelete_by_doc_id`` with
+            # ``delete_llm_cache=True`` buffers them, flushes with a plain
+            # ``_insert_done`` precisely so they are not discarded, and reports
+            # success after logging a flush error. Dropping one there would
+            # leave the rows this whole ordering exists to make deletable on
+            # disk with nothing left to find them. Backends that cannot
+            # separate the two do nothing and fall back to deferral.
+            #
+            # Reference-carrying types ONLY: the buffer is shared by the whole
+            # process, so an untyped drop would also take the query-answer rows
+            # that a concurrent (or this very) query just paid an LLM call for,
+            # and those name no chunk at all.
+            dropped = await cast(
+                StorageNameSpace, self.llm_response_cache
+            ).drop_pending_upserts(cache_types=set(_REFERENCE_CARRYING_CACHE_TYPES))
+        except Exception as e:
+            logger.error(f"Failed to quarantine pending LLM cache rows: {e}")
+        else:
+            # Tri-state, by identity: None is "this backend cannot discard",
+            # 0 is "it can and had nothing buffered". Reading 0 as the former
+            # is the defect this whole log split exists to avoid -- it would
+            # describe a snapshot backend's deferral on a per-item one that
+            # had simply already been emptied.
+            if dropped is None:
+                logger.error(
+                    f"Chunk cache references did not commit ({reason}); the LLM cache "
+                    "commit is deferred until a full ordered pair lands. Nothing was "
+                    "discarded: this backend keeps the rows and their references "
+                    "together, so the next pair commit publishes both"
+                )
+            elif dropped:
+                logger.error(
+                    f"Chunk cache references did not commit ({reason}); discarded "
+                    f"{dropped} buffered extract cache rows that name them -- every "
+                    "one buffered in this process, not just the failing document's. "
+                    "They are recomputed on the next run; an unreachable row holding "
+                    "document text would not be"
+                )
+            else:
+                logger.error(
+                    f"Chunk cache references did not commit ({reason}); no extract "
+                    "cache rows were buffered, so nothing is unreachable and nothing "
+                    "was discarded"
+                )
+
+    async def _flush_storages(
+        self, storages: list, *, strict_references: bool = False
+    ) -> None:
         """Flush the given storage instances — a narrow, named flush barrier.
 
         Failure paths and write-ahead barriers must be able to
@@ -3760,6 +4075,19 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         ``CancelledError`` propagates as-is. A flush that returns an explicit
         ``False`` -- a DECLINED commit, which discards the pending mutation --
         counts as a failure here; see ``_flush_one``.
+
+        The one exception to "every flush runs" is ``llm_response_cache``, which
+        is chained AFTER ``text_chunks`` and therefore skipped when that one
+        fails -- deliberately, and only a deferral: both buffers keep their
+        pending state for the next commit, and the aborting-batch cleanup in
+        ``_discard_pending_index_ops`` flushes the cache before dropping it.
+
+        ``strict_references`` additionally withholds the cache when the chunk
+        commit RETURNED but left operations buffered. Pass it ONLY from a
+        caller that has no next commit -- ``_commit_cache_pair_before_finalize``
+        is the only one today. Every other caller must leave it False; why
+        that is not merely a conservative default is in *LLM extraction cache
+        reachability*, ``docs/design/PurgeRecoveryContract.md``.
         """
 
         async def _flush_one(storage_inst) -> None:
@@ -3794,6 +4122,21 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         "pending mutation"
                     )
             except Exception as e:
+                if storage_inst is self.text_chunks:
+                    # Sticky, because the failure does not survive in anything
+                    # else. A per-item backend DROPS a permanently-failed
+                    # operation from its buffer before raising, so every later
+                    # retry of this namespace finds an empty buffer and reports
+                    # success -- the failure epilogue's and the aborting-batch
+                    # cleanup's alike. The exception cannot carry it either: it
+                    # is only one of several gathered results and need not be
+                    # the one that propagates. Cleared only by a full
+                    # ordered pair commit -- _flush_cache_after_references
+                    # below, or _query_done -- since only that proves the
+                    # pair is consistent again.
+                    await self._record_chunk_reference_commit_failure(
+                        f"{type(storage_inst).__name__} flush failed"
+                    )
                 namespace = getattr(storage_inst, "final_namespace", None) or getattr(
                     storage_inst, "namespace", ""
                 )
@@ -3806,8 +4149,73 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # the abort decision, and a second failing sibling would surface as a
         # "Task exception was never retrieved" warning. Collecting all results
         # first makes teardown deterministic and lets us report every failure.
+        async def _flush_cache_after_references() -> None:
+            # Reference before row, applied at the commit layer. An extract
+            # cache row is reachable only through the owning chunk's
+            # llm_cache_list, so committing the cache while the chunk rows are
+            # still buffered can strand a row holding document text: on
+            # OpenSearch a permanent bulk failure DROPS the chunk operation
+            # before raising, so the reference is not even retained for a
+            # retry. Chaining just this pair keeps every other namespace
+            # concurrent, so the ordering costs one flush of latency rather
+            # than a serialised commit. See *LLM extraction cache
+            # reachability* in the contract doc,
+            # ``docs/design/PurgeRecoveryContract.md``.
+            # Fence out the extraction writers for the duration of the pair.
+            # Chaining orders the two COMMITS; it does not stop a concurrent
+            # document from attaching and writing in the gap between them,
+            # which on a snapshot-at-commit backend publishes a cache row whose
+            # reference postdates the chunk snapshot. The writer side is in
+            # ``use_llm_func_with_cache``; the lock and why an in-process one
+            # suffices are in ``get_extract_cache_fence``.
+            async with get_extract_cache_fence(self.text_chunks):
+                await _flush_one(self.text_chunks)
+                if (
+                    strict_references
+                    and await cast(
+                        StorageNameSpace, self.text_chunks
+                    ).has_pending_index_ops()
+                ):
+                    # The commit returned, but a per-item backend kept its
+                    # retryable failures buffered. For a caller with a next
+                    # commit that is an accepted residue -- the retained
+                    # operations replay and the pair converges. This caller has
+                    # none: publishing the cache here strands its extract rows
+                    # for good, and the quarantine downstream cannot reach a
+                    # row already on disk. Record it instead, which also
+                    # quarantines the rows that are still buffered, and leave
+                    # the cache uncommitted.
+                    await self._record_chunk_reference_commit_failure(
+                        "chunk operations still buffered at the final commit"
+                    )
+                    return
+                await _flush_one(self.llm_response_cache)
+            # Both landed, in order: the namespaces are consistent again and
+            # the sticky failure above is retired. Only a full ordered pair
+            # may clear it (``_query_done`` is the other one) -- a standalone
+            # text_chunks flush elsewhere proves nothing, since it may be
+            # retrying a buffer the backend already drained.
+            self._chunk_reference_commit_failed = False
+
+        pending = [inst for inst in storages if inst is not None]
+        # Identity, never ``in``: the storage classes are dataclasses, so ``==``
+        # compares fields and two distinct namespaces can compare equal.
+        chain_pair = (
+            self.text_chunks is not None
+            and any(inst is self.text_chunks for inst in pending)
+            and self.llm_response_cache is not None
+            and any(inst is self.llm_response_cache for inst in pending)
+        )
+        if chain_pair:
+            pending = [
+                inst
+                for inst in pending
+                if inst is not self.text_chunks and inst is not self.llm_response_cache
+            ]
+
         results = await asyncio.gather(
-            *[_flush_one(inst) for inst in storages if inst is not None],
+            *[_flush_one(inst) for inst in pending],
+            *([_flush_cache_after_references()] if chain_pair else []),
             return_exceptions=True,
         )
         errors = [r for r in results if isinstance(r, BaseException)]
@@ -3818,6 +4226,27 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             for exc in errors:
                 if isinstance(exc, asyncio.CancelledError):
                     raise exc
+            # Report the text_chunks failure preferentially. The chained pair
+            # is appended after the other tasks, so gather would otherwise put
+            # an unrelated namespace first and relegate the reference failure
+            # to a log line -- which is the one an operator has to act on,
+            # since it is the one that stops the cache from being committed.
+            # Diagnostics only: the gate reads the sticky flag above, not this.
+            chunk_namespace = (
+                getattr(self.text_chunks, "final_namespace", None)
+                or getattr(self.text_chunks, "namespace", "")
+                if self.text_chunks is not None
+                else None
+            )
+            errors.sort(
+                key=lambda exc: (
+                    not (
+                        isinstance(exc, IndexFlushError)
+                        and chunk_namespace is not None
+                        and exc.namespace == chunk_namespace
+                    )
+                )
+            )
             for extra in errors[1:]:
                 logger.error(f"Additional index flush failure: {extra}")
             raise errors[0]
@@ -4837,7 +5266,64 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         )
 
     async def _query_done(self):
-        await self.llm_response_cache.index_done_callback()
+        """Commit the query cache — ordered and fenced like every other one.
+
+        A cache commit publishes the WHOLE namespace, so this one carries
+        whatever extract rows the pipeline has buffered and must not run
+        unordered. Do not drop the chunk commit to save a round trip: it is
+        not free on every backend, and what it costs and what could narrow it
+        are under *What the OpenSearch KV refresh actually protects* in
+        ``docs/design/PurgeRecoveryContract.md``.
+
+        Never raises over the chunk half — a query must not fail over a commit
+        it did not ask for. A failure there is recorded instead, and the
+        recording quarantines every extract cache row buffered IN THIS
+        PROCESS, not just this query's.
+
+        Gate on THIS call's chunk commit, never on the recorded failure: this
+        site returns before its own clear, so reading the record would let one
+        transient failure suppress every later query cache commit for the life
+        of a query-only worker. Retire the record when both halves land.
+        """
+        if self.text_chunks is None:
+            await self.llm_response_cache.index_done_callback()
+            return
+        async with get_extract_cache_fence(self.text_chunks):
+            try:
+                committed = await self.text_chunks.index_done_callback()
+            except Exception as e:
+                logger.error(
+                    f"Failed to commit chunk references before query cache: {e}"
+                )
+                await self._record_chunk_reference_commit_failure("query-path flush")
+                return
+            if committed is False:
+                # A DECLINED commit discarded the mutation, so the references
+                # are not on disk either -- recorded like every other failed
+                # chunk commit, or the next ordered commit retries an empty
+                # buffer, reports success and publishes the row.
+                await self._record_chunk_reference_commit_failure(
+                    "query-path commit declined"
+                )
+                logger.error(
+                    "Skipping the query cache commit: chunk references are not on "
+                    "disk, so it would publish extract rows nothing can reach"
+                )
+                return
+            # Gated on THIS call's chunk commit, not on the sticky flag. The
+            # flag is the deferral mechanism for OTHER sites, which commit the
+            # cache without committing the references first; here the
+            # references were just committed, which is precisely the event the
+            # deferral was waiting for. Reading the flag instead would make
+            # this the one site that can never satisfy its own gate: it
+            # returns before the clear below, so a query-only worker would
+            # suppress every later query cache commit for the rest of its life
+            # over one transient failure.
+            await self.llm_response_cache.index_done_callback()
+            # The pair landed in order, so the namespaces are consistent again
+            # and a flag set by an earlier failure is retired here too. Only a
+            # full pair may clear it -- see the docstring.
+            self._chunk_reference_commit_failed = False
 
     async def _update_delete_retry_state(
         self,
@@ -4960,14 +5446,31 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             return
 
         try:
-            # Clear all cache using drop method
-            success = await self.llm_response_cache.drop()
-            if success:
-                logger.info("Cleared all cache")
-            else:
-                logger.warning("Failed to clear all cache")
+            # Under the fence for the whole drop, not just the flush after it.
+            # ``JsonKVStorage.drop`` clears under its namespace lock, RELEASES
+            # it, and only then commits; an extraction attaching and writing in
+            # that gap has its row published by the drop's own commit while the
+            # reference stays in memory.
+            #
+            # This does NOT make clearing the cache safe during ingestion --
+            # it still wipes rows that in-flight chunks already reference, and
+            # ``drop`` requires the caller to hold the pipeline ``busy``
+            # reservation, which this path does not. That is tracked separately
+            # (folding this into the destructive clear endpoint); the fence
+            # only keeps the publish from straddling a writer's pair.
+            async with (
+                get_extract_cache_fence(self.text_chunks)
+                if self.text_chunks is not None
+                else nullcontext()
+            ):
+                # Clear all cache using drop method
+                success = await self.llm_response_cache.drop()
+                if success:
+                    logger.info("Cleared all cache")
+                else:
+                    logger.warning("Failed to clear all cache")
 
-            await self.llm_response_cache.index_done_callback()
+                await self.llm_response_cache.index_done_callback()
 
         except Exception as e:
             logger.error(f"Error while clearing cache: {e}")
