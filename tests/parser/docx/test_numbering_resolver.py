@@ -178,6 +178,73 @@ def _label(r: NumberingResolver, count: int) -> str:
     return r._format_label("100", 0, r.abstract_nums["10"])
 
 
+@pytest.mark.parametrize("num_fmt", ["lowerLetter", "upperLetter"])
+@pytest.mark.parametrize("lvl_text", ["%1.", "(%1)", "%1)"])
+def test_letter_labels_preserve_ordinals_after_first_alphabet(num_fmt, lvl_text):
+    from lightrag.parser.docx.smart_heading.style_key import classify_numbering
+
+    resolver = _fmt_resolver(num_fmt, lvl_text)
+    for count in range(1, 79):
+        label = resolver.get_label(_para(num_id="100", ilvl=0))
+        match = classify_numbering(
+            f"{label} Heading", numbering_format=resolver.last_label_format
+        )
+        assert match is not None
+        assert match.ordinal == count
+        if count in {1, 26, 27, 28, 52, 53, 78}:
+            letters = {
+                1: "a",
+                26: "z",
+                27: "aa",
+                28: "bb",
+                52: "zz",
+                53: "aaa",
+                78: "zzz",
+            }[count]
+            if num_fmt == "upperLetter":
+                letters = letters.upper()
+            assert label == lvl_text.replace("%1", letters)
+
+
+@pytest.mark.parametrize("num_fmt", ["lowerLetter", "upperLetter"])
+@pytest.mark.parametrize("count", [-1, 0, 79, 2147483647])
+@pytest.mark.parametrize("override", [False, True])
+def test_large_letter_starts_fall_back_before_allocating(num_fmt, count, override):
+    resolver = _fmt_resolver(num_fmt, "%1.")
+    resolver._warnings = {}
+    if override:
+        resolver.start_overrides = {"100": {0: count}}
+    else:
+        resolver.abstract_nums["10"][0]["start"] = count
+    assert resolver.get_label(_para(num_id="100", ilvl=0)) == f"{count}."
+    assert resolver.out_of_range_formats == ({num_fmt} if count > 78 else set())
+    assert resolver._warnings == (
+        {"numbering_out_of_range_formats": 1} if count > 78 else {}
+    )
+
+
+def test_read_pass_retains_letter_provenance_and_clears_it_on_plain_text():
+    from docx import Document
+
+    from lightrag.parser.docx.parse_document import _read_document_records
+    from lightrag.parser.docx.smart_heading.features import StyleAttributes
+
+    doc = Document()
+    para = doc.add_paragraph("Heading")
+    para._p.get_or_add_pPr().append(
+        _para(num_id="100", ilvl=0).find(f"{{{W}}}pPr/{{{W}}}numPr")
+    )
+    doc.add_paragraph("II. Typed Roman heading")
+    resolver = _fmt_resolver("lowerLetter", "%1.")
+    resolver.abstract_nums["10"][0]["start"] = 35
+    records = _read_document_records(
+        doc, resolver, {}, None, {}, style_attributes=StyleAttributes()
+    )
+    assert records[0].text == "ii. Heading"
+    assert records[0].numbering_format == "lowerLetter"
+    assert records[1].numbering_format is None
+
+
 # The counting families all render 一/二/十/十一/… — [MS-DOCX] gives
 # japaneseCounting as 一,二,三 and chineseCounting / taiwaneseCounting as
 # 一 (1) / 十 (10). Chinese-locale Word writes 一二三 auto-numbering as
