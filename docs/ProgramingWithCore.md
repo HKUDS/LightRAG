@@ -69,10 +69,10 @@ Notes:
 | -------------- | ---------- | ----------------- | ------------- |
 | **working_dir** | `str` | Directory where the cache will be stored | `./rag_storage` |
 | **workspace** | str | Workspace name for data isolation between different LightRAG Instances | |
-| **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage`,`OpenSearchKVStorage` | `JsonKVStorage` |
-| **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage`,`OpenSearchVectorDBStorage` | `NanoVectorDBStorage` |
-| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`PGTableGraphStorage`,`AGEStorage`,`OpenSearchGraphStorage` | `NetworkXStorage` |
-| **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage`,`OpenSearchDocStatusStorage` | `JsonDocStatusStorage` |
+| **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage`,`OpenSearchKVStorage`,`HologresKVStorage` | `JsonKVStorage` |
+| **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage`,`OpenSearchVectorDBStorage`,`HologresVectorStorage` | `NanoVectorDBStorage` |
+| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`PGTableGraphStorage`,`AGEStorage`,`OpenSearchGraphStorage`,`HologresGraphStorage`,`HologresAGEGraphStorage` | `NetworkXStorage` |
+| **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage`,`OpenSearchDocStatusStorage`,`HologresDocStatusStorage` | `JsonDocStatusStorage` |
 | **chunk_token_size** | `int` | Maximum token size per chunk when splitting documents | `1200` |
 | **chunk_overlap_token_size** | `int` | Overlap token size between two chunks when splitting documents | `100` |
 | **embedding_chunk_overlap_token_size** | `int` | Overlap token size the embedding hard fallback borrows from the previous window when a chunk is still over the embedding model's context limit after chunking. Independent from `chunk_overlap_token_size` (some chunking strategies, e.g. V, deliberately zero that one out for unrelated reasons); `0` disables the fallback's overlap; negative values raise `ValueError` at construction. Configured by env var `EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE`. | `100` |
@@ -722,6 +722,7 @@ PGKVStorage          Postgres
 RedisKVStorage       Redis
 MongoKVStorage       MongoDB
 OpenSearchKVStorage  OpenSearch
+HologresKVStorage    Hologres
 ```
 
 **GRAPH_STORAGE**
@@ -732,6 +733,8 @@ PGGraphStorage           PostgreSQL with AGE plugin
 PGTableGraphStorage      PostgreSQL, plain tables (no AGE, no extensions)
 MemgraphStorage          Memgraph
 OpenSearchGraphStorage   OpenSearch
+HologresGraphStorage     Hologres, two shared tables
+HologresAGEGraphStorage Hologres, embedded Apache AGE with automatic fallback
 ```
 
 > Testing has shown that Neo4J delivers superior performance in production environments compared to PostgreSQL with AGE plugin.
@@ -752,6 +755,7 @@ FaissVectorDBStorage        Faiss
 QdrantVectorDBStorage       Qdrant
 MongoVectorDBStorage        MongoDB
 OpenSearchVectorDBStorage   OpenSearch
+HologresVectorStorage       Hologres
 ```
 
 #### Graph-only ingestion
@@ -833,6 +837,7 @@ JsonDocStatusStorage        JsonFile (default)
 PGDocStatusStorage          Postgres
 MongoDocStatusStorage       MongoDB
 OpenSearchDocStatusStorage  OpenSearch
+HologresDocStatusStorage    Hologres
 ```
 
 Example connection configurations for each storage type can be found in the repository's `env.example` file. The database instance in the connection string must be created beforehand — LightRAG only creates tables within the instance, not the instance itself.
@@ -1067,6 +1072,40 @@ OPENAI_API_KEY=your-api-key \
 lightrag-server
 ```
 
+#### Using Hologres Storage
+
+Hologres 5.0+ provides an all-in-one backend for KV, vector, graph, and document-status storage. The default graph backend uses two shared tables; `HologresAGEGraphStorage` optionally uses embedded Apache AGE and automatically falls back to the two-table backend when its capability probe fails.
+
+**Configuration** (see [HologresStorageGuide.md](./HologresStorageGuide.md) for the full reference and [中文指南](./HologresStorageGuide-zh.md)):
+```bash
+export HOLOGRES_HOST=example.hologres.aliyuncs.com
+export HOLOGRES_PORT=80
+export HOLOGRES_USER=your_username
+export HOLOGRES_PASSWORD=your_password
+export HOLOGRES_DATABASE=your_database
+export HOLOGRES_SCHEMA=lightrag
+export LIGHTRAG_KV_STORAGE=HologresKVStorage
+export LIGHTRAG_VECTOR_STORAGE=HologresVectorStorage
+export LIGHTRAG_GRAPH_STORAGE=HologresGraphStorage
+export LIGHTRAG_DOC_STATUS_STORAGE=HologresDocStatusStorage
+```
+
+**Usage**:
+```python
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    workspace="project_a",
+    llm_model_func=your_llm_func,
+    embedding_func=your_embed_func,
+    kv_storage="HologresKVStorage",
+    vector_storage="HologresVectorStorage",
+    graph_storage="HologresGraphStorage",
+    doc_status_storage="HologresDocStatusStorage",
+)
+```
+
+Hologres uses the common `WORKSPACE`; there is no separate `HOLOGRES_WORKSPACE`.
+
 
 ## Data Isolation Between LightRAG Instances
 
@@ -1078,6 +1117,8 @@ The `workspace` parameter ensures data isolation between different LightRAG inst
 | `RedisKVStorage`, `MilvusVectorDBStorage`, `MongoKVStorage`, `MongoVectorDBStorage`, `MongoGraphStorage`, `PGGraphStorage` | Workspace prefix on collection name |
 | `QdrantVectorDBStorage` | Payload-based partitioning (Qdrant multitenancy) |
 | `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage`, `PGTableGraphStorage` | `workspace` field in tables |
+| `HologresKVStorage`, `HologresVectorStorage`, `HologresGraphStorage`, `HologresDocStatusStorage` | `workspace` field in tables |
+| `HologresAGEGraphStorage` | One physical AGE graph per workspace |
 | `Neo4JStorage` | Labels |
 | `OpenSearch*` | Index name prefixes |
 

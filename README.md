@@ -76,6 +76,7 @@
 ---
 
 ## 🎉 News
+- [2026.09]🎯[New Feature]: Integrated **Hologres** as an all-in-one storage backend, with optional Apache AGE graph storage.
 - [2026.07]🎯[New Feature]: Add **Smart Heading** recognition feature for word documents.
 - [2026.05]🎯[New Feature]: **Merge RagAnything into LightRAG**🎉. Multimodal content parsing and extraction via **MinerU / Docling** services.
 - [2026.05]🎯[New Feature]: Introducing four selectable text chunking strategies: `Fix`, `Recursive`, `Vector`, and `Paragraph`.
@@ -359,7 +360,7 @@ LightRAG requires four types of backend storage:
 - **GRAPH_STORAGE**: Used to save the knowledge graph.
 - **DOC_STATUS_STORAGE**: Used to store the document list.
 
-By default, LightRAG's storage backends are file-persisted, in-memory databases. These default storages are intended only for development and debugging, and are not suitable for production. In a production environment, if you prefer a single backend to handle all four storage types, you can choose PostgreSQL, MongoDB, or OpenSearch. Alternatively, you can select specialized databases for vector or graph storage, such as using Milvus or Qdrant for vector storage, and Neo4j or Memgraph for graph storage.
+By default, LightRAG's storage backends are file-persisted, in-memory databases. These default storages are intended only for development and debugging, and are not suitable for production. In a production environment, if you prefer a single backend to handle all four storage types, you can choose Hologres, PostgreSQL, MongoDB, or OpenSearch. Alternatively, you can select specialized databases for vector or graph storage, such as using Milvus or Qdrant for vector storage, and Neo4j or Memgraph for graph storage.
 
 ### Other Important Configurations for Document Processing
 
@@ -512,6 +513,7 @@ Entries marked 🇨🇳 also ship a Chinese translation as `*-zh.md` in the same
 | [LLMProviderOptions.md](./docs/LLMProviderOptions.md) | Complete reference for provider generation options (`OPENAI_LLM_*`, `OLLAMA_LLM_*`, `GEMINI_LLM_*`, `BEDROCK_LLM_*`, `*_EMBEDDING_*`) |
 | [AsymmetricEmbedding.md](./docs/AsymmetricEmbedding.md) | Query/document asymmetric embedding (`EMBEDDING_ASYMMETRIC`) and per-model prefixes |
 | [MilvusConfigurationGuide.md](./docs/MilvusConfigurationGuide.md) | Tuning Milvus index parameters through `vector_db_storage_cls_kwargs` |
+| [HologresStorageGuide.md](./docs/HologresStorageGuide.md) [🇨🇳](./docs/HologresStorageGuide-zh.md) | Using Hologres for all four storage roles, selecting the graph backend, and running offline/live tests |
 
 **SDK and Development**
 
