@@ -1219,7 +1219,12 @@ async def test_finalize_quarantines_extract_rows_when_the_chunk_commit_failed(
 
 @pytest.mark.asyncio
 async def test_finalize_quarantines_when_chunk_ops_are_merely_retained(tmp_path):
-    """A successful chunk commit that retained operations is not proof here."""
+    """A successful chunk commit that retained operations is not proof here.
+
+    Quarantined twice: once by the strict pair before the loop, once by the
+    gate before the cache's finalize. Both are needed — the pair's is the one
+    that runs before anything could be published.
+    """
     rag = await _make_rag(tmp_path)
     chunks = _SpyStorage("text_chunks", pending_index_ops=True)
     cache = _SpyStorage("llm_cache", dropped_upsert_count=1)
@@ -1228,7 +1233,7 @@ async def test_finalize_quarantines_when_chunk_ops_are_merely_retained(tmp_path)
 
     await rag.finalize_storages()
 
-    assert cache.drop_upsert_calls == 1
+    assert cache.drop_upsert_calls >= 1
 
 
 @pytest.mark.asyncio
@@ -1363,6 +1368,63 @@ async def test_the_aborting_cleanup_keeps_the_answer_rows_it_cannot_orphan(
         assert cache.published == {}
         # The tombstone an already-returned deletion promised is still there.
         assert cache.pending_deletes == {"default:extract:gone"}
+    finally:
+        rag.text_chunks = None
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_the_shutdown_pair_withholds_the_cache_over_retained_chunk_ops(
+    tmp_path,
+):
+    """A returning chunk commit that kept operations buffered is not proof here.
+
+    A per-item backend retains its retryable failures and returns normally.
+    Everywhere with a next commit that is an accepted residue: the retained
+    operations replay and the pair converges. Shutdown has no next commit, and
+    the gate before the cache's own finalize cannot undo this — a row this
+    pair publishes is already on disk, where no quarantine reaches it.
+    """
+    rag = await _make_rag(tmp_path)
+    rec: list = []
+    chunks = _SpyStorage("text_chunks", recorder=rec, pending_index_ops=True)
+    cache = _SpyStorage("llm_cache", recorder=rec, dropped_upsert_count=3)
+    rag.text_chunks = chunks
+    rag.llm_response_cache = cache
+
+    await rag.finalize_storages()
+
+    # Asserted first: a regression fails on the published row, not on a
+    # missing call to the mechanism that prevents it.
+    assert ("llm_cache", "flush") not in rec
+    assert cache.index_done_calls == 0
+    # The still-buffered extract rows are quarantined instead.
+    assert cache.drop_upsert_calls >= 1
+    assert all(names == {"extract"} for names in cache.drop_upsert_cache_types)
+    assert ("text_chunks", "flush") in rec
+
+
+@pytest.mark.asyncio
+async def test_the_runtime_pair_still_accepts_retained_chunk_ops(tmp_path):
+    """Stability: the strict gate must not leak into the runtime path.
+
+    There the retained operations replay on the next flush, and withholding
+    the cache would make this ordering stricter than the pipeline's own
+    PROCESSED write, which acknowledges the identical buffered flush.
+    """
+    rag = await _make_rag(tmp_path)
+    try:
+        rec: list = []
+        chunks = _SpyStorage("text_chunks", recorder=rec, pending_index_ops=True)
+        cache = _SpyStorage("llm_cache", recorder=rec)
+        rag.text_chunks = chunks
+        rag.llm_response_cache = cache
+
+        await rag._flush_storages([chunks, cache])
+
+        assert cache.index_done_calls == 1
+        assert cache.drop_upsert_calls == 0
+        assert rag._chunk_reference_commit_failed is False
     finally:
         rag.text_chunks = None
         await rag.finalize_storages()

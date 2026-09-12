@@ -2064,6 +2064,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     async def _commit_cache_pair_before_finalize(self) -> None:
         """Commit text_chunks then llm_response_cache, ordered, before teardown.
 
+        ``strict_references``, and this is the only caller that passes it: the
+        ordering has to withhold the cache when the chunk commit merely
+        RETURNED with operations still buffered, not only when it failed. The
+        gate before the cache's own finalize cannot cover that -- it runs after
+        this pair, and a row this pair published is already on disk where no
+        quarantine can reach it.
+
         Best effort: a shutdown must not raise over a commit, and a failure
         here is already recorded on the instance by ``_flush_storages`` --
         ``_quarantine_cache_before_finalize`` reads that record next.
@@ -2076,7 +2083,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         if len(pair) < 2:
             return
         try:
-            await self._flush_storages(pair)
+            await self._flush_storages(pair, strict_references=True)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -4038,7 +4045,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     "was discarded"
                 )
 
-    async def _flush_storages(self, storages: list) -> None:
+    async def _flush_storages(
+        self, storages: list, *, strict_references: bool = False
+    ) -> None:
         """Flush the given storage instances — a narrow, named flush barrier.
 
         Failure paths and write-ahead barriers must be able to
@@ -4059,6 +4068,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         fails -- deliberately, and only a deferral: both buffers keep their
         pending state for the next commit, and the aborting-batch cleanup in
         ``_discard_pending_index_ops`` flushes the cache before dropping it.
+
+        ``strict_references`` is for a caller that has NO next commit --
+        ``_commit_cache_pair_before_finalize`` is the only one. It additionally
+        withholds the cache when the chunk commit RETURNED but left operations
+        buffered, which a per-item backend does for a retryable failure. Every
+        other caller must leave it False: there the retained operations replay
+        on the next flush, and tightening the runtime path would make this
+        ordering stricter than the pipeline's own PROCESSED write, which
+        acknowledges the identical buffered flush.
         """
 
         async def _flush_one(storage_inst) -> None:
@@ -4141,6 +4159,25 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # suffices are in ``get_extract_cache_fence``.
             async with get_extract_cache_fence(self.text_chunks):
                 await _flush_one(self.text_chunks)
+                if (
+                    strict_references
+                    and await cast(
+                        StorageNameSpace, self.text_chunks
+                    ).has_pending_index_ops()
+                ):
+                    # The commit returned, but a per-item backend kept its
+                    # retryable failures buffered. For a caller with a next
+                    # commit that is an accepted residue -- the retained
+                    # operations replay and the pair converges. This caller has
+                    # none: publishing the cache here strands its extract rows
+                    # for good, and the quarantine downstream cannot reach a
+                    # row already on disk. Record it instead, which also
+                    # quarantines the rows that are still buffered, and leave
+                    # the cache uncommitted.
+                    await self._record_chunk_reference_commit_failure(
+                        "chunk operations still buffered at the final commit"
+                    )
+                    return
                 await _flush_one(self.llm_response_cache)
             # Both landed, in order: the namespaces are consistent again and
             # the sticky failure above is retired. Only a full ordered pair

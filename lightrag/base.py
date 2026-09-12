@@ -271,6 +271,11 @@ class StorageNameSpace(ABC):
         ``docs/design/PurgeRecoveryContract.md``) — ask here only where the
         buffer is about to be discarded or the process is about to exit.
 
+        "About to exit" means every commit from there on, not just the last
+        one: a shutdown that publishes a dependent namespace BEFORE a later
+        gate can quarantine it has already put the row on disk, where no
+        quarantine reaches it.
+
         UPSERTS only. A retained tombstone carries no reference and does not
         make another namespace's rows unreachable.
 
