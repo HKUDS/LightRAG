@@ -8,48 +8,66 @@
  * it runs inside the destructive reservation that endpoint already takes, and
  * the dialog must pass the option rather than making its own call.
  *
- * `mock.module` only reaches importers that have not been evaluated yet, so
- * the dialog is imported dynamically AFTER the stub is installed, and the real
- * module is restored in afterAll for later test files.
+ * The fake backend is installed at the axios adapter seam, NOT with
+ * `mock.module('@/api/lightrag')`: a module-level mock stays installed for
+ * every file bun evaluates afterwards, and `src/api/lightrag.test.ts` then
+ * asserts against the stub instead of the real module. The adapter also makes
+ * this a stronger test — the real `clearDocuments` runs, so the request it
+ * actually sends is what gets checked.
  */
-import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { cleanup, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
+import * as api from '@/api/lightrag'
 import { renderWithProviders, testI18n } from '@/test/render'
-
-let realApiModule: Record<string, unknown>
-let ClearDocumentsDialog: typeof import('./ClearDocumentsDialog').default
+import ClearDocumentsDialog from './ClearDocumentsDialog'
 
 type ClearStatus = 'success' | 'partial_success' | 'fail' | 'busy'
 
-const clearLlmCacheArgs: Array<boolean | undefined> = []
+const clearRequests: Array<{ method?: string; url?: string; clearLlmCache?: boolean }> = []
 let nextResult: { status: ClearStatus; message: string } = {
   status: 'success',
   message: 'All documents cleared successfully. Deleted 0 files.'
 }
-const clearDocuments = mock(async (clearLlmCache?: boolean) => {
-  clearLlmCacheArgs.push(clearLlmCache)
-  return nextResult
-})
 
 const onDocumentsCleared = mock(async () => {})
 
-beforeAll(async () => {
-  realApiModule = { ...(await import('@/api/lightrag')) }
-  mock.module('@/api/lightrag', () => ({ ...realApiModule, clearDocuments }))
-  ClearDocumentsDialog = (await import('./ClearDocumentsDialog')).default
-})
-
-afterAll(() => {
-  mock.module('@/api/lightrag', () => realApiModule)
+beforeEach(() => {
+  api.__setAxiosAdapterForTests(async (config: any) => {
+    if (config.url === '/documents' && config.method?.toLowerCase() === 'delete') {
+      clearRequests.push({
+        method: config.method,
+        url: config.url,
+        // Still a raw boolean at adapter time: axios has not serialised the
+        // query string yet.
+        clearLlmCache: config.params?.clear_llm_cache
+      })
+      return {
+        data: nextResult,
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'application/json' },
+        config
+      }
+    }
+    return {
+      data: {},
+      status: 200,
+      statusText: 'OK',
+      headers: { 'content-type': 'application/json' },
+      config
+    }
+  })
 })
 
 afterEach(() => {
+  // Restored per test, not in afterAll: a thrown expectation mid-test must not
+  // leak the adapter into the next file.
+  api.__setAxiosAdapterForTests(undefined)
   cleanup()
-  clearDocuments.mockClear()
   onDocumentsCleared.mockClear()
-  clearLlmCacheArgs.length = 0
+  clearRequests.length = 0
   nextResult = {
     status: 'success',
     message: 'All documents cleared successfully. Deleted 0 files.'
@@ -72,19 +90,23 @@ describe('ClearDocumentsDialog', () => {
   test('clears without the cache by default', async () => {
     await openAndConfirm({ checkCache: false })
 
-    await waitFor(() => expect(clearDocuments).toHaveBeenCalledTimes(1))
-    expect(clearLlmCacheArgs).toEqual([false])
+    await waitFor(() => expect(clearRequests.length).toBe(1))
+    expect(clearRequests[0].url).toBe('/documents')
+    expect(clearRequests[0].method?.toLowerCase()).toBe('delete')
+    expect(clearRequests[0].clearLlmCache).toBe(false)
   })
 
   test('folds the opted-in cache drop into the single clear request', async () => {
     await openAndConfirm({ checkCache: true })
 
-    await waitFor(() => expect(clearDocuments).toHaveBeenCalledTimes(1))
-    expect(clearLlmCacheArgs).toEqual([true])
+    await waitFor(() => expect(clearRequests.length).toBe(1))
+    expect(clearRequests[0].url).toBe('/documents')
+    expect(clearRequests[0].method?.toLowerCase()).toBe('delete')
+    expect(clearRequests[0].clearLlmCache).toBe(true)
   })
 
   test('no longer exposes a standalone cache-clearing call', () => {
-    expect('clearCache' in realApiModule).toBe(false)
+    expect('clearCache' in api).toBe(false)
   })
 
   // At least one storage was dropped, so the list on screen is stale
@@ -152,7 +174,7 @@ describe('ClearDocumentsDialog', () => {
 
       await openAndConfirm({ checkCache: false })
 
-      await waitFor(() => expect(clearDocuments).toHaveBeenCalledTimes(1))
+      await waitFor(() => expect(clearRequests.length).toBe(1))
       expect(onDocumentsCleared).toHaveBeenCalledTimes(0)
       expect(screen.queryAllByPlaceholderText(/type yes to confirm/i).length).toBe(1)
     }

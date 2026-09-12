@@ -187,10 +187,10 @@ async def test_llm_cache_drop_failure_degrades_to_partial_success(tmp_path):
 
 
 async def test_partial_success_names_the_cache_failure(tmp_path):
-    """``message`` is the only channel the caller has -- the WebUI surfaces it
-    verbatim -- so a failure that left the LLM cache in place must say so, and
-    say why. A bare "some errors" tells the operator to retry without saying
-    what to retry."""
+    """The WebUI surfaces ``message`` verbatim, so a failure that left the LLM
+    cache in place must say so. A bare "some errors" tells the operator to
+    retry without saying what to retry -- but the CATEGORY is what carries
+    that, not the backend's own words."""
     workspace = f"clear-cache-named-{uuid4().hex[:8]}"
     await _init_workspace(workspace)
 
@@ -201,7 +201,53 @@ async def test_partial_success_names_the_cache_failure(tmp_path):
 
     assert response.status == "partial_success"
     assert "LLM response cache" in response.message
-    assert "cache backend down" in response.message
+    assert "error_id:" in response.message
+
+
+async def test_the_cache_failure_does_not_leak_the_backend_text(tmp_path):
+    """CWE-209: raw exception text names database hosts, ports and absolute
+    paths. The 500 path of this same handler sanitizes via
+    ``internal_server_error``; a 200 body must not reopen what that closes.
+    The detail reaches the operator through the log, keyed by ``error_id``."""
+    workspace = f"clear-cache-leak-{uuid4().hex[:8]}"
+    await _init_workspace(workspace)
+
+    rag = _ClearRag(workspace, cache_error=RuntimeError("cache backend down"))
+    endpoint = _clear_endpoint(rag, tmp_path)
+
+    response = await endpoint(clear_llm_cache=True)
+
+    assert response.status == "partial_success"
+    assert "cache backend down" not in response.message
+
+    # pipeline_status history is served to clients by
+    # GET /documents/pipeline_status, so it is a response channel too.
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=workspace
+    )
+    history = list(pipeline_status.get("history_messages", []))
+    assert not any("cache backend down" in entry for entry in history)
+
+
+async def test_a_failed_storage_drop_does_not_leak_the_backend_text(tmp_path):
+    """Same rule for the storage-drop branch, including the non-raising
+    ``{"status": "error", "message": ...}`` form: that message is
+    backend-produced text and is just as free to quote a connection string as
+    an exception is."""
+    workspace = f"clear-storage-leak-{uuid4().hex[:8]}"
+    await _init_workspace(workspace)
+
+    rag = _ClearRag(workspace, failing_chunks=True)
+    endpoint = _clear_endpoint(rag, tmp_path)
+
+    response = await endpoint(clear_llm_cache=True)
+
+    assert response.status == "partial_success"
+    assert "backend refused the drop" not in response.message
+    # ...but the operator is still told which storage to retry.
+    assert "_FailingStorage drop failed" in response.message
+    assert "error_id:" in response.message
 
 
 async def test_standalone_clear_cache_route_is_gone(tmp_path):

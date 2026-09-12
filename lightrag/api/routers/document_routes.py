@@ -60,7 +60,7 @@ from pydantic import (
 )
 
 from lightrag import LightRAG
-from lightrag.api.utils_api import internal_server_error
+from lightrag.api.utils_api import internal_server_error, new_error_id
 from lightrag.base import (
     CURSOR_START,
     CursorAfter,
@@ -5967,8 +5967,18 @@ def create_document_routes(
             # Wait for all drop tasks to complete
             drop_results = await asyncio.gather(*drop_tasks, return_exceptions=True)
 
-            # Check for errors and log results
+            # Check for errors and log results.
+            #
+            # Two parallel lists on purpose. ``errors`` carries the raw
+            # exception text and never leaves the server: it goes to the log,
+            # joined to the response by a correlation id. ``error_summaries``
+            # carries one category per failure and is the ONLY thing the
+            # client sees. Raw backend text names database hosts, ports and
+            # absolute filesystem paths -- the CWE-209 disclosure that
+            # ``internal_server_error`` already closes on this function's 500
+            # path. A 200 body is not a licence to reopen it.
             errors = []
+            error_summaries = []
             storage_success_count = 0
             storage_error_count = 0
 
@@ -5977,6 +5987,7 @@ def create_document_routes(
                 if isinstance(result, Exception):
                     error_msg = f"Error dropping {storage_name}: {str(result)}"
                     errors.append(error_msg)
+                    error_summaries.append(f"{storage_name} drop failed")
                     logger.error(error_msg)
                     storage_error_count += 1
                 elif isinstance(result, dict) and result.get("status") != "success":
@@ -5989,6 +6000,9 @@ def create_document_routes(
                         f"{result.get('message', 'unknown error')}"
                     )
                     errors.append(error_msg)
+                    # Backend-produced text, treated exactly like exception
+                    # text: it is just as free to quote a connection string.
+                    error_summaries.append(f"{storage_name} drop failed")
                     logger.error(error_msg)
                     storage_error_count += 1
                 else:
@@ -6091,7 +6105,13 @@ def create_document_routes(
                     error_msg = f"Error clearing the LLM response cache: {cache_error}"
                     logger.error(error_msg)
                     errors.append(error_msg)
-                    append_pipeline_history(pipeline_status, error_msg)
+                    summary = "the LLM response cache could not be cleared"
+                    error_summaries.append(summary)
+                    # pipeline_status history is served to clients by
+                    # GET /documents/pipeline_status, so it is a response
+                    # channel too: the category goes here, the raw text only
+                    # to the log above.
+                    append_pipeline_history(pipeline_status, f"Error: {summary}")
 
             # Log file deletion start
             append_pipeline_history(
@@ -6118,6 +6138,7 @@ def create_document_routes(
                     f"Deleted {deleted_files_count} files with {file_errors_count} errors",
                 )
                 errors.append(f"Failed to delete {file_errors_count} files")
+                error_summaries.append(f"failed to delete {file_errors_count} files")
             else:
                 append_pipeline_history(
                     pipeline_status, f"Successfully deleted {deleted_files_count} files"
@@ -6164,6 +6185,11 @@ def create_document_routes(
                         except Exception as e:
                             logger.error(f"Error deleting {parsed_dir}: {str(e)}")
                             errors.append(f"Failed to delete __parsed__ directory: {e}")
+                            # ``e`` here is typically an OSError naming the
+                            # absolute path it could not unlink.
+                            error_summaries.append(
+                                "the __parsed__ directory could not be deleted"
+                            )
                     if pending_cancel is not None:
                         raise pending_cancel
             elif parsed_dir.exists():
@@ -6175,19 +6201,29 @@ def create_document_routes(
             # Prepare final result message
             final_message = ""
             if errors:
-                # Name the collected errors, not just their existence. This
-                # message is the only channel the caller has: the WebUI
-                # surfaces it verbatim, so a bare "some errors" tells the
-                # operator to retry without saying what to retry -- whether
-                # the LLM cache is still there, which storage kept its rows,
-                # or which input files would not unlink. The list is bounded
-                # (at most one entry per storage plus the file-count,
-                # __parsed__ and cache lines), so it is reported in full:
-                # truncating it risks hiding the one entry that matters.
+                # Name WHICH part failed, not just that something did: a bare
+                # "some errors" tells the operator to retry without saying
+                # what to retry -- whether the LLM cache is still there, which
+                # storage kept its rows, or which input files would not
+                # unlink. The WebUI surfaces this verbatim.
+                #
+                # Categories only. The raw backend text stays server-side and
+                # is joined to this response by ``error_id``, in the same
+                # format ``internal_server_error`` uses on the 500 path so an
+                # operator greps one pattern. The category list is bounded (at
+                # most one entry per storage plus the file-count, __parsed__
+                # and cache lines), so it is reported in full: truncating it
+                # risks hiding the one entry that matters.
+                error_id = new_error_id()
+                logger.error(
+                    f"/documents/clear completed with errors "
+                    f"[error_id={error_id}]: {'; '.join(errors)}"
+                )
                 final_message = (
                     f"Cleared documents with some errors. Deleted "
                     f"{deleted_files_count} files.{parsed_dir_message}{cache_cleared_message}"
-                    f" Errors: {'; '.join(errors)}"
+                    f" Errors: {'; '.join(error_summaries)}"
+                    f" (error_id: {error_id})"
                 )
                 status = "partial_success"
             else:
