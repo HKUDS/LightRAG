@@ -6305,6 +6305,18 @@ async def _find_related_text_unit_from_entities(
         # Update entity's chunks to deduplicated chunks
         entity_info["chunks"] = deduplicated_chunks
 
+    # Drop entities emptied by deduplication so they do not inflate the
+    # per-group chunk budget used by the selection strategies.
+    entities_with_chunks = [
+        entity_info for entity_info in entities_with_chunks if entity_info["chunks"]
+    ]
+
+    if not entities_with_chunks:
+        logger.info(
+            f"Find no entity-related chunks from {len(node_datas)} entities after deduplication"
+        )
+        return []
+
     # Step 3: Sort chunks for each entity by occurrence count (higher count = higher priority)
     total_entity_chunks = 0
     for entity_info in entities_with_chunks:
