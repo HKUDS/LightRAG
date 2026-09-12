@@ -60,7 +60,7 @@ from pydantic import (
 )
 
 from lightrag import LightRAG
-from lightrag.api.utils_api import internal_server_error
+from lightrag.api.utils_api import internal_server_error, new_error_id
 from lightrag.base import (
     CURSOR_START,
     CursorAfter,
@@ -1010,39 +1010,6 @@ class ForceResetRecoveryResponse(BaseModel):
             "re-issue /documents/reprocess_failed, or let the scan's own FAILED "
             "reset cover them."
         ),
-    )
-
-
-class ClearCacheRequest(BaseModel):
-    """Request model for clearing cache
-
-    This model is kept for API compatibility but no longer accepts any parameters.
-    All cache will be cleared regardless of the request content.
-    """
-
-    model_config = ConfigDict(json_schema_extra={"example": {}})
-
-
-class ClearCacheResponse(BaseModel):
-    """Response model for cache clearing operation
-
-    Attributes:
-        status: Status of the clear operation
-        message: Detailed message describing the operation result
-    """
-
-    status: Literal["success", "fail"] = Field(
-        description="Status of the clear operation"
-    )
-    message: str = Field(description="Message describing the operation result")
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "status": "success",
-                "message": "Successfully cleared cache for modes: ['default', 'naive']",
-            }
-        }
     )
 
 
@@ -5797,6 +5764,19 @@ def create_document_routes(
                 )
             ),
         ] = False,
+        clear_llm_cache: Annotated[
+            bool,
+            Query(
+                description=(
+                    "Also drop the whole LLM response cache. Off by default: "
+                    "the cache survives a clear so re-adding the same "
+                    "documents can reuse the extraction results already paid "
+                    "for. Honored only when every storage drop succeeds; a "
+                    "partial drop preserves the cache, since the surviving "
+                    "documents would otherwise repay every extraction call."
+                )
+            ),
+        ] = False,
     ):
         """
         Clear all documents from the RAG system.
@@ -5804,7 +5784,27 @@ def create_document_routes(
         This endpoint deletes all documents, entities, relationships, and files from the system.
         It uses the storage drop methods to properly clean up all data and removes all files
         from the input directory. The __parsed__ directory is preserved unless
-        delete_parsed_files=True is passed.
+        delete_parsed_files=True is passed, and the LLM response cache is preserved
+        unless clear_llm_cache=True is passed AND every storage drop succeeded
+        (a partial drop preserves it either way -- see below).
+
+        **Clearing the LLM cache is only available here**, folded into this
+        endpoint rather than exposed as its own route, because
+        ``llm_response_cache.drop()`` states a caller contract it cannot enforce
+        itself: the caller must hold the pipeline ``busy`` reservation. A
+        standalone endpoint held nothing, so clearing mid-ingestion wiped the
+        extraction rows the in-flight chunks had already paid for (a later
+        reprocess re-bills every one of those LLM calls) and left those chunks'
+        ``llm_cache_list`` naming rows that no longer exist. Running it here
+        puts it inside the destructive reservation that already refuses while
+        the pipeline is busy, and leaves one destructive path to reason about.
+
+        For the same reason the cache drop is skipped whenever ANY storage
+        drop failed, not only when they all did: a surviving ``text_chunks``
+        row still names its cache rows through ``llm_cache_list`` and its
+        document can still be reprocessed, so clearing the cache beside it
+        inflicts exactly the harm above on whatever survived. The response
+        says the cache was preserved and why; re-run the clear to remove it.
 
         Top-level input files are always deleted unconditionally: a later
         /documents/scan would otherwise re-enqueue them. The __parsed__
@@ -5967,8 +5967,18 @@ def create_document_routes(
             # Wait for all drop tasks to complete
             drop_results = await asyncio.gather(*drop_tasks, return_exceptions=True)
 
-            # Check for errors and log results
+            # Check for errors and log results.
+            #
+            # Two parallel lists on purpose. ``errors`` carries the raw
+            # exception text and never leaves the server: it goes to the log,
+            # joined to the response by a correlation id. ``error_summaries``
+            # carries one category per failure and is the ONLY thing the
+            # client sees. Raw backend text names database hosts, ports and
+            # absolute filesystem paths -- the CWE-209 disclosure that
+            # ``internal_server_error`` already closes on this function's 500
+            # path. A 200 body is not a licence to reopen it.
             errors = []
+            error_summaries = []
             storage_success_count = 0
             storage_error_count = 0
 
@@ -5977,6 +5987,7 @@ def create_document_routes(
                 if isinstance(result, Exception):
                     error_msg = f"Error dropping {storage_name}: {str(result)}"
                     errors.append(error_msg)
+                    error_summaries.append(f"{storage_name} drop failed")
                     logger.error(error_msg)
                     storage_error_count += 1
                 elif isinstance(result, dict) and result.get("status") != "success":
@@ -5989,6 +6000,9 @@ def create_document_routes(
                         f"{result.get('message', 'unknown error')}"
                     )
                     errors.append(error_msg)
+                    # Backend-produced text, treated exactly like exception
+                    # text: it is just as free to quote a connection string.
+                    error_summaries.append(f"{storage_name} drop failed")
                     logger.error(error_msg)
                     storage_error_count += 1
                 else:
@@ -6040,6 +6054,65 @@ def create_document_routes(
                 append_pipeline_history(pipeline_status, error_message)
                 return ClearDocumentsResponse(status="fail", message=error_message)
 
+            # Opt-in LLM cache drop, run here rather than from its own
+            # endpoint so it inherits the destructive reservation that
+            # ``llm_response_cache.drop()`` requires its caller to hold.
+            #
+            # After the storage drops, and only when EVERY one of them
+            # succeeded -- not merely when they did not all fail. A surviving
+            # ``text_chunks`` row still names its cache rows through
+            # ``llm_cache_list``, and its document can still be reprocessed,
+            # so dropping the cache next to it would both break those
+            # references en masse and re-bill every extraction call the
+            # document already paid for. That is the exact harm this endpoint
+            # exists to prevent; a partial drop is not a licence to inflict it
+            # on whatever survived.
+            #
+            # So the cache is preserved whenever any storage drop failed, and
+            # the operator re-runs the clear. That residue is the acceptable
+            # direction under *Consistency without transactions*: retaining
+            # rows that could have been dropped costs only storage and is
+            # disposed of by the next clear, while burning them loses paid-for
+            # work outright. The response says which happened.
+            #
+            # The mirror residue, when every drop DID succeed but the cache
+            # drop itself fails, is likewise harmless: the cache rows are then
+            # unreachable rather than dangling -- no chunk row survives to
+            # name them -- and the next clear, or a re-add of the same content
+            # that re-keys onto them, disposes of them.
+            cache_cleared_message = ""
+            if clear_llm_cache and storage_error_count > 0:
+                cache_cleared_message = (
+                    " LLM cache preserved: a storage drop failed, and the "
+                    "surviving documents would have to repay every extraction "
+                    "call. Re-run the clear to remove it."
+                )
+                append_pipeline_history(
+                    pipeline_status,
+                    "Skipped the LLM cache drop: a storage drop failed",
+                )
+            elif clear_llm_cache:
+                append_pipeline_history(
+                    pipeline_status, "Starting to clear the LLM response cache"
+                )
+                try:
+                    await rag.aclear_cache()
+                    cache_cleared_message = " Cleared the LLM response cache."
+                    append_pipeline_history(
+                        pipeline_status, "Successfully cleared the LLM response cache"
+                    )
+                except Exception as cache_error:
+                    error_msg = f"Error clearing the LLM response cache: {cache_error}"
+                    logger.error(error_msg)
+                    errors.append(error_msg)
+                    summary = "the LLM response cache could not be cleared"
+                    error_summaries.append(summary)
+                    # pipeline_status history is served to clients by
+                    # GET /documents/pipeline_status, so it is a response
+                    # channel too: the category goes here, the raw text only
+                    # to the log above.
+                    append_pipeline_history(pipeline_status, f"Error: {summary}")
+
             # Log file deletion start
             append_pipeline_history(
                 pipeline_status, "Starting to delete files in input directory"
@@ -6065,6 +6138,7 @@ def create_document_routes(
                     f"Deleted {deleted_files_count} files with {file_errors_count} errors",
                 )
                 errors.append(f"Failed to delete {file_errors_count} files")
+                error_summaries.append(f"failed to delete {file_errors_count} files")
             else:
                 append_pipeline_history(
                     pipeline_status, f"Successfully deleted {deleted_files_count} files"
@@ -6111,6 +6185,11 @@ def create_document_routes(
                         except Exception as e:
                             logger.error(f"Error deleting {parsed_dir}: {str(e)}")
                             errors.append(f"Failed to delete __parsed__ directory: {e}")
+                            # ``e`` here is typically an OSError naming the
+                            # absolute path it could not unlink.
+                            error_summaries.append(
+                                "the __parsed__ directory could not be deleted"
+                            )
                     if pending_cancel is not None:
                         raise pending_cancel
             elif parsed_dir.exists():
@@ -6122,15 +6201,35 @@ def create_document_routes(
             # Prepare final result message
             final_message = ""
             if errors:
+                # Name WHICH part failed, not just that something did: a bare
+                # "some errors" tells the operator to retry without saying
+                # what to retry -- whether the LLM cache is still there, which
+                # storage kept its rows, or which input files would not
+                # unlink. The WebUI surfaces this verbatim.
+                #
+                # Categories only. The raw backend text stays server-side and
+                # is joined to this response by ``error_id``, in the same
+                # format ``internal_server_error`` uses on the 500 path so an
+                # operator greps one pattern. The category list is bounded (at
+                # most one entry per storage plus the file-count, __parsed__
+                # and cache lines), so it is reported in full: truncating it
+                # risks hiding the one entry that matters.
+                error_id = new_error_id()
+                logger.error(
+                    f"/documents/clear completed with errors "
+                    f"[error_id={error_id}]: {'; '.join(errors)}"
+                )
                 final_message = (
                     f"Cleared documents with some errors. Deleted "
-                    f"{deleted_files_count} files.{parsed_dir_message}"
+                    f"{deleted_files_count} files.{parsed_dir_message}{cache_cleared_message}"
+                    f" Errors: {'; '.join(error_summaries)}"
+                    f" (error_id: {error_id})"
                 )
                 status = "partial_success"
             else:
                 final_message = (
                     f"All documents cleared successfully. Deleted "
-                    f"{deleted_files_count} files.{parsed_dir_message}"
+                    f"{deleted_files_count} files.{parsed_dir_message}{cache_cleared_message}"
                 )
                 status = "success"
 
@@ -6420,40 +6519,6 @@ def create_document_routes(
             # acquired (or the start helper's backstop already released it).
             if not handed_off:
                 await _release_destructive_busy(rag, destructive_token)
-
-    @router.post(
-        "/clear_cache",
-        response_model=ClearCacheResponse,
-        dependencies=[Depends(combined_auth)],
-    )
-    async def clear_cache(request: ClearCacheRequest):
-        """
-        Clear all cache data from the LLM response cache storage.
-
-        This endpoint clears all cached LLM responses regardless of mode.
-        The request body is accepted for API compatibility but is ignored.
-
-        Args:
-            request (ClearCacheRequest): The request body (ignored for compatibility).
-
-        Returns:
-            ClearCacheResponse: A response object containing the status and message.
-
-        Raises:
-            HTTPException: If an error occurs during cache clearing (500).
-        """
-        try:
-            # Call the aclear_cache method (no modes parameter)
-            await rag.aclear_cache()
-
-            # Prepare success message
-            message = "Successfully cleared all cache"
-
-            return ClearCacheResponse(status="success", message=message)
-        except Exception as e:
-            logger.error(f"Error clearing cache: {str(e)}")
-            logger.error(traceback.format_exc())
-            raise internal_server_error(e)
 
     @router.get(
         "/track_status/{track_id}",

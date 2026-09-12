@@ -31,6 +31,7 @@ _ENV_VARS_TO_ISOLATE = (
     "LIGHTRAG_API_KEY",
     "WHITELIST_PATHS",
     "LIGHTRAG_API_PREFIX",
+    "LIGHTRAG_DEFAULT_UI",
     "ENABLE_AI_CONTENT_NOTICE",
 )
 
@@ -38,6 +39,10 @@ _ENV_VARS_TO_ISOLATE = (
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch):
     """Keep tests hermetic from developer-local .env and global config state."""
+    # Import first: config loads .env at module import time.  Clearing before
+    # this import would let the loader immediately repopulate the variables.
+    import lightrag.api.config as config
+
     for var in _ENV_VARS_TO_ISOLATE:
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("AUTH_ACCOUNTS", "")
@@ -49,8 +54,6 @@ def _isolate_env(monkeypatch):
     monkeypatch.setenv("LLM_BINDING", "openai")
     monkeypatch.setenv("EMBEDDING_BINDING", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-
-    import lightrag.api.config as config
 
     config._global_args = None
     config._initialized = False
@@ -111,6 +114,10 @@ def _build_client(monkeypatch, *, notice=None):
 
     import lightrag.api.lightrag_server as lightrag_server
 
+    # auth_handler is an import-time singleton.  Clearing AUTH_ACCOUNTS before
+    # parse_args() does not replace a profile previously built from the local
+    # .env (or by an earlier test), so pin the runtime object as well.
+    monkeypatch.setattr(lightrag_server.auth_handler, "accounts", {})
     monkeypatch.setattr(lightrag_server, "LightRAG", _FakeLightRAG)
     monkeypatch.setattr(lightrag_server, "check_frontend_build", lambda: (True, False))
     monkeypatch.setattr(
