@@ -30,15 +30,25 @@ pytestmark = pytest.mark.offline
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 _LLM_PACKAGE = _REPO_ROOT / "lightrag" / "llm"
+_DISTRIBUTION_IMPORT_NAMES = {
+    "google-api-core": "google.api_core",
+    "google-genai": "google.genai",
+}
 
 
-def _installed_packages(tree: ast.AST) -> dict[str, int]:
-    """Map ``pm.install("X")`` targets to the line of the first such call.
+def _distribution_import_name(package_spec: str) -> str:
+    """Return the import name supplied by a pip distribution specification."""
+    distribution = package_spec.partition("[")[0]
+    return _DISTRIBUTION_IMPORT_NAMES.get(distribution, distribution.replace("-", "_"))
 
-    Keyed by the IMPORT name: ``pm.install("llama-index")`` installs the
-    distribution ``llama-index``, which imports as ``llama_index``.
+
+def _installed_packages(tree: ast.AST) -> list[tuple[str, str, int]]:
+    """Return ``(distribution spec, import name, line)`` for install calls.
+
+    The list deliberately retains separate distributions that share a namespace,
+    such as ``google-genai`` and ``google-api-core``.
     """
-    installs: dict[str, int] = {}
+    installs: list[tuple[str, str, int]] = []
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.Call)
@@ -48,9 +58,13 @@ def _installed_packages(tree: ast.AST) -> dict[str, int]:
             and isinstance(node.args[0], ast.Constant)
             and isinstance(node.args[0].value, str)
         ):
-            import_name = node.args[0].value.replace("-", "_")
-            installs[import_name] = min(
-                installs.get(import_name, node.lineno), node.lineno
+            package_spec = node.args[0].value
+            installs.append(
+                (
+                    package_spec,
+                    _distribution_import_name(package_spec),
+                    node.lineno,
+                )
             )
     return installs
 
@@ -58,21 +72,29 @@ def _installed_packages(tree: ast.AST) -> dict[str, int]:
 def _first_import_line(tree: ast.AST, package: str) -> int | None:
     """Line of the first ``import <package>`` / ``from <package> import ...``.
 
-    Matches on the top-level name only, so ``from llama_index.core.llms
-    import ChatMessage`` counts as importing ``llama_index``.
+    A package matches itself or a child module. ``from google import genai``
+    therefore counts as importing ``google.genai`` as well.
     """
     first: int | None = None
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            names = [alias.name.split(".")[0] for alias in node.names]
+            names = [alias.name for alias in node.names]
         elif isinstance(node, ast.ImportFrom):
             # ``level`` > 0 is a relative import; it names no third-party package.
-            names = (
-                [node.module.split(".")[0]] if node.module and not node.level else []
-            )
+            if node.module and not node.level:
+                names = [node.module]
+                names.extend(
+                    f"{node.module}.{alias.name}"
+                    for alias in node.names
+                    if alias.name != "*"
+                )
+            else:
+                names = []
         else:
             continue
-        if package in names and (first is None or node.lineno < first):
+        if any(
+            name == package or name.startswith(f"{package}.") for name in names
+        ) and (first is None or node.lineno < first):
             first = node.lineno
     return first
 
@@ -87,12 +109,40 @@ def test_the_llm_package_is_where_it_is_expected():
     assert len(modules) >= 5, f"only found {len(modules)} modules in {_LLM_PACKAGE}"
 
 
+@pytest.mark.parametrize(
+    ("package_spec", "import_name"),
+    [
+        ("llama-index", "llama_index"),
+        ("lmdeploy[all]", "lmdeploy"),
+        ("google-genai", "google.genai"),
+        ("google-api-core", "google.api_core"),
+    ],
+)
+def test_distribution_specs_resolve_to_their_import_names(
+    package_spec: str, import_name: str
+):
+    assert _distribution_import_name(package_spec) == import_name
+
+
+def test_from_namespace_import_is_matched_to_the_installed_module():
+    tree = ast.parse("from google import genai\n")
+    assert _first_import_line(tree, "google.genai") == 1
+
+
+def test_install_guards_sharing_a_namespace_remain_independent():
+    tree = ast.parse('pm.install("google-genai")\npm.install("google-api-core")\n')
+    assert _installed_packages(tree) == [
+        ("google-genai", "google.genai", 1),
+        ("google-api-core", "google.api_core", 2),
+    ]
+
+
 def test_every_install_guard_precedes_the_import_it_protects():
     offenders: list[str] = []
     guarded: list[str] = []
     for path in _provider_modules():
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        for package, install_line in _installed_packages(tree).items():
+        for package_spec, package, install_line in _installed_packages(tree):
             import_line = _first_import_line(tree, package)
             if import_line is None:
                 continue
@@ -101,7 +151,7 @@ def test_every_install_guard_precedes_the_import_it_protects():
             if import_line < install_line:
                 offenders.append(
                     f"{rel} imports {package} at line {import_line}, but "
-                    f"pm.install({package!r}) is at line {install_line} — the "
+                    f"pm.install({package_spec!r}) is at line {install_line} — the "
                     f"guard never runs"
                 )
 
