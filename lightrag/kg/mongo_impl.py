@@ -2347,6 +2347,7 @@ class MongoGraphStorage(BaseGraphStorage):
                 f"[{self.workspace}] node_degrees_batch: $in split into "
                 f"{len(id_batches)} batches for {len(unique_node_ids)} ids"
             )
+
         async def _outbound_degrees(chunk: list[str]) -> dict[str, int]:
             outbound_pipeline = [
                 {"$match": {"source_node_id": {"$in": chunk}}},
@@ -2471,6 +2472,7 @@ class MongoGraphStorage(BaseGraphStorage):
                 f"[{self.workspace}] get_edges_batch: $or split into "
                 f"{len(pair_batches)} batches for {len(canonical_pairs)} pairs"
             )
+
         async def _fetch_batch(
             batch: list[tuple[str, str]], estimated_bytes: int
         ) -> list[dict]:
