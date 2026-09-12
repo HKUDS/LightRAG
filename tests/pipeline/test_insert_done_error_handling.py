@@ -1280,3 +1280,89 @@ async def test_finalize_does_not_cry_residue_over_an_already_emptied_buffer(
     messages = [r.message for r in caplog.records]
     assert not any("nothing will heal them" in m for m in messages)
     assert any("none is left unreachable" in m for m in messages)
+
+
+class _BufferedCacheStorage:
+    """A cache storage with a real per-item buffer, like OpenSearchKVStorage.
+
+    Enough of one to observe WHICH rows a discard takes: ``drop_pending_upserts``
+    filters on the ``{mode}:{cache_type}:{hash}`` key and keeps the deletes,
+    and the flush publishes whatever is still buffered.
+    """
+
+    def __init__(self, rows: dict[str, dict], deletes: set[str] | None = None):
+        self.namespace = "llm_response_cache"
+        self.pending_upserts = dict(rows)
+        self.pending_deletes = set(deletes or set())
+        self.published: dict[str, dict] = {}
+
+    async def index_done_callback(self):
+        self.published.update(self.pending_upserts)
+        self.pending_upserts.clear()
+        self.pending_deletes.clear()
+
+    async def drop_pending_index_ops(self):
+        self.pending_upserts.clear()
+        self.pending_deletes.clear()
+
+    async def drop_pending_upserts(self, *, cache_types=None) -> int | None:
+        if cache_types is None:
+            dropped = len(self.pending_upserts)
+            self.pending_upserts.clear()
+            return dropped
+        doomed = [
+            key
+            for key in self.pending_upserts
+            if len(key.split(":", 2)) == 3 and key.split(":", 2)[1] in cache_types
+        ]
+        for key in doomed:
+            self.pending_upserts.pop(key)
+        return len(doomed)
+
+    async def has_pending_index_ops(self) -> bool:
+        return bool(self.pending_upserts)
+
+    async def finalize(self):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_the_aborting_cleanup_keeps_the_answer_rows_it_cannot_orphan(
+    tmp_path, monkeypatch
+):
+    """The shared buffer also holds query answers, which name no chunk.
+
+    When the references did not land, this cleanup withholds the cache flush
+    and discards the buffer instead of publishing it. Discarding it untyped
+    takes the answer rows too — full LLM responses that nothing can orphan and
+    that the next cache commit would have published for free.
+    """
+    rag = await _make_rag(tmp_path)
+    try:
+        chunks = _SpyStorage("text_chunks", pending_index_ops=True)
+        cache = _BufferedCacheStorage(
+            {
+                "default:extract:aaa": {"return": "e1"},
+                "default:query:bbb": {"return": "an expensive answer"},
+                "default:keywords:ccc": {"return": "kw"},
+            },
+            deletes={"default:extract:gone"},
+        )
+        rag.text_chunks = chunks
+        rag.llm_response_cache = cache
+        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache])
+
+        await rag._discard_pending_index_ops()
+
+        # The unreachable rows are gone, the rest survive for the next commit.
+        assert set(cache.pending_upserts) == {
+            "default:query:bbb",
+            "default:keywords:ccc",
+        }
+        # Nothing was published behind a reference that is not on disk.
+        assert cache.published == {}
+        # The tombstone an already-returned deletion promised is still there.
+        assert cache.pending_deletes == {"default:extract:gone"}
+    finally:
+        rag.text_chunks = None
+        await rag.finalize_storages()

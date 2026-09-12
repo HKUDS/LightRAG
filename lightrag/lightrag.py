@@ -3942,9 +3942,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         # tombstone leaves the row holding the document prompt
                         # with no recovery path at all. Drop only what this
                         # cleanup means to drop.
-                        await cast(
-                            StorageNameSpace, storage_inst
-                        ).drop_pending_upserts()
+                        #
+                        # And only the reference-carrying types, for the same
+                        # reason: the buffer is shared, so an untyped drop also
+                        # takes the query-answer rows, which name no chunk and
+                        # cannot be orphaned. They stay buffered and the next
+                        # cache commit publishes them -- unlike the extract
+                        # rows, nothing is waiting on a reference for them.
+                        await cast(StorageNameSpace, storage_inst).drop_pending_upserts(
+                            cache_types=set(_REFERENCE_CARRYING_CACHE_TYPES)
+                        )
                     else:
                         await cast(
                             StorageNameSpace, storage_inst
@@ -5216,9 +5223,17 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         A cache commit publishes the WHOLE namespace, not this query's row, so
         it carries whatever extract rows the ingestion pipeline has buffered.
         Queries run in the same process as the pipeline, so an unordered one
-        here publishes rows whose references are still pending. On an idle
-        chunk store the extra flush is free: ``index_done_callback`` returns
-        immediately when nothing is dirty.
+        here publishes rows whose references are still pending.
+
+        The extra commit is not free on every backend, and the ordering is not
+        negotiable, so know what it costs: on a snapshot backend it returns at
+        once when nothing is dirty, but ``OpenSearchKVStorage`` refreshes the
+        index unconditionally after the flush, so this adds one refresh round
+        trip on ``text_chunks`` -- usually the largest index -- to EVERY query.
+        Narrowing it means skipping the pair when the cache buffer holds no
+        reference-carrying row, which needs a backend answer a snapshot store
+        cannot give; see the residue table in
+        ``docs/design/PurgeRecoveryContract.md``.
 
         Non-raising for the chunk half: a query must not fail over a commit it
         did not ask for. A chunk failure is recorded, and the recording
