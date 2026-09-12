@@ -62,6 +62,8 @@ from lightrag.api.routers.document_routes import (
 )
 from lightrag.parser.docx.smart_heading.nlp import SmartHeadingNLPError
 from lightrag.parser.plugins import load_third_party_parsers
+from lightrag.chunker.plugins import load_and_resolve_chunker
+from lightrag.chunker.registry import log_chunker_selection
 from lightrag.parser.routing import (
     parser_rules_from_env,
     validate_parser_routing_config,
@@ -1506,6 +1508,8 @@ def create_app(args):
     # Discover third-party parser engines (``lightrag.parsers`` entry points)
     # BEFORE validating routing rules, so LIGHTRAG_PARSER may reference them.
     load_third_party_parsers()
+    selected_chunker = load_and_resolve_chunker(getattr(args, "custom_chunker", ""))
+    log_chunker_selection(selected_chunker)
     validate_parser_routing_config()
     # Fail fast when DOCX_SMART_HEADING / a LIGHTRAG_PARSER rule enables
     # smart_heading but the pinned spaCy models are missing — surfacing the
@@ -2457,6 +2461,7 @@ def create_app(args):
     # Initialize RAG with unified configuration
     try:
         rag = LightRAG(
+            **({"chunking_func": selected_chunker} if selected_chunker else {}),
             working_dir=args.working_dir,
             workspace=args.workspace,
             llm_model_func=create_llm_model_func(args.llm_binding),

@@ -249,6 +249,10 @@ Currently supported parameters (canonical name / short alias):
 
 The text APIs expose the same path as `chunking.strategy="custom"`. Its `params` object uses the complete fixed-token/legacy contract (`chunk_token_size`, `chunk_overlap_token_size`, `split_by_character`, and `split_by_character_only`). `/documents/text` and `/documents/texts` return 422 unless `LightRAG.chunking_func` was replaced with a non-default callback.
 
+For Server deployments, `CUSTOM_CHUNKER=<registered-name>` (or `--custom-chunker`) selects an installed `lightrag.chunkers` plugin at startup; see [ThirdPartyChunker.md](./ThirdPartyChunker.md). This injection is **instance-wide**: no-selector inserts also use the callback, not just `C`. Explicit F/R/V/P still use built-ins. With the key unset, existing admission and fallback behavior is unchanged. Invalid selections fail startup rather than silently reverting to the built-in callback.
+
+`doc_status.metadata.custom_chunker` records the last attempted registered name/version with `authoritative: false`, separately from the unchanged `chunk_method` and `chunk_opts`. It survives retry/reset for diagnosis, not as an instruction. Reprocessing a persisted `C` document after changing/removing the configured identity warns once per attempt and proceeds under the current configuration. The existing per-attempt fallback warning is separate and unchanged. Author-supplied versions cannot detect implementation changes behind unchanged identities.
+
 > `drop_references` detection knobs `CHUNK_P_REFERENCES_TAIL_N` (default `0`: scan all content blocks; a positive value scans only the last N) / `CHUNK_P_REFERENCES_HEADINGS` (pipe-separated, default `References\|Bibliography\|参考文献`) are env-only and read live at run time. Global default can be set via env var `CHUNK_P_DROP_REFERENCES`.
 
 ### 2.7 Validation, Priority, and Fallback
@@ -1118,7 +1122,7 @@ Parse queues are **created dynamically from the registry's `ParserSpec.queue_gro
 4. **Task limits and request limits are distinct**: `MAX_ASYNC_LLM` sets N5's per-document chunk-extraction task limit and its `2 ×` merge-task limit. Actual extraction and merge-summary requests use the Extract role's limit, `EXTRACT_MAX_ASYNC_LLM` when set or `MAX_ASYNC_LLM` otherwise. Caches, keyed graph locks, and a role limit can make observed request concurrency lower than task concurrency.
 5. **Queue size and back-pressure**: the small `QUEUE_SIZE_INSERT=4` default is deliberate — process is slow and memory-hungry, so a full queue blocks the analyze stage and back-pressures parse, instead of piling tens of thousands of parse results into memory at once.
 6. **How changes take effect**: every parameter comes from `.env` (or the environment) and is read once when the `LightRAG` instance is constructed; restart the service after changing one.
-7. **Chunking does not scale with concurrency**: chunking runs in a dedicated single-worker thread pool so it does not block the event loop, and its concurrency does not grow with `MAX_PARALLEL_INSERT` — raising that will not make chunking faster. A custom `chunking_func` still runs on the event loop (its contract allows touching the running loop), so CPU-heavy implementations should call `asyncio.to_thread` themselves.
+7. **Chunking does not scale with concurrency**: chunking runs in a dedicated single-worker thread pool so it does not block the event loop, and its concurrency does not grow with `MAX_PARALLEL_INSERT` — raising that will not make chunking faster. A custom `chunking_func` still runs on the event loop by default (its contract allows touching the running loop). CPU-heavy implementations should offload themselves, or a synchronous registered plugin may declare `executor_safe=True` to use the bounded chunking pool; async plugins cannot opt into that offload.
 
 **Typical tuning scenarios:**
 

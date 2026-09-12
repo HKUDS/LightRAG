@@ -7,7 +7,10 @@ making custom success and fixed-token fallback observable.
 
 import asyncio
 import logging
+import sys
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -16,6 +19,216 @@ from lightrag import LightRAG, ROLES, RoleLLMConfig
 from lightrag.base import DocStatus
 from lightrag.chunker import chunking_by_token_size
 from lightrag.utils import EmbeddingFunc, Tokenizer
+
+
+def _registered_callback(monkeypatch, callback, name="acme", version="1", **kwargs):
+    from lightrag.chunker import registry
+
+    # Model a freshly installed deployment without leaking registrations.
+    monkeypatch.setattr(registry, "_REGISTRY", {})
+    monkeypatch.setattr(registry, "_DUPLICATES", set())
+    monkeypatch.setitem(
+        sys.modules, "custom_chunker_test_impl", SimpleNamespace(chunk=callback)
+    )
+    registry.register_chunker(
+        registry.ChunkerSpec(
+            name, "custom_chunker_test_impl:chunk", version, "Test chunker", **kwargs
+        )
+    )
+    return registry.resolve_chunker(name)
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("options", ["C!", "!"])
+@pytest.mark.parametrize("executor_safe", [False, True])
+def test_registered_chunker_records_identity_and_preserves_six_args(
+    tmp_path, monkeypatch, options, executor_safe
+):
+    calls = []
+    threads = []
+
+    def callback(*args):
+        calls.append(args)
+        threads.append(threading.get_ident())
+        return [{"tokens": len(args[1]), "content": args[1], "chunk_order_index": 0}]
+
+    async def run():
+        bound = _registered_callback(monkeypatch, callback, executor_safe=executor_safe)
+        rag = _new_rag(tmp_path, chunking_func=bound)
+        await rag.initialize_storages()
+        try:
+            row = await _ingest(rag, doc_id="registered", process_options=options)
+        finally:
+            await rag.finalize_storages()
+        assert DocStatus(row["status"]) is DocStatus.PROCESSED
+        assert len(calls) == 1 and len(calls[0]) == 6
+        assert (threads[0] != threading.get_ident()) is executor_safe
+        assert _metadata(row)["custom_chunker"] == {
+            "name": "acme",
+            "version": "1",
+            "authoritative": False,
+        }
+        assert _metadata(row)["chunk_method"] == (
+            "custom_chunking_func" if options == "C!" else "legacy_chunking_func"
+        )
+
+    asyncio.run(run())
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "selector,method",
+    [
+        ("F", "chunking_by_fixed_token"),
+        ("R", "chunking_by_recursive_character"),
+        ("V", "chunking_by_semantic_vector"),
+        ("P", "chunking_by_paragraph_semantic"),
+    ],
+)
+def test_registered_callback_does_not_intercept_builtins(
+    tmp_path, monkeypatch, selector, method
+):
+    import lightrag.chunker as chunker_pkg
+
+    builtins = []
+
+    def custom(*args):
+        pytest.fail("explicit built-in dispatched to a registered custom callback")
+
+    def builtin(tokenizer, content, *args, **kwargs):
+        builtins.append(selector)
+        return [{"tokens": len(content), "content": content, "chunk_order_index": 0}]
+
+    async def async_builtin(*args, **kwargs):
+        return builtin(*args, **kwargs)
+
+    monkeypatch.setattr(
+        chunker_pkg, method, async_builtin if selector == "V" else builtin
+    )
+
+    async def run():
+        rag = _new_rag(
+            tmp_path, chunking_func=_registered_callback(monkeypatch, custom)
+        )
+        await rag.initialize_storages()
+        try:
+            row = await _ingest(rag, doc_id="builtin", process_options=f"{selector}!")
+            assert DocStatus(row["status"]) is DocStatus.PROCESSED
+            assert "custom_chunker" not in _metadata(row)
+            assert builtins == [selector]
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(run())
+
+
+@pytest.mark.offline
+def test_registered_sync_factory_can_return_a_task(tmp_path, monkeypatch):
+    def callback(tokenizer, content, *args):
+        async def result():
+            return [
+                {"tokens": len(content), "content": content, "chunk_order_index": 0}
+            ]
+
+        return asyncio.get_running_loop().create_task(result())
+
+    async def run():
+        rag = _new_rag(
+            tmp_path, chunking_func=_registered_callback(monkeypatch, callback)
+        )
+        await rag.initialize_storages()
+        try:
+            row = await _ingest(rag, doc_id="task-factory", process_options="C!")
+            assert DocStatus(row["status"]) is DocStatus.PROCESSED
+            assert _metadata(row)["custom_chunker"]["name"] == "acme"
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(run())
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "next_name,next_version",
+    [("next", "1"), ("acme", "2"), (None, None), ("acme", "1")],
+)
+def test_registered_identity_survives_reset_and_warns_once_on_drift(
+    tmp_path, monkeypatch, next_name, next_version
+):
+    from lightrag.utils_pipeline import doc_status_reset_metadata
+
+    def callback(tokenizer, content, *args):
+        return [{"tokens": len(content), "content": content, "chunk_order_index": 0}]
+
+    async def run():
+        rag = _new_rag(
+            tmp_path, chunking_func=_registered_callback(monkeypatch, callback)
+        )
+        await rag.initialize_storages()
+        handler = _ListHandler()
+        logger = logging.getLogger("lightrag")
+        try:
+            first = await _ingest(rag, doc_id="drift", process_options="C!")
+            prior = _metadata(first)["custom_chunker"]
+            pending = dict(
+                first,
+                status=DocStatus.PENDING.value,
+                metadata=doc_status_reset_metadata(first),
+            )
+            assert pending["metadata"]["custom_chunker"] == prior
+            await rag.doc_status.upsert({"drift": pending})
+            rag.chunking_func = (
+                _registered_callback(monkeypatch, callback, next_name, next_version)
+                if next_name
+                else chunking_by_token_size
+            )
+            logger.addHandler(handler)
+            await rag.apipeline_process_enqueue_documents()
+            second = await rag.doc_status.get_by_id("drift")
+            warnings = [
+                r.getMessage()
+                for r in handler.records
+                if "Custom chunker identity changed" in r.getMessage()
+            ]
+            assert len(warnings) == (
+                0 if (next_name, next_version) == ("acme", "1") else 1
+            )
+            if warnings:
+                assert "acme" in warnings[0] and "current configuration" in warnings[0]
+            assert DocStatus(second["status"]) is DocStatus.PROCESSED
+            assert _metadata(second)["custom_chunker"] == {
+                "name": next_name,
+                "version": next_version,
+                "authoritative": False,
+            }
+        finally:
+            logger.removeHandler(handler)
+            await rag.finalize_storages()
+
+    asyncio.run(run())
+
+
+@pytest.mark.offline
+def test_registered_async_failure_records_attempt_without_fallback(
+    tmp_path, monkeypatch
+):
+    async def callback(*args):
+        raise RuntimeError("registered chunker failed")
+
+    async def run():
+        rag = _new_rag(
+            tmp_path, chunking_func=_registered_callback(monkeypatch, callback)
+        )
+        await rag.initialize_storages()
+        try:
+            row = await _ingest(rag, doc_id="failed-registered", process_options="C!")
+            assert DocStatus(row["status"]) is DocStatus.FAILED
+            assert "registered chunker failed" in row["error_msg"]
+            assert _metadata(row)["custom_chunker"]["name"] == "acme"
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(run())
 
 
 class _SimpleTokenizerImpl:

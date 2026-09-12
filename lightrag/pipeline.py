@@ -76,6 +76,7 @@ from lightrag.kg.shared_storage import (
     with_reservation_lock,
 )
 from lightrag import pipeline_metrics
+from lightrag.chunker.registry import chunker_identity
 from lightrag.kg.pipeline_ingress import PipelineIngressMessage
 from lightrag.operate import merge_nodes_and_edges
 from lightrag.parser.base import ParseContext
@@ -4936,6 +4937,46 @@ class _PipelineMixin:
                 from lightrag.chunker import chunking_by_token_size
 
                 is_builtin_chunker = self.chunking_func is chunking_by_token_size
+                # Diagnostic only: never resolve, reject or select a callback
+                # using a previous document's author-supplied identity.
+                uses_custom_callback = (
+                    not doc_process_opts.chunking_explicit
+                    or doc_process_opts.chunking == "C"
+                )
+                current_identity = (
+                    chunker_identity(self.chunking_func)
+                    if uses_custom_callback
+                    else None
+                )
+                previous_identity = (
+                    status_doc.metadata.get("custom_chunker")
+                    if isinstance(status_doc.metadata, dict)
+                    else None
+                )
+                observation = current_identity or {
+                    "name": None,
+                    "version": None,
+                    "authoritative": False,
+                }
+                if doc_process_opts.chunking == "C" and isinstance(
+                    previous_identity, dict
+                ):
+                    if any(
+                        previous_identity.get(key) != observation[key]
+                        for key in ("name", "version")
+                    ):
+                        logger.warning(
+                            "Custom chunker identity changed for doc_id %s: %r@%r -> %r@%r; proceeding under current configuration (identity is non-authoritative)",
+                            doc_id,
+                            previous_identity.get("name"),
+                            previous_identity.get("version"),
+                            observation["name"],
+                            observation["version"],
+                        )
+                if current_identity is not None or previous_identity is not None:
+                    # Set before invocation so a failed callback still names
+                    # the attempted configuration in the FAILED record.
+                    extraction_meta["custom_chunker"] = observation
                 if (
                     doc_process_opts.chunking_explicit
                     and doc_process_opts.chunking != "C"
@@ -5267,24 +5308,26 @@ class _PipelineMixin:
                     if isinstance(content_data, dict)
                     else None
                 )
-                extraction_meta = {
-                    "parse_format": persisted_format,
-                    # Shared resolver with the parse stage (_parse_worker), so a
-                    # field already stamped at PARSING re-writes to the same
-                    # value here — no value jump across the transition.
-                    "parse_engine": resolve_doc_status_parse_engine(
-                        persisted_format, persisted_engine
-                    ),
-                    # Set by the actual branch taken, not merely the persisted
-                    # selector. This distinguishes C custom success from its
-                    # fixed-token fallback after callback removal.
-                    "chunk_method": chunk_method,
-                    # Mirrors the chunking start log line (params portion only,
-                    # without the strategy prefix or file path) so admins can
-                    # see the actual chunker params used.  Carried across
-                    # transitions via ``_DOC_STATUS_METADATA_CARRY_OVER_KEYS``.
-                    "chunk_opts": chunk_opts_str,
-                }
+                extraction_meta.update(
+                    {
+                        "parse_format": persisted_format,
+                        # Shared resolver with the parse stage (_parse_worker), so a
+                        # field already stamped at PARSING re-writes to the same
+                        # value here — no value jump across the transition.
+                        "parse_engine": resolve_doc_status_parse_engine(
+                            persisted_format, persisted_engine
+                        ),
+                        # Set by the actual branch taken, not merely the persisted
+                        # selector. This distinguishes C custom success from its
+                        # fixed-token fallback after callback removal.
+                        "chunk_method": chunk_method,
+                        # Mirrors the chunking start log line (params portion only,
+                        # without the strategy prefix or file path) so admins can
+                        # see the actual chunker params used.  Carried across
+                        # transitions via ``_DOC_STATUS_METADATA_CARRY_OVER_KEYS``.
+                        "chunk_opts": chunk_opts_str,
+                    }
+                )
 
                 blocks_path = str(parsed_data.get("blocks_path") or "").strip()
                 if blocks_path:
