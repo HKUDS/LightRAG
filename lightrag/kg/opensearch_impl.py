@@ -51,6 +51,7 @@ from ..utils import (
     compute_mdhash_id,
     _cooperative_yield,
     merge_source_ids,
+    parse_cache_key,
     validate_workspace,
 )
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
@@ -1575,18 +1576,49 @@ class OpenSearchKVStorage(BaseKVStorage):
             self._pending_upserts.clear()
             self._pending_kv_deletes.clear()
 
-    async def drop_pending_upserts(self) -> None:
+    async def drop_pending_upserts(self, *, cache_types: set[str] | None = None) -> int:
         """Discard buffered upserts, KEEPING the buffered deletes.
 
         The two sets are disjoint by construction -- ``delete`` pops any
         pending upsert for the same id before recording the tombstone -- so
         clearing one leaves the other exactly as it was.
+
+        With ``cache_types``, only buffered rows whose key parses as
+        ``{mode}:{cache_type}:{hash}`` with a named type are discarded; an
+        unparseable key is kept, since this namespace's ids are cache keys and
+        anything else is not what the caller asked to drop.
+        """
+
+        def _discard(pending: dict[str, Any]) -> int:
+            if cache_types is None:
+                dropped = len(pending)
+                pending.clear()
+                return dropped
+            doomed = [
+                doc_id
+                for doc_id in pending
+                if (parsed := parse_cache_key(doc_id)) is not None
+                and parsed[1] in cache_types
+            ]
+            for doc_id in doomed:
+                pending.pop(doc_id, None)
+            return len(doomed)
+
+        if self._flush_lock is None:  # see drop_pending_index_ops
+            return _discard(self._pending_upserts)
+        async with self._flush_lock:
+            return _discard(self._pending_upserts)
+
+    async def has_pending_index_ops(self) -> bool:
+        """Whether buffered UPSERTS remain (retryable failures are retained).
+
+        Deletes are excluded on purpose -- see the base docstring: a retained
+        tombstone carries no reference to another namespace's rows.
         """
         if self._flush_lock is None:  # see drop_pending_index_ops
-            self._pending_upserts.clear()
-            return
+            return bool(self._pending_upserts)
         async with self._flush_lock:
-            self._pending_upserts.clear()
+            return bool(self._pending_upserts)
 
     async def index_done_callback(self) -> None:
         """Flush pending KV ops and refresh the index for search visibility.

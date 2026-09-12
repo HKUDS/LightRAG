@@ -221,8 +221,8 @@ class StorageNameSpace(ABC):
         """
         return None
 
-    async def drop_pending_upserts(self) -> None:
-        """Discard buffered UPSERTS, keeping buffered deletes.
+    async def drop_pending_upserts(self, *, cache_types: set[str] | None = None) -> int:
+        """Discard buffered UPSERTS, keeping buffered deletes. Returns the count.
 
         The narrow counterpart of ``drop_pending_index_ops``, for a caller
         that has to abandon writes without abandoning deletions. A buffered
@@ -232,12 +232,43 @@ class StorageNameSpace(ABC):
         so a dropped tombstone leaves rows on disk with nothing left to find
         them and no retry.
 
-        Backends whose buffer cannot separate the two keep the default no-op:
-        doing nothing is the safe answer, since the caller falls back to
-        deferring the writes rather than dropping a deletion. Only
+        ``cache_types`` narrows the discard to LLM-cache rows of those types
+        (the buffer key is the flattened ``{mode}:{cache_type}:{hash}`` cache
+        key). Pass it whenever the reason to discard is reachability: only
+        ``extract`` rows are reachable solely through a chunk's
+        ``llm_cache_list``, while ``query`` / ``keywords`` rows name no chunk
+        and are the most expensive content in the namespace. ``None`` discards
+        every buffered upsert, for a caller abandoning the batch outright.
+        A key that does not parse is KEPT — it is not what the caller named.
+
+        The return value is the number discarded, so a caller can tell a real
+        discard from the default no-op and say which in its log. Backends
+        whose buffer cannot separate upserts from deletes keep the default,
+        returning 0: doing nothing is the safe answer, since the caller falls
+        back to deferring the writes rather than dropping a deletion. Only
         ``OpenSearchKVStorage`` overrides it today.
         """
-        return None
+        return 0
+
+    async def has_pending_index_ops(self) -> bool:
+        """Whether buffered upserts are still waiting for a commit.
+
+        For a caller that is about to DROP this buffer, or to publish another
+        namespace that depends on it, and must not read a successful
+        ``index_done_callback`` as proof that everything landed: a per-item
+        backend can retain retryable failures (408/429/5xx) and return
+        normally. Everywhere that residue heals on the next flush it is
+        accepted (see *LLM extraction cache reachability* in
+        ``docs/design/PurgeRecoveryContract.md``) — ask here only where the
+        buffer is about to be discarded or the process is about to exit.
+
+        UPSERTS only. A retained tombstone carries no reference and does not
+        make another namespace's rows unreachable.
+
+        Immediate-write and snapshot backends keep the default ``False``:
+        they have no per-operation buffer, so there is nothing to retain.
+        """
+        return False
 
     @abstractmethod
     async def drop(self) -> dict[str, str]:

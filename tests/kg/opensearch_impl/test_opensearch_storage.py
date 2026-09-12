@@ -918,6 +918,73 @@ class TestKVStorageBatching:
             assert s._pending_kv_deletes == {"gone-1", "gone-2"}
 
     @pytest.mark.asyncio
+    async def test_drop_pending_upserts_narrows_to_the_named_cache_types(
+        self, global_config, embed_func, mock_client
+    ):
+        """Only reference-carrying rows are quarantined, and the count is real.
+
+        The buffer is shared by the whole process, so an untyped discard on a
+        chunk-reference failure would also take the query-answer rows -- full
+        LLM answers that name no chunk and that no reachability rule covers.
+        A key that does not parse as a cache key is kept: it is not what the
+        caller named.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.upsert(
+                {
+                    "default:extract:aaa": {"return": "e1"},
+                    "default:extract:bbb": {"return": "e2"},
+                    "default:query:ccc": {"return": "an expensive answer"},
+                    "default:keywords:ddd": {"return": "kw"},
+                    "not-a-cache-key": {"return": "?"},
+                }
+            )
+            await s.delete(["gone-1"])
+
+            dropped = await s.drop_pending_upserts(cache_types={"extract"})
+
+            assert dropped == 2
+            assert set(s._pending_upserts) == {
+                "default:query:ccc",
+                "default:keywords:ddd",
+                "not-a-cache-key",
+            }
+            assert s._pending_kv_deletes == {"gone-1"}
+
+            # Untyped still means "everything", for a caller abandoning the
+            # batch outright; deletes still survive.
+            assert await s.drop_pending_upserts() == 3
+            assert not s._pending_upserts
+            assert s._pending_kv_deletes == {"gone-1"}
+
+    @pytest.mark.asyncio
+    async def test_has_pending_index_ops_reports_retained_upserts_only(
+        self, global_config, embed_func, mock_client
+    ):
+        """A retained retryable upsert is visible; a retained tombstone is not.
+
+        ``_flush_pending_kv_ops`` keeps 408/429/5xx failures buffered and
+        returns normally, so a successful ``index_done_callback`` is not proof
+        for a caller that is about to DROP the buffer. A retained delete
+        carries no reference and must not trip the same gate.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            assert await s.has_pending_index_ops() is False
+
+            await s.upsert({"default:extract:aaa": {"return": "e1"}})
+            assert await s.has_pending_index_ops() is True
+
+            await s.drop_pending_upserts()
+            assert await s.has_pending_index_ops() is False
+
+            await s.delete(["gone-1"])
+            assert await s.has_pending_index_ops() is False
+
+    @pytest.mark.asyncio
     async def test_repeated_kv_upserts_flush_in_single_bulk_call(
         self, global_config, embed_func, mock_client
     ):
