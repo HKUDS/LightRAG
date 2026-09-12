@@ -95,7 +95,7 @@ class _SpyStorage:
         drop_error: BaseException | None = None,
         recorder: list | None = None,
         pending_index_ops: bool = False,
-        dropped_upsert_count: int = 0,
+        dropped_upsert_count: int | None = None,
     ):
         self.label = label
         self.namespace = namespace
@@ -126,7 +126,7 @@ class _SpyStorage:
         if self._drop_error is not None:
             raise self._drop_error
 
-    async def drop_pending_upserts(self, *, cache_types=None) -> int:
+    async def drop_pending_upserts(self, *, cache_types=None) -> int | None:
         self.drop_upsert_calls += 1
         self.drop_upsert_cache_types.append(cache_types)
         self._recorder.append((self.label, "drop_upserts"))
@@ -1243,7 +1243,8 @@ async def test_finalize_reports_the_residue_a_snapshot_backend_cannot_close(
     """
     rag = await _make_rag(tmp_path)
     chunks = _SpyStorage("text_chunks", flush_error=RuntimeError("chunks down"))
-    cache = _SpyStorage("llm_cache", dropped_upsert_count=0)
+    # None, not 0: the backend cannot separate the upserts out at all.
+    cache = _SpyStorage("llm_cache", dropped_upsert_count=None)
     rag.text_chunks = chunks
     rag.llm_response_cache = cache
 
@@ -1252,6 +1253,30 @@ async def test_finalize_reports_the_residue_a_snapshot_backend_cannot_close(
 
     messages = [r.message for r in caplog.records]
     assert any("nothing will heal them" in m for m in messages)
-    assert not any("discarded 0" in m for m in messages)
     # The finalize itself still ran: it releases the backend's client.
     assert cache.drop_upsert_calls >= 1
+
+
+@pytest.mark.asyncio
+async def test_finalize_does_not_cry_residue_over_an_already_emptied_buffer(
+    tmp_path, caplog
+):
+    """An empty buffer is not an unclosable residue.
+
+    The ordered pair before the loop quarantines on its own chunk failure, so
+    by the time the finalize gate runs the per-item backend has nothing left
+    to discard and answers 0. Reading that as the base-class no-op would raise
+    a permanent-orphan alarm over rows that were already quarantined.
+    """
+    rag = await _make_rag(tmp_path)
+    chunks = _SpyStorage("text_chunks", flush_error=RuntimeError("chunks down"))
+    cache = _SpyStorage("llm_cache", dropped_upsert_count=0)
+    rag.text_chunks = chunks
+    rag.llm_response_cache = cache
+
+    with caplog.at_level("ERROR", logger="lightrag"):
+        await rag.finalize_storages()
+
+    messages = [r.message for r in caplog.records]
+    assert not any("nothing will heal them" in m for m in messages)
+    assert any("none is left unreachable" in m for m in messages)

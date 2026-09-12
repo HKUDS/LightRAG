@@ -2125,11 +2125,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         except Exception as e:
             logger.error(f"Failed to quarantine LLM cache rows before finalize: {e}")
             return
-        if dropped:
+        if dropped is not None:
+            # 0 here is the ordinary case: the ordered pair above already
+            # quarantined them when its chunk half failed.
             logger.error(
-                f"Chunk references are not on disk at shutdown ({reason}); discarded "
-                f"{dropped} buffered extract cache rows before the final cache flush. "
-                "They are recomputed on the next run"
+                f"Chunk references are not on disk at shutdown ({reason}); "
+                f"{dropped} buffered extract cache rows were discarded before the "
+                "final cache flush, and none is left unreachable. They are "
+                "recomputed on the next run"
             )
         else:
             logger.error(
@@ -4001,7 +4004,19 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         except Exception as e:
             logger.error(f"Failed to quarantine pending LLM cache rows: {e}")
         else:
-            if dropped:
+            # Tri-state, by identity: None is "this backend cannot discard",
+            # 0 is "it can and had nothing buffered". Reading 0 as the former
+            # is the defect this whole log split exists to avoid -- it would
+            # describe a snapshot backend's deferral on a per-item one that
+            # had simply already been emptied.
+            if dropped is None:
+                logger.error(
+                    f"Chunk cache references did not commit ({reason}); the LLM cache "
+                    "commit is deferred until a full ordered pair lands. Nothing was "
+                    "discarded: this backend keeps the rows and their references "
+                    "together, so the next pair commit publishes both"
+                )
+            elif dropped:
                 logger.error(
                     f"Chunk cache references did not commit ({reason}); discarded "
                     f"{dropped} buffered extract cache rows that name them -- every "
@@ -4011,10 +4026,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
             else:
                 logger.error(
-                    f"Chunk cache references did not commit ({reason}); the LLM cache "
-                    "commit is deferred until a full ordered pair lands. Nothing was "
-                    "discarded: this backend keeps the rows and their references "
-                    "together, so the next pair commit publishes both"
+                    f"Chunk cache references did not commit ({reason}); no extract "
+                    "cache rows were buffered, so nothing is unreachable and nothing "
+                    "was discarded"
                 )
 
     async def _flush_storages(self, storages: list) -> None:

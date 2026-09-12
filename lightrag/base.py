@@ -221,7 +221,9 @@ class StorageNameSpace(ABC):
         """
         return None
 
-    async def drop_pending_upserts(self, *, cache_types: set[str] | None = None) -> int:
+    async def drop_pending_upserts(
+        self, *, cache_types: set[str] | None = None
+    ) -> int | None:
         """Discard buffered UPSERTS, keeping buffered deletes. Returns the count.
 
         The narrow counterpart of ``drop_pending_index_ops``, for a caller
@@ -241,14 +243,21 @@ class StorageNameSpace(ABC):
         every buffered upsert, for a caller abandoning the batch outright.
         A key that does not parse is KEPT — it is not what the caller named.
 
-        The return value is the number discarded, so a caller can tell a real
-        discard from the default no-op and say which in its log. Backends
-        whose buffer cannot separate upserts from deletes keep the default,
-        returning 0: doing nothing is the safe answer, since the caller falls
-        back to deferring the writes rather than dropping a deletion. Only
-        ``OpenSearchKVStorage`` overrides it today.
+        The return value is tri-state, and a caller MUST distinguish all three
+        before it words a log line: an ``int`` is the number discarded, and
+        ``0`` means this backend can discard but had nothing buffered --
+        nothing was lost and nothing is at risk. ``None`` means the backend
+        cannot do this at all, which is a different situation entirely: the
+        caller's writes are still pending, and its fallback is to defer them.
+        Identity, not truthiness, exactly as with ``index_done_callback``'s
+        ``False``.
+
+        Backends whose buffer cannot separate upserts from deletes keep the
+        default, returning ``None``: doing nothing is the safe answer, since
+        the caller falls back to deferring the writes rather than dropping a
+        deletion. Only ``OpenSearchKVStorage`` overrides it today.
         """
-        return 0
+        return None
 
     async def has_pending_index_ops(self) -> bool:
         """Whether buffered upserts are still waiting for a commit.
@@ -265,8 +274,13 @@ class StorageNameSpace(ABC):
         UPSERTS only. A retained tombstone carries no reference and does not
         make another namespace's rows unreachable.
 
-        Immediate-write and snapshot backends keep the default ``False``:
-        they have no per-operation buffer, so there is nothing to retain.
+        The default is ``False``, which is the truth for an immediate-write or
+        snapshot backend (no per-operation buffer, nothing to retain) and an
+        UNIMPLEMENTED answer for the deferred per-item vector storages, which
+        do buffer and do retain. Only ``OpenSearchKVStorage`` overrides it,
+        because only the KV side is asked today. Before querying this on a
+        vector storage, implement it there -- a confident ``False`` over a
+        non-empty buffer is worse than no method at all.
         """
         return False
 
