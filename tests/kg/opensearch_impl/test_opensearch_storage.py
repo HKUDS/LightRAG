@@ -1687,10 +1687,19 @@ class TestKVRefreshGating:
                 assert mock_bulk.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_a_dropped_index_owes_no_refresh(
+    async def test_a_missing_index_defers_the_debt_rather_than_settling_it(
         self, global_config, embed_func, mock_client
     ):
-        """The writes are gone with the index, so the debt goes with them."""
+        """A missing index is not a receipt: the debt is paid once it is back.
+
+        ``_mark_index_missing`` is reached from a dozen call sites and most are
+        read paths, which cannot know whether a streaming bulk is still
+        landing rows -- so none of them may retire the commit path's
+        obligation. While the index is gone nothing is refreshed at all (the
+        readiness check short-circuits ahead of the debt check), and the first
+        commit that finds it back pays the debt once. That single over-count
+        is the one the flush's generation bump already accepts.
+        """
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             with patch(
                 "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
@@ -1707,8 +1716,83 @@ class TestKVRefreshGating:
 
                 await s.drop()
                 mock_client.indices.refresh = AsyncMock()
+
+                # Index gone: the commit refreshes nothing, but the counters
+                # stay apart.
                 await s.index_done_callback()
                 assert mock_client.indices.refresh.await_count == 0
+
+                # Index back, buffer still empty: the deferred debt is paid,
+                # and paid only once.
+                await s._ensure_index_ready()
+                await s.index_done_callback()
+                await s.index_done_callback()
+                assert mock_client.indices.refresh.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_read_seeing_a_missing_index_does_not_settle_the_debt(
+        self, global_config, embed_func, mock_client
+    ):
+        """A read path cannot know what a streaming bulk is still writing.
+
+        ``get_by_id`` releases ``_flush_lock`` before its mget, so its
+        ``index_not_found`` can land while a flush's bulk is in flight -- and
+        that bulk auto-creates the index and goes on writing rows. If the read
+        settled the debt on the commit path's behalf, those rows would never
+        be refreshed by this process: the generation was bumped before the
+        bulk, and the buffer is empty on every later commit, so nothing would
+        notice. Only the reader's own view is invalidated here.
+        """
+        mget_entered = asyncio.Event()
+        release_mget = asyncio.Event()
+        bulk_entered = asyncio.Event()
+        release_bulk = asyncio.Event()
+
+        async def blocking_missing_mget(**kwargs):
+            mget_entered.set()
+            await release_mget.wait()
+            raise NotFoundError(404, "index_not_found_exception", {})
+
+        mock_client.mget = AsyncMock(side_effect=blocking_missing_mget)
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+
+                async def blocking_bulk(*args, **kwargs):
+                    bulk_entered.set()
+                    await release_bulk.wait()
+                    return (1, [])
+
+                mock_bulk.side_effect = blocking_bulk
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"k1": {"content": "v1"}})
+
+                # The read is past the lock and awaiting its mget.
+                read = asyncio.create_task(s.get_by_id("absent-id"))
+                await mget_entered.wait()
+
+                # The flush bumps the generation and its bulk starts writing.
+                commit = asyncio.create_task(s.index_done_callback())
+                await bulk_entered.wait()
+
+                # The index goes missing under the reader mid-bulk.
+                release_mget.set()
+                assert await read is None
+                assert s._index_ready is False
+
+                release_bulk.set()
+                await commit
+                # Index unavailable: this commit refreshes nothing.
+                assert mock_client.indices.refresh.await_count == 0
+
+                # The rows the bulk wrote recreated the index, so the deferred
+                # debt must still be there to pay.
+                await s._ensure_index_ready()
+                await s.index_done_callback()
+                assert mock_client.indices.refresh.await_count == 1
 
     @pytest.mark.asyncio
     async def test_is_empty_refreshes_before_counting(

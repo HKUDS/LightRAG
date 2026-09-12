@@ -968,11 +968,17 @@ class OpenSearchKVStorage(BaseKVStorage):
     def _mark_index_missing(self):
         """Mark the KV index as unavailable for subsequent read short-circuiting.
 
-        Settles the refresh debt as well: the index is gone, so the writes it
-        covered are gone with it and there is nothing left to make visible.
+        Deliberately does NOT touch the refresh counters. Most callers are
+        read paths that know nothing about what this process's commits owe:
+        one can observe ``index_not_found`` while a streaming bulk is still in
+        flight, and that bulk auto-creates the index and goes on writing rows.
+        Settling the debt here would leave those rows outside every
+        search-based reader with nothing in this process to retry it. A debt
+        that outlives its index costs one redundant refresh once the index is
+        recreated -- the same over-count ``_flush_pending_kv_ops`` already
+        accepts when it bumps the generation before the bulk.
         """
         self._index_ready = False
-        self._refreshed_generation = self._write_generation
 
     async def _create_index_if_not_exists(self):
         try:
@@ -1693,7 +1699,10 @@ class OpenSearchKVStorage(BaseKVStorage):
         * **Settle the debt only after a refresh returns.** A raise leaves the
           counters apart so the next commit retries. Clearing on a path that
           did not refresh strands written rows outside every search-based
-          reader, with nothing in this process that would ever notice.
+          reader, with nothing in this process that would ever notice. The
+          missing-index short-circuit below is that rule, not an exception to
+          it: it returns without refreshing, so the debt stands and is paid
+          once the index is back.
         * **Never gate on what THIS call's flush wrote.** The debt belongs to
           the storage, not the call: a commit with an empty buffer must still
           refresh when an earlier refresh failed. That compensation is the one
