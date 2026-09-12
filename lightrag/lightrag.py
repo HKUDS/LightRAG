@@ -3846,6 +3846,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
           bad cache entry cannot re-flush and re-abort every subsequent batch
           and wedge the pipeline.
 
+        The cache's drop is ALWAYS upserts-only, on both paths: a buffered
+        cache delete is a tombstone an already-returned deletion promised, a
+        flush that returns does not prove it landed, and by the time one is
+        buffered the document it belongs to is already gone.
+
         Backends that materialize writes in memory and only persist on a
         later save (FAISS / Nano) discard just the pending buffer here and do
         NOT roll back already-materialized-but-unsaved writes: the FAILED
@@ -3936,28 +3941,31 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     except Exception as e:
                         logger.error(f"Failed to persist LLM cache on abort: {e}")
                 try:
-                    if storage_inst is self.llm_response_cache and (
-                        not references_committed
-                    ):
-                        # The cache was NOT flushed just above, so its buffer
-                        # still holds both kinds of op -- and a buffered delete
-                        # is a tombstone an already-returned
-                        # ``adelete_by_doc_id(delete_llm_cache=True)``
-                        # promised. That path reports success after merely
-                        # logging a flush error, and by now the document, its
+                    if storage_inst is self.llm_response_cache:
+                        # The cache NEVER goes through drop_pending_index_ops:
+                        # that takes the buffered DELETES with the upserts, and
+                        # a cache tombstone is a promise an already-returned
+                        # ``adelete_by_doc_id(delete_llm_cache=True)`` made.
+                        # The flush above does not clear them either -- a
+                        # per-item backend RETAINS a retryable delete and
+                        # returns normally -- so a healthy reference commit is
+                        # no reason to drop one. By then the document, its
                         # status and its chunks are gone, so discarding the
                         # tombstone leaves the row holding the document prompt
-                        # with no recovery path at all. Drop only what this
-                        # cleanup means to drop.
+                        # with no recovery path at all.
                         #
-                        # And only the reference-carrying types, for the same
-                        # reason: the buffer is shared, so an untyped drop also
-                        # takes the query-answer rows, which name no chunk and
-                        # cannot be orphaned. They stay buffered and the next
-                        # cache commit publishes them -- unlike the extract
-                        # rows, nothing is waiting on a reference for them.
+                        # Which UPSERTS go still depends on the references.
+                        # Everything when they landed: the batch is being
+                        # abandoned and those rows are recomputable. Only the
+                        # reference-carrying types when they did not, because
+                        # the rest name no chunk, cannot be orphaned, and the
+                        # next cache commit publishes them.
                         await cast(StorageNameSpace, storage_inst).drop_pending_upserts(
-                            cache_types=set(_REFERENCE_CARRYING_CACHE_TYPES)
+                            cache_types=(
+                                None
+                                if references_committed
+                                else set(_REFERENCE_CARRYING_CACHE_TYPES)
+                            )
                         )
                     else:
                         await cast(

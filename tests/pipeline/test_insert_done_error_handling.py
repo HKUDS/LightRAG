@@ -354,8 +354,11 @@ async def test_discard_skip_enqueue_owned_true(tmp_path, monkeypatch):
         # full_docs / doc_status are skipped.
         assert full.drop_calls == 0
         assert status.drop_calls == 0
-        # cache + other are dropped.
-        assert cache.drop_calls == 1
+        # cache + other are dropped — the cache through the upserts-only
+        # drop, which is the only one it ever takes (its buffered deletes are
+        # tombstones an already-returned deletion promised).
+        assert cache.drop_upsert_calls == 1
+        assert cache.drop_calls == 0
         assert other.drop_calls == 1
     finally:
         await rag.finalize_storages()
@@ -376,7 +379,7 @@ async def test_discard_skip_enqueue_owned_false(tmp_path, monkeypatch):
         # Now full_docs / doc_status are ALSO dropped.
         assert full.drop_calls == 1
         assert status.drop_calls == 1
-        assert cache.drop_calls == 1
+        assert cache.drop_upsert_calls == 1
         assert other.drop_calls == 1
     finally:
         await rag.finalize_storages()
@@ -397,7 +400,9 @@ async def test_discard_llm_cache_flush_before_drop(tmp_path, monkeypatch):
         # The LLM cache is flushed (index_done_callback) BEFORE its buffer is
         # dropped — expensive cached results are persisted maximally first.
         assert ("llm_cache", "flush") in rec
-        assert rec.index(("llm_cache", "flush")) < rec.index(("llm_cache", "drop"))
+        assert rec.index(("llm_cache", "flush")) < rec.index(
+            ("llm_cache", "drop_upserts")
+        )
         # Non-cache storages are only dropped, never flushed here.
         assert ("other_vdb", "flush") not in rec
         assert cache.index_done_calls == 1
@@ -451,7 +456,7 @@ async def test_discard_llm_cache_flush_error_swallowed_still_drops(
         # Flush failed (logged), but the drop still ran so a poisoned cache
         # item cannot wedge the next batch.
         assert cache.index_done_calls == 1
-        assert cache.drop_calls == 1
+        assert cache.drop_upsert_calls == 1
         assert any(
             "Failed to persist LLM cache on abort" in r.message for r in caplog.records
         )
@@ -1046,10 +1051,14 @@ async def test_abort_cleanup_keeps_cache_tombstones_when_references_fail(
 
 
 @pytest.mark.asyncio
-async def test_abort_cleanup_drops_everything_when_references_commit(
+async def test_abort_cleanup_drops_every_upsert_when_references_commit(
     tmp_path, monkeypatch
 ):
-    """The narrowing applies only to the failed-reference case."""
+    """The cache-type narrowing applies only to the failed-reference case.
+
+    The upserts-only narrowing applies to both: a buffered cache delete is
+    never this cleanup's to discard.
+    """
     rag = await _make_rag(tmp_path)
     try:
         rec: list = []
@@ -1059,8 +1068,11 @@ async def test_abort_cleanup_drops_everything_when_references_commit(
         await rag._discard_pending_index_ops()
 
         assert cache.index_done_calls == 1
-        assert cache.drop_calls == 1
-        assert cache.drop_upsert_calls == 0
+        # Upserts only, untyped: the batch is abandoned so every buffered
+        # upsert goes, but the deletes never do.
+        assert cache.drop_upsert_calls == 1
+        assert cache.drop_upsert_cache_types == [None]
+        assert cache.drop_calls == 0
     finally:
         await rag.finalize_storages()
 
@@ -1129,9 +1141,11 @@ async def test_discard_still_flushes_the_cache_when_nothing_stays_buffered(
         await rag._discard_pending_index_ops()
 
         assert cache.index_done_calls == 1
-        assert rec.index(("llm_cache", "flush")) < rec.index(("llm_cache", "drop"))
-        assert cache.drop_calls == 1
-        assert cache.drop_upsert_calls == 0
+        assert rec.index(("llm_cache", "flush")) < rec.index(
+            ("llm_cache", "drop_upserts")
+        )
+        assert cache.drop_upsert_calls == 1
+        assert cache.drop_calls == 0
     finally:
         rag.text_chunks = None
         await rag.finalize_storages()
@@ -1295,16 +1309,27 @@ class _BufferedCacheStorage:
     and the flush publishes whatever is still buffered.
     """
 
-    def __init__(self, rows: dict[str, dict], deletes: set[str] | None = None):
+    def __init__(
+        self,
+        rows: dict[str, dict],
+        deletes: set[str] | None = None,
+        *,
+        retain_deletes: bool = False,
+    ):
         self.namespace = "llm_response_cache"
         self.pending_upserts = dict(rows)
         self.pending_deletes = set(deletes or set())
         self.published: dict[str, dict] = {}
+        # ``retain_deletes`` models a retryable per-item delete failure: the
+        # flush keeps it buffered and returns NORMALLY, which is what makes a
+        # returning flush no proof that the tombstone landed.
+        self._retain_deletes = retain_deletes
 
     async def index_done_callback(self):
         self.published.update(self.pending_upserts)
         self.pending_upserts.clear()
-        self.pending_deletes.clear()
+        if not self._retain_deletes:
+            self.pending_deletes.clear()
 
     async def drop_pending_index_ops(self):
         self.pending_upserts.clear()
@@ -1425,6 +1450,44 @@ async def test_the_runtime_pair_still_accepts_retained_chunk_ops(tmp_path):
         assert cache.index_done_calls == 1
         assert cache.drop_upsert_calls == 0
         assert rag._chunk_reference_commit_failed is False
+    finally:
+        rag.text_chunks = None
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_the_aborting_cleanup_keeps_a_tombstone_a_healthy_flush_retained(
+    tmp_path, monkeypatch
+):
+    """A returning cache flush does not prove the tombstone landed.
+
+    ``adelete_by_doc_id(delete_llm_cache=True)`` buffers the delete, verifies
+    through a read that is buffer-aware (so a merely-buffered tombstone reads
+    as gone), and flushes with a plain ``_insert_done`` that RETURNS when the
+    backend retains a retryable delete. The deletion is reported successful
+    with the tombstone still buffered, and the document, its status and its
+    chunks are already gone. A later abort must not discard it: nothing can
+    reissue it, and the row holds the document prompt.
+    """
+    rag = await _make_rag(tmp_path)
+    try:
+        chunks = _SpyStorage("text_chunks")
+        cache = _BufferedCacheStorage(
+            {"default:extract:aaa": {"return": "e1"}},
+            deletes={"default:extract:promised"},
+            retain_deletes=True,
+        )
+        rag.text_chunks = chunks
+        rag.llm_response_cache = cache
+        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache])
+
+        await rag._discard_pending_index_ops()
+
+        # The promise survives the abort.
+        assert cache.pending_deletes == {"default:extract:promised"}
+        # The references landed, so the flush ran and the upserts still go.
+        assert set(cache.published) == {"default:extract:aaa"}
+        assert cache.pending_upserts == {}
     finally:
         rag.text_chunks = None
         await rag.finalize_storages()
