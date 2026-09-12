@@ -5433,47 +5433,69 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         ]
 
     async def aclear_cache(self) -> None:
-        """Clear all cache data from the LLM response cache storage.
+        """Drop every row of the LLM response cache storage.
 
-        This method clears all cached LLM responses regardless of mode.
+        Caller contract:
+            ``drop`` is destructive and **not** serialized by the storage
+            class, so this method inherits its contract: the caller MUST hold
+            the pipeline ``busy`` reservation before invoking it. Clearing
+            concurrently with an active document pipeline wipes the extraction
+            rows the in-flight chunks already paid for -- a later reprocess
+            re-bills every one of those LLM calls -- and leaves those chunks'
+            ``llm_cache_list`` naming rows that no longer exist.
+
+            The REST surface reaches this through
+            ``DELETE /documents?clear_llm_cache=true``, which runs inside the
+            destructive reservation. There is deliberately no endpoint that
+            calls it without one.
+
+        Raises:
+            Exception: propagated from the storage; the cache may be partly
+                dropped. Re-run to finish it.
 
         Example:
-            # Clear all cache
+            # Clear all cache (caller already holds the reservation)
             await rag.aclear_cache()
         """
         if not self.llm_response_cache:
             logger.warning("No cache storage configured")
             return
 
-        try:
-            # Under the fence for the whole drop, not just the flush after it.
-            # ``JsonKVStorage.drop`` clears under its namespace lock, RELEASES
-            # it, and only then commits; an extraction attaching and writing in
-            # that gap has its row published by the drop's own commit while the
-            # reference stays in memory.
-            #
-            # This does NOT make clearing the cache safe during ingestion --
-            # it still wipes rows that in-flight chunks already reference, and
-            # ``drop`` requires the caller to hold the pipeline ``busy``
-            # reservation, which this path does not. That is tracked separately
-            # (folding this into the destructive clear endpoint); the fence
-            # only keeps the publish from straddling a writer's pair.
-            async with (
-                get_extract_cache_fence(self.text_chunks)
-                if self.text_chunks is not None
-                else nullcontext()
-            ):
-                # Clear all cache using drop method
-                success = await self.llm_response_cache.drop()
-                if success:
-                    logger.info("Cleared all cache")
-                else:
-                    logger.warning("Failed to clear all cache")
+        # Under the fence for the whole drop, not just the flush after it.
+        # ``JsonKVStorage.drop`` clears under its namespace lock, RELEASES
+        # it, and only then commits; an extraction attaching and writing in
+        # that gap has its row published by the drop's own commit while the
+        # reference stays in memory. The reservation above is what keeps an
+        # extraction from running at all; the fence is what makes the pair
+        # atomic if one somehow does.
+        async with (
+            get_extract_cache_fence(self.text_chunks)
+            if self.text_chunks is not None
+            else nullcontext()
+        ):
+            result = await self.llm_response_cache.drop()
 
-                await self.llm_response_cache.index_done_callback()
+        # ``drop``'s own result is the whole answer, and no commit follows it.
+        # ``BaseKVStorage.drop`` requires the implementation to persist
+        # immediately (``JsonKVStorage.drop`` calls ``index_done_callback``
+        # itself, inside its try, so a commit failure is already reported as
+        # {"status": "error"}). A second commit here would be redundant, and
+        # propagating ITS failure would report a cache that is durably cleared
+        # as one that was not -- the misreport *Consistency without
+        # transactions* rules out.
+        #
+        # A non-raising failure comes back as {"status": "error"}; the dict is
+        # truthy either way, so check the status rather than the return value.
+        # Raise instead of logging: the caller decides what a half-cleared
+        # cache means for its operation, and a drop reported as done while
+        # rows remain is the mirror silent failure.
+        if isinstance(result, dict) and result.get("status") != "success":
+            raise RuntimeError(
+                "Failed to clear the LLM response cache: "
+                f"{result.get('message', 'unknown error')}"
+            )
 
-        except Exception as e:
-            logger.error(f"Error while clearing cache: {e}")
+        logger.info("Cleared all cache")
 
     def clear_cache(self) -> None:
         """Synchronous version of aclear_cache."""
