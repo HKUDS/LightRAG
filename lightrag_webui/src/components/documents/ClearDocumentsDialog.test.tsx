@@ -21,14 +21,19 @@ import { renderWithProviders } from '@/test/render'
 let realApiModule: Record<string, unknown>
 let ClearDocumentsDialog: typeof import('./ClearDocumentsDialog').default
 
+type ClearStatus = 'success' | 'partial_success' | 'fail' | 'busy'
+
 const clearLlmCacheArgs: Array<boolean | undefined> = []
+let nextResult: { status: ClearStatus; message: string } = {
+  status: 'success',
+  message: 'All documents cleared successfully. Deleted 0 files.'
+}
 const clearDocuments = mock(async (clearLlmCache?: boolean) => {
   clearLlmCacheArgs.push(clearLlmCache)
-  return {
-    status: 'success' as const,
-    message: 'All documents cleared successfully. Deleted 0 files.'
-  }
+  return nextResult
 })
+
+const onDocumentsCleared = mock(async () => {})
 
 beforeAll(async () => {
   realApiModule = { ...(await import('@/api/lightrag')) }
@@ -43,12 +48,17 @@ afterAll(() => {
 afterEach(() => {
   cleanup()
   clearDocuments.mockClear()
+  onDocumentsCleared.mockClear()
   clearLlmCacheArgs.length = 0
+  nextResult = {
+    status: 'success',
+    message: 'All documents cleared successfully. Deleted 0 files.'
+  }
 })
 
 const openAndConfirm = async (options: { checkCache: boolean }) => {
   const user = userEvent.setup()
-  renderWithProviders(<ClearDocumentsDialog />)
+  renderWithProviders(<ClearDocumentsDialog onDocumentsCleared={onDocumentsCleared} />)
 
   await user.click(screen.getByRole('button', { name: /clear/i }))
   await user.type(await screen.findByPlaceholderText(/type yes to confirm/i), 'yes')
@@ -76,4 +86,37 @@ describe('ClearDocumentsDialog', () => {
   test('no longer exposes a standalone cache-clearing call', () => {
     expect('clearCache' in realApiModule).toBe(false)
   })
+
+  // The documents ARE gone on partial_success -- a storage, an input file or
+  // the opted-in cache drop reported an error. Reporting that as a failed
+  // clear leaves the dialog open over a list that no longer reflects the
+  // server, telling the user their documents survived when they did not.
+  test('refreshes and closes on partial_success', async () => {
+    nextResult = {
+      status: 'partial_success',
+      message: 'Cleared documents with some errors. Deleted 0 files.'
+    }
+
+    await openAndConfirm({ checkCache: true })
+
+    await waitFor(() => expect(onDocumentsCleared).toHaveBeenCalledTimes(1))
+    await waitFor(() =>
+      expect(screen.queryAllByPlaceholderText(/type yes to confirm/i).length).toBe(0)
+    )
+  })
+
+  // `busy` (nothing ran) and `fail` (every storage drop failed) are the cases
+  // where the documents really do survive.
+  test.each(['fail', 'busy'] as const)(
+    'keeps the dialog open and does not refresh on %s',
+    async (status) => {
+      nextResult = { status, message: 'nothing was cleared' }
+
+      await openAndConfirm({ checkCache: false })
+
+      await waitFor(() => expect(clearDocuments).toHaveBeenCalledTimes(1))
+      expect(onDocumentsCleared).toHaveBeenCalledTimes(0)
+      expect(screen.queryAllByPlaceholderText(/type yes to confirm/i).length).toBe(1)
+    }
+  )
 })
