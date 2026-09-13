@@ -437,6 +437,18 @@ class NumberingResolver:
             if ilvl is None:
                 ilvl = 0
 
+            # OOXML defines w:ilvl over 0-8 (ECMA-376 ST_DecimalNumber for
+            # numbering levels). ilvl can reach here from numbering.xml,
+            # styles.xml, or a direct paragraph numPr -- none of those parse
+            # sites bound it, so a crafted document can smuggle an
+            # arbitrarily large value through. Below, it drives range(ilvl)
+            # and _format_label's range(ilvl + 1): unbounded, that turns one
+            # tiny paragraph into a CPU-bound loop of that many iterations.
+            if not 0 <= ilvl <= 8:
+                self.last_numId = None
+                self.last_abstract_id = None
+                return ""
+
             # Get abstract definition
             abstract_id = self.num_to_abstract.get(num_id)
             if abstract_id is None or abstract_id not in self.abstract_nums:

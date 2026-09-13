@@ -137,6 +137,57 @@ def test_get_numbering_from_style_merges_numid_and_explicit_ilvl() -> None:
     assert r._get_numbering_from_style("ListP") == {"numId": "100", "ilvl": None}
 
 
+def test_ilvl_outside_ooxml_domain_is_rejected_not_looped() -> None:
+    """w:ilvl is defined for 0-8 (ECMA-376 ST_DecimalNumber). A malicious
+    document can define a level at the same out-of-range ilvl in both
+    numbering.xml and the paragraph's direct numPr, so the "ilvl not in
+    levels" check alone would not catch it -- it would flow straight into
+    range(ilvl) and blow up into a CPU-bound loop of that many iterations."""
+    r = NumberingResolver.__new__(NumberingResolver)
+    r.abstract_nums = {
+        "10": {
+            1000: {"start": 1, "numFmt": "decimal", "lvlText": "%1.", "isLgl": False}
+        }
+    }
+    r.abstract_pstyle = {}
+    r.num_to_abstract = {"100": "10"}
+    r.counters = {}
+    r.start_overrides = {}
+    r.style_numpr = {}
+    r.style_based_on = {}
+    r.last_numId = None
+    r.last_abstract_id = None
+    r.last_style_id = None
+    r._warnings = None
+
+    assert r.get_label(_para(num_id="100", ilvl=1000)) == ""
+    assert r.last_numId is None
+    assert r.last_abstract_id is None
+
+
+@pytest.mark.parametrize("ilvl", [-1, 9, 999999])
+def test_out_of_range_ilvl_values_are_rejected(ilvl) -> None:
+    r = _resolver()
+    r.abstract_nums["10"][ilvl] = {
+        "start": 1,
+        "numFmt": "decimal",
+        "lvlText": "%1.",
+        "isLgl": False,
+    }
+    assert r.get_label(_para(num_id="100", ilvl=ilvl)) == ""
+
+
+def test_boundary_ilvl_eight_still_renders() -> None:
+    r = _resolver()
+    r.abstract_nums["10"][8] = {
+        "start": 1,
+        "numFmt": "decimal",
+        "lvlText": "%1.",
+        "isLgl": False,
+    }
+    assert r.get_label(_para(num_id="100", ilvl=8)) == "1."
+
+
 def test_resolve_ilvl_by_pstyle_walks_basedon_ancestors() -> None:
     r = _resolver()
     # direct style match
