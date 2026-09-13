@@ -1,6 +1,10 @@
+import asyncio
 import copy
+import contextvars
 import os
+import threading
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
 import pipmaster as pm  # Pipmaster for dynamic library install
@@ -27,7 +31,7 @@ from lightrag.exceptions import (
 )
 import torch
 import numpy as np
-from lightrag.utils import TruncatedResponse, wrap_embedding_func_with_attrs
+from lightrag.utils import TruncatedResponse, logger, wrap_embedding_func_with_attrs
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -46,6 +50,62 @@ def initialize_hf_model(model_name):
     return hf_model, hf_tokenizer
 
 
+_HF_INFERENCE_EXECUTOR = None
+_HF_INFERENCE_EXECUTOR_GUARD = threading.Lock()
+
+
+def _reset_hf_inference_executor_after_fork() -> None:
+    """A forked child (e.g. a gunicorn pre-fork worker) inherits a copy of
+    the parent's ThreadPoolExecutor object, but fork() only carries the
+    calling thread into the child -- the pool's own worker thread does not
+    exist there. Submitting through the stale executor would hang forever
+    (the job sits queued with no live worker to pick it up). The guard lock
+    is just as unsafe to inherit: if fork happens while some other thread
+    holds it, the child sees it permanently locked, since only the forking
+    thread survives to ever release it. Reset both so the next call in the
+    child lazily builds a fresh executor and lock instead.
+    """
+    global _HF_INFERENCE_EXECUTOR, _HF_INFERENCE_EXECUTOR_GUARD
+    _HF_INFERENCE_EXECUTOR = None
+    _HF_INFERENCE_EXECUTOR_GUARD = threading.Lock()
+
+
+# os.fork() (and therefore os.register_at_fork) doesn't exist on Windows --
+# there is no post-fork state to repair there.
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_hf_inference_executor_after_fork)
+
+
+def _get_hf_inference_executor() -> ThreadPoolExecutor:
+    """Return the process-wide worker used for local HF inference."""
+    global _HF_INFERENCE_EXECUTOR
+    if _HF_INFERENCE_EXECUTOR is None:
+        with _HF_INFERENCE_EXECUTOR_GUARD:
+            if _HF_INFERENCE_EXECUTOR is None:
+                _HF_INFERENCE_EXECUTOR = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="lightrag-hf-inference"
+                )
+    return _HF_INFERENCE_EXECUTOR
+
+
+async def _run_hf_inference(fn, /, *args, **kwargs):
+    """Run one inference job without binding synchronisation to an event loop."""
+    concurrent_future = _get_hf_inference_executor().submit(
+        contextvars.copy_context().run, lambda: fn(*args, **kwargs)
+    )
+    async_future = asyncio.wrap_future(concurrent_future)
+    async_future.add_done_callback(
+        lambda future: None if future.cancelled() else future.exception()
+    )
+    try:
+        return await asyncio.shield(async_future)
+    except asyncio.CancelledError:
+        # This succeeds only while the job is still queued. A running job keeps
+        # occupying the sole worker until the underlying model call returns.
+        concurrent_future.cancel()
+        raise
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -62,8 +122,6 @@ async def hf_model_if_cache(
     **kwargs,
 ) -> str:
     if enable_cot:
-        from lightrag.utils import logger
-
         logger.debug(
             "enable_cot=True is not supported for Hugging Face local models and will be ignored."
         )
@@ -117,12 +175,31 @@ async def hf_model_if_cache(
     # hf_model is loaded with device_map="auto" (see initialize_hf_model),
     # so hf_model.device already reflects accelerate's placement.
     inputs = {k: v.to(hf_model.device) for k, v in input_ids.items()}
-    output = hf_model.generate(
-        **inputs,
-        max_new_tokens=max_new_tokens,
-        num_return_sequences=1,
-        early_stopping=True,
-    )
+    # generate() runs the actual model inference synchronously and can take
+    # seconds to minutes -- calling it directly here would block the whole
+    # event loop for that duration, stalling every other concurrent task.
+    #
+    # Cancelling this await (e.g. an outer execution timeout) only cancels
+    # the asyncio wrapper: CPython cannot forcibly stop a running thread, so
+    # generate() keeps running -- and keeps holding whatever GPU memory it
+    # allocated -- until it finishes on its own. This is an inherent limit
+    # of bridging synchronous PyTorch inference through a worker thread,
+    # not something fixable at this call site.
+    try:
+        output = await _run_hf_inference(
+            hf_model.generate,
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            num_return_sequences=1,
+            early_stopping=True,
+        )
+    except asyncio.CancelledError:
+        logger.warning(
+            "hf_model_if_cache: cancelled while awaiting generate(); "
+            "if generation already started, the model keeps running in "
+            "the background thread until it completes"
+        )
+        raise
     generated_ids = output[0][len(inputs["input_ids"][0]) :]
     response_text = hf_tokenizer.decode(generated_ids, skip_special_tokens=True)
 
@@ -244,31 +321,51 @@ async def hf_embed(
         texts, return_tensors="pt", padding=True, truncation=True
     ).to(device)
 
-    # Perform inference
-    with torch.no_grad():
-        attention_mask = encoded_texts["attention_mask"]
-        outputs = embed_model(
-            input_ids=encoded_texts["input_ids"],
-            attention_mask=attention_mask,
-        )
-        # Plain .mean(dim=1) counts padding-token hidden states, so the same
-        # text's embedding shifts depending on what else is in the batch.
-        # Weight by attention_mask instead. The reduction runs in float32
-        # regardless of the model's own dtype: accumulating in fp16/bf16
-        # risks the summed hidden states overflowing to infinity on long
-        # inputs, and token counts above ~2048 (fp16) or ~256 (bf16) can't
-        # be represented exactly, biasing the mean. clamp_min(1) keeps a
-        # fully-masked row finite (all-padding input) rather than dividing
-        # by zero. The result is cast back to the original hidden-state
-        # dtype so output dtype behaviour is unchanged.
-        mask = attention_mask.unsqueeze(-1).to(torch.float32)
-        hidden_fp32 = outputs.last_hidden_state.to(torch.float32)
-        summed = (hidden_fp32 * mask).sum(dim=1)
-        counts = mask.sum(dim=1).clamp_min(1)
-        embeddings = (summed / counts).to(outputs.last_hidden_state.dtype)
+    # Perform inference. The forward pass is synchronous model compute that
+    # can take seconds -- run it off the event loop thread, same reasoning
+    # as hf_model_if_cache's generate() call.
+    def _run_forward():
+        with torch.no_grad():
+            attention_mask = encoded_texts["attention_mask"]
+            outputs = embed_model(
+                input_ids=encoded_texts["input_ids"],
+                attention_mask=attention_mask,
+            )
+            # Plain .mean(dim=1) counts padding-token hidden states, so the
+            # same text's embedding shifts depending on what else is in the
+            # batch. Weight by attention_mask instead. The reduction runs in
+            # float32 regardless of the model's own dtype: accumulating in
+            # fp16/bf16 risks the summed hidden states overflowing to
+            # infinity on long inputs, and token counts above ~2048 (fp16)
+            # or ~256 (bf16) can't be represented exactly, biasing the mean.
+            # clamp_min(1) keeps a fully-masked row finite (all-padding
+            # input) rather than dividing by zero. The result is cast back
+            # to the original hidden-state dtype so output dtype behaviour
+            # is unchanged.
+            mask = attention_mask.unsqueeze(-1).to(torch.float32)
+            hidden_fp32 = outputs.last_hidden_state.to(torch.float32)
+            summed = (hidden_fp32 * mask).sum(dim=1)
+            counts = mask.sum(dim=1).clamp_min(1)
+            embeddings = (summed / counts).to(outputs.last_hidden_state.dtype)
 
-    # Convert embeddings to NumPy
-    if embeddings.dtype == torch.bfloat16:
-        return embeddings.detach().to(torch.float32).cpu().numpy()
-    else:
+        # Convert to NumPy in the same thread: .cpu() on a CUDA tensor
+        # synchronizes the device (waits for pending GPU work to finish),
+        # which can block just as long as the forward pass itself -- doing
+        # it back on the event loop thread would defeat the point of
+        # offloading generate()/the forward pass in the first place.
+        if embeddings.dtype == torch.bfloat16:
+            return embeddings.detach().to(torch.float32).cpu().numpy()
         return embeddings.detach().cpu().numpy()
+
+    # Same cancellation caveat as hf_model_if_cache's generate() call: a
+    # timeout here cannot stop the forward pass early, only stop waiting
+    # for it.
+    try:
+        return await _run_hf_inference(_run_forward)
+    except asyncio.CancelledError:
+        logger.warning(
+            "hf_embed: cancelled while awaiting the forward pass; the "
+            "model keeps running in the background thread if inference "
+            "already started"
+        )
+        raise
