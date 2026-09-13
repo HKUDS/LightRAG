@@ -26,11 +26,13 @@ RELATED_CHUNK_NUMBER = 2
 DUPLICATE_GROUPS = 5
 
 
-def _text_chunks_db(pick_method: str) -> AsyncMock:
+def _text_chunks_db(
+    pick_method: str, related_chunk_number: int = RELATED_CHUNK_NUMBER
+) -> AsyncMock:
     text_chunks_db = AsyncMock()
     text_chunks_db.global_config = {
         "kg_chunk_pick_method": pick_method,
-        "related_chunk_number": RELATED_CHUNK_NUMBER,
+        "related_chunk_number": related_chunk_number,
     }
     text_chunks_db.get_by_ids.side_effect = lambda chunk_ids: [
         {"content": f"content-{chunk_id}"} for chunk_id in chunk_ids
@@ -116,6 +118,34 @@ async def test_vector_budget_counts_only_surviving_entity_groups():
         )
 
     # int(2 * 1 / 2) over the single surviving group, not int(2 * 5 / 2).
+    assert _vector_call_args(vector_picker) == (1, 1)
+
+
+async def test_collapsed_groups_keep_a_nonzero_vector_quota():
+    """``related_chunk_number=1`` is the input where the quota floor fires.
+
+    Every other VECTOR test here runs at 2, where ``int(2 * 1 / 2)`` is 1
+    whether or not the floor exists, so none of them can tell the two fixes
+    apart. At 1 the collapse to a single group makes the ungated expression
+    ``int(1 * 1 / 2)`` truncate to 0; ``pick_by_vector_similarity`` reads that
+    as "no chunks" and the call site silently downgrades to WEIGHT.
+
+    Dropping the phantom groups is what exposes that input -- before this fix
+    the inflated count masked it -- and the floor added with
+    ``_vector_chunk_quota`` is what answers it. This test is the only place
+    the two are pinned together.
+    """
+    text_chunks_db = _text_chunks_db("VECTOR", related_chunk_number=1)
+    text_chunks_db.embedding_func = AsyncMock()
+
+    with patch(
+        "lightrag.operate.pick_by_vector_similarity",
+        new=AsyncMock(return_value=[]),
+    ) as vector_picker:
+        await _select_from_entities(
+            text_chunks_db, query="question", chunks_vdb=AsyncMock()
+        )
+
     assert _vector_call_args(vector_picker) == (1, 1)
 
 
