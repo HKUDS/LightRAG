@@ -1,112 +1,173 @@
 """Regression tests for ``join_unique`` ordering in ``_merge_attributes``.
 
 ``_merge_attributes`` is the strategy dispatcher behind ``amerge_entities`` /
-``amerge_relations``. ``source_id`` and ``file_path`` are merged with the
+``amerge_relations``. Both ``source_id`` and ``file_path`` are merged with the
 ``join_unique`` strategy, which used to collect items into a ``set`` before
-joining them.
+joining them -- so the merged order was whatever ``str.__hash__`` produced, and
+``PYTHONHASHSEED`` randomization made it differ from one process to the next.
 
-Set iteration order for strings is not stable across processes (PYTHONHASHSEED
-randomization), and the order of ``source_id`` is load-bearing downstream:
-``apply_source_ids_limit`` truncates positionally, keeping the tail under
-``FIFO`` and the head under ``IGNORE_NEW``. A randomly ordered ``source_id``
-therefore made both limit strategies discard arbitrary chunks instead of the
-ones they name.
+That order is load-bearing, differently for each of the two fields:
 
-The sibling branch in the same dispatcher, ``join_unique_comma``, already
-sorted its output, and the codebase uses ``dict.fromkeys`` for order-preserving
-dedup in ~18 other places -- including three in ``utils_graph`` itself.
+``source_id``
+    ``apply_source_ids_limit`` truncates positionally (FIFO keeps the tail,
+    IGNORE_NEW keeps the head). Chunk tracking outranks the graph's
+    ``source_id``, so when a tracking row exists it supplies the order and the
+    graph string is rewritten from it. The damage lands on the fallback path,
+    where no tracking row exists -- legacy graphs, or a merge whose inputs had
+    no usable row and which therefore writes no target row either. There the
+    graph string is the only authority, and both limit strategies dropped
+    arbitrary chunks instead of the ones they are named after.
+
+``file_path``
+    Has no tracking side-channel at all: the graph string is the only store,
+    and ``merge_nodes_and_edges`` caps it at ``max_file_paths`` by the same
+    positional rule. This field is affected unconditionally.
+
+Preserving first-seen order also lines the merged ``source_id`` up with the
+chunk tracking row the same merge writes, which already deduplicates in order
+(source entities first, then the target).
+
+**Why the fixtures use twenty chunk IDs.** A ``set`` of six short, similar
+strings reproduces insertion order outright under roughly a fifth of the
+possible hash seeds, so a small fixture lets the set-based implementation pass
+by coincidence -- including under ``PYTHONHASHSEED=0``, the value CI systems
+pin for reproducibility. At twenty IDs no probed seed reproduces insertion
+order, either in whole or in either ten-element half, so every assertion below
+fails deterministically against the old implementation rather than only for
+most seeds.
 """
 
+import os
 import subprocess
 import sys
 import textwrap
+
+import pytest
 
 from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.utils import apply_source_ids_limit
 from lightrag.utils_graph import _merge_attributes
 
+# Set iteration order is sensitive to the exact strings, and this spelling is
+# the one the seed probe covered: do not renumber or re-pad these.
+FIRST_HALF = [f"chunk-{i:02d}" for i in range(1, 11)]
+SECOND_HALF = [f"chunk-{i:02d}" for i in range(11, 21)]
+ALL_CHUNKS = FIRST_HALF + SECOND_HALF
+HALF = len(FIRST_HALF)
 
-def test_join_unique_preserves_first_seen_order():
-    # Scenario: two entities merged, each carrying its own chunk provenance.
-    first = {"source_id": GRAPH_FIELD_SEP.join(["chunk-01", "chunk-02"])}
-    second = {"source_id": GRAPH_FIELD_SEP.join(["chunk-03", "chunk-04"])}
 
-    merged = _merge_attributes([first, second], {"source_id": "join_unique"})
+@pytest.mark.parametrize("key", ["source_id", "file_path"])
+def test_join_unique_preserves_first_seen_order(key):
+    # Both provenance fields use join_unique, and file_path has no tracking
+    # side-channel -- the order stored here is the only order it ever has.
+    first = {key: GRAPH_FIELD_SEP.join(FIRST_HALF)}
+    second = {key: GRAPH_FIELD_SEP.join(SECOND_HALF)}
 
-    assert merged["source_id"].split(GRAPH_FIELD_SEP) == [
-        "chunk-01",
-        "chunk-02",
-        "chunk-03",
-        "chunk-04",
-    ]
+    merged = _merge_attributes([first, second], {key: "join_unique"})
+
+    assert merged[key].split(GRAPH_FIELD_SEP) == ALL_CHUNKS
 
 
 def test_join_unique_dedups_without_reordering():
-    # Scenario: overlapping provenance -- the duplicate keeps its first position.
-    first = {"source_id": GRAPH_FIELD_SEP.join(["chunk-01", "chunk-02"])}
-    second = {"source_id": GRAPH_FIELD_SEP.join(["chunk-02", "chunk-03"])}
+    # Overlapping provenance: the shared IDs keep their first position instead
+    # of moving to where the second entity mentions them again.
+    overlap = FIRST_HALF[-3:]
+    first = {"source_id": GRAPH_FIELD_SEP.join(FIRST_HALF)}
+    second = {"source_id": GRAPH_FIELD_SEP.join(overlap + SECOND_HALF)}
 
     merged = _merge_attributes([first, second], {"source_id": "join_unique"})
 
-    assert merged["source_id"].split(GRAPH_FIELD_SEP) == [
-        "chunk-01",
-        "chunk-02",
-        "chunk-03",
-    ]
+    assert merged["source_id"].split(GRAPH_FIELD_SEP) == ALL_CHUNKS
 
 
 def test_join_unique_order_lets_fifo_keep_the_newest_chunks():
-    # Scenario: the merged entity exceeds max_source_ids_per_entity.
-    # FIFO keeps the tail, so it must keep the most recently merged chunks.
-    first = {"source_id": GRAPH_FIELD_SEP.join(["chunk-01", "chunk-02", "chunk-03"])}
-    second = {"source_id": GRAPH_FIELD_SEP.join(["chunk-04", "chunk-05", "chunk-06"])}
+    # A merged entity over max_source_ids_per_entity on the fallback path (no
+    # chunk tracking row). FIFO keeps the tail, so it must keep the chunks the
+    # entity merged last contributed.
+    merged = _merge_attributes(
+        [
+            {"source_id": GRAPH_FIELD_SEP.join(FIRST_HALF)},
+            {"source_id": GRAPH_FIELD_SEP.join(SECOND_HALF)},
+        ],
+        {"source_id": "join_unique"},
+    )
 
-    merged = _merge_attributes([first, second], {"source_id": "join_unique"})
-    kept = apply_source_ids_limit(merged["source_id"].split(GRAPH_FIELD_SEP), 3, "FIFO")
+    kept = apply_source_ids_limit(
+        merged["source_id"].split(GRAPH_FIELD_SEP), HALF, "FIFO"
+    )
 
-    assert kept == ["chunk-04", "chunk-05", "chunk-06"]
+    assert kept == SECOND_HALF
 
 
 def test_join_unique_order_lets_ignore_new_keep_the_oldest_chunks():
-    # Scenario: the counterpart -- IGNORE_NEW keeps the head.
-    first = {"source_id": GRAPH_FIELD_SEP.join(["chunk-01", "chunk-02", "chunk-03"])}
-    second = {"source_id": GRAPH_FIELD_SEP.join(["chunk-04", "chunk-05", "chunk-06"])}
+    # The counterpart, so the fix cannot pass by reversing the list instead:
+    # IGNORE_NEW keeps the head.
+    merged = _merge_attributes(
+        [
+            {"source_id": GRAPH_FIELD_SEP.join(FIRST_HALF)},
+            {"source_id": GRAPH_FIELD_SEP.join(SECOND_HALF)},
+        ],
+        {"source_id": "join_unique"},
+    )
 
-    merged = _merge_attributes([first, second], {"source_id": "join_unique"})
     kept = apply_source_ids_limit(
-        merged["source_id"].split(GRAPH_FIELD_SEP), 3, "IGNORE_NEW"
+        merged["source_id"].split(GRAPH_FIELD_SEP), HALF, "IGNORE_NEW"
     )
 
-    assert kept == ["chunk-01", "chunk-02", "chunk-03"]
+    assert kept == FIRST_HALF
 
 
-def test_join_unique_is_stable_across_processes():
-    """Same input, fresh interpreters: the merged order must not change.
-
-    An in-process assertion cannot catch this -- ``PYTHONHASHSEED`` is fixed
-    once per interpreter, so a set-based implementation looks deterministic
-    when tested inside a single process. Only separate processes expose it.
+_PROBE = textwrap.dedent(
     """
-    probe = textwrap.dedent(
-        """
-        from lightrag.constants import GRAPH_FIELD_SEP
-        from lightrag.utils_graph import _merge_attributes
+    from lightrag.constants import GRAPH_FIELD_SEP
+    from lightrag.utils_graph import _merge_attributes
 
-        first = {"source_id": GRAPH_FIELD_SEP.join(["chunk-01", "chunk-02", "chunk-03"])}
-        second = {"source_id": GRAPH_FIELD_SEP.join(["chunk-04", "chunk-05", "chunk-06"])}
-        merged = _merge_attributes([first, second], {"source_id": "join_unique"})
-        print(merged["source_id"].replace(GRAPH_FIELD_SEP, ","))
-        """
+    first = [f"chunk-{i:02d}" for i in range(1, 11)]
+    second = [f"chunk-{i:02d}" for i in range(11, 21)]
+    merged = _merge_attributes(
+        [
+            {"source_id": GRAPH_FIELD_SEP.join(first)},
+            {"source_id": GRAPH_FIELD_SEP.join(second)},
+        ],
+        {"source_id": "join_unique"},
     )
+    print(merged["source_id"].replace(GRAPH_FIELD_SEP, ","))
+    """
+)
 
-    results = set()
-    for _ in range(5):
-        completed = subprocess.run(
-            [sys.executable, "-c", probe],
-            capture_output=True,
+# PYTHONHASHSEED is fixed once per interpreter, so the seed has to be chosen
+# before the process starts -- which is why this runs out of process at all.
+# Inheriting the caller's seed is not enough: a CI runner that pins
+# PYTHONHASHSEED=0 for reproducibility would hand every probe the same seed and
+# the test would silently lose its power to detect variance. The seeds are
+# passed explicitly instead, and 0 is deliberately one of them because it is
+# the value that turns hash randomization off.
+_PROBE_SEEDS = ("0", "1", "2")
+
+
+def test_join_unique_order_is_identical_under_every_hash_seed():
+    """The merged order must not depend on how the IDs happen to hash."""
+    # Launched together rather than in sequence: the probes are independent and
+    # each pays a fresh interpreter start plus a lightrag import.
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", _PROBE],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            check=True,
+            # Inherit the environment so the probe can import lightrag at all;
+            # override only the seed.
+            env={**os.environ, "PYTHONHASHSEED": seed},
         )
-        results.add(completed.stdout.strip().splitlines()[-1])
+        for seed in _PROBE_SEEDS
+    ]
 
-    assert results == {"chunk-01,chunk-02,chunk-03,chunk-04,chunk-05,chunk-06"}
+    merged_orders = {}
+    for seed, process in zip(_PROBE_SEEDS, processes):
+        stdout, stderr = process.communicate()
+        assert process.returncode == 0, (
+            f"probe failed (PYTHONHASHSEED={seed}): {stderr}"
+        )
+        merged_orders[seed] = stdout.strip().splitlines()[-1]
+
+    assert set(merged_orders.values()) == {",".join(ALL_CHUNKS)}, merged_orders
