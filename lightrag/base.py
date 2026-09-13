@@ -727,32 +727,33 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         Returns:
             The number of edges connected to the node
 
-        **A self-loop counts TWICE**, matching NetworkX ``graph.degree()`` — the
-        reference this contract is defined against. Degree counts endpoint
-        *occurrences*, not edge rows, and a self-loop occupies both endpoints of
-        its own edge. The same rule binds ``node_degrees_batch``,
-        ``edge_degree``, ``edge_degrees_batch`` and ``get_popular_labels``: a
-        backend whose scalar and batch paths disagree ranks the same node
-        differently depending on which method a caller reaches for.
+        **A self-loop is EXCLUDED**: it contributes 0, not 1 and not 2.
+        Degree is LightRAG's connectivity measure -- it feeds relation ``rank``
+        in retrieval, BFS truncation priority and ``get_popular_labels`` -- and
+        a self-loop carries no connectivity, which is the same reason
+        ``_reject_self_loop_relation`` (``lightrag/utils_graph.py``) refuses to
+        create one. Counting it would rank a node above its peers for an edge
+        that reaches nothing.
 
-        This is written down because it is exactly the kind of rule a backend
-        re-derives from its own query shape and gets wrong: a document store
-        that counts *documents* matching ``source == id OR target == id``
-        naturally counts a self-loop once, while the same backend's grouped
-        aggregation over each endpoint field counts it twice.
+        The same rule binds ``node_degrees_batch``, ``edge_degree``,
+        ``edge_degrees_batch``, ``get_popular_labels`` and the degree ranking
+        inside ``get_knowledge_graph``: a backend whose scalar and batch paths
+        disagree ranks the same node differently depending on which method a
+        caller reaches for. NetworkX ``graph.degree()`` counts a self-loop
+        twice, so ``NetworkXStorage`` subtracts it like every other backend --
+        this contract, not NetworkX, is the reference.
 
-        LightRAG's own writers never create a self-loop
-        (``_reject_self_loop_relation`` in ``lightrag/utils_graph.py`` states
-        where each ingress drops it), so this governs graphs imported from
-        another backend and direct storage-API use.
+        Exclude self-loops AT THE QUERY, never by post-processing a count, so
+        the rule holds whatever the engine's matching semantics are: an
+        undirected Cypher match, an ``$or`` over two endpoint fields and a
+        grouped aggregation each see a self-loop a different number of times,
+        and only a filter is immune to that difference.
 
-        Pinned by tests for ``networkx``, ``pgtable``, ``mongo`` and
-        ``opensearch``. NOT pinned for the Cypher backends (``neo4j``,
-        ``memgraph``), whose degree comes from a single undirected
-        ``(n)-[r]-()`` match: whether that yields one row or two for a
-        self-loop needs checking against a live server, which no offline test
-        here can do. Treat them as unverified against this rule rather than
-        as compliant.
+        This governs graphs imported from another backend
+        (``tools/migrate_graph_storage.py`` carries self-loops across) and
+        direct storage-API use, since LightRAG's own writers reject them.
+
+        The opposite rule governs edge LISTINGS -- see ``get_node_edges``.
         """
 
     @abstractmethod
@@ -816,12 +817,22 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         dict of lists) and flattens ``None`` to ``[]`` by design; callers that
         need the distinction must use this single-node form.
 
-        **A self-loop is ONE edge and appears ONCE**, here and in
-        ``get_nodes_edges_batch`` — the opposite of the degree rule on
-        :meth:`node_degree`, and deliberately so: this method lists edges,
-        degree counts endpoints. A backend that walks its outbound and inbound
-        matches separately must skip the second occurrence of ``src == tgt``,
-        or it reports one edge twice.
+        **A self-loop appears ONCE** -- listed, never hidden, here and in
+        ``get_nodes_edges_batch``. This method enumerates what the store holds,
+        which is the opposite job from :meth:`node_degree`'s connectivity
+        measure, so the two rules diverge deliberately: degree excludes a
+        self-loop, the listing shows it.
+
+        Hiding it would be a data-loss bug, not a tidier contract. Entity
+        deletion, entity rename, entity merge and the purge of a document's
+        contributions all enumerate a node's incident edges HERE to delete or
+        rewrite the matching relation rows; an edge this method omits leaves an
+        orphan relation vector row behind a deleted entity, or a dangling
+        endpoint behind a renamed one.
+
+        A backend that walks its outbound and inbound matches separately must
+        skip the second occurrence of ``src == tgt``, or it reports one edge
+        twice.
         """
 
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:

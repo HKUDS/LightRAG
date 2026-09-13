@@ -670,9 +670,15 @@ class Neo4JStorage(BaseGraphStorage):
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
             try:
+                # Degree excludes self-loops (BaseGraphStorage.node_degree).
+                # The filter compares the NODES rather than the relationship's
+                # endpoints, so it holds whether an undirected match yields one
+                # row or two for a self-loop -- a difference no offline test
+                # here could settle.
                 query = f"""
                     MATCH (n:`{workspace_label}` {{entity_id: $entity_id}})
-                    OPTIONAL MATCH (n)-[r]-()
+                    OPTIONAL MATCH (n)-[r]-(m)
+                    WHERE m <> n
                     RETURN COUNT(r) AS degree
                 """
                 result = await session.run(query, entity_id=node_id)
@@ -714,10 +720,17 @@ class Neo4JStorage(BaseGraphStorage):
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
+            # Same OPTIONAL MATCH + node-inequality shape as the scalar
+            # node_degree, so the two paths exclude self-loops identically
+            # rather than relying on a count{} subquery filter behaving the
+            # same way. A backend whose scalar and batch disagree ranks the
+            # same node differently depending on which one a caller reaches for.
             query = f"""
                 UNWIND $node_ids AS id
                 MATCH (n:`{workspace_label}` {{entity_id: id}})
-                RETURN n.entity_id AS entity_id, count {{ (n)--() }} AS degree;
+                OPTIONAL MATCH (n)-[r]-(m)
+                WHERE m <> n
+                RETURN n.entity_id AS entity_id, count(r) AS degree;
             """
             result = await session.run(query, node_ids=node_ids)
             degrees = {}
@@ -1359,9 +1372,12 @@ class Neo4JStorage(BaseGraphStorage):
                     # is the BaseGraphStorage contract, and without it the
                     # LIMIT cut an unordered band of equal-degree entities, so
                     # the same graph returned different nodes run to run.
+                    # Degree excludes self-loops (BaseGraphStorage.node_degree),
+                    # and this ranking decides which nodes survive max_nodes.
                     main_query = f"""
                     MATCH (n:`{workspace_label}`)
-                    OPTIONAL MATCH (n)-[r]-()
+                    OPTIONAL MATCH (n)-[r]-(m)
+                    WHERE m <> n
                     WITH n, COALESCE(count(r), 0) AS degree
                     ORDER BY degree DESC, n.entity_id ASC
                     LIMIT $max_nodes
@@ -1950,10 +1966,12 @@ class Neo4JStorage(BaseGraphStorage):
         ) as session:
             result = None
             try:
+                # Degree excludes self-loops (BaseGraphStorage.node_degree).
                 query = f"""
                 MATCH (n:`{workspace_label}`)
                 WHERE n.entity_id IS NOT NULL
-                OPTIONAL MATCH (n)-[r]-()
+                OPTIONAL MATCH (n)-[r]-(m)
+                WHERE m <> n
                 WITH n.entity_id AS label, count(r) AS degree
                 ORDER BY degree DESC, label ASC
                 LIMIT $limit

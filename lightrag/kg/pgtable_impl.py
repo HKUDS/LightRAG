@@ -897,6 +897,10 @@ class PGTableGraphStorage(BaseGraphStorage):
             ), 0)
             FROM lightrag_graph_edges
             WHERE workspace=$1 AND namespace=$2 AND (src_id=$3 OR tgt_id=$3)
+              -- Degree excludes self-loops (BaseGraphStorage.node_degree): a
+              -- self-loop carries no connectivity. Filtered at the query, so
+              -- the CASE sums never see the row at all.
+              AND src_id <> tgt_id
             """,
             self.workspace,
             self.namespace,
@@ -946,7 +950,7 @@ class PGTableGraphStorage(BaseGraphStorage):
         # Rank ALL nodes by degree, including isolated (degree 0) nodes, to
         # match NetworkXStorage.get_popular_labels (dict(graph.degree()) covers
         # every node). Counting from the edge table alone would silently drop
-        # isolated entities. Self-loops count twice (no src_id <> tgt_id guard),
+        # isolated entities. Self-loops are excluded (src_id <> tgt_id),
         # consistent with node_degree.
         rows = await self._fetch(
             """
@@ -957,9 +961,11 @@ class PGTableGraphStorage(BaseGraphStorage):
                 FROM (
                     SELECT src_id AS id FROM lightrag_graph_edges
                     WHERE workspace = $1 AND namespace = $2
+                      AND src_id <> tgt_id
                     UNION ALL
                     SELECT tgt_id AS id FROM lightrag_graph_edges
                     WHERE workspace = $1 AND namespace = $2
+                      AND src_id <> tgt_id
                 ) sub
                 GROUP BY id
             ) d ON d.id = n.id
@@ -1228,7 +1234,7 @@ class PGTableGraphStorage(BaseGraphStorage):
                     )
                 ),
                 -- Same UNION ALL + GROUP BY shape as node_degrees_batch, so
-                -- self-loops count twice here exactly as they do there and in
+                -- self-loops are excluded here exactly as they are there and in
                 -- node_degree. Each arm is index-served: src_id via the PK
                 -- prefix, tgt_id via idx_..._namespace_tgt.
                 candidate_degrees AS (
@@ -1237,10 +1243,12 @@ class PGTableGraphStorage(BaseGraphStorage):
                         SELECT src_id AS id FROM lightrag_graph_edges
                         WHERE workspace = $1 AND namespace = $2
                           AND src_id IN (SELECT nid FROM candidates)
+                          AND src_id <> tgt_id
                         UNION ALL
                         SELECT tgt_id AS id FROM lightrag_graph_edges
                         WHERE workspace = $1 AND namespace = $2
                           AND tgt_id IN (SELECT nid FROM candidates)
+                          AND src_id <> tgt_id
                     ) sub
                     GROUP BY id
                 )
@@ -1308,9 +1316,11 @@ class PGTableGraphStorage(BaseGraphStorage):
                     FROM (
                         SELECT src_id AS id FROM lightrag_graph_edges
                         WHERE workspace = $1 AND namespace = $2
+                          AND src_id <> tgt_id
                         UNION ALL
                         SELECT tgt_id AS id FROM lightrag_graph_edges
                         WHERE workspace = $1 AND namespace = $2
+                          AND src_id <> tgt_id
                     ) sub
                     GROUP BY id
                 ) d ON d.id = n.id
@@ -1430,9 +1440,11 @@ class PGTableGraphStorage(BaseGraphStorage):
             FROM (
                 SELECT src_id AS id FROM lightrag_graph_edges
                 WHERE workspace=$1 AND namespace=$2 AND src_id=ANY($3)
+                  AND src_id <> tgt_id
                 UNION ALL
                 SELECT tgt_id AS id FROM lightrag_graph_edges
                 WHERE workspace=$1 AND namespace=$2 AND tgt_id=ANY($3)
+                  AND src_id <> tgt_id
             ) sub
             GROUP BY id
             """,

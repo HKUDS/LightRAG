@@ -2117,20 +2117,17 @@ class MongoGraphStorage(BaseGraphStorage):
         """
         Returns the total number of edges connected to node_id (both inbound and outbound).
 
-        Degree counts endpoint occurrences, so a self-loop counts twice
-        (``BaseGraphStorage.node_degree``, NetworkX ``graph.degree()``). The
-        ``$or`` counts DOCUMENTS, and a self-loop is one document matching both
-        branches -- so the loops are counted again to make up the second
-        endpoint. Without that, this method disagreed with this class's own
-        ``node_degrees_batch`` and ``get_popular_labels``, which group per
-        endpoint field and have always counted a self-loop twice.
+        A self-loop is EXCLUDED (``BaseGraphStorage.node_degree``): it carries
+        no connectivity. The ``$or`` counts DOCUMENTS, so a self-loop shows up
+        in it exactly once -- subtracting the node's self-loop count removes
+        that one occurrence and leaves the ordinary edges untouched.
 
-        Two counts rather than one ``$cond`` aggregation over the matched
-        documents: both stay index-served counts with no document fetch, which
-        keeps the cost model of a hub node unchanged, and issuing them
-        concurrently keeps the added round trip off the latency path. The
-        self-loop count is an equality on both endpoint fields, so the
-        ``source_node_id`` index narrows it to that node's outbound edges.
+        Two counts rather than one ``$expr`` filter over the matched documents:
+        both stay index-served counts with no document fetch, which keeps the
+        cost model of a hub node unchanged, and issuing them concurrently keeps
+        the second round trip off the latency path. The self-loop count is an
+        equality on both endpoint fields, so the ``source_node_id`` index
+        narrows it to that node's outbound edges.
         """
         total, self_loops = await asyncio.gather(
             self.edge_collection.count_documents(
@@ -2140,7 +2137,7 @@ class MongoGraphStorage(BaseGraphStorage):
                 {"source_node_id": node_id, "target_node_id": node_id}
             ),
         )
-        return total + self_loops
+        return total - self_loops
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         """Get the total degree (sum of relationships) of two nodes.
@@ -2248,11 +2245,23 @@ class MongoGraphStorage(BaseGraphStorage):
 
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
         # merge the outbound and inbound results with the same "_id" and sum the "degree"
-        merged_results = {}
+        # Seeded with zeros so every requested id gets an answer: excluding
+        # self-loops means a node whose only edge is one contributes no row to
+        # either aggregation, and the batch must still agree with node_degree's
+        # 0 rather than omitting the key.
+        merged_results = {nid: 0 for nid in node_ids}
 
-        # Outbound degrees
+        # Outbound degrees. The `$expr` drops self-loops (degree excludes
+        # them -- BaseGraphStorage.node_degree); the indexed `$in` still
+        # selects the candidate rows, with the comparison applied as a residual
+        # filter over them.
         outbound_pipeline = [
-            {"$match": {"source_node_id": {"$in": node_ids}}},
+            {
+                "$match": {
+                    "source_node_id": {"$in": node_ids},
+                    "$expr": {"$ne": ["$source_node_id", "$target_node_id"]},
+                }
+            },
             {"$group": {"_id": "$source_node_id", "degree": {"$sum": 1}}},
         ]
 
@@ -2264,7 +2273,12 @@ class MongoGraphStorage(BaseGraphStorage):
 
         # Inbound degrees
         inbound_pipeline = [
-            {"$match": {"target_node_id": {"$in": node_ids}}},
+            {
+                "$match": {
+                    "target_node_id": {"$in": node_ids},
+                    "$expr": {"$ne": ["$source_node_id", "$target_node_id"]},
+                }
+            },
             {"$group": {"_id": "$target_node_id", "degree": {"$sum": 1}}},
         ]
 
@@ -2762,13 +2776,22 @@ class MongoGraphStorage(BaseGraphStorage):
         if limit <= 0:
             return []
 
+        # The self-loop filter precedes each `$project`: once the projection
+        # has dropped the other endpoint field the two can no longer be
+        # compared. Degree excludes self-loops (BaseGraphStorage.node_degree),
+        # and this ranking decides which nodes survive the node budget.
+        _drop_self_loops = {
+            "$match": {"$expr": {"$ne": ["$source_node_id", "$target_node_id"]}}
+        }
         pipeline: list[dict[str, Any]] = [
+            _drop_self_loops,
             {"$project": {"source_node_id": 1, "_id": 0}},
             {"$group": {"_id": "$source_node_id", "degree": {"$sum": 1}}},
             {
                 "$unionWith": {
                     "coll": self._edge_collection_name,
                     "pipeline": [
+                        _drop_self_loops,
                         {"$project": {"target_node_id": 1, "_id": 0}},
                         {
                             "$group": {
@@ -3400,22 +3423,28 @@ class MongoGraphStorage(BaseGraphStorage):
         every call — on a large graph, to produce a result phase 1 already had.
         """
         try:
-            # Self-loops count twice (the source and target groups each see the
-            # document), matching the other backends.
+            # Self-loops are excluded from both groups, matching node_degree
+            # and the other backends: they carry no connectivity, so they earn
+            # a node no rank here.
+            drop_self_loops = {
+                "$match": {"$expr": {"$ne": ["$source_node_id", "$target_node_id"]}}
+            }
             pipeline = [
                 # Count outbound edges
+                drop_self_loops,
                 {"$group": {"_id": "$source_node_id", "out_degree": {"$sum": 1}}},
                 # Union with inbound edges count
                 {
                     "$unionWith": {
                         "coll": self._edge_collection_name,
                         "pipeline": [
+                            drop_self_loops,
                             {
                                 "$group": {
                                     "_id": "$target_node_id",
                                     "in_degree": {"$sum": 1},
                                 }
-                            }
+                            },
                         ],
                     }
                 },
