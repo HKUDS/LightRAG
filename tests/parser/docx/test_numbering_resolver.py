@@ -315,6 +315,35 @@ def test_provenance_is_the_first_placeholder_of_a_multi_level_template() -> None
     assert r.last_label_format == "lowerLetter"
 
 
+def test_provenance_skips_placeholders_that_render_nothing() -> None:
+    """A `none` level occupies a template slot but contributes no token.
+
+    Picking the leftmost SUBSTITUTED placeholder is not enough: with
+    lvlText "%1%2." and a numFmt "none" level 0, level 0 wins on position
+    while rendering "". The visible leading token comes from level 1, so
+    attributing the label to "none" drops the alpha provenance and sends
+    "ii" back to the Roman branch.
+    """
+    r = _fmt_resolver("lowerLetter", "%1%2.")
+    r.abstract_nums["10"] = {
+        0: {"start": 1, "numFmt": "none", "lvlText": "%1", "isLgl": False},
+        1: {"start": 35, "numFmt": "lowerLetter", "lvlText": "%1%2.", "isLgl": False},
+    }
+    label = r.get_label(_para(num_id="100", ilvl=1))
+
+    assert label == "ii."
+    assert r.last_label_format == "lowerLetter"
+    cls = classify_numbering(f"{label} Heading", numbering_format=r.last_label_format)
+    assert (cls.style_key, cls.ordinal) == ("EnAlpha", 35)
+
+
+def test_provenance_is_none_when_nothing_renders() -> None:
+    """An all-empty render has no token to attribute a format to."""
+    r = _fmt_resolver("none", "%1")
+    assert r.get_label(_para(num_id="100", ilvl=0)) == ""
+    assert r.last_label_format is None
+
+
 # The counting families all render 一/二/十/十一/… — [MS-DOCX] gives
 # japaneseCounting as 一,二,三 and chineseCounting / taiwaneseCounting as
 # 一 (1) / 十 (10). Chinese-locale Word writes 一二三 auto-numbering as

@@ -525,14 +525,18 @@ class NumberingResolver:
         its lowerRoman parent), and the heading classifier reads the leading
         token, so tagging it with the current level's format makes it read
         "ii" as alphabetic 35 instead of Roman 2.
+
+        A placeholder that renders empty (numFmt "none") contributes no token
+        and is skipped, so the leading token of "%1%2." with a "none" level 0
+        is still attributed to level 1.
         """
         try:
             lvl_text = levels[ilvl]["lvlText"]
             result = lvl_text
             current_is_lgl = levels[ilvl].get("isLgl", False)
-            # numFmt of the leftmost placeholder actually substituted, by its
-            # position in the ORIGINAL template (earlier substitutions shift
-            # offsets in `result`).
+            # numFmt of the leftmost placeholder that actually substituted a
+            # NON-EMPTY token, by its position in the ORIGINAL template
+            # (earlier substitutions shift offsets in `result`).
             leading_fmt: str | None = None
             leading_pos: int | None = None
 
@@ -551,7 +555,11 @@ class NumberingResolver:
                     formatted = converter(count)
                     placeholder = f"%{i + 1}"
                     pos = lvl_text.find(placeholder)
-                    if pos != -1 and (leading_pos is None or pos < leading_pos):
+                    if (
+                        formatted
+                        and pos != -1
+                        and (leading_pos is None or pos < leading_pos)
+                    ):
                         leading_pos = pos
                         leading_fmt = num_fmt
                     result = result.replace(placeholder, formatted)
