@@ -726,6 +726,37 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
         Returns:
             The number of edges connected to the node
+
+        **A self-loop must not be in the store, so its degree is not
+        contracted.** Every LightRAG ingress refuses one -- extraction,
+        ``create_relation`` via ``_reject_self_loop_relation``
+        (``lightrag/utils_graph.py``), custom-KG insert -- and
+        ``tools/migrate_graph_storage.py`` refuses a source graph that holds
+        one, rather than dropping it and orphaning the relation's vector row.
+        A self-loop
+        carries no connectivity for graph retrieval, and degree is exactly the
+        connectivity measure that feeds relation ``rank``, BFS truncation
+        priority and ``get_popular_labels``, so an edge reaching nothing has no
+        meaningful degree to report. A store still holding one holds
+        invariant-violating data to be removed, not data to be ranked.
+
+        Backends therefore use the cheapest natural query for degree and may
+        answer differently from each other -- and from their own
+        ``node_degrees_batch`` -- on such an edge. That divergence is
+        unreachable for any graph the contract admits.
+
+        **Do not "fix" this by filtering self-loops out of the degree
+        queries.** It was implemented across all seven backends and reverted
+        for cost: it takes Neo4j's ``node_degrees_batch`` off its O(1)
+        ``GetDegree`` plan and onto an expand per requested node, and it turns
+        OpenSearch's ``get_popular_labels`` and ``get_knowledge_graph('*')``
+        into a script evaluation per document in the edge index, because
+        OpenSearch cannot compare two fields with a term query. Both sit on the
+        retrieval hot path. The invariant is enforced where it costs nothing --
+        at the boundary -- rather than on every query.
+
+        Edge LISTINGS are governed separately, and a self-loop IS listed there
+        -- see ``get_node_edges``.
         """
 
     @abstractmethod
@@ -788,6 +819,23 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         ``get_nodes_edges_batch`` cannot express the middle case (it returns a
         dict of lists) and flattens ``None`` to ``[]`` by design; callers that
         need the distinction must use this single-node form.
+
+        **A self-loop appears ONCE** -- listed, never hidden, here and in
+        ``get_nodes_edges_batch``. :meth:`node_degree` says the store must not
+        hold one; this method is how a store that does is repaired, so the two
+        are not in tension: a self-loop the listing hides cannot be found and
+        cannot be deleted.
+
+        Hiding it would be a data-loss bug, not a tidier contract. Entity
+        deletion, entity rename, entity merge and the purge of a document's
+        contributions all enumerate a node's incident edges HERE to delete or
+        rewrite the matching relation rows; an edge this method omits leaves an
+        orphan relation vector row behind a deleted entity, or a dangling
+        endpoint behind a renamed one.
+
+        A backend that walks its outbound and inbound matches separately must
+        skip the second occurrence of ``src == tgt``, or it reports one edge
+        twice.
         """
 
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
@@ -810,6 +858,12 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         Default implementation fetches node degrees one by one.
         Override this method for better performance in storage backends
         that support batch operations.
+
+        **Answer every requested id.** A node with no edges gets ``0``, not a
+        missing key -- an override that builds its result from aggregation
+        buckets sees no bucket for such a node and drops it unless it seeds the
+        dict first. Callers then need no "absent means zero" rule of their own,
+        and the batch agrees with :meth:`node_degree` on an isolated node.
         """
         result = {}
         for node_id in node_ids:
@@ -823,8 +877,17 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         """Edge degrees as a batch using UNWIND also uses node_degrees_batch
 
         Default implementation calculates edge degrees one by one.
-        Override this method for better performance in storage backends
-        that support batch operations.
+
+        **Override this on any backend whose ``node_degree`` is a round trip.**
+        The default is not merely "slower": it is two AWAITED ``node_degree``
+        calls per pair, issued serially, and retrieval hands it the whole
+        incident-edge set of the top entities rather than ``top_k`` of them --
+        so a single query became thousands of sequential requests on the
+        backends that inherited it. Overriding is eight lines: collect the
+        DISTINCT endpoint ids, resolve them with one ``node_degrees_batch``,
+        sum per pair (``pgtable_impl`` and ``opensearch_impl`` both carry the
+        same shape). Doing so also takes the scalar ``node_degree`` off the
+        retrieval path entirely.
         """
         result = {}
         for src_id, tgt_id in edge_pairs:

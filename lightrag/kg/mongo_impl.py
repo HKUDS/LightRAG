@@ -2116,6 +2116,12 @@ class MongoGraphStorage(BaseGraphStorage):
     async def node_degree(self, node_id: str) -> int:
         """
         Returns the total number of edges connected to node_id (both inbound and outbound).
+
+        One count, not two. A self-loop would be counted once here and twice
+        by ``node_degrees_batch`` below, but the graph is not allowed to hold
+        one (``BaseGraphStorage.node_degree``), so no caller can observe the
+        difference on data the contract admits. Excluding it at the query was
+        measured and rejected -- see the contract for what it cost.
         """
         return await self.edge_collection.count_documents(
             {"$or": [{"source_node_id": node_id}, {"target_node_id": node_id}]}
@@ -2227,7 +2233,10 @@ class MongoGraphStorage(BaseGraphStorage):
 
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
         # merge the outbound and inbound results with the same "_id" and sum the "degree"
-        merged_results = {}
+        # Seeded with zeros so every requested id gets an answer: a node with no
+        # edges contributes no row to either aggregation, and the batch must
+        # still report the 0 node_degree reports rather than omitting the key.
+        merged_results = {nid: 0 for nid in node_ids}
 
         # Outbound degrees
         outbound_pipeline = [
@@ -2273,6 +2282,11 @@ class MongoGraphStorage(BaseGraphStorage):
             For each node, the list includes both:
             - Outgoing edges: (queried_node, connected_node)
             - Incoming edges: (connected_node, queried_node)
+
+        A self-loop appears ONCE: it matches both the outbound and the inbound
+        query, and listing it from each would report one edge as two
+        (``BaseGraphStorage.get_node_edges``, and this class's own
+        ``get_node_edges``, which returns it once).
         """
         result = {node_id: [] for node_id in node_ids}
 
@@ -2294,7 +2308,11 @@ class MongoGraphStorage(BaseGraphStorage):
         async for edge in incoming_cursor:
             source = edge["source_node_id"]
             target = edge["target_node_id"]
-            result[target].append((source, target))
+            # A self-loop was already listed by the outbound pass above (its
+            # source is the same requested id), so skip it here -- one edge,
+            # one tuple. Same guard as pgtable_impl.get_nodes_edges_batch.
+            if target != source:
+                result[target].append((source, target))
 
         return result
 
@@ -3370,8 +3388,9 @@ class MongoGraphStorage(BaseGraphStorage):
         every call — on a large graph, to produce a result phase 1 already had.
         """
         try:
-            # Self-loops count twice (the source and target groups each see the
-            # document), matching the other backends.
+            # No self-loop guard: the graph is not allowed to hold one
+            # (BaseGraphStorage.node_degree), and filtering for it here was
+            # measured and rejected.
             pipeline = [
                 # Count outbound edges
                 {"$group": {"_id": "$source_node_id", "out_degree": {"$sum": 1}}},

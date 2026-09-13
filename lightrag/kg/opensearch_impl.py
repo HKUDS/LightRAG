@@ -4182,7 +4182,18 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             raise
 
     async def node_degree(self, node_id: str) -> int:
-        """Count the number of edges connected to a node."""
+        """Count the edge endpoints a node occupies.
+
+        One count, not two. A self-loop would be counted once here and twice
+        by ``node_degrees_batch`` below, but the graph is not allowed to hold
+        one (``BaseGraphStorage.node_degree``), so no caller can observe the
+        difference on data the contract admits. Excluding it at the query was
+        measured and rejected -- see the contract for what it cost.
+
+        The count API rather than a search or a delegation to
+        ``node_degrees_batch`` (``test_node_degree_uses_count_api`` pins that
+        choice): counting is cheaper than the aggregation search.
+        """
         if not self._indices_ready:
             return 0
         try:
@@ -4426,7 +4437,10 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             # (thousands of ids), and a list scan per bucket makes this loop
             # quadratic and blocks the event loop for seconds.
             requested = set(node_ids)
-            result = {}
+            # Seeded with zeros so every requested id gets an answer: a node
+            # with no edges appears in neither aggregation, and the batch must
+            # still report the 0 node_degree reports rather than omitting it.
+            result = {nid: 0 for nid in node_ids}
             for agg_name in ("source_degrees", "target_degrees"):
                 buckets = response["aggregations"][agg_name]["ids"]["buckets"]
                 for bucket in buckets:
@@ -4444,10 +4458,49 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             logger.error(f"[{self.workspace}] Error batch-getting node degrees: {e}")
             raise
 
+    async def edge_degrees_batch(
+        self, edge_pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], int]:
+        """Sum both endpoint degrees per pair, in ONE aggregation.
+
+        The inherited default calls ``edge_degree`` per pair, which is two
+        ``node_degree`` calls, each a separate awaited round trip -- so a query
+        whose top entities carry a thousand distinct edges issued thousands of
+        SERIAL count requests. Resolving the distinct ids once through
+        ``node_degrees_batch`` replaces all of it with a single aggregation
+        search, which is why that search being more expensive than a count does
+        not decide this: it runs once instead of thousands of times. Same shape
+        as ``pgtable_impl.edge_degrees_batch``.
+        """
+        if not edge_pairs:
+            return {}
+        all_ids = list({nid for pair in edge_pairs for nid in pair})
+        # CHUNKED, not truncated. node_degrees_batch puts the whole list in four
+        # `terms` clauses and asks for one bucket per id, so an unbounded call
+        # breaches index.max_terms_count / search.max_buckets and FAILS the
+        # query -- see _GRAPH_DEGREE_RANK_MAX_CANDIDATES. The BFS and
+        # popular-label callers cap by slicing because they only need the top
+        # candidates and admit fewer nodes than they rank; this caller needs a
+        # degree for EVERY pair it was handed, and a sliced id would come back
+        # as rank 0 rather than as its real degree. Sequential on purpose: the
+        # point is replacing thousands of serial round trips with a handful,
+        # not issuing a fan-out of aggregation searches at once.
+        degrees: dict[str, int] = {}
+        for start in range(0, len(all_ids), _GRAPH_DEGREE_RANK_MAX_CANDIDATES):
+            chunk = all_ids[start : start + _GRAPH_DEGREE_RANK_MAX_CANDIDATES]
+            degrees.update(await self.node_degrees_batch(chunk))
+        return {(s, t): degrees.get(s, 0) + degrees.get(t, 0) for s, t in edge_pairs}
+
     async def get_nodes_edges_batch(
         self, node_ids: list[str]
     ) -> dict[str, list[tuple[str, str]]]:
-        """Batch-fetch edge tuples for multiple nodes."""
+        """Batch-fetch edge tuples for multiple nodes.
+
+        A self-loop appears ONCE: one hit satisfies both endpoint branches of
+        the ``should`` query, and listing it from each would report one edge as
+        two (``BaseGraphStorage.get_node_edges``, and this class's own
+        ``get_node_edges``, which returns it once).
+        """
         result = {nid: [] for nid in node_ids}
         if not self._indices_ready:
             return result
@@ -4488,7 +4541,10 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         tgt = hit["_source"]["target_node_id"]
                         if src in result:
                             result[src].append((src, tgt))
-                        if tgt in result:
+                        # A self-loop was already listed by the source branch
+                        # above, so skip it here -- one edge, one tuple. Same
+                        # guard as pgtable_impl.get_nodes_edges_batch.
+                        if tgt in result and tgt != src:
                             result[tgt].append((src, tgt))
                     search_after = hits[-1]["sort"]
                     if len(hits) < 10000:
