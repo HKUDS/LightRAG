@@ -835,7 +835,15 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
         A backend that walks its outbound and inbound matches separately must
         skip the second occurrence of ``src == tgt``, or it reports one edge
-        twice.
+        twice. ``pgtable``, ``mongo``, ``opensearch`` and the AGE backend's
+        batch form all carry that guard.
+
+        The single-node form on the Cypher family (``neo4j``, ``memgraph``, and
+        AGE) instead resolves one undirected ``(n)-[]-(m)`` match, where how
+        many rows a self-loop produces is the SERVER's answer, not the query's.
+        No offline test settles it, so treat those three as unverified on this
+        rule rather than as compliant -- the batch forms, which issue two
+        directed matches, are the ones pinned here.
         """
 
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
