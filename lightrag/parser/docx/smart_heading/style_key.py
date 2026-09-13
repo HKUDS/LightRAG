@@ -284,7 +284,7 @@ class NumberingClassification:
 
 
 def _extract_unit_and_ordinal(
-    style_key: str, label: str
+    style_key: str, label: str, *, numbering_format: str | None = None
 ) -> tuple[str | None, int | None]:
     if style_key in (CN_CHAPTER, CN_CLAUSE):
         m = re.match(rf"^第\s*([{_CN_ORD}\d]+)\s*(.)$", label.strip())
@@ -296,17 +296,17 @@ def _extract_unit_and_ordinal(
         if not m:
             return None, None
         unit = m.group(1).lower()
-        return unit, _parse_latin_ordinal(m.group(2))
+        return unit, _parse_latin_ordinal(m.group(2), numbering_format=numbering_format)
     if style_key == EN_CLAUSE:
         stripped = label.strip()
         sym = re.match(r"^([§¶]+)\s*(.+)$", stripped)
         if sym:
-            return sym.group(1)[0], _parse_latin_ordinal(sym.group(2))
+            return sym.group(1)[0], _parse_latin_ordinal(sym.group(2), numbering_format=numbering_format)
         m = re.match(r"^([A-Za-z]+)\.?\s*(.+)$", stripped)
         if not m:
             return None, None
         unit = _EN_CLAUSE_CANONICAL.get(m.group(1).lower(), m.group(1).lower())
-        return unit, _parse_latin_ordinal(m.group(2))
+        return unit, _parse_latin_ordinal(m.group(2), numbering_format=numbering_format)
     if style_key == CN_NUM:
         return None, parse_cn_ordinal(label)
     if style_key == CN_PARENT_NUM:
@@ -325,10 +325,16 @@ def _extract_unit_and_ordinal(
     return None, None
 
 
-def _parse_latin_ordinal(text: str) -> int | None:
+def _parse_latin_ordinal(
+    text: str, *, numbering_format: str | None = None
+) -> int | None:
     text = text.strip()
     if text.isdigit():
         return int(text)
+    if numbering_format in ("lowerLetter", "upperLetter"):
+        alpha = parse_alpha_ordinal(text)
+        if alpha is not None:
+            return alpha
     roman = parse_roman(text)
     if roman is not None:
         return roman
@@ -362,7 +368,9 @@ def classify_numbering(
         title = text[m.end() :].strip()
         if not title and style_key not in ALLOW_EMPTY_TITLE:
             return None
-        unit, ordinal = _extract_unit_and_ordinal(style_key, label)
+        unit, ordinal = _extract_unit_and_ordinal(
+            style_key, label, numbering_format=numbering_format
+        )
         raw_level = None
         top_ordinal = None
         if style_key == MULTI_LEVEL_NUM:

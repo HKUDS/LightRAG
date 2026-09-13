@@ -240,6 +240,24 @@ def test_repeated_letter_alpha_ordinals() -> None:
     assert parse_alpha_ordinal("AAA") == 53
 
 
+def test_unit_bearing_labels_honor_alpha_provenance() -> None:
+    c_sec = classify_numbering("Section ii Heading", numbering_format="lowerLetter")
+    assert c_sec is not None
+    assert c_sec.style_key == EN_CHAPTER
+    assert c_sec.unit == "section"
+    assert c_sec.ordinal == 35
+
+    c_art = classify_numbering("Article xx Heading", numbering_format="lowerLetter")
+    assert c_art is not None
+    assert c_art.style_key == EN_CLAUSE
+    assert c_art.unit == "article"
+    assert c_art.ordinal == 50
+
+    c_rom = classify_numbering("Section ii Heading")
+    assert c_rom is not None
+    assert c_rom.ordinal == 2
+
+
 def test_non_word_letter_runs_return_no_ordinal() -> None:
     """Mixed or over-long alpha runs are not Word list labels."""
     assert parse_alpha_ordinal("ab") is None
