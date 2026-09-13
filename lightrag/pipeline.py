@@ -94,6 +94,7 @@ from lightrag.parser.routing import (
     resolve_stored_document_parser_engine,
 )
 from lightrag.utils import (
+    get_extract_cache_fence,
     CacheData,
     _serialize_cache_variant,
     compute_args_hash,
@@ -5897,11 +5898,84 @@ class _PipelineMixin:
         async with pipeline_status_lock:
             return bool(pipeline_status.get("cancellation_requested", False))
 
+    async def _persist_chunk_cache_references_best_effort(
+        self,
+        *,
+        stage_label: str,
+        doc_id: str,
+        error: BaseException | None = None,
+    ) -> bool:
+        """Commit the chunk rows carrying this document's cache references.
+
+        Returns False when the commit did not land — the caller's signal NOT to
+        commit the LLM cache afterwards. Pass the exception that triggered the
+        epilogue as ``error``: a flush this epilogue cannot redo is reported
+        through it, not through the retry below. See *LLM extraction cache
+        reachability* in the contract doc,
+        ``docs/design/PurgeRecoveryContract.md``.
+
+        Runs for every stage epilogue, not just the extract one that can hold
+        chunk references. At the parse stage there is nothing of this
+        document's to commit, so the cost is one no-op flush; suppressing the
+        cache commit there can only happen when ``text_chunks`` is already
+        failing, and it costs a recomputable cache entry. Both are cheaper than
+        a stage whitelist that has to stay correct as stages move.
+        """
+        if self.text_chunks is None:
+            return True
+        # A retry cannot see a failure the backend already discarded. When the
+        # aborting flush was text_chunks' own, a per-item backend has dropped
+        # the permanently-failed operation from its buffer before raising
+        # (``OpenSearchKVStorage._flush_pending_kv_ops``), so flushing again
+        # finds an empty buffer and reports success while the reference is
+        # gone for good. Trust the recorded failure over the retry.
+        #
+        # ``_chunk_reference_commit_failed`` is the durable half of the check:
+        # the exception is only one of several gathered flush results and need
+        # not be the one that propagated here, so a text_chunks failure can
+        # reach this epilogue wearing another namespace's name.
+        chunk_namespace = getattr(self.text_chunks, "final_namespace", None) or getattr(
+            self.text_chunks, "namespace", ""
+        )  # the same spelling _flush_storages puts into IndexFlushError
+        if self._chunk_reference_commit_failed or (
+            isinstance(error, IndexFlushError) and error.namespace == chunk_namespace
+        ):
+            logger.error(
+                "Chunk cache references did not land after %s for d-id %s: "
+                "%s. Deferring the LLM cache commit so the pair stays together.",
+                stage_label,
+                doc_id,
+                error if error is not None else "an earlier chunk commit failed",
+            )
+            return False
+        try:
+            committed = await self.text_chunks.index_done_callback()
+        except Exception as persist_error:
+            logger.error(
+                "Failed to persist chunk cache references after %s for d-id %s: %s",
+                stage_label,
+                doc_id,
+                persist_error,
+            )
+            await self._record_chunk_reference_commit_failure(
+                f"{stage_label} epilogue flush failed"
+            )
+            return False
+        # An explicit False is a DECLINED commit: the mutation was discarded,
+        # so the references are not on disk either.
+        if committed is False:
+            await self._record_chunk_reference_commit_failure(
+                f"{stage_label} epilogue commit declined"
+            )
+            return False
+        return True
+
     async def _persist_llm_response_cache_best_effort(
         self,
         *,
         stage_label: str,
         doc_id: str,
+        error: BaseException | None = None,
     ) -> None:
         """Commit pending LLM cache entries without failing document work.
 
@@ -5909,18 +5983,55 @@ class _PipelineMixin:
         a prerequisite for a parser or multimodal result that has otherwise
         succeeded. Stage-boundary callers use this narrow commit instead of
         ``_insert_done()``, which would flush every KG/vector storage too.
+
+        The chunk references are committed first, under the fence, and the
+        cache commit is skipped when they did not land. That ordering lives
+        HERE rather than in the callers on purpose: a cache commit publishes
+        the WHOLE namespace, not this stage's rows, so every one of these
+        stage boundaries would otherwise publish extract rows that a
+        concurrently-running document has only buffered references for --
+        and every stage boundary added later would have to remember. Pass the
+        exception that triggered a failure epilogue as ``error``; see
+        ``_persist_chunk_cache_references_best_effort``. Callers must NOT hold
+        the fence themselves, since it is not reentrant. Rules and residues
+        are in *LLM extraction cache reachability* in the contract doc,
+        ``docs/design/PurgeRecoveryContract.md``.
         """
         if self.llm_response_cache is None:
             return
-        try:
-            await self.llm_response_cache.index_done_callback()
-        except Exception as persist_error:
-            logger.error(
-                "Failed to persist LLM cache after %s for d-id %s: %s",
-                stage_label,
-                doc_id,
-                persist_error,
-            )
+
+        async def _commit_cache() -> None:
+            try:
+                await self.llm_response_cache.index_done_callback()
+            except Exception as persist_error:
+                logger.error(
+                    "Failed to persist LLM cache after %s for d-id %s: %s",
+                    stage_label,
+                    doc_id,
+                    persist_error,
+                )
+
+        if self.text_chunks is None:
+            await _commit_cache()
+            return
+
+        async with get_extract_cache_fence(self.text_chunks):
+            if not await self._persist_chunk_cache_references_best_effort(
+                stage_label=stage_label,
+                doc_id=doc_id,
+                error=error,
+            ):
+                logger.error(
+                    "Deferring the LLM cache commit after %s for d-id %s: its "
+                    "chunk references are not on disk, and a cache row that "
+                    "outlives them cannot be found again. Both stay in memory "
+                    "for the next all-storage commit, which carries them "
+                    "together",
+                    stage_label,
+                    doc_id,
+                )
+                return
+            await _commit_cache()
 
     async def _mark_doc_cancelled_in_stage(
         self,
@@ -5991,8 +6102,9 @@ class _PipelineMixin:
         """Common epilogue for an extract / merge stage failure.
 
         Logs the error (or cancellation), cancels any pending stage tasks,
-        flushes the LLM response cache, and writes a FAILED status row that
-        preserves the failed chunks snapshot and processing-time metadata.
+        commits the chunk cache references and then the LLM response cache (in
+        that order — see below), and writes a FAILED status row that preserves
+        the failed chunks snapshot and processing-time metadata.
         """
         if isinstance(error, PipelineCancelledException):
             cancel_label = self._cancellation_label(pipeline_status.copy())
@@ -6045,9 +6157,15 @@ class _PipelineMixin:
             if task and not task.done():
                 task.cancel()
 
+        # One call, not a pair: the ordering, the fence and the deferral all
+        # live inside the helper, so every stage boundary gets them and none
+        # has to remember. Passing ``error`` lets it recognise a text_chunks
+        # flush failure it must not re-read. Do NOT take the fence here -- the
+        # helper takes it and it is not reentrant.
         await self._persist_llm_response_cache_best_effort(
             stage_label=f"{stage_label} failure",
             doc_id=doc_id,
+            error=error,
         )
 
         failed_chunks_list, failed_chunks_count = failed_chunks_snapshot

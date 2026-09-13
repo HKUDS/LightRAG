@@ -37,6 +37,18 @@ logger = logging.getLogger("lightrag")
 _INTERNAL_SERVER_ERROR_MESSAGE = "Internal server error"
 
 
+def new_error_id() -> str:
+    """Mint a short correlation id joining a client-visible error to the log.
+
+    Use it whenever a client-facing message must stay free of raw exception
+    text (CWE-209) but an operator still has to find the detail server-side:
+    log the full text with the id, put only the id in the response. Emit it to
+    the client in the same ``(error_id: ...)`` spelling used below so one grep
+    pattern covers every path.
+    """
+    return uuid.uuid4().hex[:12]
+
+
 def internal_server_error(exc: Exception) -> HTTPException:
     """Build a client-safe HTTP 500 that never exposes raw exception text (CWE-209).
 
@@ -54,7 +66,7 @@ def internal_server_error(exc: Exception) -> HTTPException:
             logger.error(traceback.format_exc())
             raise internal_server_error(e)
     """
-    error_id = uuid.uuid4().hex[:12]
+    error_id = new_error_id()
     logger.error(
         f"Returning HTTP 500 to client [error_id={error_id}] ({type(exc).__name__})"
     )

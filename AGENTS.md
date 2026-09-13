@@ -89,13 +89,14 @@ Five storages keep their data in memory and publish it by rewriting a whole file
 
 ### Purge recovery contract
 
-**Full contract: [docs/design/PurgeRecoveryContract.md](docs/design/PurgeRecoveryContract.md) — read it before touching `_purge_kg_contributions`, `adelete_by_doc_id`, the anchor writes in `merge_nodes_and_edges`, or the `kg_write_state` / `kg_purge` metadata.**
+**Full contract: [docs/design/PurgeRecoveryContract.md](docs/design/PurgeRecoveryContract.md) — read it before touching `_purge_kg_contributions`, `adelete_by_doc_id`, the anchor writes in `merge_nodes_and_edges`, the `kg_write_state` / `kg_purge` metadata, or the cache write ordering in `use_llm_func_with_cache`.**
 
 - "What did this document contribute?" is answerable only from the per-document write-ahead anchors (`full_entities` / `full_relations`). The reverse lookup through `text_chunks` is not a fallback — purge deletes those chunks.
 - Governing invariant: **a purge must never delete something that CARRIES attribution — a chunk row or an anchor row that names objects — and leave those objects behind.** `_purge_kg_contributions` **fails closed** (`RecoveryAnchorMissingError` → HTTP 409, nothing deleted) unless one of four proofs holds: `anchors`, `pre_graph`, `journal`, `empty_scope`.
 - **`kg_write_state` must never be inferred or backfilled** — it is written once at enqueue and is monotonic. A backfill reproduces the original silent-skip defect.
 - `kg_write_state` and `kg_purge` must stay in both `_DOC_STATUS_METADATA_CARRY_OVER_KEYS` and `_DOC_STATUS_METADATA_DIRECTIVE_KEYS` (`lightrag/utils_pipeline.py`); dropping either turns a resumable purge into a permanent refusal.
 - Chunk tracking (`entity_chunks` / `relation_chunks`) outranks graph `source_id`; code folding a `source_id` delta back into tracking must append genuine additions only.
+- LLM extraction cache rows are reachable only through the owning chunk's `llm_cache_list`, which makes that list an attribution carrier too: [LLM extraction cache reachability](docs/design/PurgeRecoveryContract.md#llm-extraction-cache-reachability) states the reference-before-row ordering, why a reference that cannot be recorded skips the cache write instead, and what the ordering does not close.
 - Merge and rename apply *Consistency without transactions* above: [the failure model](docs/design/PurgeRecoveryContract.md#merge-and-rename-failure-model) lists their ordering invariants, accepted residues and already-rejected remedies. Read it before reordering `_merge_entities_impl` or the rename branch of `_edit_entity_impl`.
 
 ### Relation weight contract
@@ -362,7 +363,7 @@ Docstrings state the **rules**: what a caller must do, what it must not do, and 
 Two rules are enforced by `tests/test_docstring_budget.py` rather than by review, because both are properties of the tree rather than of any one change:
 
 - **No docstring over 80 lines** (100 for a class). The limit is generous on purpose — it catches a document, not a thorough docstring.
-- **No source line may cite a GitHub issue number.** The referent does not survive a fork, so a comment saying something is "documented in #NNNN" leaves nothing that documents it. Name the thing instead ("the two-channel fence"), or move the content into `docs/design/` and cite that. Never delete such a reference bare — migrate what it pointed at first.
+- **No source line may cite a GitHub issue number.** The referent does not survive a fork, so a comment saying something is "documented in #NNNN" leaves nothing that documents it. Name the thing instead ("the two-channel fence"), or move the content into `docs/design/` and cite that. Never delete such a reference bare — migrate what it pointed at first. Enforced over `lightrag/` only: **tests may cite issue numbers**, and many do. There the number names the defect the test pins, and the test itself — its name, docstring and assertions — is the documentation, so the reference is provenance rather than the thing carrying the meaning.
 
 A third test requires every `docs/**.md` path named in the package to resolve; nothing imports those strings, so a typo is otherwise silent.
 

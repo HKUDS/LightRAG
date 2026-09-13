@@ -35,6 +35,7 @@ _ENV_VARS_TO_ISOLATE = (
     "LIGHTRAG_API_KEY",
     "WHITELIST_PATHS",
     "LIGHTRAG_API_PREFIX",
+    "LIGHTRAG_DEFAULT_UI",
     "ENABLE_API_DOCS",
 )
 
@@ -42,6 +43,10 @@ _ENV_VARS_TO_ISOLATE = (
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch):
     """Keep tests hermetic from developer-local .env and global config state."""
+    # Import first: config loads .env at module import time.  Clearing before
+    # this import would let the loader immediately repopulate the variables.
+    import lightrag.api.config as config
+
     for var in _ENV_VARS_TO_ISOLATE:
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("AUTH_ACCOUNTS", "")
@@ -49,8 +54,6 @@ def _isolate_env(monkeypatch):
     monkeypatch.setenv("TOKEN_SECRET", "")
     monkeypatch.setenv("LLM_BINDING", "ollama")
     monkeypatch.setenv("EMBEDDING_BINDING", "ollama")
-
-    import lightrag.api.config as config
 
     config._global_args = None
     config._initialized = False
