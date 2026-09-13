@@ -2904,6 +2904,60 @@ def _consume_future_exception(fut: "asyncio.Future") -> None:
         fut.exception()
 
 
+# Marker stamped on a ``CancelledError`` that was WITHHELD while a region which
+# must not be interrupted ran to its end -- see
+# :func:`_wait_deferring_cancellation`. It states one narrow fact: the operation
+# kept running AFTER its cancellation was requested, so the storage write that
+# region was performing had the chance to become durable even though the
+# operation is about to report failure.
+#
+# Read it through :func:`cancellation_was_deferred`. A caller that converts a
+# cancellation into an error of its own MUST NOT describe such an operation as
+# one that did not happen -- ``AGENTS.md`` *Consistency without transactions*:
+# "a durable write must never be reported as one that did not happen". The
+# admin-write hold ceiling (``LightRAG._AdminHoldCeiling``) is the reference
+# consumer.
+_DEFERRED_PAST_CANCEL_ATTR = "lightrag_deferred_past_cancel"
+
+
+def cancellation_was_deferred(exc: BaseException) -> bool:
+    """Whether ``exc`` is a cancellation that was held while an uninterruptible
+    region ran to a SUCCESSFUL end, so what that region wrote is durable.
+
+    Success is part of the claim, not an approximation of it. A region whose
+    work RAISED (a full disk, an I/O error) also withholds the cancellation, and
+    ``_bounded_submit_impl`` gives the cancellation precedence over that failure
+    -- it only logs it -- so the exception the caller sees looks the same in both
+    cases. Reporting the failed one as durable is the mirror of the defect this
+    stamp exists to prevent: it would tell a caller their write landed when
+    nothing did, and a caller told that does not retry.
+
+    See :data:`_DEFERRED_PAST_CANCEL_ATTR`. ``False`` for any other exception,
+    for a cancellation delivered at an ordinary suspension point, and for one
+    withheld across work that failed.
+    """
+    return getattr(exc, _DEFERRED_PAST_CANCEL_ATTR, False) is True
+
+
+def mark_cancellation_deferred(exc: BaseException) -> None:
+    """Record on ``exc`` that a storage commit completed despite it.
+
+    The stamp normally comes from an uninterruptible region WITHHOLDING a
+    pending cancellation (``_wait_deferring_cancellation``) or from the
+    operation-level view of one (``_bounded_submit_impl``). This is the third
+    author, for the case neither can see: a commit that STARTS after the
+    cancellation has already been delivered, from a ``finally`` unwinding on it.
+    No cancellation is pending there for those two to notice, yet the write is
+    just as durable, and a caller told otherwise retries a change that landed.
+
+    A no-op unless ``exc`` is a cancellation: nothing else carries this claim,
+    and stamping an arbitrary exception would put a durability promise on an
+    object no reader of the stamp expects to find one on.
+    """
+    if isinstance(exc, asyncio.CancelledError):
+        setattr(exc, _DEFERRED_PAST_CANCEL_ATTR, True)
+
+
 async def _wait_deferring_cancellation(
     future: "asyncio.Future",
     pending_cancel: Optional[asyncio.CancelledError],
@@ -2916,8 +2970,26 @@ async def _wait_deferring_cancellation(
     ``_KeyedLockContext.__aexit__`` in ``lightrag/kg/shared_storage.py``.
 
     Returns the cancellation to re-raise once every step is done (the first one
-    seen, if any). Cancelling ``future`` ITSELF still propagates immediately: it
-    did not run to completion and we must not pretend it did.
+    seen, if any), STAMPED with :data:`_DEFERRED_PAST_CANCEL_ATTR` **when this
+    future completed successfully**, so the caller that re-raises it -- and
+    anything upstream that rewrites it into an error of its own -- can tell it
+    apart both from a cancellation delivered at an ordinary await and from one
+    withheld across work that FAILED. That distinction is not cosmetic: this
+    function's whole purpose is to let a write finish after the cancel was
+    requested, so the operation reporting failure may have committed; but a
+    write that raised committed nothing, and ``_bounded_submit_impl`` gives the
+    cancellation precedence over that failure, so without this the two are
+    indistinguishable downstream.
+
+    An incoming stamp is never cleared. The second call in
+    ``_bounded_submit_impl`` passes the same instance for the commit hook: the
+    write already succeeded and IS durable, so a failing hook must not retract
+    that -- and when the cancel arrived only during that failing hook, so that
+    no call here ever saw a successful future, ``_bounded_submit_impl`` stamps
+    it itself. This function judges the future it was given; only the caller
+    knows what the operation as a whole committed. Cancelling ``future`` ITSELF
+    still propagates immediately: it did not run to completion and we must not
+    pretend it did.
     """
     while not future.done():
         try:
@@ -2935,7 +3007,28 @@ async def _wait_deferring_cancellation(
             if not future.done():
                 raise
             break
+    if pending_cancel is not None and _completed_successfully(future):
+        # Stamp the very instance the caller is about to re-raise. The exception
+        # object is the natural carrier: it is what travelled through the region,
+        # nothing between here and the caller replaces it (the admin flows catch
+        # ``Exception``, not ``BaseException``), and it needs neither a contextvar
+        # nor a shared counter to reach whoever ends up reporting the failure.
+        #
+        # Gated on success: see the docstring. Never cleared, so a stamp an
+        # earlier round put on this instance survives a later step that fails.
+        setattr(pending_cancel, _DEFERRED_PAST_CANCEL_ATTR, True)
     return pending_cancel
+
+
+def _completed_successfully(future: "asyncio.Future") -> bool:
+    """Whether ``future`` finished with a result rather than an error.
+
+    Reads the future without raising: a cancelled or still-pending one is not a
+    success, and ``exception()`` would raise on the former.
+    """
+    if not future.done() or future.cancelled():
+        return False
+    return future.exception() is None
 
 
 async def _bounded_submit_impl(
@@ -3038,6 +3131,18 @@ async def _bounded_submit_impl(
         )
         if not commit_future.cancelled():
             commit_exc = commit_future.exception()
+
+    if pending_cancel is not None and _completed_successfully(async_future):
+        # The stamp describes the OPERATION's durability, not one future's
+        # outcome. ``_wait_deferring_cancellation`` can only see the future it
+        # was handed, so the case "the write landed, the cancel arrived during
+        # the commit hook, and the HOOK failed" would leave the cancellation
+        # unstamped -- and every reader of the stamp (the ceiling's message,
+        # ``NetworkXStorage.index_done_callback``) would then treat a durable
+        # write as one that never happened, which is what the stamp exists to
+        # prevent. The write succeeded here, so say so; the hook's failure is
+        # logged just below.
+        setattr(pending_cancel, _DEFERRED_PAST_CANCEL_ATTR, True)
 
     if pending_cancel is not None:
         # The caller gets CancelledError, so nobody will ever see these.
@@ -3981,7 +4086,7 @@ def truncate_list_by_token_size(
 
     Counts the real serialized text — every item's ``key(item)`` joined by
     ``separator`` — so the separator's own tokens are part of the budget
-    (the previous per-item-only count silently missed them; see #3559).
+    (the previous per-item-only count silently missed them).
     Never partially truncates an item: the result is always "keep the first
     K complete items, drop the rest", never a half-rendered item.
 
@@ -4480,7 +4585,7 @@ async def wait_tasks_with_drain(
     Concurrent multi-store writers (entity/relation merge, rebuild) must never
     leave a sibling task writing in the background after a failure — a failed
     ``gather``/``wait`` does not by itself imply the other write tasks stopped
-    (issue #3400, "incomplete async failure coordination").
+    ("incomplete async failure coordination").
 
     Behavior:
       - All tasks succeed: returns their results (completion order).
@@ -5029,7 +5134,7 @@ async def update_chunk_cache_list(
     text_chunks_storage: "BaseKVStorage",
     cache_keys: list[str],
     cache_scenario: str = "batch_update",
-) -> None:
+) -> bool:
     """Update chunk's llm_cache_list with the given cache keys
 
     Args:
@@ -5037,33 +5142,55 @@ async def update_chunk_cache_list(
         text_chunks_storage: Text chunks storage instance
         cache_keys: List of cache keys to add to the list
         cache_scenario: Description of the cache scenario for logging
+
+    Returns:
+        True when the keys are recorded on the chunk row, were already there,
+        or there was nothing to record. False when they could not be recorded
+        -- the chunk row is missing, or the read/write failed. True means
+        RECORDED, not yet durable: on a deferred KV backend the upsert reaches
+        shared memory only, and the commit order is what makes the ordering
+        durable.
+
+        Never raises. A caller that must not create an unreachable cache row
+        checks this BEFORE writing the row -- see *LLM extraction cache
+        reachability* in the contract doc,
+        ``docs/design/PurgeRecoveryContract.md``.
     """
     if not cache_keys:
-        return
+        return True
 
     try:
         chunk_data = await text_chunks_storage.get_by_id(chunk_id)
-        if chunk_data:
-            # Ensure llm_cache_list exists
-            if "llm_cache_list" not in chunk_data:
-                chunk_data["llm_cache_list"] = []
+        if not chunk_data:
+            # Not a silent no-op: the caller may be about to write a cache row
+            # whose only reachable reference would have been this one.
+            logger.warning(
+                f"Cannot record cache references on missing chunk {chunk_id} ({cache_scenario})"
+            )
+            return False
 
-            # Add cache keys to the list if not already present
-            existing_keys = set(chunk_data["llm_cache_list"])
-            new_keys = [key for key in cache_keys if key not in existing_keys]
+        # Ensure llm_cache_list exists
+        if "llm_cache_list" not in chunk_data:
+            chunk_data["llm_cache_list"] = []
 
-            if new_keys:
-                chunk_data["llm_cache_list"].extend(new_keys)
+        # Add cache keys to the list if not already present
+        existing_keys = set(chunk_data["llm_cache_list"])
+        new_keys = [key for key in cache_keys if key not in existing_keys]
 
-                # Update the chunk in storage
-                await text_chunks_storage.upsert({chunk_id: chunk_data})
-                logger.debug(
-                    f"Updated chunk {chunk_id} with {len(new_keys)} cache keys ({cache_scenario})"
-                )
+        if new_keys:
+            chunk_data["llm_cache_list"].extend(new_keys)
+
+            # Update the chunk in storage
+            await text_chunks_storage.upsert({chunk_id: chunk_data})
+            logger.debug(
+                f"Updated chunk {chunk_id} with {len(new_keys)} cache keys ({cache_scenario})"
+            )
+        return True
     except Exception as e:
         logger.warning(
             f"Failed to update chunk {chunk_id} with cache references on {cache_scenario}: {e}"
         )
+        return False
 
 
 class TruncatedResponse(str):
@@ -5112,8 +5239,7 @@ def empty_length_truncated_hint(
     identically. This is the structurally-broken case, not "ran a bit long":
     generation stopped before producing a single content token, so there is
     nothing to salvage and nothing to cache — the caller raises rather than
-    returning "" and letting the document be indexed as an empty graph
-    (issue #3601 gap 4).
+    returning "" and letting the document be indexed as an empty graph.
 
     ``budget_hint`` names the provider's own output-budget knob, since that is
     the actionable part and only the binding knows it.
@@ -5346,6 +5472,42 @@ def _reject_empty_truncated_response(
     raise EmptyTruncatedResponseError(message)
 
 
+def get_extract_cache_fence(text_chunks_storage) -> asyncio.Lock:
+    """Mutual exclusion between an extract cache attach+write and its commit.
+
+    Hold it around the ``update_chunk_cache_list`` / ``save_to_cache`` pair, and
+    around the chained ``text_chunks`` -> ``llm_response_cache`` commit in
+    ``LightRAG._flush_storages``. Without it the commit pair can straddle a
+    writer's pair on a backend that publishes a snapshot taken at commit time,
+    so the cache snapshot carries a row whose reference postdates the chunk
+    snapshot.
+
+    A plain ``asyncio.Lock``, NOT a cross-process one, and that is load-bearing:
+    extract cache rows are written only by the ingestion pipeline, which runs in
+    exactly one process per workspace (the ``busy`` reservation in *Pipeline
+    concurrency contract*, ``docs/design/PipelineConcurrencyContract.md``).
+    Other processes write only query-cache rows, which name no owning chunk and
+    need no reference. Relaxing that exclusivity silently un-fences this.
+
+    Lives on the storage instance rather than in a module registry so its
+    lifetime is the storage's, and so both sides reach the same object without
+    agreeing on a key. Created lazily with no await in between, so two
+    coroutines cannot build two locks.
+
+    That placement carries a second precondition, alongside the one above:
+    **one ``LightRAG`` instance per workspace per process.** Two instances on
+    one workspace hold two storage objects over the same shared data, so they
+    would build two locks and fence nothing. Constructing them is neither
+    supported nor necessary — see *Writers are fenced out of the commit pair*
+    in ``docs/design/PurgeRecoveryContract.md``.
+    """
+    fence = getattr(text_chunks_storage, "_extract_cache_fence", None)
+    if fence is None:
+        fence = asyncio.Lock()
+        text_chunks_storage._extract_cache_fence = fence
+    return fence
+
+
 async def use_llm_func_with_cache(
     user_prompt: str,
     use_llm_func: callable,
@@ -5359,6 +5521,8 @@ async def use_llm_func_with_cache(
     response_format: Any | None = None,
     entity_extraction: bool = False,
     llm_cache_identity: Any | None = None,
+    text_chunks_storage: "BaseKVStorage | None" = None,
+    on_cache_skipped: Callable[[str], None] | None = None,
 ) -> tuple[str, int]:
     """Call LLM function with cache support and text sanitization
 
@@ -5389,6 +5553,22 @@ async def use_llm_func_with_cache(
             ``response_format`` directly.
         llm_cache_identity: Non-secret model/provider identity used to partition
             cache entries across role model, binding, or host changes.
+        text_chunks_storage: Storage holding the owning chunk. When given
+            together with ``chunk_id``, the cache key is attached to that chunk
+            BEFORE the cache row is written, so the row is never ordered ahead
+            of the only reference that reaches it, and the write is skipped
+            when the reference cannot be recorded -- see *LLM extraction cache
+            reachability* in the contract doc,
+            ``docs/design/PurgeRecoveryContract.md``. Omit it -- as the parse
+            stage and the summary path do, having no owning chunk -- to keep the
+            legacy order and the ``cache_keys_collector`` batch instead.
+        on_cache_skipped: Called with ``cache_type`` when the cache write was
+            skipped because the reference could not be recorded, i.e. caching is
+            effectively off for this call. Lets the caller surface that to the
+            operator instead of leaving it in the server log. Must be
+            synchronous and must not raise: the extraction path publishes its
+            summary from an await-free ``finally`` that also runs during a
+            cancellation unwind.
 
     Returns:
         tuple[str, int]: (LLM response text, timestamp)
@@ -5445,6 +5625,22 @@ async def use_llm_func_with_cache(
         # Generate cache key for this LLM call
         cache_key = generate_cache_key("default", cache_type, arg_hash)
 
+        async def _record_reference(scenario: str) -> bool:
+            """Record this chunk's reference to ``cache_key``.
+
+            Returns True when the caller may write the row: either the
+            reference is recorded, or the caller opted out of the invariant by
+            not naming an owning chunk (parse stage, summaries).
+            """
+            if chunk_id is None or text_chunks_storage is None:
+                return True
+            return await update_chunk_cache_list(
+                chunk_id,
+                text_chunks_storage,
+                [cache_key],
+                scenario,
+            )
+
         cached_result = await handle_cache(
             llm_response_cache,
             arg_hash,
@@ -5456,6 +5652,13 @@ async def use_llm_func_with_cache(
             content, timestamp = cached_result
             logger.debug(f"Found cache for {arg_hash}")
             statistic_data["llm_cache"] += 1
+
+            # Re-attach on a hit. The row predates this call, so ordering is
+            # moot here; this is the reprocess self-heal that re-points a
+            # rewritten chunk row at rows the purge orphaned. A failure is
+            # logged, not fatal: it fails to repair an orphan rather than
+            # creating one.
+            await _record_reference(f"{cache_type}_cache_hit")
 
             # Add cache key to collector if provided
             if cache_keys_collector is not None:
@@ -5490,15 +5693,40 @@ async def use_llm_func_with_cache(
         # Generate timestamp for cache miss (LLM call completion time)
         current_timestamp = int(time.time())
 
-        if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
+        # An extract cache row is reachable only through the owning chunk's
+        # llm_cache_list, so the reference is recorded BEFORE the row is
+        # written: attaching first can lose the reference, which every reader
+        # tolerates, while writing first lost the row itself. On a deferred KV
+        # backend this only orders the two writes in memory -- the commit order
+        # that makes it durable is the failure epilogue's, not this function's.
+        # The residues, both layers and what this ordering does not close are in
+        # *LLM extraction cache reachability* in the contract doc.
+        async def _attach_then_write() -> None:
             if res_truncated:
                 # Do not persist truncated extraction output: a cached partial
                 # payload would be replayed on every later run, even when a
                 # larger token budget would have completed the extraction.
+                # Nothing is attached either, so no reference is left dangling.
                 logger.warning(
                     f"Skipping LLM cache write for truncated {cache_type} response "
                     f"(finish_reason=length, chunk_id={chunk_id})"
                 )
+            # Attach BEFORE the write, never after -- the ordering rule above.
+            # ``save_to_cache`` is a no-op on falsy content, so attaching for an
+            # empty response would leave a reference to a row that is never
+            # written. Its other two no-ops cannot happen here: hashing_kv is
+            # non-None inside this branch, and a streaming response would
+            # already have failed the ``len(res)`` above.
+            elif res and not await _record_reference(f"{cache_type}_cache_write"):
+                logger.warning(
+                    f"Skipping LLM cache write for {cache_type} response: could not "
+                    f"record its reference on chunk {chunk_id}. The result is "
+                    "returned; it will be recomputed on the next run."
+                )
+                # Caching is effectively off for this call. Hand that to the
+                # caller so it reaches the operator, not just the server log.
+                if on_cache_skipped is not None:
+                    on_cache_skipped(cache_type)
             else:
                 await save_to_cache(
                     llm_response_cache,
@@ -5514,6 +5742,17 @@ async def use_llm_func_with_cache(
                 # Add cache key to collector if provided
                 if cache_keys_collector is not None:
                     cache_keys_collector.append(cache_key)
+
+        if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
+            if chunk_id is not None and text_chunks_storage is not None:
+                # Fence the pair against the commit that publishes both
+                # namespaces; see ``get_extract_cache_fence``. Callers that
+                # name no owning chunk need no reference, so they need no
+                # fence either.
+                async with get_extract_cache_fence(text_chunks_storage):
+                    await _attach_then_write()
+            else:
+                await _attach_then_write()
 
         return res, current_timestamp
 
@@ -6825,7 +7064,7 @@ def has_chunk_tracking_row(stored_data: Any) -> bool:
     caller fall back to the graph object's ``source_id`` — a truncated view that
     can still name chunks a previous purge already pruned (see
     ``compute_incremental_chunk_ids``); reseeding a present-but-empty row from
-    it resurrects stale attribution (issue #3609).
+    it resurrects stale attribution.
     """
 
     return isinstance(stored_data, dict) and isinstance(
@@ -6995,7 +7234,7 @@ def fix_tuple_delimiter_corruption(
         record,
     )
 
-    # Fix: <|#|>| -> <|#|>  ( this is a fix for: <|#|| -> <|#|> )
+    # Fix: <|#|>| -> <|#|>  (this is a fix for: <|#|| -> <|#|>)
     record = re.sub(
         rf"<\|{escaped_delimiter_core}\|>\|",
         tuple_delimiter,

@@ -464,7 +464,7 @@ class PostgreSQLDB:
 
         # AGE graphs this process has already confirmed to exist.  Graph
         # creation is one-time DDL, not connection session state, so it must
-        # not ride along on every AGE operation (issue #1866).
+        # not ride along on every AGE operation.
         self._ensured_age_graphs: set[str] = set()
         self._age_graph_ensure_lock = asyncio.Lock()
 
@@ -1238,7 +1238,7 @@ class PostgreSQLDB:
         - The graph itself is one-time DDL.  Creating it here unconditionally
           made PostgreSQL log an ERROR/STATEMENT pair for *every* graph read
           and write, because the server writes its log entry before the client
-          ever sees the error and can swallow it (issue #1866).  Graph
+          ever sees the error and can swallow it.  Graph
           existence is now handled by :meth:`_ensure_age_graph`, which reaches
           the database at most once per process.
         """
@@ -7315,7 +7315,7 @@ class PGGraphStorage(BaseGraphStorage):
             # Only create the labels that are actually missing. create_vlabel /
             # create_elabel have no IF NOT EXISTS form, so calling them for an
             # existing label makes PostgreSQL log an ERROR on every startup
-            # (issue #1866). with_age=True here also guarantees the graph
+            # with_age=True here also guarantees the graph
             # itself exists before we read its labels.
             existing_labels = await self.db.query(
                 "SELECT l.name::text AS name "
@@ -7335,7 +7335,7 @@ class PGGraphStorage(BaseGraphStorage):
             # with with_age=True, and the first one to do so has already had
             # PostgreSQLDB._ensure_age_graph() create the graph. Repeating it
             # here would only add one more "graph already exists" line to the
-            # PostgreSQL log (issue #1866).
+            # PostgreSQL log.
             #
             # The index statements carry IF NOT EXISTS for the same reason: a
             # plain CREATE INDEX on an existing index is an ERROR the server

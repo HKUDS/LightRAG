@@ -62,8 +62,8 @@
       "clearing": "Clearing...",
       "timeout": "Clear operation timed out, please try again",
       "success": "Documents cleared successfully",
-      "cacheCleared": "Cache cleared successfully",
-      "cacheClearFailed": "Failed to clear cache:\n{{error}}",
+      "successWithCache": "Documents and LLM cache cleared successfully",
+      "partialSuccess": "Clear completed with errors:\n{{message}}",
       "failed": "Clear Documents Failed:\n{{message}}",
       "error": "Clear Documents Failed:\n{{error}}"
     },

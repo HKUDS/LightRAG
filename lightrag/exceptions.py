@@ -66,7 +66,7 @@ class APITimeoutError(APIConnectionError):
 class EmptyTruncatedResponseError(RuntimeError):
     """A token-limit-truncated LLM response that carried nothing usable.
 
-    Two raise surfaces share it (issue #3601 gap 4):
+    Two raise surfaces share it:
 
     - the provider bindings (OpenAI/Gemini), when the response is empty and
       the finish reason is the output token limit;
@@ -192,6 +192,94 @@ class PipelineReservationConflictError(RuntimeError):
         return getattr(self.conflict, "value", self.conflict) == "recovery_required"
 
 
+class AdminWriteGateRefusedError(PipelineReservationConflictError):
+    """The workspace admin-write gate refused an admin graph write (→ HTTP 409).
+
+    Raised by ``LightRAG._admin_write_gate`` on a graph storage
+    that declares ``requires_single_writer``, in exactly two situations, each
+    with its own stable leading phrase so a client can tell them apart from the
+    ``detail`` text alone (text, not a machine-readable code,
+    is the contract):
+
+    * ``ADMIN_WRITE_LOCK_BUSY_PREFIX`` -- another admin write held the
+      workspace admin lock for longer than ``ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT``.
+      Clears when that peer admin write finishes; retry the same request.
+      ``fence`` is ``"admin_lock"`` and ``conflict`` is ``None`` (no
+      ``pipeline_status`` flag refused).
+    * ``ADMIN_WRITE_PIPELINE_BUSY_PREFIX`` -- the pipeline ``busy`` reservation
+      was refused because a processing run, a destructive job or a scan holds
+      the workspace. Clears when ingestion finishes. ``conflict`` and
+      ``fence`` carry the refusing ``pipeline_status`` flag, as for the parent.
+
+    A fenced workspace (``recovery_required``) is reported through the parent's
+    ``recovery_required`` property and maps to 503, as everywhere else.
+    """
+
+
+ADMIN_WRITE_LOCK_BUSY_PREFIX = "Another knowledge graph edit is in progress"
+ADMIN_WRITE_PIPELINE_BUSY_PREFIX = "Pipeline is busy with another operation"
+
+
+class AdminWriteHoldExceededError(TimeoutError):
+    """An admin graph write ran past ``admin_write_max_hold_seconds`` and was
+    stopped.
+
+    While an admin write holds the pipeline ``busy`` reservation it defers every
+    pipeline start in its workspace, so the hold is bounded. Expiry is a loud
+    failure (HTTP 500 through the graph routes), never a silent release: the
+    gate's ``finally`` releases the admin lock and the reservation, and the
+    caller sees this error instead of a success.
+
+    **This error does not mean nothing was written**, and its message says so in
+    the two ways it can happen -- ``LightRAG._AdminHoldCeiling`` distinguishes
+    them from the stamp ``lightrag.utils.cancellation_was_deferred`` reads:
+
+    * The ceiling fired while a storage commit was in flight AND that commit
+      succeeded. The admin flows withhold a cancellation across such a region,
+      so the write LANDED and only the work after it was skipped.
+    * Otherwise. Either nothing was mid-commit, or one was and it FAILED -- the
+      cancellation takes precedence over the write error, so the two are
+      indistinguishable downstream and the message claims neither. Either way an
+      EARLIER step of the same operation may already have committed:
+      ``_merge_entities_impl`` commits the merged node before it removes the
+      sources.
+
+    A caller must therefore re-read the entity or relation before retrying rather
+    than assume the operation is undone; retrying blind can hit "already exists"
+    or re-apply an edit that is already durable. Reporting it any other way would
+    break ``AGENTS.md`` *Consistency without transactions*: a durable write must
+    never be reported as one that did not happen.
+
+    Beyond a committed step, a stopped admin write leaves what a hard process
+    exit inside one leaves: a chunk-tracking row whose graph object never became
+    durable -- harmless to queries, never inherited as evidence by a later
+    object, and repairable offline with the chunk-tracking rebuild tool. The
+    mirror state, a graph object durable without its tracking row, is the
+    forbidden one and the write paths order themselves to keep it out of reach.
+    The graph store's contract doc covers this under *Accepted residue (crash)*:
+    ``docs/design/NetworkXSingleWriterContract.md``.
+    """
+
+
+class GraphMutationsDiscardedError(RuntimeError):
+    """``NetworkXStorage.index_done_callback`` refused to commit because a reload
+    discarded uncommitted in-memory mutations earlier in this process.
+
+    The fail-loud backstop. A reload that replaces a *dirty*
+    graph (one holding mutations no commit has published) loses those
+    mutations; the reload itself stays correct and does not raise -- the
+    coroutine that triggered it may be an innocent reader -- and instead arms a
+    sticky ``_dirty_discard_pending`` flag that the NEXT commit turns into this
+    exception, clearing the flag in the same step so a later commit is not
+    blocked forever. The operation that owns the commit therefore fails loud
+    (a pipeline batch takes the FAILED path and is reprocessed; an admin
+    request returns 500) instead of succeeding without its mutations.
+
+    Under the admin-write gate and the pipeline ``busy`` reservation this is
+    unreachable; it exists for a caller that bypasses them.
+    """
+
+
 class PipelineRecoveryRequiredError(RuntimeError):
     """The pipeline fenced its own workspace with ``recovery_required``.
 
@@ -281,7 +369,7 @@ class SourceConflictPrimaryUnusableError(ValueError):
 class RecoveryAnchorMissingError(RuntimeError):
     """A destructive KG purge has no recovery proof, so it refused to start.
 
-    Issue #3400: a whole-document purge discovers what a document contributed
+    A whole-document purge discovers what a document contributed
     to the shared knowledge graph from its write-ahead recovery anchors
     (``full_entities`` / ``full_relations``). Without them the reverse lookup
     is impossible — it runs graph ``source_id`` → ``text_chunks`` →
@@ -338,7 +426,7 @@ class RecoveryAnchorMissingError(RuntimeError):
 class KGPurgeOperationConflictError(RuntimeError):
     """A resumed purge does not match the journal already on the document.
 
-    Issue #3400: a whole-document purge journals its progress in
+    A whole-document purge journals its progress in
     ``doc_status.metadata.kg_purge`` so a retry can resume instead of redoing
     the expensive candidate re-analysis and rebuild — and so it can tell
     "anchors were legitimately deleted by a purge that got that far" from

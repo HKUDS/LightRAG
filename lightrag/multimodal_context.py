@@ -1,7 +1,5 @@
 """Surrounding-context enrichment for native multimodal sidecars.
 
-See ``docs/NativeMultimodalSurroundingContextPlan-zh.md``.
-
 For each entry in ``drawings.json`` / ``tables.json`` / ``equations.json``,
 this module locates the matching ``<drawing … id="…" … />``,
 ``<table … id="…" …>…</table>`` / table ``<cite refid="…">`` or

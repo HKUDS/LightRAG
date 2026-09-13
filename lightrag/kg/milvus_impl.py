@@ -142,7 +142,7 @@ DEFAULT_MILVUS_UPSERT_MAX_PAYLOAD_BYTES = (
 DEFAULT_MILVUS_UPSERT_MAX_RECORDS_PER_BATCH = 128
 DEFAULT_MILVUS_DELETE_MAX_RECORDS_PER_BATCH = 1000
 
-# Read-path response-size ceiling (issue #3584). Unlike the write path above,
+# Read-path response-size ceiling. Unlike the write path above,
 # a query() response that crosses the gRPC message ceiling isn't rejected by
 # self-hosted Milvus's much larger ~64MB limit — it's rejected by the ~4MB
 # gRPC default that managed gateways (e.g. Zilliz Cloud) enforce and don't
@@ -166,7 +166,7 @@ MILVUS_QUERY_ROW_OVERHEAD_BYTES = 256
 # a rate-limited call bisected into ~log2(page_size) immediate no-backoff
 # retries would amplify the throttling it misread. The status buys no recall
 # either — grpc-core always attaches this text to a genuine oversize response
-# (see the traceback in issue #3584) — so quota errors fail fast instead.
+# — so quota errors fail fast instead.
 MILVUS_QUERY_RESPONSE_TOO_LARGE_MARKERS = ("received message larger than max",)
 
 # Schema-migration resilience. A transient Milvus outage during the long
@@ -2885,8 +2885,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         estimable size here — ``content`` and ``source_id`` are each capped
         only by MILVUS_MAX_VARCHAR_BYTES — so the record cap is used alone.
         That cap is a heuristic rather than a byte-level guarantee; a page
-        that still overflows is caught and bisected by ``_query_rows_by_ids``
-        (see issue #3584 discussion).
+        that still overflows is caught and bisected by
+        ``_query_rows_by_ids``.
         """
         if not includes_vector:
             return MILVUS_QUERY_MAX_RECORDS_PER_BATCH
