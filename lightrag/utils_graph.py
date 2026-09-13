@@ -245,13 +245,18 @@ def _reject_self_loop_relation(
 ) -> None:
     """Refuse a relation whose two endpoints are the same entity.
 
-    LightRAG's own extraction never emits a self-loop: ``operate.py`` drops
-    ``source == target`` in both record parsers and again in
-    ``_merge_edges_then_upsert``, and ``amerge_entities`` skips any endpoint
-    pair that would collapse into one. Manual creation is therefore the only
-    way such an edge can reach the graph, and a self-loop carries no
-    connectivity for graph retrieval — it only widens the surface where the
-    rest of the code has to reason about ``src == tgt``.
+    One of the ingresses enforcing a STORE-level invariant: a graph must not
+    contain a self-loop (see ``BaseGraphStorage.node_degree``, which is why
+    degree is not defined on one). A self-loop carries no connectivity for
+    graph retrieval — it only widens the surface where the rest of the code has
+    to reason about ``src == tgt``.
+
+    The other ingresses: ``operate.py`` drops ``source == target`` in both
+    record parsers and again in ``_merge_edges_then_upsert``,
+    ``amerge_entities`` skips any endpoint pair that would collapse into one,
+    ``ainsert_custom_kg`` refuses one after name normalization, and
+    ``tools/migrate_graph_storage.py`` drops any it reads from a source graph.
+    Manual creation is the ingress THIS function covers.
 
     Rejected at the same layer as an empty description: before the keyed lock,
     so a refusal writes nothing.

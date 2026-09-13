@@ -882,7 +882,11 @@ async def test_bfs_matches_degree_ordered_reference_traversal(store):
     # A second, lower-degree cluster reachable only at depth 2.
     edges |= {(min(nodes[80], n), max(nodes[80], n)) for n in nodes[81:100]}
     edges.add((min(hub, nodes[80]), max(hub, nodes[80])))
-    edges.add((nodes[5], nodes[5]))  # self-loop: counts twice, like node_degree
+    # A self-loop, kept so the reference walk and the SQL are compared on one:
+    # its degree is not contracted (BaseGraphStorage.node_degree), so the
+    # reference below mirrors whatever the unfiltered query does rather than
+    # asserting a rule.
+    edges.add((nodes[5], nodes[5]))
 
     await store.upsert_nodes_batch([(n, _node(n)) for n in nodes])
     await store.upsert_edges_batch([(s, t, _edge()) for s, t in sorted(edges)])

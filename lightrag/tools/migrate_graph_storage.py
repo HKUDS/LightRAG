@@ -26,6 +26,15 @@ each undirected edge once in canonical order ``src_id = min(a, b)``,
 non-ASCII ids and would produce duplicate edges). ``canonicalize_edge`` is
 the single place this tool decides canonical order.
 
+The one thing this tool does NOT copy verbatim: **self-loop edges are
+dropped**, and the count is reported as ``dropped_self_loop_edges``. A graph
+must not contain one (``BaseGraphStorage.node_degree``) and every LightRAG
+ingress refuses one, so carrying a self-loop across would make this tool the
+only producer of an edge the read contract cannot describe. The drop happens
+at the READ boundary, so the refusal checks, the written-id derivation and the
+verification comparison all see the same edge set — ``verified`` still means
+what it says, about what was actually written.
+
 Usage (dry run is the default; no graph data is written without
 --apply, though initializing the backends still creates their schema):
 
@@ -299,6 +308,9 @@ def detect_reciprocal_pairs(
     for edge in directed_edges:
         src, tgt = edge["source"], edge["target"]
         if src == tgt:
+            # Unreachable from _plan_migration, which drops self-loops at
+            # the read boundary before any detector runs; kept so this pure
+            # helper stays correct on any input it is called with directly.
             continue  # a self-loop has only one orientation
         seen.setdefault(canonicalize_edge(src, tgt), set()).add((src, tgt))
     return sorted(key for key, directions in seen.items() if len(directions) > 1)

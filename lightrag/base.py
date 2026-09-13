@@ -753,10 +753,6 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         retrieval hot path. The invariant is enforced where it costs nothing --
         at the boundary -- rather than on every query.
 
-        What every backend DOES owe: ``node_degrees_batch`` answers every
-        requested id, reporting 0 for a node with no edges rather than omitting
-        the key, so callers need no separate "absent means zero" rule.
-
         Edge LISTINGS are governed separately, and a self-loop IS listed there
         -- see ``get_node_edges``.
         """
@@ -860,6 +856,12 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         Default implementation fetches node degrees one by one.
         Override this method for better performance in storage backends
         that support batch operations.
+
+        **Answer every requested id.** A node with no edges gets ``0``, not a
+        missing key -- an override that builds its result from aggregation
+        buckets sees no bucket for such a node and drops it unless it seeds the
+        dict first. Callers then need no "absent means zero" rule of their own,
+        and the batch agrees with :meth:`node_degree` on an isolated node.
         """
         result = {}
         for node_id in node_ids:
@@ -873,8 +875,17 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         """Edge degrees as a batch using UNWIND also uses node_degrees_batch
 
         Default implementation calculates edge degrees one by one.
-        Override this method for better performance in storage backends
-        that support batch operations.
+
+        **Override this on any backend whose ``node_degree`` is a round trip.**
+        The default is not merely "slower": it is two AWAITED ``node_degree``
+        calls per pair, issued serially, and retrieval hands it the whole
+        incident-edge set of the top entities rather than ``top_k`` of them --
+        so a single query became thousands of sequential requests on the
+        backends that inherited it. Overriding is eight lines: collect the
+        DISTINCT endpoint ids, resolve them with one ``node_degrees_batch``,
+        sum per pair (``pgtable_impl`` / ``mongo_impl`` / ``opensearch_impl``
+        all carry the same shape). Doing so also takes the scalar
+        ``node_degree`` off the retrieval path entirely.
         """
         result = {}
         for src_id, tgt_id in edge_pairs:

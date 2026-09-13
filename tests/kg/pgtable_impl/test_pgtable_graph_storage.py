@@ -910,10 +910,10 @@ async def test_bfs_degenerate_seeds_issue_no_degree_round_trip(
 
     These are the two cases where the seed's degree cannot be carried on a hop
     row: with max_depth=0 no hop query is issued at all, and an isolated seed's
-    hop returns no rows to attach it to. A self-loop-only seed lands in the
-    second case while having a non-zero degree (self-loops count twice), so any
-    scheme that recovers the seed degree from hop output would be wrong here.
-    Not computing it at all is well-defined in both.
+    hop returns no rows to attach it to. Inferring a degree from the absence of
+    hop rows would be guessing rather than measuring -- not computing it at all
+    is well-defined in both, and the caller reads a missing entry as "unknown"
+    rather than as zero.
     """
     storage = make_storage()
     fetchrow, fetch, degrees_batch = _bfs_mocks(hop_rows)
