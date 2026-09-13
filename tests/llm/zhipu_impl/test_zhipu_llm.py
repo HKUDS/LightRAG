@@ -7,17 +7,24 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from lightrag.utils import is_truncated_response
+
 
 def _fake_embedding_vector(dim=1024):
     return [0.1] * dim
 
 
-def _fake_chat_response(content="", reasoning_content="", usage=None):
+def _fake_chat_response(
+    content="", reasoning_content="", usage=None, finish_reason="stop"
+):
     message = SimpleNamespace(
         content=content,
         reasoning_content=reasoning_content,
     )
-    return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=usage)
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason=finish_reason)],
+        usage=usage,
+    )
 
 
 def _load_zhipu_module(monkeypatch, client_factory):
@@ -155,6 +162,48 @@ async def test_zhipu_complete_records_token_usage(monkeypatch):
     assert tracker.calls == [
         {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14}
     ]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_zhipu_length_finish_reason_marks_result_truncated(monkeypatch):
+    class FakeClient:
+        def __init__(self, api_key=None):
+            self.api_key = api_key
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, **kwargs):
+            return _fake_chat_response(content="partial answer", finish_reason="length")
+
+    zhipu_module = _load_zhipu_module(monkeypatch, FakeClient)
+
+    result = await zhipu_module.zhipu_complete_if_cache(
+        prompt="hello", api_key="test-key"
+    )
+
+    assert is_truncated_response(result)
+    assert result == "partial answer"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_zhipu_stop_finish_reason_keeps_plain_response(monkeypatch):
+    class FakeClient:
+        def __init__(self, api_key=None):
+            self.api_key = api_key
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, **kwargs):
+            return _fake_chat_response(content="complete answer", finish_reason="stop")
+
+    zhipu_module = _load_zhipu_module(monkeypatch, FakeClient)
+
+    result = await zhipu_module.zhipu_complete_if_cache(
+        prompt="hello", api_key="test-key"
+    )
+
+    assert not is_truncated_response(result)
+    assert result == "complete answer"
 
 
 @pytest.mark.offline

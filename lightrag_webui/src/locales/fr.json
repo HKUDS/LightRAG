@@ -62,8 +62,8 @@
       "clearing": "Effacement en cours...",
       "timeout": "L'opération d'effacement a expiré, veuillez réessayer",
       "success": "Documents effacés avec succès",
-      "cacheCleared": "Cache effacé avec succès",
-      "cacheClearFailed": "Échec de l'effacement du cache :\n{{error}}",
+      "successWithCache": "Documents et cache LLM effacés avec succès",
+      "partialSuccess": "Effacement terminé avec des erreurs :\n{{message}}",
       "failed": "Échec de l'effacement des documents :\n{{message}}",
       "error": "Échec de l'effacement des documents :\n{{error}}"
     },
