@@ -19,10 +19,17 @@ These tests pin the invariant by monkeypatching the truncation step into a
 selector that reorders, which is the only way to observe it.
 """
 
+import logging
+
 import pytest
 
 from lightrag.base import QueryParam
-from lightrag.operate import _apply_token_truncation
+from lightrag.constants import GRAPH_FIELD_SEP
+from lightrag.operate import (
+    _apply_token_truncation,
+    _find_related_text_unit_from_entities,
+)
+from lightrag.utils import logger
 
 pytestmark = pytest.mark.offline
 
@@ -248,3 +255,87 @@ async def test_missing_tokenizer_short_circuits(monkeypatch):
     assert result["relations_context"] == []
     assert result["filtered_entities"] is entities
     assert result["filtered_relations"] is relations
+
+
+async def test_unresolved_context_record_is_dropped_and_reported(monkeypatch, caplog):
+    """A record a selector invents cannot reach chunk selection -- warn, don't hide.
+
+    ``lightrag.utils.logger`` sets ``propagate = False``, so ``caplog`` sees
+    nothing unless propagation is turned back on for the assertion.
+    """
+    _install_selector(
+        monkeypatch,
+        lambda list_data: [{**list_data[0], "entity": "ghost"}] + list_data,
+    )
+
+    monkeypatch.setattr(logger, "propagate", True)
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        result = await _apply_token_truncation(
+            _search_result([_entity("alice"), _entity("bob")], []),
+            QueryParam(),
+            GLOBAL_CONFIG,
+        )
+
+    assert [e["entity"] for e in result["entities_context"]][0] == "ghost"
+    assert _names(result["filtered_entities"]) == ["alice", "bob"]
+    assert "ghost" in caplog.text
+    assert "absent from the pre-truncation map" in caplog.text
+
+
+class _FakeTextChunksDB:
+    """Minimal stand-in for the chunk KV storage on the WEIGHT pick path."""
+
+    def __init__(self, global_config: dict):
+        self.global_config = global_config
+        self.embedding_func = None
+
+    async def get_by_ids(self, ids: list[str]) -> list[dict]:
+        return [{"content": f"content of {chunk_id}"} for chunk_id in ids]
+
+
+async def test_reordering_reaches_stage_3_chunk_quota(monkeypatch):
+    """The end of the chain: stage-2 order changes which chunks survive stage 3.
+
+    ``pick_by_weighted_polling`` hands position 0 the full
+    ``related_chunk_number`` quota and the last position one chunk, so reversing
+    stage 2's order must reverse which entity's chunks get the budget. Three
+    entities with three disjoint chunks each and a quota of 3 give an exact
+    ``[3, 2, 1]`` split with no second-round redistribution to blur the result.
+    """
+    _install_selector(monkeypatch, lambda list_data: list(reversed(list_data)))
+
+    truncation = await _apply_token_truncation(
+        _search_result(
+            [
+                _entity(name, source_id=GRAPH_FIELD_SEP.join(chunks))
+                for name, chunks in (
+                    ("alice", ["a1", "a2", "a3"]),
+                    ("bob", ["b1", "b2", "b3"]),
+                    ("carol", ["c1", "c2", "c3"]),
+                )
+            ],
+            [],
+        ),
+        QueryParam(),
+        GLOBAL_CONFIG,
+    )
+
+    chunks = await _find_related_text_unit_from_entities(
+        truncation["filtered_entities"],
+        QueryParam(),
+        _FakeTextChunksDB(
+            {"kg_chunk_pick_method": "WEIGHT", "related_chunk_number": 3}
+        ),
+        None,  # knowledge_graph_inst is unused on the WEIGHT path
+    )
+
+    # Reranked order carol > bob > alice, so carol takes 3 chunks and alice 1.
+    # Stage-1 order would have produced ["a1", "a2", "a3", "b1", "b2", "c1"].
+    assert [chunk["chunk_id"] for chunk in chunks] == [
+        "c1",
+        "c2",
+        "c3",
+        "b1",
+        "b2",
+        "a1",
+    ]

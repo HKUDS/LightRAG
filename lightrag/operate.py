@@ -5491,6 +5491,11 @@ async def _apply_token_truncation(
     shared chunk to the earlier-positioned record and allocates chunk quota by
     list position -- so a selector that reorders must not leave the
     ``filtered_*`` lists in stage-1 retrieval order.
+
+    A selector may reorder and drop, but must not invent: a ``*_context``
+    record naming an entity or relation that was not in this stage's input
+    cannot be resolved back to an original, so it reaches the prompt but is
+    dropped from ``filtered_*`` with a warning.
     """
     tokenizer = global_config.get("tokenizer")
     if not tokenizer:
@@ -5534,7 +5539,10 @@ async def _apply_token_truncation(
         # Store mapping from entity name to original data.
         # First occurrence wins: the filtered rebuild below resolves records
         # through this map, and duplicate names must keep the record that was
-        # retrieved first.
+        # retrieved first. Accepted divergence if a name ever repeats: the
+        # prompt shows the context row a reordering selector picked, while
+        # filtered_* carries the first-retrieved original. Unreachable today --
+        # stage 1 already dedups entities by name and relations by sorted pair.
         entity_id_to_original.setdefault(entity_name, entity)
 
         entities_context.append(
@@ -5561,7 +5569,8 @@ async def _apply_token_truncation(
             entity1, entity2 = relation.get("src_id"), relation.get("tgt_id")
 
         # Store mapping from relation pair to original data.
-        # First occurrence wins, for the same reason as entities above.
+        # First occurrence wins, with the same rule and the same accepted
+        # divergence as entities above.
         relation_key = (entity1, entity2)
         relation_id_to_original.setdefault(relation_key, relation)
 
@@ -5628,29 +5637,49 @@ async def _apply_token_truncation(
     # rebuild these by filtering final_entities / final_relations -- that
     # reimposes stage-1 retrieval order and silently discards any reordering a
     # stage-2 selector (e.g. a reranker) performed.
+    #
+    # A context record that resolves to nothing was invented or renamed by a
+    # stage-2 selector: it reaches the prompt but cannot reach chunk selection,
+    # so it is dropped here and reported rather than lost silently.
     filtered_entities = []
     filtered_entity_id_to_original = {}
+    unresolved_entities = []
     for entity_context in entities_context:
         name = entity_context.get("entity")
         if name in filtered_entity_id_to_original:
             continue
         original = entity_id_to_original.get(name)
         if original is None:
+            unresolved_entities.append(name)
             continue
         filtered_entities.append(original)
         filtered_entity_id_to_original[name] = original
 
+    if unresolved_entities:
+        logger.warning(
+            f"Dropping {len(unresolved_entities)} entity records absent from the "
+            f"pre-truncation map: {unresolved_entities[:5]}"
+        )
+
     filtered_relations = []
     filtered_relation_id_to_original = {}
+    unresolved_relations = []
     for relation_context in relations_context:
         pair = (relation_context.get("entity1"), relation_context.get("entity2"))
         if pair in filtered_relation_id_to_original:
             continue
         original = relation_id_to_original.get(pair)
         if original is None:
+            unresolved_relations.append(pair)
             continue
         filtered_relations.append(original)
         filtered_relation_id_to_original[pair] = original
+
+    if unresolved_relations:
+        logger.warning(
+            f"Dropping {len(unresolved_relations)} relation records absent from the "
+            f"pre-truncation map: {unresolved_relations[:5]}"
+        )
 
     return {
         "entities_context": entities_context,
