@@ -46,7 +46,6 @@ async def _vector_picker(**kwargs):
     return ["chunk-1"]
 
 
-@pytest.mark.asyncio
 async def test_single_entity_uses_vector_picker_with_one_chunk(monkeypatch):
     vector_picker = AsyncMock(side_effect=_vector_picker)
     weighted_picker = Mock(return_value=["weighted-chunk"])
@@ -68,7 +67,6 @@ async def test_single_entity_uses_vector_picker_with_one_chunk(monkeypatch):
     assert [chunk["chunk_id"] for chunk in result] == ["chunk-1"]
 
 
-@pytest.mark.asyncio
 async def test_single_relation_uses_vector_picker_with_one_chunk(monkeypatch):
     vector_picker = AsyncMock(side_effect=_vector_picker)
     weighted_picker = Mock(return_value=["weighted-chunk"])
@@ -90,7 +88,6 @@ async def test_single_relation_uses_vector_picker_with_one_chunk(monkeypatch):
     assert [chunk["chunk_id"] for chunk in result] == ["chunk-1"]
 
 
-@pytest.mark.asyncio
 async def test_zero_related_chunk_limit_remains_disabled(monkeypatch):
     vector_picker = AsyncMock(side_effect=_vector_picker)
     weighted_picker = Mock(return_value=[])

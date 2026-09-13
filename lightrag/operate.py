@@ -6291,14 +6291,31 @@ async def _find_most_related_edges_from_entities(
 def _vector_chunk_quota(max_related_chunks: int, group_count: int) -> int:
     """How many chunks VECTOR-mode selection may draw, scaled by group count.
 
-    Floored at 1 (once max_related_chunks and group_count are both positive)
-    so a query with very few related entities/relations still gets at least
-    one chunk instead of being rounded down to zero by the /2 scaling below.
+    Do not remove the floor of 1: it restores parity with the WEIGHT path,
+    which guarantees at least one chunk per group via
+    ``pick_by_weighted_polling(..., min_related_chunks=1)``. This quota is the
+    same linear-gradient budget as WEIGHT's ``n * (max + 1) / 2`` minus the
+    ``n / 2`` term, so ``(max_related_chunks=1, group_count=1)`` is the single
+    input where VECTOR would otherwise truncate to 0 and drop below that floor.
+    A 0 quota makes ``pick_by_vector_similarity`` return ``[]``, which the call
+    sites read as "vector selection failed" and silently downgrade to WEIGHT.
 
-    The group_count <= 0 branch is defensive only: both call sites already
+    The ``max_related_chunks <= 0`` guard is what keeps ``related_chunk_number=0``
+    a genuine kill switch rather than a silent 1; the floor applies only once
+    both inputs are positive.
+
+    The ``group_count <= 0`` branch is defensive only: both call sites already
     guard on their group list being non-empty (entities_with_chunks /
     relations_with_chunks) before reaching here, so group_count is always
     >= 1 in practice.
+
+    Args:
+        max_related_chunks: Configured ``related_chunk_number``; 0 disables
+            KG-related chunk selection entirely.
+        group_count: Number of entity/relation groups that carry chunks.
+
+    Returns:
+        Number of chunks VECTOR selection may draw, 0 when disabled.
     """
     if max_related_chunks <= 0 or group_count <= 0:
         return 0
