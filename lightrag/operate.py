@@ -6275,6 +6275,12 @@ async def _find_related_text_unit_from_entities(
         entity_info for entity_info in entities_with_chunks if entity_info["chunks"]
     ]
 
+    # Defensive only: unreachable on this path. Deduplication drops a chunk
+    # solely because an earlier-positioned entity already claimed it, so the
+    # first entity keeps every chunk it carries and at least one group always
+    # survives. The relation path's equivalent guard IS reachable, because it
+    # additionally excludes the chunks already delivered by the entity path,
+    # which can empty every relation group.
     if not entities_with_chunks:
         logger.info(
             f"Find no entity-related chunks from {len(node_datas)} entities after deduplication"
