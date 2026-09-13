@@ -187,6 +187,32 @@ async def _run_kg(param, cfg, cache, system_prompt=None):
     )
 
 
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_context_selection_partitions_answer_cache(stub_query_context):
+    cache = _FakeKVStorage()
+    model = _RecordingModel()
+    cfg = _query_global_config(model)
+    param = _kg_param()
+    await _run_kg(param, cfg, cache)
+    cfg["addon_params"]["context_selection"] = {"strategy": "steiner_soft"}
+    await _run_kg(param, cfg, cache)
+    await _run_kg(param, cfg, cache)
+    assert model.calls == 2
+    cfg["addon_params"]["context_selection"]["connectivity_bonus"] = 0.4
+    await _run_kg(param, cfg, cache)
+    assert model.calls == 3
+    # Explicit rank still shares the historical default cache.
+    cfg["addon_params"]["context_selection"] = {"strategy": "rank"}
+    await _run_kg(param, cfg, cache)
+    assert model.calls == 3
+    # B0 changes the context even though it still uses prefix truncation.
+    cfg["addon_params"]["context_selection"]["prize_source"] = "rerank_score"
+    await _run_kg(param, cfg, cache)
+    await _run_kg(param, cfg, cache)
+    assert model.calls == 4
+
+
 # ---------------------------------------------------------------------------
 # The prefix reaches the model.
 # ---------------------------------------------------------------------------

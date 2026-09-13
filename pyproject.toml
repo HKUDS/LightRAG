@@ -53,6 +53,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Experimental context selection; never imported on the default rank path.
+steiner = ["steinerpy>=1.0.19,<2"]
+
 # Test framework dependencies (for CI/CD and testing)
 pytest = [
     "pytest>=8.4.2",

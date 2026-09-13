@@ -4840,6 +4840,21 @@ async def kg_query(
 
     # Handle cache
     answer_cache_kv = _answer_cache_kv(query_param, hashing_kv)
+    selection_cache_args = ()
+    selection_config = global_config.get("addon_params", {}).get(
+        "context_selection", {}
+    )
+    if (
+        selection_config.get("strategy", "rank") != "rank"
+        or selection_config.get("prize_source", "ordering") != "ordering"
+    ):
+        # Include the actual prompt as the heuristic/fallback may select
+        # different records. Keep the historical rank cache key unchanged.
+        selection_cache_args = (
+            "\n<context_selection_v1>\n",
+            json.dumps(selection_config, sort_keys=True),
+            sys_prompt,
+        )
     args_hash = compute_args_hash(
         _ANSWER_CACHE_POLICY_VERSION,
         query_param.mode,
@@ -4864,6 +4879,7 @@ async def kg_query(
         query_param.enable_rerank,
         global_config.get("enable_content_headings", False),
         *(("\n<system_prompt>\n", system_prompt) if system_prompt else ()),
+        *selection_cache_args,
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
     )
@@ -5477,6 +5493,7 @@ async def _apply_token_truncation(
     search_result: dict[str, Any],
     query_param: QueryParam,
     global_config: dict[str, str],
+    query: str | None = None,
 ) -> dict[str, Any]:
     """
     Apply token-based truncation to entities and relations for LLM efficiency.
@@ -5564,40 +5581,69 @@ async def _apply_token_truncation(
         f"Before truncation: {len(entities_context)} entities, {len(relations_context)} relations"
     )
 
-    # Apply token-based truncation
-    if entities_context:
-        # Remove file_path and created_at for token calculation
-        entities_context_for_truncation = []
-        for entity in entities_context:
-            entity_copy = entity.copy()
-            entity_copy.pop("file_path", None)
-            entity_copy.pop("created_at", None)
-            entities_context_for_truncation.append(entity_copy)
+    selection_config = global_config.get("addon_params", {}).get(
+        "context_selection", {}
+    )
+    selection_metadata = None
+    if (
+        selection_config.get("strategy", "rank") != "rank"
+        or selection_config.get("prize_source", "ordering") != "ordering"
+    ):
+        from lightrag.steiner_context import select_context
 
-        entities_context = await atruncate_list_by_token_size(
-            entities_context_for_truncation,
-            key=lambda x: json.dumps(x, ensure_ascii=False),
-            separator="\n",
-            max_token_size=max_entity_tokens,
-            tokenizer=tokenizer,
+        # Use exactly the same serialized records as the default path.
+        entities_context, relations_context, selection_metadata = await select_context(
+            [
+                {k: v for k, v in row.items() if k not in {"file_path", "created_at"}}
+                for row in entities_context
+            ],
+            [
+                {k: v for k, v in row.items() if k not in {"file_path", "created_at"}}
+                for row in relations_context
+            ],
+            tokenizer,
+            max_entity_tokens,
+            max_relation_tokens,
+            selection_config,
+            query=query,
+            rerank_func=global_config.get("rerank_model_func"),
+            enable_rerank=query_param.enable_rerank,
         )
+    else:
+        # Apply token-based truncation
+        if entities_context:
+            # Remove file_path and created_at for token calculation
+            entities_context_for_truncation = []
+            for entity in entities_context:
+                entity_copy = entity.copy()
+                entity_copy.pop("file_path", None)
+                entity_copy.pop("created_at", None)
+                entities_context_for_truncation.append(entity_copy)
 
-    if relations_context:
-        # Remove file_path and created_at for token calculation
-        relations_context_for_truncation = []
-        for relation in relations_context:
-            relation_copy = relation.copy()
-            relation_copy.pop("file_path", None)
-            relation_copy.pop("created_at", None)
-            relations_context_for_truncation.append(relation_copy)
+            entities_context = await atruncate_list_by_token_size(
+                entities_context_for_truncation,
+                key=lambda x: json.dumps(x, ensure_ascii=False),
+                separator="\n",
+                max_token_size=max_entity_tokens,
+                tokenizer=tokenizer,
+            )
 
-        relations_context = await atruncate_list_by_token_size(
-            relations_context_for_truncation,
-            key=lambda x: json.dumps(x, ensure_ascii=False),
-            separator="\n",
-            max_token_size=max_relation_tokens,
-            tokenizer=tokenizer,
-        )
+        if relations_context:
+            # Remove file_path and created_at for token calculation
+            relations_context_for_truncation = []
+            for relation in relations_context:
+                relation_copy = relation.copy()
+                relation_copy.pop("file_path", None)
+                relation_copy.pop("created_at", None)
+                relations_context_for_truncation.append(relation_copy)
+
+            relations_context = await atruncate_list_by_token_size(
+                relations_context_for_truncation,
+                key=lambda x: json.dumps(x, ensure_ascii=False),
+                separator="\n",
+                max_token_size=max_relation_tokens,
+                tokenizer=tokenizer,
+            )
 
     logger.info(
         f"After truncation: {len(entities_context)} entities, {len(relations_context)} relations"
@@ -5633,6 +5679,7 @@ async def _apply_token_truncation(
                 seen_edges.add(pair)
 
     return {
+        **({"selection_metadata": selection_metadata} if selection_metadata else {}),
         "entities_context": entities_context,
         "relations_context": relations_context,
         "filtered_entities": filtered_entities,
@@ -6048,6 +6095,7 @@ async def _build_query_context(
         search_result,
         query_param,
         text_chunks_db.global_config,
+        query=query,
     )
 
     # Stage 3: Merge chunks using filtered entities/relations
@@ -6094,6 +6142,11 @@ async def _build_query_context(
     # Add complete metadata to raw_data (preserve existing metadata including query_mode)
     if "metadata" not in raw_data:
         raw_data["metadata"] = {}
+
+    if "selection_metadata" in truncation_result:
+        raw_data["metadata"]["context_selection"] = truncation_result[
+            "selection_metadata"
+        ]
 
     # Update keywords while preserving existing metadata
     raw_data["metadata"]["keywords"] = {
