@@ -89,6 +89,28 @@ DEFAULT_MONGO_UPSERT_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024  # 16MB
 DEFAULT_MONGO_UPSERT_MAX_RECORDS_PER_BATCH = 128
 DEFAULT_MONGO_DELETE_MAX_RECORDS_PER_BATCH = 1000
 
+# get_edges_batch's own $or chunk size, matching postgres_impl.get_edges_batch's
+# batch_size default -- a fixed safety cap for query size, not an operator-tuned
+# knob like the env-var-driven limits above, so it isn't one.
+_GET_EDGES_BATCH_CHUNK_SIZE = 500
+
+# node_degrees_batch's own $in chunk size -- kept as its own constant rather
+# than sharing _GET_EDGES_BATCH_CHUNK_SIZE since the two methods' per-entry
+# BSON size differs enough to matter: a bare id string costs far less than
+# get_edges_batch's two-field edge_lo/edge_hi dict, so the same query-size
+# budget affords a much larger chunk here. Matched to
+# _GRAPH_DEGREE_RANK_MAX_CANDIDATES (this module's already-accepted safe
+# candidate-set size for a BFS level) rather than picked independently, so
+# that already-bounded caller stays at 2 round trips (one chunk) instead of
+# being re-split by an unrelated, smaller cap.
+_NODE_DEGREES_BATCH_CHUNK_SIZE = 8192
+
+# Shared query payload budget for node-degree ``$in`` and edge ``$or`` lookups.
+# Count-only caps cannot bound BSON size because entity IDs are caller-controlled.
+# Reserve 1 MiB for query wrappers and BSON metadata; count caps remain secondary
+# guards on round-trip volume.
+_GRAPH_BATCH_QUERY_MAX_PAYLOAD_BYTES = 15 * 1024 * 1024  # 15 MiB + 1 MiB headroom
+
 # MongoDB duplicate-key error code, raised when an upsert insert races the
 # unique edge-endpoint index (another writer inserted the same edge first).
 _DUPLICATE_KEY_CODE = 11000
@@ -99,13 +121,17 @@ _DUPLICATE_KEY_CODE = 11000
 _EDGE_MIGRATION_PROGRESS_INTERVAL = 50_000
 
 # Ceiling on how many same-depth candidates get a degree lookup before the
-# max_nodes cap in the bidirectional BFS. node_degrees_batch binds the whole
-# list into two `$in` arrays, and one hub can put 100k neighbours in a single
-# level -- an array that size inflates the command document and forces the
-# planner through a huge index-bounds list for a ranking that only decides the
-# order of candidates max_nodes will mostly discard anyway. (Deliberately not
-# shared with the OpenSearch constant of the same value: that one is derived
-# from index.max_terms_count / search.max_buckets, this one from $in size.)
+# max_nodes cap in the bidirectional BFS. node_degrees_batch itself chunks
+# its $in queries at this same size (see _NODE_DEGREES_BATCH_CHUNK_SIZE), so
+# this call site fits in exactly one chunk -- 2 round trips, same as before
+# chunking existed -- when ids are short enough to stay under
+# _GRAPH_BATCH_QUERY_MAX_PAYLOAD_BYTES; long ids can still re-split it (see
+# that constant's comment), the count cap alone is not a hard guarantee. The
+# ceiling itself still earns its keep: one hub can put 100k+ neighbours in a
+# single level, and without it every one of them would get degree-ranked (in
+# several chunks) for an outcome max_nodes will mostly discard anyway.
+# (Deliberately not shared with the OpenSearch constant of the same value:
+# that one is derived from index.max_terms_count / search.max_buckets.)
 _GRAPH_DEGREE_RANK_MAX_CANDIDATES = 8192
 
 
@@ -1805,6 +1831,13 @@ class MongoGraphStorage(BaseGraphStorage):
     async def create_edge_indexes_and_migrate_if_not_exists(self) -> None:
         """Create the compound unique edge-endpoint index, migrating legacy edges first.
 
+        Also ensures the ``source_node_id``/``target_node_id`` single-field
+        indexes that back ``node_degree``/``node_degrees_batch``/
+        ``get_node_edges``/``get_nodes_edges_batch`` exist, independently of
+        the migration below and on every call (idempotent) — so an
+        already-migrated deployment still picks them up. Best-effort: unlike
+        the migration, a failure there is logged and does not abort startup.
+
         Fail-fast one-time migration (mirrors the OpenSearch canonical-id work):
 
           1. dedupe legacy reciprocal duplicate docs, **merging the full relation
@@ -1836,7 +1869,69 @@ class MongoGraphStorage(BaseGraphStorage):
 
         indexes_cursor = await self.edge_collection.list_indexes()
         existing_indexes = await indexes_cursor.to_list(length=None)
-        if any(idx.get("name") == index_name for idx in existing_indexes):
+        existing_index_names = {idx.get("name", "") for idx in existing_indexes}
+        # Fields already covered by a single-field index. Index options are not
+        # inspected: a hand-added collation or partial index the planner can't
+        # use for these lookups would still skip creation below.
+        single_field_indexed = {
+            next(iter(idx["key"]))
+            for idx in existing_indexes
+            if isinstance(idx.get("key"), dict) and len(idx["key"]) == 1
+        }
+
+        # Best-effort only -- these two indexes are a performance optimization,
+        # not required for correctness (unlike the compound migration below).
+        # Check by field, not by our own name: an index on the same field can
+        # already exist under a different name (e.g. Mongo's own default
+        # "source_node_id_1", from a DBA-added index), and creating a
+        # same-field index under a new name raises IndexKeySpecsConflict.
+        # Catch PyMongoError too (e.g. a restricted service account without
+        # createIndex privilege) so a failure here logs and moves on instead
+        # of aborting initialize()/startup, mirroring the doc-status index
+        # creation above.
+        source_index_name = f"{workspace_prefix}source_node_id"
+        target_index_name = f"{workspace_prefix}target_node_id"
+        if (
+            "source_node_id" not in single_field_indexed
+            or "target_node_id" not in single_field_indexed
+        ):
+            # create_index() awaits the build's commit, and this runs inside
+            # get_data_init_lock, so the first startup after upgrading onto
+            # this code blocks here until the build finishes -- on a
+            # collection with tens of millions of edges that can look like a
+            # hang rather than a one-time index build. Logged unconditionally
+            # (not just on a slow-build heuristic) since there's no cheap way
+            # to know the collection size in advance.
+            logger.info(
+                f"[{self.workspace}] Creating source_node_id/target_node_id "
+                f"indexes on {self._edge_collection_name}; this may take a "
+                "while on large collections and blocks startup until it "
+                "completes"
+            )
+        if "source_node_id" not in single_field_indexed:
+            try:
+                await self.edge_collection.create_index(
+                    [("source_node_id", 1)], name=source_index_name
+                )
+            except PyMongoError as e:
+                logger.warning(
+                    f"[{self.workspace}] Could not create source_node_id index on "
+                    f"{self._edge_collection_name}: {e}. Queries filtering by "
+                    "source_node_id will fall back to a collection scan."
+                )
+        if "target_node_id" not in single_field_indexed:
+            try:
+                await self.edge_collection.create_index(
+                    [("target_node_id", 1)], name=target_index_name
+                )
+            except PyMongoError as e:
+                logger.warning(
+                    f"[{self.workspace}] Could not create target_node_id index on "
+                    f"{self._edge_collection_name}: {e}. Queries filtering by "
+                    "target_node_id will fall back to a collection scan."
+                )
+
+        if index_name in existing_index_names:
             logger.info(
                 f"[{self.workspace}] Edge collection {self._edge_collection_name} "
                 f"already on canonical edge endpoints; skipping migration"
@@ -2116,6 +2211,12 @@ class MongoGraphStorage(BaseGraphStorage):
     async def node_degree(self, node_id: str) -> int:
         """
         Returns the total number of edges connected to node_id (both inbound and outbound).
+
+        One count, not two. A self-loop would be counted once here and twice
+        by ``node_degrees_batch`` below, but the graph is not allowed to hold
+        one (``BaseGraphStorage.node_degree``), so no caller can observe the
+        difference on data the contract admits. Excluding it at the query was
+        measured and rejected -- see the contract for what it cost.
         """
         return await self.edge_collection.count_documents(
             {"$or": [{"source_node_id": node_id}, {"target_node_id": node_id}]}
@@ -2227,35 +2328,194 @@ class MongoGraphStorage(BaseGraphStorage):
 
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
         # merge the outbound and inbound results with the same "_id" and sum the "degree"
-        merged_results = {}
+        # Seeded with zeros so every requested id gets an answer: a node with no
+        # edges contributes no row to either aggregation, and the batch must
+        # still report the 0 node_degree reports rather than omitting the key.
+        merged_results = {nid: 0 for nid in node_ids}
 
-        # Outbound degrees
-        outbound_pipeline = [
-            {"$match": {"source_node_id": {"$in": node_ids}}},
-            {"$group": {"_id": "$source_node_id", "degree": {"$sum": 1}}},
-        ]
-
-        cursor = await self.edge_collection.aggregate(
-            outbound_pipeline, allowDiskUse=True
+        # Chunk the $in list so one hub with a huge neighbor set (an unbounded
+        # caller, e.g. edge_degrees_batch below) can't inflate a single command
+        # document past MongoDB's 16MB limit or force the planner through a
+        # huge index-bounds list -- the same hazard
+        # _GRAPH_DEGREE_RANK_MAX_CANDIDATES caps at the BFS call site, fixed
+        # here at the shared primitive so every caller is covered. Byte budget
+        # (_GRAPH_BATCH_QUERY_MAX_PAYLOAD_BYTES) is the primary limiter,
+        # _NODE_DEGREES_BATCH_CHUNK_SIZE stays as a secondary record-count cap
+        # so the already-bounded BFS call site still fits in one chunk. Each
+        # chunk merges into merged_results as a whole, via a fresh local dict,
+        # so it's correct regardless of dedupe or how ids are split across chunks.
+        unique_node_ids = list(dict.fromkeys(node_ids))
+        id_batches = _chunk_by_budget(
+            unique_node_ids,
+            _estimate_doc_bytes,
+            _GRAPH_BATCH_QUERY_MAX_PAYLOAD_BYTES,
+            _NODE_DEGREES_BATCH_CHUNK_SIZE,
         )
-        async for doc in cursor:
-            merged_results[doc.get("_id")] = doc.get("degree")
+        if len(id_batches) > 1:
+            logger.info(
+                f"[{self.workspace}] node_degrees_batch: $in split into "
+                f"{len(id_batches)} batches for {len(unique_node_ids)} ids"
+            )
 
-        # Inbound degrees
-        inbound_pipeline = [
-            {"$match": {"target_node_id": {"$in": node_ids}}},
-            {"$group": {"_id": "$target_node_id", "degree": {"$sum": 1}}},
-        ]
+        async def _outbound_degrees(chunk: list[str]) -> dict[str, int]:
+            outbound_pipeline = [
+                {"$match": {"source_node_id": {"$in": chunk}}},
+                {"$group": {"_id": "$source_node_id", "degree": {"$sum": 1}}},
+            ]
+            cursor = await self.edge_collection.aggregate(
+                outbound_pipeline, allowDiskUse=True
+            )
+            return {doc.get("_id"): doc.get("degree") async for doc in cursor}
 
-        cursor = await self.edge_collection.aggregate(
-            inbound_pipeline, allowDiskUse=True
-        )
-        async for doc in cursor:
-            merged_results[doc.get("_id")] = merged_results.get(
-                doc.get("_id"), 0
-            ) + doc.get("degree")
+        async def _inbound_degrees(chunk: list[str]) -> dict[str, int]:
+            inbound_pipeline = [
+                {"$match": {"target_node_id": {"$in": chunk}}},
+                {"$group": {"_id": "$target_node_id", "degree": {"$sum": 1}}},
+            ]
+            cursor = await self.edge_collection.aggregate(
+                inbound_pipeline, allowDiskUse=True
+            )
+            inbound: dict[str, int] = {}
+            async for doc in cursor:
+                inbound[doc.get("_id")] = inbound.get(doc.get("_id"), 0) + doc.get(
+                    "degree"
+                )
+            return inbound
+
+        async def _chunk_degrees(
+            chunk: list[str], estimated_bytes: int
+        ) -> dict[str, int]:
+            if (
+                len(chunk) == 1
+                and estimated_bytes > _GRAPH_BATCH_QUERY_MAX_PAYLOAD_BYTES
+            ):
+                logger.warning(
+                    f"[{self.workspace}] node_degrees_batch: single id "
+                    f"{chunk[0]!r} estimated {estimated_bytes} bytes exceeds "
+                    f"{_GRAPH_BATCH_QUERY_MAX_PAYLOAD_BYTES}"
+                )
+
+            outbound = await _outbound_degrees(chunk)
+            inbound = await _inbound_degrees(chunk)
+            chunk_degrees = dict(outbound)
+            for node_id, degree in inbound.items():
+                chunk_degrees[node_id] = chunk_degrees.get(node_id, 0) + degree
+            return chunk_degrees
+
+        for chunk, estimated_bytes in id_batches:
+            chunk_degrees = await _chunk_degrees(chunk, estimated_bytes)
+            merged_results.update(chunk_degrees)
 
         return merged_results
+
+    async def edge_degrees_batch(
+        self, edge_pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], int]:
+        """
+        Calculate the combined degree for each edge (sum of the source and target node degrees)
+        in batch using the already implemented node_degrees_batch.
+
+        Args:
+            edge_pairs: List of (source_node_id, target_node_id) tuples
+
+        Returns:
+            Dictionary mapping edge tuples to their combined degrees
+        """
+        if not edge_pairs:
+            return {}
+
+        # Node degrees are already batched; sum them locally instead of
+        # issuing one edge_degree() round-trip per pair.
+        node_ids = {node_id for pair in edge_pairs for node_id in pair}
+        degrees = await self.node_degrees_batch(list(node_ids))
+
+        result = {}
+        for src_id, tgt_id in edge_pairs:
+            result[(src_id, tgt_id)] = degrees.get(src_id, 0) + degrees.get(tgt_id, 0)
+        return result
+
+    async def get_edges_batch(
+        self, pairs: list[dict[str, str]]
+    ) -> dict[tuple[str, str], dict]:
+        """
+        Retrieve edge properties for multiple (src, tgt) pairs in one query.
+
+        Args:
+            pairs: List of dictionaries, e.g. [{"src": "node1", "tgt": "node2"}, ...]
+
+        Returns:
+            A dictionary mapping existing (src, tgt) tuples to their edge
+            properties. Missing pairs are omitted.
+        """
+        if not pairs:
+            return {}
+
+        # Map canonical (edge_lo, edge_hi) back to the requested (src, tgt)
+        # direction, since multiple requested pairs can share one canonical edge.
+        canonical_to_requested: dict[tuple[str, str], list[tuple[str, str]]] = {}
+        for pair in pairs:
+            src_id = pair["src"]
+            tgt_id = pair["tgt"]
+            canonical = _canonical_edge_endpoints(src_id, tgt_id)
+            canonical_to_requested.setdefault(canonical, []).append((src_id, tgt_id))
+
+        # Chunk the $or so a large batch (e.g. purging a document with many
+        # relations) stays under the 16MB query limit instead of building one
+        # unbounded $or. Byte budget (_GRAPH_BATCH_QUERY_MAX_PAYLOAD_BYTES) is
+        # the primary limiter -- endpoint strings are not length-bounded (see
+        # that constant's comment), so a pure item-count cap alone can't
+        # bound BSON size. _GET_EDGES_BATCH_CHUNK_SIZE (matching
+        # postgres_impl.get_edges_batch's own batch_size default) stays as a
+        # secondary record-count cap.
+        canonical_pairs = list(canonical_to_requested)
+
+        result = {}
+        pair_batches = _chunk_by_budget(
+            canonical_pairs,
+            lambda pair: _estimate_doc_bytes({"edge_lo": pair[0], "edge_hi": pair[1]}),
+            _GRAPH_BATCH_QUERY_MAX_PAYLOAD_BYTES,
+            _GET_EDGES_BATCH_CHUNK_SIZE,
+        )
+        if len(pair_batches) > 1:
+            logger.info(
+                f"[{self.workspace}] get_edges_batch: $or split into "
+                f"{len(pair_batches)} batches for {len(canonical_pairs)} pairs"
+            )
+
+        async def _fetch_batch(
+            batch: list[tuple[str, str]], estimated_bytes: int
+        ) -> list[dict]:
+            if (
+                len(batch) == 1
+                and estimated_bytes > _GRAPH_BATCH_QUERY_MAX_PAYLOAD_BYTES
+            ):
+                logger.warning(
+                    f"[{self.workspace}] get_edges_batch: single pair "
+                    f"edge_lo={batch[0][0]!r} edge_hi={batch[0][1]!r} "
+                    f"estimated {estimated_bytes} bytes exceeds "
+                    f"{_GRAPH_BATCH_QUERY_MAX_PAYLOAD_BYTES}"
+                )
+            cursor = self.edge_collection.find(
+                {
+                    "$or": [
+                        {"edge_lo": edge_lo, "edge_hi": edge_hi}
+                        for edge_lo, edge_hi in batch
+                    ]
+                }
+            )
+            return [doc async for doc in cursor]
+
+        for batch, estimated_bytes in pair_batches:
+            docs = await _fetch_batch(batch, estimated_bytes)
+            for doc in docs:
+                doc.pop("_id", None)
+                canonical = (doc["edge_lo"], doc["edge_hi"])
+                # Independent dict per requested direction: two requested pairs
+                # can share one canonical edge, and callers (e.g. purge) mutate
+                # the per-pair dict in place, so it must not be the same object.
+                for src_id, tgt_id in canonical_to_requested.get(canonical, []):
+                    result[(src_id, tgt_id)] = dict(doc)
+        return result
 
     async def get_nodes_edges_batch(
         self, node_ids: list[str]
@@ -2273,6 +2533,11 @@ class MongoGraphStorage(BaseGraphStorage):
             For each node, the list includes both:
             - Outgoing edges: (queried_node, connected_node)
             - Incoming edges: (connected_node, queried_node)
+
+        A self-loop appears ONCE: it matches both the outbound and the inbound
+        query, and listing it from each would report one edge as two
+        (``BaseGraphStorage.get_node_edges``, and this class's own
+        ``get_node_edges``, which returns it once).
         """
         result = {node_id: [] for node_id in node_ids}
 
@@ -2294,7 +2559,11 @@ class MongoGraphStorage(BaseGraphStorage):
         async for edge in incoming_cursor:
             source = edge["source_node_id"]
             target = edge["target_node_id"]
-            result[target].append((source, target))
+            # A self-loop was already listed by the outbound pass above (its
+            # source is the same requested id), so skip it here -- one edge,
+            # one tuple. Same guard as pgtable_impl.get_nodes_edges_batch.
+            if target != source:
+                result[target].append((source, target))
 
         return result
 
@@ -3370,8 +3639,9 @@ class MongoGraphStorage(BaseGraphStorage):
         every call — on a large graph, to produce a result phase 1 already had.
         """
         try:
-            # Self-loops count twice (the source and target groups each see the
-            # document), matching the other backends.
+            # No self-loop guard: the graph is not allowed to hold one
+            # (BaseGraphStorage.node_degree), and filtering for it here was
+            # measured and rejected.
             pipeline = [
                 # Count outbound edges
                 {"$group": {"_id": "$source_node_id", "out_degree": {"$sum": 1}}},
