@@ -178,6 +178,35 @@ def _label(r: NumberingResolver, count: int) -> str:
     return r._format_label("100", 0, r.abstract_nums["10"])
 
 
+@pytest.mark.parametrize(
+    ("num_fmt", "count", "expected"),
+    [
+        ("lowerLetter", 1, "a"),
+        ("lowerLetter", 26, "z"),
+        ("lowerLetter", 27, "aa"),
+        ("lowerLetter", 52, "zz"),
+        ("lowerLetter", 53, "aaa"),
+        ("upperLetter", 27, "AA"),
+    ],
+)
+def test_letter_formats_repeat_after_z(num_fmt, count, expected) -> None:
+    assert _label(_fmt_resolver(num_fmt, "%1"), count) == expected
+
+
+def test_letter_format_degrades_to_decimal_above_the_cap() -> None:
+    """A crafted or corrupted w:start flows into this counter unbounded
+    (_parse_numbering_xml has no upper bound on the parsed int). Without a
+    cap, letter * ((n - 1) // 26 + 1) allocates output proportional to n --
+    a single huge w:start in a few bytes of XML would force a
+    multi-gigabyte string. Past the cap it must degrade to plain decimal,
+    same fallback _to_roman already uses above its own 4000 cutoff."""
+    r = _fmt_resolver("lowerLetter", "%1")
+    at_cap = NumberingResolver._MAX_LETTER_COUNT
+    assert _label(r, at_cap) == NumberingResolver._to_letter(at_cap)
+    assert _label(r, at_cap + 1) == str(at_cap + 1)
+    assert _label(r, 10_000_000_000) == "10000000000"
+
+
 # The counting families all render 一/二/十/十一/… — [MS-DOCX] gives
 # japaneseCounting as 一,二,三 and chineseCounting / taiwaneseCounting as
 # 一 (1) / 十 (10). Chinese-locale Word writes 一二三 auto-numbering as
