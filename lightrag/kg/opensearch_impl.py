@@ -42,6 +42,7 @@ from ..base import (
     SourceUnique,
 )
 from ..exceptions import (
+    ReferencesIntactFlushError,
     SourceConflictRepairCASError,
     StorageControlPlaneError,
     StorageRecordNotFoundError,
@@ -109,6 +110,32 @@ _RETRYABLE_BULK_STATUSES: frozenset[int] = frozenset({408, 429, 500, 502, 503, 5
 # Cap the length of error summaries dumped to logs so a multi-MB mapping
 # explanation can't flood the log file.
 _BULK_ERROR_SUMMARY_MAX_LEN = 200
+
+
+class OpenSearchReferencesIntactError(ReferencesIntactFlushError, OpenSearchException):
+    """A commit failure on this backend that discarded nothing.
+
+    Raised on the two failure paths this backend can prove safe, and on
+    neither of the two it cannot:
+
+    * the bulk call itself raising -- the pending buffers are untouched, so
+      every operation replays on the next flush. ``async_bulk`` streams, so
+      some rows may already be written; that costs a redundant re-index, not
+      a reference;
+    * ``indices.refresh`` raising -- the flush before it already popped every
+      successful operation, so every reference it published is durable.
+
+    NOT the permanent-4xx ``RuntimeError``, which has removed the operation
+    from the buffer before raising, and not a flush that mixed permanent with
+    retryable per-item failures: both lost something, so both keep the
+    fail-safe default. Nor the ``_ensure_index_ready`` failure ahead of the
+    buffers, whose own raise is left unclassified deliberately -- it can
+    surface a permanent mapping rejection that no later flush will clear.
+
+    It subclasses ``OpenSearchException`` as well as the typed contract so a
+    caller that catches the driver's own exception -- inside this module and
+    out of it -- keeps catching these.
+    """
 
 
 @dataclass(frozen=True)
@@ -1545,7 +1572,12 @@ class OpenSearchKVStorage(BaseKVStorage):
                     f"(upserts={len(pending_upserts)}, "
                     f"deletes={len(pending_deletes)}): {e}"
                 )
-                raise
+                # Nothing has been popped yet -- the buffer edits below are
+                # the only place that happens -- so every operation replays
+                # on the next flush and no reference can have been lost. Say
+                # so, or a caller holding rows that name one must assume the
+                # worst and discard them. See ``OpenSearchReferencesIntactError``.
+                raise OpenSearchReferencesIntactError(str(e)) from e
 
             retryable_ids, non_retryable_ops = _extract_bulk_failed_ids(failed)
             non_retryable_ids = {op.doc_id for op in non_retryable_ops}
@@ -1729,7 +1761,11 @@ class OpenSearchKVStorage(BaseKVStorage):
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return
-            raise
+            # The flush returned, so it popped every operation that landed
+            # and raised for any it dropped: reaching here proves every
+            # reference this commit published is durable, and a caller must
+            # not quarantine rows naming them over a visibility round trip.
+            raise OpenSearchReferencesIntactError(str(e)) from e
         self._refreshed_generation = owed
 
     async def is_empty(self) -> bool:
@@ -6543,8 +6579,9 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     f"deletes={len(pending_deletes)}): {e}"
                 )
                 # Bulk did not return per-doc statuses, so keep everything
-                # buffered for the next flush.
-                raise
+                # buffered for the next flush -- which is also what makes this
+                # raise provably reference-safe.
+                raise OpenSearchReferencesIntactError(str(e)) from e
 
             retryable_ids, non_retryable_ops = _extract_bulk_failed_ids(failed)
 
@@ -6685,7 +6722,13 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return
-            raise
+            # Same proof as the KV commit's refresh: the flush returned, so
+            # what it published is durable and only its visibility is late.
+            # No caller branches on a VECTOR commit's answer today -- the
+            # reference carrier is a KV namespace -- but the contract is the
+            # storage layer's, not one namespace's, and a backend that
+            # answers only where it is asked drifts.
+            raise OpenSearchReferencesIntactError(str(e)) from e
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get a vector document by ID, with read-your-writes against the buffer.
