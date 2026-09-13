@@ -26,6 +26,15 @@ each undirected edge once in canonical order ``src_id = min(a, b)``,
 non-ASCII ids and would produce duplicate edges). ``canonicalize_edge`` is
 the single place this tool decides canonical order.
 
+This tool copies the graph verbatim or refuses; it never silently changes
+what it migrates. Alongside reciprocal pairs and duplicate node ids it also
+refuses **self-loop edges**: a graph must not contain one
+(``BaseGraphStorage.node_degree``), and neither available alternative is safe
+— carrying it across propagates the violation, while dropping it orphans the
+matching ``relationships_vdb`` row past the reach of ``adelete_by_relation``.
+The operator deletes those relations at the source first, where the graph edge
+still exists so the vector row goes with them.
+
 Usage (dry run is the default; no graph data is written without
 --apply, though initializing the backends still creates their schema):
 
@@ -302,6 +311,33 @@ def detect_reciprocal_pairs(
             continue  # a self-loop has only one orientation
         seen.setdefault(canonicalize_edge(src, tgt), set()).add((src, tgt))
     return sorted(key for key, directions in seen.items() if len(directions) > 1)
+
+
+def detect_self_loop_edges(
+    directed_edges: Iterable[dict[str, Any]],
+) -> list[str]:
+    """Node ids carrying a ``src == tgt`` edge, sorted.
+
+    ``BaseGraphStorage.node_degree`` states that a graph must not contain a
+    self-loop: every LightRAG ingress refuses one, and degree is not contracted
+    on it precisely because no admissible graph can hold one. So the source is
+    invariant-violating and this tool refuses it, exactly as it refuses
+    reciprocal pairs and duplicate node ids.
+
+    **Refused rather than dropped, and the reason is cross-store.** A self-loop
+    old enough to predate the ``ainsert_custom_kg`` guard also has a
+    ``relationships_vdb`` row. This tool migrates the GRAPH only, so silently
+    omitting the edge would orphan that row: ``_get_edge_data`` would keep
+    retrieving the stale vector hit and spending a ``top_k`` slot before
+    discarding it for having no graph edge, and -- worse --
+    ``adelete_by_relation`` 404s when ``has_edge`` is false, so the row would
+    become unreachable through every public API. Refusing keeps the cleanup
+    possible: run it against the SOURCE, where the graph edge still exists, and
+    the relation and its vector row go together.
+    """
+    return sorted(
+        {edge["source"] for edge in directed_edges if edge["source"] == edge["target"]}
+    )
 
 
 def detect_duplicate_node_ids(nodes: Iterable[dict[str, Any]]) -> list[str]:
@@ -822,6 +858,18 @@ async def _plan_migration(
     validate_source_nodes(source_nodes)
 
     source_edges = sort_directed_edges(await source.get_all_edges())
+
+    self_loops = detect_self_loop_edges(source_edges)
+    if self_loops:
+        raise MigrationDataError(
+            "source contains self-loop edges, which a graph must not hold "
+            "(BaseGraphStorage.node_degree); migrating them forward would "
+            "carry the violation into the target, and dropping them would "
+            "orphan the matching relationships_vdb rows beyond the reach of "
+            "adelete_by_relation. Delete these relations at the SOURCE first, "
+            "through LightRAG so the vector rows go with them, then re-run: "
+            f"{self_loops}"
+        )
 
     violations = {
         pair: count
