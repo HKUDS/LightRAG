@@ -20,8 +20,9 @@ That order is load-bearing, differently for each of the two fields:
 
 ``file_path``
     Has no tracking side-channel at all: the graph string is the only store,
-    and ``merge_nodes_and_edges`` caps it at ``max_file_paths`` by the same
-    positional rule. This field is affected unconditionally.
+    and ``_merge_nodes_then_upsert`` (``_merge_edges_then_upsert`` for
+    relations) caps it at ``max_file_paths`` by the same positional rule. This
+    field is affected unconditionally.
 
 Preserving first-seen order also lines the merged ``source_id`` up with the
 chunk tracking row the same merge writes, which already deduplicates in order
@@ -37,6 +38,7 @@ fails deterministically against the old implementation rather than only for
 most seeds.
 """
 
+import contextlib
 import os
 import subprocess
 import sys
@@ -149,25 +151,30 @@ def test_join_unique_order_is_identical_under_every_hash_seed():
     """The merged order must not depend on how the IDs happen to hash."""
     # Launched together rather than in sequence: the probes are independent and
     # each pays a fresh interpreter start plus a lightrag import.
-    processes = [
-        subprocess.Popen(
-            [sys.executable, "-c", _PROBE],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            # Inherit the environment so the probe can import lightrag at all;
-            # override only the seed.
-            env={**os.environ, "PYTHONHASHSEED": seed},
-        )
-        for seed in _PROBE_SEEDS
-    ]
-
     merged_orders = {}
-    for seed, process in zip(_PROBE_SEEDS, processes):
-        stdout, stderr = process.communicate()
-        assert process.returncode == 0, (
-            f"probe failed (PYTHONHASHSEED={seed}): {stderr}"
-        )
-        merged_orders[seed] = stdout.strip().splitlines()[-1]
+    with contextlib.ExitStack() as stack:
+        # Entered as context managers so a failing assertion below still closes
+        # and reaps the probes that have not been read yet.
+        processes = [
+            stack.enter_context(
+                subprocess.Popen(
+                    [sys.executable, "-c", _PROBE],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    # Inherit the environment so the probe can import lightrag
+                    # at all; override only the seed.
+                    env={**os.environ, "PYTHONHASHSEED": seed},
+                )
+            )
+            for seed in _PROBE_SEEDS
+        ]
+
+        for seed, process in zip(_PROBE_SEEDS, processes):
+            stdout, stderr = process.communicate()
+            assert process.returncode == 0, (
+                f"probe failed (PYTHONHASHSEED={seed}): {stderr}"
+            )
+            merged_orders[seed] = stdout.strip().splitlines()[-1]
 
     assert set(merged_orders.values()) == {",".join(ALL_CHUNKS)}, merged_orders
