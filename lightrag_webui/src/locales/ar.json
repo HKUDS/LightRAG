@@ -4,7 +4,12 @@
     "theme": "السمة",
     "light": "فاتح",
     "dark": "داكن",
-    "system": "النظام"
+    "system": "النظام",
+    "langfuseTracing": "تتبّع Langfuse",
+    "langfuseTracingDescription": "تصدير تتبّعات نماذج اللغة المتوافقة مع OpenAI عبر اتصال Langfuse الذي أعدّه المشغّل.",
+    "langfuseUnavailable": "ثبّت إضافة قابلية المراقبة واضبط بيانات اعتماد Langfuse لاستخدام مفتاح التبديل هذا.",
+    "langfuseLoadFailed": "تعذّر تحميل حالة تتبّع Langfuse.",
+    "langfuseUpdateFailed": "تعذّر تحديث تتبّع Langfuse."
   },
   "header": {
     "documents": "المستندات",

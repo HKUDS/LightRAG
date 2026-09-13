@@ -71,6 +71,7 @@ from lightrag.parser.external.mineru.cache import MinerUParserOptions
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
+from lightrag.api.routers.observability_routes import create_observability_routes
 from lightrag.api.routers.ui_customization_routes import create_ui_customization_routes
 from lightrag.api.ui_customization import (
     WEBUI_CHROME_LOCALES,
@@ -79,6 +80,7 @@ from lightrag.api.ui_customization import (
 )
 
 from lightrag.utils import logger, set_verbose_debug
+from lightrag.llm.langfuse_tracing import initialize_langfuse_tracing
 from lightrag.kg.shared_storage import (
     get_namespace_data,
     get_default_workspace,
@@ -1593,6 +1595,7 @@ def create_app(args):
             # Initialize database connections
             # Note: initialize_storages() now auto-initializes pipeline_status for rag.workspace
             await rag.initialize_storages()
+            await initialize_langfuse_tracing()
 
             # Data migration regardless of storage implementation
             await rag.check_and_migrate_data()
@@ -2540,6 +2543,7 @@ def create_app(args):
     app.include_router(create_document_routes(rag, doc_manager, api_key))
     app.include_router(create_query_routes(rag, api_key, args.top_k))
     app.include_router(create_graph_routes(rag, api_key))
+    app.include_router(create_observability_routes(api_key))
     # Public read-only customization surface — registered unconditionally:
     # without a bundle it answers 200 {"customized": false, ...}.
     app.include_router(
