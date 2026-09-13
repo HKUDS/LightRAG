@@ -304,6 +304,37 @@ def detect_reciprocal_pairs(
     return sorted(key for key, directions in seen.items() if len(directions) > 1)
 
 
+def drop_self_loop_edges(
+    directed_edges: Iterable[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Split off ``src == tgt`` rows, returning the survivors and how many went.
+
+    Dropped rather than refused, unlike reciprocals and duplicate node ids: a
+    self-loop does not make the migration ambiguous, it is data the target is
+    not allowed to hold. ``BaseGraphStorage.node_degree`` states that a graph
+    must not contain one -- every LightRAG ingress refuses it, degree is not
+    contracted on it, and the backends' cheapest degree queries disagree about
+    it precisely because no admissible graph can contain one. Carrying one
+    across would be this tool manufacturing the only input the read contract
+    cannot describe.
+
+    Dropping changes node/edge cardinality, which is exactly what ``verified``
+    promises to preserve, so the filter is applied at the READ boundary: every
+    downstream step -- canonicalization, the written-id derivation, and the
+    verification comparison -- sees the same edge set that was written, and the
+    count is reported so the operator is never told the graph came across whole
+    when it did not.
+    """
+    kept: list[dict[str, Any]] = []
+    dropped = 0
+    for edge in directed_edges:
+        if edge["source"] == edge["target"]:
+            dropped += 1
+            continue
+        kept.append(edge)
+    return kept, dropped
+
+
 def detect_duplicate_node_ids(nodes: Iterable[dict[str, Any]]) -> list[str]:
     """Node ids enumerated more than once, payloads irrelevant.
 
@@ -653,6 +684,11 @@ class MigrationRunReport:
     # preview of a run that will destroy the slice.
     target_was_non_empty: bool = False
     dropped_target_slice: bool = False
+    # Self-loops removed from the source enumeration before anything was
+    # written. Non-zero means the target graph is deliberately NOT a row-for-row
+    # copy of the source, so `verified` must not be read as "nothing was left
+    # behind" without also reading this.
+    dropped_self_loop_edges: int = 0
 
 
 def check_migration_pair(source: Any, target: Any) -> None:
@@ -822,6 +858,13 @@ async def _plan_migration(
     validate_source_nodes(source_nodes)
 
     source_edges = sort_directed_edges(await source.get_all_edges())
+    # Before every check below, so the refusal rules, the write set and the
+    # verification comparison all operate on the edges that will actually be
+    # written. A self-loop is data the target must not hold, not an ambiguity
+    # to refuse over -- see drop_self_loop_edges.
+    # Reported, never logged: this module surfaces everything through the run
+    # report so a dry run and an apply run describe themselves identically.
+    source_edges, dropped_self_loops = drop_self_loop_edges(source_edges)
 
     violations = {
         pair: count
@@ -891,6 +934,7 @@ async def _plan_migration(
         target_backend=type(target).__name__,
         node_count=len(node_items),
         edge_count=len(edge_items),
+        dropped_self_loop_edges=dropped_self_loops,
         # Derived before the first write so a failure at ANY later point
         # already has the complete compensation set, auto-created edge
         # endpoints included.
@@ -1082,6 +1126,7 @@ def _report_dict(
         out["would_drop_target_slice"] = report.target_was_non_empty
     else:
         out["dropped_target_slice"] = report.dropped_target_slice
+    out["dropped_self_loop_edges"] = report.dropped_self_loop_edges
     if report.compensation_error is not None:
         out["compensation_error"] = report.compensation_error
         # The manual-cleanup contract: compensation did not finish, so the

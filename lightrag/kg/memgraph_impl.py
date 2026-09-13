@@ -297,15 +297,9 @@ class MemgraphStorage(BaseGraphStorage):
         ) as session:
             try:
                 workspace_label = self._get_workspace_label()
-                # Degree excludes self-loops (BaseGraphStorage.node_degree).
-                # The filter compares the NODES rather than the relationship's
-                # endpoints, so it holds whether an undirected match yields one
-                # row or two for a self-loop -- a difference no offline test
-                # here could settle.
                 query = f"""
                     MATCH (n:`{workspace_label}` {{entity_id: $entity_id}})
-                    OPTIONAL MATCH (n)-[r]-(m)
-                    WHERE m <> n
+                    OPTIONAL MATCH (n)-[r]-()
                     RETURN COUNT(r) AS degree
                 """
                 result = await session.run(query, entity_id=node_id)
@@ -1112,12 +1106,9 @@ class MemgraphStorage(BaseGraphStorage):
                     # is the BaseGraphStorage contract, and without it the
                     # LIMIT cut an unordered band of equal-degree entities, so
                     # the same graph returned different nodes run to run.
-                    # Degree excludes self-loops (BaseGraphStorage.node_degree),
-                    # and this ranking decides which nodes survive max_nodes.
                     main_query = f"""
                     MATCH (n:`{workspace_label}`)
-                    OPTIONAL MATCH (n)-[r]-(m)
-                    WHERE m <> n
+                    OPTIONAL MATCH (n)-[r]-()
                     WITH n, COALESCE(count(r), 0) AS degree
                     ORDER BY degree DESC, n.entity_id ASC
                     LIMIT $max_nodes
@@ -1349,12 +1340,10 @@ class MemgraphStorage(BaseGraphStorage):
             async with self._driver.session(
                 database=self._DATABASE, default_access_mode="READ"
             ) as session:
-                # Degree excludes self-loops (BaseGraphStorage.node_degree).
                 query = f"""
                 MATCH (n:`{workspace_label}`)
                 WHERE n.entity_id IS NOT NULL
-                OPTIONAL MATCH (n)-[r]-(m)
-                WHERE m <> n
+                OPTIONAL MATCH (n)-[r]-()
                 WITH n.entity_id AS label, count(r) AS degree
                 ORDER BY degree DESC, label ASC
                 LIMIT {limit}

@@ -129,15 +129,29 @@ class TestRealRoundTrip:
         assert report.verified
         assert report.verification is not None and report.verification.ok
         assert report.node_count == len(_NODES)
-        assert report.edge_count == len(_EDGES)
-        # Target content equals source content, read back through the REAL
-        # enumeration path on both sides.
+        # The seeded fixture carries one self-loop, which the tool drops: a
+        # graph must not contain one (BaseGraphStorage.node_degree), so
+        # carrying it across would manufacture the one input the read contract
+        # cannot describe. Reported, never silent.
+        self_loops = [e for e in _EDGES if e[0] == e[1]]
+        assert self_loops, "fixture must keep a self-loop for this to mean anything"
+        assert report.dropped_self_loop_edges == len(self_loops)
+        assert report.edge_count == len(_EDGES) - len(self_loops)
+        # Target content equals source content MINUS the dropped self-loops,
+        # read back through the REAL enumeration path on both sides.
         assert _node_map(await target.get_all_nodes()) == _node_map(
             await source.get_all_nodes()
         )
-        assert _canonical_edge_map(await target.get_all_edges()) == (
-            _canonical_edge_map(await source.get_all_edges())
-        )
+        source_edges = _canonical_edge_map(await source.get_all_edges())
+        expected_edges = {
+            key: props for key, props in source_edges.items() if key[0] != key[1]
+        }
+        target_edges = _canonical_edge_map(await target.get_all_edges())
+        assert target_edges == expected_edges
+        assert not [key for key in target_edges if key[0] == key[1]]
+        # Verification passed on the filtered set: the drop happens at the READ
+        # boundary, so what was written and what was verified are one set.
+        assert report.verification.ok
         # Instance isolation: the source slice is intact after migration.
         assert set(_node_map(await source.get_all_nodes())) == set(_NODES)
 

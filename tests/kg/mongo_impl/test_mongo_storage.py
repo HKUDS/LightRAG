@@ -1321,19 +1321,12 @@ class TestMongoGraphReadContract:
         await s.get_popular_labels(limit=42)
 
         pipeline = s.edge_collection.aggregate.call_args[0][0]
-        # Both endpoint groups drop self-loops first: degree measures
-        # connectivity, and a self-loop connects nothing.
-        drop_self_loops = {
-            "$match": {"$expr": {"$ne": ["$source_node_id", "$target_node_id"]}}
-        }
-        assert pipeline[0] == drop_self_loops
-        assert pipeline[1] == {
+        assert pipeline[0] == {
             "$group": {"_id": "$source_node_id", "out_degree": {"$sum": 1}}
         }
         union = next(stage for stage in pipeline if "$unionWith" in stage)
         assert union["$unionWith"]["coll"] == "test_edges"
-        assert union["$unionWith"]["pipeline"][0] == drop_self_loops
-        assert union["$unionWith"]["pipeline"][1]["$group"]["_id"] == "$target_node_id"
+        assert union["$unionWith"]["pipeline"][0]["$group"]["_id"] == "$target_node_id"
         assert {"$sort": {"total_degree": -1, "_id": 1}} in pipeline
         assert {"$limit": 42} in pipeline
         assert s.edge_collection.aggregate.call_args.kwargs == {"allowDiskUse": True}

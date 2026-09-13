@@ -27,6 +27,7 @@ from lightrag.tools.migrate_graph_storage import (
     count_parallel_edges,
     derive_written_node_ids,
     detect_duplicate_node_ids,
+    drop_self_loop_edges,
     detect_reciprocal_pairs,
     find_non_jsonb_representable,
     dry_run_migration,
@@ -622,6 +623,64 @@ class TestSourceNodeIdentity:
         assert "drop" not in target.calls
         assert target.calls.count("upsert_nodes_batch") == 0
         assert target.nodes == {"pre": {"entity_id": "pre"}}
+
+
+class TestDropSelfLoopEdges:
+    """The migration tool must not carry a self-loop into the target.
+
+    ``BaseGraphStorage.node_degree`` states a graph must not contain one, and
+    every LightRAG ingress refuses it -- so a tool that copied one across would
+    manufacture the single input the read contract cannot describe. Dropped
+    rather than refused (unlike reciprocals and duplicate ids, which make the
+    migration ambiguous), and counted so ``verified`` is never read as "the
+    graph came across whole" when rows were deliberately left behind.
+    """
+
+    def test_drops_self_loops_and_counts_them(self):
+        edges = [
+            {"source": "a", "target": "b"},
+            {"source": "loop", "target": "loop"},
+            {"source": "b", "target": "c"},
+        ]
+
+        kept, dropped = drop_self_loop_edges(edges)
+
+        assert dropped == 1
+        assert kept == [
+            {"source": "a", "target": "b"},
+            {"source": "b", "target": "c"},
+        ]
+
+    def test_keeps_reciprocals_untouched(self):
+        """Only ``src == tgt`` goes: a reciprocal pair is a different refusal,
+        and collapsing it here would hide what detect_reciprocal_pairs reports."""
+        edges = [{"source": "a", "target": "b"}, {"source": "b", "target": "a"}]
+
+        kept, dropped = drop_self_loop_edges(edges)
+
+        assert dropped == 0
+        assert kept == edges
+
+    def test_no_self_loops_is_a_no_op(self):
+        edges = [{"source": "a", "target": "b"}]
+
+        kept, dropped = drop_self_loop_edges(edges)
+
+        assert dropped == 0
+        assert kept == edges
+
+    def test_preserves_payload_of_survivors(self):
+        edges = [
+            {"source": "loop", "target": "loop", "weight": "9.0"},
+            {"source": "a", "target": "b", "weight": "1.0", "description": "d"},
+        ]
+
+        kept, dropped = drop_self_loop_edges(edges)
+
+        assert dropped == 1
+        assert kept == [
+            {"source": "a", "target": "b", "weight": "1.0", "description": "d"}
+        ]
 
 
 class TestCardinalityPreservingPolicy:

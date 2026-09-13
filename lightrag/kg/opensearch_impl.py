@@ -369,36 +369,6 @@ _KV_UPSERT_RETRY_ON_CONFLICT = 3
 # PGGraphStorage-style startup so it runs at most once per index.
 _EDGE_ID_CANONICAL_META_FLAG = "edge_id_canonical_v1"
 
-# Degree excludes self-loops (``BaseGraphStorage.node_degree``): a self-loop
-# carries no connectivity, so it must earn a node no rank. OpenSearch cannot
-# compare two fields with a term query, so every path that DERIVES degree from
-# an aggregation pays this script clause instead.
-#
-# Accepted residue: the script runs once per matched document, so a hub node's
-# degree aggregation costs a script evaluation per incident edge. It is not
-# paid by ``node_degree``, which subtracts an index-served count instead, and a
-# graph with no self-loops still pays it -- the price of asking a question the
-# inverted index cannot answer. Bounded by how much anomalous data the
-# deployment carries; the standing alternative, a denormalized
-# ``is_self_loop`` flag written at upsert time plus a startup backfill, trades
-# that for a mapping migration and is deliberately not taken here.
-#
-# ``size() > 0`` guards both fields: reading ``.value`` on a doc that is
-# missing the field throws, which would fail the whole aggregation rather than
-# skip the document.
-_SELF_LOOP_SCRIPT_CLAUSE = {
-    "script": {
-        "script": {
-            "lang": "painless",
-            "source": (
-                "doc['source_node_id'].size() > 0 && "
-                "doc['target_node_id'].size() > 0 && "
-                "doc['source_node_id'].value == doc['target_node_id'].value"
-            ),
-        }
-    }
-}
-
 # Keys recorded in every index mapping's ``_meta`` naming the LightRAG
 # workspace and namespace the index belongs to, in their ORIGINAL form --
 # before the lowercase + character folding applied by
@@ -4214,55 +4184,34 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     async def node_degree(self, node_id: str) -> int:
         """Count the edge endpoints a node occupies.
 
-        A self-loop is EXCLUDED (``BaseGraphStorage.node_degree``): it carries
-        no connectivity. The ``should`` query counts DOCUMENTS, so a self-loop
-        appears in it exactly once -- subtracting the node's self-loop count
-        removes that one occurrence and leaves ordinary edges untouched.
+        One count, not two. A self-loop would be counted once here and twice
+        by ``node_degrees_batch`` below, but the graph is not allowed to hold
+        one (``BaseGraphStorage.node_degree``), so no caller can observe the
+        difference on data the contract admits. Excluding it at the query was
+        measured and rejected -- see the contract for what it cost.
 
-        Two term counts rather than the ``_SELF_LOOP_SCRIPT_CLAUSE`` the
-        aggregation paths need: both endpoints are the KNOWN ``node_id`` here,
-        so the exclusion is an ordinary indexed lookup and no script runs.
-
-        Still the count API rather than a search or a delegation to
+        The count API rather than a search or a delegation to
         ``node_degrees_batch`` (``test_node_degree_uses_count_api`` pins that
-        choice): counting is cheaper than the aggregation search, and the two
-        counts issue concurrently, so the second one costs no extra latency.
-        ``mongo_impl.node_degree`` resolves the identical problem the identical
-        way.
+        choice): counting is cheaper than the aggregation search.
         """
         if not self._indices_ready:
             return 0
         try:
             await self._refresh_graph_indices_if_dirty(refresh_edges=True)
-            touching, self_loops = await asyncio.gather(
-                self.client.count(
-                    index=self._edges_index,
-                    body={
-                        "query": {
-                            "bool": {
-                                "should": [
-                                    {"term": {"source_node_id": node_id}},
-                                    {"term": {"target_node_id": node_id}},
-                                ]
-                            }
+            response = await self.client.count(
+                index=self._edges_index,
+                body={
+                    "query": {
+                        "bool": {
+                            "should": [
+                                {"term": {"source_node_id": node_id}},
+                                {"term": {"target_node_id": node_id}},
+                            ]
                         }
-                    },
-                ),
-                self.client.count(
-                    index=self._edges_index,
-                    body={
-                        "query": {
-                            "bool": {
-                                "filter": [
-                                    {"term": {"source_node_id": node_id}},
-                                    {"term": {"target_node_id": node_id}},
-                                ]
-                            }
-                        }
-                    },
-                ),
+                    }
+                },
             )
-            return touching.get("count", 0) - self_loops.get("count", 0)
+            return response.get("count", 0)
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
@@ -4446,14 +4395,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         "should": [
                             {"terms": {"source_node_id": node_ids}},
                             {"terms": {"target_node_id": node_ids}},
-                        ],
-                        # Explicit because adding a sibling clause to a bool
-                        # that carries only `should` is exactly where the
-                        # implicit minimum_should_match flips to 0 -- which
-                        # would admit every edge in the index, not just the
-                        # ones touching a requested id.
-                        "minimum_should_match": 1,
-                        "must_not": [_SELF_LOOP_SCRIPT_CLAUSE],
+                        ]
                     }
                 },
                 # Each aggregation is wrapped in a `filter` so its bucket keys
@@ -4495,10 +4437,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             # (thousands of ids), and a list scan per bucket makes this loop
             # quadratic and blocks the event loop for seconds.
             requested = set(node_ids)
-            # Seeded with zeros so every requested id gets an answer: excluding
-            # self-loops means a node whose only edge is one contributes to
-            # neither aggregation, and the batch must still agree with
-            # node_degree's 0 rather than omitting the key.
+            # Seeded with zeros so every requested id gets an answer: a node
+            # with no edges appears in neither aggregation, and the batch must
+            # still report the 0 node_degree reports rather than omitting it.
             result = {nid: 0 for nid in node_ids}
             for agg_name in ("source_degrees", "target_degrees"):
                 buckets = response["aggregations"][agg_name]["ids"]["buckets"]
@@ -4516,6 +4457,26 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 return {}
             logger.error(f"[{self.workspace}] Error batch-getting node degrees: {e}")
             raise
+
+    async def edge_degrees_batch(
+        self, edge_pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], int]:
+        """Sum both endpoint degrees per pair, in ONE aggregation.
+
+        The inherited default calls ``edge_degree`` per pair, which is two
+        ``node_degree`` calls, each a separate awaited round trip -- so a query
+        whose top entities carry a thousand distinct edges issued thousands of
+        SERIAL count requests. Resolving the distinct ids once through
+        ``node_degrees_batch`` replaces all of it with a single aggregation
+        search, which is why that search being more expensive than a count does
+        not decide this: it runs once instead of thousands of times. Same shape
+        as ``pgtable_impl.edge_degrees_batch``.
+        """
+        if not edge_pairs:
+            return {}
+        all_ids = list({nid for pair in edge_pairs for nid in pair})
+        degrees = await self.node_degrees_batch(all_ids)
+        return {(s, t): degrees.get(s, 0) + degrees.get(t, 0) for s, t in edge_pairs}
 
     async def get_nodes_edges_batch(
         self, node_ids: list[str]
@@ -5382,9 +5343,6 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 # Get top nodes by degree
                 body = {
                     "size": 0,
-                    # Degree ranking decides which nodes survive max_nodes, so
-                    # it follows node_degree and excludes self-loops.
-                    "query": {"bool": {"must_not": [_SELF_LOOP_SCRIPT_CLAUSE]}},
                     "aggs": {
                         "src": {
                             "terms": {
@@ -5995,8 +5953,6 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             await self._refresh_graph_indices_if_dirty(refresh_edges=True)
             body = {
                 "size": 0,
-                # Self-loops earn no rank, consistent with node_degree.
-                "query": {"bool": {"must_not": [_SELF_LOOP_SCRIPT_CLAUSE]}},
                 "aggs": {
                     "src": {"terms": {"field": "source_node_id", "size": limit * 2}},
                     "tgt": {"terms": {"field": "target_node_id", "size": limit * 2}},

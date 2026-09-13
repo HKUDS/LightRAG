@@ -910,10 +910,10 @@ async def test_bfs_degenerate_seeds_issue_no_degree_round_trip(
 
     These are the two cases where the seed's degree cannot be carried on a hop
     row: with max_depth=0 no hop query is issued at all, and an isolated seed's
-    hop returns no rows to attach it to. Inferring a degree from the absence of
-    hop rows would be guessing rather than measuring -- not computing it at all
-    is well-defined in both cases, and the caller reads a missing entry as
-    "unknown" rather than as zero.
+    hop returns no rows to attach it to. A self-loop-only seed lands in the
+    second case while having a non-zero degree (self-loops count twice), so any
+    scheme that recovers the seed degree from hop output would be wrong here.
+    Not computing it at all is well-defined in both.
     """
     storage = make_storage()
     fetchrow, fetch, degrees_batch = _bfs_mocks(hop_rows)
@@ -1014,19 +1014,13 @@ async def test_search_labels_preserves_sql_row_order():
 
 
 @pytest.mark.asyncio
-async def test_node_degree_excludes_self_loops():
-    """node_degree SQL must exclude self-loops (BaseGraphStorage.node_degree).
-
-    A self-loop carries no connectivity, so it contributes 0 -- not the 2 that
-    NetworkX ``graph.degree()`` would report. The exclusion belongs in the
-    WHERE clause, not in Python: a post-processed subtraction would have to
-    know how many times the query already counted the row.
-    """
+async def test_self_loop_degree_consistency():
+    """node_degree SQL must count self-loops like NetworkX degree: two."""
     storage = make_storage()
-    fetchval = AsyncMock(return_value=0)
+    fetchval = AsyncMock(return_value=2)
 
     with patch.object(storage, "_fetchval", new=fetchval):
-        assert await storage.node_degree("A") == 0
+        assert await storage.node_degree("A") == 2
 
     sql, workspace, namespace, node_id = fetchval.call_args.args
     assert workspace == "test"
@@ -1034,11 +1028,10 @@ async def test_node_degree_excludes_self_loops():
     assert node_id == "A"
     assert "CASE WHEN src_id = $3 THEN 1 ELSE 0 END" in sql
     assert "CASE WHEN tgt_id = $3 THEN 1 ELSE 0 END" in sql
-    assert "src_id <> tgt_id" in sql
 
 
 @pytest.mark.asyncio
-async def test_get_popular_labels_excludes_self_loops():
+async def test_get_popular_labels_counts_self_loop_twice():
     storage = make_storage()
     fetch = AsyncMock(return_value=[{"id": "A", "degree": 2}])
 
@@ -1050,8 +1043,7 @@ async def test_get_popular_labels_excludes_self_loops():
     assert namespace == GRAPH_NAMESPACE
     assert limit_arg == 5
     assert labels == ["A"]
-    # Degree ranking excludes self-loops, consistent with node_degree.
-    assert "src_id <> tgt_id" in sql
+    assert "src_id <> tgt_id" not in sql  # self-loop counted twice (no guard)
     # Ranking + truncation are pushed into SQL (ORDER BY degree DESC, LIMIT) so
     # large graphs do not transfer every node just to slice in Python.
     assert "ORDER BY degree DESC" in sql

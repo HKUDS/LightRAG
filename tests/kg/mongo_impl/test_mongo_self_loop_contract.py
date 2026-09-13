@@ -1,29 +1,24 @@
-"""Self-loop read contract for ``MongoGraphStorage``.
+"""Self-loop LISTING contract for ``MongoGraphStorage``.
 
-Two rules, pointing opposite ways, both stated on ``BaseGraphStorage`` and both
-pinned for ``pgtable_impl`` (``test_node_degree_excludes_self_loops``,
-``test_get_nodes_edges_batch_self_loop_counted_once``):
+``BaseGraphStorage.get_node_edges``: a self-loop appears ONCE and is never
+hidden. This backend walks its outbound and inbound matches separately, so
+without a guard it reports one edge as two -- the same guard
+``pgtable_impl.get_nodes_edges_batch`` carries
+(``test_get_nodes_edges_batch_self_loop_counted_once``).
 
-* **degree measures connectivity**, so a self-loop is EXCLUDED -- it connects
-  nothing, the same reason ``_reject_self_loop_relation`` refuses to create one;
-* **edge listings enumerate what the store holds**, so a self-loop appears ONCE
-  and is never hidden -- deletion, rename, merge and document purge all resolve
-  a node's relation rows through them.
+Listing it at all is deliberate even though ``BaseGraphStorage.node_degree``
+says a graph must not CONTAIN a self-loop: entity deletion, rename, merge and
+document purge all resolve a node's relation rows through these methods, so an
+edge hidden here becomes an orphan relation vector row. A self-loop the listing
+hides also cannot be repaired.
 
-A document store gets both wrong by following its own query shape: the ``$or``
-that backs ``node_degree`` counts the self-loop's single DOCUMENT, and the
-separate outbound/inbound passes that back ``get_nodes_edges_batch`` each list
-that same document.
-
-LightRAG's own writers never create a self-loop (see
-``_reject_self_loop_relation``), so this governs imported graphs and direct
-storage-API use.
+Degree is NOT asserted here. The contract does not define a self-loop's degree
+-- the store is not allowed to hold one -- and the backends answer from their
+cheapest natural query, so pinning a number would pin an unreachable case.
 
 Only the low-level collection is faked, asserting on the actual query issued --
 same convention as ``test_mongo_edge_batch_methods.py``.
 """
-
-from collections import Counter
 
 import pytest
 from unittest.mock import AsyncMock, Mock
@@ -51,60 +46,6 @@ class _AsyncCursor:
             return next(self._iter)
         except StopIteration:
             raise StopAsyncIteration
-
-
-def _make_count_side_effect(edges: list[dict]):
-    """Answer ``count_documents`` for the two filters ``node_degree`` issues:
-    the bidirectional ``$or`` (documents touching the node at either endpoint)
-    and the both-fields equality (the node's self-loops)."""
-
-    def _count(query, **kwargs):
-        if "$or" in query:
-            node_id = query["$or"][0]["source_node_id"]
-            return sum(
-                1
-                for e in edges
-                if node_id in (e["source_node_id"], e["target_node_id"])
-            )
-        return sum(
-            1
-            for e in edges
-            if e["source_node_id"] == query["source_node_id"]
-            and e["target_node_id"] == query["target_node_id"]
-        )
-
-    return _count
-
-
-def _make_aggregate_side_effect(edges: list[dict]):
-    """Mock ``aggregate`` for ``node_degrees_batch``'s two pipelines -- outbound
-    grouped on ``source_node_id``, inbound on ``target_node_id``.
-
-    The ``$expr`` self-loop filter is APPLIED rather than ignored: a mock that
-    silently dropped it would answer the same whether or not the pipeline still
-    carries the filter, and could not tell the fixed implementation from the
-    broken one.
-    """
-
-    async def _aggregate(pipeline, **kwargs):
-        match = pipeline[0]["$match"]
-        field = "source_node_id" if "source_node_id" in match else "target_node_id"
-        ids = set(match[field]["$in"])
-        drops_self_loops = match.get("$expr") == {
-            "$ne": ["$source_node_id", "$target_node_id"]
-        }
-        matched = [
-            e
-            for e in edges
-            if e[field] in ids
-            and not (drops_self_loops and e["source_node_id"] == e["target_node_id"])
-        ]
-        counts = Counter(e[field] for e in matched)
-        return _AsyncCursor(
-            [{"_id": key, "degree": count} for key, count in counts.items()]
-        )
-
-    return _aggregate
 
 
 def _make_find_side_effect(edges: list[dict]):
@@ -137,12 +78,6 @@ def _make_storage(edges: list[dict]):
     s.global_config = {}
     s._edge_collection_name = "test_edges"
     s.edge_collection = Mock()
-    s.edge_collection.count_documents = AsyncMock(
-        side_effect=_make_count_side_effect(edges)
-    )
-    s.edge_collection.aggregate = AsyncMock(
-        side_effect=_make_aggregate_side_effect(edges)
-    )
     s.edge_collection.find = Mock(side_effect=_make_find_side_effect(edges))
     return s
 
@@ -152,71 +87,6 @@ _PLAIN = [
     {"source_node_id": "A", "target_node_id": "B"},
     {"source_node_id": "C", "target_node_id": "A"},
 ]
-
-
-class TestNodeDegreeSelfLoop:
-    @pytest.mark.asyncio
-    async def test_self_loop_only_node_has_degree_zero(self):
-        """A self-loop connects nothing, so it earns no degree. The
-        bidirectional ``$or`` matches its one document and would answer 1;
-        subtracting the node's self-loop count takes that occurrence back off."""
-        s = _make_storage(_SELF_LOOP)
-
-        assert await s.node_degree("Loop") == 0
-
-    @pytest.mark.asyncio
-    async def test_agrees_with_node_degrees_batch_on_a_self_loop(self):
-        """The defect this closes: the scalar and the batch ranked the same
-        node differently, so which value a caller saw depended on which public
-        method it reached for."""
-        s = _make_storage(_SELF_LOOP)
-
-        scalar = await s.node_degree("Loop")
-        batch = await s.node_degrees_batch(["Loop"])
-
-        assert scalar == batch["Loop"] == 0
-
-    @pytest.mark.asyncio
-    async def test_self_loop_does_not_inflate_a_connected_node(self):
-        """The exclusion must be scoped to the loop: ``A`` keeps the degree its
-        two ordinary edges earn, and the loop adds nothing on top."""
-        s = _make_storage(_PLAIN + [{"source_node_id": "A", "target_node_id": "A"}])
-
-        scalar = await s.node_degree("A")
-        batch = await s.node_degrees_batch(["A"])
-
-        assert scalar == batch["A"] == 2
-
-    @pytest.mark.asyncio
-    async def test_plain_edges_are_not_inflated(self):
-        """The self-loop count must add nothing when there is no self-loop --
-        A has two ordinary edges (A->B, C->A) and stays at degree 2."""
-        s = _make_storage(_PLAIN)
-
-        scalar = await s.node_degree("A")
-        batch = await s.node_degrees_batch(["A"])
-
-        assert scalar == batch["A"] == 2
-
-    @pytest.mark.asyncio
-    async def test_absent_node_has_degree_zero(self):
-        s = _make_storage(_PLAIN)
-
-        assert await s.node_degree("Ghost") == 0
-
-    @pytest.mark.asyncio
-    async def test_edge_degree_sums_both_endpoints(self):
-        """``edge_degree`` is two ``node_degree`` calls, so the self-loop rule
-        reaches it: (Loop, Loop) is 0 + 0."""
-        s = _make_storage(_SELF_LOOP)
-
-        assert await s.edge_degree("Loop", "Loop") == 0
-
-    @pytest.mark.asyncio
-    async def test_edge_degree_on_an_ordinary_edge(self):
-        s = _make_storage(_PLAIN)
-
-        assert await s.edge_degree("A", "B") == 3
 
 
 class TestGetNodesEdgesBatchSelfLoop:

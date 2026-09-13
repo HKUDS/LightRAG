@@ -2117,27 +2117,15 @@ class MongoGraphStorage(BaseGraphStorage):
         """
         Returns the total number of edges connected to node_id (both inbound and outbound).
 
-        A self-loop is EXCLUDED (``BaseGraphStorage.node_degree``): it carries
-        no connectivity. The ``$or`` counts DOCUMENTS, so a self-loop shows up
-        in it exactly once -- subtracting the node's self-loop count removes
-        that one occurrence and leaves the ordinary edges untouched.
-
-        Two counts rather than one ``$expr`` filter over the matched documents:
-        both stay index-served counts with no document fetch, which keeps the
-        cost model of a hub node unchanged, and issuing them concurrently keeps
-        the second round trip off the latency path. The self-loop count is an
-        equality on both endpoint fields, so the ``source_node_id`` index
-        narrows it to that node's outbound edges.
+        One count, not two. A self-loop would be counted once here and twice
+        by ``node_degrees_batch`` below, but the graph is not allowed to hold
+        one (``BaseGraphStorage.node_degree``), so no caller can observe the
+        difference on data the contract admits. Excluding it at the query was
+        measured and rejected -- see the contract for what it cost.
         """
-        total, self_loops = await asyncio.gather(
-            self.edge_collection.count_documents(
-                {"$or": [{"source_node_id": node_id}, {"target_node_id": node_id}]}
-            ),
-            self.edge_collection.count_documents(
-                {"source_node_id": node_id, "target_node_id": node_id}
-            ),
+        return await self.edge_collection.count_documents(
+            {"$or": [{"source_node_id": node_id}, {"target_node_id": node_id}]}
         )
-        return total - self_loops
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         """Get the total degree (sum of relationships) of two nodes.
@@ -2245,23 +2233,14 @@ class MongoGraphStorage(BaseGraphStorage):
 
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
         # merge the outbound and inbound results with the same "_id" and sum the "degree"
-        # Seeded with zeros so every requested id gets an answer: excluding
-        # self-loops means a node whose only edge is one contributes no row to
-        # either aggregation, and the batch must still agree with node_degree's
-        # 0 rather than omitting the key.
+        # Seeded with zeros so every requested id gets an answer: a node with no
+        # edges contributes no row to either aggregation, and the batch must
+        # still report the 0 node_degree reports rather than omitting the key.
         merged_results = {nid: 0 for nid in node_ids}
 
-        # Outbound degrees. The `$expr` drops self-loops (degree excludes
-        # them -- BaseGraphStorage.node_degree); the indexed `$in` still
-        # selects the candidate rows, with the comparison applied as a residual
-        # filter over them.
+        # Outbound degrees
         outbound_pipeline = [
-            {
-                "$match": {
-                    "source_node_id": {"$in": node_ids},
-                    "$expr": {"$ne": ["$source_node_id", "$target_node_id"]},
-                }
-            },
+            {"$match": {"source_node_id": {"$in": node_ids}}},
             {"$group": {"_id": "$source_node_id", "degree": {"$sum": 1}}},
         ]
 
@@ -2273,12 +2252,7 @@ class MongoGraphStorage(BaseGraphStorage):
 
         # Inbound degrees
         inbound_pipeline = [
-            {
-                "$match": {
-                    "target_node_id": {"$in": node_ids},
-                    "$expr": {"$ne": ["$source_node_id", "$target_node_id"]},
-                }
-            },
+            {"$match": {"target_node_id": {"$in": node_ids}}},
             {"$group": {"_id": "$target_node_id", "degree": {"$sum": 1}}},
         ]
 
@@ -2291,6 +2265,26 @@ class MongoGraphStorage(BaseGraphStorage):
             ) + doc.get("degree")
 
         return merged_results
+
+    async def edge_degrees_batch(
+        self, edge_pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], int]:
+        """Sum both endpoint degrees per pair, in ONE aggregation.
+
+        The inherited default calls ``edge_degree`` per pair, which is two
+        ``node_degree`` calls, each a separate awaited round trip -- so a query
+        whose top entities carry a thousand distinct edges issued thousands of
+        SERIAL counts, and this collection carries no index on the endpoint
+        fields, making every one of them a collection scan. Resolving the
+        distinct ids once through ``node_degrees_batch`` replaces all of it
+        with a single aggregation. Same shape as
+        ``pgtable_impl.edge_degrees_batch``.
+        """
+        if not edge_pairs:
+            return {}
+        all_ids = list({nid for pair in edge_pairs for nid in pair})
+        degrees = await self.node_degrees_batch(all_ids)
+        return {(s, t): degrees.get(s, 0) + degrees.get(t, 0) for s, t in edge_pairs}
 
     async def get_nodes_edges_batch(
         self, node_ids: list[str]
@@ -2776,22 +2770,13 @@ class MongoGraphStorage(BaseGraphStorage):
         if limit <= 0:
             return []
 
-        # The self-loop filter precedes each `$project`: once the projection
-        # has dropped the other endpoint field the two can no longer be
-        # compared. Degree excludes self-loops (BaseGraphStorage.node_degree),
-        # and this ranking decides which nodes survive the node budget.
-        _drop_self_loops = {
-            "$match": {"$expr": {"$ne": ["$source_node_id", "$target_node_id"]}}
-        }
         pipeline: list[dict[str, Any]] = [
-            _drop_self_loops,
             {"$project": {"source_node_id": 1, "_id": 0}},
             {"$group": {"_id": "$source_node_id", "degree": {"$sum": 1}}},
             {
                 "$unionWith": {
                     "coll": self._edge_collection_name,
                     "pipeline": [
-                        _drop_self_loops,
                         {"$project": {"target_node_id": 1, "_id": 0}},
                         {
                             "$group": {
@@ -3423,28 +3408,23 @@ class MongoGraphStorage(BaseGraphStorage):
         every call — on a large graph, to produce a result phase 1 already had.
         """
         try:
-            # Self-loops are excluded from both groups, matching node_degree
-            # and the other backends: they carry no connectivity, so they earn
-            # a node no rank here.
-            drop_self_loops = {
-                "$match": {"$expr": {"$ne": ["$source_node_id", "$target_node_id"]}}
-            }
+            # No self-loop guard: the graph is not allowed to hold one
+            # (BaseGraphStorage.node_degree), and filtering for it here was
+            # measured and rejected.
             pipeline = [
                 # Count outbound edges
-                drop_self_loops,
                 {"$group": {"_id": "$source_node_id", "out_degree": {"$sum": 1}}},
                 # Union with inbound edges count
                 {
                     "$unionWith": {
                         "coll": self._edge_collection_name,
                         "pipeline": [
-                            drop_self_loops,
                             {
                                 "$group": {
                                     "_id": "$target_node_id",
                                     "in_degree": {"$sum": 1},
                                 }
-                            },
+                            }
                         ],
                     }
                 },
@@ -3479,8 +3459,7 @@ class MongoGraphStorage(BaseGraphStorage):
             if len(labels) < limit:
                 # Phase 1 returned fewer than `limit`, and its aggregation is
                 # exact, so the connected set is now known in full: every node
-                # outside it has no degree -- no edge, or none but self-loops,
-                # which earn none. Top up in label order, bounded
+                # outside it has no edge at all. Top up in label order, bounded
                 # by the shortfall — the sort rides the _id index, so this stops
                 # as soon as it has enough rather than scanning the collection.
                 # list(labels), not labels: the cursor is consumed below while

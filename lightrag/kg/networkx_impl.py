@@ -3,7 +3,7 @@ import os
 from collections import deque
 from dataclasses import dataclass
 from operator import itemgetter
-from typing import Any, ClassVar, final
+from typing import ClassVar, final
 
 from lightrag.exceptions import CommitBookkeepingError, GraphMutationsDiscardedError
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
@@ -31,32 +31,6 @@ from dotenv import load_dotenv
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
-
-
-def _connectivity_degree(graph: nx.Graph, node_id: Any) -> int:
-    """Degree with self-loops excluded (``BaseGraphStorage.node_degree``).
-
-    ``graph.degree()`` counts a self-loop TWICE because it measures how many
-    edge endpoints a node occupies. LightRAG's degree measures connectivity
-    instead, and a self-loop connects nothing, so both of its endpoint
-    occurrences come back off. This is the one place NetworkX's own semantics
-    are deliberately not inherited.
-
-    ``number_of_edges(n, n)`` is an O(1) adjacency lookup, not a scan.
-    """
-    return graph.degree(node_id) - 2 * graph.number_of_edges(node_id, node_id)
-
-
-def _connectivity_degrees(graph: nx.Graph) -> dict[Any, int]:
-    """``_connectivity_degree`` for every node, in one pass.
-
-    Used by the whole-graph ranking paths, where calling the scalar form per
-    node would turn an O(V) dict build into O(V) adjacency lookups on top.
-    """
-    degrees = dict(graph.degree())
-    for node, _ in nx.selfloop_edges(graph):
-        degrees[node] -= 2
-    return degrees
 
 
 @final
@@ -802,17 +776,13 @@ class NetworkXStorage(BaseGraphStorage):
     async def node_degree(self, node_id: str) -> int:
         graph = await self._get_graph()
         if graph.has_node(node_id):
-            return _connectivity_degree(graph, node_id)
+            return graph.degree(node_id)
         return 0
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         graph = await self._get_graph()
-        src_degree = (
-            _connectivity_degree(graph, src_id) if graph.has_node(src_id) else 0
-        )
-        tgt_degree = (
-            _connectivity_degree(graph, tgt_id) if graph.has_node(tgt_id) else 0
-        )
+        src_degree = graph.degree(src_id) if graph.has_node(src_id) else 0
+        tgt_degree = graph.degree(tgt_id) if graph.has_node(tgt_id) else 0
         return src_degree + tgt_degree
 
     async def get_edge(
@@ -1044,7 +1014,7 @@ class NetworkXStorage(BaseGraphStorage):
         # Cypher `ORDER BY degree DESC, label ASC`), and this is the default
         # backend the contract in BaseGraphStorage points at. Comparing on
         # str() gives the same code-point order as COLLATE "C".
-        degrees = _connectivity_degrees(graph)
+        degrees = dict(graph.degree())
         sorted_nodes = sorted(
             degrees.items(), key=lambda item: (-item[1], str(item[0]))
         )
@@ -1146,7 +1116,7 @@ class NetworkXStorage(BaseGraphStorage):
         # Handle special case for "*" label
         if node_label == "*":
             # Get degrees of all nodes
-            degrees = _connectivity_degrees(graph)
+            degrees = dict(graph.degree())
             # Degree descending, then label ascending — same contract as
             # get_popular_labels / BaseGraphStorage. Stable degree-only sort
             # kept insertion order on ties, so max_nodes truncation dropped
@@ -1184,7 +1154,7 @@ class NetworkXStorage(BaseGraphStorage):
             bfs_nodes = []
             visited = set()
             # Store (node, depth, degree) in the queue
-            queue = deque([(node_label, 0, _connectivity_degree(graph, node_label))])
+            queue = deque([(node_label, 0, graph.degree(node_label))])
 
             # Flag to track if there are unexplored neighbors due to depth limit
             has_unexplored_neighbors = False
@@ -1226,7 +1196,7 @@ class NetworkXStorage(BaseGraphStorage):
                             ]
                             # Add neighbors to the queue with their degrees
                             for neighbor in unvisited_neighbors:
-                                neighbor_degree = _connectivity_degree(graph, neighbor)
+                                neighbor_degree = graph.degree(neighbor)
                                 queue.append((neighbor, depth + 1, neighbor_degree))
                         else:
                             # Check if there are unexplored neighbors (skipped due to depth limit)

@@ -275,18 +275,11 @@ async def test_node_degree(store):
 
 
 @pytest.mark.asyncio
-async def test_self_loop_is_excluded_from_every_degree_path(store):
-    """A self-loop carries no connectivity, so it contributes 0 everywhere.
-
-    Scalar and batch must agree: a backend whose two paths disagree ranks the
-    same node differently depending on which one a caller reaches for. The node
-    itself is still a label -- get_popular_labels ranks every node, degree 0
-    included -- it just earns no rank from the loop.
-    """
+async def test_self_loop_degree_matches_networkx(store):
     await store.upsert_edge("Loop", "Loop", _edge())
 
-    assert await store.node_degree("Loop") == 0
-    assert (await store.node_degrees_batch(["Loop"]))["Loop"] == 0
+    assert await store.node_degree("Loop") == 2
+    assert (await store.node_degrees_batch(["Loop"]))["Loop"] == 2
     assert await store.get_popular_labels(limit=1) == ["Loop"]
 
 
@@ -545,13 +538,14 @@ async def test_get_knowledge_graph_self_loop_seed(store):
     """A seed whose only edge is a self-loop still returns cleanly.
 
     The hop query finds the seed as its own neighbour, the visited anti-join
-    removes it, and the hop yields zero rows. The seed's degree is 0 here — the
-    self-loop is excluded from every degree path — and nothing in the traversal
-    reads it either, so this stays the degenerate case it was written to cover.
+    removes it, and the hop yields zero rows. The seed's degree is 2 here (a
+    self-loop counts on both the src and tgt arms) yet nothing in the traversal
+    reads it — the degenerate path that any scheme recovering the seed degree
+    from hop output would get wrong.
     """
     await store.upsert_node("loop", _node("loop"))
     await store.upsert_edge("loop", "loop", _edge())
-    assert await store.node_degree("loop") == 0
+    assert await store.node_degree("loop") == 2
 
     kg = await store.get_knowledge_graph("loop", max_depth=3, max_nodes=10)
 
@@ -881,7 +875,7 @@ async def test_bfs_matches_degree_ordered_reference_traversal(store):
     # A second, lower-degree cluster reachable only at depth 2.
     edges |= {(min(nodes[80], n), max(nodes[80], n)) for n in nodes[81:100]}
     edges.add((min(hub, nodes[80]), max(hub, nodes[80])))
-    edges.add((nodes[5], nodes[5]))  # self-loop: contributes 0, like node_degree
+    edges.add((nodes[5], nodes[5]))  # self-loop: counts twice, like node_degree
 
     await store.upsert_nodes_batch([(n, _node(n)) for n in nodes])
     await store.upsert_edges_batch([(s, t, _edge()) for s, t in sorted(edges)])
@@ -891,10 +885,6 @@ async def test_bfs_matches_degree_ordered_reference_traversal(store):
     for src, tgt in edges:
         adjacency.setdefault(src, set()).add(tgt)
         adjacency.setdefault(tgt, set()).add(src)
-        if src == tgt:
-            # Degree excludes self-loops, so the reference walk must too --
-            # otherwise this asserts the rule the storage no longer follows.
-            continue
         degree[src] = degree.get(src, 0) + 1
         degree[tgt] = degree.get(tgt, 0) + 1
 

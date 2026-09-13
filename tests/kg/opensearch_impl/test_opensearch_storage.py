@@ -2656,16 +2656,7 @@ class TestGraphStorage:
 
     @pytest.mark.asyncio
     async def test_node_degree(self, global_config, embed_func, mock_client):
-        # Two counts: documents touching the node (`should`), plus its
-        # self-loops (`filter` on both endpoint fields), which a self-loop must
-        # contribute a second endpoint for. A returns 3 edges and no self-loop,
-        # so its degree is the 3 the single count used to report. Self-loop
-        # coverage lives in test_opensearch_self_loop_contract.py.
-        mock_client.count = AsyncMock(
-            side_effect=lambda **kwargs: {
-                "count": 3 if "should" in kwargs["body"]["query"]["bool"] else 0
-            }
-        )
+        mock_client.count = AsyncMock(return_value={"count": 3})
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
@@ -4349,18 +4340,8 @@ class TestGraphPPLDetection:
     async def test_node_degree_uses_count_api(
         self, global_config, embed_func, mock_client
     ):
-        """node_degree should use the count API, not search.
-
-        Still true now that it issues TWO counts (documents touching the node,
-        plus its self-loops, which owe a second endpoint): counting stays
-        cheaper than the aggregation search behind node_degrees_batch, so the
-        self-loop fix must not be paid for by switching to one.
-        """
-        mock_client.count = AsyncMock(
-            side_effect=lambda **kwargs: {
-                "count": 7 if "should" in kwargs["body"]["query"]["bool"] else 0
-            }
-        )
+        """node_degree should use the count API, not search."""
+        mock_client.count = AsyncMock(return_value={"count": 7})
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()

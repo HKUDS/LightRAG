@@ -727,37 +727,38 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         Returns:
             The number of edges connected to the node
 
-        **A self-loop is EXCLUDED**: it contributes 0, not 1 and not 2.
-        Degree is LightRAG's connectivity measure -- it feeds relation ``rank``
-        in retrieval, BFS truncation priority and ``get_popular_labels`` -- and
-        a self-loop carries no connectivity, which is the same reason
-        ``_reject_self_loop_relation`` (``lightrag/utils_graph.py``) refuses to
-        create one. Counting it would rank a node above its peers for an edge
-        that reaches nothing.
+        **A self-loop must not be in the store, so its degree is not
+        contracted.** Every LightRAG ingress refuses one -- extraction,
+        ``create_relation`` via ``_reject_self_loop_relation``
+        (``lightrag/utils_graph.py``), custom-KG insert -- and
+        ``tools/migrate_graph_storage.py`` drops any it reads. A self-loop
+        carries no connectivity for graph retrieval, and degree is exactly the
+        connectivity measure that feeds relation ``rank``, BFS truncation
+        priority and ``get_popular_labels``, so an edge reaching nothing has no
+        meaningful degree to report. A store still holding one holds
+        invariant-violating data to be removed, not data to be ranked.
 
-        The same rule binds ``node_degrees_batch``, ``edge_degree``,
-        ``edge_degrees_batch``, ``get_popular_labels`` and the degree ranking
-        inside ``get_knowledge_graph``: a backend whose scalar and batch paths
-        disagree ranks the same node differently depending on which method a
-        caller reaches for. NetworkX ``graph.degree()`` counts a self-loop
-        twice, so ``NetworkXStorage`` subtracts it like every other backend --
-        this contract, not NetworkX, is the reference.
+        Backends therefore use the cheapest natural query for degree and may
+        answer differently from each other -- and from their own
+        ``node_degrees_batch`` -- on such an edge. That divergence is
+        unreachable for any graph the contract admits.
 
-        Exclude self-loops at the QUERY wherever the engine decides how many
-        times a self-loop matches: an undirected Cypher match, an ``$or`` over
-        two endpoint fields and a grouped aggregation each see one a different
-        number of times, and only a filter is immune to that difference. A
-        backend may instead subtract a self-loop count from a DOCUMENT count --
-        the document-store scalars do -- because a document count sees the row
-        exactly once, which is a fact about the store rather than about the
-        matcher. What must never be post-processed is an engine-defined match
-        count.
+        **Do not "fix" this by filtering self-loops out of the degree
+        queries.** It was implemented across all seven backends and reverted
+        for cost: it takes Neo4j's ``node_degrees_batch`` off its O(1)
+        ``GetDegree`` plan and onto an expand per requested node, and it turns
+        OpenSearch's ``get_popular_labels`` and ``get_knowledge_graph('*')``
+        into a script evaluation per document in the edge index, because
+        OpenSearch cannot compare two fields with a term query. Both sit on the
+        retrieval hot path. The invariant is enforced where it costs nothing --
+        at the boundary -- rather than on every query.
 
-        This governs graphs imported from another backend
-        (``tools/migrate_graph_storage.py`` carries self-loops across) and
-        direct storage-API use, since LightRAG's own writers reject them.
+        What every backend DOES owe: ``node_degrees_batch`` answers every
+        requested id, reporting 0 for a node with no edges rather than omitting
+        the key, so callers need no separate "absent means zero" rule.
 
-        The opposite rule governs edge LISTINGS -- see ``get_node_edges``.
+        Edge LISTINGS are governed separately, and a self-loop IS listed there
+        -- see ``get_node_edges``.
         """
 
     @abstractmethod
@@ -822,10 +823,10 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         need the distinction must use this single-node form.
 
         **A self-loop appears ONCE** -- listed, never hidden, here and in
-        ``get_nodes_edges_batch``. This method enumerates what the store holds,
-        which is the opposite job from :meth:`node_degree`'s connectivity
-        measure, so the two rules diverge deliberately: degree excludes a
-        self-loop, the listing shows it.
+        ``get_nodes_edges_batch``. :meth:`node_degree` says the store must not
+        hold one; this method is how a store that does is repaired, so the two
+        are not in tension: a self-loop the listing hides cannot be found and
+        cannot be deleted.
 
         Hiding it would be a data-loss bug, not a tidier contract. Entity
         deletion, entity rename, entity merge and the purge of a document's

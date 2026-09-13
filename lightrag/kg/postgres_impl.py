@@ -8520,21 +8520,16 @@ class PGGraphStorage(BaseGraphStorage):
                              VARIADIC ARRAY[b.properties, '"entity_id"'::agtype]
                            ) = i.node_id
                     ),
-                    -- Degree excludes self-loops (BaseGraphStorage.node_degree):
-                    -- they carry no connectivity. node_degree and edge_degree
-                    -- both delegate here, so filtering once covers all three.
                     deg_out AS (
                       SELECT d.start_id AS vid, COUNT(*)::bigint AS out_degree
                       FROM {self.graph_name}."DIRECTED" AS d
                       JOIN vids v ON v.vid = d.start_id
-                      WHERE d.start_id <> d.end_id
                       GROUP BY d.start_id
                     ),
                     deg_in AS (
                       SELECT d.end_id AS vid, COUNT(*)::bigint AS in_degree
                       FROM {self.graph_name}."DIRECTED" AS d
                       JOIN vids v ON v.vid = d.end_id
-                      WHERE d.start_id <> d.end_id
                       GROUP BY d.end_id
                     )
                     SELECT v.node_id::text AS node_id,
@@ -9099,13 +9094,9 @@ class PGGraphStorage(BaseGraphStorage):
                 WITH node_degrees AS (
                     SELECT node_id, COUNT(*) AS degree
                     FROM (
-                        -- Degree excludes self-loops (BaseGraphStorage.node_degree),
-                        -- and this ranking decides which nodes survive max_nodes.
                         SELECT start_id AS node_id FROM {self.graph_name}._ag_label_edge
-                        WHERE start_id <> end_id
                         UNION ALL
                         SELECT end_id AS node_id FROM {self.graph_name}._ag_label_edge
-                        WHERE start_id <> end_id
                     ) AS all_edges
                     GROUP BY node_id
                 )
@@ -9342,8 +9333,8 @@ class PGGraphStorage(BaseGraphStorage):
             # Native SQL query to calculate node degrees directly from AGE's underlying tables
             # This is significantly faster than using the cypher() function wrapper.
             #
-            # Self-loops are excluded (start_id <> end_id), matching
-            # node_degree() and the other backends. COLLATE "C" makes
+            # Self-loops count twice (start_id and end_id both contribute),
+            # matching node_degree() and the other backends. COLLATE "C" makes
             # the tie-break a byte-order comparison so it matches Python's
             # code-point sort. The ranking columns live in a derived table
             # because ORDER BY cannot apply COLLATE to a bare output alias
@@ -9356,10 +9347,8 @@ class PGGraphStorage(BaseGraphStorage):
                     COUNT(*) AS degree
                 FROM (
                     SELECT start_id AS node_id FROM {self.graph_name}._ag_label_edge
-                    WHERE start_id <> end_id
                     UNION ALL
                     SELECT end_id AS node_id FROM {self.graph_name}._ag_label_edge
-                    WHERE start_id <> end_id
                 ) AS all_edges
                 GROUP BY node_id
             )
