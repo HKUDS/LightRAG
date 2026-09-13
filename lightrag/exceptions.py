@@ -514,6 +514,70 @@ class IndexFlushError(Exception):
         super().__init__(f"{storage_name}[{namespace}] index flush failed: {cause}")
 
 
+class ReferencesIntactFlushError(Exception):
+    """A failed storage commit that PROVABLY lost no durable reference.
+
+    Answers the ONE question a caller of ``index_done_callback`` has to answer
+    when the commit raises: *could this raise have lost a durable reference?*
+    Raising this type is the backend saying **no** -- nothing buffered was
+    discarded, and nothing already durable was unwritten. Every other
+    exception means **yes, assume one may be gone**, which is what a backend
+    that says nothing keeps.
+
+    Two situations qualify, and a backend must be able to prove one of them
+    for the WHOLE flush rather than for one operation:
+
+    * every buffered operation is still buffered and replays on the next
+      flush (a transport error from the bulk call) -- the caller defers;
+    * the commit itself landed and only a step after it failed (a refresh) --
+      the references are already durable.
+
+    A flush that mixes permanent and retryable per-item failures qualifies as
+    NEITHER: it dropped something, so the honest answer stays "yes".
+
+    Read it through ``flush_may_have_lost_reference``, not with a bare
+    ``isinstance``: that predicate also unwraps the ``IndexFlushError`` every
+    flush failure reaches ``_flush_storages``' callers wearing.
+
+    Why the distinction earns a type: an ``extract`` LLM-cache row is
+    reachable only through its chunk's ``llm_cache_list``, so a caller that
+    cannot tell these apart must quarantine every buffered extract row in the
+    process to stay safe -- discarding completed LLM calls that nothing could
+    have orphaned. See *LLM extraction cache reachability* in
+    ``docs/design/PurgeRecoveryContract.md``.
+    """
+
+
+def flush_may_have_lost_reference(error: BaseException | None) -> bool:
+    """Could this failed commit have lost a durable reference?
+
+    ``True`` is the safe default and the answer for anything unrecognized:
+    only a backend that raised ``ReferencesIntactFlushError`` has proven
+    otherwise, so a backend that implements nothing keeps the fail-safe
+    quarantine it has today. ``None`` means there was no failure to judge.
+
+    ``IndexFlushError`` is unwrapped into its ``__cause__``, since it is the
+    transport wrapper ``LightRAG._flush_storages`` puts around whatever the
+    backend raised; one carrying no cause answers ``True``. **Nothing else is
+    unwrapped.** An exception re-raised ``from`` an intact one has made a new
+    claim of its own, and ``OpenSearchKVStorage.finalize`` is exactly that
+    case: it chains a "these writes have been lost" ``RuntimeError`` onto a
+    flush whose buffers were intact, because it then releases the client and
+    nothing will ever replay them.
+    """
+    if error is None:
+        return False
+    # Bounded rather than recursive: __cause__ is attacker-free here, but a
+    # self-referential chain must not turn a diagnostic into a hang.
+    for _ in range(8):
+        if not isinstance(error, IndexFlushError):
+            break
+        if error.__cause__ is None:
+            return True
+        error = error.__cause__
+    return not isinstance(error, ReferencesIntactFlushError)
+
+
 class CommitBookkeepingError(RuntimeError):
     """The offloaded write LANDED; the bookkeeping that had to follow it did not.
 

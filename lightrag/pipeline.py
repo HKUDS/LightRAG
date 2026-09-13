@@ -56,6 +56,7 @@ from lightrag.exceptions import (
     PipelineRecoveryRequiredError,
     PipelineReservationConflictError,
     IndexFlushError,
+    flush_may_have_lost_reference,
 )
 from lightrag.kg.shared_storage import (
     MANUAL_PHASE_DRAIN_TO_IDLE,
@@ -5938,7 +5939,14 @@ class _PipelineMixin:
             self.text_chunks, "namespace", ""
         )  # the same spelling _flush_storages puts into IndexFlushError
         if self._chunk_reference_commit_failed or (
-            isinstance(error, IndexFlushError) and error.namespace == chunk_namespace
+            isinstance(error, IndexFlushError)
+            and error.namespace == chunk_namespace
+            # ...unless the backend proved that raise dropped nothing. The
+            # reason to distrust the retry is a buffer the backend drained
+            # behind our back; where that did not happen the retry below is a
+            # truthful witness, and believing the exception instead would
+            # withhold the partial cache this epilogue exists to save.
+            and flush_may_have_lost_reference(error)
         ):
             logger.error(
                 "Chunk cache references did not land after %s for d-id %s: "
@@ -5957,9 +5965,14 @@ class _PipelineMixin:
                 doc_id,
                 persist_error,
             )
-            await self._record_chunk_reference_commit_failure(
-                f"{stage_label} epilogue flush failed"
-            )
+            if flush_may_have_lost_reference(persist_error):
+                await self._record_chunk_reference_commit_failure(
+                    f"{stage_label} epilogue flush failed"
+                )
+            # A raise that dropped nothing still means this commit did not
+            # happen, so the cache half stays withheld -- but the rows keep
+            # their place in the buffer for the next ordered pair instead of
+            # being quarantined.
             return False
         # An explicit False is a DECLINED commit: the mutation was discarded,
         # so the references are not on disk either.

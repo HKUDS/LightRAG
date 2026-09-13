@@ -24,7 +24,9 @@ from opensearchpy.exceptions import (  # type: ignore
     ConflictError,
 )
 import lightrag.kg.opensearch_impl
+from lightrag.exceptions import flush_may_have_lost_reference
 from lightrag.kg.opensearch_impl import (
+    OpenSearchReferencesIntactError,
     OpenSearchKVStorage,
     OpenSearchDocStatusStorage,
     OpenSearchGraphStorage,
@@ -1879,6 +1881,227 @@ class TestKVRefreshGating:
             async for _ in s._iter_raw_docs(batch_size=10):
                 pass
             assert order[:2] == ["refresh", "create_pit"]
+
+
+# ---------------------------------------------------------------------------
+# Reference-loss typing of a failed commit
+# ---------------------------------------------------------------------------
+
+
+class TestFlushReferenceLossTyping:
+    """A failed commit must say whether it could have lost a reference (#3924).
+
+    An ``extract`` LLM-cache row is reachable only through its chunk's
+    ``llm_cache_list``, so a caller that cannot tell a dropped operation from
+    a retained one has to quarantine every buffered extract row in the process
+    to stay safe. Inspecting the buffer afterwards does not separate them: a
+    permanent bulk failure empties it exactly as a successful flush does. So
+    the backend answers in the type it raises -- see *What a failed commit
+    says about references* in ``docs/design/PurgeRecoveryContract.md``.
+    """
+
+    def _kv(self, global_config, embed_func, workspace="test"):
+        return OpenSearchKVStorage(
+            namespace="text_chunks",
+            global_config=global_config,
+            embedding_func=embed_func,
+            workspace=workspace,
+        )
+
+    def _vector(self, global_config, embed_func, workspace="test"):
+        return OpenSearchVectorDBStorage(
+            namespace="entities",
+            global_config=global_config,
+            embedding_func=embed_func,
+            workspace=workspace,
+            meta_fields={"content"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_bulk_transport_failure_says_it_lost_nothing(
+        self, global_config, embed_func, mock_client
+    ):
+        """The buffer edits come after the bulk, so every op replays."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.side_effect = OpenSearchException("bulk died mid-stream")
+                s = self._kv(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"k1": {"content": "v1"}})
+
+                with pytest.raises(OpenSearchReferencesIntactError):
+                    await s.index_done_callback()
+
+                assert "k1" in s._pending_upserts, (
+                    "the raise claimed nothing was lost while the operation was "
+                    "gone from the buffer"
+                )
+
+    @pytest.mark.asyncio
+    async def test_a_refresh_failure_says_it_lost_nothing(
+        self, global_config, embed_func, mock_client
+    ):
+        """The flush returned before the refresh ran, so the writes are durable."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._kv(global_config, embed_func)
+                await s.initialize()
+                mock_client.indices.refresh = AsyncMock(
+                    side_effect=OpenSearchException("transient refresh failure")
+                )
+                await s.upsert({"k1": {"content": "v1"}})
+
+                with pytest.raises(OpenSearchReferencesIntactError):
+                    await s.index_done_callback()
+
+                assert len(s._pending_upserts) == 0
+                assert mock_bulk.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_permanent_failure_makes_no_such_claim(
+        self, global_config, embed_func, mock_client
+    ):
+        """A permanent 4xx op is removed from the buffer before the raise."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (
+                    0,
+                    [
+                        {
+                            "index": {
+                                "_id": "k1",
+                                "status": 400,
+                                "error": {"type": "mapper_parsing_exception"},
+                            }
+                        }
+                    ],
+                )
+                s = self._kv(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"k1": {"content": "v1"}})
+
+                with pytest.raises(RuntimeError) as excinfo:
+                    await s.index_done_callback()
+
+                assert not isinstance(excinfo.value, OpenSearchReferencesIntactError), (
+                    "a dropped operation was reported as a reference-safe raise"
+                )
+                assert flush_may_have_lost_reference(excinfo.value) is True
+
+    @pytest.mark.asyncio
+    async def test_a_mixed_flush_makes_no_such_claim(
+        self, global_config, embed_func, mock_client
+    ):
+        """One flush can carry both kinds; the honest answer stays "yes".
+
+        The retained operation is real -- ``k2`` is still in the buffer and
+        will replay -- so a type describing the retention rather than the
+        flush would report safety over the reference ``k1`` just lost.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (
+                    0,
+                    [
+                        {"index": {"_id": "k1", "status": 400, "error": "permanent"}},
+                        {"index": {"_id": "k2", "status": 503, "error": "down"}},
+                    ],
+                )
+                s = self._kv(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"k1": {"content": "v1"}, "k2": {"content": "v2"}})
+
+                with pytest.raises(RuntimeError) as excinfo:
+                    await s.index_done_callback()
+
+                assert "k2" in s._pending_upserts
+                assert flush_may_have_lost_reference(excinfo.value) is True
+
+    @pytest.mark.asyncio
+    async def test_the_claim_is_still_an_opensearch_exception(
+        self, global_config, embed_func, mock_client
+    ):
+        """Callers catching the driver's own exception must keep catching it.
+
+        The type is additive: it answers a question the caller did not used to
+        ask, and must not silently stop an ``except OpenSearchException``
+        inside this module or out of it from firing.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.side_effect = OpenSearchException("bulk died mid-stream")
+                s = self._kv(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"k1": {"content": "v1"}})
+
+                with pytest.raises(OpenSearchException):
+                    await s.index_done_callback()
+
+    @pytest.mark.asyncio
+    async def test_a_missing_index_on_refresh_still_makes_no_claim(
+        self, global_config, embed_func, mock_client
+    ):
+        """The missing-index branch returns; it must not start raising."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._kv(global_config, embed_func)
+                await s.initialize()
+                mock_client.indices.refresh = AsyncMock(
+                    side_effect=NotFoundError(404, "index_not_found_exception", {})
+                )
+                await s.upsert({"k1": {"content": "v1"}})
+
+                await s.index_done_callback()
+
+                assert s._index_ready is False
+
+    @pytest.mark.asyncio
+    async def test_the_vector_storage_answers_the_same_way(
+        self, global_config, embed_func, mock_client
+    ):
+        """Same flush/refresh shape, same two answers.
+
+        No caller branches on a vector commit's answer today -- the reference
+        carrier is a KV namespace -- but the contract belongs to the storage
+        layer rather than to one namespace.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.side_effect = OpenSearchException("bulk died mid-stream")
+                s = self._vector(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"v1": {"content": "x"}})
+
+                with pytest.raises(OpenSearchReferencesIntactError):
+                    await s.index_done_callback()
+
+                assert "v1" in s._pending_vector_docs
+
+                mock_bulk.side_effect = None
+                mock_bulk.return_value = (1, [])
+                mock_client.indices.refresh = AsyncMock(
+                    side_effect=OpenSearchException("transient refresh failure")
+                )
+                with pytest.raises(OpenSearchReferencesIntactError):
+                    await s.index_done_callback()
+
+                assert len(s._pending_vector_docs) == 0
 
 
 # ---------------------------------------------------------------------------
