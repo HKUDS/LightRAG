@@ -500,10 +500,10 @@ class NumberingResolver:
             else:
                 self.counters[num_id][ilvl] += 1
 
-            # Format the label using lvlText template
+            # Format the label using lvlText template. _format_label records
+            # last_label_format itself: only it knows which placeholder
+            # actually supplied the leading token.
             label = self._format_label(num_id, ilvl, levels)
-            if label:
-                self.last_label_format = levels[ilvl]["numFmt"]
 
             # Update tracking state for next paragraph
             self.last_numId = num_id
@@ -516,11 +516,25 @@ class NumberingResolver:
             return ""
 
     def _format_label(self, num_id: str, ilvl: int, levels: dict) -> str:
-        """Format label string by replacing %1, %2, etc."""
+        """Format label string by replacing %1, %2, etc.
+
+        Also records :attr:`last_label_format`: the numFmt of the placeholder
+        that supplied the label's LEADING token. That is not necessarily the
+        current level's numFmt — a valid lvlText may reference only an
+        ancestor level (an ilvl-1 lowerLetter level with lvlText "%1." renders
+        its lowerRoman parent), and the heading classifier reads the leading
+        token, so tagging it with the current level's format makes it read
+        "ii" as alphabetic 35 instead of Roman 2.
+        """
         try:
             lvl_text = levels[ilvl]["lvlText"]
             result = lvl_text
             current_is_lgl = levels[ilvl].get("isLgl", False)
+            # numFmt of the leftmost placeholder actually substituted, by its
+            # position in the ORIGINAL template (earlier substitutions shift
+            # offsets in `result`).
+            leading_fmt: str | None = None
+            leading_pos: int | None = None
 
             for i in range(ilvl + 1):
                 if i in levels and i in self.counters.get(num_id, {}):
@@ -535,8 +549,15 @@ class NumberingResolver:
                     else:
                         self._note_out_of_range(num_fmt, count)
                     formatted = converter(count)
-                    result = result.replace(f"%{i + 1}", formatted)
+                    placeholder = f"%{i + 1}"
+                    pos = lvl_text.find(placeholder)
+                    if pos != -1 and (leading_pos is None or pos < leading_pos):
+                        leading_pos = pos
+                        leading_fmt = num_fmt
+                    result = result.replace(placeholder, formatted)
 
+            # An empty render carries no token to attribute a format to.
+            self.last_label_format = leading_fmt if result else None
             return result
         except Exception:
             return ""

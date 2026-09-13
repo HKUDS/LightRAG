@@ -24,6 +24,7 @@ import pytest
 from lxml import etree
 
 from lightrag.parser.docx.numbering_resolver import NumberingResolver
+from lightrag.parser.docx.smart_heading.style_key import classify_numbering
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
@@ -260,6 +261,58 @@ def test_label_format_provenance_is_readable_before_any_label(tmp_path):
     path = tmp_path / "empty.docx"
     Document().save(str(path))
     assert NumberingResolver(str(path)).last_label_format is None
+
+
+def _cross_level_resolver(parent_fmt: str, child_fmt: str, lvl_text: str):
+    """A two-level abstractNum whose ilvl-1 template is `lvl_text`."""
+    r = _fmt_resolver(child_fmt, lvl_text)
+    r.abstract_nums["10"] = {
+        0: {"start": 2, "numFmt": parent_fmt, "lvlText": "%1.", "isLgl": False},
+        1: {"start": 35, "numFmt": child_fmt, "lvlText": lvl_text, "isLgl": False},
+    }
+    return r
+
+
+@pytest.mark.parametrize(
+    ("parent_fmt", "child_fmt", "expected_fmt", "expected"),
+    [
+        # Child is alphabetic but its template renders the Roman parent: the
+        # visible "ii" is Roman 2, NOT the alphabetic 35 the child would give.
+        ("lowerRoman", "lowerLetter", "lowerRoman", ("RomanNum", 2)),
+        # The inverse: a decimal child rendering its lowerLetter parent. The
+        # parent's counter is seeded to 35, which renders "ii" alphabetically.
+        ("lowerLetter", "decimal", "lowerLetter", ("EnAlpha", 35)),
+    ],
+)
+def test_provenance_follows_the_leading_placeholder_not_the_current_level(
+    parent_fmt, child_fmt, expected_fmt, expected
+) -> None:
+    """lvlText may reference only an ancestor level.
+
+    The classifier reads the label's LEADING token, so the provenance must
+    name the placeholder that produced it. Taking the current level's numFmt
+    instead makes a Roman-looking token classify as its own inverse.
+    """
+    r = _cross_level_resolver(parent_fmt, child_fmt, "%1.")
+    if parent_fmt == "lowerLetter":
+        r.abstract_nums["10"][0]["start"] = 35
+    label = r.get_label(_para(num_id="100", ilvl=1))
+
+    assert label == "ii."
+    assert r.last_label_format == expected_fmt
+    cls = classify_numbering(f"{label} Heading", numbering_format=r.last_label_format)
+    assert (cls.style_key, cls.ordinal) == expected
+
+
+def test_provenance_is_the_first_placeholder_of_a_multi_level_template() -> None:
+    """Guards the single-level coincidence: with "%1.%2." the leading token
+    comes from level 0, so "current level" and "first placeholder" differ."""
+    r = _cross_level_resolver("lowerLetter", "decimal", "%1.%2.")
+    r.abstract_nums["10"][0]["start"] = 27
+    label = r.get_label(_para(num_id="100", ilvl=1))
+
+    assert label == "aa.35."
+    assert r.last_label_format == "lowerLetter"
 
 
 # The counting families all render 一/二/十/十一/… — [MS-DOCX] gives
