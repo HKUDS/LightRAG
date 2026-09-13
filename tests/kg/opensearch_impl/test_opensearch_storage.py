@@ -1990,9 +1990,9 @@ class TestFlushReferenceLossTyping:
                 with pytest.raises(RuntimeError) as excinfo:
                     await s.index_done_callback()
 
-                assert not isinstance(
-                    excinfo.value, OpenSearchReferencesIntactError
-                ), "a dropped operation was reported as a reference-safe raise"
+                assert not isinstance(excinfo.value, OpenSearchReferencesIntactError), (
+                    "a dropped operation was reported as a reference-safe raise"
+                )
                 assert flush_may_have_lost_reference(excinfo.value) is True
 
     @pytest.mark.asyncio
