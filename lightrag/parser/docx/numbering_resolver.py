@@ -35,8 +35,9 @@ class NumberingResolver:
     # (not chineseCounting), which is why both are mapped here.
     FORMAT_CONVERTERS = {
         "decimal": lambda n: str(n),
-        "lowerLetter": lambda n: chr(ord("a") + (n - 1) % 26),
-        "upperLetter": lambda n: chr(ord("A") + (n - 1) % 26),
+        # Word repeats a letter after each alphabet: a...z, aa...zz, aaa...
+        "lowerLetter": lambda n: NumberingResolver._to_alpha(n),
+        "upperLetter": lambda n: NumberingResolver._to_alpha(n).upper(),
         "lowerRoman": lambda n: NumberingResolver._to_roman(n).lower(),
         "upperRoman": lambda n: NumberingResolver._to_roman(n),
         "chineseCounting": lambda n: NumberingResolver._to_chinese(n),
@@ -61,6 +62,8 @@ class NumberingResolver:
     #: table exists to make the event FINDABLE: a real document that gets there
     #: is the evidence needed to implement the right one.
     LIMITED_DOMAIN_FORMATS = {
+        "lowerLetter": 78,
+        "upperLetter": 78,
         "chineseCounting": 99,
         "chineseCountingThousand": 99,
         "japaneseCounting": 99,
@@ -88,6 +91,10 @@ class NumberingResolver:
         self.last_numId: str = None  # Previous paragraph's numId
         self.last_abstract_id: str = None  # Previous paragraph's abstractNumId
         self.last_style_id: str = None  # Previous paragraph's style ID
+        # numFmt of the label get_label() rendered most recently; None when
+        # that paragraph carried no automatic numbering. Reset on every
+        # get_label call, so a reader never sees an earlier paragraph's value.
+        self.last_label_format: str | None = None
         # numFmt values this resolver cannot render, collected the first time
         # each is hit. An unknown numFmt is a legitimate OOXML value we simply
         # do not implement (not corruption), so the label still degrades to
@@ -374,6 +381,7 @@ class NumberingResolver:
         Returns:
             Rendered label string (e.g., "1.1", "a)", "第一章") or empty string
         """
+        self.last_label_format = None
         try:
             pPr = para_element.find(f"{{{NSMAP['w']}}}pPr")
             if pPr is None:
@@ -492,7 +500,9 @@ class NumberingResolver:
             else:
                 self.counters[num_id][ilvl] += 1
 
-            # Format the label using lvlText template
+            # Format the label using lvlText template. _format_label records
+            # last_label_format itself: only it knows which placeholder
+            # actually supplied the leading token.
             label = self._format_label(num_id, ilvl, levels)
 
             # Update tracking state for next paragraph
@@ -506,11 +516,29 @@ class NumberingResolver:
             return ""
 
     def _format_label(self, num_id: str, ilvl: int, levels: dict) -> str:
-        """Format label string by replacing %1, %2, etc."""
+        """Format label string by replacing %1, %2, etc.
+
+        Also records :attr:`last_label_format`: the numFmt of the placeholder
+        that supplied the label's LEADING token. That is not necessarily the
+        current level's numFmt — a valid lvlText may reference only an
+        ancestor level (an ilvl-1 lowerLetter level with lvlText "%1." renders
+        its lowerRoman parent), and the heading classifier reads the leading
+        token, so tagging it with the current level's format makes it read
+        "ii" as alphabetic 35 instead of Roman 2.
+
+        A placeholder that renders empty (numFmt "none") contributes no token
+        and is skipped, so the leading token of "%1%2." with a "none" level 0
+        is still attributed to level 1.
+        """
         try:
             lvl_text = levels[ilvl]["lvlText"]
             result = lvl_text
             current_is_lgl = levels[ilvl].get("isLgl", False)
+            # numFmt of the leftmost placeholder that actually substituted a
+            # NON-EMPTY token, by its position in the ORIGINAL template
+            # (earlier substitutions shift offsets in `result`).
+            leading_fmt: str | None = None
+            leading_pos: int | None = None
 
             for i in range(ilvl + 1):
                 if i in levels and i in self.counters.get(num_id, {}):
@@ -525,11 +553,33 @@ class NumberingResolver:
                     else:
                         self._note_out_of_range(num_fmt, count)
                     formatted = converter(count)
-                    result = result.replace(f"%{i + 1}", formatted)
+                    placeholder = f"%{i + 1}"
+                    pos = lvl_text.find(placeholder)
+                    if (
+                        formatted
+                        and pos != -1
+                        and (leading_pos is None or pos < leading_pos)
+                    ):
+                        leading_pos = pos
+                        leading_fmt = num_fmt
+                    result = result.replace(placeholder, formatted)
 
+            # An empty render carries no token to attribute a format to.
+            self.last_label_format = leading_fmt if result else None
             return result
         except Exception:
             return ""
+
+    @staticmethod
+    def _to_alpha(n: int) -> str:
+        """Render Word's repeated letters within the classifier's 1-78 domain.
+
+        Check before multiplying: an untrusted DOCX startOverride can be a
+        32-bit integer, which must not allocate a label proportional to it.
+        """
+        if not 1 <= n <= 78:
+            return str(n)
+        return chr(ord("a") + (n - 1) % 26) * ((n - 1) // 26 + 1)
 
     @staticmethod
     def _to_roman(n: int) -> str:
