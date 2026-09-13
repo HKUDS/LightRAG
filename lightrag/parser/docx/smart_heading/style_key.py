@@ -323,8 +323,30 @@ def _extract_unit_and_ordinal(
         inner = re.sub(r"[（()）]", "", label).strip()
         if inner.isdigit():
             return None, int(inner)
-        return None, parse_alpha_ordinal(inner)
+        return None, _parse_marker_ordinal(inner, numbering_format=numbering_format)
     return None, None
+
+
+def _parse_marker_ordinal(
+    text: str, *, numbering_format: str | None = None
+) -> int | None:
+    """Parse a bare list marker (no unit word), honoring DOCX provenance.
+
+    The parenthesized patterns accept repeated-letter runs, so an automatic
+    lowerRoman/upperRoman list with lvlText "(%1)" hands "(ii)" here; read as
+    alphabetic that is 35, not 2. _P_ROMAN cannot claim those labels (it only
+    matches a "." or "、" terminator), so the carried numFmt is the only
+    evidence available.
+
+    Without that provenance the alphabetic reading stands, which keeps
+    hand-typed markers on their existing behavior: "(i)" stays 9, disambiguated
+    downstream by reclassify_single_char_romans rather than guessed here.
+    """
+    if numbering_format in ("lowerRoman", "upperRoman"):
+        roman = parse_roman(text)
+        if roman is not None:
+            return roman
+    return parse_alpha_ordinal(text)
 
 
 def _parse_latin_ordinal(

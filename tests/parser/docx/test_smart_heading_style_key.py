@@ -258,6 +258,18 @@ def test_unit_bearing_labels_honor_alpha_provenance() -> None:
     assert c_rom.ordinal == 2
 
 
+def test_marker_ordinals_without_provenance_keep_alphabetic_reading() -> None:
+    """No numFmt evidence means no reinterpretation: hand-typed markers keep
+    the alphabetic reading they have always had. "(i)" stays 9 here and is
+    disambiguated downstream by reclassify_single_char_romans, not guessed."""
+    assert classify_numbering("(bb) x").ordinal == 28
+    assert classify_numbering("(i) x").ordinal == 9
+    assert classify_numbering("zz) x").ordinal == 52
+    # An explicit alpha numFmt must not be pulled into the Roman branch.
+    assert classify_numbering("(bb) x", numbering_format="lowerLetter").ordinal == 28
+    assert classify_numbering("(ii) x", numbering_format="lowerLetter").ordinal == 35
+
+
 def test_non_word_letter_runs_return_no_ordinal() -> None:
     """Mixed or over-long alpha runs are not Word list labels."""
     assert parse_alpha_ordinal("ab") is None

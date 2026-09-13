@@ -344,6 +344,24 @@ def test_provenance_is_none_when_nothing_renders() -> None:
     assert r.last_label_format is None
 
 
+@pytest.mark.parametrize("lvl_text", ["(%1)", "%1)"])
+@pytest.mark.parametrize("num_fmt", ["lowerRoman", "upperRoman"])
+@pytest.mark.parametrize("count", [1, 2, 3])
+def test_parenthesized_roman_lists_keep_roman_ordinals(lvl_text, num_fmt, count):
+    """The widened paren patterns accept repeated letters, so "(ii)" from a
+    Roman list reaches them. _P_ROMAN cannot claim it — it only matches a
+    "." / "、" terminator — so the carried numFmt is the only evidence that
+    "ii" is 2 and not the alphabetic 35."""
+    r = _fmt_resolver(num_fmt, lvl_text)
+    r.abstract_nums["10"][0]["start"] = count
+    label = r.get_label(_para(num_id="100", ilvl=0))
+
+    assert r.last_label_format == num_fmt
+    cls = classify_numbering(f"{label} Heading", numbering_format=r.last_label_format)
+    assert cls is not None
+    assert cls.ordinal == count
+
+
 # The counting families all render 一/二/十/十一/… — [MS-DOCX] gives
 # japaneseCounting as 一,二,三 and chineseCounting / taiwaneseCounting as
 # 一 (1) / 十 (10). Chinese-locale Word writes 一二三 auto-numbering as
