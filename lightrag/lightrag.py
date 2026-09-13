@@ -175,6 +175,7 @@ from lightrag.exceptions import (
     KGPurgeOperationConflictError,
     PipelineNotInitializedError,
     RecoveryAnchorMissingError,
+    flush_may_have_lost_reference,
 )
 from lightrag.utils import (
     Tokenizer,
@@ -3986,15 +3987,19 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         """Record a failed `text_chunks` commit and quarantine what it orphaned.
 
         Two backends, two mechanisms, one trigger — call this wherever a chunk
-        commit fails, never set the flag or drop the buffer separately:
+        commit may have lost a reference, never set the flag or drop the
+        buffer separately. On an exception, gate the call on
+        `flush_may_have_lost_reference`: a backend that proved its raise
+        dropped nothing has taken this situation away, and quarantining anyway
+        discards paid-for LLM calls nothing could have orphaned.
 
-        * On a per-item backend (`OpenSearchKVStorage`) a raise means the
-          operation was PERMANENTLY rejected and already removed from the
-          buffer: `_flush_pending_kv_ops` retains retryable failures silently
-          and raises only for the rest. The reference is gone for good, so the
-          buffered cache rows naming it can never become reachable — deferring
-          them only postpones publishing an orphan, which the next successful
-          pair commit would do. Their UPSERTS are dropped instead; buffered
+        * On a per-item backend (`OpenSearchKVStorage`) an unclassified raise
+          means the operation was PERMANENTLY rejected and already removed
+          from the buffer: `_flush_pending_kv_ops` retains retryable failures
+          silently, and its two raises that drop nothing say so in their type.
+          The reference is gone for good, so the buffered cache rows naming it
+          can never become reachable — deferring them only postpones
+          publishing an orphan, which the next successful pair commit would do. Their UPSERTS are dropped instead; buffered
           deletes are kept, being tombstones an already-returned deletion
           promised.
         * On a snapshot backend (`JsonKVStorage`) the drop is a base-class
@@ -4122,7 +4127,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         "pending mutation"
                     )
             except Exception as e:
-                if storage_inst is self.text_chunks:
+                if storage_inst is self.text_chunks and flush_may_have_lost_reference(
+                    e
+                ):
                     # Sticky, because the failure does not survive in anything
                     # else. A per-item backend DROPS a permanently-failed
                     # operation from its buffer before raising, so every later
@@ -4136,6 +4143,22 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # pair is consistent again.
                     await self._record_chunk_reference_commit_failure(
                         f"{type(storage_inst).__name__} flush failed"
+                    )
+                elif storage_inst is self.text_chunks:
+                    # The backend proved this raise discarded nothing, so the
+                    # two reasons the record exists both fall away: a later
+                    # retry of this namespace is a truthful witness again
+                    # (there is no drained buffer to report success over), and
+                    # every already-published reference is durable. Recording
+                    # it anyway would quarantine extract rows that nothing can
+                    # orphan -- paid-for LLM calls thrown away, and on the
+                    # aborting-batch path thrown away for good. The cache
+                    # commit is still withheld HERE, by the chain below.
+                    logger.error(
+                        f"{type(storage_inst).__name__} flush failed without "
+                        f"losing a chunk reference: {e}. The LLM cache commit "
+                        "is deferred to the next ordered pair; nothing was "
+                        "quarantined"
                     )
                 namespace = getattr(storage_inst, "final_namespace", None) or getattr(
                     storage_inst, "namespace", ""
@@ -5295,7 +5318,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 logger.error(
                     f"Failed to commit chunk references before query cache: {e}"
                 )
-                await self._record_chunk_reference_commit_failure("query-path flush")
+                if flush_may_have_lost_reference(e):
+                    await self._record_chunk_reference_commit_failure(
+                        "query-path flush"
+                    )
+                # Otherwise nothing was dropped, so there is nothing to
+                # quarantine and no other site to warn: this commit simply did
+                # not happen. Return either way -- the cache half must not run
+                # without a chunk commit that returned.
                 return
             if committed is False:
                 # A DECLINED commit discarded the mutation, so the references

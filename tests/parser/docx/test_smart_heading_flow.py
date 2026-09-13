@@ -101,6 +101,26 @@ def test_outline_candidate_survives_smaller_font() -> None:
     assert d.rule_trail[0] == "outline"
 
 
+@pytest.mark.parametrize("fmt", ["lowerLetter", "upperLetter"])
+def test_automatic_alpha_keeps_roman_looking_ordinals(fmt):
+    labels = [("i", 9), ("ii", 35), ("vv", 48), ("xx", 50)]
+    records = _body() + [
+        _para(
+            f"{label.upper() if fmt == 'upperLetter' else label}. Heading",
+            outline_level=0,
+            numbering_format=fmt,
+        )
+        for label, _ in labels
+    ]
+    # A real, typed Roman companion must not promote the explicit alpha I.
+    records.append(_para("III. Roman heading", outline_level=0))
+    result = _gate(records)
+    classifications = [d.numbering for d in result.decisions]
+    assert [(c.style_key, c.ordinal) for c in classifications] == [
+        ("EnAlpha", ordinal) for _, ordinal in labels
+    ] + [("RomanNum", 3)]
+
+
 def test_outline_strong_body_demotion_is_rule_tagged() -> None:
     """Review C2: an outline paragraph the recognition-time strong-body check
     demotes must leave a rule-tagged demoted decision (not a silent drop), so

@@ -205,7 +205,26 @@ class StorageNameSpace(ABC):
 
     @abstractmethod
     async def index_done_callback(self) -> None:
-        """Commit the storage operations after indexing"""
+        """Commit the storage operations after indexing.
+
+        **On a raise, say whether a durable reference could be gone.** A
+        backend able to prove this failure discarded nothing -- every
+        buffered operation still buffered, or the commit itself landed and
+        only a step after it failed -- raises
+        ``lightrag.exceptions.ReferencesIntactFlushError`` (a subclass is
+        fine, so a backend may keep its own hierarchy). Any other exception
+        tells the caller to assume an operation was dropped and to quarantine
+        whatever named it, which is what a backend that implements nothing
+        keeps.
+
+        Prove it for the WHOLE flush: one that dropped a permanently-rejected
+        operation while retaining a retryable one has lost a reference, and
+        the honest answer for that flush is the default.
+
+        Why a caller needs the answer and what it costs when it cannot have
+        it: *LLM extraction cache reachability* in
+        ``docs/design/PurgeRecoveryContract.md``.
+        """
 
     async def drop_pending_index_ops(self) -> None:
         """Discard any not-yet-flushed buffered index ops.
