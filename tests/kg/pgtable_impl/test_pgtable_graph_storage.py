@@ -1014,8 +1014,15 @@ async def test_search_labels_preserves_sql_row_order():
 
 
 @pytest.mark.asyncio
-async def test_self_loop_degree_consistency():
-    """node_degree SQL must count self-loops like NetworkX degree: two."""
+async def test_node_degree_sums_both_endpoint_arms_without_a_self_loop_guard():
+    """The degree SQL stays the cheapest natural query, with no self-loop filter.
+
+    ``BaseGraphStorage.node_degree`` does not define a self-loop's degree -- the
+    store is not allowed to hold one -- so this asserts the QUERY SHAPE, not a
+    contracted value. Filtering self-loops out of the degree queries was
+    implemented across all seven backends and reverted for cost; this is the
+    guard against re-adding it here.
+    """
     storage = make_storage()
     fetchval = AsyncMock(return_value=2)
 
@@ -1031,7 +1038,7 @@ async def test_self_loop_degree_consistency():
 
 
 @pytest.mark.asyncio
-async def test_get_popular_labels_counts_self_loop_twice():
+async def test_get_popular_labels_ranks_without_a_self_loop_guard():
     storage = make_storage()
     fetch = AsyncMock(return_value=[{"id": "A", "degree": 2}])
 
@@ -1043,7 +1050,9 @@ async def test_get_popular_labels_counts_self_loop_twice():
     assert namespace == GRAPH_NAMESPACE
     assert limit_arg == 5
     assert labels == ["A"]
-    assert "src_id <> tgt_id" not in sql  # self-loop counted twice (no guard)
+    # No self-loop guard: a self-loop's degree is not contracted, and adding
+    # the predicate here was measured and rejected (see BaseGraphStorage).
+    assert "src_id <> tgt_id" not in sql
     # Ranking + truncation are pushed into SQL (ORDER BY degree DESC, LIMIT) so
     # large graphs do not transfer every node just to slice in Python.
     assert "ORDER BY degree DESC" in sql

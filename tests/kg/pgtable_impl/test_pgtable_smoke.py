@@ -275,7 +275,14 @@ async def test_node_degree(store):
 
 
 @pytest.mark.asyncio
-async def test_self_loop_degree_matches_networkx(store):
+async def test_self_loop_degree_is_whatever_the_natural_query_answers(store):
+    """Recorded, not contracted.
+
+    ``BaseGraphStorage.node_degree`` says the store must not hold a self-loop,
+    so this value is not a promise to callers -- it is what the unfiltered
+    degree SQL happens to answer, pinned only so a change to the query shape is
+    noticed. Do not read it as "a self-loop is degree 2".
+    """
     await store.upsert_edge("Loop", "Loop", _edge())
 
     assert await store.node_degree("Loop") == 2
