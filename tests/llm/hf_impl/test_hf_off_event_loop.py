@@ -391,6 +391,80 @@ async def test_cancelled_generate_remains_serialized_until_worker_finishes(
 
 
 @pytest.mark.asyncio
+async def test_hf_model_if_cache_serializes_model_loading_with_generate(
+    hf_module, monkeypatch
+):
+    """initialize_hf_model() is an lru_cache(maxsize=1). If it runs on the
+    event loop before the await, a second concurrent call with a different
+    model_name can load its own model while the first call's model is still
+    resident and mid-generate(), doubling peak GPU memory. Model
+    acquisition must be serialized together with generate() inside the
+    single-worker executor so at most one model is ever in flight."""
+    live_models = set()
+    peak_live_models = {"count": 0}
+    registry_lock = threading.Lock()
+    a_generate_started = threading.Event()
+    b_initialize_called = threading.Event()
+    release_a = threading.Event()
+
+    class FakeModel:
+        def __init__(self, name):
+            self.name = name
+            self.device = FakeDevice("cpu")
+            self.generation_config = types.SimpleNamespace(eos_token_id=0)
+
+        def generate(self, **kwargs):
+            if self.name == "model-a":
+                a_generate_started.set()
+                release_a.wait(timeout=5)
+            with registry_lock:
+                live_models.discard(self.name)
+            input_ids = kwargs["input_ids"]
+            return FakeTensor([input_ids.data[0] + [901]], "cpu")
+
+    class FakeTokenizer:
+        eos_token_id = 0
+
+        def apply_chat_template(self, *args, **kwargs):
+            return "<prompt>"
+
+        def __call__(self, *args, **kwargs):
+            return {
+                "input_ids": FakeTensor([[1]]),
+                "attention_mask": FakeTensor([[1]]),
+            }
+
+        def decode(self, tensor, skip_special_tokens=True):
+            return f"decoded:{tensor.data}"
+
+    def fake_initialize(model_name):
+        if model_name == "model-b":
+            b_initialize_called.set()
+        with registry_lock:
+            live_models.add(model_name)
+            peak_live_models["count"] = max(peak_live_models["count"], len(live_models))
+        return FakeModel(model_name), FakeTokenizer()
+
+    monkeypatch.setattr(hf_module, "initialize_hf_model", fake_initialize)
+
+    task_a = asyncio.create_task(hf_module.hf_model_if_cache("model-a", "hello a"))
+    assert await asyncio.to_thread(a_generate_started.wait, 5)
+
+    # A second call with a different model_name must queue behind the
+    # single worker instead of loading its own model while A's model is
+    # still resident and mid-generate().
+    task_b = asyncio.create_task(hf_module.hf_model_if_cache("model-b", "hello b"))
+    await asyncio.sleep(0.05)
+    assert not b_initialize_called.is_set()
+
+    release_a.set()
+    await task_a
+    await task_b
+
+    assert peak_live_models["count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_hf_embed_runs_forward_pass_off_the_event_loop_thread(hf_module):
     main_thread_id = threading.get_ident()
     call_thread_id = {}

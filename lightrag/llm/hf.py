@@ -126,7 +126,6 @@ async def hf_model_if_cache(
             "enable_cot=True is not supported for Hugging Face local models and will be ignored."
         )
     model_name = model
-    hf_model, hf_tokenizer = initialize_hf_model(model_name)
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -135,46 +134,67 @@ async def hf_model_if_cache(
     kwargs.pop("hashing_kv", None)
     max_tokens = kwargs.pop("max_tokens", 512)
     max_new_tokens = kwargs.pop("max_new_tokens", max_tokens)
-    input_prompt = ""
-    try:
-        input_prompt = hf_tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-    except Exception:
-        try:
-            ori_message = copy.deepcopy(messages)
-            if messages[0]["role"] == "system":
-                messages[1]["content"] = (
-                    "<system>"
-                    + messages[0]["content"]
-                    + "</system>\n"
-                    + messages[1]["content"]
-                )
-                messages = messages[1:]
-                input_prompt = hf_tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True
-                )
-        except Exception:
-            len_message = len(ori_message)
-            for msgid in range(len_message):
-                input_prompt = (
-                    input_prompt
-                    + "<"
-                    + ori_message[msgid]["role"]
-                    + ">"
-                    + ori_message[msgid]["content"]
-                    + "</"
-                    + ori_message[msgid]["role"]
-                    + ">\n"
-                )
 
-    input_ids = hf_tokenizer(
-        input_prompt, return_tensors="pt", padding=True, truncation=True
-    )
-    # Move to wherever the model actually is, rather than assuming CUDA.
-    # hf_model is loaded with device_map="auto" (see initialize_hf_model),
-    # so hf_model.device already reflects accelerate's placement.
-    inputs = {k: v.to(hf_model.device) for k, v in input_ids.items()}
+    # initialize_hf_model() and the tokenization/prompt-building below run
+    # inside this closure, submitted as a single job to the single-worker
+    # executor, rather than before the await. initialize_hf_model() is an
+    # lru_cache(maxsize=1): resolving it on the event loop before suspending
+    # lets a second concurrent call with a different model_name evict and
+    # load its own model while the first call's model is still resident and
+    # mid-generate(), doubling peak GPU memory. Serializing model
+    # acquisition together with generate() guarantees at most one model is
+    # ever in flight.
+    def _run_generate():
+        hf_model, hf_tokenizer = initialize_hf_model(model_name)
+        local_messages = messages
+        input_prompt = ""
+        try:
+            input_prompt = hf_tokenizer.apply_chat_template(
+                local_messages, tokenize=False, add_generation_prompt=True
+            )
+        except Exception:
+            try:
+                ori_message = copy.deepcopy(local_messages)
+                if local_messages[0]["role"] == "system":
+                    local_messages[1]["content"] = (
+                        "<system>"
+                        + local_messages[0]["content"]
+                        + "</system>\n"
+                        + local_messages[1]["content"]
+                    )
+                    local_messages = local_messages[1:]
+                    input_prompt = hf_tokenizer.apply_chat_template(
+                        local_messages, tokenize=False, add_generation_prompt=True
+                    )
+            except Exception:
+                len_message = len(ori_message)
+                for msgid in range(len_message):
+                    input_prompt = (
+                        input_prompt
+                        + "<"
+                        + ori_message[msgid]["role"]
+                        + ">"
+                        + ori_message[msgid]["content"]
+                        + "</"
+                        + ori_message[msgid]["role"]
+                        + ">\n"
+                    )
+
+        input_ids = hf_tokenizer(
+            input_prompt, return_tensors="pt", padding=True, truncation=True
+        )
+        # Move to wherever the model actually is, rather than assuming CUDA.
+        # hf_model is loaded with device_map="auto" (see initialize_hf_model),
+        # so hf_model.device already reflects accelerate's placement.
+        inputs = {k: v.to(hf_model.device) for k, v in input_ids.items()}
+        output = hf_model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            num_return_sequences=1,
+            early_stopping=True,
+        )
+        return output, inputs, hf_model, hf_tokenizer
+
     # generate() runs the actual model inference synchronously and can take
     # seconds to minutes -- calling it directly here would block the whole
     # event loop for that duration, stalling every other concurrent task.
@@ -186,13 +206,7 @@ async def hf_model_if_cache(
     # of bridging synchronous PyTorch inference through a worker thread,
     # not something fixable at this call site.
     try:
-        output = await _run_hf_inference(
-            hf_model.generate,
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            num_return_sequences=1,
-            early_stopping=True,
-        )
+        output, inputs, hf_model, hf_tokenizer = await _run_hf_inference(_run_generate)
     except asyncio.CancelledError:
         logger.warning(
             "hf_model_if_cache: cancelled while awaiting generate(); "
