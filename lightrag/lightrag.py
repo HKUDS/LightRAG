@@ -2267,6 +2267,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        document_date: str | None = None,
     ) -> str:
         """Sync Insert documents with checkpoint support
 
@@ -2279,6 +2280,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             ids: single string of the document ID or list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: single string of the file path or list of file paths, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
+            document_date: optional fact date for one document, in YYYY,
+                YYYY-MM, or YYYY-MM-DD format; None or "" inserts without a
+                date. Existing documents are not updated. For batches, use
+                apipeline_enqueue_documents(document_dates=...).
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -2291,6 +2296,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 ids,
                 file_paths,
                 track_id,
+                document_date,
             ),
             sync_name="insert",
             async_name="ainsert",
@@ -2305,18 +2311,20 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        document_date: str | None = None,
     ) -> str:
-        """Async insert documents with checkpoint support (fixed-token chunking only).
+        """Async insert documents through the legacy chunking entry point.
 
-        SDK convenience entry point. It **always** chunks with the fixed-token
-        (F) strategy: ``process_options`` is intentionally not passed, so the
-        document runs the F chunker. ``split_by_character`` /
-        ``split_by_character_only`` are F-strategy runtime args; the rest of
-        the F config (``chunk_token_size`` / ``chunk_overlap_token_size``,
-        seeded from ``CHUNK_F_SIZE`` / ``CHUNK_SIZE`` etc.) comes from
-        ``addon_params['chunker']['fixed_token']``. ``ainsert`` cannot select
-        the recursive-character (R), semantic-vector (V), or paragraph-semantic
-        (P) strategies.
+        SDK convenience entry point. It does not expose an F/R/V/P/C selector:
+        ``process_options`` is intentionally not passed, so processing follows
+        the legacy ``chunking_func`` path. With the default ``chunking_func``
+        this is fixed-token (F) chunking; if the instance supplies a custom
+        callback, that callback is invoked instead. ``split_by_character`` /
+        ``split_by_character_only`` are arguments to this legacy callback. The
+        rest of the default F config (``chunk_token_size`` /
+        ``chunk_overlap_token_size``, seeded from ``CHUNK_F_SIZE`` /
+        ``CHUNK_SIZE`` etc.) comes from
+        ``addon_params['chunker']['fixed_token']``.
 
         The LightRAG **server / REST API does not call this method** — it
         ingests via :meth:`apipeline_enqueue_documents` +
@@ -2335,6 +2343,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated
+            document_date: optional fact date for one document, in YYYY,
+                YYYY-MM, or YYYY-MM-DD format; None or "" inserts without a
+                date. Existing documents are not updated. For batches, use
+                apipeline_enqueue_documents(document_dates=...).
 
         Returns:
             str: tracking ID for monitoring processing status
@@ -2343,7 +2355,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         if track_id is None:
             track_id = generate_track_id("insert")
 
-        # Capture the F-strategy runtime args into a chunk_options
+        # Capture the legacy callback's runtime args in a chunk_options
         # snapshot before enqueue so they become a per-document
         # setting.  ``apipeline_enqueue_documents`` itself doesn't take
         # split args — chunk_options is the canonical chunker-config
@@ -2355,12 +2367,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             split_by_character=split_by_character,
             split_by_character_only=split_by_character_only,
         )
+        document_count = 1 if isinstance(input, str) else len(input)
+        if document_date is not None and document_count != 1:
+            raise ValueError(
+                "document_date can only be used when ainsert receives exactly one document"
+            )
         await self.apipeline_enqueue_documents(
-            input,
-            ids,
-            file_paths,
-            track_id,
+            input=input,
+            ids=ids,
+            file_paths=file_paths,
+            track_id=track_id,
             chunk_options=chunk_opts,
+            document_dates=[document_date] if document_date is not None else None,
         )
         await self.apipeline_process_enqueue_documents()
 
@@ -3764,6 +3782,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 pipeline_status_lock=pipeline_status_lock,
                 llm_response_cache=self.llm_response_cache,
                 text_chunks_storage=self.text_chunks,
+                full_docs_storage=getattr(self, "full_docs", None),
                 truncation_tally=truncation_tally,
             )
             return chunk_results
@@ -4919,7 +4938,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             "content": str,          # Document chunk content
                             "file_path": str,        # Origin file path
                             "chunk_id": str,         # Unique chunk identifier
-                            "reference_id": str      # Reference identifier for citations
+                            "reference_id": str,     # Reference identifier for citations
+                            "document_date": str     # Optional source-document as-of date
                         }
                     ],
                     "references": [
@@ -4946,6 +4966,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 }
             }
             ```
+
+            ``data["chunks"][*]["document_date"]`` preserves the precision
+            supplied for the source document (``YYYY``, ``YYYY-MM``, or
+            ``YYYY-MM-DD``) and is omitted when no date is available. It is
+            loaded from full-document storage through each chunk's internal
+            ``full_doc_id``; that linkage key is not included in the returned
+            chunk object.
 
             **Query Mode Differences:**
             - **local**: Focuses on entities and their related chunks based on low-level keywords
@@ -5020,6 +5047,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 hashing_kv=self.llm_response_cache,
                 system_prompt=None,
                 chunks_vdb=self.chunks_vdb,
+                full_docs_db=self.full_docs,
             )
         elif data_param.mode == "naive":
             logger.debug(f"[aquery_data] Using naive_query for mode: {data_param.mode}")
@@ -5031,6 +5059,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 hashing_kv=self.llm_response_cache,
                 system_prompt=None,
                 text_chunks_db=self.text_chunks,
+                full_docs_db=self.full_docs,
             )
         elif data_param.mode == "bypass":
             logger.debug("[aquery_data] Using bypass mode")
@@ -5126,6 +5155,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     system_prompt=system_prompt,
                     chunks_vdb=self.chunks_vdb,
                     progress_callback=progress_callback,
+                    full_docs_db=self.full_docs,
                 )
             elif param.mode == "naive":
                 query_result = await naive_query(
@@ -5137,6 +5167,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     system_prompt=system_prompt,
                     text_chunks_db=self.text_chunks,
                     progress_callback=progress_callback,
+                    full_docs_db=self.full_docs,
                 )
             elif param.mode == "bypass":
                 # Bypass mode: directly use LLM without knowledge retrieval

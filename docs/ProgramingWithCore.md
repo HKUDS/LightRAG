@@ -857,8 +857,9 @@ never read or replace it. Three limits are worth knowing:
   template that will actually be rendered has somewhere to put it.
 
 The prefix participates in the answer cache key, so editing it invalidates
-answers generated under the old one. With no prefix configured the key is
-unchanged, so existing cache entries keep hitting.
+answers generated under the old one. With no prefix configured, the
+user-prompt component remains unchanged; independent answer-prompt policy
+changes can still advance the cache version and retire older entries.
 
 
 ## Storage Backends
@@ -1306,6 +1307,70 @@ rag.insert("TEXT1", ids=["ID_FOR_TEXT1"])
 rag.insert(["TEXT1", "TEXT2", ...], ids=["ID_FOR_TEXT1", "ID_FOR_TEXT2"])
 ```
 
+* Async Insert with Document Date
+
+For a single document, `ainsert` accepts an optional caller-supplied
+`document_date` in `YYYY`, `YYYY-MM`, or `YYYY-MM-DD` format:
+
+```python
+await rag.ainsert(
+    "Organization structure during October 2018...",
+    file_paths="organization-2018.txt",
+    document_date="2018-10",
+)
+```
+
+`document_date` describes when the facts in the document apply (the document's
+as-of date), not when LightRAG ingests the document. It provides document-level
+temporal context during extraction and answer generation. Omit it when the
+document has no meaningful fact date; calls that omit it keep the existing
+behavior. The scalar argument applies when `ainsert` receives exactly one
+document. For batches, use the lower-level pipeline API with one date or
+`None` per input document, then run the processor:
+
+```python
+await rag.apipeline_enqueue_documents(
+    ["Document about 2018...", "Document without a fact date..."],
+    document_dates=["2018", None],
+)
+await rag.apipeline_process_enqueue_documents()
+```
+
+The date is stored once on the document's `full_docs` record, not duplicated
+in persisted chunks. At query time, retrieved chunks are associated with their
+document through the internal `full_doc_id`, and the date is attached to the
+in-memory chunk context used for answer generation. `aquery_data` exposes it as
+an optional `document_date` field on dated result chunks; undated chunks omit
+the field:
+
+```python
+result = await rag.aquery_data(
+    "How did the organization change?",
+    param=QueryParam(mode="naive"),
+)
+print(result["data"]["chunks"][0].get("document_date"))
+```
+
+`document_date` provides temporal context only. It does not change chunk
+content or identifiers and is not used for embedding, retrieval, filtering,
+reranking, or retrieval ordering.
+
+For the public ingestion APIs (`insert`, `ainsert`, and
+`apipeline_enqueue_documents`), `document_date` is creation metadata, not an
+update command. For a newly accepted document, an omitted value, `None`, or
+`""` produces an undated record; a valid non-empty value is stored with the
+precision supplied. Existing documents are deduplicated rather than patched,
+so these APIs do not expose an operation that clears or replaces an existing
+document date.
+
+Low-level `full_docs.upsert` behavior is storage-backend specific and is not a
+portable field-level PATCH contract. PostgreSQL distinguishes three update
+intents: a missing key or `None` preserves the stored date, `""` clears it to
+SQL `NULL`, and a valid non-empty date sets or replaces it. `JsonKVStorage`
+replaces the record as a whole and does not provide the same field-level
+semantics. Code that calls a KV backend directly must follow that backend's
+upsert contract rather than relying on PostgreSQL behavior.
+
 * Insert using Pipeline
 
 `apipeline_enqueue_documents` and `apipeline_process_enqueue_documents` allow incremental insertion of documents in the background while the main thread continues executing.
@@ -1314,7 +1379,7 @@ rag.insert(["TEXT1", "TEXT2", ...], ids=["ID_FOR_TEXT1", "ID_FOR_TEXT2"])
 rag = LightRAG(..)
 await rag.apipeline_enqueue_documents(input)
 # Your routine in loop
-await rag.apipeline_process_enqueue_documents(input)
+await rag.apipeline_process_enqueue_documents()
 ```
 
 * Insert Multi-file Type Support

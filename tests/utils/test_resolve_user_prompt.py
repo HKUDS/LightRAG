@@ -12,8 +12,9 @@ Coverage:
 - ``slot`` falls back to ``"n/a"`` only when the composed text is empty,
   matching the pre-existing template convention.
 - With no prefix configured, ``text`` is byte-identical to the value the
-  answer cache keyed on before this feature existed. This is what lets the
-  cache-policy version stay at v2 instead of invalidating every entry.
+  answer cache keyed on before this feature existed. Prefix support alone does
+  not require a cache-policy bump, although independent prompt-policy changes
+  still may.
 - ``disable_prefix`` drops the prefix and nothing else.
 """
 
@@ -115,7 +116,7 @@ def test_prefix_only_is_indistinguishable_from_a_caller_sending_it():
 
 
 # ---------------------------------------------------------------------------
-# Cache invariant: no prefix configured => byte-identical to the old key input.
+# Cache-key component invariant: no prefix => byte-identical to the old input.
 # ---------------------------------------------------------------------------
 
 
@@ -127,9 +128,9 @@ def test_unconfigured_prefix_preserves_legacy_cache_key_component(user_prompt, p
     """``text`` must equal the expression the answer cache keyed on before.
 
     ``operate.py`` previously hashed ``query_param.user_prompt or ""``. Keeping
-    this byte-identical is what allows ``_ANSWER_CACHE_POLICY_VERSION`` to stay
-    at v2 — existing cached answers keep hitting for every deployment that
-    never sets a prefix.
+    this byte-identical avoids invalidating answers solely because prefix
+    support exists; independent answer-prompt policy changes may still bump the
+    versioned cache namespace.
     """
     legacy = user_prompt or ""
     assert resolve_user_prompt(user_prompt, prefix).text == legacy
