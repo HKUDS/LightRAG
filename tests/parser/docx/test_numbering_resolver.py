@@ -245,6 +245,23 @@ def test_read_pass_retains_letter_provenance_and_clears_it_on_plain_text():
     assert records[1].numbering_format is None
 
 
+def test_label_format_provenance_is_readable_before_any_label(tmp_path):
+    """A freshly constructed resolver must already expose the attribute.
+
+    The read pass today always calls ``get_label`` before reading the
+    provenance (empty paragraphs ``continue`` before the read), so no
+    production path hits this. The defect is that the attribute is part of
+    the resolver's read surface while being declared only inside
+    ``get_label``: any other consumer, or a future reordering of the read
+    pass, gets an AttributeError instead of "no numbering here".
+    """
+    from docx import Document
+
+    path = tmp_path / "empty.docx"
+    Document().save(str(path))
+    assert NumberingResolver(str(path)).last_label_format is None
+
+
 # The counting families all render 一/二/十/十一/… — [MS-DOCX] gives
 # japaneseCounting as 一,二,三 and chineseCounting / taiwaneseCounting as
 # 一 (1) / 十 (10). Chinese-locale Word writes 一二三 auto-numbering as

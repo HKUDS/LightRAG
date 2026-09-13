@@ -301,7 +301,9 @@ def _extract_unit_and_ordinal(
         stripped = label.strip()
         sym = re.match(r"^([§¶]+)\s*(.+)$", stripped)
         if sym:
-            return sym.group(1)[0], _parse_latin_ordinal(sym.group(2), numbering_format=numbering_format)
+            return sym.group(1)[0], _parse_latin_ordinal(
+                sym.group(2), numbering_format=numbering_format
+            )
         m = re.match(r"^([A-Za-z]+)\.?\s*(.+)$", stripped)
         if not m:
             return None, None

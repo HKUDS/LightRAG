@@ -91,6 +91,10 @@ class NumberingResolver:
         self.last_numId: str = None  # Previous paragraph's numId
         self.last_abstract_id: str = None  # Previous paragraph's abstractNumId
         self.last_style_id: str = None  # Previous paragraph's style ID
+        # numFmt of the label get_label() rendered most recently; None when
+        # that paragraph carried no automatic numbering. Reset on every
+        # get_label call, so a reader never sees an earlier paragraph's value.
+        self.last_label_format: str | None = None
         # numFmt values this resolver cannot render, collected the first time
         # each is hit. An unknown numFmt is a legitimate OOXML value we simply
         # do not implement (not corruption), so the label still degrades to
@@ -377,7 +381,7 @@ class NumberingResolver:
         Returns:
             Rendered label string (e.g., "1.1", "a)", "第一章") or empty string
         """
-        self.last_label_format: str | None = None
+        self.last_label_format = None
         try:
             pPr = para_element.find(f"{{{NSMAP['w']}}}pPr")
             if pPr is None:
