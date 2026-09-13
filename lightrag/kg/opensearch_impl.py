@@ -4383,8 +4383,11 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         """Batch-fetch edge counts for multiple nodes using aggregations."""
         if not node_ids:
             return {}
+        # Seed before every empty-index exit so the batch contract remains the
+        # same as node_degree(): each requested id gets an explicit zero.
+        result = {nid: 0 for nid in node_ids}
         if not self._indices_ready:
-            return {}
+            return result
         try:
             await self._refresh_graph_indices_if_dirty(refresh_edges=True)
             # Use a single query with aggregations for both source and target
@@ -4440,7 +4443,6 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             # Seeded with zeros so every requested id gets an answer: a node
             # with no edges appears in neither aggregation, and the batch must
             # still report the 0 node_degree reports rather than omitting it.
-            result = {nid: 0 for nid in node_ids}
             for agg_name in ("source_degrees", "target_degrees"):
                 buckets = response["aggregations"][agg_name]["ids"]["buckets"]
                 for bucket in buckets:
@@ -4454,7 +4456,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-                return {}
+                return result
             logger.error(f"[{self.workspace}] Error batch-getting node degrees: {e}")
             raise
 

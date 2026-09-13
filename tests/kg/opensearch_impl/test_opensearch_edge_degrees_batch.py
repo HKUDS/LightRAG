@@ -19,6 +19,8 @@ pytest.importorskip(
     "opensearchpy", reason="opensearchpy is required for OpenSearch storage tests"
 )
 
+from opensearchpy.exceptions import NotFoundError  # type: ignore
+
 from lightrag.kg.opensearch_impl import OpenSearchGraphStorage
 
 pytestmark = pytest.mark.offline
@@ -120,3 +122,28 @@ async def test_node_degrees_batch_answers_every_requested_id():
     )
 
     assert await s.node_degrees_batch(["A", "B"]) == {"A": 0, "B": 0}
+
+
+@pytest.mark.asyncio
+async def test_node_degrees_batch_answers_every_id_when_indices_are_not_ready():
+    """An uninitialized empty graph still has a known zero degree per id."""
+    s = _make_storage()
+    s._indices_ready = False
+
+    assert await s.node_degrees_batch(["A", "B"]) == {"A": 0, "B": 0}
+    s._refresh_graph_indices_if_dirty.assert_not_awaited()
+    s.client.search.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_node_degrees_batch_answers_every_id_when_edge_index_disappears():
+    """A missing edge index is an empty graph, not a partial result mapping."""
+    s = _make_storage()
+    s.client.search = AsyncMock(
+        side_effect=NotFoundError(
+            404, "index_not_found_exception", "no such edge index"
+        )
+    )
+
+    assert await s.node_degrees_batch(["A", "B"]) == {"A": 0, "B": 0}
+    assert s._indices_ready is False
