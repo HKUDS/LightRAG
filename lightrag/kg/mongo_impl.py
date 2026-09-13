@@ -3479,7 +3479,8 @@ class MongoGraphStorage(BaseGraphStorage):
             if len(labels) < limit:
                 # Phase 1 returned fewer than `limit`, and its aggregation is
                 # exact, so the connected set is now known in full: every node
-                # outside it has no edge at all. Top up in label order, bounded
+                # outside it has no degree -- no edge, or none but self-loops,
+                # which earn none. Top up in label order, bounded
                 # by the shortfall — the sort rides the _id index, so this stops
                 # as soon as it has enough rather than scanning the collection.
                 # list(labels), not labels: the cursor is consumed below while

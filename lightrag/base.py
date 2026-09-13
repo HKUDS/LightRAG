@@ -743,11 +743,15 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         twice, so ``NetworkXStorage`` subtracts it like every other backend --
         this contract, not NetworkX, is the reference.
 
-        Exclude self-loops AT THE QUERY, never by post-processing a count, so
-        the rule holds whatever the engine's matching semantics are: an
-        undirected Cypher match, an ``$or`` over two endpoint fields and a
-        grouped aggregation each see a self-loop a different number of times,
-        and only a filter is immune to that difference.
+        Exclude self-loops at the QUERY wherever the engine decides how many
+        times a self-loop matches: an undirected Cypher match, an ``$or`` over
+        two endpoint fields and a grouped aggregation each see one a different
+        number of times, and only a filter is immune to that difference. A
+        backend may instead subtract a self-loop count from a DOCUMENT count --
+        the document-store scalars do -- because a document count sees the row
+        exactly once, which is a fact about the store rather than about the
+        matcher. What must never be post-processed is an engine-defined match
+        count.
 
         This governs graphs imported from another backend
         (``tools/migrate_graph_storage.py`` carries self-loops across) and

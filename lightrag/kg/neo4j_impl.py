@@ -725,6 +725,17 @@ class Neo4JStorage(BaseGraphStorage):
             # rather than relying on a count{} subquery filter behaving the
             # same way. A backend whose scalar and batch disagree ranks the
             # same node differently depending on which one a caller reaches for.
+            #
+            # Accepted residue: a filter-free `COUNT { (n)--() }` is planned as
+            # GetDegree, read straight off the relationship-chain header --
+            # O(1) per node. Filtering on the far endpoint forces an expand, so
+            # this is O(degree) per requested node, and edge_degrees_batch
+            # routes through here too. Paid deliberately: the alternative is a
+            # degree whose self-loop handling depends on how this server plans
+            # an undirected match, which is exactly the uncertainty the rule
+            # was restated to remove. Not yet PROFILEd against a live server --
+            # size it before optimizing, and see the OpenSearch clause in
+            # opensearch_impl for the same trade made the same way.
             query = f"""
                 UNWIND $node_ids AS id
                 MATCH (n:`{workspace_label}` {{entity_id: id}})
