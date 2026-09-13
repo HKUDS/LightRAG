@@ -39,6 +39,7 @@ from ..utils import (
     validate_interpreted_attribute_names,
     validate_workspace,
 )
+from ..utils_graph import apply_relation_weight_floor
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import (
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
@@ -1981,7 +1982,10 @@ class MongoGraphStorage(BaseGraphStorage):
         ``description`` are unioned over their ``GRAPH_FIELD_SEP`` components,
         ``keywords`` are comma-set-unioned, and ``weight`` is **summed** (like
         ``_merge_edges_then_upsert`` — duplicate docs carry separate accumulated
-        weight).
+        weight) then floored to the merged evidence count via
+        ``apply_relation_weight_floor``, so a duplicate with new source_ids but
+        a missing/non-numeric legacy weight cannot leave the result under its
+        own evidence count.
 
         The merge is **idempotent across retries**: if a transient error aborts
         startup after the survivor update but before the delete, the next run
@@ -2093,7 +2097,18 @@ class MongoGraphStorage(BaseGraphStorage):
                 set_fields["description"] = GRAPH_FIELD_SEP.join(all_descriptions)
             if all_keywords:
                 set_fields["keywords"] = ",".join(sorted(all_keywords))
-            if weights:
+            if all_source_ids:
+                # A duplicate can contribute new source_ids while carrying a
+                # missing/non-numeric weight (skipped above), which would
+                # otherwise let the summed weight fall below the merged
+                # evidence count -- or, if every doc lacked a coercible
+                # weight, leave "weight" unset even though source_ids just
+                # grew. Floor it to the evidence count, per the relation
+                # weight contract, whichever a plain sum would miss.
+                set_fields["weight"] = apply_relation_weight_floor(
+                    sum(weights) if weights else 0.0, set_fields["source_id"]
+                )
+            elif weights:
                 set_fields["weight"] = sum(weights)
             if set_fields:
                 await self.edge_collection.update_one(
