@@ -11,6 +11,7 @@ This tool cleans up LightRAG's LLM query cache from KV storage implementations. 
 3. **PGKVStorage** - PostgreSQL database storage
 4. **MongoKVStorage** - MongoDB database storage
 5. **OpenSearchKVStorage** - OpenSearch index storage
+6. **LanceDBKVStorage** - Embedded LanceDB storage (single-process: shut the LightRAG Server down before running this tool)
 
 ## Cache Types
 
@@ -304,6 +305,7 @@ The tool retrieves workspace in the following priority order:
    - MongoKVStorage: `MONGODB_WORKSPACE`
    - RedisKVStorage: `REDIS_WORKSPACE`
    - OpenSearchKVStorage: `OPENSEARCH_WORKSPACE`
+   - LanceDBKVStorage: `LANCEDB_WORKSPACE`
 
 2. **Generic workspace environment variable**
    - `WORKSPACE`
