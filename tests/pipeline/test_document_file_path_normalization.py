@@ -96,6 +96,8 @@ def _patch_custom_chunk_saga(monkeypatch, rag):
 
     rag.doc_status = CaptureKV()
     rag.llm_response_cache = CaptureKV()
+    # These bare instances bypass the constructor's resolved chunker defaults.
+    rag.chunk_token_size = 1200
     monkeypatch.setattr(
         lightrag_module,
         "get_storage_keyed_lock",
@@ -780,6 +782,7 @@ async def test_custom_chunks_release_survives_cancel_at_lock_exit(monkeypatch):
     lock = _CancelOnFirstExitLock()
 
     rag = LightRAG.__new__(LightRAG)
+    rag.chunk_token_size = 1200
     rag.full_docs = CaptureKV()
     rag.text_chunks = CaptureKV()
     rag.chunks_vdb = CaptureKV()

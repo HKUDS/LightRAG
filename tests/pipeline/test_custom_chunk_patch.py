@@ -16,6 +16,7 @@ monkeypatched to a deterministic fake (one entity per staged chunk), covering:
 
 from __future__ import annotations
 
+from threading import get_ident
 from uuid import uuid4
 
 import numpy as np
@@ -25,6 +26,7 @@ import lightrag.lightrag as lightrag_module
 import lightrag.operate as operate_module
 from lightrag import LightRAG
 from lightrag.base import DocStatus
+from lightrag.exceptions import ChunkTokenLimitExceededError
 from lightrag.utils import (
     EmbeddingFunc,
     LLM_TRUNCATION_METADATA_KEY,
@@ -60,8 +62,9 @@ async def _build_rag(tmp_path, **overrides) -> LightRAG:
         working_dir=str(tmp_path / "wd"),
         workspace=f"ccpatch-{uuid4().hex[:8]}",
         llm_model_func=_dummy_llm,
-        embedding_func=EmbeddingFunc(
-            embedding_dim=8, max_token_size=8192, func=_dummy_embedding
+        embedding_func=overrides.pop(
+            "embedding_func",
+            EmbeddingFunc(embedding_dim=8, max_token_size=8192, func=_dummy_embedding),
         ),
         tokenizer=Tokenizer("mock-tokenizer", _SimpleTokenizerImpl()),
         max_parallel_insert=1,
@@ -69,6 +72,105 @@ async def _build_rag(tmp_path, **overrides) -> LightRAG:
     )
     await rag.initialize_storages()
     return rag
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["create", "patch"])
+@pytest.mark.parametrize("embedding_limit", [None, 0, 8, 8192])
+async def test_oversized_custom_chunk_rejected_before_journal(
+    tmp_path, monkeypatch, mode, embedding_limit
+):
+    rag = await _build_rag(
+        tmp_path,
+        chunk_token_size=16 if embedding_limit == 8 else 8,
+        chunk_overlap_token_size=0,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=8, max_token_size=embedding_limit, func=_dummy_embedding
+        ),
+    )
+    try:
+        _fake_extraction(rag, monkeypatch)
+        if mode == "patch":
+            await rag.ainsert_custom_chunks("base", ["alice"], doc_id="doc-1")
+        before = await rag.doc_status.get_by_id("doc-1")
+        full_doc_before = await rag.full_docs.get_by_id("doc-1")
+
+        async def unexpected_extraction(*args, **kwargs):
+            pytest.fail("over-limit input reached extraction")
+
+        monkeypatch.setattr(rag, "_process_extract_entities", unexpected_extraction)
+        with pytest.raises(ChunkTokenLimitExceededError) as exc:
+            await rag.ainsert_custom_chunks(
+                "changed", ["bob", "123456789"], doc_id="doc-1"
+            )
+
+        assert exc.value.chunk_tokens == 9
+        assert exc.value.chunk_token_limit == 8
+        assert await rag.doc_status.get_by_id("doc-1") == before
+        assert await rag.full_docs.get_by_id("doc-1") == full_doc_before
+        for text in ("bob", "123456789"):
+            assert await rag.text_chunks.get_by_id(_chunk_id("doc-1", text)) is None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_exact_limit_custom_chunk_keeps_caller_boundaries(tmp_path, monkeypatch):
+    rag = await _build_rag(tmp_path, chunk_token_size=8, chunk_overlap_token_size=0)
+    try:
+        _fake_extraction(rag, monkeypatch)
+        original_encode = rag.tokenizer.encode
+        encoded = []
+        loop_thread = get_ident()
+
+        def recording_encode(content):
+            encoded.append((content, get_ident()))
+            return original_encode(content)
+
+        monkeypatch.setattr(rag.tokenizer, "encode", recording_encode)
+        await rag.ainsert_custom_chunks(
+            "base", ["alice xx", "", "alice xx", "bob"], doc_id="doc-1"
+        )
+
+        row = await rag.doc_status.get_by_id("doc-1")
+        assert _status_text(row) == DocStatus.PROCESSED.value
+        assert row["chunks_list"] == [
+            _chunk_id("doc-1", "alice xx"),
+            _chunk_id("doc-1", "bob"),
+        ]
+        chunk = await rag.text_chunks.get_by_id(_chunk_id("doc-1", "alice xx"))
+        assert chunk["content"] == "alice xx"
+        assert chunk["tokens"] == 8
+        custom_encodes = [
+            (text, thread) for text, thread in encoded if text in ("alice xx", "bob")
+        ]
+        assert [text for text, _ in custom_encodes] == ["alice xx", "bob"]
+        assert all(thread != loop_thread for _, thread in custom_encodes)
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_token_rejection_preserves_existing_recovery_journal(
+    tmp_path, monkeypatch
+):
+    rag = await _build_rag(tmp_path, chunk_token_size=16, chunk_overlap_token_size=0)
+    try:
+        _fake_extraction(rag, monkeypatch)
+        await _fail_one_merge_then_restore(monkeypatch)
+        with pytest.raises(RuntimeError, match="merge boom"):
+            await rag.ainsert_custom_chunks("base", ["alice xxx"], doc_id="doc-1")
+        before = await rag.doc_status.get_by_id("doc-1")
+        assert _journal(before) is not None
+
+        # Configuration can become stricter between a failed call and its retry.
+        rag.chunk_token_size = 8
+        with pytest.raises(ChunkTokenLimitExceededError):
+            await rag.ainsert_custom_chunks("base", ["alice xxx"], doc_id="doc-1")
+
+        assert await rag.doc_status.get_by_id("doc-1") == before
+    finally:
+        await rag.finalize_storages()
 
 
 def _fake_extraction(rag, monkeypatch):
