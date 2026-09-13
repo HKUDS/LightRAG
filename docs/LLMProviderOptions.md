@@ -318,10 +318,31 @@ cache keys stay safe to persist. The practical consequence:
   with the old value.
 
 When you need a tuning change to take effect on content that has already been
-processed, clear the relevant cache explicitly (`/documents/clear_cache`, or
-`ENABLE_LLM_CACHE=false` while experimenting on queries). Note that clearing the LLM
-cache drops the extraction cache too, which is what entity/relation rebuild after a
-document delete relies on.
+processed, clear the relevant cache explicitly. Which one depends on what you tuned:
+
+- **Query tuning** (retrieval or answer-generation options). Only the query-mode cache
+  entries (`mix:*`, `hybrid:*`, `local:*`, `global:*`, `naive:*`) have to go, and they
+  can go on their own:
+
+  ```bash
+  python -m lightrag.tools.clean_llm_query_cache
+  ```
+
+  The tool is workspace-aware and leaves the extraction cache untouched, so nothing you
+  already paid to extract is re-billed. It requires the LightRAG Server to be shut down
+  first (it asks) — a running server holds the same namespace in memory and would
+  republish it over the tool's work. While experimenting, `ENABLE_LLM_CACHE=false`
+  bypasses the cache instead of clearing it.
+
+- **Extraction tuning** (options that change entity/relation extraction). The extraction
+  cache has to go for the affected content, and both supported ways take the documents
+  with it, because the extraction cache is what entity/relation rebuild after a document
+  delete relies on: dropping it beside documents that survive would break those
+  references and re-bill every extraction call they already paid for.
+
+  - A subset: delete those documents with
+    `DELETE /documents/delete_document` and `delete_llm_cache=true`, then re-add them.
+  - Everything: `DELETE /documents?clear_llm_cache=true`, then re-add.
 
 ## 11. Common tasks
 

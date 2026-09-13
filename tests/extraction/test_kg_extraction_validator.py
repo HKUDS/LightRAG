@@ -517,14 +517,15 @@ class _FakeKV:
 async def test_cache_keys_are_attached_before_the_validator_can_fail():
     """A failing validator must not orphan the LLM cache entry.
 
-    ``save_to_cache`` writes each entry durably during extraction, but its key
-    lives only in the in-memory collector until ``update_chunk_cache_list``
-    attaches it to the chunk. Recovery collects operation-scoped cache ids
-    exclusively from a staged chunk's ``llm_cache_list``
-    (``_rollback_one_custom_chunk_patch``), so a key never attached is a cache
-    row nothing can reach again — orphaned even after ``/documents/scan``
-    rolls the operation back and deletes the chunk. The attach therefore has
-    to happen before any step that user code can fail.
+    Recovery collects operation-scoped cache ids exclusively from a staged
+    chunk's ``llm_cache_list`` (``_rollback_one_custom_chunk_patch``), so a key
+    that was never attached is a cache row nothing can reach again — orphaned
+    even after ``/documents/scan`` rolls the operation back and deletes the
+    chunk. Since #3833 each key is attached before its row is written, inside
+    ``use_llm_func_with_cache``, so a validator raising here cannot orphan
+    anything. This test pins that property from the user-code angle;
+    ``tests/extraction/test_extract_cache_orphans.py`` pins it from the
+    cancellation angle.
     """
     from lightrag.operate import extract_entities
 

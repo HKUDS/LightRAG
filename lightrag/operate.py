@@ -43,7 +43,6 @@ from lightrag.utils import (
     get_env_value,
     get_llm_cache_identity,
     serialize_llm_cache_identity,
-    update_chunk_cache_list,
     remove_think_tags,
     pick_by_weighted_polling,
     pick_by_vector_similarity,
@@ -3973,6 +3972,12 @@ async def extract_entities(
     # Extraction-scoped truncation tally; see _publish_truncation_summary below.
     stage_tally = TokenLimitTruncationTally()
 
+    # Chunks whose LLM cache write was skipped because the chunk could not
+    # carry the reference to it. A set, not a tally: there is no
+    # per-stage breakdown to report and nothing is persisted — see
+    # _publish_cache_skip_summary below.
+    cache_skip_chunks: set[str] = set()
+
     # Optional per-chunk extraction-quality hook; None leaves the pipeline
     # unchanged. See the call site in _process_single_content below.
     kg_extraction_validator = global_config.get("kg_extraction_validator")
@@ -4125,9 +4130,6 @@ async def extract_entities(
             else ""
         )
 
-        # Create cache keys collector for batch processing
-        cache_keys_collector = []
-
         def _report_truncation(result: str, stage: str) -> None:
             if not is_truncated_response(result):
                 return
@@ -4144,6 +4146,32 @@ async def extract_entities(
                     f"Warning: token-limit truncation during {stage} entity "
                     f"extraction for {location}; further occurrences are "
                     f"reported as one summary at the end of extraction"
+                )
+
+        def _report_cache_skip(cache_type: str) -> None:
+            """The extraction cache is off for this chunk; say so out loud.
+
+            ``use_llm_func_with_cache`` skips the cache write when the chunk
+            could not carry the reference to it. That is the safe direction,
+            but it means the extraction cache silently stopped working for this
+            document — the next run re-calls the LLM for these chunks. Reported on the
+            same discipline as truncation above: every occurrence to the server
+            log, the first one plus an end-of-stage aggregate to the bounded
+            pipeline-status ring. Synchronous and non-raising, per the
+            ``on_cache_skipped`` contract.
+            """
+            location = f"chunk {chunk_key} in {file_path}"
+            logger.warning(
+                f"LLM {cache_type} cache write skipped for {location}: its cache "
+                f"reference could not be recorded on the chunk"
+            )
+            first = not cache_skip_chunks
+            cache_skip_chunks.add(chunk_key)
+            if first:
+                status_logger.log(
+                    f"Warning: LLM cache write skipped for {location} because its "
+                    f"cache reference could not be recorded; further occurrences "
+                    f"are reported as one summary at the end of extraction"
                 )
 
         if use_json_extraction:
@@ -4191,7 +4219,8 @@ async def extract_entities(
             llm_response_cache=llm_response_cache,
             cache_type="extract",
             chunk_id=chunk_key,
-            cache_keys_collector=cache_keys_collector,
+            text_chunks_storage=text_chunks_storage,
+            on_cache_skipped=_report_cache_skip,
             response_format=({"type": "json_object"} if use_json_extraction else None),
             llm_cache_identity=get_llm_cache_identity(global_config, "extract"),
         )
@@ -4267,7 +4296,8 @@ async def extract_entities(
                 history_messages=history,
                 cache_type="extract",
                 chunk_id=chunk_key,
-                cache_keys_collector=cache_keys_collector,
+                text_chunks_storage=text_chunks_storage,
+                on_cache_skipped=_report_cache_skip,
                 response_format=(
                     {"type": "json_object"} if use_json_extraction else None
                 ),
@@ -4333,31 +4363,15 @@ async def extract_entities(
                     maybe_edges[edge_key] = list(glean_edge_list)
                 await _cooperative_yield(i, every=8)
 
-        # Batch update chunk's llm_cache_list with all collected cache keys.
-        #
-        # Ordered BEFORE the validator on purpose. The rows are already
-        # written durably, but their keys live only in the in-memory
-        # cache_keys_collector until this call attaches them to the chunk, and
-        # recovery (_rollback_one_custom_chunk_patch) reaches cache rows
-        # exclusively through a chunk's llm_cache_list. A validator that raises
-        # exits the chunk here, so a key never attached is a row nothing can
-        # reach again — orphaned even after /documents/scan rolls the operation
-        # back. Ordering is all this buys, NOT durability: this call swallows
-        # storage errors, and a sibling cancelled by the FIRST_EXCEPTION path
-        # never reaches its own call. Both leave the same orphan; closing that
-        # off needs recovery to find rows by the `chunk_id` they already carry
-        # there, not more ordering here.
-        #
-        # Nothing after this point adds keys: the collector is filled by the
-        # extraction and gleaning calls above, and the multimodal injection
-        # below builds records from sidecar metadata without calling the LLM.
-        if cache_keys_collector and text_chunks_storage:
-            await update_chunk_cache_list(
-                chunk_key,
-                text_chunks_storage,
-                cache_keys_collector,
-                "entity_extraction",
-            )
+        # No end-of-chunk cache-key attach here, by design. Each extract cache
+        # row is attached to this chunk BEFORE it is written, inside
+        # use_llm_func_with_cache; collecting the keys in memory and attaching
+        # them once at the end is precisely what orphaned them. See *LLM
+        # extraction cache reachability* in the contract doc,
+        # docs/design/PurgeRecoveryContract.md. Nothing here needs to re-attach:
+        # the extraction and gleaning calls above have each recorded their own
+        # key, and the multimodal injection below builds records from sidecar
+        # metadata without calling the LLM.
 
         # Optional extraction-quality hook: the last word on what the LLM
         # extracted from this chunk. Caller-facing contract, including why core
@@ -4508,6 +4522,27 @@ async def extract_entities(
         if truncation_tally is not None:
             truncation_tally.absorb(stage_tally)
 
+    def _publish_cache_skip_summary() -> None:
+        """Publish one aggregated line for chunks whose cache write was skipped.
+
+        Called from the same ``finally`` as _publish_truncation_summary and
+        under the same rules: exactly once, on every exit, await-free so it is
+        safe inside a cancellation unwind, a no-op when nothing was skipped.
+        Nothing is handed upward — unlike truncation this is not recorded on
+        the document, because the trigger is an unwritable text_chunks storage
+        rather than a property of the document's content.
+        """
+        if not cache_skip_chunks:
+            return
+        cache_skip_message = (
+            f"Warning: LLM cache writes were skipped for {len(cache_skip_chunks)} "
+            f"of {total_chunks} chunks during entity extraction because their "
+            f"cache references could not be recorded; those extraction results "
+            f"were not cached and will be recomputed on the next run"
+        )
+        logger.warning(cache_skip_message)
+        status_logger.log(cache_skip_message)
+
     # Get max async tasks limit from global_config
     chunk_max_async = global_config.get("llm_model_max_async", 4)
     semaphore = asyncio.Semaphore(chunk_max_async)
@@ -4606,6 +4641,7 @@ async def extract_entities(
         # persisted FAILED with no llm_truncation for responses that had
         # already been recorded. Await-free, called exactly once.
         _publish_truncation_summary()
+        _publish_cache_skip_summary()
 
     # If all tasks completed successfully, chunk_results already contains the results
     # Return the chunk_results for later processing in merge_nodes_and_edges

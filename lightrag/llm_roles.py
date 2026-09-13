@@ -273,6 +273,39 @@ class _RoleLLMMixin:
             tasks = list(self._retired_llm_queue_cleanup_tasks)
             await asyncio.gather(*tasks, return_exceptions=True)
 
+    async def _shutdown_model_queues(self) -> None:
+        """Shut down every queue owned by this instance.
+
+        Finalization must call this before tearing down storages: role LLM
+        calls can still use the response cache while their queues drain.
+        Queue shutdown is best-effort, matching storage finalization, but one
+        broken wrapper must not leave the remaining workers attached to the
+        event loop.
+        """
+        await self.wait_for_retired_llm_queues()
+
+        wrappers: list[tuple[str, Callable[..., object] | None]] = [
+            (f"{spec.name} LLM", self._role_llm_states[spec.name].wrapped)
+            for spec in ROLES
+        ]
+        embedding = getattr(self, "embedding_func", None)
+        wrappers.extend(
+            (
+                ("embedding", getattr(embedding, "func", None)),
+                ("rerank", getattr(self, "rerank_model_func", None)),
+            )
+        )
+
+        seen: set[int] = set()
+        for label, wrapped in wrappers:
+            if wrapped is None or id(wrapped) in seen:
+                continue
+            seen.add(id(wrapped))
+            try:
+                await self._shutdown_llm_wrapper(wrapped)
+            except Exception as e:
+                logger.error(f"Failed to shut down {label} queue: {e}")
+
     def _apply_llm_role_config_update(
         self,
         role: str,
