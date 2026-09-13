@@ -6,8 +6,7 @@ produced by docling-serve with ``to_formats=[json,md]`` +
 ``artifacts/`` are not read by the builder (markdown stays for human
 inspection; image bytes are referenced by relative URI).
 
-Conversion rules (informed by
-``docs/DoclingSidecarRefactorPlan-zh.md`` §5):
+Conversion rules:
 
 - **Faithful** mapping. We do NOT correct heading levels from numbering,
   do NOT bind orphan ``caption`` / ``footnote`` text to neighbouring

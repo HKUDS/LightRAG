@@ -63,7 +63,18 @@ READ_RETRY = retry(
 )
 
 
-# @final (removed per request in Issue #3130)
+# Deliberately NOT ``@final``, unlike every other storage class in this package:
+# the decorator was removed by request so this backend can be subclassed. What
+# the tree can show is that nothing in it subclasses this class, so the
+# extension point exists for code outside the repository and cannot be verified
+# from here -- which is a reason to leave it alone, not evidence that restoring
+# it is safe.
+#
+# Before restoring it, note what it would and would not do. ``typing.final`` has
+# no runtime effect: a downstream subclass keeps working, and only a type
+# checker starts rejecting it. So the restore breaks nobody's deployment and
+# silences nobody's tests; it re-asserts the constraint whose removal was asked
+# for, somewhere its author will not see it.
 @dataclass
 class Neo4JStorage(BaseGraphStorage):
     # Lucene query-syntax reserved characters. The full-text query parser

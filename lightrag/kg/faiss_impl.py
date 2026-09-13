@@ -57,267 +57,49 @@ class _PendingFaissDoc:
 class FaissVectorDBStorage(BaseVectorStorage):
     """Faiss-backed vector storage for LightRAG.
 
-    Uses cosine similarity by storing L2-normalized vectors in an
-    ``IndexFlatIP`` (inner-product search on normalized vectors == cosine).
+    Cosine similarity by storing L2-normalized vectors in an ``IndexFlatIP``
+    (inner product over normalized vectors is cosine). State is split across
+    ``self._index`` and ``self._id_to_meta``, persisted to TWO files per
+    ``(workspace, namespace)``: ``faiss_index_<namespace>.index`` and
+    ``…<namespace>.index.meta.json``. Both are the only cross-process
+    synchronization surface.
 
-    Storage model:
-        Two on-disk files per ``(workspace, namespace)``:
-            * ``working_dir/[workspace/]faiss_index_<namespace>.index`` —
-              the Faiss index (binary, written by ``faiss.write_index``).
-            * ``…<namespace>.index.meta.json`` — the ``_id_to_meta`` dict
-              serialized as JSON, **without** the ``__vector__`` field
-              (vectors are reconstructed from the Faiss index on load).
-        In memory the storage is split across two fields:
-            * ``self._index`` — the Faiss index.
-            * ``self._id_to_meta`` — ``dict[int_faiss_id, metadata]``.
-        Both files are the **only** cross-process synchronization surface
-        — there is no shared memory between processes. Cross-process
-        visibility is mediated by (a) per-file atomic writes and (b) a
-        per-namespace ``storage_updated`` flag distributed through
-        ``lightrag.kg.shared_storage``.
+    **Full contract: ``docs/design/FileBackedSnapshotContract.md``** -- the
+    two-channel fence and its both-files-must-move rule, failed-save adoption,
+    the deferred-embedding and deferred-delete protocols with their redo-log
+    ordering rules, and the accepted residues.
 
-        **Cross-file atomicity is not guaranteed**: the two ``atomic_write``
-        renames in ``_save_faiss_index`` are independent, so a crash
-        between them can leave ``.index`` and ``.meta.json`` referring to
-        different snapshots. ``_load_faiss_index`` tolerates both
-        directions on load: ``meta > index`` rows are dropped silently;
-        ``index > meta`` (the more dangerous case) is logged as a warning
-        but **not** auto-repaired — orphan vectors remain in the loaded
-        index but are unreachable via custom-id lookups. Repair semantics
-        (truncate index vs rebuild meta) are deliberately left to a
-        follow-up PR.
+    **Cross-file atomicity is not guaranteed.** The two ``atomic_write``
+    renames are independent, so a crash between them can leave the pair
+    describing different snapshots. ``_load_faiss_index`` drops ``meta > index``
+    rows silently and warns on ``index > meta`` without repairing it, so orphan
+    vectors stay in the loaded index, unreachable by custom-id lookup.
 
-    Concurrency invariants (the code here is correct *only* while all
-    three hold):
-        1. **Single writer per workspace.** The document pipeline's
-           ``busy`` / ``destructive_busy`` flags (see
-           ``docs/design/PipelineConcurrencyContract.md``) guarantee at most
-           one process
-           performs ``upsert`` / ``delete`` / ``index_done_callback`` at
-           any time. Every other process is read-only.
-        2. **Eventual consistency is sufficient.** Read-only processes
-           only need to observe the writer's data *after* the writer's
-           ``index_done_callback`` completes. Reads in the gap between a
-           writer's in-memory mutation and its commit may legitimately
-           return the pre-update snapshot.
-        3. **Faiss + dict MUTATIONS are synchronous and stay on the
-           event loop.** ``index.add`` / ``index.remove_ids`` /
-           ``self._id_to_meta`` mutations cannot be preempted by another
-           coroutine, which gives them implicit mutual exclusion. This is
-           why most methods don't hold ``_storage_lock`` while touching
-           ``self._index`` / ``self._id_to_meta``.
+    The three invariants this class is correct only while they hold: **single
+    writer per workspace** (the pipeline's ``busy`` reservation), **eventual
+    consistency is sufficient** for readers, and **Faiss and dict MUTATIONS are
+    synchronous and stay on the event loop**. ``_save_faiss_index`` is the one
+    part in a worker thread and is compatible only because it READS -- it
+    snapshots ``_id_to_meta`` on the loop and reads ``_index`` under
+    ``_storage_lock``. Moving a mutation, or an unsnapshotted dict iteration,
+    into the pool would break the invariant and require widening the lock.
 
-           ``_save_faiss_index`` is the one part that runs in a worker
-           thread, and it is compatible with this invariant because it
-           only READS: it takes its ``self._id_to_meta`` snapshot on the
-           loop before offloading, and it reads ``self._index`` while
-           holding ``_storage_lock``, which excludes every mutation
-           above. The only unlocked Faiss access, ``query``'s
-           ``index.search``, is a read as well. Moving a MUTATION (or an
-           unsnapshotted dict iteration) into the pool would break the
-           invariant and would require widening the lock scope instead.
+    ``_storage_lock`` is **non-reentrant**: ``_flush_pending_locked`` /
+    ``_remove_faiss_ids_locked`` / ``_save_faiss_index`` /
+    ``_reload_index_from_disk_locked`` all require the caller to hold it and
+    must never re-enter through ``_get_index``.
 
-    Cross-process sync protocol (two channels — see #3854):
-        Two independent tests decide whether this process holds a current
-        snapshot, OR-ed at the one place that asks
-        (``_reload_index_from_disk_locked``). They are not redundant — their
-        blind spots do not overlap. The mechanism lives in
-        ``lightrag.kg.file_fingerprint``; the canonical prose contract is
-        ``NetworkXStorage``'s section of the same name.
+    ``upsert`` does NOT embed; it buffers, and the model is called once per id
+    at flush time. Once a pending vector is set it is an already-L2-normalized
+    float32 1D ndarray, so a later flush can ``vstack`` and ``index.add``
+    without re-normalizing. ``client_storage`` is synchronous and skips the
+    reload check, so a reader can see a stale snapshot through it; the async
+    read methods funnel through ``_get_index``.
 
-        * **Authoritative channel — the file fingerprint.**
-          ``(st_mtime_ns, st_size)`` of **both** files against what this
-          process recorded when it last loaded or wrote them
-          (``_loaded_fingerprint``). State, not an event: nothing consumes
-          it and a failed notification cannot lose it. **Both files must
-          have moved** for the change to count: the publication renames them
-          one at a time, so a pair where only one moved does not describe a
-          single state, and reloading THAT is the corruption vector —
-          ``_load_faiss_index`` binds every in-range metadata row to whatever
-          vector the other file now holds. A partial change therefore reports
-          "no change" and this process keeps the older self-consistent
-          snapshot until the writer's retry completes the set (see
-          ``file_fingerprint.peer_commit_detected``). Blind spot: two
-          commits inside one filesystem timestamp tick with identical sizes.
-        * **Accelerator channel — the ``storage_updated`` flag.** Read
-          first, because a ``True`` value already answers the question.
-          ``set_all_update_flags`` publishes it with one Manager RPC per
-          process, so a partial publication leaves a peer unnotified —
-          that loss is its blind spot, and it is what the file channel
-          exists for. In exchange it covers the fingerprint's tick
-          collision, which needs a healthy, fast-committing system.
+    Like ``NanoVectorDBStorage`` and unlike the graph store, this backend never
+    declines a stale write -- it reloads and replays.
 
-        Writer side (``index_done_callback`` / ``finalize``):
-            1. ``_save_faiss_index`` writes both files atomically (per
-               file; cross-file atomicity is best-effort, see above).
-            2. Record the fingerprint of the pair just written, so this
-               process does not later read its own save as a peer's. Done
-               inside ``_save_faiss_index`` — before the caller's
-               bookkeeping, because that publishes through the manager and
-               can fail, while this is a local ``stat``.
-            3. ``set_all_update_flags`` flips every process's
-               ``storage_updated`` flag (including the writer's own), then
-               reset the writer's own flag to ``False``.
-            On a FAILED save the pair is adopted too. Step 1 is two
-            ``atomic_write`` calls, so a failure between them publishes a
-            MISMATCHED pair (a new ``.index`` beside the previous
-            ``.meta.json``) — this process's own doing, not a peer's. The
-            in-memory index plus the redo logs are the authority the retry
-            writes from; reloading the mismatched pair instead would bind one
-            row's metadata to another's vector and the replay would then
-            delete the wrong one. Opposite direction from
-            ``NetworkXStorage``, which reloads after a failed save: it has no
-            redo log, so its in-memory graph is the untrustworthy side. Note
-            that it does not reach that reload by invalidating its
-            fingerprint — the file did not move, so the fingerprint still
-            describes it — but through a process-local
-            ``_recovery_reload_pending`` flag; see its *Recovery reload*.
-
-            Adoption covers the failing writer only. Every OTHER process is
-            covered by the both-files-must-move rule above — they never
-            recorded this pair, so nothing local tells them the publication
-            was interrupted; only the shape of the change on disk does.
-        Reader and writer side (everything through
-        ``_reload_index_from_disk_locked``):
-            1. Inside ``_storage_lock``, test the flag; if it is ``False``,
-               test the fingerprint.
-            2. On either, **fully reload**: re-init ``self._index`` from
-               ``IndexFlatIP``, clear ``self._id_to_meta``, then call
-               ``_load_faiss_index`` to re-parse both files. Faiss has no
-               incremental sync API.
-            3. Record the new fingerprint **and** reset the flag, whichever
-               channel fired.
-
-        **This backend does not decline a stale write, and must not.**
-        ``NetworkXStorage`` refuses to save when the file has moved past its
-        snapshot, because it has no way to keep the mutation. Here the write
-        path is *reload-then-replay*: ``index_done_callback`` reloads the
-        peer's snapshot and ``_flush_pending_locked`` replays the pending
-        buffer and the ``_unsaved_upserts`` / ``_unsaved_deletes`` redo logs
-        on top of it (issue #3688), so both sides survive and there is
-        nothing to report as a failure. Consequently the flush-failure
-        propagation NetworkX needs (a declined commit must not be
-        acknowledged as durable, see ``LightRAG._flush_storages``) has no
-        counterpart here.
-
-        Accepted residues (see *Consistency without transactions* in
-        ``AGENTS.md``):
-            * The tick collision above, **and** the notification lost for
-              this process: the peer commit is not observed. Recovery: the
-              next commit by any process flips the flag and changes the
-              fingerprint; the redo logs mean this process's own rows are
-              replayed rather than lost either way.
-            * A ``stat`` this process cannot perform on either file: the
-              file channel reports "no change" and the fence degrades to
-              the flag alone, i.e. to the behaviour that predates it. See
-              ``kg.file_fingerprint`` for why the other direction is worse.
-
-    Lock scope:
-        ``_storage_lock`` is a per-``(namespace, workspace)`` keyed lock
-        spanning both intra-process coroutines and inter-process workers.
-        It wraps:
-            * ``_get_index`` reload checks.
-            * Pending-buffer mutations in ``upsert`` and pending-buffer
-              reads in ``get_by_id`` / ``get_by_ids`` /
-              ``get_vectors_by_ids`` (read-your-writes).
-            * The single critical section in ``index_done_callback`` and
-              ``finalize`` (reload → flush → save → notify).
-            * The pending-cancel + rebuild critical sections in
-              ``delete`` / ``delete_entity_relation``.
-            * The entire ``drop`` body.
-        The lock is **non-reentrant**, so ``_flush_pending_locked`` /
-        ``_remove_faiss_ids_locked`` / ``_save_faiss_index`` /
-        ``_reload_index_from_disk_locked`` all require the caller to
-        already hold it and never re-enter via ``_get_index`` — the last
-        of these runs its writes in a worker thread, where re-entering
-        would deadlock on a lock the caller already holds. Routine
-        ``index.search`` outside ``_get_index`` and the synchronous
-        ``client_storage`` read rely on invariant (3) above; both are
-        reads, which is why they coexist with the offloaded save. Moving
-        a Faiss or dict MUTATION into a thread pool would break that
-        premise and require widening the lock scope.
-
-    Caveat — synchronous ``client_storage`` reads:
-        ``client_storage`` is a synchronous property and does **not** go
-        through ``_get_index``, so in a reader process it can return data
-        older than the latest committed snapshot until some other method
-        triggers a reload. The async read methods (``get_by_id`` /
-        ``get_by_ids`` / ``get_vectors_by_ids``) now funnel through
-        ``_get_index`` after checking the pending buffer, so they observe
-        the latest on-disk snapshot.
-
-    Deferred-embedding protocol:
-        ``upsert`` does **not** call the embedding model. It only buffers
-        a ``_PendingFaissDoc`` (content-bearing record + ``vector=None``)
-        in the minimal ``self._pending_upserts`` area, overwriting any
-        prior pending doc for the same id (which also clears a temp
-        vector a previous ``get_vectors_by_ids`` may have cached). The
-        model is called once per id at flush time
-        (``_flush_pending_locked``), so repeated upserts of the same id —
-        and many small upsert calls — embed only once. See issue #2785
-        and the ``NanoVectorDBStorage`` / ``OpenSearchVectorDBStorage``
-        equivalents.
-
-        Embedding runs **inside ``_storage_lock``** during the flush (not
-        in ``upsert``): under the single-writer invariant this keeps the
-        content used for embedding consistent with the rows written to
-        disk and prevents a destructive op from interleaving between
-        embed and write. The lock is non-reentrant, so
-        ``_flush_pending_locked`` requires the caller to already hold it
-        and operates on ``self._index`` / ``self._id_to_meta`` directly
-        (never through ``_get_index``).
-
-        Vector storage invariant: once a ``_PendingFaissDoc.vector`` is
-        set it is an **already-L2-normalized float32 1D ndarray** — both
-        flush and lazy ``get_vectors_by_ids`` normalize the entire batch
-        with ``faiss.normalize_L2`` before caching back, so a later flush
-        can ``vstack`` and ``index.add`` without re-normalizing.
-
-        Reads are read-your-writes: ``get_by_id`` / ``get_by_ids`` /
-        ``get_vectors_by_ids`` consult ``_pending_upserts`` first, then
-        funnel through ``_get_index`` for the materialized fallback.
-        ``get_vectors_by_ids`` lazily embeds a pending doc on demand and
-        caches the (normalized) vector back for the next flush.
-        ``query`` and ``client_storage`` see only data already
-        materialized into ``self._index`` / ``self._id_to_meta`` —
-        unflushed pending data is intentionally not queryable.
-
-        A flush failure (embedding error, count mismatch, or save IO
-        error) raises through ``index_done_callback``; the pending buffer
-        is preserved on flush failure. If only the save failed, the
-        flushed docs have moved into the ``_unsaved_upserts`` redo log
-        (record + cached normalized vector) and ``_index_dirty`` stays
-        ``True``: a later commit or ``finalize`` reloads whatever another
-        writer committed meanwhile and replays the logged rows on top —
-        without re-embedding (issue #3688). A logged row is *not* replayed
-        over a row the other writer committed strictly later — by the
-        ``__write_seq__`` token, or by whole-second ``__created_at__`` when a
-        row predates it (see ``write_seq``): that writer legitimately
-        superseded us (a reprocess of the same document under the same
-        content-hash id), and the redo entry is dropped instead. The read
-        paths apply the same ordering rule over the same find-all row set
-        (``_resolve_resident_rows``), so read-your-writes never reports a row
-        the replay is about to decline to restore — not even in a corrupt
-        store where one id carries several rows. The log is cleared only once
-        a save lands.
-
-    Non-pipeline write paths:
-        The pipeline ``busy`` gate serializes ``upsert`` / ``delete`` /
-        ``index_done_callback`` called from document ingestion and purge.
-        The following entry points are **not** serialized by the pipeline
-        and must be guarded externally:
-            * ``drop`` — gated by the API layer (``/documents/clear``
-              takes the pipeline busy reservation before invoking it).
-            * ``delete_entity`` / ``delete_entity_relation`` — reached
-              from the ``utils_graph.py`` admin flows, which the WebUI does
-              exercise (the ``/graph/*`` endpoints). Admin-vs-pipeline is
-              guarded by ``check_pipeline_busy_or_raise``; admin-vs-admin is
-              not, and deliberately stays that way — see the *Non-pipeline
-              write paths* section of ``NetworkXStorage`` for the accepted
-              residue and issue #3838 for the reasoning.
-
-        As in ``NanoVectorDBStorage``, a flush publishes every pending
-        upsert buffered in this instance, not only the caller's.
+    Supported for small-scale testing and validation only.
     """
 
     def __post_init__(self):
@@ -368,7 +150,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         self._loaded_fingerprint = None
         # How many times the file channel caught a commit the flag channel
         # never announced, so a deployment can tell whether the
-        # lost-notification window in #3854 actually occurs.
+        # lost-notification window actually occurs.
         # The on-disk state already counted as a lost notification. A load
         # that raises leaves _loaded_fingerprint in place, so the same peer
         # commit is re-detected by every later call; without this it would
@@ -385,7 +167,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # Custom ids queued for removal, applied in one batched index rebuild
         # by _flush_pending_locked (see *Deferred-delete protocol* in delete's
         # docstring). An eager delete rebuilt the whole IndexFlatIP per call
-        # and the merge stage deletes once per relation (#3681).
+        # and the merge stage deletes once per relation.
         self._pending_deletes: set[str] = set()
         # Redo log: removals already applied to self._index / self._id_to_meta
         # but not yet on disk, kept as custom id -> {_row_fingerprint(removed
@@ -409,7 +191,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # normalized vector). The upsert mirror of _unsaved_deletes: a reload
         # after a failed save rebuilds the in-memory state from the on-disk
         # snapshot, and the next flush replays these rows on top without
-        # re-embedding (issue #3688). Cleared only once a save lands.
+        # re-embedding. Cleared only once a save lands.
         self._unsaved_upserts: dict[str, _PendingFaissDoc] = {}
 
         # Sweep orphan tmp siblings left behind by hard kills mid-save.
@@ -588,7 +370,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         sync API — the reload is unconditionally a full reload of both
         files via ``_reload_index_from_disk_locked``.
 
-        Under the *Single writer* invariant (see class docstring), the
+        Under the *Concurrency invariants* single-writer rule (contract doc), the
         reload branch never fires in the writer process: the writer
         resets its own flag at the end of every ``index_done_callback``.
         The branch exists for readers.
@@ -618,13 +400,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
         model is called once per id at flush time (``_flush_pending_locked``
         during ``index_done_callback`` / ``finalize``). This coalesces
         repeated upserts of the same id and many small upsert calls into a
-        single embedding pass (see class docstring,
-        *Deferred-embedding protocol*, and issue #2785).
+        single embedding pass (see the contract doc,
+        *Deferred-embedding protocol*).
 
         Persistence:
             Changes live only in this process's memory until the next
             ``index_done_callback``. Cross-process readers will not see
-            them until that commit fires (see class docstring,
+            them until that commit fires (see the contract doc,
             *Cross-process sync protocol*). Until the flush, an upserted
             id is observable only through the read-your-writes read paths,
             not through ``query``.
@@ -660,7 +442,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 # A fresh upsert supersedes a queued delete for the same id:
                 # the flush materializes the new row after applying deletes,
                 # so applying the delete would be redundant work. Mirrors the
-                # Nano / PG / Qdrant buffers (#3681).
+                # Nano / PG / Qdrant buffers.
                 self._pending_deletes.discard(doc_id)
                 self._pending_upserts[doc_id] = _PendingFaissDoc(record=record)
 
@@ -760,99 +542,24 @@ class FaissVectorDBStorage(BaseVectorStorage):
     async def delete(self, ids: list[str]):
         """Delete vectors for the provided custom IDs.
 
-        Deletes are **deferred**: each id is queued in
-        ``self._pending_deletes`` (cancelling any pending upsert for it) and
-        every queued id is applied in one batched index rebuild by
-        ``_flush_pending_locked``. The entity/relation merge stage deletes the
-        stale forward/reverse rows once per relation, and an eager delete
-        rebuilt the whole ``IndexFlatIP`` per call — deferring turns that into
-        one rebuild per flush (#3681; the same change #3680 made on Nano, and
-        the contract the Qdrant / PostgreSQL / Milvus / MongoDB / OpenSearch
-        buffers already document).
+        Deletes are **deferred**: each id is queued in ``self._pending_deletes``
+        (cancelling any pending upsert for it) and every queued id is applied in
+        one batched index rebuild by ``_flush_pending_locked``. An eager delete
+        rebuilt the whole ``IndexFlatIP`` per call, and the merge stage deletes
+        once per relation.
 
-        Deferring also keeps a delete from being lost across writers: the
-        removal used to be applied to ``self._index`` while still unsaved,
-        and because ``index_done_callback`` reloads from disk unconditionally
-        when another process has committed — a reload that *replaces*
-        ``self._index`` / ``self._id_to_meta`` — the row could silently
-        reappear. A queued id is applied *after* that reload, so it survives.
+        Deferring also keeps a delete from being lost across writers: a removal
+        applied to ``self._index`` while still unsaved could silently reappear
+        when ``index_done_callback`` reloaded a peer's commit. A queued id is
+        applied AFTER that reload, so it survives.
 
-        Two buffers, because the flush and the save can fail independently
-        (the same protocol Nano documents, #3680):
+        Ids that match no row are a no-op, not an error -- the by-id contract
+        every backend implements, and the one purge relies on.
 
-            * ``_pending_deletes`` — queued, not applied to the index yet.
-            * ``_unsaved_deletes`` — applied to the index but not yet on
-              disk, kept as ``id -> {fingerprints of the removed rows}``.
-              This is a redo log, not a pending buffer.
-
-        The redo log exists because a removal that reached ``self._index``
-        can still be undone: if the save fails, the next
-        ``index_done_callback``'s unconditional reload replaces the in-memory
-        state with the on-disk snapshot and the row returns. Replaying the
-        log after that reload removes it again, so the reload stays lossless
-        for deletes. (Upserts carry the mirror log: the flush moves its docs
-        from ``_pending_upserts`` into the ``_unsaved_upserts`` redo log
-        rather than dropping them, so a materialized-but-unsaved upsert is
-        replayed after the same reload; see the deferred-embedding protocol
-        above and issue #3688. A removal request evicts the id's redo entry
-        — ``delete`` / ``delete_entity_relation`` — or the replay would
-        resurrect the row the removal just took out.)
-
-        A replay matches on the row, not on the id alone. Ids are content
-        hashes, so another writer can publish a *new* row under an id we
-        removed, and deleting by id would destroy it. The log therefore
-        stores the ``_row_fingerprint`` of every row it removed — a set per
-        id, because a legacy / corrupt store can hold several rows under one
-        id and ``delete`` removes all of them (see
-        ``_find_faiss_ids_by_custom_id``) — and a replay removes only rows
-        that still match one of them. The two buffers are scoped
-        differently on purpose: ``_pending_deletes`` holds a *request* — the
-        flush removes whatever row carries that id, the by-id contract purge
-        relies on — while ``_unsaved_deletes`` holds a *record* of a removal
-        that already happened, so replaying it must not remove a row that
-        has since taken the id's place.
-
-        **Boundary of that guarantee.** Successor preservation is only as
-        sharp as content-based identity, and the case it has to resolve is a
-        successor *identical* in content to the row removed.
-        ``__created_at__`` does not break that tie — ``upsert`` stamps
-        ``int(time.time())``, so a rewrite inside the same second carries the
-        same timestamp — but ``__write_seq__`` does: every ``upsert`` stamps
-        its own token into the record (see ``write_seq``), so a successor
-        written by another writer, or by us, fingerprints differently and the
-        replay preserves it. What remains is a row written before the token
-        existed, which no content-based identity can tell from the row we
-        deleted, so the replay removes it — a case that already presupposes
-        the *Single writer* invariant above being violated (see class
-        docstring, *Concurrency invariants*).
-
-        The read-your-writes paths mirror both rules: a queued id reads as
-        absent, while a logged one hides only the row the entry names — a
-        replacement the replay would preserve stays readable. An ``upsert``
-        cancels a *queued* delete for the same id but never touches the redo
-        log: the buffered row may be discarded by an aborting batch before
-        it materializes, and dropping the entry then would leave the reload
-        nothing to replay. Ids that matched no row are not logged at all.
-        The log is cleared once a save lands; an aborting batch keeps it
-        (``drop_pending_index_ops`` discards buffered work, not removals
-        that already reached the index). ``delete_entity_relation`` stays
-        eager — it is off the merge hot path — but its removals are
-        applied-and-unsaved just the same, so they are recorded in the log
-        too. Both buffers are in-memory only: they are dropped by ``drop``
-        and lost on a crash before the flush.
-
-        Persistence:
-            Queued ids are in-memory only: they land on the index at the next
-            ``index_done_callback`` / ``finalize`` flush and are lost on a
-            crash before it. Cross-process visibility requires the flush.
-
-        Errors propagate to the caller at flush time — Faiss delete is
-        destructive enough that document deletion / status updates must not
-        proceed if the vectors were not actually removed. (This intentionally
-        diverges from Nano, whose delete swallows + logs.)
-
-        Args:
-            ids: List of custom IDs to be deleted.
+        The two-buffer split (``_pending_deletes`` is a request, scoped by id;
+        ``_unsaved_deletes`` is a record of a removal that happened, scoped by
+        row version), the replay ordering rules and the read-your-writes
+        behaviour are in ``docs/design/FileBackedSnapshotContract.md``.
         """
         if not ids:
             return
@@ -884,7 +591,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             a subsequent ``index_done_callback``. Callers outside the
             pipeline must persist explicitly.
 
-        **Not pipeline-gated** — see class docstring
+        **Not pipeline-gated** — see the contract doc
         *Non-pipeline write paths*. The caller is responsible for
         ensuring single-writer serialization.
         """
@@ -917,7 +624,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             short-circuit before ``_persist_graph_updates`` flushes a
             half-cleaned buffer.
 
-        **Not pipeline-gated** — see class docstring
+        **Not pipeline-gated** — see the contract doc
         *Non-pipeline write paths*. The caller is responsible for
         ensuring single-writer serialization.
         """
@@ -1168,7 +875,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         Precondition: the caller **must already hold** ``_storage_lock``. The
         lock is non-reentrant, so this helper never calls ``_get_index`` and
         operates on ``self._index`` / ``self._id_to_meta`` directly. Embedding
-        runs inside the lock on purpose (see class docstring,
+        runs inside the lock on purpose (see the contract doc,
         *Deferred-embedding protocol*).
 
         Invariant: once ``_PendingFaissDoc.vector`` is set it is an **already
@@ -1209,7 +916,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # (upsert also cancels the queued delete, but a delete queued after
         # the upsert must still win over the *materialized* stale row).
         # One scan of ``_id_to_meta`` for the whole queued set instead of
-        # one full scan per deleted id (#3681). A queued id removes whatever
+        # one full scan per deleted id. A queued id removes whatever
         # row carries it; a replayed one (redo log, after a reload undid an
         # unsaved removal) only removes the row version it removed before,
         # so anything written under that id since — by another writer or by
@@ -1259,7 +966,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # (foreign commit) rebuilt the in-memory state from a snapshot that
         # lacks them. Rebuilding from the logged records + cached vectors
         # puts them back on top of whatever the other writer committed,
-        # without re-embedding (issue #3688). An id that is pending again is
+        # without re-embedding. An id that is pending again is
         # skipped — the newer buffered doc materializes below and supersedes
         # the logged row; one whose stored row already fingerprints equal to
         # the logged record (no reload happened, or an earlier retry
@@ -1413,7 +1120,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # The flushed entries move from the pending buffer into the redo log
         # rather than being dropped: the rows are materialized but not
         # durable yet, and clearing the only replayable copy here is exactly
-        # the loss window of issue #3688. The caller clears the log once its
+        # the reload-loses-them window. The caller clears the log once its
         # save lands. Only entries we just flushed leave the pending buffer —
         # the `is pdoc` identity check is defensive scaffolding: today the
         # non-reentrant _storage_lock locks out concurrent upserts for the
@@ -1453,8 +1160,8 @@ class FaissVectorDBStorage(BaseVectorStorage):
         index has more vectors than the meta describes. The
         ``index < meta`` direction is covered by
         ``test_faiss_meta_inconsistency``; the ``index > meta`` direction is
-        a known gap (logged on reload, not auto-repaired) — see class
-        docstring *Storage model*.
+        a known gap (logged on reload, not auto-repaired) — see
+        *Storage model* in the contract doc.
 
         Both writes run in the storage-IO pool rather than on the event loop:
         together they rewrite the entire index and the entire metadata file, so
@@ -1560,7 +1267,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 # Adopting hides nothing: a genuine peer commit after this
                 # moves the pair again, away from what was adopted here. The
                 # mismatched pair on disk is a pre-existing residue of the
-                # best-effort cross-file write (see the class docstring's
+                # best-effort cross-file write (see the contract doc's
                 # storage model and ``_load_faiss_index``'s skew detection),
                 # not something this fence can repair.
                 self._record_fingerprint()
@@ -1578,8 +1285,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
             # `storage_updated` only makes this process reload the files it just
             # wrote. The hook also keeps its redo logs when it fails here, so if
             # an unnotified peer saves its older snapshot over these rows first,
-            # the next flush replays them back rather than losing them (#3854 is
-            # the fence gap itself; this only makes it recoverable).
+            # the next flush replays them back rather than losing them. The gap
+            # is the fence's own, and it takes BOTH halves missing: this failure
+            # silences the notification channel, and the file channel still
+            # closes it unless the replaced file happens to read as unchanged
+            # (the tick collision). The redo log does not close the gap; it
+            # makes it recoverable. See the contract doc, *Accepted residues*.
             log_without_raising(
                 logger.error,
                 f"[{self.workspace}] FAISS index {self.namespace} was saved to "
@@ -1639,7 +1350,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             # between the two atomic_writes in _save_faiss_index can leave
             # the index with more vectors than the meta describes. We log
             # but do not auto-repair — repair semantics (truncate index vs
-            # rebuild meta) are out of scope here. See class docstring.
+            # rebuild meta) are out of scope here. See the contract doc.
             if self._index.ntotal > len(self._id_to_meta):
                 logger.warning(
                     f"[{self.workspace}] FAISS index has {self._index.ntotal} vectors "
@@ -1692,7 +1403,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         ``_unsaved_upserts`` is kept for the same reason as its delete twin:
         it names rows that already reached ``self._index`` (the class this
         method intentionally does not roll back), and dropping it would only
-        reopen the reload-loses-them window of issue #3688 for rows whose
+        reopen the reload-loses-them window for rows whose
         fate is already sealed either way — reprocessing overwrites them
         idempotently whether or not the replay preserved them.
         """
@@ -1708,7 +1419,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         """Flush deferred embeddings, commit to disk, and notify other processes.
 
         This is the writer's **commit point** in the cross-process sync
-        protocol (see class docstring). Effects, in order:
+        protocol (see the contract doc). Effects, in order:
             1. If another process committed first, reload the latest on-disk
                snapshot while preserving this process's pending buffer.
             2. ``_flush_pending_locked`` embeds every buffered upsert (once
@@ -1721,7 +1432,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                docs sit in the ``_unsaved_upserts`` redo log (flush moved
                them there) and ``_index_dirty`` stays ``True``, so a later
                commit or ``finalize`` can reload a foreign snapshot and
-               replay them on top — without re-embedding (issue #3688).
+               replay them on top — without re-embedding.
             4. ``set_all_update_flags`` flips every registered process's
                ``storage_updated`` flag, then we immediately reset our own
                flag to ``False`` so the writer does not self-reload on the
@@ -1755,7 +1466,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 # that peer can become the next writer and save it over these
                 # rows. Keeping the redo logs makes that recoverable: this
                 # process's next flush reloads the foreign snapshot and replays
-                # them on top (the same path issue #3688 built), so the rows
+                # them on top (the redo-log path), so the rows
                 # come back instead of being lost silently. Retiring them first
                 # threw away the only copy. Replay is idempotent -- an
                 # unchanged file matches by fingerprint and writes nothing, and
@@ -2031,7 +1742,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             (the ``/documents/clear`` endpoint does this) before invoking
             it — running ``drop`` concurrently with an active document
             pipeline will tear down storage out from under the writer and
-            silently lose data. See class docstring,
+            silently lose data. See the contract doc,
             *Non-pipeline write paths*.
 
         Returns:
@@ -2100,7 +1811,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             # "No existing Faiss index file found" warning per successful
             # clear, and nothing else. Kept on the event loop: mutating
             # ``self._index`` / ``self._id_to_meta`` off the loop would break
-            # concurrency invariant (3) in the class docstring.
+            # concurrency invariant 3 in the contract doc.
             #
             # Guarded like every other post-removal step: the files are already
             # gone, so nothing here may report the completed destruction as
@@ -2232,7 +1943,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
           logs replay both the removals (``_unsaved_deletes``) and the rows
           (``_unsaved_upserts``) on top of the snapshot, whereas skipping
           the reload would write our pre-commit snapshot over another
-          writer's durable rows (issue #3688).
+          writer's durable rows.
 
         ``_index_dirty`` can be ``True`` while all four buffers are empty —
         e.g. a materialized-but-unsaved upsert whose id is then ``delete()``-d
@@ -2296,7 +2007,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 # that peer can become the next writer and save it over these
                 # rows. Keeping the redo logs makes that recoverable: this
                 # process's next flush reloads the foreign snapshot and replays
-                # them on top (the same path issue #3688 built), so the rows
+                # them on top (the redo-log path), so the rows
                 # come back instead of being lost silently. Retiring them first
                 # threw away the only copy. Replay is idempotent -- an
                 # unchanged file matches by fingerprint and writes nothing, and

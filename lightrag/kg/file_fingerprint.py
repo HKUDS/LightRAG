@@ -1,6 +1,6 @@
-"""The file half of the file-backed storages' cross-process fence (#3854).
+"""The file half of the file-backed storages' cross-process fence.
 
-``NetworkXStorage``, ``NanoVectorDBStorage`` and ``FaissVectorDBStorage`` all
+`NetworkXStorage`, `NanoVectorDBStorage` and `FaissVectorDBStorage` all
 coordinate through a file plus a ``storage_updated`` flag distributed by
 ``lightrag.kg.shared_storage``. The flag is published with one Manager RPC per
 process, so it can be lost -- for one process, for several, or for all -- and a
@@ -18,141 +18,30 @@ are far apart in time and the fingerprint sees them; the fingerprint fails when
 two commits land inside one filesystem timestamp tick with an identical size,
 which needs a healthy, fast-committing system -- exactly when the flag works.
 
-**The deferred remedy for the tick collision**, recorded here so it is not
-rediscovered from scratch: make the writer guarantee mtime monotonicity --
-``stat`` the target before the commit and, if ``os.replace`` did not advance
-its mtime, bump it with ``os.utime``. That would make the file channel exact
-on its own. It is deliberately NOT done, because the bump has no good value on
-a coarse filesystem: ``+1 ns`` is truncated away on a 1 s (ext3, HFS+) or 2 s
-(FAT) granularity, and a whole-granule bump produces user-visible future
-timestamps. It costs one extra ``stat`` per commit plus a rare ``utime``, so
-cost is not the objection. Do it only if the ``_missed_notification_reloads``
-counters that each storage logs ever show this window occurring in a real
-deployment -- those counters are the evidence this decision waits on, which is
-why the next section exists.
-
-``_missed_notification_reloads``: one increment per unannounced state
----------------------------------------------------------------------
-
-Each storage keeps this counter, and its contract is exactly:
-
-    **it increments once per distinct on-disk state this process found
-    unannounced -- not per detection of one, and not per attempt to reload
-    out of one.**
-
-A *state*, not a commit, and the difference is not pedantry: this is a state
-channel and not a log. It can only ever ask "is the file the one I recorded?",
-so several peer commits that land before this process next looks are one
-observation and one increment. Reading the contract as "one per commit" is
-what makes the batching below look like a defect rather than the shape of the
-instrument.
-
-It reads like a log line and is not one. It is the instrument the ``os.utime``
-decision above waits on, so a bias in it is not cosmetic: it silently decides
-whether that work is ever judged necessary. Both directions are defects, and
-review found this counter wrong in five distinct ways, each fixed in a
-different place. They are indexed here because no single site shows the whole
-contract, and the next person to touch any one of them will be looking at a
-fragment:
-
-1. **Do not arm a cross-process channel for a process-local fact.**
-   ``NetworkXStorage`` recovers from a failed save by discarding its
-   unpersisted graph. Arming that through ``_loaded_fingerprint`` made the
-   file channel report a peer commit that never happened. It uses a
-   process-local ``_recovery_reload_pending`` bool instead -- see that class's
-   *Recovery reload*. (Overcount.)
-2. **Classify before a reload that discharges several conditions at once.**
-   That same recovery flag outranks both channels, and one reload satisfies
-   all of them, so a peer commit arriving while recovery is pending would be
-   handled and never counted. Every reload that could discharge it counts
-   first: both recovery branches, and the failed-save handler's reload --
-   the one that arms the flag when it fails. (Undercount.)
-3. **Count states, not attempts.** A reload that raises leaves the reader's
-   recorded fingerprint untouched, so the same commit is re-detected by every
-   later call. :func:`counts_as_a_new_lost_notification` plus each storage's
-   ``_counted_peer_fingerprint`` makes it once-per-state. (Overcount, and it
-   was unbounded.)
-4. **End that marker at the reload it was protecting -- and not before.**
-   Kept longer, it suppresses a state that RECURS -- a drop, a notified
-   recreation, a second drop -- which is a real second loss and not the
-   tick-collision residue. Cleared in each storage's ``_adopt_fingerprint``,
-   the single point a new state is recorded and one reached only after a load
-   or commit landed. **Only when that adoption records a CONCRETE state**,
-   though: ``adopted(UNREADABLE)`` is ``None``, which means "nothing
-   recorded" and against which any state reads as a change, so clearing there
-   forgets which commit was counted and counts it again. The post-drop
-   fingerprint is ``(None,)``, a real state, so a drop still clears. (Both
-   directions: undercount if kept too long, double-count if dropped too
-   early.)
-5. **Once a call is committed to adopting, it must not observe the file
-   again.** Every step from there -- deciding there is a divergence, counting
-   it, adopting the new state -- runs on ONE sample. A second observation can
-   come back ``UNREADABLE`` while the first succeeded, and then its step is
-   skipped while the adoption still happens on the good sample, erasing the
-   divergence a later call would have counted. So the counting callers pass
-   their sample to :func:`divergence_detected`, to
-   :func:`counts_as_a_new_lost_notification` and to their reload alike.
-   An observation *before* that point is fine and the vector backends use one:
-   theirs gates the whole function and returns early, adopting nothing, so a
-   failure there costs a retry rather than the event. Found twice, both after
-   the commit point: first the count-vs-adopt pair, then the divergence test
-   that was still re-observing. (Loss, not merely undercount.)
-
-Two blind spots remain by design, and they are not the same kind. The five
-above were neither -- they were defects.
-
-* **The tick collision**: two commits sharing one ``(st_mtime_ns, st_size)``,
-  so the second raises no divergence at all. This is the residue the
-  ``os.utime`` remedy above would remove, and it is the dangerous one -- not
-  because of the count but because a commit the channel cannot see is a
-  commit it cannot rescue a stale writer out of.
-* **Batching**: N unannounced commits observed as one state, counted once.
-  Inherent to a state channel, and the ``os.utime`` remedy does nothing for
-  it -- monotone timestamps cannot make countable a state that was never
-  observed. Only a monotonic generation persisted with the data would, which
-  is a larger change than the remedy above and buys resolution rather than
-  safety: batching understates how OFTEN the window occurs and cannot hide
-  THAT it occurs, which is the question the counter is read to answer. So it
-  is recorded here and not fixed.
-
-Neither is an excuse for the five defects above: each of those could bias the
-count in a deployment where the window occurs at all, and two could erase the
-evidence outright.
-
-The mechanism lives here, once, because its hazards are in the details rather
-than the shape, and three copies of them is how it rots:
+Four rules a caller must not get wrong, each of which has cost a defect:
 
 * **Sample BEFORE reading the file, never after.** A fingerprint taken after
   the parse can belong to a newer file than the one now in memory, and
-  recording it would suppress the reload that newer file needs -- the one way
-  this fence could *introduce* a lost write. Sampling early can only cost a
-  redundant reload. Callers own this ordering; the functions cannot enforce it.
+  recording it would suppress the reload that file needs -- the one way this
+  fence could *introduce* a lost write. Callers own this ordering; the
+  functions cannot enforce it.
+* **Once a call is committed to adopting, it must not observe the file again.**
+  Divergence, counting and adoption all run on ONE sample, passed in.
 * **An unreadable ``stat`` is not an absent file.** ``UNREADABLE`` reports "no
-  change" so the fence degrades to the flag alone, i.e. to the behaviour that
-  predates it. Failing towards a reload instead would install an empty
-  snapshot from a file it cannot read, and the next commit would serialize that
-  over the real one.
-* **``st_ino`` is deliberately excluded.** ``atomic_write`` renames a tmp file
-  over the target, freeing the previous inode, and the allocator hands that
-  same inode straight back to the next tmp file in the directory -- measured at
-  28 reuses across 30 consecutive commits. It is near-constant across commits
-  and discriminates nothing. ``st_size`` is a helper that catches nothing on
-  its own (an equal-length attribute rewrite keeps it); ``mtime`` carries the
-  signal.
-* **Single-process mode has no peer that could have committed**, so the test is
-  skipped there: a divergent file means an external edit, and reloading for it
-  would discard the process's own uncommitted mutations.
-* **A multi-file storage must look completely published**, judged from the
-  files themselves: it publishes them in a fixed order and renames the last one
-  -- the commit marker -- LAST, so a completed publication leaves the marker
-  STRICTLY newer than the files it commits. Reloading a torn set is the
-  corruption vector, and strictness is what keeps a coarse filesystem clock
-  from passing one off as complete. ``paths`` is therefore given in PUBLICATION
-  ORDER. See :func:`publication_complete`.
+  change", degrading the fence to the flag alone; failing towards a reload
+  would install an empty snapshot the next commit then serializes over the
+  real one.
+* **A multi-file storage must look completely published.** ``paths`` is given
+  in PUBLICATION ORDER, marker last; see :func:`publication_complete`.
 
-Each storage keeps its own recorded value and wires these into its reload,
-commit and drop paths; see ``NetworkXStorage``'s *Cross-process sync protocol*
-for the full contract, including the accepted residues.
+``st_ino`` is deliberately excluded: ``atomic_write`` frees the previous inode
+and the allocator hands it straight back (measured at 28 reuses in 30 commits),
+so it discriminates nothing. Single-process mode skips the test entirely.
+
+**Full contract: ``docs/design/FileBackedSnapshotContract.md``** -- the
+``_missed_notification_reloads`` counter contract and the five ways review
+found it biased, the deferred ``os.utime`` remedy and why it waits on that
+counter, and the two blind spots that remain by design.
 """
 
 from __future__ import annotations

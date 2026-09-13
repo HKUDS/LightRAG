@@ -34,129 +34,35 @@ from .shared_storage import (
 class JsonKVStorage(BaseKVStorage):
     """JSON-file-backed KV storage with **shared in-memory state across processes**.
 
-    This class uses a *fundamentally different* cross-process model from
-    ``NanoVectorDBStorage`` / ``FaissVectorDBStorage`` / ``NetworkXStorage``
-    (which keep one in-memory copy per process and reconcile via file
-    reloads). Compare carefully before changing either side.
+    A *fundamentally different* cross-process model from
+    ``NanoVectorDBStorage`` / ``FaissVectorDBStorage`` / ``NetworkXStorage``,
+    which keep one in-memory copy per process and reconcile via file reloads.
+    Compare carefully before changing either side.
 
-    Storage model:
-        ``self._data`` is **not** a per-process dict — it is the value
-        returned by ``get_namespace_data(namespace, workspace=...)``, i.e.
-        a reference into ``shared_storage._shared_dicts``. In multi-
-        process mode this is a ``multiprocessing.Manager().dict()`` proxy
-        that every worker sees the **same instance** of; in single-
-        process mode it degrades to a plain ``dict``. Either way, a
-        mutation in any process is *immediately* visible to every other
-        process — there is no reload needed.
+    **Full contract: ``docs/design/FileBackedSnapshotContract.md``** (see its
+    ``JsonKVStorage`` section) -- the reversed flag semantics, lock scope,
+    commit granularity and what it means for chunk tracking, and the caveats.
 
-        The on-disk file at
-        ``working_dir/[workspace/]kv_store_<namespace>.json`` exists for
-        durability only. It is the source of truth at startup and the
-        target of ``index_done_callback`` flushes, but is **not** part of
-        the steady-state read/write path.
+    ``self._data`` is NOT a per-process dict: it is a reference into
+    ``shared_storage._shared_dicts``, a ``Manager().dict()`` proxy every worker
+    sees the same instance of (a plain dict in single-process mode). A mutation
+    in any process is immediately visible in every other -- there is no reload,
+    and adding a ``_get_*`` entry method would be wrong. The on-disk file is
+    for durability only: read once in ``initialize``, written by
+    ``index_done_callback``, and not on the steady-state path.
 
-    First-time load (``initialize``):
-        ``try_initialize_namespace`` is a global init lock that returns
-        ``True`` to exactly one process per ``(namespace, workspace)``.
-        That process reads the JSON file and populates ``self._data``
-        under ``_storage_lock``. Other processes skip the load — they
-        will see the data through the same shared ``self._data`` proxy.
+    ``storage_updated`` means the OPPOSITE of what it means in the file-backed
+    classes: ``True`` is "there is dirty data still to flush", never "there is
+    fresher data on disk to reload".
 
-    Cross-process sync protocol (note: reversed semantics vs file-backed
-    classes):
-        Anyone writing (``upsert`` / ``delete`` / ``drop``):
-            1. Mutate ``self._data`` under ``_storage_lock`` (same lock,
-               same dict, all processes see the change immediately).
-            2. Call ``set_all_update_flags`` to mark **every** process's
-               ``storage_updated`` flag ``True``. Here ``True`` means
-               *"there is dirty data that still needs to be flushed"*,
-               not *"there is fresher data on disk that I need to
-               reload"* as in the file-backed implementations.
-        Commit (``index_done_callback``):
-            1. Under ``_storage_lock``, if ``storage_updated.value`` is
-               ``True``, snapshot ``self._data`` and write it to disk
-               via ``write_json`` (atomic).
-            2. ``clear_all_update_flags`` — wipe every process's flag
-               back to ``False``. Because the in-memory state is already
-               consistent across processes, there is nothing for the
-               *other* processes to do; the clear is just a
-               "the dirty data has been persisted" signal.
+    ``_storage_lock`` is held over EVERY ``self._data`` access, read or write,
+    because the Manager proxy is not free-threaded across processes.
 
-    Lock scope:
-        ``_storage_lock`` is a per-``(namespace, workspace)`` keyed lock
-        spanning intra-process coroutines **and** inter-process workers.
-        Unlike the file-backed classes (which only lock reload/commit
-        critical sections), this class **holds the lock over every
-        ``self._data`` access** — read or write — because the underlying
-        ``Manager().dict()`` is not free-threaded across processes.
+    A commit rewrites the whole namespace, so any writer's flush durably
+    publishes every other writer's pending mutation here. That matters most for
+    the chunk-tracking namespaces, whose rows carry purge attribution.
 
-        Two places intentionally do work outside the lock for latency
-        reasons:
-            * ``upsert`` performs its per-key timestamp prep loop inside
-              the lock but yields to the event loop via
-              ``_cooperative_yield`` between keys (safe: ``NamespaceLock``
-              is non-reentrant, so siblings blocked on it stay blocked).
-            * ``JsonDocStatusStorage.upsert`` prepares its caller-supplied
-              dict outside the lock (it only mutates the input, not the
-              shared store).
-
-    Commit granularity — a commit publishes the whole namespace:
-        ``index_done_callback`` snapshots the entire ``_data`` dict and
-        rewrites the whole JSON file. There is no scoped or transactional
-        commit, and issue #3838 rejects adding one for the file-backed
-        storages. So **any writer's flush durably publishes every other
-        writer's pending in-memory mutation in this namespace.**
-
-        This matters most for the chunk-tracking namespaces
-        (``entity_chunks`` / ``relation_chunks``), whose rows are the
-        authoritative attribution carriers behind
-        ``_purge_kg_contributions``: a row and the graph object it describes
-        live in different stores with no transaction between them, and the
-        forbidden ordering is the object durable without the row.
-        ``utils_graph._persist_graph_updates`` commits the rows first for
-        exactly that reason; a co-tenant's flush can still publish a row
-        early, which lands in the benign direction. See the *Non-pipeline
-        write paths* section of ``NetworkXStorage`` for the full residue.
-
-        Scope decision (issue #3838): this backend is supported for
-        small-scale testing and validation only, so the cost of the
-        whole-file rewrite is not a consideration and no change here may be
-        justified by it.
-
-    Who can write:
-        Pipeline ``busy`` still serializes the document ingest / purge
-        flows, but the *file-flush trigger* is symmetric: any process
-        whose ``storage_updated.value`` is ``True`` when
-        ``index_done_callback`` fires will perform the write. In a
-        single-writer pipeline this is always the same process; if you
-        ever permit multiple writers, two processes may race to flush
-        the same in-memory state — that race is safe (both flush the
-        same shared dict, ``write_json`` is atomic per file) but
-        wasteful, and the ``clear_all_update_flags`` after each flush
-        means subsequent re-flushes are no-ops.
-
-    Caveats vs file-backed implementations:
-        * **No reload path.** If something writes to the on-disk file
-          out of band, this class will not pick it up until restart.
-          The file is only ever written by ``index_done_callback`` and
-          read once in ``initialize``.
-        * **No ``_get_*`` entry method.** Adding one would be wrong —
-          there's nothing to "get fresher than" since the in-memory
-          state is already the shared, authoritative view.
-        * **``write_json`` may sanitize.** If sanitization happens, the
-          on-disk JSON differs from what was in memory; the callback
-          re-reads the cleaned file back into ``self._data`` under the
-          same lock so the shared view stays consistent with disk.
-
-    Non-pipeline write paths:
-        * ``drop`` — destructive, **not** serialized by this storage
-          class. Currently gated by the API layer
-          (``/documents/clear``); any new caller must hold the pipeline
-          ``busy`` reservation.
-        * ``upsert`` / ``delete`` invoked from non-pipeline admin flows
-          (cache management, etc.) — safe under the shared-lock model,
-          but consumers should still respect the pipeline gate to avoid
-          interleaving with batched ingest work.
+    Supported for small-scale testing and validation only.
     """
 
     supports_strict_point_reads: ClassVar[bool] = True
@@ -228,8 +134,8 @@ class JsonKVStorage(BaseKVStorage):
     async def index_done_callback(self) -> None:
         """Flush dirty in-memory state to disk and clear all dirty flags.
 
-        Commit point in the shared-memory protocol (see class docstring,
-        *Cross-process sync protocol*). Steps:
+        Commit point in the shared-memory protocol (see the contract doc,
+        *Reversed flag semantics*). Steps:
             1. Under ``_storage_lock``, check this process's
                ``storage_updated.value``. If ``False``, nothing to do —
                return.
@@ -425,7 +331,7 @@ class JsonKVStorage(BaseKVStorage):
                ``storage_updated.value`` to ``True``. Here ``True``
                means *"there is dirty data that still needs to be
                flushed to disk"*, **not** *"there is fresher data on
-               disk"* as in the file-backed classes (see class docstring
+               disk"* as in the file-backed classes (see the contract doc
                for the contrast).
 
         Persistence is deferred to the next ``index_done_callback`` (the
@@ -496,7 +402,7 @@ class JsonKVStorage(BaseKVStorage):
         was actually present (avoids creating spurious dirty state for
         no-op deletes).
 
-        See class docstring for the shared-memory + dirty-flag protocol
+        See the contract doc for the shared-memory + dirty-flag protocol
         and the semantic contrast vs file-backed classes.
 
         Args:
@@ -538,7 +444,7 @@ class JsonKVStorage(BaseKVStorage):
             reservation (the ``/documents/clear`` endpoint does this)
             before invoking it — running ``drop`` concurrently with an
             active document pipeline will wipe out in-flight work and
-            silently lose data. See class docstring,
+            silently lose data. See the contract doc,
             *Non-pipeline write paths*.
 
         Returns:

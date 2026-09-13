@@ -1625,25 +1625,159 @@ deletion is always the recovery step:
 
 #### Concurrent admin writes
 
-The graph mutation endpoints (`/graph/entity/*`, `/graph/relation/*`) refuse a
-request with HTTP 409 while the document pipeline is busy, so an admin write
-never overlaps ingestion except in the narrow window between that snapshot check
-and the underlying write. Holding the pipeline's `busy` flag across a UI edit
-would close that window and is deliberately not done — it would serialize every
-edit against ingestion.
+On a graph storage that declares `requires_single_writer` — `NetworkXStorage`,
+the only one — every public admin graph writer (`acreate_entity`,
+`acreate_relation`, `aedit_entity`, `aedit_relation`, `adelete_by_entity`,
+`adelete_by_relation`, `amerge_entities`, `ainsert_custom_kg`, and therefore
+every `/graph/*` mutation endpoint) runs inside `LightRAG._admin_write_gate`
+(issue #3899), which serializes it in two directions for the whole
+mutate-and-commit body, embedding round-trip included:
 
-Two admin writes are **not** serialized against each other. Each takes only a
-per-entity or per-edge keyed lock, so two calls for different keys run
-concurrently. On a file-backed workspace this matters because a commit there
-publishes the whole namespace: one caller's flush makes another caller's
-unfinished in-memory state durable.
+- **Against other admin writes**, through a workspace-wide admin lock
+  (`{workspace}:GraphAdmin`, key `admin`; cross-process). A second admin write
+  *queues* behind the first for up to `ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT`
+  (default 30 s, `LIGHTRAG_ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT`) and is refused
+  only on expiry. That timeout is the *only* bound on the wait — the
+  multiprocess keyed lock polls with backoff and has no timeout of its own.
+- **Against the document pipeline**, through the pipeline `busy` reservation
+  (`kind="admin"`, never `destructive_busy`, so uploads stay allowed). While an
+  admin write holds it, a pipeline start is *deferred*: the start is reduced to a
+  sticky auto-rescan request in the workspace ingress mailbox, and the gate
+  drives the queue once when it releases. A pipeline that is already running or
+  scanning refuses the admin write, as before.
 
-What that can leave behind, and why it is tolerated:
+  That drive runs in the background on a long-lived loop (the API server), but is
+  **awaited inline under the synchronous wrappers** (`create_entity`,
+  `edit_relation`, …), because `run_until_complete` stops the loop as soon as the
+  admin call returns and a background task there would park after taking the
+  `busy` reservation, wedging the workspace under a live pid. A synchronous admin
+  write therefore blocks until the queue is drained — only when a pipeline start
+  was actually deferred during its hold.
 
-- Two admin writes overlapping *in time* on different workers are caught by the
-  reload fence: the losing writer declines its commit, the caller gets a 500,
-  and retrying re-applies the edit against the peer's snapshot. Loud, and
-  recoverable by the operator.
+  **The background drive needs an event loop that outlives the admin call**, so
+  what an SDK caller of the `a*` methods gets depends on how the loop is driven.
+  Nothing here risks data: the auto-rescan request is sticky, so a drive that
+  does not run leaves it armed for the next scan or upload. What varies is
+  whether the queue is drained now.
+
+  | How the `a*` call is driven | What happens to the deferred drive |
+  |---|---|
+  | A loop that keeps running (an API server, any long-lived app) | Runs to completion. This is the case the background path is for. |
+  | `asyncio.run(main())` with further `await`s after the edit | Runs to completion. |
+  | `asyncio.run(main())` where the edit is the last step, or followed straight by `finalize_storages()` | Cancelled in flight. `finalize_storages` cancels pending drives and the pipeline's own cleanup releases `busy`, so the end state is clean and the request stays armed — the document simply waits for the next trigger. |
+  | A hand-managed loop stopped and restarted with repeated `loop.run_until_complete(...)`, never finalized | The task advances only while the loop happens to run, so it can take the `busy` reservation and then park. Dead-owner reclaim cannot clear a live pid, so the workspace stays busy until the process exits. **Not a supported pattern** — use `asyncio.run`, or `await finalize_storages()` before going idle. |
+
+  Note that `asyncio.run` **cancels** pending tasks on exit; it does not run them
+  to completion. That is why the third row is a cancellation rather than a drain,
+  and why the fourth row — which never reaches such a cancellation — is the only
+  one that can strand the reservation.
+
+The hold is bounded by `ADMIN_WRITE_MAX_HOLD_SECONDS`
+(`LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS`), which defaults to
+`max(180, 6 × EMBEDDING_TIMEOUT)` — 180 s at the default embedding timeout. On
+expiry the write fails with HTTP 500 and both gates release, so a hung embedding
+endpoint cannot fence ingestion indefinitely.
+
+The default is *derived* rather than fixed because the embedding round-trip runs
+inside the hold: raising `EMBEDDING_TIMEOUT` alone would otherwise leave a
+ceiling sized for the old value, killing every retry it was meant to allow. One
+hold has to cover an embedding retry storm (`3 × EMBEDDING_TIMEOUT` plus 8 s of
+backoff — 98 s at the default) plus one whole-graph GraphML commit (~17 s at
+200k nodes, since `write_nx_graph` rewrites the entire graph however small the
+edit was), so ~115 s; the remainder is headroom for the edges an edit touches.
+
+The ceiling is resolved per `LightRAG` instance from that instance's
+`default_embedding_timeout`, not from the environment at import, so a direct
+`LightRAG(default_embedding_timeout=300)` is followed without any environment
+variable. Setting it *below* the embedding timeout is refused at startup.
+Prefer erring high: a ceiling that is
+too high only defers ingestion, and a deferred start is sticky in the ingress
+mailbox so it self-heals, whereas one that is too low kills edits whose commit
+may already have landed.
+
+These two knobs are **not** derived from each other. The ceiling asks how long
+the worst legitimate write may run; the acquire timeout asks how long a caller
+should wait before being told to retry. Deriving one from the other would make
+them equal — which would park an interactive edit for the full worst case
+instead of returning the actionable 409. When the edit ahead runs long, the
+queue is *meant* to degrade to fast failure.
+
+An acquire timeout *above* the ceiling is not wasted, either. The admin lock is
+taken before the ceiling starts (the `pipeline_status` fetch and the reservation
+acquire run inside the lock and outside the ceiling) and released after it ends,
+and a cancellation-resistant commit runs to completion past the expiry — a 1 s
+ceiling was measured holding the lock for 5.01 s. So the lock always outlives
+the ceiling by an amount no static comparison can bound, and a queued write can
+still be rewarded for waiting.
+
+**A 500 from that ceiling does not mean the edit was undone.** The ceiling stops
+the operation by cancelling it, and an admin write withholds a cancellation while
+a storage commit is in flight, so a ceiling firing mid-commit lets that commit
+land. A multi-step flow can also have committed at an earlier step: a merge
+commits the merged node before it removes the source entities. The error message
+says which of the two happened, and either way the caller must **re-read the
+entity or relation before retrying** rather than assume the operation is undone.
+Retrying blind can hit `Entity 'X' already exists` or re-apply an edit that is
+already durable. The graph endpoints return that wording as the 500's `detail`
+rather than the sanitized generic body, because a REST client is the caller that
+has to act on it and does not read server logs. Every other failure on those
+endpoints keeps the sanitized body.
+
+Server-backed graph stores (Neo4j, PostgreSQL, Memgraph, MongoDB, OpenSearch)
+never take the gate, whatever the KV or vector storage beside them: only the
+graph storage can lose an uncommitted mutation to a peer commit
+(`NanoVectorDBStorage` / `FaissVectorDBStorage` replay their pending buffers over
+a reloaded snapshot, and `JsonKVStorage` has no reload path at all). There, two
+admin writes for different keys still run concurrently under per-entity keyed
+locks, as they always did.
+
+**Two 409s, told apart by the `detail` text.** The graph endpoints return
+HTTP 409 for two different reasons, and the retry semantics differ, so the
+`detail` starts with a stable phrase for each (the WebUI surfaces the response
+body verbatim, so no client change is needed):
+
+| Leading phrase | Cause | Clears when |
+|---|---|---|
+| `Another knowledge graph edit is in progress` | the admin lock was held by a peer admin write past the acquire timeout | that peer admin write finishes — retry the same request |
+| `Pipeline is busy with another operation` | the pipeline holds `busy` (a processing run or a destructive job) or `scanning` — from the router's early check or from the gate's reservation | ingestion or the scan finishes |
+
+The router's early check refuses on `busy` **except when an admin write owns
+it**. Without that exemption the second concurrent REST edit would be refused
+before it ever reached the admin lock, so the queueing above would exist only
+for direct SDK callers — and the client would be told to wait for document
+ingestion when what is ahead of it is another UI edit. A `busy` holder that
+cannot be identified is never exempt.
+
+**Accepted residue: queueing can still end in a refusal.** Every admin write
+drives the queue once when it releases, so with two of them in flight the first
+one's drive races the second one's reservation for `busy`. In one process the
+second write wins (it is woken by the lock release, while the drive is a task
+created after it). Across workers it may not: the second write waits on the
+lease lock with backoff, so the first one's drive can take `busy` first and the
+second write gets the pipeline-busy 409 despite having queued. No data is at
+risk — the write simply did not happen and the client retries — so this is
+accepted rather than fixed; treat it as the queued request having missed a turn.
+
+Why a lock rather than teaching the file backend to replay its pending work over
+a reloaded snapshot: graph payloads are accumulate-over-read (`source_id` is an
+evidence set merged from what the writer read; `weight` is floored by the
+evidence count it read), so a replay over a peer's newer state would drop the
+peer's evidence and republish a stale `weight`, silently violating the
+[relation weight contract](#relation-weight-contract). It would exchange a loss
+the reload fence can still see for one nothing can. The one part of that idea
+that was kept is loud: `NetworkXStorage` records when a reload discards
+uncommitted mutations and refuses the next commit in that process with
+`GraphMutationsDiscardedError`, so a writer that bypasses the gate fails instead
+of succeeding without its changes.
+
+What remains, and why it is tolerated:
+
+- Two admin requests a second apart, load-balanced to different workers, where a
+  lost reload notification lets the second mutate a stale snapshot: the admin
+  lock was released long before it was re-acquired, so it cannot help. That is
+  the file-fingerprint fence's case (issue #3854): the stale writer declines its
+  commit, the caller gets a 500, and retrying re-applies the edit against the
+  peer's snapshot. Loud, and recoverable by the operator.
 - A hard process exit can leave a tracking row whose graph object never became
   durable. That row is harmless to queries, cannot be inherited as evidence by a
   later object (the explicit creation paths reset attribution), and is removed by

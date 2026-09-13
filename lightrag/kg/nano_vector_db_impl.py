@@ -56,290 +56,38 @@ class _PendingNanoDoc:
 class NanoVectorDBStorage(BaseVectorStorage):
     """File-backed vector storage built on the in-memory ``NanoVectorDB``.
 
-    Storage model:
-        A single ``NanoVectorDB`` instance lives in process memory; its full
-        state is serialized to one JSON file at
-        ``working_dir/[workspace/]vdb_<namespace>.json``. That JSON file is
-        the **only** cross-process synchronization surface — there is no
-        shared memory, no message bus, and no network channel between
-        processes. All cross-process visibility is therefore mediated by
-        (a) an atomic file write at commit time and (b) a per-namespace
-        ``storage_updated`` flag distributed through
-        ``lightrag.kg.shared_storage``.
+    One ``NanoVectorDB`` instance in process memory, serialized in full to
+    ``working_dir/[workspace/]vdb_<namespace>.json``. That file is the ONLY
+    cross-process synchronization surface.
 
-    Concurrency invariants (the code in this file is correct *only* while
-    all three hold):
-        1. **Single writer per workspace.** The document pipeline's
-           ``busy`` / ``destructive_busy`` flags (see
-           ``docs/design/PipelineConcurrencyContract.md``) guarantee that at
-           most one
-           process performs ``upsert`` / ``delete`` /
-           ``index_done_callback`` at any time. Every other process is
-           read-only with respect to this storage.
-        2. **Eventual consistency is sufficient.** Read-only processes
-           only need to observe the writer's data *after* the writer's
-           ``index_done_callback`` completes. Reads that land in the gap
-           between a writer's in-memory mutation and its commit may
-           legitimately return the pre-update snapshot.
-        3. **NanoVectorDB operations are fully synchronous.** Under a
-           single-threaded asyncio event loop, ``client.upsert`` /
-           ``client.query`` / ``client.delete`` cannot be preempted by
-           another coroutine, which gives them implicit mutual exclusion
-           over ``self._client.__storage``. This is why the methods below
-           don't have to hold ``_storage_lock`` while calling into
-           ``client``.
+    **Full contract: ``docs/design/FileBackedSnapshotContract.md``** -- the
+    two-channel commit fence, the deferred-embedding and deferred-delete
+    protocols with their redo-log ordering rules, the accepted residues, and
+    why this backend replays where ``NetworkXStorage`` declines.
 
-    Cross-process sync protocol (two channels — see #3854):
-        Two independent tests decide whether this process holds a current
-        snapshot, OR-ed at the one place that asks
-        (``_reload_client_from_disk_locked``). They are not redundant — their
-        blind spots do not overlap. The mechanism, and why each detail of it
-        is the way it is, lives in ``lightrag.kg.file_fingerprint``; the
-        canonical prose contract is ``NetworkXStorage``'s section of the same
-        name.
+    The three invariants this class is correct only while they hold: **single
+    writer per workspace** (the pipeline's ``busy`` reservation), **eventual
+    consistency is sufficient** for readers, and **NanoVectorDB calls are
+    synchronous** so they cannot be preempted on the event loop -- which is why
+    the methods do not hold ``_storage_lock`` around them.
 
-        * **Authoritative channel — the file fingerprint.**
-          ``(st_mtime_ns, st_size)`` of the JSON file against what this
-          process recorded when it last loaded or wrote it
-          (``_loaded_fingerprint``). State, not an event: nothing consumes
-          it and a failed notification cannot lose it. Blind spot: two
-          commits inside one filesystem timestamp tick with an identical
-          file size.
-        * **Accelerator channel — the ``storage_updated`` flag.** Read
-          first, because a ``True`` value already answers the question.
-          ``set_all_update_flags`` publishes it with one Manager RPC per
-          process, so a partial publication leaves a peer unnotified —
-          that loss is its blind spot, and it is what the file channel
-          exists for. In exchange it covers the fingerprint's tick
-          collision, which needs a healthy, fast-committing system.
+    Two behaviours a caller has to know:
 
-        Writer side (``index_done_callback`` / ``finalize``):
-            1. Atomically write the in-memory state to disk
-               (``atomic_write`` swaps a tmp file into place).
-            2. Record the fingerprint of the file just written, so this
-               process does not later read its own save as a peer's. Done
-               inside ``_save_to_disk_locked`` — before the caller's
-               bookkeeping, because that publishes through the manager and
-               can fail, while this is a local ``stat``.
-            3. ``set_all_update_flags`` flips every process's
-               ``storage_updated`` flag (including the writer's own), then
-               reset the writer's own flag to ``False``.
-        Reader and writer side (everything through
-        ``_reload_client_from_disk_locked``):
-            1. Inside ``_storage_lock``, test the flag; if it is ``False``,
-               test the fingerprint.
-            2. On either, **fully reload** ``self._client`` from disk —
-               NanoVectorDB has no incremental sync API, so the entire JSON
-               file is re-parsed and a fresh in-memory matrix is rebuilt.
-            3. Record the new fingerprint **and** reset the flag, whichever
-               channel fired.
+    * ``upsert`` does NOT embed. It buffers, and the model is called once per
+      id at flush time, so repeated upserts of one id embed once. Reads are
+      read-your-writes through the buffer; ``query`` and ``client_storage`` see
+      only materialized data, so unflushed rows are deliberately not queryable.
+    * A flush publishes every pending upsert buffered in this instance, not
+      only the caller's. Nothing is lost to that (a peer commit is reloaded and
+      the buffers replayed on top), but the timing is not the caller's to
+      choose.
 
-        **This backend does not decline a stale write, and must not.**
-        ``NetworkXStorage`` refuses to save when the file has moved past its
-        snapshot, because it has no way to keep the mutation. Here the write
-        path is *reload-then-replay*: ``index_done_callback`` reloads the
-        peer's snapshot and ``_flush_pending_locked`` replays the pending
-        buffer and the ``_unsaved_upserts`` / ``_unsaved_deletes`` redo logs
-        on top of it (issue #3688), so both sides survive and there is
-        nothing to report as a failure. Replay is idempotent: an unchanged
-        file matches by fingerprint and writes nothing, and a genuinely newer
-        row under the same id is declined by ``_resident_supersedes_redo``.
-        Consequently the flush-failure propagation NetworkX needs (a declined
-        commit must not be acknowledged as durable, see
-        ``LightRAG._flush_storages``) has no counterpart here.
+    Unlike the graph store this class never declines a stale write: the write
+    path is reload-then-replay, so both sides survive and there is nothing to
+    report as a failure. ``LightRAG._flush_storages``'s decline propagation has
+    no counterpart here.
 
-        Accepted residues (see *Consistency without transactions* in
-        ``AGENTS.md``):
-            * The tick collision above, **and** the notification lost for
-              this process: the peer commit is not observed. Recovery: the
-              next commit by any process flips the flag and changes the
-              fingerprint; the redo logs mean this process's own rows are
-              replayed rather than lost either way.
-            * A ``stat`` this process cannot perform: the file channel
-              reports "no change" and the fence degrades to the flag alone,
-              i.e. to the behaviour that predates it. See
-              ``kg.file_fingerprint`` for why the other direction is worse.
-
-    Lock scope:
-        ``_storage_lock`` is a per-``(namespace, workspace)`` keyed lock
-        spanning both intra-process coroutines and inter-process workers.
-        It only wraps the *reload* and *commit* critical sections, not
-        every ``client.xxx`` call. Operating on ``client`` outside the
-        lock is safe today *because of invariant (3)* — if either premise
-        is ever broken (e.g. ``client.xxx`` is moved to a thread pool, or
-        NanoVectorDB is swapped for an async vector library), the lock
-        scope must be widened to cover the mutation/read itself.
-
-    Non-pipeline write paths:
-        The pipeline's ``busy`` gate serializes ``upsert`` / ``delete`` /
-        ``index_done_callback`` called from the document ingestion and
-        purge flows. The following entry points are **not** serialized by
-        the pipeline gate and must be guarded externally:
-            * ``drop`` — currently gated by the API layer (the
-              ``/documents/clear`` endpoint takes the pipeline busy
-              reservation before invoking it).
-            * ``delete_entity`` / ``delete_entity_relation`` — reached
-              from the ``utils_graph.py`` admin flows, which the WebUI does
-              exercise (``/graph/entity/edit`` and the other ``/graph/*``
-              endpoints). Admin-vs-pipeline is guarded by
-              ``check_pipeline_busy_or_raise``; admin-vs-admin is not, and
-              deliberately stays that way — see the *Non-pipeline write
-              paths* section of ``NetworkXStorage`` for the accepted residue
-              and issue #3838 for why a workspace-wide admin lock was
-              specified and then dropped.
-
-        A flush here publishes every pending upsert buffered in this
-        instance, not only the caller's, so a co-tenant's unfinished
-        sequence can become durable on someone else's commit. Unlike the
-        graph store this class loses nothing to it (a peer commit is
-        reloaded and the pending buffer and redo log replayed on top), but
-        the *timing* is still not the caller's to choose.
-
-    Deferred-embedding protocol:
-        ``upsert`` does **not** call the embedding model. It only buffers a
-        ``_PendingNanoDoc`` (content-bearing record + ``vector=None``) in the
-        minimal ``self._pending_upserts`` area, overwriting any prior pending
-        doc for the same id (which also clears a temp vector a previous
-        ``get_vectors_by_ids`` may have cached). The model is called once per
-        id at flush time (``_flush_pending_locked``), so repeated upserts of
-        the same id — and many small upsert calls — embed only once. See
-        issue #2785 and the ``OpenSearchVectorDBStorage`` equivalent.
-
-        Embedding runs **inside ``_storage_lock``** during the flush (not in
-        ``upsert``): under the single-writer invariant this keeps the content
-        used for embedding consistent with the record written to disk and
-        prevents a destructive op from interleaving between embed and write.
-        The lock is non-reentrant, so ``_flush_pending_locked`` requires the
-        caller to already hold it and operates on ``self._client`` directly
-        (never through ``_get_client``).
-
-        Reads are read-your-writes: ``get_by_id`` / ``get_by_ids`` /
-        ``get_vectors_by_ids`` consult ``_pending_upserts`` first.
-        ``get_vectors_by_ids`` lazily embeds a pending doc on demand and
-        caches the vector back for the next flush. ``query`` and
-        ``client_storage`` see only data already materialized into
-        ``self._client`` — unflushed pending data is intentionally not
-        queryable. A flush failure (embedding error, count mismatch, or save
-        IO error) raises through ``index_done_callback``; the pending buffer
-        is preserved on flush failure. If only the save failed, the flushed
-        docs have moved into the ``_unsaved_upserts`` redo log (record +
-        cached vector) and ``_client_dirty`` stays ``True``: a later commit
-        or ``finalize`` reloads whatever another writer committed meanwhile
-        and replays the logged rows on top — without re-embedding (issue
-        #3688). The log is cleared only once a save lands.
-
-    Deferred-delete protocol:
-        ``delete`` mirrors the buffering above: it cancels any pending upsert
-        for the id and queues the id in ``self._pending_deletes`` instead of
-        removing the row from ``self._client``. ``_flush_pending_locked``
-        applies every queued id in **one** ``client.delete`` call, and does so
-        **before** materializing pending upserts, so an id that was deleted
-        and re-upserted in the same batch ends up with exactly the new row.
-
-        The motivation is cost: ``NanoVectorDB.delete`` rebuilds the entire
-        matrix (``np.delete``) on every call, and the entity/relation merge
-        stage deletes the stale forward/reverse rows once per relation — so an
-        eager delete copied the whole matrix per merged relation.
-
-        Two buffers, because the flush and the save can fail independently:
-            * ``_pending_deletes`` — queued, not applied to ``self._client``.
-            * ``_unsaved_deletes`` — applied to ``self._client`` but not yet
-              on disk, kept as ``id -> a fingerprint of the removed row``.
-              This is a redo log, not a pending buffer.
-
-        The redo log exists because a removal that reached ``self._client``
-        can still be undone: if the save fails, ``index_done_callback``'s
-        unconditional reload replaces ``self._client`` with the on-disk
-        snapshot and the row returns. Replaying the log after that reload
-        removes it again, so the reload stays lossless for deletes. (Upserts
-        carry the mirror log: a flush moves its docs from ``_pending_upserts``
-        into the ``_unsaved_upserts`` redo log rather than dropping them, so
-        a materialized-but-unsaved upsert is replayed after the same reload;
-        see the deferred-embedding protocol above and issue #3688.)
-
-        A replay matches on the row, not on the id alone. Ids are content
-        hashes, so another writer can publish a *new* row under an id we
-        removed, and deleting by id would destroy it. The log therefore stores
-        ``_row_fingerprint`` of the row it removed — a digest of the whole
-        stored record, stable across a save/reload — and a replay removes only
-        a row that still matches it. A whole-second ``__created_at__`` is not
-        enough on its own: ``upsert`` stamps ``int(time.time())``, so a rewrite
-        inside the same second as the removed row carries the same timestamp.
-
-        A rewrite *identical* in content to the row removed is still a
-        distinct row version: every write also stamps its own
-        ``__write_seq__`` token (see ``write_seq``), so it fingerprints
-        differently and the replay preserves it — whether we wrote it or
-        another writer did. Only a row written before the token existed is
-        indistinguishable from the row we removed, and the replay removes it.
-
-        Being replayable is also what lets ``finalize`` reload before it
-        retries a save: without the logs it had to choose between skipping
-        the reload (saving a pre-commit snapshot over another writer's rows)
-        and reloading (dropping its own unsaved changes). With both logs —
-        ``_unsaved_deletes`` for removals, ``_unsaved_upserts`` for rows —
-        every retry path reloads first and replays on top. The reload is
-        unconditional: ``finalize`` runs it even when both logs are empty and
-        only the dirty flag is set, since a bare dirty flag still means the
-        in-memory state may be stale relative to disk. What a replay
-        deliberately does *not* restore is a row another writer has since
-        superseded with a strictly newer one.
-
-        The upsert replay is scoped by the redo entry itself: an id whose
-        stored row already fingerprints equal to the logged record has
-        nothing to redo. Any *other* row under that id is ordered against
-        ours by the ``__write_seq__`` token, or by whole-second
-        ``__created_at__`` when one of them predates it: a strictly newer one
-        is left alone and our redo entry is dropped (another writer
-        legitimately superseded us — reverting it would undo a completed
-        reprocess), while an older one is overwritten by ours. Only a tie no
-        token can break — one of the two rows written before the token
-        existed — still falls back to being overwritten by the replay. A removal request
-        evicts the id's redo entry (``delete`` / ``delete_entity`` /
-        ``delete_entity_relation``), or the replay would resurrect the row
-        the removal just took out.
-
-        The read paths apply that same ordering rule rather than answering
-        from the log alone, so read-your-writes never reports a row the
-        replay is about to decline to restore.
-
-        Ids that matched no row are not logged at all — there is nothing to
-        persist for them, and replaying them could only hit a row they were
-        never meant to touch. The log is cleared once a save lands, and an
-        aborting batch keeps it: ``drop_pending_index_ops`` discards buffered
-        work, not removals that already reached ``self._client``.
-
-        ``delete_entity`` / ``delete_entity_relation`` stay eager — they are
-        off the merge hot path — but their removals are applied-and-unsaved
-        just the same, so they are recorded in the log too.
-
-        The two buffers are scoped differently, and deliberately so.
-        ``_pending_deletes`` holds a *request*: the caller named an id, so the
-        flush removes whatever row carries that id — the by-id contract every
-        server-backed backend implements, and the one purge relies on to leave
-        nothing behind. Version-scoping a request would silently skip a delete
-        the caller asked for, and pinning the version at ``delete`` time would
-        also put back the per-call ``O(rows)`` lookup this protocol exists to
-        remove. ``_unsaved_deletes`` holds a *record* of a removal that already
-        happened, so it is version-scoped: replaying it must not remove a row
-        that has since taken the id's place.
-
-        The read-your-writes paths mirror both rules. ``get_by_id`` /
-        ``get_by_ids`` / ``get_vectors_by_ids`` consult the buffers after
-        ``_pending_upserts``: a queued id reads as absent, while a logged one
-        hides only the row the entry names — a replacement the replay would
-        preserve stays readable. An ``upsert`` cancels a *queued* delete for
-        the same id (``client.upsert`` overwrites the row in place, so
-        applying it first would be redundant work) but never the redo log: the
-        buffered row may be discarded by an aborting batch before it
-        materializes, and dropping the entry then would leave the reload
-        nothing to replay.
-        ``query`` and ``client_storage`` are unchanged: they read the
-        materialized index, so a queued delete still surfaces there until the
-        flush — the same contract the Qdrant and PostgreSQL buffers document.
-
-        Both buffers are in-memory only: they are dropped by ``drop`` and lost
-        on a crash before the flush.
+    Supported for small-scale testing and validation only.
     """
 
     def __post_init__(self):
@@ -391,7 +139,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         self._loaded_fingerprint = None
         # How many times the file channel caught a commit the flag channel
         # never announced, so a deployment can tell whether the
-        # lost-notification window in #3854 actually occurs.
+        # lost-notification window actually occurs.
         # The on-disk state already counted as a lost notification. A load
         # that raises leaves _loaded_fingerprint in place, so the same peer
         # commit is re-detected by every later call; without this it would
@@ -412,8 +160,8 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # under _storage_lock by _flush_pending_locked().
         self._pending_upserts: dict[str, _PendingNanoDoc] = {}
         # Ids queued for removal, applied in one batched client.delete() by
-        # _flush_pending_locked (see *Deferred-delete protocol* in the class
-        # docstring). NanoVectorDB.delete() rebuilds the whole matrix per
+        # _flush_pending_locked (see *Deferred-delete protocol* in the
+        # contract doc). NanoVectorDB.delete() rebuilds the whole matrix per
         # call, and the merge stage deletes once per relation, so deferring
         # turns O(relations) full-matrix copies into one per flush.
         self._pending_deletes: set[str] = set()
@@ -429,7 +177,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # kept as id -> the flushed _PendingNanoDoc (record + cached vector).
         # The upsert mirror of _unsaved_deletes: a reload after a failed save
         # replaces self._client with the on-disk snapshot, and the next flush
-        # replays these rows on top without re-embedding (issue #3688).
+        # replays these rows on top without re-embedding.
         # Cleared only once a save lands.
         self._unsaved_upserts: dict[str, _PendingNanoDoc] = {}
 
@@ -575,7 +323,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         NanoVectorDB has no incremental sync API — the reload is
         unconditionally a full file reload.
 
-        Under the *Single writer* invariant (see class docstring), the
+        Under the *Concurrency invariants* single-writer rule (contract doc), the
         reload branch never fires in the writer process: the writer
         resets its own flag at the end of every ``index_done_callback``.
         The branch exists for readers.
@@ -597,13 +345,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
         is called once per id at flush time (``_flush_pending_locked`` during
         ``index_done_callback`` / ``finalize``). This coalesces repeated
         upserts of the same id and many small upsert calls into a single
-        embedding pass (see class docstring, *Deferred-embedding protocol*,
-        and issue #2785).
+        embedding pass (see the contract doc, *Deferred-embedding protocol*).
 
         Persistence:
             Changes live only in this process's memory until the next
             ``index_done_callback``. Cross-process readers will not see
-            them until that commit fires (see class docstring,
+            them until that commit fires (see the contract doc,
             *Cross-process sync protocol*). Until the flush, an upserted id
             is observable only through the read-your-writes read paths, not
             through ``query``.
@@ -672,7 +419,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         Precondition: the caller **must already hold** ``_storage_lock``. The
         lock is non-reentrant, so this helper never calls ``_get_client`` and
         operates on ``self._client`` directly. Embedding runs inside the lock
-        on purpose (see class docstring, *Deferred-embedding protocol*).
+        on purpose (see the contract doc, *Deferred-embedding protocol*).
 
         Failure handling: if embedding raises or the returned count does not
         match, the exception propagates and both buffers are left intact so
@@ -689,8 +436,8 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # One batched delete before the upserts materialize: one matrix copy
         # per flush instead of one per relation, and a deleted-then-reinserted
         # id keeps only the new row. The queue survives until a save persists
-        # the removal, so a failed save can replay it (see the class
-        # docstring); ids that matched nothing have nothing to persist.
+        # the removal, so a failed save can replay it (see the contract
+        # doc); ids that matched nothing have nothing to persist.
         if self._pending_deletes or self._unsaved_deletes:
             queued = len(self._pending_deletes)
             storage = getattr(self._client, "_NanoVectorDB__storage")
@@ -722,7 +469,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # reload since (foreign commit) replaced self._client with a snapshot
         # that lacks them. Re-upserting from the logged record + cached
         # vector puts them back on top of whatever the other writer
-        # committed, without re-embedding (issue #3688). An id that is
+        # committed, without re-embedding. An id that is
         # pending again is skipped — the newer buffered doc materializes
         # below and supersedes the logged row; one whose stored row already
         # fingerprints equal to the logged record (no reload happened, or an
@@ -853,7 +600,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # The flushed entries move from the pending buffer into the redo log
         # rather than being dropped: the rows are materialized but not durable
         # yet, and clearing the only replayable copy here is exactly the loss
-        # window of issue #3688. The caller clears the log once its save
+        # reload-loses-them window. The caller clears the log once its save
         # lands. Only entries we just flushed leave the pending buffer (an
         # upsert that arrived after the snapshot would have re-set vector=None
         # and must stay buffered; its redo entry is superseded next flush).
@@ -975,8 +722,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
             # `storage_updated` only makes this process reload the file it just
             # wrote. The hook also keeps its redo logs when it fails here, so if
             # an unnotified peer saves its older snapshot over these rows first,
-            # the next flush replays them back rather than losing them (#3854 is
-            # the fence gap itself; this only makes it recoverable).
+            # the next flush replays them back rather than losing them. The gap
+            # is the fence's own, and it takes BOTH halves missing: this failure
+            # silences the notification channel, and the file channel still
+            # closes it unless the replaced file happens to read as unchanged
+            # (the tick collision). The redo log does not close the gap; it
+            # makes it recoverable. See the contract doc, *Accepted residues*.
             log_without_raising(
                 logger.error,
                 f"[{self.workspace}] Vector data for {self.namespace} was saved "
@@ -1033,7 +784,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         The returned dict is the same object NanoVectorDB mutates in
         place during ``upsert`` / ``delete``. Reading it outside
         ``_storage_lock`` is safe today only because NanoVectorDB
-        mutations are fully synchronous (see class docstring,
+        mutations are fully synchronous (see the contract doc,
         *Lock scope*). Callers must not retain this reference across an
         ``await`` that might cross into ``_get_client`` again: a reload
         will swap ``self._client`` for a fresh instance and leave the
@@ -1106,7 +857,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             caller can short-circuit before ``index_done_callback``
             flushes a half-cleaned buffer.
 
-        **Not pipeline-gated** — see class docstring
+        **Not pipeline-gated** — see the contract doc
         *Non-pipeline write paths*. The caller is responsible for
         ensuring single-writer serialization.
         """
@@ -1182,7 +933,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             combination silently dropped both buffered relation vectors
             and the failure signal.
 
-        **Not pipeline-gated** — see class docstring
+        **Not pipeline-gated** — see the contract doc
         *Non-pipeline write paths*. The caller is responsible for
         ensuring single-writer serialization.
         """
@@ -1283,7 +1034,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         ``_unsaved_upserts`` is kept for the same reason as its delete twin:
         it names rows that already reached ``self._client`` (the class this
         method intentionally does not roll back), and dropping it would only
-        reopen the reload-loses-them window of issue #3688 for rows whose
+        reopen the reload-loses-them window for rows whose
         fate is already sealed either way — reprocessing overwrites them
         idempotently whether or not the replay preserved them.
         """
@@ -1299,7 +1050,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         """Flush deferred embeddings, commit to disk, and notify other processes.
 
         This is the writer's **commit point** in the cross-process sync
-        protocol (see class docstring). Effects, in order:
+        protocol (see the contract doc). Effects, in order:
             1. If another process committed first, reload the latest on-disk
                snapshot while preserving this process's pending buffer.
             2. ``_flush_pending_locked`` embeds every buffered upsert (once
@@ -1312,7 +1063,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                stays ``True`` and the redo logs (``_unsaved_upserts`` /
                ``_unsaved_deletes``) keep the flushed ops, so a later commit
                or ``finalize`` can reload a foreign snapshot and replay them
-               on top (issue #3688).
+               on top.
             4. ``set_all_update_flags`` flips every registered process's
                ``storage_updated`` flag, then we immediately reset our own
                flag to ``False`` so the writer does not self-reload on the
@@ -1346,7 +1097,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 # that peer can become the next writer and save it over these
                 # rows. Keeping the redo logs makes that recoverable: this
                 # process's next flush reloads the foreign snapshot and replays
-                # them on top (the same path issue #3688 built), so the rows
+                # them on top (the redo-log path), so the rows
                 # come back instead of being lost silently. Retiring them first
                 # threw away the only copy. Replay is idempotent -- an
                 # unchanged file matches by fingerprint and writes nothing, and
@@ -1630,7 +1381,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             (the ``/documents/clear`` endpoint does this) before invoking
             it — running ``drop`` concurrently with an active document
             pipeline will tear down storage out from under the writer and
-            silently lose data. See class docstring,
+            silently lose data. See the contract doc,
             *Non-pipeline write paths*.
 
         Returns:
@@ -1805,7 +1556,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
           logs replay both the removals (``_unsaved_deletes``) and the rows
           (``_unsaved_upserts``) on top of the snapshot, whereas skipping the
           reload would write our pre-commit snapshot over another writer's
-          durable rows (issue #3688).
+          durable rows.
 
         ``_client_dirty`` can be ``True`` while all four buffers are empty —
         e.g. a materialized-but-unsaved upsert whose id is then ``delete()``-d
@@ -1869,7 +1620,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 # that peer can become the next writer and save it over these
                 # rows. Keeping the redo logs makes that recoverable: this
                 # process's next flush reloads the foreign snapshot and replays
-                # them on top (the same path issue #3688 built), so the rows
+                # them on top (the redo-log path), so the rows
                 # come back instead of being lost silently. Retiring them first
                 # threw away the only copy. Replay is idempotent -- an
                 # unchanged file matches by fingerprint and writes nothing, and

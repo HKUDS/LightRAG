@@ -59,41 +59,28 @@ from .shared_storage import (
 class JsonDocStatusStorage(DocStatusStorage):
     """JSON-file-backed document-status storage, sharing memory across processes.
 
-    Uses the **same shared-memory + dirty-flag protocol** as
-    ``JsonKVStorage`` — see that class's docstring for the canonical
-    description of:
-        * how ``self._data`` is a cross-process
-          ``multiprocessing.Manager().dict()`` proxy obtained via
-          ``get_namespace_data``;
-        * how ``try_initialize_namespace`` ensures exactly one process
-          reads the JSON file on first init;
-        * how ``set_all_update_flags`` marks dirty state (semantics
-          *reversed* from the file-backed classes
-          ``NanoVectorDBStorage`` / ``FaissVectorDBStorage`` /
-          ``NetworkXStorage``);
-        * how ``index_done_callback`` flushes and calls
-          ``clear_all_update_flags``;
-        * why ``_storage_lock`` wraps **every** ``self._data`` access
-          (not just commit / reload).
+    Runs the **same shared-memory + dirty-flag protocol** as
+    ``JsonKVStorage``, reimplemented rather than inherited: ``self._data``
+    is a cross-process ``Manager().dict()`` proxy, not a per-process
+    copy, so there is nothing to reload and adding a ``_get_*`` entry
+    method would be wrong. ``storage_updated`` here means *"dirty data
+    still to flush"* — the REVERSE of what the same flag means on
+    ``NanoVectorDBStorage`` / ``FaissVectorDBStorage`` /
+    ``NetworkXStorage``. Hold ``_storage_lock`` over **every**
+    ``self._data`` access, read or write. Mechanism and rationale:
+    ``docs/design/FileBackedSnapshotContract.md``; a change here is
+    almost always a change ``JsonKVStorage`` needs too.
 
-    Differences from ``JsonKVStorage`` (in this class only):
-        * ``upsert`` calls ``index_done_callback`` synchronously after
-          mutating shared memory, so doc-status changes hit disk
-          immediately rather than being deferred to the pipeline's
-          batched ``_insert_done()``. Rationale: doc-status is the
-          recovery anchor for the ingest pipeline — if the process
-          crashes after an in-memory upsert but before the next batch
-          commit, the doc must still be visible as PENDING/PROCESSING
-          on restart. The other writes (``delete``, ``drop``) follow
-          the standard deferred-commit pattern.
-        * Pre-upsert preparation (``chunks_list`` default) runs
-          *outside* the lock because it only mutates the caller-
-          supplied dict, not the shared store.
-        * Read methods are richer (``get_docs_by_statuses`` /
-          ``get_docs_by_track_id`` / ``get_docs_paginated`` /
-          ``get_doc_by_file_path`` / etc.), but they all follow the
-          same "acquire ``_storage_lock``, scan ``self._data``, copy
-          values out before returning" template.
+    Rules this class adds on top of that protocol:
+        * ``upsert``, ``update_doc_status_fields`` and the
+          source-conflict repair flush synchronously — they ``await
+          index_done_callback()`` before returning. Doc-status is the
+          ingest pipeline's recovery anchor, so a crash must not lose
+          the fact that a document was enqueued. ``delete`` stays
+          deferred; ``drop`` flushes like the others.
+        * Reads copy or convert rows out of ``self._data`` before
+          returning them — never hand a caller a live reference into
+          the shared proxy.
 
     Non-pipeline write paths:
         * ``drop`` — destructive, **not** serialized; the caller must
@@ -397,8 +384,8 @@ class JsonDocStatusStorage(DocStatusStorage):
                ``set_all_update_flags`` to mark every process dirty.
             3. Await ``index_done_callback`` for an immediate flush.
 
-        See ``JsonKVStorage`` class docstring for the shared-memory +
-        dirty-flag protocol that underpins step 2.
+        See the contract doc, *Reversed flag semantics*, for the
+        shared-memory + dirty-flag protocol that underpins step 2.
         """
         if not data:
             return
@@ -1227,7 +1214,7 @@ class JsonDocStatusStorage(DocStatusStorage):
             ``drop`` is destructive and **not** serialized by this
             storage class. The caller must hold the pipeline ``busy``
             reservation (the ``/documents/clear`` endpoint does this)
-            before invoking it. See class docstring,
+            before invoking it. See the contract doc,
             *Non-pipeline write paths*.
 
         Returns:
