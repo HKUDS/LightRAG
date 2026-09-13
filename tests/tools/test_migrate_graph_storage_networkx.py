@@ -60,7 +60,6 @@ _NODES: dict[str, dict[str, str]] = {
 _EDGES: list[tuple[str, str, dict[str, str]]] = [
     ("한국", "alice", {"weight": "1.0", "description": "unicode endpoint"}),
     ('He said "hi"', "alice", {"weight": "2.0", "source_id": "chunk-1"}),
-    ("loop", "loop", {"weight": "3.0", "description": "self-loop"}),
 ]
 
 
@@ -140,6 +139,26 @@ class TestRealRoundTrip:
         )
         # Instance isolation: the source slice is intact after migration.
         assert set(_node_map(await source.get_all_nodes())) == set(_NODES)
+
+    @pytest.mark.usefixtures("allow_networkx_pair")
+    async def test_self_loop_in_source_is_refused_and_writes_nothing(self, tmp_path):
+        """A self-loop is refused, not dropped, and refusing writes nothing.
+
+        Dropping it would orphan the relation's ``relationships_vdb`` row --
+        this tool migrates the graph only, and ``adelete_by_relation`` 404s
+        once the graph edge is gone, so the row would be unreachable through
+        every public API. Refusing keeps the cleanup possible at the source,
+        where the graph edge still exists and the vector row goes with it.
+        """
+        source = await _seeded_source(tmp_path)
+        await source.upsert_edge("loop", "loop", {"weight": "3.0"})
+        target = await _storage(tmp_path, "migration_tgt")
+
+        with pytest.raises(MigrationDataError, match="self-loop"):
+            await migrate_graph(source, target)
+
+        assert await target.get_all_nodes() == []
+        assert await target.get_all_edges() == []
 
     @pytest.mark.usefixtures("allow_networkx_pair")
     async def test_non_empty_real_target_rejected(self, tmp_path):

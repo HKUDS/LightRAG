@@ -1036,16 +1036,21 @@ export const batchUploadDocuments = async (
   )
 }
 
-export const clearDocuments = async (): Promise<DocActionResponse> => {
-  const response = await axiosInstance.delete('/documents')
-  return response.data
-}
-
-export const clearCache = async (): Promise<{
-  status: 'success' | 'fail'
-  message: string
-}> => {
-  const response = await axiosInstance.post('/documents/clear_cache', {})
+/**
+ * Clears every document from the RAG system.
+ *
+ * `clearLlmCache` folds what used to be a separate POST /documents/clear_cache
+ * into this call, so dropping the cache runs inside the destructive pipeline
+ * reservation this endpoint already takes. Off by default: the cache survives
+ * a clear so re-adding the same documents reuses the extraction results
+ * already paid for.
+ */
+export const clearDocuments = async (
+  clearLlmCache: boolean = false
+): Promise<DocActionResponse> => {
+  const response = await axiosInstance.delete('/documents', {
+    params: { clear_llm_cache: clearLlmCache }
+  })
   return response.data
 }
 

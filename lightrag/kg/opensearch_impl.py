@@ -51,6 +51,7 @@ from ..utils import (
     compute_mdhash_id,
     _cooperative_yield,
     merge_source_ids,
+    parse_cache_key,
     validate_workspace,
 )
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
@@ -319,8 +320,8 @@ async def _run_chunked_async_bulk(
 
 # Painless script behind every KV upsert. It reproduces MongoDB's
 # ``$setOnInsert`` semantics for ``create_time`` ON THE SERVER, so a
-# replacement upsert never has to read the stored row back first (issue
-# #3870 -- a client-side read-modify-write cost one extra HTTP round trip per
+# replacement upsert never has to read the stored row back first (a
+# client-side read-modify-write cost one extra HTTP round trip per
 # ``upsert()`` call, and this backend is deliberately called with many small
 # batches):
 #   * document missing -> ``_KV_UPSERT_ACTION_UPSERT`` becomes the starting
@@ -385,7 +386,7 @@ _EDGE_ID_CANONICAL_META_FLAG = "edge_id_canonical_v1"
 # deliberately a detection mechanism and not a renaming scheme: renaming the
 # index (e.g. by appending a hash of the workspace) would force a migration on
 # every existing deployment, including the overwhelming majority that never
-# collide. See issue #3827.
+# collide.
 _WORKSPACE_META_KEY = "lightrag_workspace"
 _FINAL_NAMESPACE_META_KEY = "lightrag_final_namespace"
 # Both keys identify the owner: the joined ``{workspace}_{namespace}`` is
@@ -899,6 +900,12 @@ class OpenSearchKVStorage(BaseKVStorage):
     client: AsyncOpenSearch = field(default=None)
     _index_name: str = field(default="", init=False)
     _index_ready: bool = field(default=False, init=False)
+    # Refresh bookkeeping: a flush that issues writes bumps the write
+    # generation, a successful refresh records the generation it covered, and
+    # a refresh is owed exactly while the two differ. ``index_done_callback``
+    # states why this is a pair of counters and not one dirty bool.
+    _write_generation: int = field(default=0, init=False)
+    _refreshed_generation: int = field(default=0, init=False)
 
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
         super().__init__(
@@ -917,8 +924,8 @@ class OpenSearchKVStorage(BaseKVStorage):
         # Pending writes are flushed via _flush_pending_kv_ops() during
         # index_done_callback() / finalize(). Buffering many small upsert()
         # invocations into a single async_bulk roundtrip avoids the per-call
-        # HTTP overhead profiled in issue #2785; the lock-everywhere model
-        # mirrors what #3043 introduced for OpenSearchVectorDBStorage.
+        # HTTP overhead profiled for the deferred-embedding work; the lock-everywhere model
+        # mirrors what was introduced for OpenSearchVectorDBStorage.
         self._pending_upserts: dict[str, dict[str, Any]] = {}
         self._pending_kv_deletes: set[str] = set()
         # Namespace-keyed lock (multi-process aware) is assigned in
@@ -959,7 +966,18 @@ class OpenSearchKVStorage(BaseKVStorage):
                 self._index_ready = True
 
     def _mark_index_missing(self):
-        """Mark the KV index as unavailable for subsequent read short-circuiting."""
+        """Mark the KV index as unavailable for subsequent read short-circuiting.
+
+        Deliberately does NOT touch the refresh counters. Most callers are
+        read paths that know nothing about what this process's commits owe:
+        one can observe ``index_not_found`` while a streaming bulk is still in
+        flight, and that bulk auto-creates the index and goes on writing rows.
+        Settling the debt here would leave those rows outside every
+        search-based reader with nothing in this process to retry it. A debt
+        that outlives its index costs one redundant refresh once the index is
+        recreated -- the same over-count ``_flush_pending_kv_ops`` already
+        accepts when it bumps the generation before the bulk.
+        """
         self._index_ready = False
 
     async def _create_index_if_not_exists(self):
@@ -1007,7 +1025,7 @@ class OpenSearchKVStorage(BaseKVStorage):
         # Verify the index we just created (or attached to) is ours. The
         # workspace-to-index-name mapping is lossy, so a differently-named
         # workspace can resolve to this same index -- fail fast instead of
-        # silently sharing its data. See issue #3827.
+        # silently sharing its data.
         await _claim_index_for_workspace(
             self.client, self._index_name, self.workspace, self.final_namespace
         )
@@ -1064,7 +1082,13 @@ class OpenSearchKVStorage(BaseKVStorage):
     async def _iter_raw_docs(
         self, batch_size: int = 1000
     ) -> AsyncIterator[list[dict[str, Any]]]:
-        """Yield raw OpenSearch hits using PIT + search_after pagination."""
+        """Yield raw OpenSearch hits using PIT + search_after pagination.
+
+        Refreshes before opening the PIT: the point-in-time freezes the view
+        for the whole scan, so a row that is written but not yet in a
+        searchable segment when it opens is missed by every page.
+        """
+        await self._refresh_for_search()
         if not self._index_ready:
             return
 
@@ -1379,7 +1403,7 @@ class OpenSearchKVStorage(BaseKVStorage):
             # Residue: a read served from the buffer (get_by_id / get_by_ids)
             # reports this estimate, so an update of a row that already exists
             # on the server shows the write time until the next flush, when the
-            # stored value wins. Same shape as before issue #3870's fix; it
+            # stored value wins. Same shape as before the read-modify-write fix; it
             # heals at flush and never reaches storage.
             doc_data["create_time"] = current_time
             source = {k: v for k, v in doc_data.items() if k != "_id"}
@@ -1424,7 +1448,7 @@ class OpenSearchKVStorage(BaseKVStorage):
         script preserves the stored ``create_time`` while replacing the
         business value, which is how this backend meets the
         ``BaseKVStorage.upsert`` contract without reading rows back
-        client-side (issue #3870). ``retry_on_conflict`` lets the server
+        client-side. ``retry_on_conflict`` lets the server
         resolve concurrent updates of one id instead of failing the item.
 
         Concurrency contract: the entire flush runs under ``_flush_lock``;
@@ -1485,6 +1509,14 @@ class OpenSearchKVStorage(BaseKVStorage):
                 for doc_id, source in pending_upserts.items()
             ]
 
+            # Bumped BEFORE the bulk and never conditioned on its outcome:
+            # async_bulk streams chunks, so a transport error can raise with
+            # earlier chunks already written, and the permanent-failure raise
+            # at the end of this method follows a partially successful bulk
+            # too. Over-counting costs one refresh -- what this storage did
+            # unconditionally until now -- while under-counting leaves written
+            # rows outside every search-based reader with nothing to retry it.
+            self._write_generation += 1
             try:
                 log_prefix = f"[{self.workspace}] {self.namespace} flush:"
                 del_success, del_failed = await _run_chunked_async_bulk(
@@ -1562,19 +1594,83 @@ class OpenSearchKVStorage(BaseKVStorage):
 
     async def drop_pending_index_ops(self) -> None:
         """Discard buffered upserts/deletes (pipeline aborting on error)."""
+        # ``_flush_lock`` is assigned in ``initialize()``. Before that the
+        # instance is unreachable by any other coroutine, so there is nothing
+        # to serialise against and the buffers are cleared directly; taking
+        # ``async with None`` would raise AttributeError instead, on a path
+        # whose callers swallow it. Mirrors ``NanoVectorDBStorage``.
+        if self._flush_lock is None:
+            self._pending_upserts.clear()
+            self._pending_kv_deletes.clear()
+            return
         async with self._flush_lock:
             self._pending_upserts.clear()
             self._pending_kv_deletes.clear()
 
-    async def index_done_callback(self) -> None:
-        """Flush pending KV ops and refresh the index for search visibility.
+    async def drop_pending_upserts(self, *, cache_types: set[str] | None = None) -> int:
+        """Discard buffered upserts, KEEPING the buffered deletes.
 
-        Flush runs first so a previously-missing index gets recreated by
-        ``_flush_pending_kv_ops`` (via ``_ensure_index_ready``) before any
-        buffered writes are abandoned. The refresh step is skipped only
-        when the index is still not ready after the flush attempt.
+        The two sets are disjoint by construction -- ``delete`` pops any
+        pending upsert for the same id before recording the tombstone -- so
+        clearing one leaves the other exactly as it was.
+
+        With ``cache_types``, only buffered rows whose key parses as
+        ``{mode}:{cache_type}:{hash}`` with a named type are discarded; an
+        unparseable key is kept, since this namespace's ids are cache keys and
+        anything else is not what the caller asked to drop.
         """
-        await self._flush_pending_kv_ops()
+
+        def _discard(pending: dict[str, Any]) -> int:
+            if cache_types is None:
+                dropped = len(pending)
+                pending.clear()
+                return dropped
+            doomed = [
+                doc_id
+                for doc_id in pending
+                if (parsed := parse_cache_key(doc_id)) is not None
+                and parsed[1] in cache_types
+            ]
+            for doc_id in doomed:
+                pending.pop(doc_id, None)
+            return len(doomed)
+
+        if self._flush_lock is None:  # see drop_pending_index_ops
+            return _discard(self._pending_upserts)
+        async with self._flush_lock:
+            return _discard(self._pending_upserts)
+
+    async def has_pending_index_ops(self) -> bool:
+        """Whether buffered UPSERTS remain (retryable failures are retained).
+
+        Deletes are excluded on purpose -- see the base docstring: a retained
+        tombstone carries no reference to another namespace's rows.
+        """
+        if self._flush_lock is None:  # see drop_pending_index_ops
+            return bool(self._pending_upserts)
+        async with self._flush_lock:
+            return bool(self._pending_upserts)
+
+    async def _refresh_for_search(self) -> None:
+        """Publish prior writes to a search-based read of this index.
+
+        Call this from every reader that goes through ``search`` / ``count``
+        rather than ``mget`` by ``_id``; a GET by id consults the translog and
+        is real time, so the point reads never need it. Refreshing where the
+        search happens rather than at every commit is what lets
+        ``index_done_callback`` skip an idle namespace, and it makes the
+        guarantee STRONGER at the two sites that have it: a refresh publishes
+        the index, so these readers now also see writes from processes whose
+        own commits this one can know nothing about.
+
+        Best effort by contract. A failure is logged and swallowed, leaving the
+        caller the pre-refresh view -- what every one of these readers got
+        unconditionally before. It must never turn a read into an error.
+
+        It must not settle the commit path's refresh debt either: those
+        counters record what this storage's own commits owe, and a best-effort
+        call must not retire an obligation on their behalf.
+        """
         if not self._index_ready:
             return
         try:
@@ -1583,7 +1679,58 @@ class OpenSearchKVStorage(BaseKVStorage):
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return
+            logger.warning(
+                f"[{self.workspace}] Refresh before a search read of "
+                f"{self._index_name} failed; reading a possibly stale view: {e}"
+            )
+
+    async def index_done_callback(self) -> None:
+        """Flush pending KV ops, and refresh only when this storage owes one.
+
+        Flush runs first so a previously-missing index gets recreated by
+        ``_flush_pending_kv_ops`` (via ``_ensure_index_ready``) before any
+        buffered writes are abandoned. The refresh is then owed exactly while
+        ``_write_generation`` runs ahead of ``_refreshed_generation``, so a
+        commit of an idle namespace is a full no-op rather than a broadcast
+        round trip that publishes nothing of this process's.
+
+        Three rules, and a change here must keep all three:
+
+        * **Settle the debt only after a refresh returns.** A raise leaves the
+          counters apart so the next commit retries. Clearing on a path that
+          did not refresh strands written rows outside every search-based
+          reader, with nothing in this process that would ever notice. The
+          missing-index short-circuit below is that rule, not an exception to
+          it: it returns without refreshing, so the debt stands and is paid
+          once the index is back.
+        * **Never gate on what THIS call's flush wrote.** The debt belongs to
+          the storage, not the call: a commit with an empty buffer must still
+          refresh when an earlier refresh failed. That compensation is the one
+          thing the old unconditional refresh was really providing.
+        * **Sample the generation before the refresh, record it after.** A
+          concurrent flush that lands mid-refresh may or may not be covered by
+          it, so recording the sampled value leaves the debt standing and the
+          next commit refreshes again. Recording the live counter instead
+          would retire a write this refresh never saw -- which is why one
+          dirty bool is not enough.
+
+        Readers that need to see writes through ``search`` refresh at their own
+        call site instead (``is_empty``, ``_iter_raw_docs``); what that moves
+        and what it costs is in *What the OpenSearch KV refresh actually
+        protects*, ``docs/design/PurgeRecoveryContract.md``.
+        """
+        await self._flush_pending_kv_ops()
+        owed = self._write_generation
+        if not self._index_ready or owed == self._refreshed_generation:
+            return
+        try:
+            await self.client.indices.refresh(index=self._index_name)
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return
             raise
+        self._refreshed_generation = owed
 
     async def is_empty(self) -> bool:
         """Return True if the index (plus pending buffer) contains no docs.
@@ -1593,12 +1740,19 @@ class OpenSearchKVStorage(BaseKVStorage):
         returned True" case. Pending deletes alone are not enough to flip
         the answer because we cannot tell whether other persisted rows
         survive without flushing.
+
+        ``count`` is search-based, so it refreshes first. The answer decides
+        whether ``_migrate_chunk_tracking_storage`` runs a migration at
+        startup, which makes a stale read the expensive direction here.
         """
         async with self._flush_lock:
             if self._pending_upserts:
                 return False
             index_ready = self._index_ready
         if not index_ready:
+            return True
+        await self._refresh_for_search()
+        if not self._index_ready:
             return True
         try:
             response = await self.client.count(index=self._index_name)
@@ -1840,7 +1994,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         # Verify the index we just created (or attached to) is ours. The
         # workspace-to-index-name mapping is lossy, so a differently-named
         # workspace can resolve to this same index -- fail fast instead of
-        # silently sharing its data. See issue #3827.
+        # silently sharing its data.
         await _claim_index_for_workspace(
             self.client, self._index_name, self.workspace, self.final_namespace
         )
@@ -3628,7 +3782,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
         # Runs before _migrate_edges_to_canonical_id_if_needed (see
         # initialize) so a colliding deployment never reindexes another
-        # workspace's edges. See issue #3827.
+        # workspace's edges.
         for index_name in (self._nodes_index, self._edges_index):
             await _claim_index_for_workspace(
                 self.client, index_name, self.workspace, self.final_namespace
@@ -4028,7 +4182,18 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             raise
 
     async def node_degree(self, node_id: str) -> int:
-        """Count the number of edges connected to a node."""
+        """Count the edge endpoints a node occupies.
+
+        One count, not two. A self-loop would be counted once here and twice
+        by ``node_degrees_batch`` below, but the graph is not allowed to hold
+        one (``BaseGraphStorage.node_degree``), so no caller can observe the
+        difference on data the contract admits. Excluding it at the query was
+        measured and rejected -- see the contract for what it cost.
+
+        The count API rather than a search or a delegation to
+        ``node_degrees_batch`` (``test_node_degree_uses_count_api`` pins that
+        choice): counting is cheaper than the aggregation search.
+        """
         if not self._indices_ready:
             return 0
         try:
@@ -4218,8 +4383,11 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         """Batch-fetch edge counts for multiple nodes using aggregations."""
         if not node_ids:
             return {}
+        # Seed before every empty-index exit so the batch contract remains the
+        # same as node_degree(): each requested id gets an explicit zero.
+        result = {nid: 0 for nid in node_ids}
         if not self._indices_ready:
-            return {}
+            return result
         try:
             await self._refresh_graph_indices_if_dirty(refresh_edges=True)
             # Use a single query with aggregations for both source and target
@@ -4272,7 +4440,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             # (thousands of ids), and a list scan per bucket makes this loop
             # quadratic and blocks the event loop for seconds.
             requested = set(node_ids)
-            result = {}
+            # Seeded with zeros so every requested id gets an answer: a node
+            # with no edges appears in neither aggregation, and the batch must
+            # still report the 0 node_degree reports rather than omitting it.
             for agg_name in ("source_degrees", "target_degrees"):
                 buckets = response["aggregations"][agg_name]["ids"]["buckets"]
                 for bucket in buckets:
@@ -4286,14 +4456,53 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-                return {}
+                return result
             logger.error(f"[{self.workspace}] Error batch-getting node degrees: {e}")
             raise
+
+    async def edge_degrees_batch(
+        self, edge_pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], int]:
+        """Sum both endpoint degrees per pair, in ONE aggregation.
+
+        The inherited default calls ``edge_degree`` per pair, which is two
+        ``node_degree`` calls, each a separate awaited round trip -- so a query
+        whose top entities carry a thousand distinct edges issued thousands of
+        SERIAL count requests. Resolving the distinct ids once through
+        ``node_degrees_batch`` replaces all of it with a single aggregation
+        search, which is why that search being more expensive than a count does
+        not decide this: it runs once instead of thousands of times. Same shape
+        as ``pgtable_impl.edge_degrees_batch``.
+        """
+        if not edge_pairs:
+            return {}
+        all_ids = list({nid for pair in edge_pairs for nid in pair})
+        # CHUNKED, not truncated. node_degrees_batch puts the whole list in four
+        # `terms` clauses and asks for one bucket per id, so an unbounded call
+        # breaches index.max_terms_count / search.max_buckets and FAILS the
+        # query -- see _GRAPH_DEGREE_RANK_MAX_CANDIDATES. The BFS and
+        # popular-label callers cap by slicing because they only need the top
+        # candidates and admit fewer nodes than they rank; this caller needs a
+        # degree for EVERY pair it was handed, and a sliced id would come back
+        # as rank 0 rather than as its real degree. Sequential on purpose: the
+        # point is replacing thousands of serial round trips with a handful,
+        # not issuing a fan-out of aggregation searches at once.
+        degrees: dict[str, int] = {}
+        for start in range(0, len(all_ids), _GRAPH_DEGREE_RANK_MAX_CANDIDATES):
+            chunk = all_ids[start : start + _GRAPH_DEGREE_RANK_MAX_CANDIDATES]
+            degrees.update(await self.node_degrees_batch(chunk))
+        return {(s, t): degrees.get(s, 0) + degrees.get(t, 0) for s, t in edge_pairs}
 
     async def get_nodes_edges_batch(
         self, node_ids: list[str]
     ) -> dict[str, list[tuple[str, str]]]:
-        """Batch-fetch edge tuples for multiple nodes."""
+        """Batch-fetch edge tuples for multiple nodes.
+
+        A self-loop appears ONCE: one hit satisfies both endpoint branches of
+        the ``should`` query, and listing it from each would report one edge as
+        two (``BaseGraphStorage.get_node_edges``, and this class's own
+        ``get_node_edges``, which returns it once).
+        """
         result = {nid: [] for nid in node_ids}
         if not self._indices_ready:
             return result
@@ -4334,7 +4543,10 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         tgt = hit["_source"]["target_node_id"]
                         if src in result:
                             result[src].append((src, tgt))
-                        if tgt in result:
+                        # A self-loop was already listed by the source branch
+                        # above, so skip it here -- one edge, one tuple. Same
+                        # guard as pgtable_impl.get_nodes_edges_batch.
+                        if tgt in result and tgt != src:
                             result[tgt].append((src, tgt))
                     search_after = hits[-1]["sort"]
                     if len(hits) < 10000:
@@ -5179,7 +5391,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 # buckets happened to come back.
                 #
                 # Exact WITHIN degree_map, which is itself approximate, so the
-                # ranking on this backend is too (#3613). Each aggregation above
+                # ranking on this backend is too. Each aggregation above
                 # returns only its own top max_nodes buckets, so an entity whose
                 # in- and out-degree each fall outside their respective top-N
                 # never reaches this sort however high its undirected degree is;
@@ -5932,7 +6144,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         self._max_batch_size = self.global_config["embedding_batch_num"]
         # Pending writes are flushed via _flush_pending_vector_ops() during
         # index_done_callback() / finalize(). This batches many small upsert()
-        # invocations into a single async_bulk roundtrip. See issue #2785.
+        # invocations into a single async_bulk roundtrip.
         self._pending_vector_docs: dict[str, _PendingVectorDoc] = {}
         self._pending_vector_deletes: set[str] = set()
         # Namespace-keyed lock (multi-process safe) is initialised in
@@ -6072,7 +6284,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         # Verify the index we just created (or attached to) is ours. The
         # workspace-to-index-name mapping is lossy, so a differently-named
         # workspace can resolve to this same index -- fail fast instead of
-        # silently sharing its data. See issue #3827.
+        # silently sharing its data.
         await _claim_index_for_workspace(
             self.client, self._index_name, self.workspace, self.final_namespace
         )
@@ -6434,6 +6646,15 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
 
     async def drop_pending_index_ops(self) -> None:
         """Discard buffered upserts/deletes (pipeline aborting on error)."""
+        # ``_flush_lock`` is assigned in ``initialize()``. Before that the
+        # instance is unreachable by any other coroutine, so there is nothing
+        # to serialise against and the buffers are cleared directly; taking
+        # ``async with None`` would raise AttributeError instead, on a path
+        # whose callers swallow it. Mirrors ``NanoVectorDBStorage``.
+        if self._flush_lock is None:
+            self._pending_vector_docs.clear()
+            self._pending_vector_deletes.clear()
+            return
         async with self._flush_lock:
             self._pending_vector_docs.clear()
             self._pending_vector_deletes.clear()

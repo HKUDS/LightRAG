@@ -202,3 +202,142 @@ async def test_drop_adopts_the_files_absence(tmp_path, multiprocess, monkeypatch
         assert worker._peer_commit_detected() is False
     finally:
         await worker.finalize()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_reload_does_not_recount_the_same_peer_commit(
+    tmp_path, multiprocess, lost_notification, monkeypatch
+):
+    """The counter must count peer commits, not attempts to reload out of them.
+
+    A load that raises leaves `_loaded_fingerprint` untouched, so the same peer
+    commit is re-detected by every later call. Counted at each detection, one
+    commit inflates the counter without bound — and `file_fingerprint`'s module
+    docstring designates these counters as the evidence the writer-side
+    `os.utime` remedy waits on, so an inflated one is as useless as a
+    suppressed one. Issue #3854.
+    """
+    worker_a = await _worker(tmp_path)
+    worker_b = await _worker(tmp_path)
+    try:
+        await worker_a.upsert({"from_a": {"content": "a"}})
+        assert await worker_a.index_done_callback() is True
+        assert worker_b.storage_updated.value is False
+
+        broken = [True]
+
+        def maybe_boom(*args, **kwargs):
+            if broken[0]:
+                raise OSError("unreadable")
+            return real_client(*args, **kwargs)
+
+        real_client = nano_vector_db_impl.NanoVectorDB
+        monkeypatch.setattr(nano_vector_db_impl, "NanoVectorDB", maybe_boom)
+
+        for _ in range(5):
+            with pytest.raises(OSError, match="unreadable"):
+                await worker_b.get_by_id("from_a")
+        assert worker_b._missed_notification_reloads == 1
+
+        # A genuinely second commit during the outage IS counted: deduplication
+        # must not turn into suppression.
+        await worker_a.upsert({"from_a_again": {"content": "a2"}})
+        assert await worker_a.index_done_callback() is True
+        with pytest.raises(OSError, match="unreadable"):
+            await worker_b.get_by_id("from_a")
+        assert worker_b._missed_notification_reloads == 2
+
+        broken[0] = False
+        assert await worker_b.get_by_id("from_a_again") is not None
+        assert worker_b._missed_notification_reloads == 2
+    finally:
+        await worker_a.finalize()
+        await worker_b.finalize()
+
+
+@pytest.mark.asyncio
+async def test_a_recurring_state_is_counted_again_after_a_notified_reload(
+    tmp_path, multiprocess, lost_notification
+):
+    """Deduplication must not outlive the reload it was protecting.
+
+    The marker exists only to stop ONE detection being re-counted while the
+    reload keeps failing. Kept past a successful reload it suppresses a state
+    that RECURS — a peer drop, a notified recreation, then a second drop whose
+    notification is lost, all sharing the "absent" fingerprint. That is a
+    genuine second lost notification, and not the same-tick collision residue.
+    """
+    worker_a = await _worker(tmp_path)
+    await worker_a.upsert({"x": {"content": "x"}})
+    assert await worker_a.index_done_callback() is True
+
+    worker_b = await _worker(tmp_path)
+    try:
+        assert worker_b._missed_notification_reloads == 0
+
+        assert (await worker_a.drop())["status"] == "success"
+        assert await worker_b.get_by_id("x") is None
+        assert worker_b._missed_notification_reloads == 1
+
+        await worker_a.upsert({"y": {"content": "y"}})
+        assert await worker_a.index_done_callback() is True
+        worker_b.storage_updated.value = True
+        assert await worker_b.get_by_id("y") is not None
+        assert worker_b._missed_notification_reloads == 1
+
+        assert (await worker_a.drop())["status"] == "success"
+        assert await worker_b.get_by_id("y") is None
+        assert worker_b._missed_notification_reloads == 2
+    finally:
+        await worker_b.finalize()
+        await worker_a.finalize()
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_adoption_keeps_the_dedupe_marker(
+    tmp_path, multiprocess, lost_notification, monkeypatch
+):
+    """Clearing the marker is only safe once a CONCRETE state is recorded.
+
+    `adopted(UNREADABLE)` is `None`, which means "nothing recorded" — and
+    `peer_commit_detected` reports a change against `None` for any state. So a
+    clear on that adoption forgets which commit was already counted, and the
+    next call counts the same one again. The post-drop state is `(None,)`, a
+    real fingerprint, so it still clears. Issue #3854.
+    """
+    worker_a = await _worker(tmp_path)
+    worker_b = await _worker(tmp_path)
+    try:
+        await worker_a.upsert({"from_a": {"content": "a"}})
+        assert await worker_a.index_done_callback() is True
+        assert worker_b.storage_updated.value is False
+
+        # Counted once, and the load fails, so the marker must survive.
+        with pytest.MonkeyPatch.context() as broken:
+            broken.setattr(
+                nano_vector_db_impl,
+                "NanoVectorDB",
+                lambda *a, **k: (_ for _ in ()).throw(OSError("unreadable")),
+            )
+            with pytest.raises(OSError, match="unreadable"):
+                await worker_b.get_by_id("from_a")
+        assert worker_b._missed_notification_reloads == 1
+
+        # The retry's pre-read sample fails while the load itself succeeds, so
+        # the adoption records `None` rather than a state.
+        original = worker_b._stat_fingerprint
+
+        def unreadable_once():
+            worker_b._stat_fingerprint = original
+            return file_fingerprint.UNREADABLE
+
+        worker_b._stat_fingerprint = unreadable_once
+        assert await worker_b.get_by_id("from_a") is not None
+        assert worker_b._loaded_fingerprint is None
+
+        # Same peer commit, still one event.
+        assert await worker_b.get_by_id("from_a") is not None
+        assert worker_b._missed_notification_reloads == 1
+    finally:
+        await worker_b.finalize()
+        await worker_a.finalize()

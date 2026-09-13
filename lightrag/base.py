@@ -221,6 +221,69 @@ class StorageNameSpace(ABC):
         """
         return None
 
+    async def drop_pending_upserts(
+        self, *, cache_types: set[str] | None = None
+    ) -> int | None:
+        """Discard buffered UPSERTS, keeping buffered deletes.
+
+        The narrow counterpart of ``drop_pending_index_ops``, for a caller
+        abandoning writes that must NOT abandon deletions: a buffered delete
+        is a tombstone some already-returned operation promised, and dropping
+        one is unrecoverable.
+
+        ``cache_types`` restricts the discard to LLM-cache rows of those
+        types; a buffer key that does not parse as a cache key is KEPT. Pass
+        it whenever the reason to discard is reachability, so the discard
+        cannot reach rows no reference can orphan. ``None`` discards every
+        buffered upsert, for a caller abandoning the batch outright.
+
+        Returns tri-state, and a caller MUST distinguish all three by
+        identity, not truthiness: an ``int`` is the number discarded, ``0``
+        means this backend can discard and had nothing buffered, and ``None``
+        means it cannot discard at all, so the caller's writes are still
+        pending and its fallback is to defer them. Reading ``0`` as ``None``
+        reports a loss that did not happen; the reverse reports safety that
+        does not hold.
+
+        Backends that cannot separate upserts from deletes keep the default
+        ``None``. Only ``OpenSearchKVStorage`` overrides it today.
+
+        Why the tombstones, the cache types and the fallback are what they
+        are: *LLM extraction cache reachability* in
+        ``docs/design/PurgeRecoveryContract.md``.
+        """
+        return None
+
+    async def has_pending_index_ops(self) -> bool:
+        """Whether buffered upserts are still waiting for a commit.
+
+        For a caller that is about to DROP this buffer, or to publish another
+        namespace that depends on it, and must not read a successful
+        ``index_done_callback`` as proof that everything landed: a per-item
+        backend can retain retryable failures (408/429/5xx) and return
+        normally. Everywhere that residue heals on the next flush it is
+        accepted (see *LLM extraction cache reachability* in
+        ``docs/design/PurgeRecoveryContract.md``) — ask here only where the
+        buffer is about to be discarded or the process is about to exit.
+
+        "About to exit" means every commit from there on, not just the last
+        one: a shutdown that publishes a dependent namespace BEFORE a later
+        gate can quarantine it has already put the row on disk, where no
+        quarantine reaches it.
+
+        UPSERTS only. A retained tombstone carries no reference and does not
+        make another namespace's rows unreachable.
+
+        The default is ``False``, which is the truth for an immediate-write or
+        snapshot backend (no per-operation buffer, nothing to retain) and an
+        UNIMPLEMENTED answer for the deferred per-item vector storages, which
+        do buffer and do retain. Only ``OpenSearchKVStorage`` overrides it,
+        because only the KV side is asked today. Before querying this on a
+        vector storage, implement it there -- a confident ``False`` over a
+        non-empty buffer is worse than no method at all.
+        """
+        return False
+
     @abstractmethod
     async def drop(self) -> dict[str, str]:
         """Drop all data from storage and clean up resources
@@ -323,7 +386,7 @@ class BaseVectorStorage(StorageNameSpace, ABC):
 
         Multi-worker note:
             Backends that buffer writes in process memory (e.g.
-            OpenSearchVectorDBStorage as of #3043) keep the buffer
+            OpenSearchVectorDBStorage) keep the buffer
             process-local. In a multi-worker deployment (e.g.
             lightrag-gunicorn) other workers will not observe these writes
             until the writing worker has called index_done_callback().
@@ -544,12 +607,12 @@ class BaseKVStorage(StorageNameSpace, ABC):
             reconstructs one -- ``OpenSearchKVStorage`` with a
             ``scripted_upsert`` bulk action, ``RedisKVStorage`` with a Lua
             script that reads a bounded prefix and writes in the same step --
-            rather than reading whole values back. See issue #3870.
+            rather than reading whole values back.
 
         Multi-worker note:
             Backends that buffer writes in process memory (e.g.
-            OpenSearchKVStorage as of the KV-batching change derived from
-            #2822) keep the buffer process-local. In a multi-worker
+            OpenSearchKVStorage, since its KV writes were batched) keep the
+            buffer process-local. In a multi-worker
             deployment (e.g. lightrag-gunicorn) other workers will not
             observe these writes until the writing worker has called
             index_done_callback(). Callers that depend on cross-worker
@@ -591,6 +654,46 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
     embedding_func: EmbeddingFunc
 
+    # Whether this backend can lose an uncommitted in-memory mutation when a
+    # peer commit makes it reload. ``True`` means the backend
+    # holds the whole graph in process memory, commits it as one unit, and has
+    # no pending buffer or redo log to replay over a reloaded snapshot -- so
+    # concurrent writers on one workspace must be serialized above it.
+    # ``LightRAG._admin_write_gate`` keys off this: where it is ``True`` the
+    # admin graph writers take the workspace admin lock and the pipeline
+    # ``busy`` reservation; where it is ``False`` (every server-backed store,
+    # which has row/transaction-level concurrency of its own) they run
+    # unserialized, as before.
+    #
+    # ``ClassVar`` on purpose: the storage bases are dataclasses, so a bare
+    # annotated attribute would become an ``__init__`` field and change the
+    # constructor signature and field order of every backend.
+    requires_single_writer: ClassVar[bool] = False
+
+    def discard_uncommitted_mutations(self, reason: str) -> bool:
+        """Give up in-memory graph mutations no commit has published.
+
+        For a backend that buffers the whole graph in process memory
+        (``requires_single_writer``), an operation that dies between its
+        ``upsert_node`` / ``remove_nodes`` and its commit leaves those
+        mutations sitting in that buffer with nothing owing anything about
+        them, so the next unrelated commit publishes them -- making an
+        operation that was reported as FAILED durable after the fact. Called
+        by ``LightRAG._admin_write_gate`` on the one exit where the operation's
+        own ``except Exception`` handlers cannot run (a cancellation, including
+        the hold ceiling's), while the gate still holds the admin lock and the
+        pipeline reservation, so no other writer can be mid-mutation.
+
+        **Synchronous on purpose.** It runs on an already-cancelled task where
+        every ``await`` is a place the cleanup can be interrupted a second
+        time; a plain attribute write cannot be.
+
+        Returns True when something was actually given up (worth logging),
+        False when there was nothing unpublished. The default is False: a
+        server-backed store commits per statement and holds no such buffer.
+        """
+        return False
+
     @abstractmethod
     async def has_node(self, node_id: str) -> bool:
         """Check if a node exists in the graph.
@@ -623,6 +726,37 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
         Returns:
             The number of edges connected to the node
+
+        **A self-loop must not be in the store, so its degree is not
+        contracted.** Every LightRAG ingress refuses one -- extraction,
+        ``create_relation`` via ``_reject_self_loop_relation``
+        (``lightrag/utils_graph.py``), custom-KG insert -- and
+        ``tools/migrate_graph_storage.py`` refuses a source graph that holds
+        one, rather than dropping it and orphaning the relation's vector row.
+        A self-loop
+        carries no connectivity for graph retrieval, and degree is exactly the
+        connectivity measure that feeds relation ``rank``, BFS truncation
+        priority and ``get_popular_labels``, so an edge reaching nothing has no
+        meaningful degree to report. A store still holding one holds
+        invariant-violating data to be removed, not data to be ranked.
+
+        Backends therefore use the cheapest natural query for degree and may
+        answer differently from each other -- and from their own
+        ``node_degrees_batch`` -- on such an edge. That divergence is
+        unreachable for any graph the contract admits.
+
+        **Do not "fix" this by filtering self-loops out of the degree
+        queries.** It was implemented across all seven backends and reverted
+        for cost: it takes Neo4j's ``node_degrees_batch`` off its O(1)
+        ``GetDegree`` plan and onto an expand per requested node, and it turns
+        OpenSearch's ``get_popular_labels`` and ``get_knowledge_graph('*')``
+        into a script evaluation per document in the edge index, because
+        OpenSearch cannot compare two fields with a term query. Both sit on the
+        retrieval hot path. The invariant is enforced where it costs nothing --
+        at the boundary -- rather than on every query.
+
+        Edge LISTINGS are governed separately, and a self-loop IS listed there
+        -- see ``get_node_edges``.
         """
 
     @abstractmethod
@@ -685,6 +819,31 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         ``get_nodes_edges_batch`` cannot express the middle case (it returns a
         dict of lists) and flattens ``None`` to ``[]`` by design; callers that
         need the distinction must use this single-node form.
+
+        **A self-loop appears ONCE** -- listed, never hidden, here and in
+        ``get_nodes_edges_batch``. :meth:`node_degree` says the store must not
+        hold one; this method is how a store that does is repaired, so the two
+        are not in tension: a self-loop the listing hides cannot be found and
+        cannot be deleted.
+
+        Hiding it would be a data-loss bug, not a tidier contract. Entity
+        deletion, entity rename, entity merge and the purge of a document's
+        contributions all enumerate a node's incident edges HERE to delete or
+        rewrite the matching relation rows; an edge this method omits leaves an
+        orphan relation vector row behind a deleted entity, or a dangling
+        endpoint behind a renamed one.
+
+        A backend that walks its outbound and inbound matches separately must
+        skip the second occurrence of ``src == tgt``, or it reports one edge
+        twice. ``pgtable``, ``mongo``, ``opensearch`` and the AGE backend's
+        batch form all carry that guard.
+
+        The single-node form on the Cypher family (``neo4j``, ``memgraph``, and
+        AGE) instead resolves one undirected ``(n)-[]-(m)`` match, where how
+        many rows a self-loop produces is the SERVER's answer, not the query's.
+        No offline test settles it, so treat those three as unverified on this
+        rule rather than as compliant -- the batch forms, which issue two
+        directed matches, are the ones pinned here.
         """
 
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
@@ -707,6 +866,12 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         Default implementation fetches node degrees one by one.
         Override this method for better performance in storage backends
         that support batch operations.
+
+        **Answer every requested id.** A node with no edges gets ``0``, not a
+        missing key -- an override that builds its result from aggregation
+        buckets sees no bucket for such a node and drops it unless it seeds the
+        dict first. Callers then need no "absent means zero" rule of their own,
+        and the batch agrees with :meth:`node_degree` on an isolated node.
         """
         result = {}
         for node_id in node_ids:
@@ -720,8 +885,17 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         """Edge degrees as a batch using UNWIND also uses node_degrees_batch
 
         Default implementation calculates edge degrees one by one.
-        Override this method for better performance in storage backends
-        that support batch operations.
+
+        **Override this on any backend whose ``node_degree`` is a round trip.**
+        The default is not merely "slower": it is two AWAITED ``node_degree``
+        calls per pair, issued serially, and retrieval hands it the whole
+        incident-edge set of the top entities rather than ``top_k`` of them --
+        so a single query became thousands of sequential requests on the
+        backends that inherited it. Overriding is eight lines: collect the
+        DISTINCT endpoint ids, resolve them with one ``node_degrees_batch``,
+        sum per pair (``pgtable_impl`` and ``opensearch_impl`` both carry the
+        same shape). Doing so also takes the scalar ``node_degree`` off the
+        retrieval path entirely.
         """
         result = {}
         for src_id, tgt_id in edge_pairs:
@@ -1001,7 +1175,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         admit in traversal order. A new backend should rank its levels where
         its query language makes that free, and is under no obligation to
         reshape a traversal to achieve it.
-        This is the resolution of issue #3612, not an outstanding gap in it.
+        This is a resolved decision, not an outstanding gap.
 
         **Known deviation -- PGGraphStorage (Apache AGE)** ranks the ``*`` view
         on ``degree DESC, v.id ASC``, the internal vertex id, not the label.
@@ -1022,7 +1196,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         ``max_nodes``, so an entity whose in- and out-degree both fall outside
         their respective top-N never reaches the ranking however high its
         undirected degree is, and terms aggregations are count-approximate
-        across shards. Tracked in issue #3613; it needs a storage-shape change,
+        across shards. Not addressed; it needs a storage-shape change,
         not an ordering one.
 
         This constrains WHICH nodes survive truncation, not the order of

@@ -43,7 +43,6 @@ from lightrag.utils import (
     get_env_value,
     get_llm_cache_identity,
     serialize_llm_cache_identity,
-    update_chunk_cache_list,
     remove_think_tags,
     pick_by_weighted_polling,
     pick_by_vector_similarity,
@@ -146,7 +145,7 @@ class KGRebuildReport:
 
     Known degradation semantics: a degraded relationship preserves its stored
     ``weight`` as-is — without per-chunk extraction cache the rolled-back
-    chunk's weight contribution cannot be subtracted (#3399 precision is
+    chunk's weight contribution cannot be subtracted (precision is
     restored only by a full reprocess). The degradation is recorded in the
     persisted ``kg_recovery_warnings`` so operators can identify affected
     aggregates.
@@ -2390,7 +2389,7 @@ def _combine_descriptions_dedup(
     Stored fragments come first (preserving prior order), then new fragments not
     already present. Deduplicating across stored *and* new (not only within the
     new batch) prevents a re-extracted description from appending a duplicate
-    fragment on every reprocess or resume (issue #3367); it also collapses any
+    fragment on every reprocess or resume; it also collapses any
     legacy duplicate fragments already stored. Returns the combined list and the
     count of surviving stored fragments, used for accurate merge accounting.
 
@@ -2601,7 +2600,7 @@ async def _merge_nodes_then_upsert(
         sorted_descriptions = [dp["description"] for dp in sorted_nodes]
 
         # Combine stored and new descriptions, deduplicating across both so a
-        # re-extracted description does not accumulate on reprocess (issue #3367)
+        # re-extracted description does not accumulate on reprocess
         description_list, already_fragment = _combine_descriptions_dedup(
             already_description, sorted_descriptions
         )
@@ -2960,7 +2959,7 @@ async def _merge_edges_then_upsert(
         # can be re-fed while it is already reflected in already_weights (the
         # stored scalar), so only sum weights of edges whose source_id is NOT
         # already stored -- otherwise weight double-counts and grows 1 -> 2 -> 3
-        # per reprocess (the #3367 sibling of description accumulation).
+        # per reprocess (the sibling of description accumulation).
         # Genuinely new sources still add their weight, preserving legitimate
         # multi-document growth.
         #
@@ -3037,7 +3036,7 @@ async def _merge_edges_then_upsert(
         sorted_descriptions = [dp["description"] for dp in sorted_edges]
 
         # Combine stored and new descriptions, deduplicating across both so a
-        # re-extracted description does not accumulate on reprocess (issue #3367)
+        # re-extracted description does not accumulate on reprocess
         description_list, already_fragment = _combine_descriptions_dedup(
             already_description, sorted_descriptions
         )
@@ -3480,7 +3479,7 @@ def collect_kg_merge_candidates(
 ) -> tuple[set[str], set[tuple[str, str]]]:
     """Derive the full candidate entity/relation superset a merge may touch.
 
-    Recovery anchor for issue #3400: before any graph/vector/tracking
+    Write-ahead recovery anchor: before any graph/vector/tracking
     mutation, the caller must be able to persist a durable candidate set in
     ``full_entities`` / ``full_relations`` so a later purge/retry can discover
     every object the merge might have written. The superset therefore
@@ -3536,7 +3535,7 @@ async def merge_nodes_and_edges(
 ) -> None:
     """Merge extracted entities/relations into the KG behind write-ahead anchors.
 
-    Phase order (issue #3400 — discoverability before mutation):
+    Phase order (discoverability before mutation):
     0. Phase 0: Persist the full candidate superset to ``full_entities`` /
        ``full_relations`` and flush both BEFORE any graph mutation, so a
        crash mid-merge always leaves a durable recovery anchor that purge /
@@ -3664,7 +3663,7 @@ async def merge_nodes_and_edges(
         pipeline_status["latest_message"] = log_message
         append_pipeline_history(pipeline_status, log_message)
 
-    # ===== Phase 0: write-ahead recovery indexes (issue #3400) =====
+    # ===== Phase 0: write-ahead recovery indexes =====
     # Persist the candidate superset BEFORE any graph/vector/tracking
     # mutation. Candidates are a superset, not proof of existence: purge
     # verifies ownership per candidate and skips absent objects. Empty rows
@@ -3801,7 +3800,7 @@ async def merge_nodes_and_edges(
 
         # Execute entity tasks; on any failure every sibling is cancelled and
         # drained before the first exception propagates (no background writes
-        # survive failure handling — issue #3400).
+        # survive failure handling).
         processed_entities = []
         if entity_tasks:
             processed_entities = await wait_tasks_with_drain(
@@ -3924,7 +3923,7 @@ async def merge_nodes_and_edges(
         # graph mutation. The historical post-merge "Phase 3" write — which
         # derived the rows from in-memory merge results and swallowed its own
         # exceptions — is gone: a merge whose anchors cannot be persisted no
-        # longer mutates the graph at all (issue #3400).
+        # longer mutates the graph at all.
 
     finally:
         # On EVERY exit — the inter-phase await points (sleep(0) yields,
@@ -3972,6 +3971,12 @@ async def extract_entities(
 
     # Extraction-scoped truncation tally; see _publish_truncation_summary below.
     stage_tally = TokenLimitTruncationTally()
+
+    # Chunks whose LLM cache write was skipped because the chunk could not
+    # carry the reference to it. A set, not a tally: there is no
+    # per-stage breakdown to report and nothing is persisted — see
+    # _publish_cache_skip_summary below.
+    cache_skip_chunks: set[str] = set()
 
     # Optional per-chunk extraction-quality hook; None leaves the pipeline
     # unchanged. See the call site in _process_single_content below.
@@ -4125,9 +4130,6 @@ async def extract_entities(
             else ""
         )
 
-        # Create cache keys collector for batch processing
-        cache_keys_collector = []
-
         def _report_truncation(result: str, stage: str) -> None:
             if not is_truncated_response(result):
                 return
@@ -4144,6 +4146,32 @@ async def extract_entities(
                     f"Warning: token-limit truncation during {stage} entity "
                     f"extraction for {location}; further occurrences are "
                     f"reported as one summary at the end of extraction"
+                )
+
+        def _report_cache_skip(cache_type: str) -> None:
+            """The extraction cache is off for this chunk; say so out loud.
+
+            ``use_llm_func_with_cache`` skips the cache write when the chunk
+            could not carry the reference to it. That is the safe direction,
+            but it means the extraction cache silently stopped working for this
+            document — the next run re-calls the LLM for these chunks. Reported on the
+            same discipline as truncation above: every occurrence to the server
+            log, the first one plus an end-of-stage aggregate to the bounded
+            pipeline-status ring. Synchronous and non-raising, per the
+            ``on_cache_skipped`` contract.
+            """
+            location = f"chunk {chunk_key} in {file_path}"
+            logger.warning(
+                f"LLM {cache_type} cache write skipped for {location}: its cache "
+                f"reference could not be recorded on the chunk"
+            )
+            first = not cache_skip_chunks
+            cache_skip_chunks.add(chunk_key)
+            if first:
+                status_logger.log(
+                    f"Warning: LLM cache write skipped for {location} because its "
+                    f"cache reference could not be recorded; further occurrences "
+                    f"are reported as one summary at the end of extraction"
                 )
 
         if use_json_extraction:
@@ -4191,7 +4219,8 @@ async def extract_entities(
             llm_response_cache=llm_response_cache,
             cache_type="extract",
             chunk_id=chunk_key,
-            cache_keys_collector=cache_keys_collector,
+            text_chunks_storage=text_chunks_storage,
+            on_cache_skipped=_report_cache_skip,
             response_format=({"type": "json_object"} if use_json_extraction else None),
             llm_cache_identity=get_llm_cache_identity(global_config, "extract"),
         )
@@ -4267,7 +4296,8 @@ async def extract_entities(
                 history_messages=history,
                 cache_type="extract",
                 chunk_id=chunk_key,
-                cache_keys_collector=cache_keys_collector,
+                text_chunks_storage=text_chunks_storage,
+                on_cache_skipped=_report_cache_skip,
                 response_format=(
                     {"type": "json_object"} if use_json_extraction else None
                 ),
@@ -4333,31 +4363,15 @@ async def extract_entities(
                     maybe_edges[edge_key] = list(glean_edge_list)
                 await _cooperative_yield(i, every=8)
 
-        # Batch update chunk's llm_cache_list with all collected cache keys.
-        #
-        # Ordered BEFORE the validator on purpose. The rows are already
-        # written durably, but their keys live only in the in-memory
-        # cache_keys_collector until this call attaches them to the chunk, and
-        # recovery (_rollback_one_custom_chunk_patch) reaches cache rows
-        # exclusively through a chunk's llm_cache_list. A validator that raises
-        # exits the chunk here, so a key never attached is a row nothing can
-        # reach again — orphaned even after /documents/scan rolls the operation
-        # back. Ordering is all this buys, NOT durability: this call swallows
-        # storage errors, and a sibling cancelled by the FIRST_EXCEPTION path
-        # never reaches its own call. Both leave the same orphan; closing that
-        # off needs recovery to find rows by the `chunk_id` they already carry
-        # (issue #3833), not more ordering here.
-        #
-        # Nothing after this point adds keys: the collector is filled by the
-        # extraction and gleaning calls above, and the multimodal injection
-        # below builds records from sidecar metadata without calling the LLM.
-        if cache_keys_collector and text_chunks_storage:
-            await update_chunk_cache_list(
-                chunk_key,
-                text_chunks_storage,
-                cache_keys_collector,
-                "entity_extraction",
-            )
+        # No end-of-chunk cache-key attach here, by design. Each extract cache
+        # row is attached to this chunk BEFORE it is written, inside
+        # use_llm_func_with_cache; collecting the keys in memory and attaching
+        # them once at the end is precisely what orphaned them. See *LLM
+        # extraction cache reachability* in the contract doc,
+        # docs/design/PurgeRecoveryContract.md. Nothing here needs to re-attach:
+        # the extraction and gleaning calls above have each recorded their own
+        # key, and the multimodal injection below builds records from sidecar
+        # metadata without calling the LLM.
 
         # Optional extraction-quality hook: the last word on what the LLM
         # extracted from this chunk. Caller-facing contract, including why core
@@ -4508,6 +4522,27 @@ async def extract_entities(
         if truncation_tally is not None:
             truncation_tally.absorb(stage_tally)
 
+    def _publish_cache_skip_summary() -> None:
+        """Publish one aggregated line for chunks whose cache write was skipped.
+
+        Called from the same ``finally`` as _publish_truncation_summary and
+        under the same rules: exactly once, on every exit, await-free so it is
+        safe inside a cancellation unwind, a no-op when nothing was skipped.
+        Nothing is handed upward — unlike truncation this is not recorded on
+        the document, because the trigger is an unwritable text_chunks storage
+        rather than a property of the document's content.
+        """
+        if not cache_skip_chunks:
+            return
+        cache_skip_message = (
+            f"Warning: LLM cache writes were skipped for {len(cache_skip_chunks)} "
+            f"of {total_chunks} chunks during entity extraction because their "
+            f"cache references could not be recorded; those extraction results "
+            f"were not cached and will be recomputed on the next run"
+        )
+        logger.warning(cache_skip_message)
+        status_logger.log(cache_skip_message)
+
     # Get max async tasks limit from global_config
     chunk_max_async = global_config.get("llm_model_max_async", 4)
     semaphore = asyncio.Semaphore(chunk_max_async)
@@ -4606,6 +4641,7 @@ async def extract_entities(
         # persisted FAILED with no llm_truncation for responses that had
         # already been recorded. Await-free, called exactly once.
         _publish_truncation_summary()
+        _publish_cache_skip_summary()
 
     # If all tasks completed successfully, chunk_results already contains the results
     # Return the chunk_results for later processing in merge_nodes_and_edges
@@ -5444,6 +5480,22 @@ async def _apply_token_truncation(
 ) -> dict[str, Any]:
     """
     Apply token-based truncation to entities and relations for LLM efficiency.
+
+    Returns ``entities_context`` / ``relations_context`` (the records handed to
+    the prompt) plus ``filtered_entities`` / ``filtered_relations`` (the matching
+    original records handed to chunk selection).
+
+    Ordering rule for any selector added here: the ``*_context`` lists are this
+    stage's output and the only importance ranking downstream sees. The
+    ``filtered_*`` lists MUST follow that same order -- stage 3 attributes a
+    shared chunk to the earlier-positioned record and allocates chunk quota by
+    list position -- so a selector that reorders must not leave the
+    ``filtered_*`` lists in stage-1 retrieval order.
+
+    A selector may reorder and drop, but must not invent: a ``*_context``
+    record naming an entity or relation that was not in this stage's input
+    cannot be resolved back to an original, so it reaches the prompt but is
+    dropped from ``filtered_*`` with a warning.
     """
     tokenizer = global_config.get("tokenizer")
     if not tokenizer:
@@ -5484,8 +5536,14 @@ async def _apply_token_truncation(
         if isinstance(created_at, (int, float)):
             created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
 
-        # Store mapping from entity name to original data
-        entity_id_to_original[entity_name] = entity
+        # Store mapping from entity name to original data.
+        # First occurrence wins: the filtered rebuild below resolves records
+        # through this map, and duplicate names must keep the record that was
+        # retrieved first. Accepted divergence if a name ever repeats: the
+        # prompt shows the context row a reordering selector picked, while
+        # filtered_* carries the first-retrieved original. Unreachable today --
+        # stage 1 already dedups entities by name and relations by sorted pair.
+        entity_id_to_original.setdefault(entity_name, entity)
 
         entities_context.append(
             {
@@ -5510,9 +5568,11 @@ async def _apply_token_truncation(
         else:
             entity1, entity2 = relation.get("src_id"), relation.get("tgt_id")
 
-        # Store mapping from relation pair to original data
+        # Store mapping from relation pair to original data.
+        # First occurrence wins, with the same rule and the same accepted
+        # divergence as entities above.
         relation_key = (entity1, entity2)
-        relation_id_to_original[relation_key] = relation
+        relation_id_to_original.setdefault(relation_key, relation)
 
         relations_context.append(
             {
@@ -5567,34 +5627,59 @@ async def _apply_token_truncation(
         f"After truncation: {len(entities_context)} entities, {len(relations_context)} relations"
     )
 
-    # Create filtered original data based on truncated context
+    # Create filtered original data based on truncated context.
+    #
+    # Walk the *_context lists (this stage's own output order) and resolve each
+    # record through the pre-truncation maps. Stage 2's order is the single
+    # source of truth for downstream importance: stage 3 deduplicates chunk
+    # attribution by first occurrence and hands the list to
+    # pick_by_weighted_polling, whose quota decreases with list position. Do NOT
+    # rebuild these by filtering final_entities / final_relations -- that
+    # reimposes stage-1 retrieval order and silently discards any reordering a
+    # stage-2 selector (e.g. a reranker) performed.
+    #
+    # A context record that resolves to nothing was invented or renamed by a
+    # stage-2 selector: it reaches the prompt but cannot reach chunk selection,
+    # so it is dropped here and reported rather than lost silently.
     filtered_entities = []
     filtered_entity_id_to_original = {}
-    if entities_context:
-        final_entity_names = {e["entity"] for e in entities_context}
-        seen_nodes = set()
-        for entity in final_entities:
-            name = entity.get("entity_name")
-            if name in final_entity_names and name not in seen_nodes:
-                filtered_entities.append(entity)
-                filtered_entity_id_to_original[name] = entity
-                seen_nodes.add(name)
+    unresolved_entities = []
+    for entity_context in entities_context:
+        name = entity_context.get("entity")
+        if name in filtered_entity_id_to_original:
+            continue
+        original = entity_id_to_original.get(name)
+        if original is None:
+            unresolved_entities.append(name)
+            continue
+        filtered_entities.append(original)
+        filtered_entity_id_to_original[name] = original
+
+    if unresolved_entities:
+        logger.warning(
+            f"Dropping {len(unresolved_entities)} entity records absent from the "
+            f"pre-truncation map: {unresolved_entities[:5]}"
+        )
 
     filtered_relations = []
     filtered_relation_id_to_original = {}
-    if relations_context:
-        final_relation_pairs = {(r["entity1"], r["entity2"]) for r in relations_context}
-        seen_edges = set()
-        for relation in final_relations:
-            src, tgt = relation.get("src_id"), relation.get("tgt_id")
-            if src is None or tgt is None:
-                src, tgt = relation.get("src_tgt", (None, None))
+    unresolved_relations = []
+    for relation_context in relations_context:
+        pair = (relation_context.get("entity1"), relation_context.get("entity2"))
+        if pair in filtered_relation_id_to_original:
+            continue
+        original = relation_id_to_original.get(pair)
+        if original is None:
+            unresolved_relations.append(pair)
+            continue
+        filtered_relations.append(original)
+        filtered_relation_id_to_original[pair] = original
 
-            pair = (src, tgt)
-            if pair in final_relation_pairs and pair not in seen_edges:
-                filtered_relations.append(relation)
-                filtered_relation_id_to_original[pair] = relation
-                seen_edges.add(pair)
+    if unresolved_relations:
+        logger.warning(
+            f"Dropping {len(unresolved_relations)} relation records absent from the "
+            f"pre-truncation map: {unresolved_relations[:5]}"
+        )
 
     return {
         "entities_context": entities_context,

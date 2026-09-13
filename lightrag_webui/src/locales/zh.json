@@ -62,8 +62,8 @@
       "clearing": "正在清除...",
       "timeout": "清除操作超时，请重试",
       "success": "文档清空成功",
-      "cacheCleared": "缓存清空成功",
-      "cacheClearFailed": "清空缓存失败：\n{{error}}",
+      "successWithCache": "文档和LLM缓存清空成功",
+      "partialSuccess": "清空操作完成，但存在错误：\n{{message}}",
       "failed": "清空文档失败：\n{{message}}",
       "error": "清空文档失败：\n{{error}}"
     },

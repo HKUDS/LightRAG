@@ -371,15 +371,15 @@ PARSER_ENGINE_NATIVE = "native"
 PARSER_ENGINE_MINERU = "mineru"
 PARSER_ENGINE_DOCLING = "docling"
 PARSED_DIR_NAME = "__parsed__"  # Dir for parsed files (renamed from __enqueued__)
-# Reserved doc_status.metadata key holding the custom-chunk patch journal
-# (issue #3400 Phase 3). While present, the document has an in-flight or
+# Reserved doc_status.metadata key holding the custom-chunk patch journal.
+# While present, the document has an in-flight or
 # failed ainsert_custom_chunks operation: the pipeline must NOT process the
 # row as ordinary ingestion, resets must NOT strip it, and deletion must
 # include its staged chunk IDs. Lives here (not utils_pipeline) so that
 # base.py can derive the scheduling projection without an import cycle.
 CUSTOM_CHUNK_PATCH_METADATA_KEY = "custom_chunk_patch"
 # Reserved doc_status.metadata key recording how far this document's KG write
-# has progressed (issue #3400 fail-closed purge). Stamped ``pre_graph`` when the
+# has progressed (fail-closed purge). Stamped ``pre_graph`` when the
 # document enters PROCESSING and promoted to ``graph_mutation_started`` only
 # once the write-ahead recovery anchors are durable — i.e. the value answers
 # "could this document have touched the graph?" without reading the graph.
@@ -387,12 +387,12 @@ CUSTOM_CHUNK_PATCH_METADATA_KEY = "custom_chunk_patch"
 # clean up staged chunks even with no anchor rows, because no graph mutation
 # can have happened yet. MONOTONIC and never cleared: a PROCESSED document
 # keeps ``graph_mutation_started`` (its anchors serve as the proof from then
-# on). Absent means UNKNOWN — a pre-#3416 document, which fails closed.
+# on). Absent means UNKNOWN — a document predating it, which fails closed.
 KG_WRITE_STATE_METADATA_KEY = "kg_write_state"
 KG_WRITE_STATE_PRE_GRAPH = "pre_graph"
 KG_WRITE_STATE_GRAPH_MUTATION_STARTED = "graph_mutation_started"
 # Reserved doc_status.metadata key holding the whole-document purge journal
-# (issue #3400 fail-closed purge). Required BY fail-closed, not merely nice to
+# (fail-closed purge). Required BY fail-closed, not merely nice to
 # have: purge's last step deletes the recovery anchors, so without a journal a
 # failure in any later step (LLM cache, full_docs) would make the retry see
 # "anchors missing" and refuse forever. The journal distinguishes "anchors were

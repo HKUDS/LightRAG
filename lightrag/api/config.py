@@ -845,8 +845,7 @@ def parse_args() -> argparse.Namespace:
 
     # Single authoritative switch for the interactive API documentation
     # surfaces (/docs, /docs/oauth2-redirect, /redoc, /openapi.json and the
-    # /static/swagger-ui mount). When False all five return 404 (issue #3666,
-    # RFC #3671). Any route audit must condition the same set on this flag.
+    # /static/swagger-ui mount). When False all five return 404 (one flag). Any route audit must condition the same set on this flag.
     args.enable_api_docs = get_env_value("ENABLE_API_DOCS", True, bool)
 
     # AI-generated content notice shown under every answer in the two query

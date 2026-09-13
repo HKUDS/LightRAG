@@ -26,6 +26,7 @@ from tenacity import (
 )
 
 from lightrag.utils import (
+    TruncatedResponse,
     wrap_embedding_func_with_attrs,
     logger,
 )
@@ -177,15 +178,19 @@ async def zhipu_complete_if_cache(
 
     if not response.choices or response.choices[0].message is None:
         return ""
-    message = response.choices[0].message
+    choice = response.choices[0]
+    message = choice.message
     content = message.content or ""
     reasoning_content = getattr(message, "reasoning_content", "") or ""
 
     if enable_cot and reasoning_content.strip():
         if content:
-            return f"<think>{reasoning_content}</think>{content}"
-        return f"<think>{reasoning_content}</think>"
+            content = f"<think>{reasoning_content}</think>{content}"
+        else:
+            content = f"<think>{reasoning_content}</think>"
 
+    if getattr(choice, "finish_reason", None) == "length":
+        return TruncatedResponse(content)
     return content
 
 
