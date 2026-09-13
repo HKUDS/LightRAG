@@ -4840,6 +4840,24 @@ async def kg_query(
 
     # Handle cache
     answer_cache_kv = _answer_cache_kv(query_param, hashing_kv)
+    # The chunk-selection settings must be read from the STORAGE snapshot, not
+    # from the `global_config` parameter, even though the two usually agree.
+    # A storage captures `asdict(self)` once at construction, while `aquery`
+    # rebuilds `global_config` on every call, so the two diverge as soon as the
+    # attribute is mutated on a live LightRAG. The code that actually consumes
+    # these settings (`_find_most_related_text_unit_from_entities` /
+    # `..._from_relationships`) reads the snapshot, so keying on the same dict
+    # the consumer reads is what keeps the key and the retrieved context in
+    # sync. Do NOT "unify" this with the `global_config` reads above.
+    retrieval_config = (
+        text_chunks_db.global_config if text_chunks_db is not None else global_config
+    )
+    related_chunk_number = retrieval_config.get(
+        "related_chunk_number", DEFAULT_RELATED_CHUNK_NUMBER
+    )
+    kg_chunk_pick_method = retrieval_config.get(
+        "kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD
+    )
     args_hash = compute_args_hash(
         _ANSWER_CACHE_POLICY_VERSION,
         query_param.mode,
@@ -4863,6 +4881,11 @@ async def kg_query(
         effective_user_prompt.text,
         query_param.enable_rerank,
         global_config.get("enable_content_headings", False),
+        # Unconditional, and read from `retrieval_config` -- see the comment on
+        # its assignment above for why the source differs from the line above.
+        "\n<kg_chunk_selection>\n",
+        related_chunk_number,
+        kg_chunk_pick_method,
         *(("\n<system_prompt>\n", system_prompt) if system_prompt else ()),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
@@ -4910,6 +4933,8 @@ async def kg_query(
                 "enable_content_headings": global_config.get(
                     "enable_content_headings", False
                 ),
+                "related_chunk_number": related_chunk_number,
+                "kg_chunk_pick_method": kg_chunk_pick_method,
             }
             await save_to_cache(
                 answer_cache_kv,
@@ -5480,6 +5505,22 @@ async def _apply_token_truncation(
 ) -> dict[str, Any]:
     """
     Apply token-based truncation to entities and relations for LLM efficiency.
+
+    Returns ``entities_context`` / ``relations_context`` (the records handed to
+    the prompt) plus ``filtered_entities`` / ``filtered_relations`` (the matching
+    original records handed to chunk selection).
+
+    Ordering rule for any selector added here: the ``*_context`` lists are this
+    stage's output and the only importance ranking downstream sees. The
+    ``filtered_*`` lists MUST follow that same order -- stage 3 attributes a
+    shared chunk to the earlier-positioned record and allocates chunk quota by
+    list position -- so a selector that reorders must not leave the
+    ``filtered_*`` lists in stage-1 retrieval order.
+
+    A selector may reorder and drop, but must not invent: a ``*_context``
+    record naming an entity or relation that was not in this stage's input
+    cannot be resolved back to an original, so it reaches the prompt but is
+    dropped from ``filtered_*`` with a warning.
     """
     tokenizer = global_config.get("tokenizer")
     if not tokenizer:
@@ -5520,8 +5561,14 @@ async def _apply_token_truncation(
         if isinstance(created_at, (int, float)):
             created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
 
-        # Store mapping from entity name to original data
-        entity_id_to_original[entity_name] = entity
+        # Store mapping from entity name to original data.
+        # First occurrence wins: the filtered rebuild below resolves records
+        # through this map, and duplicate names must keep the record that was
+        # retrieved first. Accepted divergence if a name ever repeats: the
+        # prompt shows the context row a reordering selector picked, while
+        # filtered_* carries the first-retrieved original. Unreachable today --
+        # stage 1 already dedups entities by name and relations by sorted pair.
+        entity_id_to_original.setdefault(entity_name, entity)
 
         entities_context.append(
             {
@@ -5546,9 +5593,11 @@ async def _apply_token_truncation(
         else:
             entity1, entity2 = relation.get("src_id"), relation.get("tgt_id")
 
-        # Store mapping from relation pair to original data
+        # Store mapping from relation pair to original data.
+        # First occurrence wins, with the same rule and the same accepted
+        # divergence as entities above.
         relation_key = (entity1, entity2)
-        relation_id_to_original[relation_key] = relation
+        relation_id_to_original.setdefault(relation_key, relation)
 
         relations_context.append(
             {
@@ -5603,34 +5652,59 @@ async def _apply_token_truncation(
         f"After truncation: {len(entities_context)} entities, {len(relations_context)} relations"
     )
 
-    # Create filtered original data based on truncated context
+    # Create filtered original data based on truncated context.
+    #
+    # Walk the *_context lists (this stage's own output order) and resolve each
+    # record through the pre-truncation maps. Stage 2's order is the single
+    # source of truth for downstream importance: stage 3 deduplicates chunk
+    # attribution by first occurrence and hands the list to
+    # pick_by_weighted_polling, whose quota decreases with list position. Do NOT
+    # rebuild these by filtering final_entities / final_relations -- that
+    # reimposes stage-1 retrieval order and silently discards any reordering a
+    # stage-2 selector (e.g. a reranker) performed.
+    #
+    # A context record that resolves to nothing was invented or renamed by a
+    # stage-2 selector: it reaches the prompt but cannot reach chunk selection,
+    # so it is dropped here and reported rather than lost silently.
     filtered_entities = []
     filtered_entity_id_to_original = {}
-    if entities_context:
-        final_entity_names = {e["entity"] for e in entities_context}
-        seen_nodes = set()
-        for entity in final_entities:
-            name = entity.get("entity_name")
-            if name in final_entity_names and name not in seen_nodes:
-                filtered_entities.append(entity)
-                filtered_entity_id_to_original[name] = entity
-                seen_nodes.add(name)
+    unresolved_entities = []
+    for entity_context in entities_context:
+        name = entity_context.get("entity")
+        if name in filtered_entity_id_to_original:
+            continue
+        original = entity_id_to_original.get(name)
+        if original is None:
+            unresolved_entities.append(name)
+            continue
+        filtered_entities.append(original)
+        filtered_entity_id_to_original[name] = original
+
+    if unresolved_entities:
+        logger.warning(
+            f"Dropping {len(unresolved_entities)} entity records absent from the "
+            f"pre-truncation map: {unresolved_entities[:5]}"
+        )
 
     filtered_relations = []
     filtered_relation_id_to_original = {}
-    if relations_context:
-        final_relation_pairs = {(r["entity1"], r["entity2"]) for r in relations_context}
-        seen_edges = set()
-        for relation in final_relations:
-            src, tgt = relation.get("src_id"), relation.get("tgt_id")
-            if src is None or tgt is None:
-                src, tgt = relation.get("src_tgt", (None, None))
+    unresolved_relations = []
+    for relation_context in relations_context:
+        pair = (relation_context.get("entity1"), relation_context.get("entity2"))
+        if pair in filtered_relation_id_to_original:
+            continue
+        original = relation_id_to_original.get(pair)
+        if original is None:
+            unresolved_relations.append(pair)
+            continue
+        filtered_relations.append(original)
+        filtered_relation_id_to_original[pair] = original
 
-            pair = (src, tgt)
-            if pair in final_relation_pairs and pair not in seen_edges:
-                filtered_relations.append(relation)
-                filtered_relation_id_to_original[pair] = relation
-                seen_edges.add(pair)
+    if unresolved_relations:
+        logger.warning(
+            f"Dropping {len(unresolved_relations)} relation records absent from the "
+            f"pre-truncation map: {unresolved_relations[:5]}"
+        )
 
     return {
         "entities_context": entities_context,
@@ -6239,6 +6313,40 @@ async def _find_most_related_edges_from_entities(
     return all_edges_data
 
 
+def _vector_chunk_quota(max_related_chunks: int, group_count: int) -> int:
+    """How many chunks VECTOR-mode selection may draw, scaled by group count.
+
+    Do not remove the floor of 1: it restores parity with the WEIGHT path,
+    which guarantees at least one chunk per group via
+    ``pick_by_weighted_polling(..., min_related_chunks=1)``. This quota is the
+    same linear-gradient budget as WEIGHT's ``n * (max + 1) / 2`` minus the
+    ``n / 2`` term, so ``(max_related_chunks=1, group_count=1)`` is the single
+    input where VECTOR would otherwise truncate to 0 and drop below that floor.
+    A 0 quota makes ``pick_by_vector_similarity`` return ``[]``, which the call
+    sites read as "vector selection failed" and silently downgrade to WEIGHT.
+
+    The ``max_related_chunks <= 0`` guard is what keeps ``related_chunk_number=0``
+    a genuine kill switch rather than a silent 1; the floor applies only once
+    both inputs are positive.
+
+    The ``group_count <= 0`` branch is defensive only: both call sites already
+    guard on their group list being non-empty (entities_with_chunks /
+    relations_with_chunks) before reaching here, so group_count is always
+    >= 1 in practice.
+
+    Args:
+        max_related_chunks: Configured ``related_chunk_number``; 0 disables
+            KG-related chunk selection entirely.
+        group_count: Number of entity/relation groups that carry chunks.
+
+    Returns:
+        Number of chunks VECTOR selection may draw, 0 when disabled.
+    """
+    if max_related_chunks <= 0 or group_count <= 0:
+        return 0
+    return max(1, int(max_related_chunks * group_count / 2))
+
+
 async def _find_related_text_unit_from_entities(
     node_datas: list[dict],
     query_param: QueryParam,
@@ -6305,6 +6413,24 @@ async def _find_related_text_unit_from_entities(
         # Update entity's chunks to deduplicated chunks
         entity_info["chunks"] = deduplicated_chunks
 
+    # Drop entities emptied by deduplication so they do not inflate the
+    # per-group chunk budget used by the selection strategies.
+    entities_with_chunks = [
+        entity_info for entity_info in entities_with_chunks if entity_info["chunks"]
+    ]
+
+    # Defensive only: unreachable on this path. Deduplication drops a chunk
+    # solely because an earlier-positioned entity already claimed it, so the
+    # first entity keeps every chunk it carries and at least one group always
+    # survives. The relation path's equivalent guard IS reachable, because it
+    # additionally excludes the chunks already delivered by the entity path,
+    # which can empty every relation group.
+    if not entities_with_chunks:
+        logger.info(
+            f"Find no entity-related chunks from {len(node_datas)} entities after deduplication"
+        )
+        return []
+
     # Step 3: Sort chunks for each entity by occurrence count (higher count = higher priority)
     total_entity_chunks = 0
     for entity_info in entities_with_chunks:
@@ -6323,7 +6449,9 @@ async def _find_related_text_unit_from_entities(
     #     The order of text chunks aligns with the naive retrieval's destination.
     #     When reranking is disabled, the text chunks delivered to the LLM tend to favor naive retrieval.
     if kg_chunk_pick_method == "VECTOR" and query and chunks_vdb:
-        num_of_chunks = int(max_related_chunks * len(entities_with_chunks) / 2)
+        num_of_chunks = _vector_chunk_quota(
+            max_related_chunks, len(entities_with_chunks)
+        )
 
         # Get embedding function from global config
         actual_embedding_func = text_chunks_db.embedding_func
@@ -6615,7 +6743,9 @@ async def _find_related_text_unit_from_relations(
     selected_chunk_ids = []  # Initialize to avoid UnboundLocalError
 
     if kg_chunk_pick_method == "VECTOR" and query and chunks_vdb:
-        num_of_chunks = int(max_related_chunks * len(relations_with_chunks) / 2)
+        num_of_chunks = _vector_chunk_quota(
+            max_related_chunks, len(relations_with_chunks)
+        )
 
         # Get embedding function from global config
         actual_embedding_func = text_chunks_db.embedding_func

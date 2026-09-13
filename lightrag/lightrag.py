@@ -175,6 +175,7 @@ from lightrag.exceptions import (
     KGPurgeOperationConflictError,
     PipelineNotInitializedError,
     RecoveryAnchorMissingError,
+    flush_may_have_lost_reference,
 )
 from lightrag.utils import (
     Tokenizer,
@@ -3986,15 +3987,19 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         """Record a failed `text_chunks` commit and quarantine what it orphaned.
 
         Two backends, two mechanisms, one trigger — call this wherever a chunk
-        commit fails, never set the flag or drop the buffer separately:
+        commit may have lost a reference, never set the flag or drop the
+        buffer separately. On an exception, gate the call on
+        `flush_may_have_lost_reference`: a backend that proved its raise
+        dropped nothing has taken this situation away, and quarantining anyway
+        discards paid-for LLM calls nothing could have orphaned.
 
-        * On a per-item backend (`OpenSearchKVStorage`) a raise means the
-          operation was PERMANENTLY rejected and already removed from the
-          buffer: `_flush_pending_kv_ops` retains retryable failures silently
-          and raises only for the rest. The reference is gone for good, so the
-          buffered cache rows naming it can never become reachable — deferring
-          them only postpones publishing an orphan, which the next successful
-          pair commit would do. Their UPSERTS are dropped instead; buffered
+        * On a per-item backend (`OpenSearchKVStorage`) an unclassified raise
+          means the operation was PERMANENTLY rejected and already removed
+          from the buffer: `_flush_pending_kv_ops` retains retryable failures
+          silently, and its two raises that drop nothing say so in their type.
+          The reference is gone for good, so the buffered cache rows naming it
+          can never become reachable — deferring them only postpones
+          publishing an orphan, which the next successful pair commit would do. Their UPSERTS are dropped instead; buffered
           deletes are kept, being tombstones an already-returned deletion
           promised.
         * On a snapshot backend (`JsonKVStorage`) the drop is a base-class
@@ -4122,7 +4127,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         "pending mutation"
                     )
             except Exception as e:
-                if storage_inst is self.text_chunks:
+                if storage_inst is self.text_chunks and flush_may_have_lost_reference(
+                    e
+                ):
                     # Sticky, because the failure does not survive in anything
                     # else. A per-item backend DROPS a permanently-failed
                     # operation from its buffer before raising, so every later
@@ -4136,6 +4143,22 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # pair is consistent again.
                     await self._record_chunk_reference_commit_failure(
                         f"{type(storage_inst).__name__} flush failed"
+                    )
+                elif storage_inst is self.text_chunks:
+                    # The backend proved this raise discarded nothing, so the
+                    # two reasons the record exists both fall away: a later
+                    # retry of this namespace is a truthful witness again
+                    # (there is no drained buffer to report success over), and
+                    # every already-published reference is durable. Recording
+                    # it anyway would quarantine extract rows that nothing can
+                    # orphan -- paid-for LLM calls thrown away, and on the
+                    # aborting-batch path thrown away for good. The cache
+                    # commit is still withheld HERE, by the chain below.
+                    logger.error(
+                        f"{type(storage_inst).__name__} flush failed without "
+                        f"losing a chunk reference: {e}. The LLM cache commit "
+                        "is deferred to the next ordered pair; nothing was "
+                        "quarantined"
                     )
                 namespace = getattr(storage_inst, "final_namespace", None) or getattr(
                     storage_inst, "namespace", ""
@@ -5295,7 +5318,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 logger.error(
                     f"Failed to commit chunk references before query cache: {e}"
                 )
-                await self._record_chunk_reference_commit_failure("query-path flush")
+                if flush_may_have_lost_reference(e):
+                    await self._record_chunk_reference_commit_failure(
+                        "query-path flush"
+                    )
+                # Otherwise nothing was dropped, so there is nothing to
+                # quarantine and no other site to warn: this commit simply did
+                # not happen. Return either way -- the cache half must not run
+                # without a chunk commit that returned.
                 return
             if committed is False:
                 # A DECLINED commit discarded the mutation, so the references
@@ -5433,47 +5463,69 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         ]
 
     async def aclear_cache(self) -> None:
-        """Clear all cache data from the LLM response cache storage.
+        """Drop every row of the LLM response cache storage.
 
-        This method clears all cached LLM responses regardless of mode.
+        Caller contract:
+            ``drop`` is destructive and **not** serialized by the storage
+            class, so this method inherits its contract: the caller MUST hold
+            the pipeline ``busy`` reservation before invoking it. Clearing
+            concurrently with an active document pipeline wipes the extraction
+            rows the in-flight chunks already paid for -- a later reprocess
+            re-bills every one of those LLM calls -- and leaves those chunks'
+            ``llm_cache_list`` naming rows that no longer exist.
+
+            The REST surface reaches this through
+            ``DELETE /documents?clear_llm_cache=true``, which runs inside the
+            destructive reservation. There is deliberately no endpoint that
+            calls it without one.
+
+        Raises:
+            Exception: propagated from the storage; the cache may be partly
+                dropped. Re-run to finish it.
 
         Example:
-            # Clear all cache
+            # Clear all cache (caller already holds the reservation)
             await rag.aclear_cache()
         """
         if not self.llm_response_cache:
             logger.warning("No cache storage configured")
             return
 
-        try:
-            # Under the fence for the whole drop, not just the flush after it.
-            # ``JsonKVStorage.drop`` clears under its namespace lock, RELEASES
-            # it, and only then commits; an extraction attaching and writing in
-            # that gap has its row published by the drop's own commit while the
-            # reference stays in memory.
-            #
-            # This does NOT make clearing the cache safe during ingestion --
-            # it still wipes rows that in-flight chunks already reference, and
-            # ``drop`` requires the caller to hold the pipeline ``busy``
-            # reservation, which this path does not. That is tracked separately
-            # (folding this into the destructive clear endpoint); the fence
-            # only keeps the publish from straddling a writer's pair.
-            async with (
-                get_extract_cache_fence(self.text_chunks)
-                if self.text_chunks is not None
-                else nullcontext()
-            ):
-                # Clear all cache using drop method
-                success = await self.llm_response_cache.drop()
-                if success:
-                    logger.info("Cleared all cache")
-                else:
-                    logger.warning("Failed to clear all cache")
+        # Under the fence for the whole drop, not just the flush after it.
+        # ``JsonKVStorage.drop`` clears under its namespace lock, RELEASES
+        # it, and only then commits; an extraction attaching and writing in
+        # that gap has its row published by the drop's own commit while the
+        # reference stays in memory. The reservation above is what keeps an
+        # extraction from running at all; the fence is what makes the pair
+        # atomic if one somehow does.
+        async with (
+            get_extract_cache_fence(self.text_chunks)
+            if self.text_chunks is not None
+            else nullcontext()
+        ):
+            result = await self.llm_response_cache.drop()
 
-                await self.llm_response_cache.index_done_callback()
+        # ``drop``'s own result is the whole answer, and no commit follows it.
+        # ``BaseKVStorage.drop`` requires the implementation to persist
+        # immediately (``JsonKVStorage.drop`` calls ``index_done_callback``
+        # itself, inside its try, so a commit failure is already reported as
+        # {"status": "error"}). A second commit here would be redundant, and
+        # propagating ITS failure would report a cache that is durably cleared
+        # as one that was not -- the misreport *Consistency without
+        # transactions* rules out.
+        #
+        # A non-raising failure comes back as {"status": "error"}; the dict is
+        # truthy either way, so check the status rather than the return value.
+        # Raise instead of logging: the caller decides what a half-cleared
+        # cache means for its operation, and a drop reported as done while
+        # rows remain is the mirror silent failure.
+        if isinstance(result, dict) and result.get("status") != "success":
+            raise RuntimeError(
+                "Failed to clear the LLM response cache: "
+                f"{result.get('message', 'unknown error')}"
+            )
 
-        except Exception as e:
-            logger.error(f"Error while clearing cache: {e}")
+        logger.info("Cleared all cache")
 
     def clear_cache(self) -> None:
         """Synchronous version of aclear_cache."""

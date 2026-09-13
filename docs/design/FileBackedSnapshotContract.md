@@ -546,7 +546,13 @@ Because nothing here can discard an uncommitted write, neither class carries a
 
 * `drop` — destructive, **not** serialized by either storage class. Currently
   gated by the API layer (`/documents/clear`); any new caller must hold the
-  pipeline `busy` reservation.
+  pipeline `busy` reservation. That includes the `llm_response_cache`
+  namespace: `LightRAG.aclear_cache` states the contract but does not take the
+  reservation, and the only REST path to it is `DELETE
+  /documents?clear_llm_cache=true`, which runs inside the destructive
+  reservation. A standalone cache-clearing endpoint is what this rules out —
+  clearing mid-ingestion wipes the extraction rows in-flight chunks already
+  paid for.
 * `upsert` / `delete` invoked from non-pipeline admin flows (cache management,
   etc.) — safe under the shared-lock model, but consumers should still respect
   the pipeline gate to avoid interleaving with batched ingest work.

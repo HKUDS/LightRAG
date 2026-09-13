@@ -23,7 +23,11 @@ import numpy as np
 import pytest
 
 from lightrag import LightRAG
-from lightrag.exceptions import IndexFlushError
+from lightrag.exceptions import (
+    IndexFlushError,
+    ReferencesIntactFlushError,
+    flush_may_have_lost_reference,
+)
 from lightrag.utils import EmbeddingFunc, Tokenizer
 
 pytestmark = pytest.mark.offline
@@ -888,6 +892,172 @@ async def test_a_permanent_chunk_failure_quarantines_the_buffered_cache_rows(
         await rag.finalize_storages()
 
 
+# ---------------------------------------------------------------------------
+# The quarantine is gated on what the raise could have lost (issue #3924)
+# ---------------------------------------------------------------------------
+
+
+def test_the_predicate_assumes_a_loss_unless_the_backend_says_otherwise():
+    """The safe answer is the absence of a claim, not a claim to remember."""
+    assert flush_may_have_lost_reference(RuntimeError("permanent")) is True
+    assert flush_may_have_lost_reference(ReferencesIntactFlushError("intact")) is False
+    assert flush_may_have_lost_reference(None) is False
+
+
+def test_the_predicate_unwraps_the_flush_wrapper_and_nothing_else():
+    """``_flush_storages`` wraps every failure; a re-raise is a new claim.
+
+    ``IndexFlushError`` carries no meaning of its own, so the answer is its
+    cause's. Anything else chained onto an intact raise has spoken for itself
+    -- ``OpenSearchKVStorage.finalize`` chains a "these writes have been lost"
+    ``RuntimeError`` onto a flush whose buffers were intact, because it then
+    releases the client and nothing will ever replay them.
+    """
+    intact = ReferencesIntactFlushError("bulk died mid-stream")
+    wrapped = IndexFlushError("OpenSearchKVStorage", "text_chunks", intact)
+    wrapped.__cause__ = intact
+    assert flush_may_have_lost_reference(wrapped) is False
+
+    lost = IndexFlushError("OpenSearchKVStorage", "text_chunks", RuntimeError("4xx"))
+    lost.__cause__ = RuntimeError("4xx")
+    assert flush_may_have_lost_reference(lost) is True
+
+    # A wrapper with no cause knows nothing, so it answers the safe way.
+    assert (
+        flush_may_have_lost_reference(
+            IndexFlushError("Spy", "text_chunks", RuntimeError("x"))
+        )
+        is True
+    )
+
+    finalize_error = RuntimeError("these writes have been lost")
+    finalize_error.__cause__ = intact
+    assert flush_may_have_lost_reference(finalize_error) is True
+
+
+@pytest.mark.asyncio
+async def test_a_reference_safe_chunk_failure_does_not_quarantine(
+    tmp_path, monkeypatch
+):
+    """Nothing was dropped, so nothing can be orphaned -- and nothing is discarded.
+
+    Quarantine exists because a per-item backend drains the buffer behind the
+    caller's back. A backend that proves it did not leaves the cache rows
+    exactly where they were: they are paid-for LLM calls, and the next ordered
+    pair publishes them behind references that are still there.
+    """
+    rag = await _make_rag(tmp_path)
+    try:
+        rec: list = []
+        chunks, cache, other = _bind_cache_pair_spies(
+            rag,
+            rec,
+            chunks_flush_error=ReferencesIntactFlushError("bulk died mid-stream"),
+        )
+        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
+
+        with pytest.raises(IndexFlushError):
+            await rag._insert_done()
+
+        assert cache.drop_upsert_calls == 0, (
+            "buffered extract rows were discarded over a flush that dropped "
+            "nothing -- completed LLM calls thrown away"
+        )
+        assert rag._chunk_reference_commit_failed is False, (
+            "the sticky record would defer every later cache commit and make "
+            "the abort cleanup distrust its own truthful retry"
+        )
+        # Still deferred HERE: the chain, not the flag, withholds the cache.
+        assert cache.index_done_calls == 0
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_the_epilogue_retries_a_chunk_flush_that_dropped_nothing(
+    tmp_path, monkeypatch
+):
+    """The reason to distrust a retry is a drained buffer; without one it is truthful.
+
+    The epilogue exists to save the partial cache of a document that failed
+    midway. Believing a reference-safe exception over its own retry would
+    withhold exactly that, on a transport blip that has since cleared.
+    """
+    rag = await _make_rag(tmp_path)
+    try:
+        rec: list = []
+        chunks, cache, other = _bind_cache_pair_spies(rag, rec)
+        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
+        namespace = chunks.namespace
+
+        intact = ReferencesIntactFlushError("bulk died mid-stream")
+        error = IndexFlushError("OpenSearchKVStorage", namespace, intact)
+        error.__cause__ = intact
+
+        committed = await rag._persist_chunk_cache_references_best_effort(
+            stage_label="extract failure", doc_id="doc-intact", error=error
+        )
+
+        assert committed is True
+        assert chunks.index_done_calls == 1
+        assert cache.drop_upsert_calls == 0
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_the_epilogue_still_believes_a_raise_that_dropped_something(
+    tmp_path, monkeypatch
+):
+    """The unclassified case is unchanged: the retry reads a drained buffer."""
+    rag = await _make_rag(tmp_path)
+    try:
+        rec: list = []
+        chunks, cache, other = _bind_cache_pair_spies(rag, rec)
+        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
+
+        cause = RuntimeError("permanent bulk failure")
+        error = IndexFlushError("OpenSearchKVStorage", chunks.namespace, cause)
+        error.__cause__ = cause
+
+        committed = await rag._persist_chunk_cache_references_best_effort(
+            stage_label="extract failure", doc_id="doc-lost", error=error
+        )
+
+        assert committed is False
+        assert chunks.index_done_calls == 0, (
+            "the epilogue retried a flush the backend had already given up on"
+        )
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_a_reference_safe_epilogue_failure_does_not_quarantine(
+    tmp_path, monkeypatch
+):
+    """Its own flush raising safely defers the cache without discarding it."""
+    rag = await _make_rag(tmp_path)
+    try:
+        rec: list = []
+        chunks, cache, other = _bind_cache_pair_spies(
+            rag,
+            rec,
+            chunks_flush_error=ReferencesIntactFlushError("chunk store blipped"),
+        )
+        monkeypatch.setattr(rag, "_index_storages", lambda: [chunks, cache, other])
+
+        committed = await rag._persist_chunk_cache_references_best_effort(
+            stage_label="extract failure", doc_id="doc-epilogue-intact"
+        )
+
+        assert committed is False
+        assert rag._chunk_reference_commit_failed is False
+        assert cache.drop_upsert_calls == 0
+    finally:
+        await rag.finalize_storages()
+
+
 @pytest.mark.asyncio
 async def test_the_epilogue_records_its_own_failed_chunk_commit(tmp_path, monkeypatch):
     """The epilogue's standalone flush is a chunk commit like any other.
@@ -952,9 +1122,21 @@ async def test_clearing_the_cache_holds_the_fence_across_the_drop(tmp_path):
             async def drop(self):
                 # Stands for drop's lock-released window before its commit.
                 in_the_gap.set()
-                await asyncio.sleep(0)
-                await asyncio.sleep(0)
+                # A real sleep rather than a bare yield: the writer has to get
+                # a genuine chance to take an UNCONTENDED fence here, or the
+                # test would pass for want of scheduling rather than because
+                # the fence held. With the fence in place the writer blocks
+                # for this whole window; without it, it wins the race.
+                await asyncio.sleep(0.05)
                 order.append("drop")
+                # ``BaseKVStorage.drop`` requires the implementation to
+                # persist immediately, and ``JsonKVStorage.drop`` does it
+                # exactly here -- inside its own drop, after releasing the
+                # namespace lock. ``aclear_cache`` adds no second commit of
+                # its own (one would be redundant, and propagating ITS failure
+                # would report a durably cleared cache as a failed one), so
+                # the publish point the fence has to cover is this one.
+                await self.index_done_callback()
                 return {"status": "success"}
 
             async def index_done_callback(self):

@@ -62,8 +62,8 @@
       "clearing": "Đang xóa...",
       "timeout": "Thao tác xóa hết thời gian, vui lòng thử lại",
       "success": "Đã xóa tài liệu thành công",
-      "cacheCleared": "Đã xóa bộ nhớ cache thành công",
-      "cacheClearFailed": "Xóa bộ nhớ cache thất bại:\n{{error}}",
+      "successWithCache": "Đã xóa tài liệu và bộ nhớ cache LLM thành công",
+      "partialSuccess": "Thao tác xóa hoàn tất với một số lỗi:\n{{message}}",
       "failed": "Xóa Tài Liệu Thất Bại:\n{{message}}",
       "error": "Xóa Tài Liệu Thất Bại:\n{{error}}"
     },
