@@ -389,6 +389,8 @@ def test_carry_over_keys_grouped_by_stage():
         "source_file",
         "parse_warnings",
         "chunk_opts",
+        # Non-authoritative registry observation, grouped with chunk options.
+        "custom_chunker",
         "parse_start_time",
         "parse_end_time",
         "parse_stage_skipped",
