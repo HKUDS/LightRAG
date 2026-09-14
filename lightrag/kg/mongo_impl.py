@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import json
 import math
 import time
@@ -40,7 +41,7 @@ from ..utils import (
     validate_interpreted_attribute_names,
     validate_workspace,
 )
-from ..utils_graph import apply_relation_weight_floor
+from ..utils_graph import relation_evidence_count
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import (
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
@@ -166,10 +167,11 @@ def _coerce_weight(weight: Any) -> float | None:
     """Coerce a (possibly string) edge weight to float, or None if the value
     is missing, non-numeric, or not finite.
 
-    NaN/+-inf pass ``float()`` (including via strings like "nan"), but
-    ``apply_relation_weight_floor`` rejects a non-finite weight outright --
-    letting one through here would abort the one-time legacy-edge migration
-    on a malformed legacy row instead of just skipping its weight.
+    NaN/+-inf pass ``float()`` (including via strings like "nan"), but no graph
+    backend can store one (see ``graph_attribute_value_rejection``) and a NaN
+    poisons every ``sum``/``max`` it later reaches. A non-finite legacy weight
+    is therefore unusable in exactly the way a non-numeric one is, and is
+    skipped the same way.
     """
     if weight is None:
         return None
@@ -1991,10 +1993,9 @@ class MongoGraphStorage(BaseGraphStorage):
         ``description`` are unioned over their ``GRAPH_FIELD_SEP`` components,
         ``keywords`` are comma-set-unioned, and ``weight`` is **summed** (like
         ``_merge_edges_then_upsert`` — duplicate docs carry separate accumulated
-        weight) then floored to the merged evidence count via
-        ``apply_relation_weight_floor``, so a duplicate with new source_ids but
-        a missing/non-numeric legacy weight cannot leave the result under its
-        own evidence count.
+        weight) then floored to the merged evidence count, so a duplicate with
+        new source_ids but a missing/non-numeric legacy weight cannot leave the
+        result under its own evidence count.
 
         The merge is **idempotent across retries**: if a transient error aborts
         startup after the survivor update but before the delete, the next run
@@ -2106,28 +2107,30 @@ class MongoGraphStorage(BaseGraphStorage):
                 set_fields["description"] = GRAPH_FIELD_SEP.join(all_descriptions)
             if all_keywords:
                 set_fields["keywords"] = ",".join(sorted(all_keywords))
-            if all_source_ids:
-                # A duplicate can contribute new source_ids while carrying a
-                # missing/non-numeric weight (skipped above), which would
-                # otherwise let the summed weight fall below the merged
-                # evidence count -- or, if every doc lacked a coercible
-                # weight, leave "weight" unset even though source_ids just
-                # grew. Floor it to the evidence count, per the relation
-                # weight contract, whichever a plain sum would miss.
+            # A duplicate can contribute new source_ids while carrying a
+            # missing/non-numeric weight (skipped above), which would otherwise
+            # let the summed weight fall below the merged evidence count -- or,
+            # if every doc lacked a coercible weight, leave "weight" unset even
+            # though source_ids just grew. Floor the sum to the evidence count,
+            # per the relation weight contract, whichever a plain sum misses.
+            #
+            # The floor is computed from `relation_evidence_count` rather than
+            # through `apply_relation_weight_floor`, which validates the whole
+            # relation the way a caller ingress does: a legacy `source_id` no
+            # backend can store (an XML-incompatible character, say) would abort
+            # this one-time migration over a row it is supposed to carry
+            # through. Counting evidence needs no such validation.
+            evidence_count = relation_evidence_count(set_fields.get("source_id", ""))
+            if weights or evidence_count:
                 summed_weight = sum(weights) if weights else 0.0
                 if not math.isfinite(summed_weight):
                     # Each weight was individually finite (_coerce_weight
-                    # rejects nan/inf inputs), but their sum can still
-                    # overflow to +inf. apply_relation_weight_floor rejects
-                    # a non-finite aggregate outright -- fall back to the
-                    # evidence-count floor rather than aborting the
-                    # migration over one edge's absurd weight sum.
-                    summed_weight = 0.0
-                set_fields["weight"] = apply_relation_weight_floor(
-                    summed_weight, set_fields["source_id"]
-                )
-            elif weights:
-                set_fields["weight"] = sum(weights)
+                    # rejects nan/inf inputs), but their sum can still overflow
+                    # to +inf, which no backend can store. Keep the largest
+                    # representable weight instead of collapsing an absurd but
+                    # real magnitude down to the evidence count.
+                    summed_weight = sys.float_info.max
+                set_fields["weight"] = max(summed_weight, float(evidence_count))
             if set_fields:
                 await self.edge_collection.update_one(
                     {"_id": survivor["_id"]}, {"$set": set_fields}
