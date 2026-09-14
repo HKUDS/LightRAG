@@ -2590,13 +2590,13 @@ def _validate_custom_chunking_available(process_options: str, rag: LightRAG) -> 
     from lightrag.chunker import chunking_by_token_size
 
     if getattr(rag, "chunking_func", chunking_by_token_size) is chunking_by_token_size:
-        from lightrag.chunker.registry import registered_chunker_names
+        from lightrag.chunker.registry import selectable_chunker_names
 
         raise ValueError(
             "custom chunking requires a non-default LightRAG.chunking_func; "
             "configure CUSTOM_CHUNKER / --custom-chunker with an installed "
-            "lightrag.chunkers registration. Registered names: "
-            + (", ".join(registered_chunker_names()) or "(none)")
+            "lightrag.chunkers registration. Selectable names: "
+            + (", ".join(selectable_chunker_names()) or "(none)")
         )
 
 

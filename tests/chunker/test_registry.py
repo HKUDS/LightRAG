@@ -190,6 +190,28 @@ def test_duplicate_selected_fails_but_unselected_does_not(monkeypatch, caplog):
         registry.resolve_chunker("acme")
 
 
+def test_unselectable_duplicate_is_not_offered_as_a_choice(monkeypatch, caplog):
+    """The "what can I set this to" lists must not name a guaranteed failure.
+
+    Regression: a duplicated name stays in the registry (last wins, per the
+    ERROR line), but ``resolve_chunker`` refuses it. Listing it among the
+    available names sent the operator to a value that aborts startup.
+    """
+    install_impl(monkeypatch, lambda *args: [])
+    registry.register_chunker(spec("usable"))
+    registry.register_chunker(spec("shadowed"), origin="first")
+    registry.register_chunker(spec("shadowed"), origin="second")
+
+    assert registry.registered_chunker_names() == ("shadowed", "usable")
+    assert registry.selectable_chunker_names() == ("usable",)
+    with pytest.raises(ValueError, match="duplicate.*shadowed"):
+        registry.resolve_chunker("shadowed")
+    with pytest.raises(ValueError) as unknown:
+        registry.resolve_chunker("absent")
+    assert "usable" in str(unknown.value)
+    assert "shadowed" not in str(unknown.value)
+
+
 def test_discovery_once_and_failed_provider_rolls_back(monkeypatch, caplog):
     calls = []
 
