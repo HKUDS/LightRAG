@@ -135,15 +135,20 @@ async def hf_model_if_cache(
     max_tokens = kwargs.pop("max_tokens", 512)
     max_new_tokens = kwargs.pop("max_new_tokens", max_tokens)
 
-    # initialize_hf_model() and the tokenization/prompt-building below run
-    # inside this closure, submitted as a single job to the single-worker
-    # executor, rather than before the await. initialize_hf_model() is an
-    # lru_cache(maxsize=1): resolving it on the event loop before suspending
-    # lets a second concurrent call with a different model_name evict and
-    # load its own model while the first call's model is still resident and
-    # mid-generate(), doubling peak GPU memory. Serializing model
-    # acquisition together with generate() guarantees at most one model is
-    # ever in flight.
+    # initialize_hf_model(), tokenization/prompt-building, generate(), and
+    # decoding/truncation all run inside this closure, as a single job
+    # submitted to the single-worker executor, rather than split around the
+    # await. initialize_hf_model() is an lru_cache(maxsize=1): resolving it
+    # on the event loop before suspending lets a second concurrent call with
+    # a different model_name evict and load its own model while the first
+    # call's model is still resident and mid-generate(), doubling peak GPU
+    # memory. Returning hf_model/inputs/output for the caller to decode
+    # afterwards reopens the same window at a smaller scale: those
+    # references would stay alive in this coroutine's locals -- keeping
+    # model A resident -- while the now-free worker starts loading model B
+    # for a second queued call. Decoding inside the closure means nothing
+    # referencing the model crosses back to the caller, so the model is
+    # only ever referenced while this job holds the sole worker.
     def _run_generate():
         hf_model, hf_tokenizer = initialize_hf_model(model_name)
         local_messages = messages
@@ -193,7 +198,30 @@ async def hf_model_if_cache(
             num_return_sequences=1,
             early_stopping=True,
         )
-        return output, inputs, hf_model, hf_tokenizer
+        generated_ids = output[0][len(inputs["input_ids"][0]) :]
+        response_text = hf_tokenizer.decode(generated_ids, skip_special_tokens=True)
+
+        eos_token_id = getattr(
+            getattr(hf_model, "generation_config", None), "eos_token_id", None
+        )
+        if eos_token_id is None:
+            eos_token_id = getattr(hf_tokenizer, "eos_token_id", None)
+        eos_token_ids = (
+            set(eos_token_id)
+            if isinstance(eos_token_id, (list, tuple, set))
+            else {eos_token_id}
+            if eos_token_id is not None
+            else set()
+        )
+        last_token_id = generated_ids[-1].item() if len(generated_ids) else None
+        if (
+            max_new_tokens is not None
+            and len(generated_ids) >= max_new_tokens
+            and last_token_id not in eos_token_ids
+        ):
+            response_text = TruncatedResponse(response_text)
+
+        return response_text
 
     # generate() runs the actual model inference synchronously and can take
     # seconds to minutes -- calling it directly here would block the whole
@@ -206,7 +234,7 @@ async def hf_model_if_cache(
     # of bridging synchronous PyTorch inference through a worker thread,
     # not something fixable at this call site.
     try:
-        output, inputs, hf_model, hf_tokenizer = await _run_hf_inference(_run_generate)
+        return await _run_hf_inference(_run_generate)
     except asyncio.CancelledError:
         logger.warning(
             "hf_model_if_cache: cancelled while awaiting generate(); "
@@ -214,30 +242,6 @@ async def hf_model_if_cache(
             "the background thread until it completes"
         )
         raise
-    generated_ids = output[0][len(inputs["input_ids"][0]) :]
-    response_text = hf_tokenizer.decode(generated_ids, skip_special_tokens=True)
-
-    eos_token_id = getattr(
-        getattr(hf_model, "generation_config", None), "eos_token_id", None
-    )
-    if eos_token_id is None:
-        eos_token_id = getattr(hf_tokenizer, "eos_token_id", None)
-    eos_token_ids = (
-        set(eos_token_id)
-        if isinstance(eos_token_id, (list, tuple, set))
-        else {eos_token_id}
-        if eos_token_id is not None
-        else set()
-    )
-    last_token_id = generated_ids[-1].item() if len(generated_ids) else None
-    if (
-        max_new_tokens is not None
-        and len(generated_ids) >= max_new_tokens
-        and last_token_id not in eos_token_ids
-    ):
-        response_text = TruncatedResponse(response_text)
-
-    return response_text
 
 
 async def hf_model_complete(

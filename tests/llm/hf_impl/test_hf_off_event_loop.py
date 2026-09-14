@@ -465,6 +465,74 @@ async def test_hf_model_if_cache_serializes_model_loading_with_generate(
 
 
 @pytest.mark.asyncio
+async def test_hf_model_if_cache_keeps_decoding_inside_the_serialized_job(
+    hf_module, monkeypatch
+):
+    """Returning hf_model/inputs/output for the caller to decode afterwards
+    would keep model A's references alive in this coroutine's locals while
+    the now-free worker starts loading model B for a second queued call --
+    reopening the residency window generate()-serialization was meant to
+    close, just narrower. Decoding and the truncation check must run inside
+    the closure that holds the executor slot instead."""
+    a_decode_started = threading.Event()
+    release_a_decode = threading.Event()
+    b_initialize_called = threading.Event()
+
+    class FakeModel:
+        def __init__(self, name):
+            self.name = name
+            self.device = FakeDevice("cpu")
+            self.generation_config = types.SimpleNamespace(eos_token_id=0)
+
+        def generate(self, **kwargs):
+            input_ids = kwargs["input_ids"]
+            return FakeTensor([input_ids.data[0] + [901]], "cpu")
+
+    class FakeTokenizer:
+        def __init__(self, name):
+            self.name = name
+            self.eos_token_id = 0
+
+        def apply_chat_template(self, *args, **kwargs):
+            return "<prompt>"
+
+        def __call__(self, *args, **kwargs):
+            return {
+                "input_ids": FakeTensor([[1]]),
+                "attention_mask": FakeTensor([[1]]),
+            }
+
+        def decode(self, tensor, skip_special_tokens=True):
+            if self.name == "model-a":
+                a_decode_started.set()
+                release_a_decode.wait(timeout=5)
+            return f"decoded:{tensor.data}"
+
+    def fake_initialize(model_name):
+        if model_name == "model-b":
+            b_initialize_called.set()
+        return FakeModel(model_name), FakeTokenizer(model_name)
+
+    monkeypatch.setattr(hf_module, "initialize_hf_model", fake_initialize)
+
+    task_a = asyncio.create_task(hf_module.hf_model_if_cache("model-a", "hello a"))
+    assert await asyncio.to_thread(a_decode_started.wait, 5)
+
+    # generate() has already returned by now -- only decode() is still
+    # running. A second queued call must not be able to start loading its
+    # own model until decode() (still inside A's closure) finishes too.
+    task_b = asyncio.create_task(hf_module.hf_model_if_cache("model-b", "hello b"))
+    await asyncio.sleep(0.05)
+    assert not b_initialize_called.is_set()
+
+    release_a_decode.set()
+    await task_a
+    await task_b
+
+    assert b_initialize_called.is_set()
+
+
+@pytest.mark.asyncio
 async def test_hf_embed_runs_forward_pass_off_the_event_loop_thread(hf_module):
     main_thread_id = threading.get_ident()
     call_thread_id = {}
