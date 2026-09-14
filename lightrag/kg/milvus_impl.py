@@ -2810,11 +2810,12 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 _prune_pending()
                 return
 
-            self._ensure_collection_loaded()
+            await run_in_milvus_executor(self._ensure_collection_loaded)
 
             safe_name = _escape_milvus_str(entity_name)
             expr = f'src_id == "{safe_name}" or tgt_id == "{safe_name}"'
-            results = self._client.query(
+            results = await run_in_milvus_executor(
+                self._client.query,
                 collection_name=self.final_namespace,
                 filter=expr,
                 output_fields=["id"],
@@ -2830,7 +2831,11 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 return
 
             relation_ids = [item["id"] for item in results]
-            self._client.delete(collection_name=self.final_namespace, pks=relation_ids)
+            await run_in_milvus_executor(
+                self._client.delete,
+                collection_name=self.final_namespace,
+                pks=relation_ids,
+            )
             # Server-side delete succeeded — safe to prune the pending
             # buffer so subsequent flushes don't re-upsert the deleted
             # relations.
@@ -2920,7 +2925,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         the pages that already succeeded, since callers treat an incomplete
         result as a storage-consistency signal, not a partial one.
         """
-        self._ensure_collection_loaded()
+        await run_in_milvus_executor(self._ensure_collection_loaded)
 
         page_size = self._resolve_query_page_size(includes_vector=includes_vector)
         rows: list[dict[str, Any]] = []
@@ -2932,7 +2937,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             filter_expr = f'id in ["{id_list}"]'
 
             try:
-                page_rows = self._client.query(
+                page_rows = await run_in_milvus_executor(
+                    self._client.query,
                     collection_name=self.final_namespace,
                     filter=filter_expr,
                     output_fields=output_fields,
@@ -2972,12 +2978,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         try:
             # Ensure collection is loaded before querying
-            self._ensure_collection_loaded()
+            await run_in_milvus_executor(self._ensure_collection_loaded)
 
             # Include all meta_fields (created_at is now always included) plus id
             output_fields = list(self.meta_fields) + ["id"]
 
-            result = self._client.query(
+            result = await run_in_milvus_executor(
+                self._client.query,
                 collection_name=self.final_namespace,
                 filter=f'id == "{_escape_milvus_str(id)}"',
                 output_fields=output_fields,
