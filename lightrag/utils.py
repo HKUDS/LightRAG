@@ -6053,10 +6053,26 @@ _BACKSPACE_LATEX_PATTERN = re.compile(r"\x08(?=[A-Za-z])")
 # Whitespace + residue spelling that completes a common LaTeX command whose
 # remainder collides with no English word ("eq"/"o"/"exists" are deliberately
 # absent: "eq." abbreviations, the word "o"/"exists" would false-positive).
-_WS_LATEX_SUSPECT_PATTERN = re.compile(
-    r"\t(?=(?:au|heta|imes|ext|ilde|herefore|riangle)\b)"
-    r"|\r(?=(?:ho|ight|angle|ceil)\b)"
-    r"|\n(?=(?:abla|otin)\b)"
+# Two variants of the same whitelist:
+#   * _WS_LATEX_SUSPECT_PATTERN (\b) is the prose detector. The word boundary
+#     keeps "col\text_id" or "\tau2" out of the warning, at the cost of
+#     missing damage that is followed by a word character.
+#   * _WS_LATEX_MATH_PATTERN ((?![A-Za-z])) is used *inside* a confirmed math
+#     span, where "_", "{", "^" and digits are the most common characters to
+#     follow a command and the "it might be an English word" argument no
+#     longer applies. It is a strict superset of the prose pattern, so a span
+#     that was repaired can never re-trigger the prose warning afterwards.
+# ``__END__`` is substituted with the trailing guard; a plain placeholder
+# rather than ``str.format`` so that adding a ``{n}`` quantifier to the
+# residue alternation below cannot break the substitution.
+_WS_LATEX_RESIDUES = (
+    r"\t(?=(?:au|heta|imes|ext|ilde|herefore|riangle)__END__)"
+    r"|\r(?=(?:ho|ight|angle|ceil)__END__)"
+    r"|\n(?=(?:abla|otin)__END__)"
+)
+_WS_LATEX_SUSPECT_PATTERN = re.compile(_WS_LATEX_RESIDUES.replace("__END__", r"\b"))
+_WS_LATEX_MATH_PATTERN = re.compile(
+    _WS_LATEX_RESIDUES.replace("__END__", r"(?![A-Za-z])")
 )
 
 
@@ -6072,6 +6088,10 @@ def _repair_ws_latex_in_dollar_math(text: str) -> tuple[str, int]:
     Unpaired and backslash-escaped dollar signs are left untouched. The
     function operates on already-decoded strings, so a correct LaTeX command
     still contains a real backslash and cannot match the damage pattern.
+
+    Inline spans pair by Pandoc's rule (see ``_find_close``), which is what
+    stops a currency amount from consuming the opening ``$`` of a later
+    formula.
     """
 
     def _is_escaped(index: int) -> bool:
@@ -6083,18 +6103,42 @@ def _repair_ws_latex_in_dollar_math(text: str) -> tuple[str, int]:
         return backslashes % 2 == 1
 
     def _find_close(start: int, delimiter: str) -> int:
+        """Locate the closing delimiter, preferring Pandoc's inline rule.
+
+        For ``$$`` the first unescaped ``$$`` closes. For ``$`` two vetoes
+        apply, and they differ in strength:
+
+        - **hard** — a ``$`` followed by a digit never closes. This is what
+          keeps two currency amounts (``"$5 - $10"``) from forming a span.
+        - **soft** — a ``$`` preceded by whitespace is skipped while a
+          stricter candidate remains, which is what stops a price from
+          consuming the opening delimiter of a later formula
+          (``"Cost is $5. The domain is $<tab>au^2$"``). It is accepted as a
+          last resort so that a padded inline span (``"$ x $"``) still pairs.
+
+        Only the closer half of the rule is applied. Pandoc also requires a
+        non-space character after the opening ``$``; adding that here would
+        reject ``"$<tab>au$"``, which is precisely the damage this function
+        exists to repair — the decoded control character sits immediately
+        after the opener.
+        """
         cursor = start
+        fallback = -1
         while cursor < len(text):
             if text.startswith(delimiter, cursor) and not _is_escaped(cursor):
-                if delimiter == "$" and (
-                    (cursor > 0 and text[cursor - 1] == "$")
-                    or (cursor + 1 < len(text) and text[cursor + 1] == "$")
-                ):
+                if delimiter != "$":
+                    return cursor
+                if cursor + 1 < len(text) and text[cursor + 1].isdigit():
+                    cursor += 1
+                    continue
+                if cursor > 0 and text[cursor - 1].isspace():
+                    if fallback < 0:
+                        fallback = cursor
                     cursor += 1
                     continue
                 return cursor
             cursor += 1
-        return -1
+        return fallback
 
     def _restore(match: re.Match[str]) -> str:
         return {"\t": r"\t", "\r": r"\r", "\n": r"\n"}[match.group(0)]
@@ -6116,7 +6160,7 @@ def _repair_ws_latex_in_dollar_math(text: str) -> tuple[str, int]:
 
         span_end = close + len(delimiter)
         math_span = text[cursor:span_end]
-        repaired_span, count = _WS_LATEX_SUSPECT_PATTERN.subn(_restore, math_span)
+        repaired_span, count = _WS_LATEX_MATH_PATTERN.subn(_restore, math_span)
         pieces.append(repaired_span)
         replacements += count
         cursor = span_end

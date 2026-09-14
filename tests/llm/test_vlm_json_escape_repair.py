@@ -100,6 +100,75 @@ def test_whitespace_class_damage_outside_math_is_logged_not_rewritten(
     )
 
 
+@pytest.mark.parametrize(
+    ("damaged", "expected"),
+    [
+        # "\b" refuses a boundary before a word character, but "_", "{" and a
+        # digit are the most common characters to follow a LaTeX command.
+        ("$\tau_i$", r"$\tau_i$"),
+        ("$\rho_{ij}$", r"$\rho_{ij}$"),
+        ("$\theta_0$", r"$\theta_0$"),
+        ("$\times2$", r"$\times2$"),
+        ("$$\nabla_x f$$", "$$\\nabla_x f$$"),
+    ],
+)
+@pytest.mark.offline
+def test_in_math_repair_is_not_blocked_by_a_word_character(
+    damaged, expected, caplog, _propagate_lightrag_logger
+):
+    """Inside a confirmed math span the residue whitelist matches on "not a
+    letter", not on a word boundary -- otherwise the most common LaTeX
+    continuations stay damaged AND unwarned, because the prose pattern that
+    drives the tail warning refuses them too, so the loss is silent."""
+    with caplog.at_level(logging.WARNING, logger="lightrag"):
+        result = repair_vlm_json_escape_damage(damaged, context="table/t1")
+    assert result == expected
+    assert not any("not auto-repaired" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.offline
+def test_currency_amount_does_not_consume_a_later_math_span():
+    """A lone "$" price must not pair with the opening delimiter of a real
+    formula: the "$" before the damage is preceded by a space and therefore
+    cannot close an inline span."""
+    assert repair_vlm_json_escape_damage("Cost is $5. The domain is $\tau^2$ end.") == (
+        "Cost is $5. The domain is " + r"$\tau^2$" + " end."
+    )
+    # Two amounts must not form a span of their own around prose.
+    between_amounts = "$5\rangle and $10"
+    assert repair_vlm_json_escape_damage(between_amounts) == between_amounts
+    # A range of amounts followed by real math: only the math is repaired.
+    assert repair_vlm_json_escape_damage("$5-$10 range $\tau$") == (
+        "$5-$10 range " + r"$\tau$"
+    )
+
+
+@pytest.mark.offline
+def test_intact_math_does_not_block_a_following_damaged_span():
+    """Pairing stays left-to-right and greedy for well-formed spans:
+    "$10 \times 5$" is math, not a price, and consuming it must leave the
+    next span pairable."""
+    assert repair_vlm_json_escape_damage("$10 \times 5$ then $\tau$") == (
+        r"$10 \times 5$ then $\tau$"
+    )
+
+
+@pytest.mark.offline
+def test_inline_span_closes_against_the_first_dollar_of_a_display_pair():
+    """An inline opener followed by a stray "$$" must still close: the first
+    of the two dollars is a legal inline closer (non-space on its left, no
+    digit on its right)."""
+    assert repair_vlm_json_escape_damage("a $\tau$$ b") == "a " + r"$\tau$" + "$ b"
+
+
+@pytest.mark.offline
+def test_padded_inline_span_still_pairs():
+    """The whitespace-before-closer veto is soft: with no stricter candidate
+    left, a padded inline span ("$ x $") must still pair, or the currency
+    rule would cost a repair the scanner used to make."""
+    assert repair_vlm_json_escape_damage("$ \tau $") == "$ " + r"\tau" + " $"
+
+
 @pytest.mark.offline
 def test_unpaired_or_escaped_dollars_do_not_enable_whitespace_repair():
     assert repair_vlm_json_escape_damage("price $5 then\tau") == "price $5 then\tau"
