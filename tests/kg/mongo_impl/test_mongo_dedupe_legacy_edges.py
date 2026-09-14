@@ -99,3 +99,37 @@ async def test_all_docs_missing_weight_still_gets_the_evidence_floor():
 
     set_fields = storage.edge_collection.update_one.await_args[0][1]["$set"]
     assert set_fields["weight"] == 2
+
+
+@pytest.mark.parametrize("bad_weight", [float("nan"), float("inf"), "NaN", "-Infinity"])
+@pytest.mark.asyncio
+async def test_non_finite_legacy_weight_is_skipped_not_raised(bad_weight):
+    """A NaN/inf legacy weight parses fine through float() but is rejected by
+    apply_relation_weight_floor's storability check. Migration must skip it
+    like any other unusable legacy weight, not raise and abort startup."""
+    storage = _make_storage()
+    group = {
+        "_id": {"lo": "A", "hi": "B"},
+        "docs": [
+            {
+                "_id": "survivor",
+                "source_ids": ["chunk1"],
+                "weight": bad_weight,
+                "created_at": 2,
+            },
+            {
+                "_id": "dup",
+                "source_ids": ["chunk2"],
+                "created_at": 1,
+            },
+        ],
+        "count": 2,
+    }
+    storage.edge_collection.aggregate = AsyncMock(return_value=_AsyncCursor([group]))
+    storage.edge_collection.update_one = AsyncMock()
+    storage.edge_collection.delete_many = AsyncMock()
+
+    await storage._dedupe_legacy_edges()
+
+    set_fields = storage.edge_collection.update_one.await_args[0][1]["$set"]
+    assert set_fields["weight"] == 2

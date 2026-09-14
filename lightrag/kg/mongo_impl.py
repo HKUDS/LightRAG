@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import math
 import time
 import hashlib
 from dataclasses import dataclass, field
@@ -162,13 +163,21 @@ def _edge_source_id_list(doc: dict[str, Any]) -> list[str]:
 
 
 def _coerce_weight(weight: Any) -> float | None:
-    """Coerce a (possibly string) edge weight to float, or None if non-numeric."""
+    """Coerce a (possibly string) edge weight to float, or None if the value
+    is missing, non-numeric, or not finite.
+
+    NaN/+-inf pass ``float()`` (including via strings like "nan"), but
+    ``apply_relation_weight_floor`` rejects a non-finite weight outright --
+    letting one through here would abort the one-time legacy-edge migration
+    on a malformed legacy row instead of just skipping its weight.
+    """
     if weight is None:
         return None
     try:
-        return float(weight)
+        coerced = float(weight)
     except (TypeError, ValueError):
         return None
+    return coerced if math.isfinite(coerced) else None
 
 
 def _estimate_doc_bytes(doc: Any) -> int:
