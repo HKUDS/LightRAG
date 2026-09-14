@@ -297,6 +297,10 @@ class MinerUIRBuilder:
             cb_lines.append(text)
             return True
 
+        # Types whose items reached the text fallback with nothing usable,
+        # counted for the end-of-parse summary below.
+        dropped_by_type: dict[str, int] = {}
+
         for item_index, item in enumerate(content_list):
             if not isinstance(item, dict):
                 continue
@@ -358,6 +362,16 @@ class MinerUIRBuilder:
                 latex_raw = _coerce_text(item)
                 if not latex_raw:
                     # Spec compliance fix: empty equation must not enter sidecar.
+                    # Local drop of a known type, like the empty-table branch in
+                    # ``_build_ir_table``: a debug breadcrumb, not the summary
+                    # below, which is reserved for content the dispatch could
+                    # not map at all.
+                    logger.debug(
+                        "[mineru_ir_builder] dropping empty equation item "
+                        "(page_idx=%s, self_ref=%s)",
+                        item.get("page_idx"),
+                        _content_list_self_ref(item_index),
+                    )
                     continue
                 # Preserve MinerU's raw latex (including any ``$$``/``$``
                 # wrappers); the writer strips them when emitting
@@ -427,14 +441,37 @@ class MinerUIRBuilder:
             if _append_text(_coerce_text(item)):
                 _record_position(item)
             elif item_type not in _KNOWN_EMPTY_TYPES:
+                # ``self_ref`` and the key set are the diagnostic part: they
+                # point at the offending item in content_list.json and name the
+                # payload shape the dispatch does not know yet. Neither carries
+                # document content.
                 logger.debug(
                     "[mineru_ir_builder] dropping item with no usable text "
-                    "(type=%s, page_idx=%s)",
+                    "(type=%s, page_idx=%s, self_ref=%s, keys=%s)",
                     item_type,
                     item.get("page_idx"),
+                    _content_list_self_ref(item_index),
+                    sorted(item),
                 )
+                dropped_by_type[item_type] = dropped_by_type.get(item_type, 0) + 1
 
         _flush_block()
+
+        # The per-item breadcrumbs above are DEBUG, which a deployment running
+        # at INFO never sees — an operator would have to suspect the loss first
+        # and re-parse the document to confirm it. Summarize once per document
+        # at WARNING so an unmapped item type is visible on the first ingest,
+        # naming the types to go looking for. Silent when nothing was dropped.
+        if dropped_by_type:
+            logger.warning(
+                "[mineru_ir_builder] %d content_list item(s) dropped with no "
+                "usable text: %s",
+                sum(dropped_by_type.values()),
+                ", ".join(
+                    f"{t or '<untyped>'}={n}"
+                    for t, n in sorted(dropped_by_type.items())
+                ),
+            )
 
         if not doc_title:
             doc_title = Path(document_name).stem or document_name
