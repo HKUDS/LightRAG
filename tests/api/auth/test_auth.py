@@ -192,6 +192,33 @@ def test_invalid_auth_accounts_raises(monkeypatch):
     sys.modules.pop("lightrag.api.auth", None)
 
 
+def test_auth_accounts_ignore_whitespace_around_commas(monkeypatch):
+    """A space after the comma (``admin:a, user1:b``) must not become part of
+    the next username: the account would be registered as `` user1`` and every
+    login as ``user1`` would fail with no hint why.
+    """
+    config = import_real_api_module("lightrag.api.config")
+
+    mock_global_args = SimpleNamespace(
+        token_secret="test-jwt-secret",
+        jwt_algorithm="HS256",
+        token_expire_hours=48,
+        guest_token_expire_hours=24,
+        auth_accounts="admin:admin_pass, user1:user_pass ",
+    )
+
+    monkeypatch.setattr(config, "global_args", mock_global_args)
+
+    module = import_real_api_module("lightrag.api.auth")
+    try:
+        assert module.auth_handler.accounts == {
+            "admin": "admin_pass",
+            "user1": "user_pass",
+        }
+    finally:
+        sys.modules.pop("lightrag.api.auth", None)
+
+
 def test_initialize_config_rejects_default_token_secret_with_auth_accounts():
     config = import_real_api_module("lightrag.api.config")
 
