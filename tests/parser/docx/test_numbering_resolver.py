@@ -545,3 +545,41 @@ def test_ideograph_digital_has_no_domain_limit() -> None:
     assert r.out_of_range_formats == set()
     assert warnings == {}
     assert "ideographDigital" not in NumberingResolver.LIMITED_DOMAIN_FORMATS
+
+
+@pytest.mark.parametrize(
+    ("num_fmt", "last"), [("lowerRoman", "mmmcmxcix"), ("upperRoman", "MMMCMXCIX")]
+)
+def test_roman_past_3999_is_recorded(num_fmt, last) -> None:
+    """Regression for #3934: ``_to_roman`` already degrades to decimal at 4000,
+    but the Roman formats were missing from the limited-domain table, so the
+    fallback was silent."""
+    warnings: dict = {}
+    r = _fmt_resolver(num_fmt, "%1")
+    r._warnings = warnings
+    assert _label(r, 3999) == last  # in domain: nothing recorded
+    assert r.out_of_range_formats == set()
+    assert warnings == {}
+
+    assert _label(r, 4000) == "4000"
+    assert r.out_of_range_formats == {num_fmt}
+    assert warnings == {"numbering_out_of_range_formats": 1}
+
+
+def test_ideograph_traditional_renders_the_ten_stems() -> None:
+    r = _fmt_resolver("ideographTraditional", "%1")
+    r._warnings = {}
+    assert [_label(r, n) for n in range(1, 11)] == list("甲乙丙丁戊己庚辛壬癸")
+    assert r.out_of_range_formats == set()
+
+
+@pytest.mark.parametrize("count", [-1, 0, 11, 21])
+def test_ideograph_traditional_falls_back_instead_of_wrapping(count) -> None:
+    """Regression for #3934: ``(n - 1) % 10`` made item 11 render 甲 like item 1,
+    and kept zero / negative counts inside the stem string."""
+    warnings: dict = {}
+    r = _fmt_resolver("ideographTraditional", "%1")
+    r._warnings = warnings
+    assert _label(r, count) == str(count)
+    assert r.out_of_range_formats == ({"ideographTraditional"} if count > 10 else set())
+    assert warnings == ({"numbering_out_of_range_formats": 1} if count > 10 else {})

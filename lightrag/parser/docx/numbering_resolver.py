@@ -45,7 +45,7 @@ class NumberingResolver:
         "japaneseCounting": lambda n: NumberingResolver._to_chinese(n),
         "taiwaneseCounting": lambda n: NumberingResolver._to_chinese(n),
         "ideographDigital": lambda n: NumberingResolver._to_ideograph_digital(n),
-        "ideographTraditional": lambda n: "甲乙丙丁戊己庚辛壬癸"[(n - 1) % 10],
+        "ideographTraditional": lambda n: NumberingResolver._to_heavenly_stem(n),
         "bullet": lambda n: "•",
         "none": lambda n: "",
     }
@@ -60,10 +60,16 @@ class NumberingResolver:
     #: while chineseCountingThousand keeps counting (一百) — three renderings, no
     #: corpus document that reaches any of them, so none is implemented. This
     #: table exists to make the event FINDABLE: a real document that gets there
-    #: is the evidence needed to implement the right one.
+    #: is the evidence needed to implement the right one. The Roman cutoff is
+    #: the converter's own (standard Roman numerals stop at 3999), not a
+    #: rendering choice; ideographTraditional renders only the ten Heavenly
+    #: Stems, and what Word shows past 癸 is likewise unimplemented.
     LIMITED_DOMAIN_FORMATS = {
         "lowerLetter": 78,
         "upperLetter": 78,
+        "lowerRoman": 3999,
+        "upperRoman": 3999,
+        "ideographTraditional": 10,
         "chineseCounting": 99,
         "chineseCountingThousand": 99,
         "japaneseCounting": 99,
@@ -592,6 +598,14 @@ class NumberingResolver:
         if not 1 <= n <= 78:
             return str(n)
         return chr(ord("a") + (n - 1) % 26) * ((n - 1) // 26 + 1)
+
+    @staticmethod
+    def _to_heavenly_stem(n: int) -> str:
+        """Render the ten Heavenly Stems (甲…癸) and fall back to the decimal
+        string outside 1-10. Never wrap: item 11 must not pass for item 1."""
+        if not 1 <= n <= 10:
+            return str(n)
+        return "甲乙丙丁戊己庚辛壬癸"[n - 1]
 
     @staticmethod
     def _to_roman(n: int) -> str:
