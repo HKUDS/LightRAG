@@ -3225,29 +3225,65 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         the freshly recreated collection. Direct callers bypassing the
         idle precondition MUST flush every aliased instance first.
 
+        Cancellation: the drop + recreate pair is uninterruptible. A
+        cancellation delivered once the collection is gone but before the
+        empty replacement exists is deferred until the recreate finishes,
+        and is then re-raised (stamped, so a caller rewriting it knows the
+        drop did land). That residue does not self-heal like the ones
+        ``AGENTS.md`` *Consistency without transactions* accepts: nothing
+        recreates the collection at run time, every later call fails on a
+        missing collection, and the next ``initialize()`` would see the
+        intentionally-kept legacy collection and re-run the
+        legacy->suffixed migration this method exists to avoid.
+
         Returns:
             dict[str, str]: ``{"status": "success"|"error", "message": str}``
         """
+
+        async def _drop_and_recreate() -> None:
+            # Discard any buffered writes before the collection is gone;
+            # a concurrent flush would otherwise resurrect them.
+            self._pending_vector_docs.clear()
+            self._pending_vector_deletes.clear()
+
+            # Drop the collection and recreate it empty.
+            if await run_in_milvus_executor(
+                self._client.has_collection, self.final_namespace
+            ):
+                await run_in_milvus_executor(
+                    self._client.drop_collection, self.final_namespace
+                )
+
+            # Recreate an EMPTY collection. Do NOT route through
+            # _create_collection_if_not_exist here: with the suffixed
+            # collection now gone it would see the intentionally-kept legacy
+            # collection and re-run the legacy->suffixed migration, pulling
+            # the just-dropped rows back in. That makes drop() non-empty
+            # (clear_documents would leave stale legacy data behind) and
+            # forces a needless full migration on every rebuild/clear.
+            await run_in_milvus_executor(
+                self._create_collection_with_schema, self.final_namespace
+            )
+            await run_in_milvus_executor(self._ensure_collection_loaded)
+
         try:
             async with self._flush_lock:
-                # Discard any buffered writes before the collection is gone;
-                # a concurrent flush would otherwise resurrect them.
-                self._pending_vector_docs.clear()
-                self._pending_vector_deletes.clear()
-
-                # Drop the collection and recreate it empty.
-                if self._client.has_collection(self.final_namespace):
-                    self._client.drop_collection(self.final_namespace)
-
-                # Recreate an EMPTY collection. Do NOT route through
-                # _create_collection_if_not_exist here: with the suffixed
-                # collection now gone it would see the intentionally-kept legacy
-                # collection and re-run the legacy->suffixed migration, pulling
-                # the just-dropped rows back in. That makes drop() non-empty
-                # (clear_documents would leave stale legacy data behind) and
-                # forces a needless full migration on every rebuild/clear.
-                self._create_collection_with_schema(self.final_namespace)
-                self._ensure_collection_loaded()
+                # Defer any cancellation until the collection exists again --
+                # see the docstring. Same idiom as _flush_pending_vector_ops
+                # and delete_entity_relation.
+                drop_future = asyncio.ensure_future(_drop_and_recreate())
+                drop_future.add_done_callback(_consume_future_exception)
+                pending_cancel = await _wait_deferring_cancellation(drop_future, None)
+                if pending_cancel is not None:
+                    if not drop_future.cancelled():
+                        drop_exc = drop_future.exception()
+                        if drop_exc is not None:
+                            logger.error(
+                                f"[{self.workspace}] {self.namespace} drop "
+                                f"completed while its caller was cancelled: {drop_exc}"
+                            )
+                    raise pending_cancel
+                drop_future.result()
 
             logger.info(
                 f"[{self.workspace}] Process {os.getpid()} drop Milvus collection {self.namespace}"

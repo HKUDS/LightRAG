@@ -1,10 +1,10 @@
 """MilvusVectorDBStorage.query(), _flush_pending_vector_ops(),
 delete_entity_relation(), _query_rows_by_ids() (used by get_by_ids() /
-get_vectors_by_ids()), and get_by_id() call the synchronous MilvusClient SDK
-(blocking gRPC) directly inside async methods. Calling it without offloading
-would block the whole event loop for the duration of every
-search/upsert/delete/query round trip, stalling every other concurrent task
-(LLM calls, other storage I/O) sharing the loop.
+get_vectors_by_ids()), get_by_id() and drop() call the synchronous
+MilvusClient SDK (blocking gRPC) directly inside async methods. Calling it
+without offloading would block the whole event loop for the duration of every
+search/upsert/delete/query/collection-management round trip, stalling every
+other concurrent task (LLM calls, other storage I/O) sharing the loop.
 
 The negative-case tests pin the other half of the contract: a call that
 never reaches the client (a buffer-only read/prune) must not touch the
@@ -406,6 +406,120 @@ async def test_new_call_sites_use_dedicated_pool_not_default():
 
     assert thread_names["query"].startswith("lightrag-milvus")
     assert thread_names["delete"].startswith("lightrag-milvus")
+
+
+@pytest.mark.asyncio
+async def test_drop_runs_collection_management_off_the_event_loop_thread():
+    """drop() rebuilds the collection through four blocking SDK calls
+    (has_collection / drop_collection / create_collection / load_collection).
+    A collection drop + recreate is the longest round trip this class makes,
+    so running it on the loop thread stalls every concurrent request for its
+    whole duration."""
+    main_thread_id = threading.get_ident()
+    thread_names: dict[str, str] = {}
+
+    def record(op, result=None):
+        def _fake(*args, **kwargs):
+            thread_names[op] = threading.current_thread().name
+            return result
+
+        return _fake
+
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.has_collection = MagicMock(side_effect=record("has_collection", True))
+    s._client.drop_collection = MagicMock(side_effect=record("drop_collection"))
+    s._client.create_collection = MagicMock(side_effect=record("create_collection"))
+    s._client.load_collection = MagicMock(side_effect=record("load_collection"))
+
+    result = await s.drop()
+
+    assert result["status"] == "success"
+    assert set(thread_names) == {
+        "has_collection",
+        "drop_collection",
+        "create_collection",
+        "load_collection",
+    }
+    for op, name in thread_names.items():
+        assert name != threading.current_thread().name, op
+        # The dedicated pool, not the default executor: parking a collection
+        # rebuild there would queue every namespace-lock acquisition and every
+        # login behind it.
+        assert name.startswith("lightrag-milvus"), op
+    assert threading.get_ident() == main_thread_id
+
+
+@pytest.mark.asyncio
+async def test_drop_clears_the_pending_buffers():
+    """Unchanged behavior the offloading must not disturb: buffered writes are
+    discarded before the collection goes away, so a later flush cannot
+    resurrect rows into the freshly recreated collection."""
+    s = _make_storage(MockEmbeddingFunc())
+    s._pending_vector_docs = {"v1": object()}
+    s._pending_vector_deletes = {"v2"}
+
+    result = await s.drop()
+
+    assert result["status"] == "success"
+    assert s._pending_vector_docs == {}
+    assert s._pending_vector_deletes == set()
+
+
+@pytest.mark.asyncio
+async def test_cancelling_drop_defers_until_the_collection_is_recreated():
+    """run_in_milvus_executor only cancels the awaiting future -- an in-flight
+    drop_collection keeps running in the background thread. A bare cancel
+    between the drop and the recreate would leave the namespace with NO
+    collection at all, and unlike the residues Consistency without
+    transactions accepts, that one never heals: nothing recreates it at run
+    time and the next initialize() would re-run the legacy migration this
+    method exists to avoid. Cancellation must be deferred until the empty
+    replacement exists."""
+    call_started = threading.Event()
+    release_call = threading.Event()
+
+    def fake_drop_collection(*args, **kwargs):
+        call_started.set()
+        release_call.wait(timeout=5)
+
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.drop_collection = MagicMock(side_effect=fake_drop_collection)
+
+    task = asyncio.ensure_future(s.drop())
+    for _ in range(500):
+        if call_started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert call_started.is_set()
+
+    task.cancel()
+    # Let the background drop finish so the deferred cancellation can resolve --
+    # release_call must be set before awaiting the cancelled task, since the
+    # cancellation is held back until the recreate completes.
+    release_call.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The collection was actually rebuilt, not left missing.
+    s._client.drop_collection.assert_called_once()
+    s._client.create_collection.assert_called_once()
+    s._client.load_collection.assert_called_once()
+    assert not s._flush_lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_drop_reports_a_server_error_as_an_error_dict():
+    """Unchanged behavior: a failure raised inside the pool must surface as
+    drop()'s error dict, not propagate -- clear_documents reads the status."""
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.drop_collection = MagicMock(side_effect=RuntimeError("boom"))
+
+    result = await s.drop()
+
+    assert result["status"] == "error"
+    assert "boom" in result["message"]
+    s._client.create_collection.assert_not_called()
 
 
 @pytest.mark.asyncio
