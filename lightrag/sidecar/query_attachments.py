@@ -65,7 +65,7 @@ OnImIdFoundCallback = Callable[[str, str, str | None], None]
 # Process-global drawings index cache: (mtime, index) per sidecar URI.
 # - mtime invalidates entries when drawings.json appears or is rewritten
 #   (avoids pinning a negative ``{}`` while a doc is still parsing).
-# - LRU cap bounds memory in long-lived servers (#3739 review M2).
+# - LRU cap bounds memory in long-lived servers.
 # - Lock protects cache access from concurrent ``asyncio.to_thread`` callers.
 _DRAWINGS_INDEX_CACHE_MAX = 128
 _drawings_index_cache: OrderedDict[str, tuple[float | None, dict[str, Any]]] = (
@@ -628,7 +628,7 @@ async def aload_drawings_index(sidecar_uri: str | None) -> dict[str, Any]:
     """Async wrapper: load drawings index without blocking the event loop.
 
     ``load_drawings_index`` uses blocking ``read_text()``; call this from
-    ``index_figures_on_chunks`` / ``resolve_drawing_attachments`` (#3739 M3).
+    ``index_figures_on_chunks`` / ``resolve_drawing_attachments``.
     """
     return await asyncio.to_thread(load_drawings_index, sidecar_uri)
 
@@ -671,7 +671,7 @@ async def aresolve_asset_path(
     """Async wrapper: verify asset path without blocking the event loop.
 
     ``resolve_asset_path`` uses blocking ``stat`` / ``is_file`` / ``glob``; call
-    this from ``resolve_single_drawing`` on the enrich path (#3739 M3).
+    this from ``resolve_single_drawing`` on the enrich path.
     """
     return await asyncio.to_thread(resolve_asset_path, sidecar_uri, relative_path)
 
