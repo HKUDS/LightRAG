@@ -148,12 +148,17 @@ def test_registered_sync_factory_can_return_a_task(tmp_path, monkeypatch):
 
 
 @pytest.mark.offline
+# Both selectors that consult the callback drift-check. "!" is the no-selector
+# path -- the DEFAULT one, where chunk_method stays "legacy_chunking_func" for
+# built-in and plugin alike and no fallback warning exists, so this warning is
+# the only signal that the document's chunking changed between attempts.
+@pytest.mark.parametrize("options", ["C!", "!"])
 @pytest.mark.parametrize(
     "next_name,next_version",
     [("next", "1"), ("acme", "2"), (None, None), ("acme", "1")],
 )
 def test_registered_identity_survives_reset_and_warns_once_on_drift(
-    tmp_path, monkeypatch, next_name, next_version
+    tmp_path, monkeypatch, next_name, next_version, options
 ):
     from lightrag.utils_pipeline import doc_status_reset_metadata
 
@@ -168,7 +173,7 @@ def test_registered_identity_survives_reset_and_warns_once_on_drift(
         handler = _ListHandler()
         logger = logging.getLogger("lightrag")
         try:
-            first = await _ingest(rag, doc_id="drift", process_options="C!")
+            first = await _ingest(rag, doc_id="drift", process_options=options)
             prior = _metadata(first)["custom_chunker"]
             pending = dict(
                 first,
@@ -201,6 +206,82 @@ def test_registered_identity_survives_reset_and_warns_once_on_drift(
                 "version": next_version,
                 "authoritative": False,
             }
+        finally:
+            logger.removeHandler(handler)
+            await rag.finalize_storages()
+
+    asyncio.run(run())
+
+
+@pytest.mark.offline
+def test_explicit_builtin_attempt_does_not_manufacture_drift(tmp_path, monkeypatch):
+    """An F/R/V/P attempt between two C attempts must not invent a drift.
+
+    Regression: an explicit built-in attempt never consults ``chunking_func``,
+    yet it used to overwrite ``custom_chunker`` with a null observation. The
+    next C attempt then compared against that null and warned
+    ``None@None -> 'acme'@'1'`` on a deployment whose configuration had never
+    changed.
+    """
+    from lightrag.utils_pipeline import doc_status_reset_metadata
+
+    def callback(tokenizer, content, *args):
+        return [{"tokens": len(content), "content": content, "chunk_order_index": 0}]
+
+    async def requeue(rag: LightRAG, doc_id: str, process_options: str) -> None:
+        """Re-run the document under a different persisted selector.
+
+        The chunker dispatch reads ``process_options`` from ``full_docs``, not
+        from doc_status, so both have to move for the re-run to take the other
+        branch — the same pair a re-enqueue with new options would rewrite.
+        """
+        persisted = await rag.full_docs.get_by_id(doc_id)
+        await rag.full_docs.upsert(
+            {doc_id: dict(persisted, process_options=process_options)}
+        )
+        row = await rag.doc_status.get_by_id(doc_id)
+        metadata = doc_status_reset_metadata(row)
+        metadata["process_options"] = process_options
+        await rag.doc_status.upsert(
+            {doc_id: dict(row, status=DocStatus.PENDING.value, metadata=metadata)}
+        )
+        await rag.apipeline_process_enqueue_documents()
+
+    async def run():
+        rag = _new_rag(
+            tmp_path, chunking_func=_registered_callback(monkeypatch, callback)
+        )
+        await rag.initialize_storages()
+        handler = _ListHandler()
+        logger = logging.getLogger("lightrag")
+        try:
+            first = await _ingest(rag, doc_id="interleaved", process_options="C!")
+            recorded = _metadata(first)["custom_chunker"]
+            assert recorded == {
+                "name": "acme",
+                "version": "1",
+                "authoritative": False,
+            }
+
+            logger.addHandler(handler)
+            # Explicit built-in strategy: observes nothing, so it must leave
+            # the previous observation alone rather than blank it.
+            await requeue(rag, "interleaved", "F!")
+            builtin_row = await rag.doc_status.get_by_id("interleaved")
+            assert _metadata(builtin_row)["chunk_method"] == "fixed_token"
+            assert _metadata(builtin_row)["custom_chunker"] == recorded
+
+            # Back to C under the SAME configuration: nothing drifted.
+            await requeue(rag, "interleaved", "C!")
+            final = await rag.doc_status.get_by_id("interleaved")
+            assert DocStatus(final["status"]) is DocStatus.PROCESSED
+            assert _metadata(final)["chunk_method"] == "custom_chunking_func"
+            assert _metadata(final)["custom_chunker"] == recorded
+            assert [
+                r.getMessage()
+                for r in handler.records
+                if "Custom chunker identity changed" in r.getMessage()
+            ] == []
         finally:
             logger.removeHandler(handler)
             await rag.finalize_storages()

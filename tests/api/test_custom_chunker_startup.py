@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from lightrag.api import config
@@ -162,16 +164,44 @@ def test_invalid_selection_fails_before_constructor(startup, monkeypatch, name, 
     assert captured == []
 
 
-def test_ingress_error_names_config_and_registered_choices(monkeypatch):
+def test_ingress_error_names_config_and_selectable_choices(monkeypatch):
     from lightrag.api.routers.document_routes import _validate_custom_chunking_available
     from lightrag.chunker import chunking_by_token_size
 
     monkeypatch.setattr(registry, "_REGISTRY", {})
+    monkeypatch.setattr(registry, "_DUPLICATES", set())
     registry.register_chunker(registry.ChunkerSpec("acme", "absent:chunk", "1", "Acme"))
-    with pytest.raises(ValueError, match="CUSTOM_CHUNKER.*acme"):
+    # A duplicated name is registered but unselectable, so the 422 must not
+    # offer it as something the operator could configure.
+    registry.register_chunker(registry.ChunkerSpec("dup", "absent:chunk", "1", "Dup"))
+    registry.register_chunker(registry.ChunkerSpec("dup", "absent:other", "1", "Dup"))
+    with pytest.raises(ValueError, match="CUSTOM_CHUNKER.*acme") as excinfo:
         _validate_custom_chunking_available(
             "C", SimpleNamespace(chunking_func=chunking_by_token_size)
         )
+    assert "dup" not in str(excinfo.value)
+
+
+def test_invalid_selection_prints_a_boxed_notice_and_still_aborts(startup, monkeypatch):
+    """Operator misconfiguration reads like the other startup notices.
+
+    The boxed output is presentation only: the ValueError must still leave
+    ``create_app`` so an unselectable chunker cannot reach a running server.
+    ASCIIColors writes through its own stream rather than the one capsys
+    replaces, so collect the arguments it is handed instead.
+    """
+    server, args, captured, _ = startup
+    monkeypatch.setattr(plugins, "entry_points", lambda **kwargs: [])
+    colors = MagicMock()
+    monkeypatch.setattr(server, "ASCIIColors", colors)
+    args.custom_chunker = "pkg:func"
+    with pytest.raises(ValueError, match="import paths"):
+        server.create_app(args)
+    notice = "\n".join(str(a) for call in colors.mock_calls for a in call.args)
+    assert "ERROR: invalid CUSTOM_CHUNKER selection" in notice
+    assert "import paths are not supported" in notice
+    assert "docs/ThirdPartyChunker.md" in notice
+    assert captured == []
 
 
 @pytest.mark.parametrize(
