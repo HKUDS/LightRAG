@@ -75,9 +75,11 @@ class AuthHandler:
         oversized_username_lengths = []
         if auth_accounts:
             for account in auth_accounts.split(","):
-                account = account.strip()
                 try:
                     username, password = account.split(":", 1)
+                    # Whitespace around the username is list padding; the
+                    # password is the credential and is kept byte-for-byte.
+                    username = username.strip()
                     if not username or not password:
                         raise ValueError
                 except ValueError:
