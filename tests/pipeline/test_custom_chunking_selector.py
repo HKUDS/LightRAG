@@ -148,12 +148,17 @@ def test_registered_sync_factory_can_return_a_task(tmp_path, monkeypatch):
 
 
 @pytest.mark.offline
+# Both selectors that consult the callback drift-check. "!" is the no-selector
+# path -- the DEFAULT one, where chunk_method stays "legacy_chunking_func" for
+# built-in and plugin alike and no fallback warning exists, so this warning is
+# the only signal that the document's chunking changed between attempts.
+@pytest.mark.parametrize("options", ["C!", "!"])
 @pytest.mark.parametrize(
     "next_name,next_version",
     [("next", "1"), ("acme", "2"), (None, None), ("acme", "1")],
 )
 def test_registered_identity_survives_reset_and_warns_once_on_drift(
-    tmp_path, monkeypatch, next_name, next_version
+    tmp_path, monkeypatch, next_name, next_version, options
 ):
     from lightrag.utils_pipeline import doc_status_reset_metadata
 
@@ -168,7 +173,7 @@ def test_registered_identity_survives_reset_and_warns_once_on_drift(
         handler = _ListHandler()
         logger = logging.getLogger("lightrag")
         try:
-            first = await _ingest(rag, doc_id="drift", process_options="C!")
+            first = await _ingest(rag, doc_id="drift", process_options=options)
             prior = _metadata(first)["custom_chunker"]
             pending = dict(
                 first,

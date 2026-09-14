@@ -4964,9 +4964,15 @@ class _PipelineMixin:
                         "version": None,
                         "authoritative": False,
                     }
-                    if doc_process_opts.chunking == "C" and isinstance(
-                        previous_identity, dict
-                    ):
+                    # Both paths that reach here consulted the callback, so
+                    # both compare. The selector is not what makes a drift
+                    # worth reporting, and gating on it left the quieter path
+                    # silent: on the no-selector path ``chunk_method`` is
+                    # ``legacy_chunking_func`` whether the built-in or a plugin
+                    # ran, and no fallback warning exists there either, so this
+                    # line is the ONLY signal that a document's chunking
+                    # changed between attempts.
+                    if isinstance(previous_identity, dict):
                         if any(
                             previous_identity.get(key) != observation[key]
                             for key in ("name", "version")
