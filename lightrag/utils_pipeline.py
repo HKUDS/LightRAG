@@ -376,6 +376,9 @@ _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     "source_file",
     "parse_warnings",
     "chunk_opts",
+    # Last attempted registry identity, explicitly non-authoritative. Retained
+    # for drift diagnostics, never for admission or dispatch decisions.
+    "custom_chunker",
     "parse_start_time",
     "parse_end_time",
     "parse_stage_skipped",
@@ -681,6 +684,10 @@ def doc_status_reset_metadata(status_doc: Any) -> dict[str, Any]:
             value = raw_metadata.get(key)
         if value not in (None, ""):
             payload[key] = value
+    # Unlike timing/result fields this observation must survive retry/restart
+    # so the next attempt can report a changed deployment. It is NOT a directive.
+    if isinstance(raw_metadata.get("custom_chunker"), dict):
+        payload["custom_chunker"] = dict(raw_metadata["custom_chunker"])
     return payload
 
 
