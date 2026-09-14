@@ -1514,9 +1514,7 @@ def create_app(args):
     # swallowed — an unselectable chunker must still abort startup (the
     # deployment would otherwise chunk its C documents the wrong way).
     try:
-        selected_chunker = load_and_resolve_chunker(
-            getattr(args, "custom_chunker", "")
-        )
+        selected_chunker = load_and_resolve_chunker(getattr(args, "custom_chunker", ""))
     except ValueError as exc:
         # markup=False: ASCIIColors interprets "[...]" as rich markup tags.
         ASCIIColors.red("\n" + "=" * 80, markup=False)
