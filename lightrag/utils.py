@@ -6045,9 +6045,9 @@ def strip_control_characters(text: str, replacement_char: str = "") -> str:
 # destroyed. Form feed (\x0c) and backspace (\x08) followed by a letter have
 # no legitimate use in LLM-generated prose, so restoring the backslash is
 # unconditionally safe. The other three decodable escapes (\t, \n, \r) map to
-# legitimate whitespace and cannot be restored without guessing; they are only
-# *detected* (see _WS_LATEX_SUSPECT_PATTERN) so real-world frequency can be
-# observed before deciding on heuristic restoration.
+# legitimate whitespace and cannot be restored globally without guessing. They
+# are repaired only inside paired dollar-math spans and merely detected
+# elsewhere (see _WS_LATEX_SUSPECT_PATTERN).
 _FORMFEED_LATEX_PATTERN = re.compile(r"\x0c(?=[A-Za-z])")
 _BACKSPACE_LATEX_PATTERN = re.compile(r"\x08(?=[A-Za-z])")
 # Whitespace + residue spelling that completes a common LaTeX command whose
@@ -6058,6 +6058,70 @@ _WS_LATEX_SUSPECT_PATTERN = re.compile(
     r"|\r(?=(?:ho|ight|angle|ceil)\b)"
     r"|\n(?=(?:abla|otin)\b)"
 )
+
+
+def _repair_ws_latex_in_dollar_math(text: str) -> tuple[str, int]:
+    """Restore whitespace-class LaTeX escapes inside paired dollar math.
+
+    Outside an explicit ``$...$`` / ``$$...$$`` span, tab, carriage return,
+    and newline are legitimate whitespace and remain ambiguous. Inside one,
+    however, a whitespace character followed by a residue from
+    ``_WS_LATEX_SUSPECT_PATTERN`` is strong evidence that JSON decoding ate
+    the command's leading ``\\t`` / ``\\r`` / ``\\n``.
+
+    Unpaired and backslash-escaped dollar signs are left untouched. The
+    function operates on already-decoded strings, so a correct LaTeX command
+    still contains a real backslash and cannot match the damage pattern.
+    """
+
+    def _is_escaped(index: int) -> bool:
+        backslashes = 0
+        cursor = index - 1
+        while cursor >= 0 and text[cursor] == "\\":
+            backslashes += 1
+            cursor -= 1
+        return backslashes % 2 == 1
+
+    def _find_close(start: int, delimiter: str) -> int:
+        cursor = start
+        while cursor < len(text):
+            if text.startswith(delimiter, cursor) and not _is_escaped(cursor):
+                if delimiter == "$" and (
+                    (cursor > 0 and text[cursor - 1] == "$")
+                    or (cursor + 1 < len(text) and text[cursor + 1] == "$")
+                ):
+                    cursor += 1
+                    continue
+                return cursor
+            cursor += 1
+        return -1
+
+    def _restore(match: re.Match[str]) -> str:
+        return {"\t": r"\t", "\r": r"\r", "\n": r"\n"}[match.group(0)]
+
+    pieces: list[str] = []
+    replacements = 0
+    cursor = 0
+    while cursor < len(text):
+        if text[cursor] != "$" or _is_escaped(cursor):
+            pieces.append(text[cursor])
+            cursor += 1
+            continue
+
+        delimiter = "$$" if text.startswith("$$", cursor) else "$"
+        close = _find_close(cursor + len(delimiter), delimiter)
+        if close < 0:
+            pieces.append(text[cursor:])
+            break
+
+        span_end = close + len(delimiter)
+        math_span = text[cursor:span_end]
+        repaired_span, count = _WS_LATEX_SUSPECT_PATTERN.subn(_restore, math_span)
+        pieces.append(repaired_span)
+        replacements += count
+        cursor = span_end
+
+    return "".join(pieces), replacements
 
 
 def repair_vlm_json_escape_damage(text: str, *, context: str = "") -> str:
@@ -6072,8 +6136,9 @@ def repair_vlm_json_escape_damage(text: str, *, context: str = "") -> str:
 
     Isolated control characters (not followed by a letter) are left alone for
     downstream sanitization to drop. Whitespace-class damage (``\\tau`` ->
-    tab + ``au`` etc.) is ambiguous with legitimate whitespace and is only
-    logged at WARNING level, never rewritten.
+    tab + ``au`` etc.) is repaired only inside paired dollar-math spans.
+    Outside explicit math it remains ambiguous with legitimate whitespace and
+    is only logged, never rewritten.
 
     Args:
         text: Parsed string value to repair.
@@ -6089,6 +6154,16 @@ def repair_vlm_json_escape_damage(text: str, *, context: str = "") -> str:
         logger.warning(
             "Repaired LaTeX escape damage (\\f/\\b decoded by JSON parser)%s",
             f" in {context}" if context else "",
+        )
+
+    repaired, ws_repair_count = _repair_ws_latex_in_dollar_math(repaired)
+    if ws_repair_count:
+        logger.warning(
+            "Repaired whitespace-class LaTeX escape damage inside dollar math%s "
+            "(%d occurrence%s)",
+            f" in {context}" if context else "",
+            ws_repair_count,
+            "" if ws_repair_count == 1 else "s",
         )
 
     suspect = _WS_LATEX_SUSPECT_PATTERN.search(repaired)

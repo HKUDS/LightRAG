@@ -8,10 +8,9 @@ is exactly the five decodable escape letters b/f/n/r/t — json_repair
 preserves invalid escapes like ``\\alpha`` verbatim.
 
 ``repair_vlm_json_escape_damage`` restores the two zero-risk cases
-(form feed / backspace + letter: no legitimate use in LLM prose) and
-only *logs* the ambiguous whitespace-class cases (tab/CR/newline also
-appear as legitimate whitespace and cannot be restored without
-guessing).
+(form feed / backspace + letter: no legitimate use in LLM prose), and restores
+whitespace-class cases only inside explicit dollar math. Outside math,
+tab/CR/newline remain ambiguous legitimate whitespace and are only logged.
 """
 
 import json_repair
@@ -60,15 +59,37 @@ def test_clean_text_is_unchanged_and_idempotent():
     assert repair_vlm_json_escape_damage(once) == once
 
 
+@pytest.mark.parametrize(
+    ("damaged", "expected"),
+    [
+        ("domain is $\tau^2$", r"domain is $\tau^2$"),
+        ("$a \times b$", r"$a \times b$"),
+        ("$$\nabla f = 0$$", "$$\\nabla f = 0$$"),
+        ("$\rho + \right)$", r"$\rho + \right)$"),
+    ],
+)
 @pytest.mark.offline
-def test_whitespace_class_damage_is_logged_not_rewritten(
+def test_whitespace_class_damage_inside_dollar_math_is_repaired(
+    damaged, expected, caplog, _propagate_lightrag_logger
+):
+    with caplog.at_level(logging.WARNING, logger="lightrag"):
+        result = repair_vlm_json_escape_damage(damaged, context="table/t1")
+    assert result == expected
+    assert any(
+        "Repaired whitespace-class LaTeX escape damage inside dollar math"
+        in rec.message
+        and "table/t1" in rec.getMessage()
+        for rec in caplog.records
+    )
+    assert not any("not auto-repaired" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.offline
+def test_whitespace_class_damage_outside_math_is_logged_not_rewritten(
     caplog, _propagate_lightrag_logger
 ):
-    """Tab + "imes" (destroyed ``\\times``) is ambiguous with legitimate
-    whitespace: detection must warn but never modify the text."""
-    # NOTE: "\t" in this source literal IS a real tab — exactly what a
-    # destroyed "\times" looks like post-parse: tab + "imes" + boundary.
-    damaged = "area is $a \times b$"
+    """Outside math, tab + residue stays ambiguous and is not rewritten."""
+    damaged = "label:\tau"
     with caplog.at_level(logging.WARNING, logger="lightrag"):
         result = repair_vlm_json_escape_damage(damaged, context="table/t1")
     assert result == damaged
@@ -77,6 +98,22 @@ def test_whitespace_class_damage_is_logged_not_rewritten(
         and "table/t1" in rec.getMessage()
         for rec in caplog.records
     )
+
+
+@pytest.mark.offline
+def test_unpaired_or_escaped_dollars_do_not_enable_whitespace_repair():
+    assert repair_vlm_json_escape_damage("price $5 then\tau") == "price $5 then\tau"
+    damaged = r"escaped \$" + "\tau" + "$"
+    assert repair_vlm_json_escape_damage(damaged) == damaged
+
+
+@pytest.mark.offline
+def test_math_whitespace_repair_is_idempotent_and_handles_multiple_spans():
+    damaged = "first $\tau^2$, second $$a \times b$$"
+    expected = r"first $\tau^2$, second $$a \times b$$"
+    once = repair_vlm_json_escape_damage(damaged)
+    assert once == expected
+    assert repair_vlm_json_escape_damage(once) == expected
 
 
 @pytest.mark.offline
@@ -149,10 +186,10 @@ async def test_extraction_json_result_repairs_latex_escape_damage():
 
     raw_response = (
         '{"entities": [{"name": "LightRAG", "type": "Other", '
-        '"description": "成本为 $\\frac{610}{C}$ 次调用"}], '
+        '"description": "成本为 $\\frac{610}{C}$，领域为 $\\tau^2$"}], '
         '"relationships": [{"source": "LightRAG", "target": "GraphRAG", '
         '"keywords": "cost", '
-        '"description": "比较 $\\frac{a}{b}$ 与 $\\\\times$ 系数"}]}'
+        '"description": "比较 $\\frac{a}{b}$、$a \\times b$ 与 $\\\\beta$"}]}'
     )
 
     nodes, edges = await _process_json_extraction_result(
@@ -161,9 +198,12 @@ async def test_extraction_json_result_repairs_latex_escape_damage():
 
     (entity_list,) = [nodes[k] for k in nodes if k == "LightRAG"]
     assert "\\frac{610}{C}" in entity_list[0]["description"]
+    assert "\\tau^2" in entity_list[0]["description"]
     assert "\x0c" not in entity_list[0]["description"]
+    assert "\t" not in entity_list[0]["description"]
 
     (edge_list,) = list(edges.values())
     assert "\\frac{a}{b}" in edge_list[0]["description"]
     assert "\\times" in edge_list[0]["description"]
+    assert "\\beta" in edge_list[0]["description"]
     assert "\x0c" not in edge_list[0]["description"]
