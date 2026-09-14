@@ -281,6 +281,54 @@ async def test_delete_entity_relation_without_client_does_not_touch_executor():
 
 
 @pytest.mark.asyncio
+async def test_cancelling_delete_entity_relation_defers_until_delete_completes_then_prunes():
+    """run_in_milvus_executor only cancels the awaiting future -- an in-flight
+    Milvus delete keeps running in the background thread. A bare cancel here
+    would release _flush_lock and return to the caller while that delete (and
+    the pending-buffer prune that follows it) is still pending, letting a
+    concurrent flush reinsert a relation the server already deleted.
+    Cancellation must instead be deferred until the delete, and the prune
+    that follows it, have actually finished."""
+    call_started = threading.Event()
+    release_call = threading.Event()
+
+    def fake_delete(**kwargs):
+        call_started.set()
+        release_call.wait(timeout=5)
+        return {"delete_count": 1}
+
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.query = MagicMock(return_value=[{"id": "rel-1"}])
+    s._client.delete = MagicMock(side_effect=fake_delete)
+    s._pending_vector_docs = {
+        "rel-1": type("P", (), {"source": {"src_id": "entity-1", "tgt_id": "other"}})()
+    }
+
+    task = asyncio.ensure_future(s.delete_entity_relation("entity-1"))
+    for _ in range(500):
+        if call_started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert call_started.is_set()
+
+    task.cancel()
+    # Let the background delete finish so the deferred cancellation can
+    # resolve -- release_call must be set before awaiting the cancelled
+    # task, since the cancellation is held back until the delete completes.
+    release_call.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    s._client.delete.assert_called_once()
+    # The delete actually landed, so the buffer must reflect that outcome --
+    # not the stale "still pending" state a bare cancel would leave, which
+    # would let a later flush reinsert the relation the server just deleted.
+    assert s._pending_vector_docs == {}
+    assert not s._flush_lock.locked()
+
+
+@pytest.mark.asyncio
 async def test_get_by_ids_runs_query_off_the_event_loop_thread():
     """get_by_ids (and get_vectors_by_ids, which shares the same
     _query_rows_by_ids helper) must offload the paged query() calls."""
