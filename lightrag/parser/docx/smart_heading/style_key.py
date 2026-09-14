@@ -101,12 +101,8 @@ _P_EN_SINGLE_PAREN = re.compile(r"^\s*((?:\d+|([A-Za-z])\2{0,2}))[）)]")
 # Provenance-gated: mixed IVX runs (iv, vii, ix) are valid Roman list labels.
 # The alphabetic backref above deliberately rejects those as non-Word alpha
 # (CV. / MD. abbreviations); only lowerRoman/upperRoman numFmt may use these.
-_P_EN_DOUBLE_PAREN_ROMAN = re.compile(
-    r"^\s*([（(](?:[IVXivx]+|[Ⅰ-Ⅻⅰ-ⅻ])[）)])"
-)
-_P_EN_SINGLE_PAREN_ROMAN = re.compile(
-    r"^\s*((?:[IVXivx]+|[Ⅰ-Ⅻⅰ-ⅻ]))[）)]"
-)
+_P_EN_DOUBLE_PAREN_ROMAN = re.compile(r"^\s*([（(](?:[IVXivx]+|[Ⅰ-Ⅻⅰ-ⅻ])[）)])")
+_P_EN_SINGLE_PAREN_ROMAN = re.compile(r"^\s*((?:[IVXivx]+|[Ⅰ-Ⅻⅰ-ⅻ]))[）)]")
 
 #: Try order: MultiLevelNum first, then the table order top-down.
 _MATCH_ORDER: tuple[tuple[str, re.Pattern], ...] = (
