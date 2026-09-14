@@ -193,6 +193,7 @@ observability = [
 ]
 
 [project.scripts]
+lightrag-repair-chunk-tracking = "lightrag.tools.chunk_tracking_repair:main"
 lightrag-server = "lightrag.api.lightrag_server:main"
 lightrag-gunicorn = "lightrag.api.run_with_gunicorn:main"
 lightrag-hash-password = "lightrag.tools.hash_password:main"

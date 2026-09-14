@@ -62,8 +62,8 @@
       "clearing": "삭제하는 중...",
       "timeout": "삭제 작업 시간 초과, 다시 시도해주세요",
       "success": "문서가 성공적으로 삭제되었습니다",
-      "cacheCleared": "캐시가 성공적으로 삭제되었습니다",
-      "cacheClearFailed": "캐시 삭제 실패:\n{{error}}",
+      "successWithCache": "문서와 LLM 캐시가 성공적으로 삭제되었습니다",
+      "partialSuccess": "삭제 작업이 오류와 함께 완료되었습니다:\n{{message}}",
       "failed": "문서 삭제 실패:\n{{message}}",
       "error": "문서 삭제 실패:\n{{error}}"
     },

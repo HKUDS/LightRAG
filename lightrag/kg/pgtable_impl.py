@@ -920,12 +920,37 @@ class PGTableGraphStorage(BaseGraphStorage):
         )
         return sorted(r["id"] for r in rows)
 
+    async def iter_labels(self, batch_size: int):
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        after = ""
+        while True:
+            rows = await self._fetch(
+                """
+                SELECT id FROM lightrag_graph_nodes
+                WHERE workspace = $1 AND namespace = $2 AND id COLLATE "C" > $3
+                ORDER BY id COLLATE "C" ASC LIMIT $4
+                """,
+                self.workspace,
+                self.namespace,
+                after,
+                batch_size,
+            )
+            if not rows:
+                break
+            batch = [r["id"] for r in rows]
+            yield batch
+            after = batch[-1]
+
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
         # Rank ALL nodes by degree, including isolated (degree 0) nodes, to
         # match NetworkXStorage.get_popular_labels (dict(graph.degree()) covers
         # every node). Counting from the edge table alone would silently drop
-        # isolated entities. Self-loops count twice (no src_id <> tgt_id guard),
-        # consistent with node_degree.
+        # isolated entities. No self-loop guard (no src_id <> tgt_id): a
+        # self-loop's degree is not contracted -- the graph is not allowed to
+        # hold one (BaseGraphStorage.node_degree) -- and adding the predicate
+        # was measured and rejected across all backends. Same query shape as
+        # node_degree, so the two cannot drift.
         rows = await self._fetch(
             """
             SELECT n.id AS id, COALESCE(d.degree, 0) AS degree
@@ -1071,6 +1096,40 @@ class PGTableGraphStorage(BaseGraphStorage):
         ]
         return sorted(edges, key=lambda edge: (edge["source"], edge["target"]))
 
+    async def iter_edges(self, batch_size: int):
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        after_source = ""
+        after_target = ""
+        while True:
+            rows = await self._fetch(
+                """
+                SELECT src_id, tgt_id, properties FROM lightrag_graph_edges
+                WHERE workspace = $1 AND namespace = $2
+                  AND (src_id COLLATE "C" > $3 OR
+                       (src_id = $3 AND tgt_id COLLATE "C" > $4))
+                ORDER BY src_id COLLATE "C" ASC, tgt_id COLLATE "C" ASC
+                LIMIT $5
+                """,
+                self.workspace,
+                self.namespace,
+                after_source,
+                after_target,
+                batch_size,
+            )
+            if not rows:
+                break
+            yield [
+                {
+                    **self._json_loads(row["properties"]),
+                    "source": row["src_id"],
+                    "target": row["tgt_id"],
+                }
+                for row in rows
+            ]
+            after_source = rows[-1]["src_id"]
+            after_target = rows[-1]["tgt_id"]
+
     # ------------------------------------------------------------------
     # Knowledge graph — frontier-capped iterative BFS
     # ------------------------------------------------------------------
@@ -1171,10 +1230,11 @@ class PGTableGraphStorage(BaseGraphStorage):
                         SELECT 1 FROM visited v WHERE v.vid = nb.nid
                     )
                 ),
-                -- Same UNION ALL + GROUP BY shape as node_degrees_batch, so
-                -- self-loops count twice here exactly as they do there and in
-                -- node_degree. Each arm is index-served: src_id via the PK
-                -- prefix, tgt_id via idx_..._namespace_tgt.
+                -- Same UNION ALL + GROUP BY shape as node_degrees_batch,
+                -- so this ranking and the degree methods answer identically.
+                -- No self-loop guard, for the reason given on
+                -- get_popular_labels. Each arm is index-served: src_id via the
+                -- PK prefix, tgt_id via idx_..._namespace_tgt.
                 candidate_degrees AS (
                     SELECT id, COUNT(*) AS degree
                     FROM (

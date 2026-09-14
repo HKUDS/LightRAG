@@ -56,6 +56,7 @@ from lightrag.exceptions import (
     PipelineRecoveryRequiredError,
     PipelineReservationConflictError,
     IndexFlushError,
+    flush_may_have_lost_reference,
 )
 from lightrag.kg.shared_storage import (
     MANUAL_PHASE_DRAIN_TO_IDLE,
@@ -76,6 +77,7 @@ from lightrag.kg.shared_storage import (
     with_reservation_lock,
 )
 from lightrag import pipeline_metrics
+from lightrag.chunker.registry import chunker_identity
 from lightrag.kg.pipeline_ingress import PipelineIngressMessage
 from lightrag.operate import merge_nodes_and_edges
 from lightrag.parser.base import ParseContext
@@ -94,6 +96,7 @@ from lightrag.parser.routing import (
     resolve_stored_document_parser_engine,
 )
 from lightrag.utils import (
+    get_extract_cache_fence,
     CacheData,
     _serialize_cache_variant,
     compute_args_hash,
@@ -1104,8 +1107,8 @@ class _PipelineMixin:
             }
             if content_data.get("content_hash"):
                 base["content_hash"] = content_data["content_hash"]
-            # Stamp the KG write-progress marker at BIRTH (issue #3400
-            # fail-closed purge). A brand-new row provably owns nothing in the
+            # Stamp the KG write-progress marker at BIRTH, for the
+            # fail-closed purge. A brand-new row provably owns nothing in the
             # graph, and every pre-merge state a document can fail in —
             # PENDING, PARSING, ANALYZING, PROCESSING-before-merge — inherits
             # that fact by carry-over. This is what lets deletion clean up a
@@ -2851,8 +2854,8 @@ class _PipelineMixin:
         ``_reset_failed_page`` and scan's ``_confirm_full_docs_absent``.
         """
         # Documents carrying a custom-chunk patch journal belong to an
-        # in-flight or failed ainsert_custom_chunks operation (issue #3400
-        # Phase 3). Ordinary pipeline processing must not touch them: a reset
+        # in-flight or failed ainsert_custom_chunks operation. Ordinary
+        # pipeline processing must not touch them: a reset
         # would strip the journal and rebuild the whole document, discarding
         # the operation's recovery anchor. They are resumed by the SDK caller
         # (same call) or rolled back by /documents/scan.
@@ -4935,6 +4938,46 @@ class _PipelineMixin:
                 from lightrag.chunker import chunking_by_token_size
 
                 is_builtin_chunker = self.chunking_func is chunking_by_token_size
+                # Diagnostic only: never resolve, reject or select a callback
+                # using a previous document's author-supplied identity.
+                uses_custom_callback = (
+                    not doc_process_opts.chunking_explicit
+                    or doc_process_opts.chunking == "C"
+                )
+                current_identity = (
+                    chunker_identity(self.chunking_func)
+                    if uses_custom_callback
+                    else None
+                )
+                previous_identity = (
+                    status_doc.metadata.get("custom_chunker")
+                    if isinstance(status_doc.metadata, dict)
+                    else None
+                )
+                observation = current_identity or {
+                    "name": None,
+                    "version": None,
+                    "authoritative": False,
+                }
+                if doc_process_opts.chunking == "C" and isinstance(
+                    previous_identity, dict
+                ):
+                    if any(
+                        previous_identity.get(key) != observation[key]
+                        for key in ("name", "version")
+                    ):
+                        logger.warning(
+                            "Custom chunker identity changed for doc_id %s: %r@%r -> %r@%r; proceeding under current configuration (identity is non-authoritative)",
+                            doc_id,
+                            previous_identity.get("name"),
+                            previous_identity.get("version"),
+                            observation["name"],
+                            observation["version"],
+                        )
+                if current_identity is not None or previous_identity is not None:
+                    # Set before invocation so a failed callback still names
+                    # the attempted configuration in the FAILED record.
+                    extraction_meta["custom_chunker"] = observation
                 if (
                     doc_process_opts.chunking_explicit
                     and doc_process_opts.chunking != "C"
@@ -5266,24 +5309,26 @@ class _PipelineMixin:
                     if isinstance(content_data, dict)
                     else None
                 )
-                extraction_meta = {
-                    "parse_format": persisted_format,
-                    # Shared resolver with the parse stage (_parse_worker), so a
-                    # field already stamped at PARSING re-writes to the same
-                    # value here — no value jump across the transition.
-                    "parse_engine": resolve_doc_status_parse_engine(
-                        persisted_format, persisted_engine
-                    ),
-                    # Set by the actual branch taken, not merely the persisted
-                    # selector. This distinguishes C custom success from its
-                    # fixed-token fallback after callback removal.
-                    "chunk_method": chunk_method,
-                    # Mirrors the chunking start log line (params portion only,
-                    # without the strategy prefix or file path) so admins can
-                    # see the actual chunker params used.  Carried across
-                    # transitions via ``_DOC_STATUS_METADATA_CARRY_OVER_KEYS``.
-                    "chunk_opts": chunk_opts_str,
-                }
+                extraction_meta.update(
+                    {
+                        "parse_format": persisted_format,
+                        # Shared resolver with the parse stage (_parse_worker), so a
+                        # field already stamped at PARSING re-writes to the same
+                        # value here — no value jump across the transition.
+                        "parse_engine": resolve_doc_status_parse_engine(
+                            persisted_format, persisted_engine
+                        ),
+                        # Set by the actual branch taken, not merely the persisted
+                        # selector. This distinguishes C custom success from its
+                        # fixed-token fallback after callback removal.
+                        "chunk_method": chunk_method,
+                        # Mirrors the chunking start log line (params portion only,
+                        # without the strategy prefix or file path) so admins can
+                        # see the actual chunker params used.  Carried across
+                        # transitions via ``_DOC_STATUS_METADATA_CARRY_OVER_KEYS``.
+                        "chunk_opts": chunk_opts_str,
+                    }
+                )
 
                 blocks_path = str(parsed_data.get("blocks_path") or "").strip()
                 if blocks_path:
@@ -5534,7 +5579,7 @@ class _PipelineMixin:
                     # upsert, so writing PROCESSED first opens a crash window
                     # where the status is durable but the graph/vector/chunk
                     # data is not — a false PROCESSED that recovery can never
-                    # detect (issue #3400: status is the commit record).
+                    # detect (status is the commit record).
                     await self._insert_done()
 
                     # A sibling document's flush error may have aborted the
@@ -5720,7 +5765,7 @@ class _PipelineMixin:
         # back stale IDs.
         #
         # Persist that reset together with retiring the purge journal, in one
-        # targeted write (issue #3400). In-memory-only was not enough: the
+        # targeted write. In-memory-only was not enough: the
         # stored chunks_list kept pointing at chunks this purge just deleted,
         # so a crash here left the row advertising them. Retiring the journal
         # in the SAME write is what keeps the two consistent — a surviving
@@ -5766,7 +5811,7 @@ class _PipelineMixin:
         Returning silently instead would let the merge proceed with the
         stored marker still ``pre_graph``: the graph gets written, and if the
         anchors are later lost, that stale marker is a false proof licensing
-        a purge to skip graph cleanup — the exact defect of issue #3400.
+        a purge to skip graph cleanup — the exact defect fail-closed prevents.
         """
         stored = await require_doc_status_record(
             self.doc_status, doc_id, purpose="advance kg_write_state"
@@ -5897,11 +5942,96 @@ class _PipelineMixin:
         async with pipeline_status_lock:
             return bool(pipeline_status.get("cancellation_requested", False))
 
+    async def _persist_chunk_cache_references_best_effort(
+        self,
+        *,
+        stage_label: str,
+        doc_id: str,
+        error: BaseException | None = None,
+    ) -> bool:
+        """Commit the chunk rows carrying this document's cache references.
+
+        Returns False when the commit did not land — the caller's signal NOT to
+        commit the LLM cache afterwards. Pass the exception that triggered the
+        epilogue as ``error``: a flush this epilogue cannot redo is reported
+        through it, not through the retry below. See *LLM extraction cache
+        reachability* in the contract doc,
+        ``docs/design/PurgeRecoveryContract.md``.
+
+        Runs for every stage epilogue, not just the extract one that can hold
+        chunk references. At the parse stage there is nothing of this
+        document's to commit, so the cost is one no-op flush; suppressing the
+        cache commit there can only happen when ``text_chunks`` is already
+        failing, and it costs a recomputable cache entry. Both are cheaper than
+        a stage whitelist that has to stay correct as stages move.
+        """
+        if self.text_chunks is None:
+            return True
+        # A retry cannot see a failure the backend already discarded. When the
+        # aborting flush was text_chunks' own, a per-item backend has dropped
+        # the permanently-failed operation from its buffer before raising
+        # (``OpenSearchKVStorage._flush_pending_kv_ops``), so flushing again
+        # finds an empty buffer and reports success while the reference is
+        # gone for good. Trust the recorded failure over the retry.
+        #
+        # ``_chunk_reference_commit_failed`` is the durable half of the check:
+        # the exception is only one of several gathered flush results and need
+        # not be the one that propagated here, so a text_chunks failure can
+        # reach this epilogue wearing another namespace's name.
+        chunk_namespace = getattr(self.text_chunks, "final_namespace", None) or getattr(
+            self.text_chunks, "namespace", ""
+        )  # the same spelling _flush_storages puts into IndexFlushError
+        if self._chunk_reference_commit_failed or (
+            isinstance(error, IndexFlushError)
+            and error.namespace == chunk_namespace
+            # ...unless the backend proved that raise dropped nothing. The
+            # reason to distrust the retry is a buffer the backend drained
+            # behind our back; where that did not happen the retry below is a
+            # truthful witness, and believing the exception instead would
+            # withhold the partial cache this epilogue exists to save.
+            and flush_may_have_lost_reference(error)
+        ):
+            logger.error(
+                "Chunk cache references did not land after %s for d-id %s: "
+                "%s. Deferring the LLM cache commit so the pair stays together.",
+                stage_label,
+                doc_id,
+                error if error is not None else "an earlier chunk commit failed",
+            )
+            return False
+        try:
+            committed = await self.text_chunks.index_done_callback()
+        except Exception as persist_error:
+            logger.error(
+                "Failed to persist chunk cache references after %s for d-id %s: %s",
+                stage_label,
+                doc_id,
+                persist_error,
+            )
+            if flush_may_have_lost_reference(persist_error):
+                await self._record_chunk_reference_commit_failure(
+                    f"{stage_label} epilogue flush failed"
+                )
+            # A raise that dropped nothing still means this commit did not
+            # happen, so the cache half stays withheld -- but the rows keep
+            # their place in the buffer for the next ordered pair instead of
+            # being quarantined.
+            return False
+        # An explicit False is a DECLINED commit: the mutation was discarded,
+        # so the references are not on disk either.
+        if committed is False:
+            await self._record_chunk_reference_commit_failure(
+                f"{stage_label} epilogue commit declined"
+            )
+            return False
+        return True
+
     async def _persist_llm_response_cache_best_effort(
         self,
         *,
         stage_label: str,
         doc_id: str,
+        error: BaseException | None = None,
     ) -> None:
         """Commit pending LLM cache entries without failing document work.
 
@@ -5909,18 +6039,55 @@ class _PipelineMixin:
         a prerequisite for a parser or multimodal result that has otherwise
         succeeded. Stage-boundary callers use this narrow commit instead of
         ``_insert_done()``, which would flush every KG/vector storage too.
+
+        The chunk references are committed first, under the fence, and the
+        cache commit is skipped when they did not land. That ordering lives
+        HERE rather than in the callers on purpose: a cache commit publishes
+        the WHOLE namespace, not this stage's rows, so every one of these
+        stage boundaries would otherwise publish extract rows that a
+        concurrently-running document has only buffered references for --
+        and every stage boundary added later would have to remember. Pass the
+        exception that triggered a failure epilogue as ``error``; see
+        ``_persist_chunk_cache_references_best_effort``. Callers must NOT hold
+        the fence themselves, since it is not reentrant. Rules and residues
+        are in *LLM extraction cache reachability* in the contract doc,
+        ``docs/design/PurgeRecoveryContract.md``.
         """
         if self.llm_response_cache is None:
             return
-        try:
-            await self.llm_response_cache.index_done_callback()
-        except Exception as persist_error:
-            logger.error(
-                "Failed to persist LLM cache after %s for d-id %s: %s",
-                stage_label,
-                doc_id,
-                persist_error,
-            )
+
+        async def _commit_cache() -> None:
+            try:
+                await self.llm_response_cache.index_done_callback()
+            except Exception as persist_error:
+                logger.error(
+                    "Failed to persist LLM cache after %s for d-id %s: %s",
+                    stage_label,
+                    doc_id,
+                    persist_error,
+                )
+
+        if self.text_chunks is None:
+            await _commit_cache()
+            return
+
+        async with get_extract_cache_fence(self.text_chunks):
+            if not await self._persist_chunk_cache_references_best_effort(
+                stage_label=stage_label,
+                doc_id=doc_id,
+                error=error,
+            ):
+                logger.error(
+                    "Deferring the LLM cache commit after %s for d-id %s: its "
+                    "chunk references are not on disk, and a cache row that "
+                    "outlives them cannot be found again. Both stay in memory "
+                    "for the next all-storage commit, which carries them "
+                    "together",
+                    stage_label,
+                    doc_id,
+                )
+                return
+            await _commit_cache()
 
     async def _mark_doc_cancelled_in_stage(
         self,
@@ -5991,8 +6158,9 @@ class _PipelineMixin:
         """Common epilogue for an extract / merge stage failure.
 
         Logs the error (or cancellation), cancels any pending stage tasks,
-        flushes the LLM response cache, and writes a FAILED status row that
-        preserves the failed chunks snapshot and processing-time metadata.
+        commits the chunk cache references and then the LLM response cache (in
+        that order — see below), and writes a FAILED status row that preserves
+        the failed chunks snapshot and processing-time metadata.
         """
         if isinstance(error, PipelineCancelledException):
             cancel_label = self._cancellation_label(pipeline_status.copy())
@@ -6045,9 +6213,15 @@ class _PipelineMixin:
             if task and not task.done():
                 task.cancel()
 
+        # One call, not a pair: the ordering, the fence and the deferral all
+        # live inside the helper, so every stage boundary gets them and none
+        # has to remember. Passing ``error`` lets it recognise a text_chunks
+        # flush failure it must not re-read. Do NOT take the fence here -- the
+        # helper takes it and it is not reentrant.
         await self._persist_llm_response_cache_best_effort(
             stage_label=f"{stage_label} failure",
             doc_id=doc_id,
+            error=error,
         )
 
         failed_chunks_list, failed_chunks_count = failed_chunks_snapshot
@@ -6654,7 +6828,7 @@ class _PipelineMixin:
                     # authoritative LaTeX.  An otherwise valid response (name +
                     # description) must therefore not fail a whole document
                     # just because the model renamed or dropped that one field
-                    # (#3502).  Resolution order:
+                    #  Resolution order:
                     #   1. ``equation`` — the schema field, normalized as the
                     #      equation_analysis prompt requires (delimiters and
                     #      ``\tag{...}`` stripped, align→aligned, Markdown /

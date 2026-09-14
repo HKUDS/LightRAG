@@ -8,6 +8,9 @@ from xml.etree import ElementTree as ET
 
 import pytest
 from openpyxl import Workbook
+from pptx import Presentation
+from pptx.enum.shapes import MSO_CONNECTOR
+from pptx.util import Inches
 
 from lightrag.parser.legacy.extractors import extract_text
 
@@ -150,3 +153,33 @@ def test_extract_text_xlsx_handles_multiple_sheets_and_string_results():
     # String cached result preferred over the concatenation formula text.
     assert "foobar" in text
     assert '=A1&"bar"' not in text
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("group_depth", [0, 1, 2])
+def test_extract_text_pptx_preserves_grouped_text_and_order(group_depth):
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+
+    def add_text(shapes, text):
+        shapes.add_textbox(0, 0, Inches(2), Inches(1)).text = text
+
+    add_text(slide.shapes, "Before")
+    shapes = slide.shapes
+    for _ in range(group_depth):
+        shapes = shapes.add_group_shape().shapes
+    add_text(shapes, "Grouped paragraph\nSecond paragraph\vSoft break")
+    shapes.add_connector(MSO_CONNECTOR.STRAIGHT, 0, 0, Inches(1), Inches(1))
+    shapes.add_group_shape()  # Empty groups must not add spurious newlines.
+    add_text(shapes, "")  # Keep the existing empty-textbox newline behavior.
+    add_text(shapes, "Group sibling")
+    add_text(slide.shapes, "After")
+    next_slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    add_text(next_slide.shapes, "Next slide")
+    file_bytes = BytesIO()
+    presentation.save(file_bytes)
+
+    assert extract_text(file_bytes.getvalue(), "pptx") == (
+        "Before\nGrouped paragraph\nSecond paragraph\vSoft break\n\n"
+        "Group sibling\nAfter\nNext slide\n"
+    )

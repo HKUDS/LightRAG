@@ -55,15 +55,37 @@ how ``process_options`` and the new ``chunk_options`` snapshot drive
 chunker selection per document.
 """
 
-from lightrag.chunker.paragraph_semantic import chunking_by_paragraph_semantic
-from lightrag.chunker.recursive_character import (
-    chunking_by_recursive_character,
-)
-from lightrag.chunker.semantic_vector import chunking_by_semantic_vector
-from lightrag.chunker.token_size import (
-    chunking_by_fixed_token,
-    chunking_by_token_size,
-)
+from importlib import import_module
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from lightrag.chunker.paragraph_semantic import chunking_by_paragraph_semantic
+    from lightrag.chunker.recursive_character import chunking_by_recursive_character
+    from lightrag.chunker.semantic_vector import chunking_by_semantic_vector
+    from lightrag.chunker.token_size import (
+        chunking_by_fixed_token,
+        chunking_by_token_size,
+    )
+
+# Importing chunker.registry/plugins must not eagerly load any implementation.
+# Preserve public exports and cache the original callable (identity matters to C).
+_EXPORT_MODULES = {
+    "chunking_by_fixed_token": "token_size",
+    "chunking_by_token_size": "token_size",
+    "chunking_by_paragraph_semantic": "paragraph_semantic",
+    "chunking_by_recursive_character": "recursive_character",
+    "chunking_by_semantic_vector": "semantic_vector",
+}
+
+
+def __getattr__(name: str) -> Any:
+    module = _EXPORT_MODULES.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(f"lightrag.chunker.{module}"), name)
+    globals()[name] = value
+    return value
+
 
 __all__ = [
     "chunking_by_fixed_token",

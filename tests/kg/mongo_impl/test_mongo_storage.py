@@ -831,6 +831,145 @@ class TestMongoEdgeKey:
 
     @pytest.mark.asyncio
     async def test_edge_migration_skips_when_index_exists(self):
+        """Once every index (unique endpoints + the two single-field degree
+        indexes) already exists, re-running is a pure no-op: no migration
+        aggregate, no redundant create_index calls."""
+        s = self._make_storage()
+        s.edge_collection.list_indexes = AsyncMock(
+            return_value=SimpleNamespace(
+                to_list=AsyncMock(
+                    return_value=[
+                        {"name": "test_edge_endpoints_unique"},
+                        {"name": "test_source_node_id", "key": {"source_node_id": 1}},
+                        {"name": "test_target_node_id", "key": {"target_node_id": 1}},
+                    ]
+                )
+            )
+        )
+        s.edge_collection.aggregate = AsyncMock()
+        s.edge_collection.create_index = AsyncMock()
+
+        await s.create_edge_indexes_and_migrate_if_not_exists()
+
+        s.edge_collection.aggregate.assert_not_awaited()
+        s.edge_collection.create_index.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_edge_migration_skips_when_index_exists_logs_nothing(self):
+        """No INFO log about a potentially slow index build when there's
+        nothing to build -- the log exists to explain a startup stall, and
+        would be noise on every ordinary already-migrated startup otherwise."""
+        s = self._make_storage()
+        s.edge_collection.list_indexes = AsyncMock(
+            return_value=SimpleNamespace(
+                to_list=AsyncMock(
+                    return_value=[
+                        {"name": "test_edge_endpoints_unique"},
+                        {"name": "test_source_node_id", "key": {"source_node_id": 1}},
+                        {"name": "test_target_node_id", "key": {"target_node_id": 1}},
+                    ]
+                )
+            )
+        )
+        s.edge_collection.aggregate = AsyncMock()
+        s.edge_collection.create_index = AsyncMock()
+
+        with patch("lightrag.kg.mongo_impl.logger") as mock_logger:
+            await s.create_edge_indexes_and_migrate_if_not_exists()
+
+        # The unrelated "already on canonical edge endpoints" migration-skip
+        # log still fires; only the degree-index build log must not.
+        info_messages = [c.args[0] for c in mock_logger.info.call_args_list]
+        assert not any("source_node_id" in m for m in info_messages)
+
+    @pytest.mark.asyncio
+    async def test_edge_migration_logs_before_building_a_missing_degree_index(self):
+        """create_index() blocks (inside get_data_init_lock) until the build
+        commits -- on a large pre-existing edge collection, the first startup
+        after upgrading onto this code can stall there for a while. An INFO
+        log before the build gives an operator watching logs a reason, rather
+        than a startup that looks hung."""
+        s = self._make_storage()
+        s.edge_collection.list_indexes = AsyncMock(
+            return_value=SimpleNamespace(
+                to_list=AsyncMock(return_value=[{"name": "test_edge_endpoints_unique"}])
+            )
+        )
+        s.edge_collection.aggregate = AsyncMock()
+        s.edge_collection.create_index = AsyncMock()
+
+        with patch("lightrag.kg.mongo_impl.logger") as mock_logger:
+            await s.create_edge_indexes_and_migrate_if_not_exists()
+
+        # The unrelated "already on canonical edge endpoints" migration-skip
+        # log also fires here; find our specific message among the calls.
+        info_messages = [c.args[0] for c in mock_logger.info.call_args_list]
+        degree_index_logs = [m for m in info_messages if "source_node_id" in m]
+        assert len(degree_index_logs) == 1
+        assert "target_node_id" in degree_index_logs[0]
+        # Logged once before both create_index calls, not once per index.
+        assert s.edge_collection.create_index.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_edge_migration_skips_degree_index_already_present_under_another_name(
+        self,
+    ):
+        """The degree indexes are recognized by field, not by our own naming
+        convention -- an index on source_node_id created under Mongo's own
+        default name (e.g. by a DBA, or Mongo's auto-generated
+        "source_node_id_1") must not trigger a second, same-field
+        create_index call, which MongoDB rejects with IndexKeySpecsConflict."""
+        s = self._make_storage()
+        s.edge_collection.list_indexes = AsyncMock(
+            return_value=SimpleNamespace(
+                to_list=AsyncMock(
+                    return_value=[
+                        {"name": "test_edge_endpoints_unique"},
+                        {"name": "source_node_id_1", "key": {"source_node_id": 1}},
+                        {"name": "target_node_id_1", "key": {"target_node_id": 1}},
+                    ]
+                )
+            )
+        )
+        s.edge_collection.aggregate = AsyncMock()
+        s.edge_collection.create_index = AsyncMock()
+
+        await s.create_edge_indexes_and_migrate_if_not_exists()
+
+        s.edge_collection.create_index.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_edge_migration_degree_index_failure_is_logged_not_raised(self):
+        """The degree indexes are a best-effort performance optimization, not
+        required for correctness like the compound migration below -- a
+        create_index failure (e.g. a restricted service account without
+        createIndex privilege) must be caught and logged, not propagate out
+        of initialize()/startup."""
+        s = self._make_storage()
+        s.edge_collection.list_indexes = AsyncMock(
+            return_value=SimpleNamespace(
+                to_list=AsyncMock(return_value=[{"name": "test_edge_endpoints_unique"}])
+            )
+        )
+        s.edge_collection.aggregate = AsyncMock()
+        s.edge_collection.create_index = AsyncMock(
+            side_effect=PyMongoError("not authorized on test to execute command")
+        )
+
+        with patch("lightrag.kg.mongo_impl.logger") as mock_logger:
+            await s.create_edge_indexes_and_migrate_if_not_exists()
+
+        assert s.edge_collection.create_index.await_count == 2
+        assert mock_logger.warning.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_edge_migration_backfills_degree_indexes_on_already_migrated_edges(
+        self,
+    ):
+        """The source_node_id/target_node_id degree indexes are ensured
+        unconditionally, independent of the unique-endpoints migration state —
+        an already-migrated deployment (pre-dating these two indexes) must
+        still pick them up, without re-running the dedupe/backfill migration."""
         s = self._make_storage()
         s.edge_collection.list_indexes = AsyncMock(
             return_value=SimpleNamespace(
@@ -842,8 +981,15 @@ class TestMongoEdgeKey:
 
         await s.create_edge_indexes_and_migrate_if_not_exists()
 
+        # Unique-endpoints migration already complete: no dedupe/backfill pass.
         s.edge_collection.aggregate.assert_not_awaited()
-        s.edge_collection.create_index.assert_not_awaited()
+        # But the two missing degree indexes are still (idempotently) created.
+        assert s.edge_collection.create_index.await_count == 2
+        created_names = {
+            call.kwargs.get("name")
+            for call in s.edge_collection.create_index.await_args_list
+        }
+        assert created_names == {"test_source_node_id", "test_target_node_id"}
 
     @pytest.mark.asyncio
     async def test_edge_migration_dedupes_backfills_and_builds_unique_index(self):

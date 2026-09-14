@@ -22,6 +22,8 @@ from lightrag.utils import (
     performance_timing_log,
     safe_log_value,
     validate_workspace,
+    _consume_future_exception,
+    _wait_deferring_cancellation,
 )
 import aiofiles
 import traceback
@@ -58,7 +60,7 @@ from pydantic import (
 )
 
 from lightrag import LightRAG
-from lightrag.api.utils_api import internal_server_error
+from lightrag.api.utils_api import internal_server_error, new_error_id
 from lightrag.base import (
     CURSOR_START,
     CursorAfter,
@@ -780,12 +782,16 @@ class TextChunkingConfig(BaseModel):
     ``custom`` explicitly invokes ``LightRAG.chunking_func`` and reuses the
     fixed-token parameter contract (split character, split-only flag, overlap,
     and size). It is rejected unless the application injected a non-default
-    callback.
+    callback (Server: ``CUSTOM_CHUNKER`` / ``--custom-chunker`` selects an
+    installed ``lightrag.chunkers`` registration, never an HTTP import path).
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    strategy: TextChunkingStrategy = "fixed_token"
+    strategy: TextChunkingStrategy = Field(
+        default="fixed_token",
+        description="custom invokes the constructor callback selected at Server startup by CUSTOM_CHUNKER; it accepts fixed-token parameters, never an implementation name or import path",
+    )
     params: Dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -1008,39 +1014,6 @@ class ForceResetRecoveryResponse(BaseModel):
             "re-issue /documents/reprocess_failed, or let the scan's own FAILED "
             "reset cover them."
         ),
-    )
-
-
-class ClearCacheRequest(BaseModel):
-    """Request model for clearing cache
-
-    This model is kept for API compatibility but no longer accepts any parameters.
-    All cache will be cleared regardless of the request content.
-    """
-
-    model_config = ConfigDict(json_schema_extra={"example": {}})
-
-
-class ClearCacheResponse(BaseModel):
-    """Response model for cache clearing operation
-
-    Attributes:
-        status: Status of the clear operation
-        message: Detailed message describing the operation result
-    """
-
-    status: Literal["success", "fail"] = Field(
-        description="Status of the clear operation"
-    )
-    message: str = Field(description="Message describing the operation result")
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "status": "success",
-                "message": "Successfully cleared cache for modes: ['default', 'naive']",
-            }
-        }
     )
 
 
@@ -1805,17 +1778,42 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
     the namespace lock and raises immediately on contention -- it does
     NOT set any flag, so it cannot block the pipeline itself.
 
-    ``busy`` is set by the processing loop and by destructive jobs
-    (``/documents/clear`` / per-doc delete). Both paths concurrently
-    write the same graph storages that these endpoints mutate, so a
-    409 here mirrors the existing UI guard and tells clients to wait.
+    ``busy`` is set by the processing loop, by destructive jobs
+    (``/documents/clear`` / per-doc delete), AND by an admin graph write
+    itself. The first two concurrently write the same graph
+    storages that these endpoints mutate, so a 409 here mirrors the
+    existing UI guard and tells clients to wait.
 
-    A narrow race remains between this check and the underlying graph
-    write: if the pipeline transitions to busy in that window, the
-    per-edge/-node locks inside the storage layer are the last line of
-    defense. That trade-off is deliberate -- holding ``busy`` here
-    would serialise every UI edit against document ingestion, which is
-    a worse user-visible failure mode than tolerating the race.
+    **An ``admin`` holder is exempt, and the exemption is load-bearing.**
+    Refusing on the raw flag would refuse the second concurrent REST admin
+    write before it ever reaches the workspace admin lock, so the bounded
+    QUEUEING that lock provides would exist only for
+    direct SDK callers, and the client would be told to wait for document
+    ingestion when what is actually ahead of it is another UI edit. Letting
+    it through costs nothing: the core gate takes the admin lock, waits for
+    the peer edit, and only then takes the reservation -- and if a pipeline
+    job has claimed ``busy`` by that point, the gate refuses it there with
+    the same 409. ``None`` (a bare token, a legacy record, no owner) is NOT
+    exempt: an unidentifiable holder is what a fence exists for.
+
+    This check is a snapshot taken at request entry, while the graph
+    commit happens at request exit, so on its own it leaves the WHOLE
+    request open -- embedding round-trip included -- for the pipeline to
+    start inside; the per-edge/-node keyed locks do not close that, since
+    the pipeline and an admin write lock different keys. The window is
+    closed in the core instead: ``LightRAG._admin_write_gate``
+    takes the pipeline ``busy`` reservation (``kind="admin"``) for the
+    duration of every admin write, deferring a pipeline start until the
+    write commits, and refuses with its own 409 when the pipeline is
+    already busy or scanning. That gate runs only where the graph storage
+    declares ``requires_single_writer`` (``NetworkXStorage``, the one
+    backend whose reload discards uncommitted mutations); server-backed
+    graph stores never take it, so the cost once cited against holding
+    ``busy`` across a UI edit -- serialising every edit against ingestion --
+    does not apply to them, and on the file backend it amounts to deferring
+    a pipeline start by one short, LLM-free request. This router check is
+    kept as the early refusal that fails before any embedding work is
+    done; it is no longer the only guard.
 
     No-op (returns silently) when ``pipeline_status`` was never
     bootstrapped, matching the behaviour of ``_acquire_destructive_busy``
@@ -1827,6 +1825,7 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
         check_pipeline_status_mutation,
         get_namespace_data,
         get_namespace_lock,
+        reservation_owner_kind,
     )
 
     try:
@@ -1838,16 +1837,13 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
     pipeline_status_lock = get_namespace_lock(
         "pipeline_status", workspace=rag.workspace
     )
+    # ``reject_when=()``: the recovery fence is still evaluated (and is
+    # mandatory), but the ``busy`` decision needs the flag AND its owner, which
+    # the helper's flag-only form cannot express. Both come from the ONE
+    # snapshot the helper took inside ``pipeline_status_lock``, so this stays a
+    # single critical section rather than a second, racing read.
     result = await check_pipeline_status_mutation(
-        pipeline_status,
-        pipeline_status_lock,
-        reject_when=(
-            (
-                "busy",
-                "Pipeline is busy with another operation. Wait for the running "
-                "job to finish before editing the knowledge graph.",
-            ),
-        ),
+        pipeline_status, pipeline_status_lock, reject_when=()
     )
     if not result.acquired:
         raise HTTPException(
@@ -1857,6 +1853,17 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
                 else 409
             ),
             detail=result.message,
+        )
+    snapshot = result.snapshot or {}
+    if snapshot.get("busy") and (
+        reservation_owner_kind(snapshot.get("busy_owner")) != "admin"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Pipeline is busy with another operation. Wait for the running "
+                "job to finish before editing the knowledge graph."
+            ),
         )
 
 
@@ -2583,8 +2590,13 @@ def _validate_custom_chunking_available(process_options: str, rag: LightRAG) -> 
     from lightrag.chunker import chunking_by_token_size
 
     if getattr(rag, "chunking_func", chunking_by_token_size) is chunking_by_token_size:
+        from lightrag.chunker.registry import registered_chunker_names
+
         raise ValueError(
-            "custom chunking requires a non-default LightRAG.chunking_func"
+            "custom chunking requires a non-default LightRAG.chunking_func; "
+            "configure CUSTOM_CHUNKER / --custom-chunker with an installed "
+            "lightrag.chunkers registration. Registered names: "
+            + (", ".join(registered_chunker_names()) or "(none)")
         )
 
 
@@ -3677,9 +3689,10 @@ async def run_scanning_process(
             pass
 
         # Roll back failed/stale custom-chunk operations FIRST, while the
-        # classification phase still holds ``scanning_exclusive`` (issue
-        # #3400 Phase 4). Discovery is storage-driven — SDK operations may
-        # have no scan-visible input file — and a failed rollback keeps the
+        # classification phase still holds ``scanning_exclusive`` (see
+        # docs/design/PurgeRecoveryContract.md for the rollback ordering).
+        # Discovery is storage-driven — SDK operations may have no
+        # scan-visible input file — and a failed rollback keeps the
         # journal/FAILED row for the next scan without aborting this one.
         if pipeline_status is not None and pipeline_status_lock is not None:
             try:
@@ -5749,13 +5762,65 @@ def create_document_routes(
     @router.delete(
         "", response_model=ClearDocumentsResponse, dependencies=[Depends(combined_auth)]
     )
-    async def clear_documents():
+    async def clear_documents(
+        delete_parsed_files: Annotated[
+            bool,
+            Query(
+                description=(
+                    "Also delete the __parsed__ directory contents. Preserved "
+                    "by default so parsed artifacts survive re-adding the "
+                    "same files."
+                )
+            ),
+        ] = False,
+        clear_llm_cache: Annotated[
+            bool,
+            Query(
+                description=(
+                    "Also drop the whole LLM response cache. Off by default: "
+                    "the cache survives a clear so re-adding the same "
+                    "documents can reuse the extraction results already paid "
+                    "for. Honored only when every storage drop succeeds; a "
+                    "partial drop preserves the cache, since the surviving "
+                    "documents would otherwise repay every extraction call."
+                )
+            ),
+        ] = False,
+    ):
         """
         Clear all documents from the RAG system.
 
         This endpoint deletes all documents, entities, relationships, and files from the system.
         It uses the storage drop methods to properly clean up all data and removes all files
-        from the input directory.
+        from the input directory. The __parsed__ directory is preserved unless
+        delete_parsed_files=True is passed, and the LLM response cache is preserved
+        unless clear_llm_cache=True is passed AND every storage drop succeeded
+        (a partial drop preserves it either way -- see below).
+
+        **Clearing the LLM cache is only available here**, folded into this
+        endpoint rather than exposed as its own route, because
+        ``llm_response_cache.drop()`` states a caller contract it cannot enforce
+        itself: the caller must hold the pipeline ``busy`` reservation. A
+        standalone endpoint held nothing, so clearing mid-ingestion wiped the
+        extraction rows the in-flight chunks had already paid for (a later
+        reprocess re-bills every one of those LLM calls) and left those chunks'
+        ``llm_cache_list`` naming rows that no longer exist. Running it here
+        puts it inside the destructive reservation that already refuses while
+        the pipeline is busy, and leaves one destructive path to reason about.
+
+        For the same reason the cache drop is skipped whenever ANY storage
+        drop failed, not only when they all did: a surviving ``text_chunks``
+        row still names its cache rows through ``llm_cache_list`` and its
+        document can still be reprocessed, so clearing the cache beside it
+        inflicts exactly the harm above on whatever survived. The response
+        says the cache was preserved and why; re-run the clear to remove it.
+
+        Top-level input files are always deleted unconditionally: a later
+        /documents/scan would otherwise re-enqueue them. The __parsed__
+        directory is opt-in only, since it holds pre-parsed cache artifacts
+        that let a re-added file skip re-parsing. A partial shutil.rmtree
+        failure (e.g. a locked file) can leave __parsed__ incomplete; re-run
+        with delete_parsed_files=True to retry.
 
         **Concurrency Constraint:**
         - Atomically reserves the destructive slot (sets ``busy=True``
@@ -5911,8 +5976,18 @@ def create_document_routes(
             # Wait for all drop tasks to complete
             drop_results = await asyncio.gather(*drop_tasks, return_exceptions=True)
 
-            # Check for errors and log results
+            # Check for errors and log results.
+            #
+            # Two parallel lists on purpose. ``errors`` carries the raw
+            # exception text and never leaves the server: it goes to the log,
+            # joined to the response by a correlation id. ``error_summaries``
+            # carries one category per failure and is the ONLY thing the
+            # client sees. Raw backend text names database hosts, ports and
+            # absolute filesystem paths -- the CWE-209 disclosure that
+            # ``internal_server_error`` already closes on this function's 500
+            # path. A 200 body is not a licence to reopen it.
             errors = []
+            error_summaries = []
             storage_success_count = 0
             storage_error_count = 0
 
@@ -5921,6 +5996,7 @@ def create_document_routes(
                 if isinstance(result, Exception):
                     error_msg = f"Error dropping {storage_name}: {str(result)}"
                     errors.append(error_msg)
+                    error_summaries.append(f"{storage_name} drop failed")
                     logger.error(error_msg)
                     storage_error_count += 1
                 elif isinstance(result, dict) and result.get("status") != "success":
@@ -5933,6 +6009,9 @@ def create_document_routes(
                         f"{result.get('message', 'unknown error')}"
                     )
                     errors.append(error_msg)
+                    # Backend-produced text, treated exactly like exception
+                    # text: it is just as free to quote a connection string.
+                    error_summaries.append(f"{storage_name} drop failed")
                     logger.error(error_msg)
                     storage_error_count += 1
                 else:
@@ -5984,6 +6063,65 @@ def create_document_routes(
                 append_pipeline_history(pipeline_status, error_message)
                 return ClearDocumentsResponse(status="fail", message=error_message)
 
+            # Opt-in LLM cache drop, run here rather than from its own
+            # endpoint so it inherits the destructive reservation that
+            # ``llm_response_cache.drop()`` requires its caller to hold.
+            #
+            # After the storage drops, and only when EVERY one of them
+            # succeeded -- not merely when they did not all fail. A surviving
+            # ``text_chunks`` row still names its cache rows through
+            # ``llm_cache_list``, and its document can still be reprocessed,
+            # so dropping the cache next to it would both break those
+            # references en masse and re-bill every extraction call the
+            # document already paid for. That is the exact harm this endpoint
+            # exists to prevent; a partial drop is not a licence to inflict it
+            # on whatever survived.
+            #
+            # So the cache is preserved whenever any storage drop failed, and
+            # the operator re-runs the clear. That residue is the acceptable
+            # direction under *Consistency without transactions*: retaining
+            # rows that could have been dropped costs only storage and is
+            # disposed of by the next clear, while burning them loses paid-for
+            # work outright. The response says which happened.
+            #
+            # The mirror residue, when every drop DID succeed but the cache
+            # drop itself fails, is likewise harmless: the cache rows are then
+            # unreachable rather than dangling -- no chunk row survives to
+            # name them -- and the next clear, or a re-add of the same content
+            # that re-keys onto them, disposes of them.
+            cache_cleared_message = ""
+            if clear_llm_cache and storage_error_count > 0:
+                cache_cleared_message = (
+                    " LLM cache preserved: a storage drop failed, and the "
+                    "surviving documents would have to repay every extraction "
+                    "call. Re-run the clear to remove it."
+                )
+                append_pipeline_history(
+                    pipeline_status,
+                    "Skipped the LLM cache drop: a storage drop failed",
+                )
+            elif clear_llm_cache:
+                append_pipeline_history(
+                    pipeline_status, "Starting to clear the LLM response cache"
+                )
+                try:
+                    await rag.aclear_cache()
+                    cache_cleared_message = " Cleared the LLM response cache."
+                    append_pipeline_history(
+                        pipeline_status, "Successfully cleared the LLM response cache"
+                    )
+                except Exception as cache_error:
+                    error_msg = f"Error clearing the LLM response cache: {cache_error}"
+                    logger.error(error_msg)
+                    errors.append(error_msg)
+                    summary = "the LLM response cache could not be cleared"
+                    error_summaries.append(summary)
+                    # pipeline_status history is served to clients by
+                    # GET /documents/pipeline_status, so it is a response
+                    # channel too: the category goes here, the raw text only
+                    # to the log above.
+                    append_pipeline_history(pipeline_status, f"Error: {summary}")
+
             # Log file deletion start
             append_pipeline_history(
                 pipeline_status, "Starting to delete files in input directory"
@@ -6009,18 +6147,99 @@ def create_document_routes(
                     f"Deleted {deleted_files_count} files with {file_errors_count} errors",
                 )
                 errors.append(f"Failed to delete {file_errors_count} files")
+                error_summaries.append(f"failed to delete {file_errors_count} files")
             else:
                 append_pipeline_history(
                     pipeline_status, f"Successfully deleted {deleted_files_count} files"
                 )
 
+            # __parsed__ is preserved by default so re-adding the same file
+            # does not require re-parsing, and so a deleted document's raw
+            # upload can still be recovered from there. Only remove it when
+            # the caller explicitly opts in.
+            parsed_dir_message = ""
+            parsed_dir = doc_manager.input_dir / PARSED_DIR_NAME
+            if delete_parsed_files:
+                if parsed_dir.exists():
+                    # __parsed__ can hold many files; run the recursive
+                    # delete off the event loop thread so a large directory
+                    # doesn't block every other request. A bare cancel (e.g.
+                    # the client disconnecting) would only cancel this
+                    # await -- the rmtree keeps running in the background --
+                    # while the `finally` below releases destructive_busy
+                    # immediately, letting a new request race an in-flight
+                    # delete. Defer the cancellation until rmtree actually
+                    # finishes, same idiom as milvus_impl.py's flush.
+                    rmtree_future = asyncio.ensure_future(
+                        asyncio.to_thread(shutil.rmtree, parsed_dir)
+                    )
+                    rmtree_future.add_done_callback(_consume_future_exception)
+                    pending_cancel = await _wait_deferring_cancellation(
+                        rmtree_future, None
+                    )
+                    if pending_cancel is not None and not rmtree_future.cancelled():
+                        rmtree_exc = rmtree_future.exception()
+                        if rmtree_exc is not None:
+                            logger.error(
+                                f"Error deleting {parsed_dir} while cancelled: "
+                                f"{rmtree_exc}"
+                            )
+                    elif pending_cancel is None:
+                        try:
+                            rmtree_future.result()
+                            parsed_dir_message = " Deleted __parsed__ directory."
+                            append_pipeline_history(
+                                pipeline_status, "Deleted __parsed__ directory"
+                            )
+                        except Exception as e:
+                            logger.error(f"Error deleting {parsed_dir}: {str(e)}")
+                            errors.append(f"Failed to delete __parsed__ directory: {e}")
+                            # ``e`` here is typically an OSError naming the
+                            # absolute path it could not unlink.
+                            error_summaries.append(
+                                "the __parsed__ directory could not be deleted"
+                            )
+                    if pending_cancel is not None:
+                        raise pending_cancel
+            elif parsed_dir.exists():
+                parsed_dir_message = (
+                    " __parsed__ preserved (pass delete_parsed_files=true to "
+                    "remove it)."
+                )
+
             # Prepare final result message
             final_message = ""
             if errors:
-                final_message = f"Cleared documents with some errors. Deleted {deleted_files_count} files."
+                # Name WHICH part failed, not just that something did: a bare
+                # "some errors" tells the operator to retry without saying
+                # what to retry -- whether the LLM cache is still there, which
+                # storage kept its rows, or which input files would not
+                # unlink. The WebUI surfaces this verbatim.
+                #
+                # Categories only. The raw backend text stays server-side and
+                # is joined to this response by ``error_id``, in the same
+                # format ``internal_server_error`` uses on the 500 path so an
+                # operator greps one pattern. The category list is bounded (at
+                # most one entry per storage plus the file-count, __parsed__
+                # and cache lines), so it is reported in full: truncating it
+                # risks hiding the one entry that matters.
+                error_id = new_error_id()
+                logger.error(
+                    f"/documents/clear completed with errors "
+                    f"[error_id={error_id}]: {'; '.join(errors)}"
+                )
+                final_message = (
+                    f"Cleared documents with some errors. Deleted "
+                    f"{deleted_files_count} files.{parsed_dir_message}{cache_cleared_message}"
+                    f" Errors: {'; '.join(error_summaries)}"
+                    f" (error_id: {error_id})"
+                )
                 status = "partial_success"
             else:
-                final_message = f"All documents cleared successfully. Deleted {deleted_files_count} files."
+                final_message = (
+                    f"All documents cleared successfully. Deleted "
+                    f"{deleted_files_count} files.{parsed_dir_message}{cache_cleared_message}"
+                )
                 status = "success"
 
             # Log final result
@@ -6309,40 +6528,6 @@ def create_document_routes(
             # acquired (or the start helper's backstop already released it).
             if not handed_off:
                 await _release_destructive_busy(rag, destructive_token)
-
-    @router.post(
-        "/clear_cache",
-        response_model=ClearCacheResponse,
-        dependencies=[Depends(combined_auth)],
-    )
-    async def clear_cache(request: ClearCacheRequest):
-        """
-        Clear all cache data from the LLM response cache storage.
-
-        This endpoint clears all cached LLM responses regardless of mode.
-        The request body is accepted for API compatibility but is ignored.
-
-        Args:
-            request (ClearCacheRequest): The request body (ignored for compatibility).
-
-        Returns:
-            ClearCacheResponse: A response object containing the status and message.
-
-        Raises:
-            HTTPException: If an error occurs during cache clearing (500).
-        """
-        try:
-            # Call the aclear_cache method (no modes parameter)
-            await rag.aclear_cache()
-
-            # Prepare success message
-            message = "Successfully cleared all cache"
-
-            return ClearCacheResponse(status="success", message=message)
-        except Exception as e:
-            logger.error(f"Error clearing cache: {str(e)}")
-            logger.error(traceback.format_exc())
-            raise internal_server_error(e)
 
     @router.get(
         "/track_status/{track_id}",
@@ -6824,7 +7009,7 @@ def create_document_routes(
         NOT repair anything; it only drops the fence (and any lingering
         reservation flags), re-opening a possibly-inconsistent workspace. Requires
         ``confirm=true``. A true idempotent replay of the interrupted operation is
-        a separate concern (core atomicity / #3400).
+        a separate concern (core atomicity).
 
         It ALSO cancels the workspace's queued manual retry requests, and that is
         load-bearing rather than housekeeping: a sticky un-ACKed request makes
