@@ -4944,40 +4944,45 @@ class _PipelineMixin:
                     not doc_process_opts.chunking_explicit
                     or doc_process_opts.chunking == "C"
                 )
-                current_identity = (
-                    chunker_identity(self.chunking_func)
-                    if uses_custom_callback
-                    else None
-                )
                 previous_identity = (
                     status_doc.metadata.get("custom_chunker")
                     if isinstance(status_doc.metadata, dict)
                     else None
                 )
-                observation = current_identity or {
-                    "name": None,
-                    "version": None,
-                    "authoritative": False,
-                }
-                if doc_process_opts.chunking == "C" and isinstance(
-                    previous_identity, dict
-                ):
-                    if any(
-                        previous_identity.get(key) != observation[key]
-                        for key in ("name", "version")
+                # An explicit F/R/V/P attempt never consults ``chunking_func``,
+                # so it has nothing to observe and MUST NOT overwrite the
+                # record: writing a null observation here made the next C
+                # attempt compare against that null and report a drift the
+                # deployment never had (C -> F -> C warned "None -> acme").
+                # Leaving the key alone lets carry-over preserve the last
+                # attempt that actually routed through the callback, which is
+                # the only baseline a drift comparison can be made against.
+                if uses_custom_callback:
+                    current_identity = chunker_identity(self.chunking_func)
+                    observation = current_identity or {
+                        "name": None,
+                        "version": None,
+                        "authoritative": False,
+                    }
+                    if doc_process_opts.chunking == "C" and isinstance(
+                        previous_identity, dict
                     ):
-                        logger.warning(
-                            "Custom chunker identity changed for doc_id %s: %r@%r -> %r@%r; proceeding under current configuration (identity is non-authoritative)",
-                            doc_id,
-                            previous_identity.get("name"),
-                            previous_identity.get("version"),
-                            observation["name"],
-                            observation["version"],
-                        )
-                if current_identity is not None or previous_identity is not None:
-                    # Set before invocation so a failed callback still names
-                    # the attempted configuration in the FAILED record.
-                    extraction_meta["custom_chunker"] = observation
+                        if any(
+                            previous_identity.get(key) != observation[key]
+                            for key in ("name", "version")
+                        ):
+                            logger.warning(
+                                "Custom chunker identity changed for doc_id %s: %r@%r -> %r@%r; proceeding under current configuration (identity is non-authoritative)",
+                                doc_id,
+                                previous_identity.get("name"),
+                                previous_identity.get("version"),
+                                observation["name"],
+                                observation["version"],
+                            )
+                    if current_identity is not None or previous_identity is not None:
+                        # Set before invocation so a failed callback still names
+                        # the attempted configuration in the FAILED record.
+                        extraction_meta["custom_chunker"] = observation
                 if (
                     doc_process_opts.chunking_explicit
                     and doc_process_opts.chunking != "C"

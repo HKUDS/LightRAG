@@ -46,6 +46,8 @@ def chunk(tokenizer, content, split_by_character, split_by_character_only,
 
 CPU 密集、同步且线程安全的实现可以声明 `executor_safe=True`，复用 LightRAG 有界分块线程池。该实现不得依赖当前事件循环或返回 awaitable。异步函数/异步可调用对象声明该选项会在启动时被拒绝。依赖事件循环的实现保持默认，或在异步回调中自行 offload；这个声明是作者承诺，不是线程安全证明或隔离机制。
 
+该线程池是与内置策略共用的**单 worker** 池，因此这个开关换回来的是事件循环，不是并行度：慢插件会排在其它文档分块之前，而不再阻塞循环。CPU 密集的实现仍应打开它——循环卡住会导致 HTTP 停止响应——但不要把它当作扩容。
+
 ## Server 选择
 
 将插件安装进运行 LightRAG 的同一环境，配置：
@@ -58,7 +60,7 @@ CUSTOM_CHUNKER=acme
 
 未知/有歧义的名称、导入/属性错误、不可调用对象、可检查但不能接受六个位置参数的签名均导致启动失败。没有可检查签名的原生可调用对象仍允许加载，但运行与输出契约不变。
 
-注入等同于 `LightRAG(chunking_func=...)`，作用于**显式 C 和不带分块 selector 的插入**，不是 C 专用。F/R/V/P 仍选内置策略并保留现有 bypass 告警。文本 API 用 `chunking.strategy="custom"`，文件/路由 hint 用 C。未设置时不覆盖默认回调：新 C 请求仍返回 422，已持久化/后台 C 仍逐次告警并回退精确定长分块。仅安装插件并不会选中它。
+注入等同于 `LightRAG(chunking_func=...)`，作用于**显式 C 和不带分块 selector 的插入**，不是 C 专用。运维最容易忽略的连带影响：原本走内置定长分块的无 selector 插入此后改走插件，因此记录 `chunk_method=legacy_chunking_func`，并且与任何构造期传入的回调一样不再适用 source-span sidecar 回填。选中分块器改变的是默认摄入行为，不只是 `C`。F/R/V/P 仍选内置策略并保留现有 bypass 告警。文本 API 用 `chunking.strategy="custom"`，文件/路由 hint 用 C。未设置时不覆盖默认回调：新 C 请求仍返回 422，已持久化/后台 C 仍逐次告警并回退精确定长分块。仅安装插件并不会选中它。
 
 ## SDK 嵌入
 
@@ -73,12 +75,12 @@ rag = LightRAG(chunking_func=callback)  # Add storage/LLM configuration.
 
 SDK 也可直接 `register_chunker(spec, origin="my-application")`。未配置的解析结果为 `None`：此时应省略构造参数，而非传入 `chunking_func=None`。
 
-若仅需发现插件，可调用 `load_third_party_chunkers()`，再使用 registry 中的 `registered_chunker_names()` 或 `resolve_chunker(name)`。仅发现的接口会记录失败，但不会声称选择已通过校验。
+若仅需发现插件，可调用 `load_third_party_chunkers()`，再使用 registry 中的 `selectable_chunker_names()`（`CUSTOM_CHUNKER` 可取的值）或 `resolve_chunker(name)`。`registered_chunker_names()` 返回提供方注册的全部名称（含重名），也是启动摘要列出的内容；重名虽已注册但不可选中。仅发现的接口会记录失败，但不会声称选择已通过校验。
 
 ## 诊断与重处理
 
 一条启动 INFO 列出名称、版本、说明、来源和选择结果，并说明不带 selector 的插入也受影响。注册失败是 ERROR，不影响无关的有效选择。Server 的每条失败日志会注明选择校验后的结果：指定的分块器仍可用于 C/无 selector 插入、选择失败导致启动中止，或未配置时维持现有 C 接纳/回退行为。启动校验成功不保证插件之后的运行或输出一定正确。
 
-`doc_status.metadata.custom_chunker` 独立于 `chunk_opts` 保存最近一次尝试的观察值，例如 `{"name": "acme", "version": "1", "authoritative": false}`；`chunk_method` 原有字符串不变。旧观察值被没有注册回调的一次尝试替换时，名称/版本记为 null。
+`doc_status.metadata.custom_chunker` 独立于 `chunk_opts` 保存最近一次尝试的观察值，例如 `{"name": "acme", "version": "1", "authoritative": false}`；`chunk_method` 原有字符串不变。旧观察值被没有注册回调的一次尝试替换时，名称/版本记为 null。只有真正调用回调的尝试（`C` 与无 selector）才写这个字段：显式 `F`/`R`/`V`/`P` 的尝试根本不会走到 `chunking_func`，因此保留原有观察值而不是把它清空——请结合 `chunk_method` 一起读，后者才说明实际执行的是什么。
 
 观察值跨重置保留仅供比较：持久化 C 文档的旧名称/版本与当前配置不同时，每次处理尝试记录一条 drift WARNING，随后按**当前**回调执行，或在移除配置后按原有规则告警回退。fallback 告警独立保留原有逐文档/逐次频率。记录中的身份不参与选择或阻止执行；同名同版本无法证明实现未变，包版本及部署可重现性需另外管理。改变配置不会自动重处理已完成文档。

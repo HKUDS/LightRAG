@@ -116,8 +116,23 @@ def register_chunker(spec: ChunkerSpec, *, origin: str | None = None) -> None:
 
 
 def registered_chunker_names() -> tuple[str, ...]:
-    """Return names without importing any implementation."""
+    """Return every registered name without importing any implementation.
+
+    Includes names that collided, so the startup summary can show what a
+    provider actually registered. Use :func:`selectable_chunker_names` for
+    anything that answers "what may CUSTOM_CHUNKER be set to".
+    """
     return tuple(sorted(_REGISTRY))
+
+
+def selectable_chunker_names() -> tuple[str, ...]:
+    """Return the names ``CUSTOM_CHUNKER`` can actually be set to.
+
+    A duplicated name is registered but unselectable -- ``resolve_chunker``
+    refuses it -- so offering it as a choice sends the operator to a value
+    that is guaranteed to fail startup.
+    """
+    return tuple(sorted(name for name in _REGISTRY if name not in _DUPLICATES))
 
 
 class ChunkerBinding:
@@ -174,7 +189,7 @@ def resolve_chunker(name: str | None) -> ChunkerBinding | None:
     registration = _REGISTRY.get(name)
     if registration is None:
         raise ValueError(
-            f"CUSTOM_CHUNKER: unknown chunker {name!r}; registered names: {', '.join(registered_chunker_names()) or '(none)'}. Check plugin discovery errors for a failed provider."
+            f"CUSTOM_CHUNKER: unknown chunker {name!r}; selectable names: {', '.join(selectable_chunker_names()) or '(none)'}. Check plugin discovery errors for a failed provider."
         )
     spec = registration.spec
     try:
@@ -237,7 +252,8 @@ def log_chunker_selection(selected: ChunkerBinding | None) -> None:
         "[chunker-plugins] registered=%s; selected=%s%s",
         registered,
         selected.spec.name if selected else "(none)",
-        "; serves C and no-selector inserts"
+        "; serves C and no-selector inserts, which therefore forgo source-span"
+        " sidecar backfill exactly as a constructor-supplied callback does"
         if selected
         else "; built-in callback unchanged",
     )

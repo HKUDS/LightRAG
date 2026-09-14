@@ -249,9 +249,9 @@ LIGHTRAG_PARSER=pdf:legacy-R(chunk_ts=800,chunk_ol=80);*:legacy-R  # 规则
 
 文本 API 以 `chunking.strategy="custom"` 暴露同一路径；`params` 使用完整的 fixed-token/legacy 参数契约（`chunk_token_size`、`chunk_overlap_token_size`、`split_by_character`、`split_by_character_only`）。如果没有替换 `LightRAG.chunking_func`，`/documents/text` 与 `/documents/texts` 会返回 422。
 
-Server 部署可以通过 `CUSTOM_CHUNKER=<注册名>`（或 `--custom-chunker`）在启动时选择已安装的 `lightrag.chunkers` 插件，见 [ThirdPartyChunker-zh.md](./ThirdPartyChunker-zh.md)。注入作用于**整个实例**：不带分块 selector 的插入也调用它，不限于 `C`。显式 F/R/V/P 仍调用内置策略。未配置时保持现有准入和回退行为；配置错误则启动失败，不会悄悄换回默认回调。
+Server 部署可以通过 `CUSTOM_CHUNKER=<注册名>`（或 `--custom-chunker`）在启动时选择已安装的 `lightrag.chunkers` 插件，见 [ThirdPartyChunker-zh.md](./ThirdPartyChunker-zh.md)。注入作用于**整个实例**：不带分块 selector 的插入也调用它，不限于 `C`，因此这些文档记录 `chunk_method=legacy_chunking_func`，并与构造期传入回调一样失去 source-span sidecar 回填资格。显式 F/R/V/P 仍调用内置策略。未配置时保持现有准入和回退行为；配置错误则启动失败，不会悄悄换回默认回调。
 
-`doc_status.metadata.custom_chunker` 独立记录最近一次尝试的注册名/版本及 `authoritative: false`，不改变 `chunk_method` 与 `chunk_opts`。该观察值跨重试/重置保留，仅供诊断，不是执行指令。持久化 C 文档在配置身份变化或移除后重处理，每次尝试告警一次并按**当前配置**继续。已有的逐次 fallback 告警独立保留；作者提供的版本号无法检测同名同版本背后的实现变化。
+`doc_status.metadata.custom_chunker` 独立记录最近一次尝试的注册名/版本及 `authoritative: false`，不改变 `chunk_method` 与 `chunk_opts`。该观察值跨重试/重置保留，仅供诊断，不是执行指令；只有真正调用回调的尝试才写它，显式 F/R/V/P 的尝试保留原观察值而不清空。持久化 C 文档在配置身份变化或移除后重处理，每次尝试告警一次并按**当前配置**继续。已有的逐次 fallback 告警独立保留；作者提供的版本号无法检测同名同版本背后的实现变化。
 
 > `drop_references` 检测调参 `CHUNK_P_REFERENCES_TAIL_N`（默认 `0`：扫描全部内容块；正数表示只扫描文末最后 N 块）/ `CHUNK_P_REFERENCES_HEADINGS`（竖线分隔，默认 `References\|Bibliography\|参考文献`）仅经环境变量、运行时实时读取。drop_references可以通过环境变量 `CHUNK_P_DROP_REFERENCES` 设置为全局默认值.
 
