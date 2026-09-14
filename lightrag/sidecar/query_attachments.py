@@ -79,7 +79,6 @@ _SIDECAR_DEGRADE_ERRORS: tuple[type[BaseException], ...] = (
     json.JSONDecodeError,
     ConnectionError,
     TimeoutError,
-    RuntimeError,
 )
 
 

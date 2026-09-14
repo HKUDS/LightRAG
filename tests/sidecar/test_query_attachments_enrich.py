@@ -133,9 +133,9 @@ class TestEnrichRawDataAttachments:
 
     @pytest.mark.asyncio
     async def test_enrich_degrades_on_operational_storage_error(self):
-        """Enrich degrades to [] for ``_SIDECAR_DEGRADE_ERRORS`` (e.g. RuntimeError)."""
+        """Enrich degrades to [] for ``_SIDECAR_DEGRADE_ERRORS`` (e.g. ConnectionError)."""
 
-        class BrokenStorageError(RuntimeError):
+        class BrokenStorageError(ConnectionError):
             pass
 
         class BrokenFullDocs:
