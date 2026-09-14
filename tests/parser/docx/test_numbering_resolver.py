@@ -262,6 +262,8 @@ def test_letter_labels_preserve_ordinals_after_first_alphabet(num_fmt, lvl_text)
 @pytest.mark.parametrize("count", [-1, 0, 79, 2147483647])
 @pytest.mark.parametrize("override", [False, True])
 def test_large_letter_starts_fall_back_before_allocating(num_fmt, count, override):
+    """Every count here is outside ``_to_alpha``'s 1-78 domain — below it as well
+    as above — so each falls back to decimal AND is recorded."""
     resolver = _fmt_resolver(num_fmt, "%1.")
     resolver._warnings = {}
     if override:
@@ -269,10 +271,8 @@ def test_large_letter_starts_fall_back_before_allocating(num_fmt, count, overrid
     else:
         resolver.abstract_nums["10"][0]["start"] = count
     assert resolver.get_label(_para(num_id="100", ilvl=0)) == f"{count}."
-    assert resolver.out_of_range_formats == ({num_fmt} if count > 78 else set())
-    assert resolver._warnings == (
-        {"numbering_out_of_range_formats": 1} if count > 78 else {}
-    )
+    assert resolver.out_of_range_formats == {num_fmt}
+    assert resolver._warnings == {"numbering_out_of_range_formats": 1}
 
 
 def test_read_pass_retains_letter_provenance_and_clears_it_on_plain_text():
@@ -545,3 +545,100 @@ def test_ideograph_digital_has_no_domain_limit() -> None:
     assert r.out_of_range_formats == set()
     assert warnings == {}
     assert "ideographDigital" not in NumberingResolver.LIMITED_DOMAIN_FORMATS
+    # No UPPER limit is not no domain: the converter still starts at 1, so a
+    # non-positive count degrades to decimal and is recorded like any other.
+    assert "ideographDigital" in NumberingResolver.POSITIVE_DOMAIN_FORMATS
+    assert _label(r, 0) == "0"
+    assert r.out_of_range_formats == {"ideographDigital"}
+    assert warnings == {"numbering_out_of_range_formats": 1}
+
+
+@pytest.mark.parametrize(
+    ("num_fmt", "last"), [("lowerRoman", "mmmcmxcix"), ("upperRoman", "MMMCMXCIX")]
+)
+def test_roman_past_3999_is_recorded(num_fmt, last) -> None:
+    """Regression for #3934: ``_to_roman`` already degrades to decimal at 4000,
+    but the Roman formats were missing from the limited-domain table, so the
+    fallback was silent."""
+    warnings: dict = {}
+    r = _fmt_resolver(num_fmt, "%1")
+    r._warnings = warnings
+    assert _label(r, 3999) == last  # in domain: nothing recorded
+    assert r.out_of_range_formats == set()
+    assert warnings == {}
+
+    assert _label(r, 4000) == "4000"
+    assert r.out_of_range_formats == {num_fmt}
+    assert warnings == {"numbering_out_of_range_formats": 1}
+
+
+def test_ideograph_traditional_renders_the_ten_stems() -> None:
+    r = _fmt_resolver("ideographTraditional", "%1")
+    r._warnings = {}
+    assert [_label(r, n) for n in range(1, 11)] == list("甲乙丙丁戊己庚辛壬癸")
+    assert r.out_of_range_formats == set()
+
+
+@pytest.mark.parametrize("count", [-1, 0, 11, 21])
+def test_ideograph_traditional_falls_back_instead_of_wrapping(count) -> None:
+    """Regression for #3934: ``(n - 1) % 10`` made item 11 render 甲 like item 1,
+    and kept zero / negative counts inside the stem string. Both directions
+    degrade to decimal, and both are recorded."""
+    warnings: dict = {}
+    r = _fmt_resolver("ideographTraditional", "%1")
+    r._warnings = warnings
+    assert _label(r, count) == str(count)
+    assert r.out_of_range_formats == {"ideographTraditional"}
+    assert warnings == {"numbering_out_of_range_formats": 1}
+
+
+@pytest.mark.parametrize("num_fmt", sorted(NumberingResolver.POSITIVE_DOMAIN_FORMATS))
+@pytest.mark.parametrize("count", [0, -1])
+def test_non_positive_counts_are_recorded_for_every_positive_domain_format(
+    num_fmt, count
+) -> None:
+    """A counter below 1 is as far outside a converter's domain as one above its
+    limit, and reaches the resolver the same way — an untrusted w:start /
+    w:startOverride. Every converter already degrades to decimal there; this
+    pins that the event is also RECORDED, which is the whole point of the
+    limited-domain table.
+    """
+    warnings: dict = {}
+    r = _fmt_resolver(num_fmt, "%1")
+    r._warnings = warnings
+    assert _label(r, count) == str(count)
+    assert r.out_of_range_formats == {num_fmt}
+    assert warnings == {"numbering_out_of_range_formats": 1}
+    # Still a supported format — nothing lands in the unsupported ledger.
+    assert r.unsupported_formats == set()
+
+
+@pytest.mark.parametrize(
+    ("num_fmt", "rendered"), [("decimal", "0"), ("bullet", "•"), ("none", "")]
+)
+def test_formats_without_a_domain_render_zero_and_stay_unrecorded(
+    num_fmt, rendered
+) -> None:
+    """decimal / bullet / none have no domain to fall out of: what they render at
+    0 is what Word renders, not a degradation, so warning about it would be
+    noise. They are the only three POSITIVE_DOMAIN_FORMATS leaves out."""
+    warnings: dict = {}
+    r = _fmt_resolver(num_fmt, "%1")
+    r._warnings = warnings
+    assert _label(r, 0) == rendered
+    assert r.out_of_range_formats == set()
+    assert warnings == {}
+    assert num_fmt not in NumberingResolver.POSITIVE_DOMAIN_FORMATS
+
+
+def test_positive_domain_membership_matches_converter_behavior() -> None:
+    """Pin the derived set against what the converters actually do, so adding a
+    numFmt cannot quietly put the wrong entry in either bucket."""
+    for num_fmt in NumberingResolver.POSITIVE_DOMAIN_FORMATS:
+        convert = NumberingResolver.FORMAT_CONVERTERS[num_fmt]
+        assert convert(0) == "0", num_fmt
+        assert convert(-1) == "-1", num_fmt
+    excluded = set(NumberingResolver.FORMAT_CONVERTERS) - set(
+        NumberingResolver.POSITIVE_DOMAIN_FORMATS
+    )
+    assert excluded == {"decimal", "bullet", "none"}
