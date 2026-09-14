@@ -6082,16 +6082,29 @@ def _repair_ws_latex_in_dollar_math(text: str) -> tuple[str, int]:
     Outside an explicit ``$...$`` / ``$$...$$`` span, tab, carriage return,
     and newline are legitimate whitespace and remain ambiguous. Inside one,
     however, a whitespace character followed by a residue from
-    ``_WS_LATEX_SUSPECT_PATTERN`` is strong evidence that JSON decoding ate
-    the command's leading ``\\t`` / ``\\r`` / ``\\n``.
+    ``_WS_LATEX_MATH_PATTERN`` is strong evidence that JSON decoding ate the
+    command's leading ``\\t`` / ``\\r`` / ``\\n``.
 
-    Unpaired and backslash-escaped dollar signs are left untouched. The
-    function operates on already-decoded strings, so a correct LaTeX command
-    still contains a real backslash and cannot match the damage pattern.
+    Dollar delimiters are ambiguous by construction -- prose contains stray
+    and currency dollars, and even Pandoc reads ``"$5 ... $x$"`` as one span
+    -- so no delimiter rule is correct in both directions. This scanner is
+    deliberately biased: it never rewrites text a Pandoc-style parser would
+    not call math, at the price of skipping damage it cannot prove is inside
+    math (that damage is still reported by the prose detector). Rewriting
+    prose is corruption; skipping a repair is a warned miss.
 
-    Inline spans pair by Pandoc's rule (see ``_find_close``), which is what
-    stops a currency amount from consuming the opening ``$`` of a later
-    formula.
+    Unpaired, mispaired and backslash-escaped dollar signs are therefore left
+    untouched, and an unusable ``$`` is skipped as an ordinary character
+    rather than ending the scan -- one stray dollar must not cost every later
+    formula its repair. The function operates on already-decoded strings, so
+    a correct LaTeX command still contains a real backslash and cannot match
+    the damage pattern.
+
+    Accepted residue: a padded inline span (``"$ x $"``) is not recognized as
+    math, matching Pandoc, so damage inside it is only warned about. Likewise
+    a stray dollar directly against real math in text without spaces
+    (``"价格$5，公式$<tab>au$为"``) pairs the wrong way and the repair is
+    missed. Both are misses, not rewrites.
     """
 
     def _is_escaped(index: int) -> bool:
@@ -6102,43 +6115,39 @@ def _repair_ws_latex_in_dollar_math(text: str) -> tuple[str, int]:
             cursor -= 1
         return backslashes % 2 == 1
 
-    def _find_close(start: int, delimiter: str) -> int:
-        """Locate the closing delimiter, preferring Pandoc's inline rule.
+    def _opens_inline_math(index: int) -> bool:
+        """Pandoc requires a non-space character after an opening ``$``.
 
-        For ``$$`` the first unescaped ``$$`` closes. For ``$`` two vetoes
-        apply, and they differ in strength:
-
-        - **hard** — a ``$`` followed by a digit never closes. This is what
-          keeps two currency amounts (``"$5 - $10"``) from forming a span.
-        - **soft** — a ``$`` preceded by whitespace is skipped while a
-          stricter candidate remains, which is what stops a price from
-          consuming the opening delimiter of a later formula
-          (``"Cost is $5. The domain is $<tab>au^2$"``). It is accepted as a
-          last resort so that a padded inline span (``"$ x $"``) still pairs.
-
-        Only the closer half of the rule is applied. Pandoc also requires a
-        non-space character after the opening ``$``; adding that here would
-        reject ``"$<tab>au$"``, which is precisely the damage this function
-        exists to repair — the decoded control character sits immediately
-        after the opener.
+        The one exception is the damage itself: JSON decoding puts the tab /
+        CR / LF immediately after the opener, so ``"$<tab>au$"`` -- the very
+        shape this function repairs -- would otherwise be rejected. A residue
+        match at that position is evidence of a command, not of whitespace.
         """
+        if index + 1 >= len(text):
+            return False
+        return (
+            not text[index + 1].isspace()
+            or _WS_LATEX_MATH_PATTERN.match(text, index + 1) is not None
+        )
+
+    def _closes_inline_math(index: int) -> bool:
+        """Pandoc's closer rule: no whitespace before, no digit after.
+
+        The digit clause is what keeps two currency amounts (``"$5 - $10"``)
+        from forming a span; the whitespace clause keeps a price from closing
+        against the opening delimiter of a later formula.
+        """
+        if index == 0 or text[index - 1].isspace():
+            return False
+        return not (index + 1 < len(text) and text[index + 1].isdigit())
+
+    def _next_delimiter(start: int, delimiter: str) -> int:
         cursor = start
-        fallback = -1
         while cursor < len(text):
             if text.startswith(delimiter, cursor) and not _is_escaped(cursor):
-                if delimiter != "$":
-                    return cursor
-                if cursor + 1 < len(text) and text[cursor + 1].isdigit():
-                    cursor += 1
-                    continue
-                if cursor > 0 and text[cursor - 1].isspace():
-                    if fallback < 0:
-                        fallback = cursor
-                    cursor += 1
-                    continue
                 return cursor
             cursor += 1
-        return fallback
+        return -1
 
     def _restore(match: re.Match[str]) -> str:
         return {"\t": r"\t", "\r": r"\r", "\n": r"\n"}[match.group(0)]
@@ -6153,10 +6162,21 @@ def _repair_ws_latex_in_dollar_math(text: str) -> tuple[str, int]:
             continue
 
         delimiter = "$$" if text.startswith("$$", cursor) else "$"
-        close = _find_close(cursor + len(delimiter), delimiter)
+        close = -1
+        if delimiter == "$$" or _opens_inline_math(cursor):
+            # Only the very next unescaped delimiter may close: a span that
+            # has to reach over another dollar is not one span but a stray
+            # dollar plus a real span, and consuming it swallows the prose
+            # (and the real span's opener) in between.
+            close = _next_delimiter(cursor + len(delimiter), delimiter)
+            if delimiter == "$" and close >= 0 and not _closes_inline_math(close):
+                close = -1
         if close < 0:
-            pieces.append(text[cursor:])
-            break
+            # Not a usable delimiter here: emit it and keep scanning, so a
+            # later well-formed span is still reached.
+            pieces.append("$")
+            cursor += 1
+            continue
 
         span_end = close + len(delimiter)
         math_span = text[cursor:span_end]

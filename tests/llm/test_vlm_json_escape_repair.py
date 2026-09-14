@@ -162,11 +162,69 @@ def test_inline_span_closes_against_the_first_dollar_of_a_display_pair():
 
 
 @pytest.mark.offline
-def test_padded_inline_span_still_pairs():
-    """The whitespace-before-closer veto is soft: with no stricter candidate
-    left, a padded inline span ("$ x $") must still pair, or the currency
-    rule would cost a repair the scanner used to make."""
-    assert repair_vlm_json_escape_damage("$ \tau $") == "$ " + r"\tau" + " $"
+def test_prose_between_two_spans_is_never_rewritten():
+    """The scanner must not reach over a span boundary. A padded "$ x $" is
+    not math (Pandoc requires a non-space after the opener), and treating it
+    as a half-open span rewrote the ordinary prose that followed it."""
+    damaged = "$ x $ then\text column $y$"
+    assert repair_vlm_json_escape_damage(damaged) == damaged
+    # Same shape without spaces around the delimiters: Chinese prose between
+    # two real spans must survive too.
+    cjk = "成本为$a$，领域\tau为$b$"
+    assert repair_vlm_json_escape_damage(cjk) == cjk
+
+
+@pytest.mark.offline
+def test_currency_dollar_is_rejected_as_an_opener():
+    """A "$" that cannot close against the very next delimiter is skipped as
+    an ordinary character, not treated as an opener and not allowed to end
+    the scan -- otherwise a price consumes half of the following display
+    delimiter and every later repair is lost."""
+    assert repair_vlm_json_escape_damage("Cost $5. Formula $$\tau^2$$") == (
+        "Cost $5. Formula " + r"$$\tau^2$$"
+    )
+    # The span must also stay narrow: prose between the price and the real
+    # formula is not math and must not be rewritten along with it.
+    assert repair_vlm_json_escape_damage("Cost $5 and\text is $\tau$") == (
+        "Cost $5 and\text is " + r"$\tau$"
+    )
+
+
+@pytest.mark.offline
+def test_display_math_with_newlines_is_repaired():
+    """Display math is routinely formatted across lines; the "$$" branch must
+    keep repairing it even though a newline is not a valid inline opener."""
+    assert (
+        repair_vlm_json_escape_damage("$$\n\tau^2\n$$") == "$$\n" + r"\tau^2" + "\n$$"
+    )
+    assert repair_vlm_json_escape_damage("$$\n\nabla f$$") == "$$\n" + r"\nabla f$$"
+
+
+@pytest.mark.offline
+def test_padded_inline_span_is_not_math(caplog, _propagate_lightrag_logger):
+    """Documented residue: "$ x $" has whitespace after the opener, so like
+    Pandoc the scanner does not read it as math. The damage inside is warned
+    about, never rewritten -- a warned miss beats a silent prose rewrite."""
+    damaged = "$ \tau $"
+    with caplog.at_level(logging.WARNING, logger="lightrag"):
+        assert repair_vlm_json_escape_damage(damaged) == damaged
+    assert any("not auto-repaired" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.offline
+def test_stray_dollar_against_math_without_spaces_is_a_warned_miss(
+    caplog, _propagate_lightrag_logger
+):
+    """Stability test for the other documented residue: with no spaces to
+    separate them (Chinese text), a stray dollar pairs with the formula's
+    opener and the repair is missed. Pinned so a future pairing change has
+    to face the trade-off rather than silently flip to rewriting prose.
+    English prose survives the same shape, because the space in front of the
+    formula stops the price from closing against its opener."""
+    damaged = "价格$5，公式$\tau$为"
+    with caplog.at_level(logging.WARNING, logger="lightrag"):
+        assert repair_vlm_json_escape_damage(damaged) == damaged
+    assert any("not auto-repaired" in rec.message for rec in caplog.records)
 
 
 @pytest.mark.offline
