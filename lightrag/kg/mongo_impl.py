@@ -2114,8 +2114,17 @@ class MongoGraphStorage(BaseGraphStorage):
                 # weight, leave "weight" unset even though source_ids just
                 # grew. Floor it to the evidence count, per the relation
                 # weight contract, whichever a plain sum would miss.
+                summed_weight = sum(weights) if weights else 0.0
+                if not math.isfinite(summed_weight):
+                    # Each weight was individually finite (_coerce_weight
+                    # rejects nan/inf inputs), but their sum can still
+                    # overflow to +inf. apply_relation_weight_floor rejects
+                    # a non-finite aggregate outright -- fall back to the
+                    # evidence-count floor rather than aborting the
+                    # migration over one edge's absurd weight sum.
+                    summed_weight = 0.0
                 set_fields["weight"] = apply_relation_weight_floor(
-                    sum(weights) if weights else 0.0, set_fields["source_id"]
+                    summed_weight, set_fields["source_id"]
                 )
             elif weights:
                 set_fields["weight"] = sum(weights)

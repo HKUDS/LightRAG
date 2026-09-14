@@ -101,6 +101,42 @@ async def test_all_docs_missing_weight_still_gets_the_evidence_floor():
     assert set_fields["weight"] == 2
 
 
+@pytest.mark.asyncio
+async def test_weight_sum_overflow_falls_back_to_the_evidence_floor():
+    """Each weight is individually finite (1e308 passes _coerce_weight's
+    isfinite check), but summing two of them overflows to +inf.
+    apply_relation_weight_floor rejects a non-finite aggregate outright --
+    the migration must fall back to the evidence-count floor instead of
+    raising and aborting startup."""
+    storage = _make_storage()
+    group = {
+        "_id": {"lo": "A", "hi": "B"},
+        "docs": [
+            {
+                "_id": "survivor",
+                "source_ids": ["chunk1"],
+                "weight": 1e308,
+                "created_at": 2,
+            },
+            {
+                "_id": "dup",
+                "source_ids": ["chunk2"],
+                "weight": 1e308,
+                "created_at": 1,
+            },
+        ],
+        "count": 2,
+    }
+    storage.edge_collection.aggregate = AsyncMock(return_value=_AsyncCursor([group]))
+    storage.edge_collection.update_one = AsyncMock()
+    storage.edge_collection.delete_many = AsyncMock()
+
+    await storage._dedupe_legacy_edges()
+
+    set_fields = storage.edge_collection.update_one.await_args[0][1]["$set"]
+    assert set_fields["weight"] == 2
+
+
 @pytest.mark.parametrize("bad_weight", [float("nan"), float("inf"), "NaN", "-Infinity"])
 @pytest.mark.asyncio
 async def test_non_finite_legacy_weight_is_skipped_not_raised(bad_weight):
