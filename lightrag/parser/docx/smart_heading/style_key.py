@@ -101,8 +101,12 @@ _P_EN_SINGLE_PAREN = re.compile(r"^\s*((?:\d+|([A-Za-z])\2{0,2}))[）)]")
 # Provenance-gated: mixed IVX runs (iv, vii, ix) are valid Roman list labels.
 # The alphabetic backref above deliberately rejects those as non-Word alpha
 # (CV. / MD. abbreviations); only lowerRoman/upperRoman numFmt may use these.
-_P_EN_DOUBLE_PAREN_ROMAN = re.compile(r"^\s*([（(](?:[IVXivx]+|[Ⅰ-Ⅻⅰ-ⅻ])[）)])")
-_P_EN_SINGLE_PAREN_ROMAN = re.compile(r"^\s*((?:[IVXivx]+|[Ⅰ-Ⅻⅰ-ⅻ]))[）)]")
+# Case-homogeneous like _P_ROMAN — a real label renders in one case. The \d+
+# branch is kept: a Roman numFmt still renders decimal when the resolver's
+# _to_roman is out of domain (count <= 0 or >= 4000), and that label carries
+# the Roman provenance, so dropping the branch would unclassify it.
+_P_EN_DOUBLE_PAREN_ROMAN = re.compile(r"^\s*([（(](?:\d+|[IVX]+|[ivx]+|[Ⅰ-Ⅻⅰ-ⅻ])[）)])")
+_P_EN_SINGLE_PAREN_ROMAN = re.compile(r"^\s*((?:\d+|[IVX]+|[ivx]+|[Ⅰ-Ⅻⅰ-ⅻ]))[）)]")
 
 #: Try order: MultiLevelNum first, then the table order top-down.
 _MATCH_ORDER: tuple[tuple[str, re.Pattern], ...] = (
@@ -120,21 +124,17 @@ _MATCH_ORDER: tuple[tuple[str, re.Pattern], ...] = (
     (EN_SINGLE_PAREN, _P_EN_SINGLE_PAREN),
 )
 
-#: Same order as ``_MATCH_ORDER``, but paren slots accept Roman letter runs.
-#: Selected only when ``numbering_format`` is lowerRoman / upperRoman.
-_MATCH_ORDER_ROMAN_PAREN: tuple[tuple[str, re.Pattern], ...] = (
-    (MULTI_LEVEL_NUM, _P_MULTI_LEVEL),
-    (CN_CHAPTER, _P_CN_CHAPTER),
-    (EN_CHAPTER, _P_EN_CHAPTER),
-    (CN_CLAUSE, _P_CN_CLAUSE),
-    (EN_CLAUSE, _P_EN_CLAUSE),
-    (CN_NUM, _P_CN_NUM),
-    (CN_PARENT_NUM, _P_CN_PARENT),
-    (ROMAN_NUM, _P_ROMAN),
-    (EN_NUM, _P_EN_NUM),
-    (EN_ALPHA, _P_EN_ALPHA),
-    (EN_DOUBLE_PAREN, _P_EN_DOUBLE_PAREN_ROMAN),
-    (EN_SINGLE_PAREN, _P_EN_SINGLE_PAREN_ROMAN),
+#: Paren-slot overrides applied when ``numbering_format`` is lowerRoman /
+#: upperRoman. Derived from ``_MATCH_ORDER`` so a pattern added there also
+#: reaches the Roman path.
+_ROMAN_PAREN_OVERRIDES: dict[str, re.Pattern] = {
+    EN_DOUBLE_PAREN: _P_EN_DOUBLE_PAREN_ROMAN,
+    EN_SINGLE_PAREN: _P_EN_SINGLE_PAREN_ROMAN,
+}
+
+_MATCH_ORDER_ROMAN_PAREN: tuple[tuple[str, re.Pattern], ...] = tuple(
+    (style_key, _ROMAN_PAREN_OVERRIDES.get(style_key, pattern))
+    for style_key, pattern in _MATCH_ORDER
 )
 
 
@@ -359,8 +359,10 @@ def _parse_marker_ordinal(
     alphabetic that is 35, not 2. _P_ROMAN cannot claim those labels (it only
     matches a "." or "、" terminator), so the carried numFmt is the only
     evidence available. When that provenance is Roman but ``parse_roman``
-    declines (out-of-domain L/C/D/M, malformed runs), return None — do not
-    fall back to the alphabetic reading, which would invent a wrong ordinal.
+    declines (a malformed run such as "vv" / "iiii"), return None — do not
+    fall back to the alphabetic reading, which would invent a wrong ordinal
+    ("vv" is not 48). Out-of-domain L/C/D/M labels no longer reach here at
+    all: the Roman paren patterns do not accept those letters.
 
     Without that provenance the alphabetic reading stands, which keeps
     hand-typed markers on their existing behavior: "(i)" stays 9, disambiguated

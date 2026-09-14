@@ -332,15 +332,51 @@ def test_parenthesized_roman_style_keys_match_template() -> None:
     )
 
 
-def test_roman_provenance_out_of_domain_no_alphabetic_fallback() -> None:
-    """When numFmt says Roman but parse_roman declines, do not invent alpha ordinals.
+def test_roman_provenance_out_of_domain_letters_do_not_classify() -> None:
+    """L/C/D/M are outside the I/V/X domain and the paren patterns reject them.
 
-    L/C/D/M satisfy the alphabetic backref but are outside the I/V/X domain;
-    a wrong ordinal (l→12, c→3, …) is worse than no classification.
+    They satisfy the DEFAULT alphabetic backref, so before the Roman-accepting
+    patterns they classified with the alphabetic ordinal (l→12, c→3, …) — a
+    wrong ordinal, which is worse than no classification.
     """
     for text in ("(l) x", "(c) x", "(d) x", "(m) x", "(cc) x", "l) x"):
+        assert classify_numbering(text, numbering_format="lowerRoman") is None, text
+
+
+def test_roman_provenance_malformed_run_has_no_alphabetic_fallback() -> None:
+    """Pattern accepts, parse_roman declines: the ordinal stays None.
+
+    "vv" / "iiii" are IVX letters the pattern lets through but no Roman
+    numeral; the alphabetic reading would call them 48 / None. This is the
+    only path that reaches _parse_marker_ordinal's Roman branch with a
+    declining parse, so it is what pins the removed fallback.
+    """
+    for text in ("(vv) x", "(iiii) x", "(xxxx) x", "vv) x"):
         cls = classify_numbering(text, numbering_format="lowerRoman")
-        assert cls is None or cls.ordinal is None, text
+        assert cls is not None, text
+        assert cls.ordinal is None, f"{text!r}: invented ordinal {cls.ordinal}"
+
+
+def test_roman_provenance_mixed_case_run_does_not_classify() -> None:
+    """A rendered label is case-homogeneous; "iV" is neither list label."""
+    assert classify_numbering("(iV) x", numbering_format="lowerRoman") is None
+    assert classify_numbering("(Xi) x", numbering_format="upperRoman") is None
+
+
+def test_roman_provenance_keeps_decimal_paren_labels() -> None:
+    """The resolver renders decimal when _to_roman is out of domain.
+
+    NumberingResolver._to_roman returns str(n) for n <= 0 or n >= 4000 while
+    last_label_format still reports lowerRoman, so the Roman-accepting
+    patterns must keep the \\d+ branch or those labels lose their class.
+    """
+    for text, want in (("(0) x", 0), ("(4000) x", 4000), ("(1) x", 1)):
+        cls = classify_numbering(text, numbering_format="lowerRoman")
+        assert cls is not None, text
+        assert cls.style_key == EN_DOUBLE_PAREN
+        assert cls.ordinal == want, text
+    single = classify_numbering("1) x", numbering_format="lowerRoman")
+    assert single is not None and single.ordinal == 1
 
 
 def test_paren_roman_patterns_do_not_relax_alphabetic_negatives() -> None:
