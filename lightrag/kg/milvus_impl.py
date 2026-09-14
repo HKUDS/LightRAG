@@ -119,28 +119,62 @@ async def run_in_milvus_executor(
     return await bounded_submit(get_milvus_executor(), semaphore, fn, *args, **kwargs)
 
 
-# Per-collection "the collection exists" flag, keyed like the writer lock
-# (`get_namespace_lock(namespace=final_namespace)`) rather than per instance:
-# several MilvusVectorDBStorage objects can resolve to the SAME collection --
-# two LightRAG instances, or distinct workspaces collapsed by the
-# MILVUS_WORKSPACE override -- and a drop through one of them must gate the
-# readers of all of them. Per process, like the executor above; a drop is a
-# server-side event other processes cannot be told about from here.
-_COLLECTION_GATES: dict[str, asyncio.Event] = {}
+# "The collection exists" flag, keyed by (running loop, collection).
+#
+# By COLLECTION rather than by instance, like the writer lock
+# (`get_namespace_lock(namespace=final_namespace)`): several
+# MilvusVectorDBStorage objects can resolve to the SAME collection -- two
+# LightRAG instances, or distinct workspaces collapsed by the MILVUS_WORKSPACE
+# override -- and a drop through one of them must gate the readers of all of
+# them.
+#
+# By LOOP because `asyncio.Event` is loop-bound in fact if not in signature:
+# `wait()` on a SET event returns without touching the loop, but one that
+# actually blocks binds the event, `set()` from elsewhere is not thread-safe,
+# and a later loop blocking on it raises "bound to a different event loop".
+# Sharing one event across loops would therefore trade a read that fails during
+# a clear for a hang or a spurious error -- the mirror of the residue, not an
+# improvement on it. `get_loop_semaphore` keys the submit semaphore the same
+# way and for the same reason.
+#
+# So a drop on one loop does not gate readers on another loop in the same
+# process, exactly as it does not gate other processes: those readers fall back
+# to the documented residue on `_run_gated` -- the read fails loudly during the
+# clear and succeeds on retry. The deployment shape is one active loop per
+# process anyway (gunicorn forks a worker per loop), which is what
+# `run_in_milvus_executor` says about its own per-loop/per-process split.
+_COLLECTION_GATES: dict[int, tuple[Any, dict[str, asyncio.Event]]] = {}
 _COLLECTION_GATES_GUARD = threading.Lock()
 
 
 def get_collection_gate(final_namespace: str) -> asyncio.Event:
-    """The shared reader gate for one Milvus collection, open when idle."""
-    gate = _COLLECTION_GATES.get(final_namespace)
-    if gate is None:
-        with _COLLECTION_GATES_GUARD:
-            gate = _COLLECTION_GATES.get(final_namespace)
-            if gate is None:
-                gate = asyncio.Event()
-                gate.set()
-                _COLLECTION_GATES[final_namespace] = gate
-    return gate
+    """The running loop's reader gate for one Milvus collection, open when idle.
+
+    Must be called from inside the loop that will await it -- never cached on
+    an instance, which outlives any one loop (successive ``asyncio.run()``
+    calls on the same ``LightRAG`` object are the ordinary way that happens).
+
+    The entry holds a strong reference to the loop on purpose: an event that
+    never had to block never learns which loop it belongs to, so there would be
+    nothing to test ``is_closed()`` on and no way to detect ``id()`` reuse.
+    Closed loops are swept on the next call, same as ``_fallback_semaphore``.
+    """
+    loop = asyncio.get_running_loop()
+    with _COLLECTION_GATES_GUARD:
+        for stale_key, (stale_loop, _) in list(_COLLECTION_GATES.items()):
+            if stale_loop.is_closed():
+                _COLLECTION_GATES.pop(stale_key, None)
+        key = id(loop)
+        entry = _COLLECTION_GATES.get(key)
+        if entry is None or entry[0] is not loop:
+            entry = (loop, {})
+            _COLLECTION_GATES[key] = entry
+        gate = entry[1].get(final_namespace)
+        if gate is None:
+            gate = asyncio.Event()
+            gate.set()
+            entry[1][final_namespace] = gate
+        return gate
 
 
 @dataclass
@@ -2385,10 +2419,6 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         self._flush_lock = get_namespace_lock(
             namespace=self.final_namespace, workspace=""
         )
-        # Open except while drop() sits between removing the collection and
-        # recreating it; see _run_gated. Shared by every instance pointing at
-        # this collection, like _flush_lock above.
-        self._collection_available = get_collection_gate(self.final_namespace)
 
     async def initialize(self):
         """Initialize Milvus collection"""
@@ -2508,7 +2538,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         then stall a destructive admin operation for as long as that takes, and
         one that never completes would hang it outright.
         """
-        await self._collection_available.wait()
+        await get_collection_gate(self.final_namespace).wait()
         return await run_in_milvus_executor(fn, *args, **kwargs)
 
     async def query(
@@ -3330,7 +3360,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
             # Close the reader gate for the window where the collection does
             # not exist: writers are excluded by _flush_lock, readers are not.
-            self._collection_available.clear()
+            gate = get_collection_gate(self.final_namespace)
+            gate.clear()
             try:
                 # Drop the collection and recreate it empty.
                 if await run_in_milvus_executor(
@@ -3356,7 +3387,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 # Reopen even when the rebuild failed: a waiting reader must
                 # get the server's real error, never hang behind a gate no
                 # later call reopens.
-                self._collection_available.set()
+                gate.set()
 
         try:
             async with self._flush_lock:

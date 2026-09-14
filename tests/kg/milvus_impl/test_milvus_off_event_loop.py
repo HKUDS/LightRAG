@@ -55,14 +55,6 @@ def patch_namespace_lock():
         yield cache
 
 
-@pytest.fixture(autouse=True)
-def reset_collection_gates():
-    """The gate registry is module-level; never let one leak between tests."""
-    milvus_impl._COLLECTION_GATES.clear()
-    yield
-    milvus_impl._COLLECTION_GATES.clear()
-
-
 def _make_storage(embed_func, *, namespace="entities", workspace="test"):
     storage = MilvusVectorDBStorage(
         namespace=namespace,
@@ -601,7 +593,8 @@ async def test_id_lookups_wait_at_the_gate_while_the_collection_is_gone(read):
     s = _make_storage(MockEmbeddingFunc())
     s._client.query = MagicMock(return_value=[{"id": "v1", "content": "hi"}])
 
-    s._collection_available.clear()
+    gate = milvus_impl.get_collection_gate(s.final_namespace)
+    gate.clear()
     task = asyncio.ensure_future(
         s.get_by_id("v1") if read == "get_by_id" else s.get_by_ids(["v1"])
     )
@@ -609,7 +602,7 @@ async def test_id_lookups_wait_at_the_gate_while_the_collection_is_gone(read):
         await asyncio.sleep(0)
     s._client.query.assert_not_called()
 
-    s._collection_available.set()
+    gate.set()
     result = await asyncio.wait_for(task, timeout=5)
 
     expected = {"id": "v1", "content": "hi"}
@@ -665,7 +658,9 @@ async def test_aliased_instances_share_one_collection_gate():
     a = _make_storage(MockEmbeddingFunc())
     b = _make_storage(MockEmbeddingFunc())
     assert a.final_namespace == b.final_namespace
-    assert a._collection_available is b._collection_available
+    assert milvus_impl.get_collection_gate(
+        a.final_namespace
+    ) is milvus_impl.get_collection_gate(b.final_namespace)
 
     b._client.search = MagicMock(return_value=[[]])
     drop_task, release = await _drop_blocking_on(a, "drop_collection")
@@ -680,6 +675,47 @@ async def test_aliased_instances_share_one_collection_gate():
     release()
     assert (await asyncio.wait_for(drop_task, timeout=5))["status"] == "success"
     assert await asyncio.wait_for(read_task, timeout=5) == []
+
+
+def test_each_loop_gets_its_own_collection_gate():
+    """asyncio.Event is loop-bound in fact if not in signature: one that
+    actually blocks binds itself, and a later loop blocking on it raises
+    'bound to a different event loop'. A gate shared across loops would
+    therefore turn a read that merely fails during a clear into a hang or a
+    spurious error, so the registry keys on the running loop -- which is also
+    what makes a storage object survive successive asyncio.run() calls."""
+    s = _make_storage(MockEmbeddingFunc())
+    namespace = s.final_namespace
+
+    seen = {}
+
+    async def bind_the_gate():
+        gate = milvus_impl.get_collection_gate(namespace)
+        seen["first"] = gate
+        # Make it actually block, which is what binds the event to this loop.
+        gate.clear()
+        waiter = asyncio.ensure_future(gate.wait())
+        await asyncio.sleep(0)
+        gate.set()
+        await asyncio.wait_for(waiter, timeout=5)
+
+    asyncio.run(bind_the_gate())
+
+    async def reuse_from_a_new_loop():
+        gate = milvus_impl.get_collection_gate(namespace)
+        seen["second"] = gate
+        gate.clear()
+        waiter = asyncio.ensure_future(gate.wait())
+        await asyncio.sleep(0)
+        gate.set()
+        # Would raise "bound to a different event loop" on a shared gate.
+        await asyncio.wait_for(waiter, timeout=5)
+
+    asyncio.run(reuse_from_a_new_loop())
+
+    assert seen["first"] is not seen["second"]
+    # The closed first loop must not be retained.
+    assert len(milvus_impl._COLLECTION_GATES) <= 1
 
 
 @pytest.mark.asyncio
