@@ -86,6 +86,28 @@ from lightrag.utils import logger
 PREFACE_HEADING = "Preface/Uncategorized"
 CONTENT_LIST_FILENAME = "content_list.json"
 
+# MinerU item types whose payload IS plain text: an empty one is layout noise
+# (a blank running head, a heading the model could not read), not information
+# the builder failed to map. Everything else that reaches the text fallback
+# without usable text is a structural item — a picture-like type or a payload
+# shape the dispatch does not know yet — so it gets a debug breadcrumb and is
+# counted into the end-of-parse WARNING summary.
+# ``text`` / ``list`` / ``code`` / ``equation`` / ``table`` / the drawing types
+# and ``page_number`` never reach the fallback: they have their own branch.
+_KNOWN_EMPTY_TYPES = frozenset(
+    {
+        "title",
+        "section_header",
+        "header",
+        "footer",
+        "ref_text",
+        "aside_text",
+        "page_footnote",
+        "phonetic",
+        "discarded",
+    }
+)
+
 
 class MinerUIRBuilder:
     """Stateless except for env-driven config. Reusable across calls."""
@@ -276,6 +298,10 @@ class MinerUIRBuilder:
             cb_lines.append(text)
             return True
 
+        # Types whose items reached the text fallback with nothing usable,
+        # counted for the end-of-parse summary below.
+        dropped_by_type: dict[str, int] = {}
+
         for item_index, item in enumerate(content_list):
             if not isinstance(item, dict):
                 continue
@@ -337,6 +363,17 @@ class MinerUIRBuilder:
                 latex_raw = _coerce_text(item)
                 if not latex_raw:
                     # Spec compliance fix: empty equation must not enter sidecar.
+                    # Local drop of a known type, like the empty-table branch in
+                    # ``_build_ir_table``: a debug breadcrumb, not the summary
+                    # below, which is reserved for content the dispatch could
+                    # not map at all.
+                    logger.debug(
+                        "[mineru_ir_builder] %r: dropping empty equation item "
+                        "(page_idx=%s, self_ref=%s)",
+                        document_name,
+                        item.get("page_idx"),
+                        _content_list_self_ref(item_index),
+                    )
                     continue
                 # Preserve MinerU's raw latex (including any ``$$``/``$``
                 # wrappers); the writer strips them when emitting
@@ -405,8 +442,44 @@ class MinerUIRBuilder:
             # not leak their page_idx into the current block.
             if _append_text(_coerce_text(item)):
                 _record_position(item)
+            elif item_type not in _KNOWN_EMPTY_TYPES:
+                # ``self_ref`` and the key set are the diagnostic part: they
+                # point at the offending item in content_list.json and name the
+                # payload shape the dispatch does not know yet. Neither carries
+                # document content.
+                logger.debug(
+                    "[mineru_ir_builder] %r: dropping item with no usable text "
+                    "(type=%s, page_idx=%s, self_ref=%s, keys=%s)",
+                    document_name,
+                    item_type,
+                    item.get("page_idx"),
+                    _content_list_self_ref(item_index),
+                    sorted(item),
+                )
+                dropped_by_type[item_type] = dropped_by_type.get(item_type, 0) + 1
 
         _flush_block()
+
+        # The per-item breadcrumbs above are DEBUG, which a deployment running
+        # at INFO never sees — an operator would have to suspect the loss first
+        # and re-parse the document to confirm it. Summarize once per document
+        # at WARNING so an unmapped item type is visible on the first ingest,
+        # naming the types to go looking for. Silent when nothing was dropped.
+        # ``document_name`` is part of every one of these lines: parse workers
+        # run concurrently (``max_parallel_insert``) and neither log formatter
+        # carries per-document context, so without it an interleaved batch
+        # reports a loss the operator cannot attribute to an input file.
+        if dropped_by_type:
+            logger.warning(
+                "[mineru_ir_builder] %r: %d content_list item(s) dropped with "
+                "no usable text: %s",
+                document_name,
+                sum(dropped_by_type.values()),
+                ", ".join(
+                    f"{t or '<untyped>'}={n}"
+                    for t, n in sorted(dropped_by_type.items())
+                ),
+            )
 
         if not doc_title:
             doc_title = Path(document_name).stem or document_name
