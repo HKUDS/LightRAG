@@ -281,6 +281,76 @@ def test_non_word_letter_runs_return_no_ordinal() -> None:
     assert classify_numbering("MD. 医生头像") is None
 
 
+def _ascii_roman(n: int, *, upper: bool = False) -> str:
+    """I..XXXIX — mirrors style_key._to_roman for the classifier's domain."""
+    out: list[str] = []
+    for value, sym in ((10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")):
+        while n >= value:
+            out.append(sym)
+            n -= value
+    s = "".join(out)
+    return s if upper else s.lower()
+
+
+@pytest.mark.parametrize("num_fmt", ["lowerRoman", "upperRoman"])
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        lambda body: f"({body}) Heading",
+        lambda body: f"{body}) Heading",
+    ],
+    ids=["(%1)", "%1)"],
+)
+def test_parenthesized_roman_list_full_domain(num_fmt: str, wrap) -> None:
+    """Automatic Roman lists with paren lvlText classify every I..XXXIX item.
+
+    Without provenance-gated paren patterns, mixed runs such as (iv)/(vii)
+    fall through: _P_ROMAN requires '.'/'、' and the alphabetic backref only
+    accepts a repeated same letter.
+    """
+    upper = num_fmt == "upperRoman"
+    for n in range(1, 40):
+        body = _ascii_roman(n, upper=upper)
+        text = wrap(body)
+        cls = classify_numbering(text, numbering_format=num_fmt)
+        assert cls is not None, f"unclassified {text!r} under {num_fmt}"
+        assert cls.ordinal == n, f"{text!r}: got ordinal {cls.ordinal}, want {n}"
+        assert cls.style_key in (EN_DOUBLE_PAREN, EN_SINGLE_PAREN)
+
+
+def test_parenthesized_roman_style_keys_match_template() -> None:
+    assert (
+        classify_numbering("(iv) Heading", numbering_format="lowerRoman").style_key
+        == EN_DOUBLE_PAREN
+    )
+    assert (
+        classify_numbering("vii) Heading", numbering_format="lowerRoman").style_key
+        == EN_SINGLE_PAREN
+    )
+    assert (
+        classify_numbering("(IX) Heading", numbering_format="upperRoman").ordinal == 9
+    )
+
+
+def test_roman_provenance_out_of_domain_no_alphabetic_fallback() -> None:
+    """When numFmt says Roman but parse_roman declines, do not invent alpha ordinals.
+
+    L/C/D/M satisfy the alphabetic backref but are outside the I/V/X domain;
+    a wrong ordinal (l→12, c→3, …) is worse than no classification.
+    """
+    for text in ("(l) x", "(c) x", "(d) x", "(m) x", "(cc) x", "l) x"):
+        cls = classify_numbering(text, numbering_format="lowerRoman")
+        assert cls is None or cls.ordinal is None, text
+
+
+def test_paren_roman_patterns_do_not_relax_alphabetic_negatives() -> None:
+    """Provenance gating must not widen the default alphabetic backref."""
+    assert classify_numbering("CV. 简历") is None
+    assert classify_numbering("MD. 医生") is None
+    assert classify_numbering("(iv) Heading") is None  # no Roman numFmt
+    assert classify_numbering("vii) Heading") is None
+
+
 def test_multilevel_raw_level_and_top() -> None:
     two = classify_numbering("1.2 概述")
     three = classify_numbering("§ 1.1.4 节")

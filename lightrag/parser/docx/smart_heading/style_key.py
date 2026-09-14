@@ -98,6 +98,15 @@ _P_EN_NUM = re.compile(r"^\s*(\d+)(?:\s|[.、]|(?=[一-龥]))")
 _P_EN_ALPHA = re.compile(r"^\s*(([A-Za-z])\2{0,2})[.、]")
 _P_EN_DOUBLE_PAREN = re.compile(r"^\s*([（(](?:\d+|([A-Za-z])\2{0,2})[）)])")
 _P_EN_SINGLE_PAREN = re.compile(r"^\s*((?:\d+|([A-Za-z])\2{0,2}))[）)]")
+# Provenance-gated: mixed IVX runs (iv, vii, ix) are valid Roman list labels.
+# The alphabetic backref above deliberately rejects those as non-Word alpha
+# (CV. / MD. abbreviations); only lowerRoman/upperRoman numFmt may use these.
+_P_EN_DOUBLE_PAREN_ROMAN = re.compile(
+    r"^\s*([（(](?:[IVXivx]+|[Ⅰ-Ⅻⅰ-ⅻ])[）)])"
+)
+_P_EN_SINGLE_PAREN_ROMAN = re.compile(
+    r"^\s*((?:[IVXivx]+|[Ⅰ-Ⅻⅰ-ⅻ]))[）)]"
+)
 
 #: Try order: MultiLevelNum first, then the table order top-down.
 _MATCH_ORDER: tuple[tuple[str, re.Pattern], ...] = (
@@ -113,6 +122,23 @@ _MATCH_ORDER: tuple[tuple[str, re.Pattern], ...] = (
     (EN_ALPHA, _P_EN_ALPHA),
     (EN_DOUBLE_PAREN, _P_EN_DOUBLE_PAREN),
     (EN_SINGLE_PAREN, _P_EN_SINGLE_PAREN),
+)
+
+#: Same order as ``_MATCH_ORDER``, but paren slots accept Roman letter runs.
+#: Selected only when ``numbering_format`` is lowerRoman / upperRoman.
+_MATCH_ORDER_ROMAN_PAREN: tuple[tuple[str, re.Pattern], ...] = (
+    (MULTI_LEVEL_NUM, _P_MULTI_LEVEL),
+    (CN_CHAPTER, _P_CN_CHAPTER),
+    (EN_CHAPTER, _P_EN_CHAPTER),
+    (CN_CLAUSE, _P_CN_CLAUSE),
+    (EN_CLAUSE, _P_EN_CLAUSE),
+    (CN_NUM, _P_CN_NUM),
+    (CN_PARENT_NUM, _P_CN_PARENT),
+    (ROMAN_NUM, _P_ROMAN),
+    (EN_NUM, _P_EN_NUM),
+    (EN_ALPHA, _P_EN_ALPHA),
+    (EN_DOUBLE_PAREN, _P_EN_DOUBLE_PAREN_ROMAN),
+    (EN_SINGLE_PAREN, _P_EN_SINGLE_PAREN_ROMAN),
 )
 
 
@@ -336,16 +362,16 @@ def _parse_marker_ordinal(
     lowerRoman/upperRoman list with lvlText "(%1)" hands "(ii)" here; read as
     alphabetic that is 35, not 2. _P_ROMAN cannot claim those labels (it only
     matches a "." or "、" terminator), so the carried numFmt is the only
-    evidence available.
+    evidence available. When that provenance is Roman but ``parse_roman``
+    declines (out-of-domain L/C/D/M, malformed runs), return None — do not
+    fall back to the alphabetic reading, which would invent a wrong ordinal.
 
     Without that provenance the alphabetic reading stands, which keeps
     hand-typed markers on their existing behavior: "(i)" stays 9, disambiguated
     downstream by reclassify_single_char_romans rather than guessed here.
     """
     if numbering_format in ("lowerRoman", "upperRoman"):
-        roman = parse_roman(text)
-        if roman is not None:
-            return roman
+        return parse_roman(text)
     return parse_alpha_ordinal(text)
 
 
@@ -377,8 +403,10 @@ def classify_numbering(
     if not text:
         return None
     automatic_alpha = numbering_format in ("lowerLetter", "upperLetter")
+    automatic_roman = numbering_format in ("lowerRoman", "upperRoman")
+    match_order = _MATCH_ORDER_ROMAN_PAREN if automatic_roman else _MATCH_ORDER
     multi_level_shape = _P_MULTI_LEVEL_SHAPE.match(text) is not None
-    for style_key, pattern in _MATCH_ORDER:
+    for style_key, pattern in match_order:
         if automatic_alpha and style_key == ROMAN_NUM:
             continue
         if multi_level_shape and style_key != MULTI_LEVEL_NUM:
