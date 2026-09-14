@@ -167,11 +167,12 @@ def _coerce_weight(weight: Any) -> float | None:
     """Coerce a (possibly string) edge weight to float, or None if the value
     is missing, non-numeric, or not finite.
 
-    NaN/+-inf pass ``float()`` (including via strings like "nan"), but no graph
-    backend can store one (see ``graph_attribute_value_rejection``) and a NaN
-    poisons every ``sum``/``max`` it later reaches. A non-finite legacy weight
-    is therefore unusable in exactly the way a non-numeric one is, and is
-    skipped the same way.
+    NaN/+-inf pass ``float()`` (including via strings like "nan"), but none of
+    them is a storable graph attribute (see ``graph_attribute_value_rejection``
+    -- the rule is the portability intersection across the backends, not a
+    per-backend impossibility) and a NaN poisons every ``sum``/``max`` it later
+    reaches. A non-finite legacy weight is therefore unusable in exactly the
+    way a non-numeric one is, and is skipped the same way.
     """
     if weight is None:
         return None
@@ -2123,12 +2124,14 @@ class MongoGraphStorage(BaseGraphStorage):
             evidence_count = relation_evidence_count(set_fields.get("source_id", ""))
             if weights or evidence_count:
                 summed_weight = sum(weights) if weights else 0.0
-                if not math.isfinite(summed_weight):
+                if summed_weight == math.inf:
                     # Each weight was individually finite (_coerce_weight
                     # rejects nan/inf inputs), but their sum can still overflow
-                    # to +inf, which no backend can store. Keep the largest
+                    # past what a graph attribute may hold. Keep the largest
                     # representable weight instead of collapsing an absurd but
-                    # real magnitude down to the evidence count.
+                    # real magnitude down to the evidence count. Only +inf is
+                    # clamped: a sum of finite floats is never NaN, and -inf is
+                    # absorbed by the evidence floor below.
                     summed_weight = sys.float_info.max
                 set_fields["weight"] = max(summed_weight, float(evidence_count))
             if set_fields:

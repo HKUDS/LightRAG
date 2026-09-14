@@ -260,3 +260,37 @@ async def test_placeholder_only_evidence_keeps_a_real_weight():
 
     set_fields = storage.edge_collection.update_one.await_args[0][1]["$set"]
     assert set_fields["weight"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_negative_weight_sum_overflow_takes_the_evidence_floor():
+    """The overflow clamp must not pull a hugely NEGATIVE sum up to the largest
+    positive weight. Summing two finite negatives underflows to -inf, which the
+    evidence floor -- not the clamp -- is what absorbs."""
+    storage = _make_storage()
+    group = {
+        "_id": {"lo": "A", "hi": "B"},
+        "docs": [
+            {
+                "_id": "survivor",
+                "source_ids": ["chunk1"],
+                "weight": -1e308,
+                "created_at": 2,
+            },
+            {
+                "_id": "dup",
+                "source_ids": ["chunk2"],
+                "weight": -1e308,
+                "created_at": 1,
+            },
+        ],
+        "count": 2,
+    }
+    storage.edge_collection.aggregate = AsyncMock(return_value=_AsyncCursor([group]))
+    storage.edge_collection.update_one = AsyncMock()
+    storage.edge_collection.delete_many = AsyncMock()
+
+    await storage._dedupe_legacy_edges()
+
+    set_fields = storage.edge_collection.update_one.await_args[0][1]["$set"]
+    assert set_fields["weight"] == 2

@@ -116,3 +116,17 @@ def test_placeholder_only_evidence_keeps_a_real_weight():
     )
 
     assert merged["weight"] == 0.5
+
+
+def test_negative_weight_sum_overflow_takes_the_evidence_floor():
+    """The overflow clamp must not pull a hugely NEGATIVE sum up to the largest
+    positive weight. Summing two finite negatives underflows to -inf, which the
+    evidence floor -- not the clamp -- is what absorbs."""
+    merged = _merge_edge_payloads(
+        [
+            {"source_ids": ["chunk1"], "weight": -1e308},
+            {"source_ids": ["chunk2"], "weight": -1e308},
+        ]
+    )
+
+    assert merged["weight"] == 2
