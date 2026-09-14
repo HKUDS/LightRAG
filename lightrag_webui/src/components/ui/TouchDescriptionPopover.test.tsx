@@ -37,7 +37,7 @@ describe('touch description popover', () => {
   test('keeps the description out of the tree until the trigger is used', () => {
     renderWithProviders(<TouchDescriptionPopover description={DESCRIPTION} />)
 
-    expect(screen.queryByText(DESCRIPTION)).toBeNull()
+    expect(screen.queryAllByText(DESCRIPTION)).toHaveLength(0)
   })
 
   test('reveals the description when the trigger is activated', async () => {

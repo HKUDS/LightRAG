@@ -649,6 +649,7 @@ class ParagraphRecord:
     # --- smart-heading features (populated only when smart is enabled) ------
     full_text_raw: str | None = None  # pre-policy label+text (keeps "\n")
     label: str = ""  # auto-numbering label, if any
+    numbering_format: str | None = None  # OOXML provenance; disambiguates ii/xx
     outline_level_raw: int | None = None  # pre-policy outline level
     style_id: str | None = None
     font_size_pt: float | None = None  # char-weighted dominant (0.5pt grid)
@@ -832,6 +833,7 @@ def _read_document_records(
                 phys = extract_paragraph_physical_features(element, style_attributes)
                 rec.full_text_raw = full_text_raw
                 rec.label = label or ""
+                rec.numbering_format = resolver.last_label_format
                 rec.outline_level_raw = outline_level_raw
                 rec.style_id = phys.style_id
                 rec.font_size_pt = phys.font_size_pt

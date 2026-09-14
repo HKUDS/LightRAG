@@ -114,6 +114,15 @@ def _preprefix_answer_cache_key(
     still served when no prefix is configured. Do NOT refresh this when new key
     fields are added -- if a later change makes this miss, that change costs
     every deployment its warm answer cache and must be a deliberate decision.
+
+    Refreshed ONCE, deliberately, in PR #3877: the KG chunk-selection settings
+    (``related_chunk_number`` / ``kg_chunk_pick_method``) joined the key because
+    changing either changes the retrieved context, and serving an answer cached
+    under the previous setting is a wrong answer. That retires every KG answer
+    entry written before it; a stale answer is worse than a cold cache. The
+    naive branch is untouched -- it does not carry these components. The
+    defaults below are written as literals on purpose: if ``DEFAULT_*`` ever
+    moves, this snapshot must go red again rather than follow it silently.
     """
     args = [
         "query-answer-cache-v2",
@@ -133,6 +142,18 @@ def _preprefix_answer_cache_key(
             param.user_prompt or "",
             param.enable_rerank,
             cfg.get("enable_content_headings", False),
+        ]
+    )
+    if keywords is not None:
+        args.extend(
+            [
+                "\n<kg_chunk_selection>\n",
+                cfg.get("related_chunk_number", 5),
+                cfg.get("kg_chunk_pick_method", "VECTOR"),
+            ]
+        )
+    args.extend(
+        [
             "\n<llm_identity>\n",
             serialize_llm_cache_identity(get_llm_cache_identity(cfg, "query")),
         ]
@@ -162,12 +183,29 @@ def _kg_param(**overrides) -> QueryParam:
     )
 
 
-async def _run_naive(param, cfg, cache):
-    return await naive_query(QUERY, _FakeChunksVDB(), param, cfg, hashing_kv=cache)
+async def _run_naive(param, cfg, cache, system_prompt=None):
+    return await naive_query(
+        QUERY,
+        _FakeChunksVDB(),
+        param,
+        cfg,
+        hashing_kv=cache,
+        system_prompt=system_prompt,
+    )
 
 
-async def _run_kg(param, cfg, cache):
-    return await kg_query(QUERY, None, None, None, None, param, cfg, hashing_kv=cache)
+async def _run_kg(param, cfg, cache, system_prompt=None):
+    return await kg_query(
+        QUERY,
+        None,
+        None,
+        None,
+        None,
+        param,
+        cfg,
+        hashing_kv=cache,
+        system_prompt=system_prompt,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +263,73 @@ async def test_prefix_alone_reaches_the_model_without_a_user_prompt(
 # ---------------------------------------------------------------------------
 # Cache partitioning.
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "runner,param,prompt_a,prompt_b",
+    [
+        (
+            _run_naive,
+            _naive_param,
+            "Policy A\n{content_data}\n{response_type}\n{user_prompt}",
+            "Policy B\n{content_data}\n{response_type}\n{user_prompt}",
+        ),
+        (
+            _run_kg,
+            _kg_param,
+            "Policy A\n{context_data}\n{response_type}\n{user_prompt}",
+            "Policy B\n{context_data}\n{response_type}\n{user_prompt}",
+        ),
+    ],
+)
+async def test_changing_system_prompt_does_not_serve_old_answer(
+    runner, param, prompt_a, prompt_b, stub_query_context
+):
+    cache = _FakeKVStorage()
+    model = _RecordingModel()
+    cfg = _query_global_config(model)
+
+    first = await runner(param(), cfg, cache, system_prompt=prompt_a)
+    second = await runner(param(), cfg, cache, system_prompt=prompt_b)
+
+    assert first.content == "answer-1"
+    assert second.content == "answer-2"
+    assert model.calls == 2
+    assert len(_answer_cache_keys(cache)) == 2
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "runner,param,system_prompt",
+    [
+        (
+            _run_naive,
+            _naive_param,
+            "Policy A\n{content_data}\n{response_type}\n{user_prompt}",
+        ),
+        (
+            _run_kg,
+            _kg_param,
+            "Policy A\n{context_data}\n{response_type}\n{user_prompt}",
+        ),
+    ],
+)
+async def test_same_system_prompt_still_hits_cache(
+    runner, param, system_prompt, stub_query_context
+):
+    cache = _FakeKVStorage()
+    model = _RecordingModel()
+    cfg = _query_global_config(model)
+
+    first = await runner(param(), cfg, cache, system_prompt=system_prompt)
+    second = await runner(param(), cfg, cache, system_prompt=system_prompt)
+
+    assert first.content == second.content == "answer-1"
+    assert model.calls == 1
+    assert len(_answer_cache_keys(cache)) == 1
 
 
 @pytest.mark.offline

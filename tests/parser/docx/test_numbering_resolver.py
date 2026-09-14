@@ -24,6 +24,7 @@ import pytest
 from lxml import etree
 
 from lightrag.parser.docx.numbering_resolver import NumberingResolver
+from lightrag.parser.docx.smart_heading.style_key import classify_numbering
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
@@ -136,6 +137,57 @@ def test_get_numbering_from_style_merges_numid_and_explicit_ilvl() -> None:
     assert r._get_numbering_from_style("ListP") == {"numId": "100", "ilvl": None}
 
 
+def test_ilvl_outside_ooxml_domain_is_rejected_not_looped() -> None:
+    """w:ilvl is defined for 0-8 (ECMA-376 ST_DecimalNumber). A malicious
+    document can define a level at the same out-of-range ilvl in both
+    numbering.xml and the paragraph's direct numPr, so the "ilvl not in
+    levels" check alone would not catch it -- it would flow straight into
+    range(ilvl) and blow up into a CPU-bound loop of that many iterations."""
+    r = NumberingResolver.__new__(NumberingResolver)
+    r.abstract_nums = {
+        "10": {
+            1000: {"start": 1, "numFmt": "decimal", "lvlText": "%1.", "isLgl": False}
+        }
+    }
+    r.abstract_pstyle = {}
+    r.num_to_abstract = {"100": "10"}
+    r.counters = {}
+    r.start_overrides = {}
+    r.style_numpr = {}
+    r.style_based_on = {}
+    r.last_numId = None
+    r.last_abstract_id = None
+    r.last_style_id = None
+    r._warnings = None
+
+    assert r.get_label(_para(num_id="100", ilvl=1000)) == ""
+    assert r.last_numId is None
+    assert r.last_abstract_id is None
+
+
+@pytest.mark.parametrize("ilvl", [-1, 9, 999999])
+def test_out_of_range_ilvl_values_are_rejected(ilvl) -> None:
+    r = _resolver()
+    r.abstract_nums["10"][ilvl] = {
+        "start": 1,
+        "numFmt": "decimal",
+        "lvlText": "%1.",
+        "isLgl": False,
+    }
+    assert r.get_label(_para(num_id="100", ilvl=ilvl)) == ""
+
+
+def test_boundary_ilvl_eight_still_renders() -> None:
+    r = _resolver()
+    r.abstract_nums["10"][8] = {
+        "start": 1,
+        "numFmt": "decimal",
+        "lvlText": "%1.",
+        "isLgl": False,
+    }
+    assert r.get_label(_para(num_id="100", ilvl=8)) == "1."
+
+
 def test_resolve_ilvl_by_pstyle_walks_basedon_ancestors() -> None:
     r = _resolver()
     # direct style match
@@ -176,6 +228,189 @@ def _fmt_resolver(num_fmt: str, lvl_text: str = "（%1）") -> NumberingResolver
 def _label(r: NumberingResolver, count: int) -> str:
     r.counters["100"] = {0: count}
     return r._format_label("100", 0, r.abstract_nums["10"])
+
+
+@pytest.mark.parametrize("num_fmt", ["lowerLetter", "upperLetter"])
+@pytest.mark.parametrize("lvl_text", ["%1.", "(%1)", "%1)"])
+def test_letter_labels_preserve_ordinals_after_first_alphabet(num_fmt, lvl_text):
+    from lightrag.parser.docx.smart_heading.style_key import classify_numbering
+
+    resolver = _fmt_resolver(num_fmt, lvl_text)
+    for count in range(1, 79):
+        label = resolver.get_label(_para(num_id="100", ilvl=0))
+        match = classify_numbering(
+            f"{label} Heading", numbering_format=resolver.last_label_format
+        )
+        assert match is not None
+        assert match.ordinal == count
+        if count in {1, 26, 27, 28, 52, 53, 78}:
+            letters = {
+                1: "a",
+                26: "z",
+                27: "aa",
+                28: "bb",
+                52: "zz",
+                53: "aaa",
+                78: "zzz",
+            }[count]
+            if num_fmt == "upperLetter":
+                letters = letters.upper()
+            assert label == lvl_text.replace("%1", letters)
+
+
+@pytest.mark.parametrize("num_fmt", ["lowerLetter", "upperLetter"])
+@pytest.mark.parametrize("count", [-1, 0, 79, 2147483647])
+@pytest.mark.parametrize("override", [False, True])
+def test_large_letter_starts_fall_back_before_allocating(num_fmt, count, override):
+    """Every count here is outside ``_to_alpha``'s 1-78 domain — below it as well
+    as above — so each falls back to decimal AND is recorded."""
+    resolver = _fmt_resolver(num_fmt, "%1.")
+    resolver._warnings = {}
+    if override:
+        resolver.start_overrides = {"100": {0: count}}
+    else:
+        resolver.abstract_nums["10"][0]["start"] = count
+    assert resolver.get_label(_para(num_id="100", ilvl=0)) == f"{count}."
+    assert resolver.out_of_range_formats == {num_fmt}
+    assert resolver._warnings == {"numbering_out_of_range_formats": 1}
+
+
+def test_read_pass_retains_letter_provenance_and_clears_it_on_plain_text():
+    from docx import Document
+
+    from lightrag.parser.docx.parse_document import _read_document_records
+    from lightrag.parser.docx.smart_heading.features import StyleAttributes
+
+    doc = Document()
+    para = doc.add_paragraph("Heading")
+    para._p.get_or_add_pPr().append(
+        _para(num_id="100", ilvl=0).find(f"{{{W}}}pPr/{{{W}}}numPr")
+    )
+    doc.add_paragraph("II. Typed Roman heading")
+    resolver = _fmt_resolver("lowerLetter", "%1.")
+    resolver.abstract_nums["10"][0]["start"] = 35
+    records = _read_document_records(
+        doc, resolver, {}, None, {}, style_attributes=StyleAttributes()
+    )
+    assert records[0].text == "ii. Heading"
+    assert records[0].numbering_format == "lowerLetter"
+    assert records[1].numbering_format is None
+
+
+def test_label_format_provenance_is_readable_before_any_label(tmp_path):
+    """A freshly constructed resolver must already expose the attribute.
+
+    The read pass today always calls ``get_label`` before reading the
+    provenance (empty paragraphs ``continue`` before the read), so no
+    production path hits this. The defect is that the attribute is part of
+    the resolver's read surface while being declared only inside
+    ``get_label``: any other consumer, or a future reordering of the read
+    pass, gets an AttributeError instead of "no numbering here".
+    """
+    from docx import Document
+
+    path = tmp_path / "empty.docx"
+    Document().save(str(path))
+    assert NumberingResolver(str(path)).last_label_format is None
+
+
+def _cross_level_resolver(parent_fmt: str, child_fmt: str, lvl_text: str):
+    """A two-level abstractNum whose ilvl-1 template is `lvl_text`."""
+    r = _fmt_resolver(child_fmt, lvl_text)
+    r.abstract_nums["10"] = {
+        0: {"start": 2, "numFmt": parent_fmt, "lvlText": "%1.", "isLgl": False},
+        1: {"start": 35, "numFmt": child_fmt, "lvlText": lvl_text, "isLgl": False},
+    }
+    return r
+
+
+@pytest.mark.parametrize(
+    ("parent_fmt", "child_fmt", "expected_fmt", "expected"),
+    [
+        # Child is alphabetic but its template renders the Roman parent: the
+        # visible "ii" is Roman 2, NOT the alphabetic 35 the child would give.
+        ("lowerRoman", "lowerLetter", "lowerRoman", ("RomanNum", 2)),
+        # The inverse: a decimal child rendering its lowerLetter parent. The
+        # parent's counter is seeded to 35, which renders "ii" alphabetically.
+        ("lowerLetter", "decimal", "lowerLetter", ("EnAlpha", 35)),
+    ],
+)
+def test_provenance_follows_the_leading_placeholder_not_the_current_level(
+    parent_fmt, child_fmt, expected_fmt, expected
+) -> None:
+    """lvlText may reference only an ancestor level.
+
+    The classifier reads the label's LEADING token, so the provenance must
+    name the placeholder that produced it. Taking the current level's numFmt
+    instead makes a Roman-looking token classify as its own inverse.
+    """
+    r = _cross_level_resolver(parent_fmt, child_fmt, "%1.")
+    if parent_fmt == "lowerLetter":
+        r.abstract_nums["10"][0]["start"] = 35
+    label = r.get_label(_para(num_id="100", ilvl=1))
+
+    assert label == "ii."
+    assert r.last_label_format == expected_fmt
+    cls = classify_numbering(f"{label} Heading", numbering_format=r.last_label_format)
+    assert (cls.style_key, cls.ordinal) == expected
+
+
+def test_provenance_is_the_first_placeholder_of_a_multi_level_template() -> None:
+    """Guards the single-level coincidence: with "%1.%2." the leading token
+    comes from level 0, so "current level" and "first placeholder" differ."""
+    r = _cross_level_resolver("lowerLetter", "decimal", "%1.%2.")
+    r.abstract_nums["10"][0]["start"] = 27
+    label = r.get_label(_para(num_id="100", ilvl=1))
+
+    assert label == "aa.35."
+    assert r.last_label_format == "lowerLetter"
+
+
+def test_provenance_skips_placeholders_that_render_nothing() -> None:
+    """A `none` level occupies a template slot but contributes no token.
+
+    Picking the leftmost SUBSTITUTED placeholder is not enough: with
+    lvlText "%1%2." and a numFmt "none" level 0, level 0 wins on position
+    while rendering "". The visible leading token comes from level 1, so
+    attributing the label to "none" drops the alpha provenance and sends
+    "ii" back to the Roman branch.
+    """
+    r = _fmt_resolver("lowerLetter", "%1%2.")
+    r.abstract_nums["10"] = {
+        0: {"start": 1, "numFmt": "none", "lvlText": "%1", "isLgl": False},
+        1: {"start": 35, "numFmt": "lowerLetter", "lvlText": "%1%2.", "isLgl": False},
+    }
+    label = r.get_label(_para(num_id="100", ilvl=1))
+
+    assert label == "ii."
+    assert r.last_label_format == "lowerLetter"
+    cls = classify_numbering(f"{label} Heading", numbering_format=r.last_label_format)
+    assert (cls.style_key, cls.ordinal) == ("EnAlpha", 35)
+
+
+def test_provenance_is_none_when_nothing_renders() -> None:
+    """An all-empty render has no token to attribute a format to."""
+    r = _fmt_resolver("none", "%1")
+    assert r.get_label(_para(num_id="100", ilvl=0)) == ""
+    assert r.last_label_format is None
+
+
+@pytest.mark.parametrize("lvl_text", ["(%1)", "%1)"])
+@pytest.mark.parametrize("num_fmt", ["lowerRoman", "upperRoman"])
+@pytest.mark.parametrize("count", [1, 2, 3])
+def test_parenthesized_roman_lists_keep_roman_ordinals(lvl_text, num_fmt, count):
+    """The widened paren patterns accept repeated letters, so "(ii)" from a
+    Roman list reaches them. _P_ROMAN cannot claim it — it only matches a
+    "." / "、" terminator — so the carried numFmt is the only evidence that
+    "ii" is 2 and not the alphabetic 35."""
+    r = _fmt_resolver(num_fmt, lvl_text)
+    r.abstract_nums["10"][0]["start"] = count
+    label = r.get_label(_para(num_id="100", ilvl=0))
+
+    assert r.last_label_format == num_fmt
+    cls = classify_numbering(f"{label} Heading", numbering_format=r.last_label_format)
+    assert cls is not None
+    assert cls.ordinal == count
 
 
 # The counting families all render 一/二/十/十一/… — [MS-DOCX] gives
@@ -310,3 +545,100 @@ def test_ideograph_digital_has_no_domain_limit() -> None:
     assert r.out_of_range_formats == set()
     assert warnings == {}
     assert "ideographDigital" not in NumberingResolver.LIMITED_DOMAIN_FORMATS
+    # No UPPER limit is not no domain: the converter still starts at 1, so a
+    # non-positive count degrades to decimal and is recorded like any other.
+    assert "ideographDigital" in NumberingResolver.POSITIVE_DOMAIN_FORMATS
+    assert _label(r, 0) == "0"
+    assert r.out_of_range_formats == {"ideographDigital"}
+    assert warnings == {"numbering_out_of_range_formats": 1}
+
+
+@pytest.mark.parametrize(
+    ("num_fmt", "last"), [("lowerRoman", "mmmcmxcix"), ("upperRoman", "MMMCMXCIX")]
+)
+def test_roman_past_3999_is_recorded(num_fmt, last) -> None:
+    """Regression for #3934: ``_to_roman`` already degrades to decimal at 4000,
+    but the Roman formats were missing from the limited-domain table, so the
+    fallback was silent."""
+    warnings: dict = {}
+    r = _fmt_resolver(num_fmt, "%1")
+    r._warnings = warnings
+    assert _label(r, 3999) == last  # in domain: nothing recorded
+    assert r.out_of_range_formats == set()
+    assert warnings == {}
+
+    assert _label(r, 4000) == "4000"
+    assert r.out_of_range_formats == {num_fmt}
+    assert warnings == {"numbering_out_of_range_formats": 1}
+
+
+def test_ideograph_traditional_renders_the_ten_stems() -> None:
+    r = _fmt_resolver("ideographTraditional", "%1")
+    r._warnings = {}
+    assert [_label(r, n) for n in range(1, 11)] == list("甲乙丙丁戊己庚辛壬癸")
+    assert r.out_of_range_formats == set()
+
+
+@pytest.mark.parametrize("count", [-1, 0, 11, 21])
+def test_ideograph_traditional_falls_back_instead_of_wrapping(count) -> None:
+    """Regression for #3934: ``(n - 1) % 10`` made item 11 render 甲 like item 1,
+    and kept zero / negative counts inside the stem string. Both directions
+    degrade to decimal, and both are recorded."""
+    warnings: dict = {}
+    r = _fmt_resolver("ideographTraditional", "%1")
+    r._warnings = warnings
+    assert _label(r, count) == str(count)
+    assert r.out_of_range_formats == {"ideographTraditional"}
+    assert warnings == {"numbering_out_of_range_formats": 1}
+
+
+@pytest.mark.parametrize("num_fmt", sorted(NumberingResolver.POSITIVE_DOMAIN_FORMATS))
+@pytest.mark.parametrize("count", [0, -1])
+def test_non_positive_counts_are_recorded_for_every_positive_domain_format(
+    num_fmt, count
+) -> None:
+    """A counter below 1 is as far outside a converter's domain as one above its
+    limit, and reaches the resolver the same way — an untrusted w:start /
+    w:startOverride. Every converter already degrades to decimal there; this
+    pins that the event is also RECORDED, which is the whole point of the
+    limited-domain table.
+    """
+    warnings: dict = {}
+    r = _fmt_resolver(num_fmt, "%1")
+    r._warnings = warnings
+    assert _label(r, count) == str(count)
+    assert r.out_of_range_formats == {num_fmt}
+    assert warnings == {"numbering_out_of_range_formats": 1}
+    # Still a supported format — nothing lands in the unsupported ledger.
+    assert r.unsupported_formats == set()
+
+
+@pytest.mark.parametrize(
+    ("num_fmt", "rendered"), [("decimal", "0"), ("bullet", "•"), ("none", "")]
+)
+def test_formats_without_a_domain_render_zero_and_stay_unrecorded(
+    num_fmt, rendered
+) -> None:
+    """decimal / bullet / none have no domain to fall out of: what they render at
+    0 is what Word renders, not a degradation, so warning about it would be
+    noise. They are the only three POSITIVE_DOMAIN_FORMATS leaves out."""
+    warnings: dict = {}
+    r = _fmt_resolver(num_fmt, "%1")
+    r._warnings = warnings
+    assert _label(r, 0) == rendered
+    assert r.out_of_range_formats == set()
+    assert warnings == {}
+    assert num_fmt not in NumberingResolver.POSITIVE_DOMAIN_FORMATS
+
+
+def test_positive_domain_membership_matches_converter_behavior() -> None:
+    """Pin the derived set against what the converters actually do, so adding a
+    numFmt cannot quietly put the wrong entry in either bucket."""
+    for num_fmt in NumberingResolver.POSITIVE_DOMAIN_FORMATS:
+        convert = NumberingResolver.FORMAT_CONVERTERS[num_fmt]
+        assert convert(0) == "0", num_fmt
+        assert convert(-1) == "-1", num_fmt
+    excluded = set(NumberingResolver.FORMAT_CONVERTERS) - set(
+        NumberingResolver.POSITIVE_DOMAIN_FORMATS
+    )
+    assert excluded == {"decimal", "bullet", "none"}

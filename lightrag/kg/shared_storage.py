@@ -2177,10 +2177,19 @@ _INTERNAL_PIPELINE_STATUS_FIELDS = (
 )
 
 # Owner ``kind`` values whose work is safely RE-RUNNABLE after a dead-owner
-# reclaim (in-flight docs sit in doc_status and are reset to PENDING / retried).
+# reclaim (in-flight docs sit in doc_status and are reset to PENDING / retried;
+# an admin graph write is a manual operation its caller simply repeats).
 # Every other kind (custom_chunks / delete / clear) may have half-committed and
 # is fenced with ``recovery_required`` instead of being cleared for re-run.
-_RERUNNABLE_RESERVATION_KINDS = frozenset({"processing", "scan"})
+#
+# ``admin`` MUST stay here: an admin write holds ``busy`` for
+# seconds, and a worker killed inside it would otherwise fence the whole
+# workspace with a 503 clearable only through ``/documents/recovery/force_reset``
+# -- worse than the lost-write defect the reservation exists to remove. What a
+# crash mid-edit leaves behind is the residue the graph store's contract
+# already documents: a tracking row without its graph object, harmless to
+# queries and repaired offline with the chunk-tracking rebuild tool.
+_RERUNNABLE_RESERVATION_KINDS = frozenset({"processing", "scan", "admin"})
 
 
 def _reservation_recovery_enabled() -> bool:
@@ -2267,6 +2276,15 @@ def make_owner_record(token: str, kind: str) -> Dict[str, Any]:
     * ``processing`` / ``scan`` — re-runnable: in-flight docs sit in doc_status
       and are reset to PENDING / retried, so a dead owner's slot is simply
       cleared (see :data:`_RERUNNABLE_RESERVATION_KINDS`).
+    * ``admin`` — an admin graph write (the admin-write gate,
+      ``LightRAG._admin_write_gate``) holding ``busy`` so a pipeline start is
+      deferred for its duration.
+      Re-runnable: the caller repeats the edit, and a crash mid-edit leaves
+      only the documented crash residue. A dead admin owner is reclaimed
+      through the ``busy_owner`` branch, which also clears the manual-freeze
+      fields -- correct, not incidental: the freeze is only ever set by a
+      processing run that already holds ``busy``, which cannot coexist with an
+      admin holder, so those fields are already false.
     * ``custom_chunks`` / ``delete`` / ``clear`` — destructive and may have
       half-committed, so a dead owner fences the workspace with
       ``recovery_required`` instead of being cleared for re-run.
@@ -2637,6 +2655,26 @@ def _reservation_owner_token(record: Any) -> Any:
     if isinstance(record, dict):
         return record.get("token")
     return record
+
+
+def reservation_owner_kind(record: Any) -> Optional[str]:
+    """The ``kind`` of a reservation owner record, or ``None`` when unknown.
+
+    Public because a caller outside this layer has to tell WHICH holder owns a
+    flag, not just that it is set: ``check_pipeline_busy_or_raise`` must let an
+    ``admin`` holder of ``busy`` through (that request queues on the workspace
+    admin lock instead) while still refusing a ``processing`` / ``clear`` /
+    ``delete`` one. The record's shape stays known only here, as with
+    :func:`make_owner_record` and :func:`_reservation_owner_token`.
+
+    ``None`` for a bare token, a legacy record without the field, and a missing
+    owner. Callers MUST treat ``None`` as "not exempt": a flag with no
+    identifiable owner is the case a fence exists for.
+    """
+    if isinstance(record, Mapping):
+        kind = record.get("kind")
+        return str(kind) if kind is not None else None
+    return None
 
 
 async def acquire_reservation(
@@ -3525,6 +3563,21 @@ async def drain_reserved_background_tasks(
         observed = await _join_resistant(task)
         pending_cancel = pending_cancel or observed
     return pending_cancel
+
+
+def is_multiprocess_mode() -> bool:
+    """Whether shared state is backed by a ``multiprocessing.Manager``.
+
+    ``False`` in single-process mode (and before :func:`initialize_share_data`
+    has run), where the shared dicts are plain dicts and the update flags are
+    local ``MutableBoolean`` objects.
+
+    Exposed for the storages whose cross-process fences are only meaningful
+    when peer processes exist -- see ``NetworkXStorage``'s *Cross-process sync
+    protocol*, which skips its file-fingerprint check in single-process mode
+    because there is no peer that could have committed.
+    """
+    return bool(_is_multiprocess)
 
 
 async def get_update_flag(namespace: str, workspace: str | None = None):

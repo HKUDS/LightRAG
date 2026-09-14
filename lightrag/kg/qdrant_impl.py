@@ -1371,7 +1371,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         intact.
 
         MUST only be called when ``pipeline_status`` is idle (see the
-        Pipeline concurrency contract in ``AGENTS.md``); the only
+        Pipeline concurrency contract in ``docs/design/PipelineConcurrencyContract.md``); the only
         in-tree caller ``clear_documents`` enforces this.
 
         Pending-write buffers are cleared *before* the server-side delete

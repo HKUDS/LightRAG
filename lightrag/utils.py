@@ -41,7 +41,11 @@ import numpy as np
 from dotenv import load_dotenv
 import json_repair
 
-from lightrag.exceptions import ChunkBlockMatchError, EmptyTruncatedResponseError
+from lightrag.exceptions import (
+    ChunkBlockMatchError,
+    CommitBookkeepingError,
+    EmptyTruncatedResponseError,
+)
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
@@ -503,7 +507,6 @@ class LightragPathFilter(logging.Filter):
         super().__init__()
         # Define paths to be filtered
         self.filtered_paths = [
-            "/documents",
             "/documents/paginated",
             "/health",
             "/webui/",
@@ -662,6 +665,30 @@ class EmbeddingFunc:
             embeddings = await embed_func(texts, context="document")  # For indexing
             embeddings = await embed_func([query], context="query")   # For search
 
+    Return shape contract:
+        The wrapped function MUST return a 2D numpy array of shape
+        ``(len(texts), embedding_dim)`` -- exactly one row per input text, in
+        input order. Every storage backend consumes the result positionally
+        (``embeddings[i]`` belongs to ``texts[i]``), so any other shape is
+        rejected with a ValueError; the wrapper never reshapes, slices or pads
+        the result, because the row-to-input mapping cannot be recovered once
+        it is wrong.
+
+        Rank and dimension are always checked. The row count is checked
+        against the input batch, resolved from the first positional argument
+        or from the kwarg named after the wrapped function's first parameter;
+        when neither applies the row count is left unverified rather than
+        guessed at. In particular:
+
+        - A single input still returns ``(1, embedding_dim)``, not
+          ``(embedding_dim,)``.
+        - A provider that returns more vectors than inputs (e.g. one vector
+          per internally split segment of an over-long text) needs its token
+          limit declared via ``max_token_size``, or a dedicated adapter that
+          normalizes the output to one vector per input.
+        - An empty input list may return any empty array, including a bare
+          ``np.array([])``.
+
     Args:
         embedding_dim: Expected dimension of the embeddings(For dimension checking and workspace data isolation in vector DB)
         func: The actual embedding function to wrap
@@ -710,6 +737,40 @@ class EmbeddingFunc:
                 "Consider using .func to access the unwrapped function directly."
             )
 
+    def _resolve_input_batch(self, args: tuple, kwargs: dict) -> Any:
+        """Return the sequence of texts the caller passed, or None if unknown.
+
+        The vector count can only be checked against something. Positional is
+        the overwhelmingly common path and costs nothing to read. A keyword
+        call needs the wrapped function's first parameter name to know which
+        kwarg holds the texts, so the signature is inspected only on that
+        path -- and only the parameter name is read, never a full bind(),
+        which would raise on the extra kwargs this wrapper and its priority
+        decorator pass through (``_priority``, ``context``, ...).
+
+        Returning None means "not resolvable", which downgrades the vector
+        count check to unverifiable rather than guessing at a mapping.
+        """
+        if args:
+            return args[0]
+        if not kwargs:
+            return None
+        try:
+            params = inspect.signature(self.func).parameters
+        except (TypeError, ValueError):
+            # Builtins and C-implemented callables expose no signature.
+            return None
+        for param in params.values():
+            if param.kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            ):
+                return kwargs.get(param.name)
+            # A positional-only or *args first parameter cannot be addressed
+            # by keyword at all, so the batch stays unknown.
+            return None
+        return None
+
     async def __call__(self, *args, **kwargs) -> np.ndarray:
         # Only inject embedding_dim when send_dimensions is True
         if self.send_dimensions:
@@ -746,27 +807,89 @@ class EmbeddingFunc:
         # Call the actual embedding function
         result = await self.func(*args, **kwargs)
 
-        # Validate embedding dimensions using total element count
-        total_elements = result.size  # Total number of elements in the numpy array
+        # Validate the result shape directly rather than inferring it from a
+        # total-element count. A total-element check cannot tell a genuine
+        # vector-count mismatch (2N, D) apart from a dimension mismatch
+        # (N, 2D) -- both divide out to the same "actual vectors" number, so
+        # the wrong one of the two gets reported. Checking ndim/shape[0]/
+        # shape[1] directly identifies which one actually happened.
+        #
+        # Every mismatch is fatal: the wrapper never reshapes, slices or pads
+        # the result. Each raise is preceded by a logger.error carrying the
+        # likely cause and the fix, so the short exception message stays
+        # readable while the diagnosis is still available in the logs.
         expected_dim = self.embedding_dim
+        # None means the input batch could not be resolved from the call, so
+        # the vector count is unverifiable -- see _resolve_input_batch.
+        input_batch = self._resolve_input_batch(args, kwargs)
+        expected_vectors = (
+            len(input_batch) if isinstance(input_batch, (list, tuple)) else None
+        )
 
-        # Check if total elements can be evenly divided by embedding_dim
-        if total_elements % expected_dim != 0:
+        # An empty batch carries no vectors and no dimension to validate. A
+        # provider that short-circuits with `if not texts: return np.array([])`
+        # yields a 1D (0,) array, which is a correct answer to a zero-input
+        # request and must not be rejected by the 2D check below. An empty
+        # input paired with a non-empty result still falls through and fails.
+        if expected_vectors == 0 and result.size == 0:
+            return result
+
+        if result.ndim != 2:
+            logger.error(
+                f"Embedding result has unexpected shape {result.shape}: this "
+                f"wrapper requires a 2D array of exactly one row per input "
+                f"text, i.e. (len(texts), {expected_dim}). A single input "
+                f"must still come back as (1, {expected_dim}), not "
+                f"({expected_dim},); a flattened or nested array is rejected "
+                f"rather than reshaped, because the row-to-input mapping "
+                f"cannot be recovered from it."
+            )
             raise ValueError(
-                f"Embedding dimension mismatch detected: "
-                f"total elements ({total_elements}) cannot be evenly divided by "
-                f"expected dimension ({expected_dim}). "
+                f"Embedding result has unexpected shape: expected a 2D "
+                f"array (vectors, dimension) but got ndim={result.ndim} "
+                f"(shape={result.shape})."
             )
 
-        # Optional: Verify vector count matches input text count
-        actual_vectors = total_elements // expected_dim
-        if args and isinstance(args[0], (list, tuple)):
-            expected_vectors = len(args[0])
-            if actual_vectors != expected_vectors:
-                raise ValueError(
-                    f"Vector count mismatch: "
-                    f"expected {expected_vectors} vectors but got {actual_vectors} vectors (from embedding result)."
-                )
+        if expected_vectors is not None and result.shape[0] != expected_vectors:
+            logger.error(
+                f"Embedding vector count mismatch: {expected_vectors} text(s) "
+                f"in, {result.shape[0]} vector(s) out (shape={result.shape}). "
+                f"The usual cause is an embedding service that splits an "
+                f"over-long input internally and returns one vector per "
+                f"segment: declare the model's real token limit so texts are "
+                f"truncated before the call -- EMBEDDING_TOKEN_LIMIT on the "
+                f"API server, or max_token_size on "
+                f"@wrap_embedding_func_with_attrs for a custom embedding "
+                f"function. A provider that legitimately returns multiple "
+                f"vectors per input needs a dedicated adapter that normalizes "
+                f"its output to one vector per input before it reaches this "
+                f"wrapper; nothing is reshaped or truncated here, since there "
+                f"is no general contract for which rows correspond to which "
+                f"inputs."
+            )
+            raise ValueError(
+                f"Vector count mismatch: expected {expected_vectors} vectors "
+                f"(one per input text) but got {result.shape[0]} "
+                f"(shape={result.shape})."
+            )
+
+        if result.shape[1] != expected_dim:
+            logger.error(
+                f"Embedding dimension mismatch: the model returned "
+                f"{result.shape[1]}-dimensional vectors but this embedding "
+                f"function declares {expected_dim} (shape={result.shape}). "
+                f"Check that EMBEDDING_DIM (or the embedding_dim passed to "
+                f"@wrap_embedding_func_with_attrs / EmbeddingFunc) matches "
+                f"the model actually being called, and that the endpoint "
+                f"honours the requested output dimension. Vectors already "
+                f"stored under the previously declared dimension do not match "
+                f"the corrected one, so clear the data directory too unless "
+                f"nothing has been indexed yet."
+            )
+            raise ValueError(
+                f"Embedding dimension mismatch: expected dimension "
+                f"{expected_dim} but got {result.shape[1]} (shape={result.shape})."
+            )
 
         return result
 
@@ -997,13 +1120,26 @@ class QueueFullError(Exception):
 
 
 class VectorStorageConsistencyError(Exception):
-    """Raised when a vector storage write fails after the graph has already been updated.
+    """Raised when a step AFTER a durable graph update fails.
 
     The knowledge graph (plus the text_chunks KV store) is the authoritative data
-    source, so no data is lost — but the vector storage no longer mirrors the graph
-    and query results may be incomplete until it is rebuilt. Stop the LightRAG
-    server and run the offline rebuild tool (``lightrag-rebuild-vdb``) to restore
-    consistency.
+    source, so no data is lost — but something that mirrors or annotates it did
+    not complete:
+
+    * a **vector storage** write, so the vector records no longer mirror the
+      graph and query results may be incomplete until they are rebuilt. Stop the
+      LightRAG server and run the offline rebuild tool (``lightrag-rebuild-vdb``)
+      to restore consistency.
+    * a **chunk-tracking** retirement, so rows survive for graph objects a merge
+      or rename has removed. Those are dead bookkeeping until the same key
+      recurs; the message names the keys.
+
+    What every case shares is the reason this type exists at all: the graph
+    mutation IS durable, so the failure must not be reported as one that did not
+    happen. ``_edit_entity_impl``'s ``allow_merge`` handler re-raises exactly
+    this type and folds every other exception into a partial-success summary
+    answering HTTP 200 — which for a landed merge would name the source entity
+    it just deleted as the surviving one.
     """
 
     pass
@@ -2768,6 +2904,60 @@ def _consume_future_exception(fut: "asyncio.Future") -> None:
         fut.exception()
 
 
+# Marker stamped on a ``CancelledError`` that was WITHHELD while a region which
+# must not be interrupted ran to its end -- see
+# :func:`_wait_deferring_cancellation`. It states one narrow fact: the operation
+# kept running AFTER its cancellation was requested, so the storage write that
+# region was performing had the chance to become durable even though the
+# operation is about to report failure.
+#
+# Read it through :func:`cancellation_was_deferred`. A caller that converts a
+# cancellation into an error of its own MUST NOT describe such an operation as
+# one that did not happen -- ``AGENTS.md`` *Consistency without transactions*:
+# "a durable write must never be reported as one that did not happen". The
+# admin-write hold ceiling (``LightRAG._AdminHoldCeiling``) is the reference
+# consumer.
+_DEFERRED_PAST_CANCEL_ATTR = "lightrag_deferred_past_cancel"
+
+
+def cancellation_was_deferred(exc: BaseException) -> bool:
+    """Whether ``exc`` is a cancellation that was held while an uninterruptible
+    region ran to a SUCCESSFUL end, so what that region wrote is durable.
+
+    Success is part of the claim, not an approximation of it. A region whose
+    work RAISED (a full disk, an I/O error) also withholds the cancellation, and
+    ``_bounded_submit_impl`` gives the cancellation precedence over that failure
+    -- it only logs it -- so the exception the caller sees looks the same in both
+    cases. Reporting the failed one as durable is the mirror of the defect this
+    stamp exists to prevent: it would tell a caller their write landed when
+    nothing did, and a caller told that does not retry.
+
+    See :data:`_DEFERRED_PAST_CANCEL_ATTR`. ``False`` for any other exception,
+    for a cancellation delivered at an ordinary suspension point, and for one
+    withheld across work that failed.
+    """
+    return getattr(exc, _DEFERRED_PAST_CANCEL_ATTR, False) is True
+
+
+def mark_cancellation_deferred(exc: BaseException) -> None:
+    """Record on ``exc`` that a storage commit completed despite it.
+
+    The stamp normally comes from an uninterruptible region WITHHOLDING a
+    pending cancellation (``_wait_deferring_cancellation``) or from the
+    operation-level view of one (``_bounded_submit_impl``). This is the third
+    author, for the case neither can see: a commit that STARTS after the
+    cancellation has already been delivered, from a ``finally`` unwinding on it.
+    No cancellation is pending there for those two to notice, yet the write is
+    just as durable, and a caller told otherwise retries a change that landed.
+
+    A no-op unless ``exc`` is a cancellation: nothing else carries this claim,
+    and stamping an arbitrary exception would put a durability promise on an
+    object no reader of the stamp expects to find one on.
+    """
+    if isinstance(exc, asyncio.CancelledError):
+        setattr(exc, _DEFERRED_PAST_CANCEL_ATTR, True)
+
+
 async def _wait_deferring_cancellation(
     future: "asyncio.Future",
     pending_cancel: Optional[asyncio.CancelledError],
@@ -2780,8 +2970,26 @@ async def _wait_deferring_cancellation(
     ``_KeyedLockContext.__aexit__`` in ``lightrag/kg/shared_storage.py``.
 
     Returns the cancellation to re-raise once every step is done (the first one
-    seen, if any). Cancelling ``future`` ITSELF still propagates immediately: it
-    did not run to completion and we must not pretend it did.
+    seen, if any), STAMPED with :data:`_DEFERRED_PAST_CANCEL_ATTR` **when this
+    future completed successfully**, so the caller that re-raises it -- and
+    anything upstream that rewrites it into an error of its own -- can tell it
+    apart both from a cancellation delivered at an ordinary await and from one
+    withheld across work that FAILED. That distinction is not cosmetic: this
+    function's whole purpose is to let a write finish after the cancel was
+    requested, so the operation reporting failure may have committed; but a
+    write that raised committed nothing, and ``_bounded_submit_impl`` gives the
+    cancellation precedence over that failure, so without this the two are
+    indistinguishable downstream.
+
+    An incoming stamp is never cleared. The second call in
+    ``_bounded_submit_impl`` passes the same instance for the commit hook: the
+    write already succeeded and IS durable, so a failing hook must not retract
+    that -- and when the cancel arrived only during that failing hook, so that
+    no call here ever saw a successful future, ``_bounded_submit_impl`` stamps
+    it itself. This function judges the future it was given; only the caller
+    knows what the operation as a whole committed. Cancelling ``future`` ITSELF
+    still propagates immediately: it did not run to completion and we must not
+    pretend it did.
     """
     while not future.done():
         try:
@@ -2799,7 +3007,28 @@ async def _wait_deferring_cancellation(
             if not future.done():
                 raise
             break
+    if pending_cancel is not None and _completed_successfully(future):
+        # Stamp the very instance the caller is about to re-raise. The exception
+        # object is the natural carrier: it is what travelled through the region,
+        # nothing between here and the caller replaces it (the admin flows catch
+        # ``Exception``, not ``BaseException``), and it needs neither a contextvar
+        # nor a shared counter to reach whoever ends up reporting the failure.
+        #
+        # Gated on success: see the docstring. Never cleared, so a stamp an
+        # earlier round put on this instance survives a later step that fails.
+        setattr(pending_cancel, _DEFERRED_PAST_CANCEL_ATTR, True)
     return pending_cancel
+
+
+def _completed_successfully(future: "asyncio.Future") -> bool:
+    """Whether ``future`` finished with a result rather than an error.
+
+    Reads the future without raising: a cancelled or still-pending one is not a
+    success, and ``exception()`` would raise on the former.
+    """
+    if not future.done() or future.cancelled():
+        return False
+    return future.exception() is None
 
 
 async def _bounded_submit_impl(
@@ -2849,6 +3078,11 @@ async def _bounded_submit_impl(
       because nothing was ever submitted. That is load-bearing, not tidiness:
       Nano's bookkeeping retires the redo log, and running it without a write
       would discard rows that were never persisted.
+    * ``on_committed`` raised → the write is already durable, so the failure is
+      re-raised as :class:`CommitBookkeepingError`, which says exactly that. The
+      hook's own exception must NOT reach the caller unwrapped: it is then
+      indistinguishable from a write that never landed, and every call site's
+      ``except Exception`` handles it by reasoning that only holds for that case.
     """
     await semaphore.acquire()
     try:
@@ -2898,6 +3132,18 @@ async def _bounded_submit_impl(
         if not commit_future.cancelled():
             commit_exc = commit_future.exception()
 
+    if pending_cancel is not None and _completed_successfully(async_future):
+        # The stamp describes the OPERATION's durability, not one future's
+        # outcome. ``_wait_deferring_cancellation`` can only see the future it
+        # was handed, so the case "the write landed, the cancel arrived during
+        # the commit hook, and the HOOK failed" would leave the cancellation
+        # unstamped -- and every reader of the stamp (the ceiling's message,
+        # ``NetworkXStorage.index_done_callback``) would then treat a durable
+        # write as one that never happened, which is what the stamp exists to
+        # prevent. The write succeeded here, so say so; the hook's failure is
+        # logged just below.
+        setattr(pending_cancel, _DEFERRED_PAST_CANCEL_ATTR, True)
+
     if pending_cancel is not None:
         # The caller gets CancelledError, so nobody will ever see these.
         # ``_consume_future_exception`` already marked them retrieved (no
@@ -2908,6 +3154,23 @@ async def _bounded_submit_impl(
                 logger.error(f"{label} failed while its caller was cancelled: {exc}")
         raise pending_cancel
     if commit_exc is not None:
+        if isinstance(commit_exc, Exception):
+            # Typed, because the two failures this function can report want
+            # opposite handling and used to look identical: ``fn`` raising means
+            # nothing was persisted, while reaching HERE means the write is on
+            # disk and only its publication failed. A caller that cannot tell
+            # them apart rolls back in-memory state the file already has, and
+            # reports a durable mutation as one that never happened.
+            raise CommitBookkeepingError(
+                f"The offloaded write landed, but its commit bookkeeping "
+                f"failed: {commit_exc}",
+                result=async_future.result(),
+            ) from commit_exc
+        # A BaseException that is not an Exception (SystemExit, KeyboardInterrupt)
+        # is interpreter-level control flow, not a bookkeeping failure, and
+        # wrapping it would demote a shutdown request into a storage error. A
+        # cancelled hook never arrives here — ``commit_future.cancelled()`` is
+        # tested above, and that case is the caller's cancellation path.
         raise commit_exc
     return async_future.result()
 
@@ -3132,6 +3395,32 @@ async def run_in_storage_io(fn: Callable[..., Any], *args: Any, **kwargs: Any) -
     )
 
 
+def log_without_raising(emit: Callable[[str], Any], message: str) -> None:
+    """Emit a log line that must never propagate a sink failure to its caller.
+
+    For code past a point of no return, where the caller's status no longer has
+    the right to change. The file backends' ``drop`` commit hooks are the
+    motivating case: once the file is gone the destruction happened, and a
+    broken handler, formatter or output target must not turn it into
+    ``{"status": "error"}`` — the exact misreport those hooks exist to prevent.
+    Their outer ``except`` needs it for the mirror reason: a sink failure there
+    must not swallow the ``"error"`` a real destructive failure has to report.
+
+    Pass the log method itself (``log_without_raising(logger.info, msg)``)
+    rather than wrapping the call in a lambda: an ``except X as e`` name is
+    unbound at the end of its block, so a closure over it reads as undefined to
+    static analysis even though it resolves at call time.
+
+    The failure is deliberately **swallowed, not re-reported**: any report would
+    travel the same broken sink. This is the narrow exception to *fail loud* —
+    it applies to logging alone, never to the work being logged about.
+    """
+    try:
+        emit(message)
+    except Exception:
+        pass
+
+
 async def commit_in_storage_io(
     fn: Callable[[], Any],
     on_committed: Callable[[], Awaitable[Any]],
@@ -3154,6 +3443,15 @@ async def commit_in_storage_io(
     this signature clear of the keyword-forwarding hazard ``run_in_storage_io``
     has to live with. ``on_committed`` runs ONLY if ``fn`` succeeded — see
     ``_bounded_submit_impl`` for why running it otherwise would lose data.
+
+    Raises:
+        CommitBookkeepingError: ``fn`` succeeded and ``on_committed`` did not.
+            The write is DURABLE; only its publication failed. Every call site
+            must handle this separately from a write failure and report the
+            commit as landed — see the exception's own docstring for the
+            contract, and ``NetworkXStorage.index_done_callback`` for the
+            reference handler.
+        Exception: whatever ``fn`` raised. Nothing was persisted.
     """
     from lightrag.constants import STORAGE_IO_SUBMIT_LIMIT
 
@@ -3788,7 +4086,7 @@ def truncate_list_by_token_size(
 
     Counts the real serialized text — every item's ``key(item)`` joined by
     ``separator`` — so the separator's own tokens are part of the budget
-    (the previous per-item-only count silently missed them; see #3559).
+    (the previous per-item-only count silently missed them).
     Never partially truncates an item: the result is always "keep the first
     K complete items, drop the rest", never a half-rendered item.
 
@@ -4287,7 +4585,7 @@ async def wait_tasks_with_drain(
     Concurrent multi-store writers (entity/relation merge, rebuild) must never
     leave a sibling task writing in the background after a failure — a failed
     ``gather``/``wait`` does not by itself imply the other write tasks stopped
-    (issue #3400, "incomplete async failure coordination").
+    ("incomplete async failure coordination").
 
     Behavior:
       - All tasks succeed: returns their results (completion order).
@@ -4500,13 +4798,76 @@ async def aexport_data(
                 relations_data.append(relation_row)
 
     # --- Relationships (from VectorDB) ---
-    all_relationships = await relationships_vdb.client_storage
-    for rel in all_relationships["data"]:
-        relationships_data.append(
-            {
-                "relationship_id": rel["__id__"],
-                "data": str(rel),  # Convert to string for compatibility
-            }
+    # ``client_storage`` is a debug/snapshot escape hatch, not part of the
+    # BaseVectorStorage contract: only NanoVectorDBStorage (async property)
+    # and FaissVectorDBStorage (sync property) implement it. Every other
+    # backend (Milvus, Qdrant, Postgres, Redis, MongoDB, OpenSearch) has no
+    # such attribute at all. This section is a supplementary raw-record
+    # dump; the entity/relation data above already carries the authoritative
+    # graph content, so skip it rather than fail the whole export on a
+    # backend that doesn't support it.
+    #
+    # Check the class, not the instance, for attribute presence:
+    # ``hasattr(relationships_vdb, ...)`` would call the getter to answer
+    # the question, and for NanoVectorDB's *async* property that getter
+    # returns a coroutine that ``hasattr`` immediately discards --
+    # "coroutine was never awaited" plus doing the (wasted) work twice.
+    # Attribute access on the class itself returns the property descriptor
+    # without invoking it.
+    if hasattr(type(relationships_vdb), "client_storage"):
+        # The two implementations disagree on sync vs. async (NanoVectorDB's
+        # is async, Faiss's is a plain sync property), so the value itself
+        # decides whether to await -- a fixed isinstance/backend-name check
+        # would silently break the moment either changes.
+        client_storage = relationships_vdb.client_storage
+        if inspect.isawaitable(client_storage):
+            # Freshness-aware shape (NanoVectorDBStorage): awaiting the
+            # property funnels through the backend's reload-if-stale path,
+            # so the snapshot picks up whatever another process committed.
+            client_storage = await client_storage
+        else:
+            # Synchronous shape (FaissVectorDBStorage), which is documented
+            # as deliberately NOT going through `_get_index`: in a reader
+            # process it can hand back a snapshot older than the latest
+            # committed one until some other call triggers a reload. That
+            # is fine in the single-process case a local file-backed store
+            # usually runs in, and this section is a supplementary raw dump
+            # -- the authoritative entity/relation content above comes from
+            # the graph storage -- so the export proceeds. But it must not
+            # pass silently: exports get used for backups, and a section
+            # that quietly omits recent records is worse than one whose
+            # limits are stated.
+            logger.warning(
+                f"{type(relationships_vdb).__name__}.client_storage is a "
+                "synchronous snapshot that does not check for a newer "
+                "on-disk commit; in a multi-process deployment the raw "
+                "VectorDB relationships section of this export may lag "
+                "records committed by another process."
+            )
+        for rel in client_storage["data"]:
+            # Faiss materializes the embedding INTO its metadata rows -- at
+            # flush time, and again by reconstruction when loading a
+            # persisted index -- so a raw `str(rel)` would carry the full
+            # vector even for the default vector-free export, inflating the
+            # file by orders of magnitude and emitting embeddings the caller
+            # asked to leave out. Faiss's own read paths filter the key for
+            # exactly this reason. NanoVectorDB is unaffected either way: it
+            # keeps vectors in a separate `matrix`, not in these rows.
+            #
+            # Build a new dict rather than popping: these rows are live
+            # references into the backend's own metadata store.
+            if not include_vector_data:
+                rel = {k: v for k, v in rel.items() if k != "__vector__"}
+            relationships_data.append(
+                {
+                    "relationship_id": rel["__id__"],
+                    "data": str(rel),  # Convert to string for compatibility
+                }
+            )
+    else:
+        logger.debug(
+            f"{type(relationships_vdb).__name__} does not expose client_storage; "
+            "skipping the raw VectorDB relationships dump in the export."
         )
 
     # Export based on format
@@ -4773,7 +5134,7 @@ async def update_chunk_cache_list(
     text_chunks_storage: "BaseKVStorage",
     cache_keys: list[str],
     cache_scenario: str = "batch_update",
-) -> None:
+) -> bool:
     """Update chunk's llm_cache_list with the given cache keys
 
     Args:
@@ -4781,33 +5142,55 @@ async def update_chunk_cache_list(
         text_chunks_storage: Text chunks storage instance
         cache_keys: List of cache keys to add to the list
         cache_scenario: Description of the cache scenario for logging
+
+    Returns:
+        True when the keys are recorded on the chunk row, were already there,
+        or there was nothing to record. False when they could not be recorded
+        -- the chunk row is missing, or the read/write failed. True means
+        RECORDED, not yet durable: on a deferred KV backend the upsert reaches
+        shared memory only, and the commit order is what makes the ordering
+        durable.
+
+        Never raises. A caller that must not create an unreachable cache row
+        checks this BEFORE writing the row -- see *LLM extraction cache
+        reachability* in the contract doc,
+        ``docs/design/PurgeRecoveryContract.md``.
     """
     if not cache_keys:
-        return
+        return True
 
     try:
         chunk_data = await text_chunks_storage.get_by_id(chunk_id)
-        if chunk_data:
-            # Ensure llm_cache_list exists
-            if "llm_cache_list" not in chunk_data:
-                chunk_data["llm_cache_list"] = []
+        if not chunk_data:
+            # Not a silent no-op: the caller may be about to write a cache row
+            # whose only reachable reference would have been this one.
+            logger.warning(
+                f"Cannot record cache references on missing chunk {chunk_id} ({cache_scenario})"
+            )
+            return False
 
-            # Add cache keys to the list if not already present
-            existing_keys = set(chunk_data["llm_cache_list"])
-            new_keys = [key for key in cache_keys if key not in existing_keys]
+        # Ensure llm_cache_list exists
+        if "llm_cache_list" not in chunk_data:
+            chunk_data["llm_cache_list"] = []
 
-            if new_keys:
-                chunk_data["llm_cache_list"].extend(new_keys)
+        # Add cache keys to the list if not already present
+        existing_keys = set(chunk_data["llm_cache_list"])
+        new_keys = [key for key in cache_keys if key not in existing_keys]
 
-                # Update the chunk in storage
-                await text_chunks_storage.upsert({chunk_id: chunk_data})
-                logger.debug(
-                    f"Updated chunk {chunk_id} with {len(new_keys)} cache keys ({cache_scenario})"
-                )
+        if new_keys:
+            chunk_data["llm_cache_list"].extend(new_keys)
+
+            # Update the chunk in storage
+            await text_chunks_storage.upsert({chunk_id: chunk_data})
+            logger.debug(
+                f"Updated chunk {chunk_id} with {len(new_keys)} cache keys ({cache_scenario})"
+            )
+        return True
     except Exception as e:
         logger.warning(
             f"Failed to update chunk {chunk_id} with cache references on {cache_scenario}: {e}"
         )
+        return False
 
 
 class TruncatedResponse(str):
@@ -4856,8 +5239,7 @@ def empty_length_truncated_hint(
     identically. This is the structurally-broken case, not "ran a bit long":
     generation stopped before producing a single content token, so there is
     nothing to salvage and nothing to cache — the caller raises rather than
-    returning "" and letting the document be indexed as an empty graph
-    (issue #3601 gap 4).
+    returning "" and letting the document be indexed as an empty graph.
 
     ``budget_hint`` names the provider's own output-budget knob, since that is
     the actionable part and only the binding knows it.
@@ -5090,6 +5472,42 @@ def _reject_empty_truncated_response(
     raise EmptyTruncatedResponseError(message)
 
 
+def get_extract_cache_fence(text_chunks_storage) -> asyncio.Lock:
+    """Mutual exclusion between an extract cache attach+write and its commit.
+
+    Hold it around the ``update_chunk_cache_list`` / ``save_to_cache`` pair, and
+    around the chained ``text_chunks`` -> ``llm_response_cache`` commit in
+    ``LightRAG._flush_storages``. Without it the commit pair can straddle a
+    writer's pair on a backend that publishes a snapshot taken at commit time,
+    so the cache snapshot carries a row whose reference postdates the chunk
+    snapshot.
+
+    A plain ``asyncio.Lock``, NOT a cross-process one, and that is load-bearing:
+    extract cache rows are written only by the ingestion pipeline, which runs in
+    exactly one process per workspace (the ``busy`` reservation in *Pipeline
+    concurrency contract*, ``docs/design/PipelineConcurrencyContract.md``).
+    Other processes write only query-cache rows, which name no owning chunk and
+    need no reference. Relaxing that exclusivity silently un-fences this.
+
+    Lives on the storage instance rather than in a module registry so its
+    lifetime is the storage's, and so both sides reach the same object without
+    agreeing on a key. Created lazily with no await in between, so two
+    coroutines cannot build two locks.
+
+    That placement carries a second precondition, alongside the one above:
+    **one ``LightRAG`` instance per workspace per process.** Two instances on
+    one workspace hold two storage objects over the same shared data, so they
+    would build two locks and fence nothing. Constructing them is neither
+    supported nor necessary — see *Writers are fenced out of the commit pair*
+    in ``docs/design/PurgeRecoveryContract.md``.
+    """
+    fence = getattr(text_chunks_storage, "_extract_cache_fence", None)
+    if fence is None:
+        fence = asyncio.Lock()
+        text_chunks_storage._extract_cache_fence = fence
+    return fence
+
+
 async def use_llm_func_with_cache(
     user_prompt: str,
     use_llm_func: callable,
@@ -5103,6 +5521,8 @@ async def use_llm_func_with_cache(
     response_format: Any | None = None,
     entity_extraction: bool = False,
     llm_cache_identity: Any | None = None,
+    text_chunks_storage: "BaseKVStorage | None" = None,
+    on_cache_skipped: Callable[[str], None] | None = None,
 ) -> tuple[str, int]:
     """Call LLM function with cache support and text sanitization
 
@@ -5112,14 +5532,14 @@ async def use_llm_func_with_cache(
     This function applies text sanitization to prevent UTF-8 encoding errors for all LLM providers.
 
     Args:
-        input_text: Input text to send to LLM
+        user_prompt: Input text to send to LLM
         use_llm_func: LLM function with higher priority
         llm_response_cache: Cache storage instance
         max_tokens: Maximum tokens for generation
         history_messages: History messages list
         cache_type: Type of cache
         chunk_id: Chunk identifier to store in cache
-        text_chunks_storage: Text chunks storage to update llm_cache_list
+        system_prompt: Optional system prompt sent alongside the user prompt
         cache_keys_collector: Optional list to collect cache keys for batch processing
         response_format: Structured output control forwarded to the LLM provider.
             Providers translate this to their native structured-output surface
@@ -5133,6 +5553,22 @@ async def use_llm_func_with_cache(
             ``response_format`` directly.
         llm_cache_identity: Non-secret model/provider identity used to partition
             cache entries across role model, binding, or host changes.
+        text_chunks_storage: Storage holding the owning chunk. When given
+            together with ``chunk_id``, the cache key is attached to that chunk
+            BEFORE the cache row is written, so the row is never ordered ahead
+            of the only reference that reaches it, and the write is skipped
+            when the reference cannot be recorded -- see *LLM extraction cache
+            reachability* in the contract doc,
+            ``docs/design/PurgeRecoveryContract.md``. Omit it -- as the parse
+            stage and the summary path do, having no owning chunk -- to keep the
+            legacy order and the ``cache_keys_collector`` batch instead.
+        on_cache_skipped: Called with ``cache_type`` when the cache write was
+            skipped because the reference could not be recorded, i.e. caching is
+            effectively off for this call. Lets the caller surface that to the
+            operator instead of leaving it in the server log. Must be
+            synchronous and must not raise: the extraction path publishes its
+            summary from an await-free ``finally`` that also runs during a
+            cancellation unwind.
 
     Returns:
         tuple[str, int]: (LLM response text, timestamp)
@@ -5189,6 +5625,22 @@ async def use_llm_func_with_cache(
         # Generate cache key for this LLM call
         cache_key = generate_cache_key("default", cache_type, arg_hash)
 
+        async def _record_reference(scenario: str) -> bool:
+            """Record this chunk's reference to ``cache_key``.
+
+            Returns True when the caller may write the row: either the
+            reference is recorded, or the caller opted out of the invariant by
+            not naming an owning chunk (parse stage, summaries).
+            """
+            if chunk_id is None or text_chunks_storage is None:
+                return True
+            return await update_chunk_cache_list(
+                chunk_id,
+                text_chunks_storage,
+                [cache_key],
+                scenario,
+            )
+
         cached_result = await handle_cache(
             llm_response_cache,
             arg_hash,
@@ -5200,6 +5652,13 @@ async def use_llm_func_with_cache(
             content, timestamp = cached_result
             logger.debug(f"Found cache for {arg_hash}")
             statistic_data["llm_cache"] += 1
+
+            # Re-attach on a hit. The row predates this call, so ordering is
+            # moot here; this is the reprocess self-heal that re-points a
+            # rewritten chunk row at rows the purge orphaned. A failure is
+            # logged, not fatal: it fails to repair an orphan rather than
+            # creating one.
+            await _record_reference(f"{cache_type}_cache_hit")
 
             # Add cache key to collector if provided
             if cache_keys_collector is not None:
@@ -5234,15 +5693,40 @@ async def use_llm_func_with_cache(
         # Generate timestamp for cache miss (LLM call completion time)
         current_timestamp = int(time.time())
 
-        if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
+        # An extract cache row is reachable only through the owning chunk's
+        # llm_cache_list, so the reference is recorded BEFORE the row is
+        # written: attaching first can lose the reference, which every reader
+        # tolerates, while writing first lost the row itself. On a deferred KV
+        # backend this only orders the two writes in memory -- the commit order
+        # that makes it durable is the failure epilogue's, not this function's.
+        # The residues, both layers and what this ordering does not close are in
+        # *LLM extraction cache reachability* in the contract doc.
+        async def _attach_then_write() -> None:
             if res_truncated:
                 # Do not persist truncated extraction output: a cached partial
                 # payload would be replayed on every later run, even when a
                 # larger token budget would have completed the extraction.
+                # Nothing is attached either, so no reference is left dangling.
                 logger.warning(
                     f"Skipping LLM cache write for truncated {cache_type} response "
                     f"(finish_reason=length, chunk_id={chunk_id})"
                 )
+            # Attach BEFORE the write, never after -- the ordering rule above.
+            # ``save_to_cache`` is a no-op on falsy content, so attaching for an
+            # empty response would leave a reference to a row that is never
+            # written. Its other two no-ops cannot happen here: hashing_kv is
+            # non-None inside this branch, and a streaming response would
+            # already have failed the ``len(res)`` above.
+            elif res and not await _record_reference(f"{cache_type}_cache_write"):
+                logger.warning(
+                    f"Skipping LLM cache write for {cache_type} response: could not "
+                    f"record its reference on chunk {chunk_id}. The result is "
+                    "returned; it will be recomputed on the next run."
+                )
+                # Caching is effectively off for this call. Hand that to the
+                # caller so it reaches the operator, not just the server log.
+                if on_cache_skipped is not None:
+                    on_cache_skipped(cache_type)
             else:
                 await save_to_cache(
                     llm_response_cache,
@@ -5258,6 +5742,17 @@ async def use_llm_func_with_cache(
                 # Add cache key to collector if provided
                 if cache_keys_collector is not None:
                     cache_keys_collector.append(cache_key)
+
+        if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
+            if chunk_id is not None and text_chunks_storage is not None:
+                # Fence the pair against the commit that publishes both
+                # namespaces; see ``get_extract_cache_fence``. Callers that
+                # name no owning chunk need no reference, so they need no
+                # fence either.
+                async with get_extract_cache_fence(text_chunks_storage):
+                    await _attach_then_write()
+            else:
+                await _attach_then_write()
 
         return res, current_timestamp
 
@@ -5309,13 +5804,18 @@ def get_content_summary(content: str, max_length: int = 250) -> str:
 def sanitize_and_normalize_extracted_text(
     input_text: str, remove_inner_quotes=False
 ) -> str:
-    """Santitize and normalize extracted text
+    """Sanitize and normalize extracted text
+
     Args:
         input_text: text string to be processed
-        is_name: whether the input text is a entity or relation name
+        remove_inner_quotes: whether to remove Chinese quotation marks and
+            English quotation marks adjacent to Chinese characters, and to
+            normalize non-breaking spaces. Matching outer quotation marks are
+            removed independently of this option only when the enclosed text
+            contains no corresponding quote characters.
 
     Returns:
-        Santitized and normalized text string
+        Sanitized and normalized text string
     """
     safe_input_text = sanitize_text_for_encoding(input_text)
     if safe_input_text:
@@ -5340,19 +5840,21 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
     - Preserve spaces within English text and numbers
     - Replace Chinese parentheses with English parentheses
     - Replace Chinese dash with English dash
-    - Remove English quotation marks from the beginning and end of the text
-    - Remove English quotation marks in and around chinese
-    - Remove Chinese quotation marks
+    - Remove a matching outer English/Chinese quote or book title mark pair only
+      when the enclosed text contains no corresponding mark characters
     - Filter out short numeric-only text (length < 3 and only digits/dots)
     - remove_inner_quotes = True
-        remove Chinese quotes
-        remove English quotes in and around chinese
-        Convert non-breaking spaces to regular spaces
-        Convert narrow non-breaking spaces after non-digits to regular spaces
+        - Remove Chinese quotation marks
+        - Remove English quotation marks adjacent to Chinese characters
+        - Convert non-breaking spaces to regular spaces
+        - Convert narrow non-breaking spaces after non-digits to regular spaces
 
     Args:
         name: Entity name to normalize
-        is_entity: Whether this is an entity name (affects quote handling)
+        remove_inner_quotes: whether to apply the optional quote and
+            non-breaking-space rules above. Matching outer quotation marks are
+            removed independently of this option only when the enclosed text
+            contains no corresponding quote characters.
 
     Returns:
         Normalized entity name
@@ -5464,7 +5966,9 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
     return name
 
 
-def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
+def sanitize_text_for_encoding(
+    text: str, replacement_char: str = "", *, strip: bool = True
+) -> str:
     """Sanitize text to ensure safe UTF-8 encoding by removing or replacing problematic characters.
 
     This function handles:
@@ -5473,11 +5977,19 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
     - Control characters that might cause issues
     - Unescape HTML escapes
     - Remove control characters
-    - Whitespace trimming
+    - Whitespace trimming (see ``strip``)
 
     Args:
         text: Input text to sanitize
         replacement_char: Character to use for replacing invalid sequences
+        strip: Trim leading/trailing whitespace. Default ``True``, which is
+            what every caller sanitizing a whole payload wants. Pass ``False``
+            when the text is a FRAGMENT that will sit inside a larger
+            sanitized string: its boundary whitespace is interior to that
+            string and survives there, so trimming the fragment in isolation
+            would produce something the consumer of the larger string never
+            saw. ``kg_extraction_validator`` is the case in point — the chunk
+            sits inside a fenced ``---Input Text---`` section of the prompt.
 
     Returns:
         Sanitized text that can be safely encoded as UTF-8
@@ -5486,7 +5998,8 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
         return text
 
     # First, strip whitespace
-    text = text.strip()
+    if strip:
+        text = text.strip()
 
     # Early return if text is empty after basic cleaning
     if not text:
@@ -5502,7 +6015,7 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
     # 3. Remove control characters but preserve common whitespace (\t, \n, \r)
     text = _CONTROL_CHAR_PATTERN_ALL.sub(replacement_char, text)
 
-    return text.strip()
+    return text.strip() if strip else text
 
 
 def strip_control_characters(text: str, replacement_char: str = "") -> str:
@@ -5933,11 +6446,12 @@ async def pick_by_vector_similarity(
     if not entity_info or num_of_chunks <= 0:
         return []
 
-    # Collect all unique chunk IDs from entity info
-    all_chunk_ids = set()
-    for i, entity in enumerate(entity_info):
-        chunk_ids = entity.get("sorted_chunks", [])
-        all_chunk_ids.update(chunk_ids)
+    # Preserve first occurrence order for similarity ties and fallback selection.
+    all_chunk_ids = dict.fromkeys(
+        chunk_id
+        for entity in entity_info
+        for chunk_id in entity.get("sorted_chunks", [])
+    )
 
     if not all_chunk_ids:
         logger.warning(
@@ -6244,7 +6758,7 @@ async def process_chunks_unified(
 
     Args:
         query: Search query for reranking
-        chunks: List of text chunks to process
+        unique_chunks: List of deduplicated text chunks to process
         query_param: Query parameters containing configuration
         global_config: Global configuration dictionary
         source_type: Source type for logging ("vector", "entity", "relationship", "mixed")
@@ -6550,7 +7064,7 @@ def has_chunk_tracking_row(stored_data: Any) -> bool:
     caller fall back to the graph object's ``source_id`` — a truncated view that
     can still name chunks a previous purge already pruned (see
     ``compute_incremental_chunk_ids``); reseeding a present-but-empty row from
-    it resurrects stale attribution (issue #3609).
+    it resurrects stale attribution.
     """
 
     return isinstance(stored_data, dict) and isinstance(
@@ -6720,7 +7234,7 @@ def fix_tuple_delimiter_corruption(
         record,
     )
 
-    # Fix: <|#|>| -> <|#|>  ( this is a fix for: <|#|| -> <|#|> )
+    # Fix: <|#|>| -> <|#|>  (this is a fix for: <|#|| -> <|#|>)
     record = re.sub(
         rf"<\|{escaped_delimiter_core}\|>\|",
         tuple_delimiter,

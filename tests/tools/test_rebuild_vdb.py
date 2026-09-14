@@ -696,9 +696,11 @@ async def test_merge_entity_vdb_failure_raises_consistency_error(
 async def test_merge_source_entity_delete_failure_raises_consistency_error(
     single_attempt_vdb_ops,
 ):
-    # Step 10 deletes the source node from the graph first, then its vector
-    # record. A delete failure here happens AFTER the graph node is gone, so it
-    # must fail loud with a message that does not claim the source still exists.
+    # Step 10 deletes the source entities' vector records BEFORE removing their
+    # nodes, so a delete failure here leaves the graph untouched: the sources
+    # are still present with their chunk tracking intact and a retry is safe.
+    # It still fails loud -- vector records deleted before the failure leave
+    # those entities without an embedding until a retry or an offline rebuild.
     from lightrag.utils_graph import _merge_entities_impl
 
     graph = make_merge_graph()
@@ -713,9 +715,11 @@ async def test_merge_source_entity_delete_failure_raises_consistency_error(
 
     message = str(excinfo.value)
     assert "lightrag-rebuild-vdb" in message
-    # The source node was already removed; the message must not claim otherwise.
-    graph.delete_node.assert_awaited_with("Bob")
-    assert "were not deleted" not in message
+    # The node removal never ran, and the message must say so: claiming the
+    # source was already gone would send an operator looking for a repair that
+    # is not owed, and would hide that a plain retry is the fix.
+    graph.delete_node.assert_not_awaited()
+    assert "were NOT removed from the knowledge graph" in message
     entities_vdb.delete.assert_awaited()
 
 

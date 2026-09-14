@@ -59,7 +59,7 @@ lightrag-server
 启动日志会明确告诉你当前处于哪种状态：
 
 ```
-INFO: UI customization bundle active: bundle_revision=1f0c… locales=['en', 'zh', 'zh-TW']
+INFO: UI customization: bundle 1f0c… ['en', 'zh', 'zh-TW']
 ```
 
 ### 2.2 Docker Compose 部署
@@ -502,7 +502,7 @@ kubectl create configmap lightrag-ui-templates \
 ```
 INFO:    UI customization: no bundle configured (UI_TEMPLATES_DIR unset)
 WARNING: UI customization: UI_TEMPLATES_DIR=/app/data/ui_templates holds no manifest.json — serving the built-in LightRAG branding. …
-INFO:    UI customization bundle active: bundle_revision=<sha256> locales=['en', 'zh']
+INFO:    UI customization: bundle <sha256> ['en', 'zh']
 ```
 
 中间那一行就是 Docker 默认状态：变量由自带的 compose 文件设置，而挂载的目录还是空的。它被记为 WARNING 而非 INFO，是因为「挂载指向了错误的宿主机目录」也会落到同一状态——日志中写明了服务器实际读取的目录，供你区分这两种情况。

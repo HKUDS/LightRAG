@@ -37,11 +37,10 @@ interface KaTeXOptions {
 import type { MessageWithError } from '@/types/retrieval'
 export type { MessageWithError } from '@/types/retrieval'
 
-// Both entries share ChatMessage, so mermaid MUST NOT be a static import —
-// it would land in the workspace entry's first-load closure. It is loaded on
-// demand when a complete ```mermaid``` block is actually rendered, keeping
-// full Mermaid support in both entries.
-const loadMermaid = () => import('mermaid').then((m) => m.default)
+// Kept out of this file so tests can stub the load without mocking the
+// `mermaid` package process-wide; see `mermaidLoader.ts`.
+import { loadMermaid } from './mermaidLoader'
+
 
 /**
  * Tables scroll INSIDE their own block. The message list scrolls vertically

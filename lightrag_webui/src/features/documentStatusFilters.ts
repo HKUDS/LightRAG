@@ -14,17 +14,6 @@ const BUCKET_TO_STATUS: Record<StatusBucket, DocStatus> = {
   failed: 'failed'
 }
 
-const STATUS_TO_BUCKET: Partial<Record<DocStatus, StatusBucket>> = {
-  processed: 'completed',
-  parsing: 'parse',
-  analyzing: 'analyze',
-  processing: 'process',
-  failed: 'failed'
-}
-
-export const getStatusBucket = (status: DocStatus): StatusBucket | null =>
-  STATUS_TO_BUCKET[status] ?? null
-
 export const getStatusRequestFilters = (
   statusFilter: StatusFilter
 ): Pick<DocumentsRequest, 'status_filter' | 'status_filters'> => {
@@ -40,6 +29,3 @@ export const getStatusRequestFilters = (
     status_filters: null
   }
 }
-
-export const matchesStatusFilter = (status: DocStatus, statusFilter: StatusFilter): boolean =>
-  statusFilter === 'all' || BUCKET_TO_STATUS[statusFilter] === status

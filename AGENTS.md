@@ -55,97 +55,58 @@ Each `LightRAG` instance can pass a `workspace` parameter for data isolation. Im
 - **Relational DB**: workspace column filtering.
 - **Qdrant**: payload-based partitioning.
 
+### Consistency without transactions
+
+LightRAG writes to independent stores — graph, KV, vector, doc-status — with **no transaction across them**. Every multi-store operation therefore has intermediate states, and no ordering removes them; an ordering only chooses which one it keeps.
+
+- **The rule:** an inconsistency is acceptable when it **heals itself later** (a retry, a rebuild, or the next run rewrites it) or is **harmless in direction**. Losing data is never acceptable; retaining an object that could have been deleted, or surfacing a chunk a query did not need, is.
+- A change must **improve on an accepted residue**, not swap it for its mirror. "An inconsistent state exists" is not by itself a defect report — the questions are which state, how it heals, and whether the alternative is better.
+- Every accepted residue is **written down** with its reason and recovery path, next to the code or in the relevant contract. An undocumented residue is a defect; a documented one is a decision.
+- This licenses nothing for **silent failure**. A durable write must never be reported as one that did not happen, and a failure must never be swallowed: fail loud, then let the documented residue heal.
+
+### File-backed storage contracts
+
+**Full contracts: [docs/design/NetworkXSingleWriterContract.md](docs/design/NetworkXSingleWriterContract.md) — read it before touching `lightrag/kg/networkx_impl.py` or any caller of `index_done_callback` on the graph store; [docs/design/FileBackedSnapshotContract.md](docs/design/FileBackedSnapshotContract.md) — read it before touching `lightrag/kg/nano_vector_db_impl.py`, `lightrag/kg/faiss_impl.py`, `lightrag/kg/json_kv_impl.py`, `lightrag/kg/json_doc_status_impl.py` or `lightrag/kg/file_fingerprint.py`.**
+
+Five storages keep their data in memory and publish it by rewriting a whole file, and **they do not share one model** — `JsonKVStorage` and `JsonDocStatusStorage` are the odd ones out and the contracts say so at length. Read the right one before assuming.
+
+- **All five**: a commit publishes the WHOLE namespace, so any writer's flush also publishes every other writer's pending mutation there, half-finished ones included. All five are supported for **small-scale testing and validation only**; no change to them may be justified by write throughput.
+- **`NetworkXStorage`, `NanoVectorDBStorage`, `FaissVectorDBStorage`** keep one in-memory copy per process and reconcile by reloading the file. Visibility rests on a **two-channel fence**: the file's own `(st_mtime_ns, st_size)` (authoritative, state) OR-ed with the `storage_updated` flag (accelerator, a consumable event). Both are permanent — their blind spots do not overlap.
+- Those three diverge on a write conflict, and the reason is in the contracts: the graph store **declines** the commit (it has no buffer to replay, and graph payloads are accumulate-over-read), the vector stores **reload and replay** their pending buffers and redo logs. Do not reopen reload-then-replay for the graph store without addressing the accumulate-over-read argument.
+- **`JsonKVStorage` and `JsonDocStatusStorage` use none of that.** Their data is a `Manager().dict()` every worker shares, so a mutation is visible everywhere immediately and there is nothing to reload — adding a `_get_*` entry method would be wrong. Their `storage_updated` flag means the OPPOSITE of the other three's: `True` is "dirty data still to flush", never "fresher data on disk to reload". Do not read it as a peer notification. `JsonDocStatusStorage` reimplements this protocol rather than inheriting it, so a change to one of the pair is almost always a change the other needs too; where they diverge is the flush trigger — doc-status writes that change scheduling state flush synchronously because doc-status is the pipeline's recovery anchor.
+- `NetworkXStorage` is the only storage that declares `requires_single_writer`, which is what puts the admin flows under `LightRAG._admin_write_gate`.
+
 ### Pipeline concurrency contract
 
-The document ingestion pipeline coordinates concurrent writers through `pipeline_status` (a per-workspace shared dict in `lightrag.kg.shared_storage`). These fields are mutated under `get_namespace_lock("pipeline_status", workspace=...)`:
+**Full contract: [docs/design/PipelineConcurrencyContract.md](docs/design/PipelineConcurrencyContract.md) — read it before touching `lightrag/pipeline.py`, `lightrag/kg/pipeline_ingress.py`, `pipeline_status` fields, or any `/documents/*` endpoint.**
 
-- **`busy`**: any pipeline-busy state. Set by both the processing loop AND destructive jobs (clear / per-doc delete). On its own, `busy=True` does NOT block enqueue — see `destructive_busy` for the exclusive subset.
-- **`destructive_busy`**: the busy job is `/documents/clear` or `/documents/{doc_id}` (delete). These DROP storages and remove input files; a concurrent enqueue accepted in this window would write to storage being torn down and silently lose the document. Reservation and the enqueue last-line guard reject when this is True.
-- **`scanning`**: a `/documents/scan` task is running (whole lifecycle: classification + processing). Used by the `/scan` endpoint to refuse overlapping scans. Does NOT on its own block uploads/inserts.
-- **`scanning_exclusive`**: True only during the scan task's classification phase, when `run_scanning_process` is reading `doc_status` to classify files (PROCESSED → archive, FAILED-without-`full_docs` → retry-as-new, etc.) and possibly deleting stale stubs. Reservation and the enqueue last-line guard reject when this is set. Cleared before the scan transitions to its processing phase, allowing concurrent uploads to land while scan-driven processing finishes.
-- **`pending_enqueues`**: count of `/upload`, `/text`, `/texts` endpoints that have reserved a slot (via `_reserve_enqueue_slot`) but whose bg task has not yet completed. Only the scan endpoint reads this — to refuse starting while uploads are mid-flight.
-
-**Workspace pipeline ingress** (`lightrag/kg/pipeline_ingress.py`, resolved via `get_pipeline_ingress(workspace)`): a three-channel mailbox living beside `pipeline_status` (never inside it — the status dict is serialized into API responses). It is the pipeline's only wake-up channel; `doc_status` stays the source of truth (a dropped notification is recovered by the next run's initial strict scan). Enqueue publishes document messages under `pipeline_status_lock` (one `put_documents` batch RPC); a busy-refused `apipeline_process_enqueue_documents` arms the **auto-rescan** flag inside `acquire_processing_reservation`'s own critical section. At every quiescence point the loop decides, atomically under `pipeline_status_lock`, cancellation first (consumes nothing), then: earliest sticky **manual retry** request (peeked, one per cycle) > **auto-rescan** dirty flag (consumed atomically; the loop is the sole consumer and re-arms it if the follow-up strict query fails) > **document** channel non-empty (peeked via `counts()`; resolved by a bounded drain-then-strict-scan refetch that compacts provably-stale messages) > release `busy` (same critical section).
-
-**FAILED retry semantics**: automatic runs resume only `_AUTO_RESUME_DOC_STATUSES` (PENDING + PROCESSING/PARSING/ANALYZING dead-process orphans). A FAILED document re-enters the pipeline exclusively through a sticky manual retry request published by `/documents/scan` (after its reservation is granted) or `/documents/reprocess_failed` (publish-first; pure storage-driven, no filesystem scan, no custom-chunk rollback). Each request grants at most ONE retry attempt (`_MANUAL_RETRY_DOC_STATUSES`, initial scan only) and is ACKed only after the FAILED→PENDING resets persist — a crash re-executes the request or leaves the docs PENDING for automatic recovery; a doc failing again stays FAILED until the next explicit request. All scheduling-control-plane `doc_status` queries use `get_docs_by_statuses(..., strict=True)` (complete-or-raise), and scheduler `full_docs` reads distinguish confirmed-absent (`None`) from backend errors (raise). Manual-intent endpoints start their work through `start_committed_background_task` (fence recheck + publish in one critical section; a post-commit cancellation never cancels the child).
-
-Mutual-exclusion rules (all checked atomically inside the lock):
-
-| Operation | Refuses if | Writes |
-|---|---|---|
-| `_reserve_enqueue_slot` | `scanning_exclusive` or `destructive_busy` | `pending_enqueues++` |
-| `apipeline_enqueue_documents` (last-line guard) | (`scanning_exclusive` and not `from_scan`) or `destructive_busy` | — |
-| Scan endpoint reservation | `busy or scanning or pending_enqueues > 0` | `scanning = True` |
-| `apipeline_process_enqueue_documents` entry | (already busy → arm ingress auto-rescan, return) | `busy = True` (NOT `destructive_busy`) |
-| `clear_documents` / `delete_document` (synchronous reservation) | `busy or scanning or pending_enqueues > 0` | `busy = True`, `destructive_busy = True` |
-
-The contract permits **concurrent enqueue + processing**: a freshly-uploaded doc lands in `doc_status` while the loop is mid-batch, its document message is routed into the running batch by the in-batch feeder (or resolved at the batch boundary by the quiescence decision), and the doc processes without waiting for a new run.
-
-For the rest — write ordering of `full_docs` vs `doc_status`, the workspace-scoped `enqueue_serialize` lock around dedup-and-upsert, and the `from_scan=True` bypass — see the docstrings on `apipeline_enqueue_documents` and `apipeline_process_enqueue_documents` in `lightrag/pipeline.py`.
+- Concurrent writers coordinate through `pipeline_status` (per-workspace shared dict in `lightrag.kg.shared_storage`), mutated under `get_namespace_lock("pipeline_status", workspace=...)`.
+- `busy` alone does NOT block enqueue — enqueue + processing are allowed to run concurrently. Three states do refuse it: `destructive_busy` (clear / delete, which drops storages), `scanning_exclusive` (scan's classification phase), and `manual_freeze_requested` (a manual retry draining the pipeline to idle).
+- **Admin graph writes** (`acreate_*` / `aedit_*` / `adelete_by_*` / `amerge_entities` / `ainsert_custom_kg`) run inside `LightRAG._admin_write_gate` when the graph storage declares `requires_single_writer` (`NetworkXStorage` only): a workspace admin lock (waited for) then the `busy` reservation (`kind="admin"`, refuses on `busy` / `scanning`), in that fixed order and OUTSIDE the per-entity keyed locks. A pipeline start during the hold is deferred into the ingress mailbox and driven once on release. The routes' `check_pipeline_busy_or_raise` preflight exempts an `admin`-owned `busy` so a second REST edit reaches the admin lock and queues. Never re-acquire the admin lock inside `lightrag/utils_graph.py`.
+- The workspace **ingress mailbox** (`get_pipeline_ingress(workspace)`) is the pipeline's only wake-up channel; `doc_status` stays the source of truth, so a dropped notification is recovered by the next strict scan.
+- FAILED documents never resume automatically: they re-enter only through a sticky manual retry request (`/documents/scan`, `/documents/reprocess_failed`), granting ONE attempt each.
+- All scheduling-control-plane `doc_status` queries use `get_docs_by_statuses(..., strict=True)`; scheduler `full_docs` reads must distinguish confirmed-absent (`None`) from backend errors (raise).
 
 ### Purge recovery contract
 
-The KG is shared across documents, so "what did this document contribute?" can only be answered from the per-document **write-ahead recovery anchors** (`full_entities` / `full_relations`, written and flushed in `merge_nodes_and_edges` Phase 0 *before* the first graph mutation). The reverse lookup — graph `source_id` → `text_chunks` → `full_doc_id` — is not a fallback, because purge deletes those chunks.
+**Full contract: [docs/design/PurgeRecoveryContract.md](docs/design/PurgeRecoveryContract.md) — read it before touching `_purge_kg_contributions`, `adelete_by_doc_id`, the anchor writes in `merge_nodes_and_edges`, the `kg_write_state` / `kg_purge` metadata, or the cache write ordering in `use_llm_func_with_cache`.**
 
-The governing invariant is narrower than "every purge needs a proof":
-
-> **A purge must never delete something that CARRIES attribution — a chunk row or an anchor row that names objects — and leave those objects behind.** An operation that removes no such carrier cannot strand anything and needs no proof.
-
-`_purge_kg_contributions` therefore **fails closed** (`RecoveryAnchorMissingError`, surfaced as HTTP 409, nothing deleted) when it would remove a carrier without one of these proofs. Treating absent anchors as an empty candidate list was issue #3400's silent-skip defect: graph cleanup was skipped while the chunks went anyway, stranding unattributable entities that `audit_kg_integrity` can only report as unrecoverable orphans.
-
-| Proof | Established by |
-|---|---|
-| `anchors` | Both anchor ROWS present and structurally usable. **Row presence is the test, never list truthiness** — an empty row is a document that extracted no entities, and conflating the two is the original bug. |
-| `pre_graph` | `doc_status.metadata.kg_write_state`. Stamped `pre_graph` at enqueue so every pre-merge failure state inherits it by carry-over; advanced to `graph_mutation_started` only by `merge_nodes_and_edges`' `on_anchors_durable` hook. **Monotonic** — nothing writes it back, because re-stamping `pre_graph` on reprocess would let the resume purge skip and orphan the previous run's contributions. Absent means UNKNOWN (pre-#3416), which fails closed. |
-| `journal` | `doc_status.metadata.kg_purge` at a phase past `prepared`, i.e. a previous attempt got far enough to have deleted the anchors itself. |
-| `empty_scope` | No chunks AND no anchor row that names anything — so the delete removes no carrier at all and the invariant is satisfied outright. This is what lets a row enqueued before the marker existed, still holding no chunks, be deleted directly (no scan, no audit). |
-
-**`kg_write_state` must never be inferred.** `pre_graph` asserts "this document never touched the graph", which licenses deleting its chunks while *skipping the graph* — sound only because the marker is written once, at enqueue, when it is necessarily true and the document has no history to misread. A backfill keying off a momentarily-empty `chunks_list` would stamp a document that does own graph objects, and because the stamp is durable the damage lands later, when the chunks reappear: chunks deleted, graph skipped, issue #3400 reproduced exactly. `empty_scope` is safe where such a backfill is not, because it is re-evaluated against live state on every call and grants nothing beyond that call. `tests/pipeline/test_purge_fail_closed.py::test_a_false_pre_graph_marker_would_reproduce_the_original_defect` pins the cost.
-
-Anchor-driven whole-document purge is **journaled and resumable** through four ordered phases — `prepared` → `derived_committed` → `anchors_pending` → `completed` — keyed by an operation id over the document key plus its chunk SET. The journal is *required by* fail-closed rather than an optimisation: purge's last step deletes the anchors, so without it any later failure would make every retry refuse forever. A resumed purge skips exactly the phases already persisted (so it never re-runs the LLM-cache-backed rebuild); an in-flight journal for a different operation is refused (`KGPurgeOperationConflictError`), while a stale `completed` one is ignored as dead bookkeeping.
-
-Both metadata keys are in the `_DOC_STATUS_METADATA_CARRY_OVER_KEYS` **and** `_DOC_STATUS_METADATA_DIRECTIVE_KEYS` whitelists in `lightrag/utils_pipeline.py`; dropping either at a transition or a FAILED→PENDING reset turns a resumable purge into a permanent refusal. Retiring one requires `doc_status_transition_metadata(..., drop=...)` — passing it via `extra` would persist the value, and omitting it lets carry-over restore it.
-
-Callers: `adelete_by_doc_id` (delegates wholly to the primitive; the chunk-less branch runs it too), and the pipeline's resume path `_purge_stale_extraction_if_resuming` (which retires the journal and persists `chunks_list=[]` in one targeted write). Explicit-candidate mode — custom-chunk patch rollback — is neither journaled nor proof-checked, because its own operation journal already names the complete candidate superset; the primitive reads that journal to union in candidates no anchor row can name yet.
-
-A document can legitimately own nothing: `skip_kg` (`process_options` `'!'`) skips extraction and the merge, so no anchor rows are ever written. Post-change those documents carry `pre_graph` and delete normally; older ones have neither proof, and anchor repair has nothing to rebuild from.
-
-**Chunk tracking outranks graph `source_id`.** Within a surviving entity or relation, the `entity_chunks` / `relation_chunks` row is the authoritative chunk list; the graph node's `source_id` is only a truncated view of it (`apply_source_ids_limit`) and may legitimately still name chunks a previous purge already pruned — `_purge_kg_contributions` reads tracking first, falls back to `source_id` only when the row is absent, and its `graph_references_deleted_chunks` branch exists to repair exactly that lag. So code that folds a `source_id` delta back into tracking must append genuine additions only: restoring an ID that is in the graph but not in tracking writes stale attribution into the authoritative store, and a later purge would rebuild or retain KG objects from chunks that no longer exist. `compute_incremental_chunk_ids` carries this rule and `tests/utils/test_compute_incremental_chunk_ids.py` pins it. Genuinely missing attribution is repaired by `audit_kg_integrity`, never by the incremental path.
+- "What did this document contribute?" is answerable only from the per-document write-ahead anchors (`full_entities` / `full_relations`). The reverse lookup through `text_chunks` is not a fallback — purge deletes those chunks.
+- Governing invariant: **a purge must never delete something that CARRIES attribution — a chunk row or an anchor row that names objects — and leave those objects behind.** `_purge_kg_contributions` **fails closed** (`RecoveryAnchorMissingError` → HTTP 409, nothing deleted) unless one of four proofs holds: `anchors`, `pre_graph`, `journal`, `empty_scope`.
+- **`kg_write_state` must never be inferred or backfilled** — it is written once at enqueue and is monotonic. A backfill reproduces the original silent-skip defect.
+- `kg_write_state` and `kg_purge` must stay in both `_DOC_STATUS_METADATA_CARRY_OVER_KEYS` and `_DOC_STATUS_METADATA_DIRECTIVE_KEYS` (`lightrag/utils_pipeline.py`); dropping either turns a resumable purge into a permanent refusal.
+- Chunk tracking (`entity_chunks` / `relation_chunks`) outranks graph `source_id`; code folding a `source_id` delta back into tracking must append genuine additions only.
+- LLM extraction cache rows are reachable only through the owning chunk's `llm_cache_list`, which makes that list an attribution carrier too: [LLM extraction cache reachability](docs/design/PurgeRecoveryContract.md#llm-extraction-cache-reachability) states the reference-before-row ordering, why a reference that cannot be recorded skips the cache write instead, and what the ordering does not close.
+- Merge and rename apply *Consistency without transactions* above: [the failure model](docs/design/PurgeRecoveryContract.md#merge-and-rename-failure-model) lists their ordering invariants, accepted residues and already-rejected remedies. Read it before reordering `_merge_entities_impl` or the rename branch of `_edit_entity_impl`.
 
 ### Relation weight contract
 
-Relation `weight` is bounded below by the number of distinct real IDs in the
-graph edge's `source_id`; a larger value is an optional importance boost.
-Empty IDs and the legacy no-source placeholders `manual_creation` and
-`UNKNOWN` do not count as evidence. A source-less relation may therefore use
-any non-negative fractional weight. Public ingress paths (`create_relation`,
-`edit_relation`, and `insert_custom_kg`) must validate the complete relation
-before the first storage mutation. To request a weight below the current
-evidence count, creation callers omit `source_id`, while edit callers set it to
-an empty string in the same operation.
+**Full contract: [docs/ProgramingWithCore.md](docs/ProgramingWithCore.md#relation-weight-contract)** — keep it synchronized with the core API docstrings, REST graph documentation, and custom-KG examples whenever relation write behavior changes.
 
-Entity merges use `max(all input weights, distinct merged real source IDs)`.
-Every extraction merge or entity-rename rewrite that rewrites the edge is a
-repair point for legacy rows: it must lift an undersized stored weight to the
-current evidence floor while preserving any larger explicit boost. Repair is
-opportunistic, not a sweep: `_merge_edges_then_upsert`'s KEEP-cap skip branch
-returns the stored edge without writing the graph or the vector record, so a
-legacy row there stays undersized until a merge, an unrelated relation edit, or
-a rebuild rewrites it. Rebuilds from surviving chunks
-(`_rebuild_single_relationship`, reached only through `_purge_kg_contributions`
--> `rebuild_knowledge_from_chunks`, i.e. document purge, resume, and
-custom-chunk rollback) are a repair point for the floor only: they re-derive
-weight from the surviving cached fragments and then lift it to the surviving
-evidence count, so weight tracks evidence down as purge removes chunks and an
-explicit boost is not carried across — exactly as the rebuilt description and
-keywords replace their edited values. The degraded path, having no fragments to
-re-derive from, keeps the stored weight instead. Relation chunk tracking is the
-authoritative chunk list, so the no-source placeholders must never be written
-into it. Keep this contract synchronized across the core API docstrings, REST
-graph documentation, `ProgramingWithCore.md`, and custom-KG examples whenever
-relation write behavior changes.
-
-The offline remedy for a document with no proof is `audit_kg_integrity(..., apply=True)` (`lightrag/tools/kg_integrity_repair.py`): it rebuilds anchors from surviving chunk provenance, and — because it enumerates the **whole** graph, which the hot paths never do — it can additionally certify that a document appearing nowhere in that scan owns nothing, writing it the empty anchor rows that are the normal proof for such a document (`anchorless_docs` in the report). Absence is only ever concluded from the completed scan; a document that does own graph objects is repaired with its real names, never blanked.
+- `weight >= len(distinct real source IDs)` on the graph edge; a larger value is an optional importance boost. Empty IDs and the legacy placeholders `manual_creation` / `UNKNOWN` are not evidence, so a source-less relation may use any non-negative fractional weight.
+- Public ingress paths (`create_relation`, `edit_relation`, `insert_custom_kg`) must validate the complete relation **before the first storage mutation**. To go below the current evidence count, creation callers omit `source_id`, edit callers set it to an empty string in the same operation.
+- Entity merges use `max(all input weights, distinct merged real source IDs)`.
+- Legacy-row repair is **opportunistic, not a sweep**: `_merge_edges_then_upsert`'s KEEP-cap skip branch returns the stored edge without writing graph or vector record, so an undersized legacy row stays undersized until a merge, an unrelated edit, or a rebuild rewrites it.
 
 ### Query Modes
 
@@ -227,65 +188,6 @@ bunx tsc --noEmit                  # Typecheck (`bun run build` does NOT typeche
 - Backend tests use pytest; frontend unit tests use Bun's built-in runner — see *WebUI* above and *React component tests* below.
 - **A WebUI change runs the WHOLE frontend check set**, from `lightrag_webui/`: `bun install --frozen-lockfile` (see *WebUI* above — skip it after a branch switch and every later step fails on missing modules), then `bun test`, `bunx tsc --noEmit`, and `bun run lint`. The subsetting rule above is a backend rule and does not apply — all three together take well under a minute (test ~2 s, typecheck ~14 s, lint ~21 s), so there is nothing to save by running less. Report the pass count. `bun run build` transpiles WITHOUT checking types, so skipping `tsc --noEmit` means nothing checks them.
 
-#### React component tests
-
-WebUI tests are **colocated** next to the module they cover
-(`src/features/SiteHeader.test.ts`), not mirrored into a separate tree — the
-`tests/` mirror layout above is a backend rule and does not apply here. A test
-file containing JSX must be named `.test.tsx`.
-
-`bun test` has a DOM: `bunfig.toml` preloads `src/test/happydom.ts` (registers
-happy-dom globally) and then `src/test/setup.ts` (jest-dom matchers plus
-Testing Library's `cleanup` in `afterEach`). Order is load-bearing — Testing
-Library binds to whatever `document` exists when it is first evaluated.
-
-That preload is found relative to the WORKING DIRECTORY, so `bun test` must be
-run from `lightrag_webui/`. From the repository root no preload loads at all
-and the failure is silent in the worst way: pure logic tests still pass and
-only the component tests break. `src/test/render.tsx` calls
-`assertDomAvailable()` at import time to turn that into a message naming the
-cause and the fix; `bun test --config <path>` does NOT work around it, because
-the preload paths inside the file are still resolved against the CWD.
-
-Rules for new tests:
-
-- **Test rendered behavior by rendering it.** Assert what the user gets —
-  roles, accessible names, visibility, what a click does. Do NOT write new
-  tests that `readFileSync` a `.tsx` and match substrings: that style cannot
-  see whether Radix's `asChild` actually wired the trigger up, and it breaks on
-  equivalent rewrites. Several older tests still do this; converting one while
-  working nearby is welcome. String and AST assertions stay correct for what
-  genuinely IS a source-level property — an i18n key present in every locale, a
-  forbidden import — just not for what the component renders.
-- **Render through `renderWithProviders`** (`src/test/render.tsx`), not
-  Testing Library's bare `render`. It supplies a fixed English i18n instance
-  built from `locales/en.json` and deliberately does not import `@/i18n`, whose
-  bootstrap resolves a language from `localStorage` and runs the settings
-  migration — ambient state that asserted strings must not depend on.
-- **Prove the test can fail.** Before calling it done, break the behavior it
-  pins (flip the `aria-label`, drop the guard), confirm it goes red, then
-  restore. A test written against already-passing code is worth nothing until
-  it has been seen to fail: `harnessIsolation.test.ts` originally matched only
-  `from '…'` and silently let a bare side-effect `import '…'` through, which
-  only the mutation check surfaced.
-- **The DOM is process-wide.** Bun evaluates every test file in one process, so
-  `delete globalThis.window` in one file removes it for every file that runs
-  later — and the failure surfaces somewhere else entirely. To exercise a
-  DOM-less code path use `withoutDomGlobals(body, keys?)` from
-  `src/test/domGlobals.ts`; to undo a stubbed global use `restoreDomGlobals()`
-  in an `afterEach`. Never leave a bare `delete` of the `window` or `document`
-  GLOBAL behind — `harnessIsolation.test.ts` fails on one anywhere but the
-  helper. (Deleting a property OF window, such as `__LIGHTRAG_CONFIG__`, is
-  fine and is not what the guard matches.)
-- **Never import the test harness from production code.** Vite bundles from the
-  import graph rooted at `index.html` / `workspace.html`, and the harness is
-  reached only through the runner's preload — one import from `src/` would ship
-  happy-dom to the browser. `src/test/harnessIsolation.test.ts` pins this for
-  every import form (bare, dynamic, `require`), and `vite.config.ts`'s
-  first-load byte budget backs it up. Dependency-section placement is not what
-  decides this: `@faker-js/faker` is a runtime `dependencies` entry and ships
-  because `hooks/useRandomGraph.tsx` imports it.
-
 ```bash
 # Preferred for fresh shells and automation; resolves PYTHON, venv, uv, .venv, venv, python, python3
 # Default during development: only the directories mirroring the changed modules
@@ -313,6 +215,18 @@ Rules for new tests:
   - When adding a new backend or LLM provider, create a new subdirectory plus an empty `__init__.py` rather than dropping the file in the parent directory root.
 - Markers (registered in `[tool.pytest.ini_options]` in `pyproject.toml`): `offline`, `integration`, `requires_db`, `requires_api`, `pg_smoke`. Integration tests are skipped by default via `-m "not integration"`; opt in with `--run-integration`.
 - Integration env vars: `LIGHTRAG_RUN_INTEGRATION=true`, `LIGHTRAG_KEEP_ARTIFACTS=true`, `LIGHTRAG_TEST_WORKERS=4`, plus storage-specific connection strings.
+
+#### React component tests
+
+**Full guide: [docs/design/WebUITestingGuide.md](docs/design/WebUITestingGuide.md) — read it before writing or converting any test under `lightrag_webui/src/`.**
+
+- Tests are **colocated** next to the module they cover (`src/features/SiteHeader.test.ts`); the `tests/` mirror layout above is a backend rule. A test file containing JSX must be named `.test.tsx`.
+- **Run `bun test` from `lightrag_webui/`.** The `bunfig.toml` preload that installs the DOM is resolved against the CWD, and from the repository root the failure is silent — pure logic tests still pass, only component tests break.
+- **Test rendered behavior by rendering it**, through `renderWithProviders` (`src/test/render.tsx`). Do not write new tests that `readFileSync` a `.tsx` and match substrings.
+- **Never assert `toBeNull()` / `not.toBeInTheDocument()` / `toBe(element)` on a DOM node** — Bun serialises the whole happy-dom element and the run appears to HANG instead of failing. Assert a count or an extracted boolean/string instead.
+- **The DOM is process-wide**: never leave a bare `delete` of the `window` / `document` global behind; use `withoutDomGlobals()` from `src/test/domGlobals.ts`.
+- **Never import the test harness from production code** — one import from `src/` ships happy-dom to the browser.
+- **Prove the test can fail**: break the behavior it pins, see it go red, then restore.
 
 ### Linting
 ```bash
@@ -352,21 +266,7 @@ asyncio.run(main())
 
 ### Custom Embedding Functions
 
-Use `@wrap_embedding_func_with_attrs` decorator and call `.func` when wrapping (already-decorated functions cannot be wrapped again — access the underlying via `.func`):
-
-```python
-from lightrag.utils import wrap_embedding_func_with_attrs
-
-@wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)
-async def custom_embed(texts: list[str]) -> np.ndarray:
-    # Call underlying function, not wrapped version
-    return await openai_embed.func(texts, model="text-embedding-3-large")
-
-# Wrong: EmbeddingFunc(func=openai_embed)
-# Right: EmbeddingFunc(func=openai_embed.func)
-```
-
-> **Pitfall — switching embedding models**: when changing the embedding model you MUST clear the data directory (optionally keeping `kv_store_llm_response_cache.json` for LLM cache). Existing vectors will not match the new model's space.
+**Full guide: [docs/ProgramingWithCore.md](docs/ProgramingWithCore.md#custom-embedding-functions)** — the `.func` unwrapping rule, `max_token_size`, the `(len(texts), embedding_dim)` return contract that `EmbeddingFunc.__call__` enforces on every call, and the clear-the-data-directory pitfall when switching models. Read it before writing or wrapping an embedding function.
 
 ### Storage Configuration
 
@@ -455,6 +355,17 @@ See `env.example` for comprehensive template.
 
 ### Language
 Comments, backend code, log messages, and Git commit messages in English. Frontend uses i18next for multi-language support.
+
+### Docstrings and comments
+
+Docstrings state the **rules**: what a caller must do, what it must not do, and the gotchas it will otherwise be caught by. The **mechanism** — how it works, the accepted residues, and the alternatives already rejected — goes in `docs/design/` with a pointer from the docstring. A docstring that has grown into a design document is the thing this separates: it buries the code, and the same facts in two places drift apart.
+
+Two rules are enforced by `tests/test_docstring_budget.py` rather than by review, because both are properties of the tree rather than of any one change:
+
+- **No docstring over 80 lines** (100 for a class). The limit is generous on purpose — it catches a document, not a thorough docstring.
+- **No source line may cite a GitHub issue number.** The referent does not survive a fork, so a comment saying something is "documented in #NNNN" leaves nothing that documents it. Name the thing instead ("the two-channel fence"), or move the content into `docs/design/` and cite that. Never delete such a reference bare — migrate what it pointed at first. Enforced over `lightrag/` only: **tests may cite issue numbers**, and many do. There the number names the defect the test pins, and the test itself — its name, docstring and assertions — is the documentation, so the reference is provenance rather than the thing carrying the meaning.
+
+A third test requires every `docs/**.md` path named in the package to resolve; nothing imports those strings, so a typo is otherwise silent.
 
 ### Python
 - Follow PEP 8 with 4-space indentation

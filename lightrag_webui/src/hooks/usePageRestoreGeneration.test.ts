@@ -63,6 +63,8 @@ describe('BFCache consumers', () => {
 
     expect(source).toContain('!hasLoadedDocuments && initialLoadError === null')
     expect(source).toContain('!hasLoadedDocuments && initialLoadError !== null')
-    expect(source).toContain('hasLoadedDocuments && !docs')
+    // A loaded-but-empty corpus is told apart from the pre-load state by the
+    // pagination total, not by a separate grouped-documents state.
+    expect(source).toContain('hasLoadedDocuments && pagination.total_count === 0')
   })
 })

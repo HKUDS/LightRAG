@@ -43,6 +43,12 @@ MAX_ASYNC_LLM=4
 | `LLM_TIMEOUT` | 基础 LLM timeout。角色未设置 timeout 时继承它。 |
 | `MAX_ASYNC_LLM` | 基础 LLM 最大并发。角色未设置 `{ROLE}_MAX_ASYNC_LLM` 时继承它。`MAX_ASYNC` 作为兼容旧名仍可用。 |
 
+### 与文件处理的关系
+
+`MAX_ASYNC_LLM` 还是文件处理调度器使用的基础值：对单个文档，文本块的实体/关系抽取最多并发运行这么多 task；每个实体合并或关系合并阶段最多运行其两倍数量的 task。这些是流水线 task 上限，不会替代角色级请求限流。
+
+Extract 角色既处理文本块抽取，也在图合并时生成描述摘要。设置 `EXTRACT_MAX_ASYNC_LLM` 后，它会限制该角色实际发出的 LLM 请求；未设置时继承 `MAX_ASYNC_LLM`。调整此角色覆盖值不会改变调度器的单文档 task 上限。完整 worker 拓扑见[文件处理流水线规格](FileProcessingPipeline-zh.md#86-流水线并发参数)。
+
 ## 角色覆盖变量
 
 每个角色都可以覆盖 binding、模型、endpoint、API key、并发和 timeout：

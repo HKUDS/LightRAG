@@ -18,6 +18,8 @@ from tenacity import (
     retry_if_exception_type,
 )
 
+from lightrag.utils import TruncatedResponse
+
 
 from functools import lru_cache
 
@@ -168,6 +170,7 @@ async def lmdeploy_model_if_cache(
     )
 
     response = ""
+    finish_reason = None
     async for res in lmdeploy_pipe.generate(
         messages,
         gen_config=gen_config,
@@ -175,5 +178,9 @@ async def lmdeploy_model_if_cache(
         stream_response=False,
         session_id=1,
     ):
-        response += res.response
+        response += getattr(res, "text", getattr(res, "response", ""))
+        if getattr(res, "finish_reason", None) is not None:
+            finish_reason = res.finish_reason
+    if finish_reason == "length":
+        return TruncatedResponse(response)
     return response
