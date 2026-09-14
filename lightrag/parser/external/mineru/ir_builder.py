@@ -90,7 +90,8 @@ CONTENT_LIST_FILENAME = "content_list.json"
 # (a blank running head, a heading the model could not read), not information
 # the builder failed to map. Everything else that reaches the text fallback
 # without usable text is a structural item — a picture-like type or a payload
-# shape the dispatch does not know yet — and gets a debug breadcrumb.
+# shape the dispatch does not know yet — so it gets a debug breadcrumb and is
+# counted into the end-of-parse WARNING summary.
 # ``text`` / ``list`` / ``code`` / ``equation`` / ``table`` / the drawing types
 # and ``page_number`` never reach the fallback: they have their own branch.
 _KNOWN_EMPTY_TYPES = frozenset(
