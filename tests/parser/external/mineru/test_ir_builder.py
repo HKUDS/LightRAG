@@ -581,7 +581,7 @@ def test_adapter_logs_structural_item_dropped_without_text(
     records = _distinct_records(caplog, "no usable text", logging.DEBUG)
     assert len(records) == 1
     assert records[0].getMessage() == (
-        "[mineru_ir_builder] dropping item with no usable text "
+        "[mineru_ir_builder] 'h.pdf': dropping item with no usable text "
         "(type=header_image, page_idx=3, self_ref=content_list.json#/0, "
         "keys=['img_path', 'page_idx', 'type'])"
     )
@@ -594,6 +594,10 @@ def test_adapter_warns_once_per_document_about_dropped_items(
     """The per-item breadcrumb is DEBUG, which a deployment running at INFO
     never sees. One WARNING per document names the types that went missing, so
     the loss is visible on the first ingest instead of after a manual audit.
+
+    It names the document: parse workers run concurrently and no log formatter
+    supplies per-document context, so a bare type/count line in an interleaved
+    batch cannot be attributed to an input file.
     """
     raw = _write_bundle(
         tmp_path,
@@ -613,8 +617,8 @@ def test_adapter_warns_once_per_document_about_dropped_items(
     records = _distinct_records(caplog, "item(s) dropped", logging.WARNING)
     assert len(records) == 1
     assert records[0].getMessage() == (
-        "[mineru_ir_builder] 3 content_list item(s) dropped with no usable "
-        "text: <untyped>=1, header_image=2"
+        "[mineru_ir_builder] 'w.pdf': 3 content_list item(s) dropped with no "
+        "usable text: <untyped>=1, header_image=2"
     )
     # The warning is a report, not a behaviour change: the body still carries
     # the text item and nothing else entered the IR.
@@ -664,7 +668,7 @@ def test_adapter_logs_empty_equation_dropped(tmp_path: Path, caplog) -> None:
     records = _distinct_records(caplog, "empty equation", logging.DEBUG)
     assert len(records) == 1
     assert records[0].getMessage() == (
-        "[mineru_ir_builder] dropping empty equation item "
+        "[mineru_ir_builder] 'e.pdf': dropping empty equation item "
         "(page_idx=4, self_ref=content_list.json#/1)"
     )
     # A local drop of a known type stays out of the per-document summary.

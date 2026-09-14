@@ -368,8 +368,9 @@ class MinerUIRBuilder:
                     # below, which is reserved for content the dispatch could
                     # not map at all.
                     logger.debug(
-                        "[mineru_ir_builder] dropping empty equation item "
+                        "[mineru_ir_builder] %r: dropping empty equation item "
                         "(page_idx=%s, self_ref=%s)",
+                        document_name,
                         item.get("page_idx"),
                         _content_list_self_ref(item_index),
                     )
@@ -447,8 +448,9 @@ class MinerUIRBuilder:
                 # payload shape the dispatch does not know yet. Neither carries
                 # document content.
                 logger.debug(
-                    "[mineru_ir_builder] dropping item with no usable text "
+                    "[mineru_ir_builder] %r: dropping item with no usable text "
                     "(type=%s, page_idx=%s, self_ref=%s, keys=%s)",
+                    document_name,
                     item_type,
                     item.get("page_idx"),
                     _content_list_self_ref(item_index),
@@ -463,10 +465,15 @@ class MinerUIRBuilder:
         # and re-parse the document to confirm it. Summarize once per document
         # at WARNING so an unmapped item type is visible on the first ingest,
         # naming the types to go looking for. Silent when nothing was dropped.
+        # ``document_name`` is part of every one of these lines: parse workers
+        # run concurrently (``max_parallel_insert``) and neither log formatter
+        # carries per-document context, so without it an interleaved batch
+        # reports a loss the operator cannot attribute to an input file.
         if dropped_by_type:
             logger.warning(
-                "[mineru_ir_builder] %d content_list item(s) dropped with no "
-                "usable text: %s",
+                "[mineru_ir_builder] %r: %d content_list item(s) dropped with "
+                "no usable text: %s",
+                document_name,
                 sum(dropped_by_type.values()),
                 ", ".join(
                     f"{t or '<untyped>'}={n}"
