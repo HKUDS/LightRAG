@@ -894,6 +894,69 @@ def test_adapter_drawing_body_content_kept_next_to_placeholder(
 
 
 @pytest.mark.offline
+def test_adapter_drawing_body_text_read_from_all_payload_keys(
+    tmp_path: Path,
+) -> None:
+    """The picture body must be read the way the text fallback used to read
+    it (``_coerce_text``), not from ``content`` alone. MinerU puts that text
+    under ``text`` or ``body`` as well; before charts had their own branch the
+    fallback surfaced it, so reading one key only would drop it.
+    """
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {
+                "type": "chart",
+                "img_path": "images/c1.jpg",
+                "text": "chart data table: 2024 = 42",
+            },
+            {
+                "type": "chart",
+                "img_path": "images/c2.jpg",
+                "body": "oscillogram legend",
+            },
+        ],
+    )
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="c.pdf")
+
+    chart_a, chart_b = ir.blocks[0].drawings
+    assert ir.blocks[0].content_template == (
+        f"{{{{IMG:{chart_a.placeholder_key}}}}}\n"
+        "chart data table: 2024 = 42\n"
+        f"{{{{IMG:{chart_b.placeholder_key}}}}}\n"
+        "oscillogram legend"
+    )
+
+
+@pytest.mark.offline
+def test_adapter_drawing_non_string_body_never_enters_block_text(
+    tmp_path: Path,
+) -> None:
+    """A non-string ``content`` (MinerU's v2 content_list nests the path under
+    ``content.image_source.path``) must NOT reach the block body: it would be
+    ``str()``-ed into a Python repr that then gets chunked, embedded and
+    returned by retrieval. ``_coerce_text``'s ``isinstance`` guard is what
+    keeps it out.
+    """
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {
+                "type": "chart",
+                "img_path": "images/a.png",
+                "content": {"image_source": {"path": "images/a.png"}},
+            },
+        ],
+    )
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="c.pdf")
+
+    drawing = ir.blocks[0].drawings[0]
+    body = ir.blocks[0].content_template
+    assert body == f"{{{{IMG:{drawing.placeholder_key}}}}}"
+    assert "image_source" not in body
+
+
+@pytest.mark.offline
 def test_adapter_refuses_path_traversal_img_path(tmp_path: Path) -> None:
     """Untrusted img_path with ``..`` or absolute filesystem segments must
     not be allowed to point ``AssetSpec.source`` outside ``raw_dir``.

@@ -30,9 +30,13 @@ Conversion rules (informed by spec §3-§六):
 - ``image`` / ``picture`` / ``drawing`` / ``chart`` → IRDrawing + ``{{IMG:k}}``
   placeholder. Asset bytes are referenced via ``img_path`` relative to the raw
   dir. ``chart`` items (MinerU >= 3.x) carry their text in ``chart_caption`` /
-  ``chart_footnote`` instead of ``image_caption`` / ``image_footnote``. A
-  non-empty ``content`` (MinerU's recognised picture body — often empty, but
-  populated e.g. with a chart's data table) is appended after the placeholder.
+  ``chart_footnote`` instead of ``image_caption`` / ``image_footnote``. The
+  item's text payload (``_coerce_text``: the first non-empty STRING among
+  ``text`` / ``content`` / ``body`` / ``code_body`` — MinerU's recognised
+  picture body, often empty but populated e.g. with a chart's data table) is
+  appended after the placeholder. When image analysis runs, that recognised
+  text and the VLM's own description of the same picture both end up in the
+  body; upstream's markdown does the same (image + chart content block).
 - ``equation`` → IREquation. ``is_block`` is decided by whether
   ``text_format=="block"`` (MinerU explicit flag) OR ``text_level==0`` with
   no inline neighbours; otherwise inline. The latex string is preserved
@@ -381,11 +385,15 @@ class MinerUIRBuilder:
                     assets.append(asset)
                 cb_drawings.append(drawing)
                 cb_lines.append(f"{{{{IMG:{placeholder}}}}}")
-                # MinerU fills ``content`` when the model recognised the
+                # MinerU fills a text payload when the model recognised the
                 # picture's data (a chart's data table, OCR'd labels). Keep it
                 # in the block body — it is the only retrievable form of that
-                # text when no VLM analysis runs.
-                body_text = str(item.get("content") or "").strip()
+                # text when no VLM analysis runs. Reuse ``_coerce_text`` rather
+                # than reading ``content`` alone: it covers the other keys the
+                # text fallback used to reach for these items, and its
+                # ``isinstance(val, str)`` guard keeps a non-string payload
+                # (the v2 content_list shape) from entering the body as a repr.
+                body_text = _coerce_text(item).strip()
                 if body_text:
                     cb_lines.append(body_text)
                 _record_position(item)
