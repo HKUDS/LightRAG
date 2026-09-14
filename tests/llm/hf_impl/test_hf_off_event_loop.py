@@ -140,7 +140,18 @@ def test_cancelled_queued_hf_inference_does_not_run(hf_module):
 def hf_module(monkeypatch):
     install_fake_transformers_and_torch(monkeypatch)
     sys.modules.pop("lightrag.llm.hf", None)
-    return importlib.import_module("lightrag.llm.hf")
+    module = importlib.import_module("lightrag.llm.hf")
+    try:
+        yield module
+    finally:
+        # Tests that submit inference start the module-level executor's worker
+        # thread. Shut it down before the next test can exercise os.fork();
+        # removing only the module leaves that thread alive across fixtures.
+        executor = module._HF_INFERENCE_EXECUTOR
+        module._HF_INFERENCE_EXECUTOR = None
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
+        sys.modules.pop("lightrag.llm.hf", None)
 
 
 @pytest.mark.asyncio
