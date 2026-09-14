@@ -1221,8 +1221,9 @@ def sidecar_uri_for(parsed_artifact_dir: Path | str) -> str:
     from a file at the URI level. Non-ASCII characters are percent-encoded.
     """
     p = Path(parsed_artifact_dir).resolve()
-    encoded = quote(str(p), safe="/")
-    return f"file://{encoded}/"
+    # Use POSIX separators so ``file:///C:/...`` round-trips on Windows.
+    encoded = quote(p.as_posix(), safe="/")
+    return f"file:///{encoded}/"
 
 
 def resolve_sidecar_uri(uri: str | None) -> Path | None:
@@ -1236,9 +1237,23 @@ def resolve_sidecar_uri(uri: str | None) -> Path | None:
     parts = urlsplit(uri)
     if parts.scheme != "file":
         return None
-    path_str = unquote(parts.path)
+    if parts.path and parts.path not in ("/", ""):
+        path_str = unquote(parts.path)
+    elif parts.netloc:
+        # Legacy Windows URIs where the drive path was encoded into netloc.
+        path_str = unquote(parts.netloc)
+    else:
+        return None
     if path_str.endswith("/") and len(path_str) > 1:
         path_str = path_str[:-1]
+    # ``file:///C:/...`` yields ``/C:/...``; strip the leading slash on Windows.
+    if (
+        os.name == "nt"
+        and len(path_str) >= 3
+        and path_str[0] == "/"
+        and path_str[2] == ":"
+    ):
+        path_str = path_str[1:]
     return Path(path_str)
 
 

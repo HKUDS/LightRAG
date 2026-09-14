@@ -5,6 +5,7 @@ introduced when ``full_docs`` collapsed its four path fields to
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -81,6 +82,26 @@ def test_resolve_sidecar_uri_tolerates_missing_trailing_slash(tmp_path):
 )
 def test_resolve_sidecar_uri_returns_none_for_unsupported(uri):
     assert resolve_sidecar_uri(uri) is None
+
+
+@pytest.mark.offline
+def test_resolve_sidecar_uri_strips_windows_drive_leading_slash(monkeypatch):
+    """``file:///C:/...`` → ``C:/...`` on Windows (CI is Linux — fake os.name)."""
+    monkeypatch.setattr(os, "name", "nt")
+    uri = "file:///E:/hot100/contributor/LightRAG/parsed/doc.parsed/"
+    resolved = resolve_sidecar_uri(uri)
+    assert resolved == Path("E:/hot100/contributor/LightRAG/parsed/doc.parsed")
+
+
+@pytest.mark.offline
+def test_resolve_sidecar_uri_windows_drive_without_nt_keeps_leading_slash(
+    monkeypatch,
+):
+    """On non-Windows (CI Linux), ``/E:/...`` is not rewritten (nt-only branch)."""
+    monkeypatch.setattr(os, "name", "posix")
+    uri = "file:///E:/hot100/parsed/doc.parsed/"
+    resolved = resolve_sidecar_uri(uri)
+    assert resolved == Path("/E:/hot100/parsed/doc.parsed")
 
 
 @pytest.mark.offline

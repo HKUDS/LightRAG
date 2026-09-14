@@ -150,6 +150,9 @@ from lightrag.operate import (
     naive_query,
     rebuild_knowledge_from_chunks,
 )
+
+# PR-1: resolve-only enrich (metadata.whitelist → data.attachments); Index runs in operate.
+from lightrag.sidecar.query_attachments import enrich_raw_data_attachments
 from lightrag.utils_pipeline import (
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
     KG_RECOVERY_WARNINGS_METADATA_KEY,
@@ -5043,6 +5046,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 hashing_kv=self.llm_response_cache,
                 system_prompt=None,
                 chunks_vdb=self.chunks_vdb,
+                # PR-1: self.full_docs → operate Index (sidecar_location / drawings.json).
+                full_docs_db=self.full_docs,
             )
         elif data_param.mode == "naive":
             logger.debug(f"[aquery_data] Using naive_query for mode: {data_param.mode}")
@@ -5054,6 +5059,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 hashing_kv=self.llm_response_cache,
                 system_prompt=None,
                 text_chunks_db=self.text_chunks,
+                # PR-1: same full_docs wiring for naive Index path.
+                full_docs_db=self.full_docs,
             )
         elif data_param.mode == "bypass":
             logger.debug("[aquery_data] Using bypass mode")
@@ -5076,7 +5083,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             final_data: dict[str, Any] = {
                 "status": "failure",
                 "message": no_result_message,
-                "data": {},
+                # PR-1: failure contract — clients always see data.attachments (may be []).
+                "data": {"attachments": []},
                 "metadata": {
                     "failure_reason": "no_results",
                     "mode": data_param.mode,
@@ -5086,6 +5094,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         else:
             # Extract raw_data from QueryResult
             final_data = query_result.raw_data or {}
+            # PR-1 (aquery_data): enrich after operate Index; no LLM, same attachments path.
+            final_data = await enrich_raw_data_attachments(
+                final_data,
+                self.full_docs,
+            )
 
             # Log final result counts - adapt to new data format from convert_to_user_format
             if final_data and "data" in final_data:
@@ -5149,6 +5162,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     system_prompt=system_prompt,
                     chunks_vdb=self.chunks_vdb,
                     progress_callback=progress_callback,
+                    # PR-1: self.full_docs → operate Index (sidecar_location / drawings.json).
+                    full_docs_db=self.full_docs,
                 )
             elif param.mode == "naive":
                 query_result = await naive_query(
@@ -5160,6 +5175,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     system_prompt=system_prompt,
                     text_chunks_db=self.text_chunks,
                     progress_callback=progress_callback,
+                    # PR-1: same full_docs wiring for naive Index path.
+                    full_docs_db=self.full_docs,
                 )
             elif param.mode == "bypass":
                 # Bypass mode: directly use LLM without knowledge retrieval
@@ -5216,7 +5233,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 return {
                     "status": "failure",
                     "message": "Query returned no results",
-                    "data": {},
+                    # PR-1: failure contract — clients always see data.attachments (may be []).
+                    "data": {"attachments": []},
                     "metadata": {
                         "failure_reason": "no_results",
                         "mode": param.mode,
@@ -5232,6 +5250,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
             # Extract structured data from query result
             raw_data = query_result.raw_data or {}
+            # PR-1 (aquery_llm): enrich whitelist → attachments; streaming + non-streaming alike
+            # (does not depend on LLM output; llm_select subset selection is PR-4).
+            raw_data = await enrich_raw_data_attachments(
+                raw_data,
+                self.full_docs,
+            )
             raw_data["llm_response"] = {
                 "content": query_result.content
                 if not query_result.is_streaming
@@ -5251,7 +5275,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             return {
                 "status": "failure",
                 "message": f"Query failed: {str(e)}",
-                "data": {},
+                # PR-1: enrich never raises, but top-level query errors still degrade attachments.
+                "data": {"attachments": []},
                 "metadata": {},
                 "llm_response": {
                     "content": None,
