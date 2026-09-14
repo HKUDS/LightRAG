@@ -522,6 +522,110 @@ async def test_drop_reports_a_server_error_as_an_error_dict():
     s._client.create_collection.assert_not_called()
 
 
+async def _drop_blocking_on(storage, blocked_call: str):
+    """Start drop() and suspend it inside the window where the collection is
+    gone. Returns (task, release) -- call release() to let the rebuild finish.
+    """
+    call_started = threading.Event()
+    release_call = threading.Event()
+
+    def _fake(*args, **kwargs):
+        call_started.set()
+        release_call.wait(timeout=5)
+
+    setattr(storage._client, blocked_call, MagicMock(side_effect=_fake))
+    task = asyncio.ensure_future(storage.drop())
+    for _ in range(500):
+        if call_started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert call_started.is_set()
+    return task, release_call.set
+
+
+@pytest.mark.asyncio
+async def test_query_waits_out_the_drop_recreate_window():
+    """drop() yields the loop between drop_collection and the recreate, and
+    query() holds no lock at all -- so without a gate a concurrent search in
+    the same worker hits a collection that does not exist and fails the
+    request. Before the offloading the synchronous body made that impossible;
+    the reader must wait the rebuild out, as it effectively did then."""
+    order: list[str] = []
+
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.create_collection = MagicMock(
+        side_effect=lambda *a, **k: order.append("create")
+    )
+    s._client.search = MagicMock(side_effect=lambda **k: order.append("search") or [[]])
+
+    drop_task, release = await _drop_blocking_on(s, "drop_collection")
+    query_task = asyncio.ensure_future(
+        s.query("hello", top_k=5, query_embedding=[0.1] * 8)
+    )
+
+    # Give the query every chance to slip into the window.
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert order == [], "query reached the client while the collection was gone"
+
+    release()
+    # Timeouts, not bare awaits: a gate that is never reopened must fail this
+    # test, not hang the run.
+    assert (await asyncio.wait_for(drop_task, timeout=5))["status"] == "success"
+    assert await asyncio.wait_for(query_task, timeout=5) == []
+    assert order == ["create", "search"]
+
+
+@pytest.mark.parametrize("read", ["get_by_id", "get_by_ids"])
+@pytest.mark.asyncio
+async def test_id_lookups_wait_at_the_gate_while_the_collection_is_gone(read):
+    """The id lookups take _flush_lock only for their buffer phase and release
+    it before the server leg, so -- unlike a reader that arrives after drop()
+    already holds the lock -- one already past that phase can resume inside the
+    rebuild window. get_by_id's except-Exception would then report the missing
+    collection as a plain None: a broken backend read as a missing row.
+
+    Driven through the gate directly rather than through a drop(): what the
+    lock happens to serialize depends on whether UnifiedLock.__aexit__
+    suspends, and the reader must hold regardless of that.
+    """
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.query = MagicMock(return_value=[{"id": "v1", "content": "hi"}])
+
+    s._collection_available.clear()
+    task = asyncio.ensure_future(
+        s.get_by_id("v1") if read == "get_by_id" else s.get_by_ids(["v1"])
+    )
+    for _ in range(5):
+        await asyncio.sleep(0)
+    s._client.query.assert_not_called()
+
+    s._collection_available.set()
+    result = await asyncio.wait_for(task, timeout=5)
+
+    expected = {"id": "v1", "content": "hi"}
+    assert result == (expected if read == "get_by_id" else [expected])
+    s._client.query.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_drop_reopens_the_reader_gate():
+    """The gate must be reopened even when the rebuild raises: a reader held
+    behind a gate nothing reopens would hang forever, which is strictly worse
+    than the error it was being spared."""
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.drop_collection = MagicMock(side_effect=RuntimeError("boom"))
+    s._client.search = MagicMock(return_value=[[]])
+
+    assert (await s.drop())["status"] == "error"
+
+    # Would hang instead of returning if the gate stayed closed.
+    result = await asyncio.wait_for(
+        s.query("hello", top_k=5, query_embedding=[0.1] * 8), timeout=5
+    )
+    assert result == []
+
+
 @pytest.mark.asyncio
 async def test_concurrent_searches_are_capped_by_the_submit_limit():
     """The dedicated pool's wait queue is unbounded like any other

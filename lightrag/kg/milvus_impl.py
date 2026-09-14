@@ -2361,6 +2361,10 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         self._flush_lock = get_namespace_lock(
             namespace=self.final_namespace, workspace=""
         )
+        # Open except while drop() sits between removing the collection and
+        # recreating it; see _await_collection_available.
+        self._collection_available = asyncio.Event()
+        self._collection_available.set()
 
     async def initialize(self):
         """Initialize Milvus collection"""
@@ -2440,6 +2444,28 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 self._pending_vector_deletes.discard(doc_id)
                 self._pending_vector_docs[doc_id] = pdoc
 
+    async def _await_collection_available(self) -> None:
+        """Wait out a drop() that is rebuilding the collection.
+
+        Writers are already excluded: every one of them runs under
+        ``_flush_lock``, which ``drop()`` holds for its whole rebuild. The
+        server-side legs of ``query`` / ``_query_rows_by_ids`` / ``get_by_id``
+        are NOT under that lock, so they must call this before touching the
+        client; without it a read issued while the collection is gone fails the
+        request, and ``get_by_id`` would report the missing collection as a
+        plain ``None`` (a row that does not exist), which is the silent failure
+        ``AGENTS.md`` *Consistency without transactions* forbids.
+
+        Costs nothing when no drop is running: ``Event.wait()`` on a set event
+        returns without suspending.
+
+        Only same-process readers are held. A drop is a real server-side
+        window, so other workers (gunicorn forks one loop per process) still
+        see the collection missing for its duration -- unchanged by this gate,
+        and not closable from here: Milvus has no atomic drop-and-replace.
+        """
+        await self._collection_available.wait()
+
     async def query(
         self, query: str, top_k: int, query_embedding: list[float] = None
     ) -> list[dict[str, Any]]:
@@ -2454,6 +2480,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         # synchronous SDK (blocking gRPC calls) -- run it off the event loop
         # thread so a search doesn't stall every other concurrent task, and off
         # the SHARED default pool (see get_milvus_executor).
+        await self._await_collection_available()
         await run_in_milvus_executor(self._ensure_collection_loaded)
 
         # Use provided embedding or compute it
@@ -2952,6 +2979,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         the pages that already succeeded, since callers treat an incomplete
         result as a storage-consistency signal, not a partial one.
         """
+        await self._await_collection_available()
         await run_in_milvus_executor(self._ensure_collection_loaded)
 
         page_size = self._resolve_query_page_size(includes_vector=includes_vector)
@@ -3004,6 +3032,10 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 return doc
 
         try:
+            # Past the buffer phase the _flush_lock is released, so a drop can
+            # start before this reaches the client.
+            await self._await_collection_available()
+
             # Ensure collection is loaded before querying
             await run_in_milvus_executor(self._ensure_collection_loaded)
 
@@ -3225,6 +3257,12 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         the freshly recreated collection. Direct callers bypassing the
         idle precondition MUST flush every aliased instance first.
 
+        Readers of this instance (``query`` / ``get_by_id`` / ``get_by_ids`` /
+        ``get_vectors_by_ids``) are held at ``_await_collection_available``
+        for the rebuild instead of seeing a missing collection; writers are
+        already excluded by ``_flush_lock``. Readers in OTHER processes are
+        not, and cannot be -- see that method.
+
         Cancellation: the drop + recreate pair is uninterruptible. A
         cancellation delivered once the collection is gone but before the
         empty replacement exists is deferred until the recreate finishes,
@@ -3246,25 +3284,35 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             self._pending_vector_docs.clear()
             self._pending_vector_deletes.clear()
 
-            # Drop the collection and recreate it empty.
-            if await run_in_milvus_executor(
-                self._client.has_collection, self.final_namespace
-            ):
-                await run_in_milvus_executor(
-                    self._client.drop_collection, self.final_namespace
-                )
+            # Close the reader gate for the window where the collection does
+            # not exist: writers are excluded by _flush_lock, readers are not.
+            self._collection_available.clear()
+            try:
+                # Drop the collection and recreate it empty.
+                if await run_in_milvus_executor(
+                    self._client.has_collection, self.final_namespace
+                ):
+                    await run_in_milvus_executor(
+                        self._client.drop_collection, self.final_namespace
+                    )
 
-            # Recreate an EMPTY collection. Do NOT route through
-            # _create_collection_if_not_exist here: with the suffixed
-            # collection now gone it would see the intentionally-kept legacy
-            # collection and re-run the legacy->suffixed migration, pulling
-            # the just-dropped rows back in. That makes drop() non-empty
-            # (clear_documents would leave stale legacy data behind) and
-            # forces a needless full migration on every rebuild/clear.
-            await run_in_milvus_executor(
-                self._create_collection_with_schema, self.final_namespace
-            )
-            await run_in_milvus_executor(self._ensure_collection_loaded)
+                # Recreate an EMPTY collection. Do NOT route through
+                # _create_collection_if_not_exist here: with the suffixed
+                # collection now gone it would see the intentionally-kept
+                # legacy collection and re-run the legacy->suffixed migration,
+                # pulling the just-dropped rows back in. That makes drop()
+                # non-empty (clear_documents would leave stale legacy data
+                # behind) and forces a needless full migration on every
+                # rebuild/clear.
+                await run_in_milvus_executor(
+                    self._create_collection_with_schema, self.final_namespace
+                )
+                await run_in_milvus_executor(self._ensure_collection_loaded)
+            finally:
+                # Reopen even when the rebuild failed: a waiting reader must
+                # get the server's real error, never hang behind a gate no
+                # later call reopens.
+                self._collection_available.set()
 
         try:
             async with self._flush_lock:
