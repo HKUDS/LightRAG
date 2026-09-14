@@ -119,6 +119,30 @@ async def run_in_milvus_executor(
     return await bounded_submit(get_milvus_executor(), semaphore, fn, *args, **kwargs)
 
 
+# Per-collection "the collection exists" flag, keyed like the writer lock
+# (`get_namespace_lock(namespace=final_namespace)`) rather than per instance:
+# several MilvusVectorDBStorage objects can resolve to the SAME collection --
+# two LightRAG instances, or distinct workspaces collapsed by the
+# MILVUS_WORKSPACE override -- and a drop through one of them must gate the
+# readers of all of them. Per process, like the executor above; a drop is a
+# server-side event other processes cannot be told about from here.
+_COLLECTION_GATES: dict[str, asyncio.Event] = {}
+_COLLECTION_GATES_GUARD = threading.Lock()
+
+
+def get_collection_gate(final_namespace: str) -> asyncio.Event:
+    """The shared reader gate for one Milvus collection, open when idle."""
+    gate = _COLLECTION_GATES.get(final_namespace)
+    if gate is None:
+        with _COLLECTION_GATES_GUARD:
+            gate = _COLLECTION_GATES.get(final_namespace)
+            if gate is None:
+                gate = asyncio.Event()
+                gate.set()
+                _COLLECTION_GATES[final_namespace] = gate
+    return gate
+
+
 @dataclass
 class _PendingVectorDoc:
     """Buffered vector upsert waiting for embedding and/or bulk flush."""
@@ -2362,9 +2386,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             namespace=self.final_namespace, workspace=""
         )
         # Open except while drop() sits between removing the collection and
-        # recreating it; see _await_collection_available.
-        self._collection_available = asyncio.Event()
-        self._collection_available.set()
+        # recreating it; see _run_gated. Shared by every instance pointing at
+        # this collection, like _flush_lock above.
+        self._collection_available = get_collection_gate(self.final_namespace)
 
     async def initialize(self):
         """Initialize Milvus collection"""
@@ -2444,27 +2468,48 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 self._pending_vector_deletes.discard(doc_id)
                 self._pending_vector_docs[doc_id] = pdoc
 
-    async def _await_collection_available(self) -> None:
-        """Wait out a drop() that is rebuilding the collection.
+    async def _run_gated(
+        self, fn: Callable[..., Any], *args: Any, **kwargs: Any
+    ) -> Any:
+        """Submit one blocking read to the pool, waiting out a drop() first.
 
-        Writers are already excluded: every one of them runs under
-        ``_flush_lock``, which ``drop()`` holds for its whole rebuild. The
-        server-side legs of ``query`` / ``_query_rows_by_ids`` / ``get_by_id``
-        are NOT under that lock, so they must call this before touching the
-        client; without it a read issued while the collection is gone fails the
-        request, and ``get_by_id`` would report the missing collection as a
-        plain ``None`` (a row that does not exist), which is the silent failure
+        Every reader-side submission goes through this, never bare
+        ``run_in_milvus_executor``: ``query`` / ``_query_rows_by_ids`` /
+        ``get_by_id`` hold no lock over their server legs, so without it a read
+        issued while ``drop()`` has the collection removed fails the request --
+        and ``get_by_id``, whose ``except Exception`` returns ``None``, would
+        report a missing COLLECTION as a missing ROW, the silent failure
         ``AGENTS.md`` *Consistency without transactions* forbids.
 
-        Costs nothing when no drop is running: ``Event.wait()`` on a set event
-        returns without suspending.
+        Gating each submission rather than each method is the point: a reader
+        that passed one check at entry can then sit in an embedding round trip
+        for seconds, and a drop starting in that gap would leave the check
+        behind it worthless.
 
-        Only same-process readers are held. A drop is a real server-side
-        window, so other workers (gunicorn forks one loop per process) still
-        see the collection missing for its duration -- unchanged by this gate,
-        and not closable from here: Milvus has no atomic drop-and-replace.
+        Writers must NOT use this. They run under ``_flush_lock``, which
+        ``drop()`` holds for the whole rebuild, so they are already excluded --
+        and ``drop()`` itself, which closes this gate, would wait on itself.
+
+        Free when no drop is running: ``Event.wait()`` on a set event returns
+        without suspending.
+
+        Two windows stay open, both narrowed rather than closed, and both
+        recovered the same way -- the read fails loudly and the caller retries
+        once the clear it raced is over:
+
+        * between this check and the call reaching a pool thread, bounded by
+          pool scheduling rather than by the rebuild;
+        * readers in other processes, which no in-process gate reaches:
+          gunicorn forks a loop per process and Milvus has no atomic
+          drop-and-replace, so a clear is a real server-side window there.
+
+        Closing the first would mean ``drop()`` waiting for in-flight readers
+        to drain. Rejected: a reader suspended in an embedding round trip would
+        then stall a destructive admin operation for as long as that takes, and
+        one that never completes would hang it outright.
         """
         await self._collection_available.wait()
+        return await run_in_milvus_executor(fn, *args, **kwargs)
 
     async def query(
         self, query: str, top_k: int, query_embedding: list[float] = None
@@ -2480,8 +2525,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         # synchronous SDK (blocking gRPC calls) -- run it off the event loop
         # thread so a search doesn't stall every other concurrent task, and off
         # the SHARED default pool (see get_milvus_executor).
-        await self._await_collection_available()
-        await run_in_milvus_executor(self._ensure_collection_loaded)
+        await self._run_gated(self._ensure_collection_loaded)
 
         # Use provided embedding or compute it
         if query_embedding is not None:
@@ -2506,7 +2550,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             },
         }
 
-        results = await run_in_milvus_executor(
+        # Re-gated: the embedding round trip above can have taken seconds.
+        results = await self._run_gated(
             self._client.search,
             collection_name=self.final_namespace,
             data=embedding,
@@ -2979,8 +3024,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         the pages that already succeeded, since callers treat an incomplete
         result as a storage-consistency signal, not a partial one.
         """
-        await self._await_collection_available()
-        await run_in_milvus_executor(self._ensure_collection_loaded)
+        await self._run_gated(self._ensure_collection_loaded)
 
         page_size = self._resolve_query_page_size(includes_vector=includes_vector)
         rows: list[dict[str, Any]] = []
@@ -2992,7 +3036,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             filter_expr = f'id in ["{id_list}"]'
 
             try:
-                page_rows = await run_in_milvus_executor(
+                # Re-gated per page: a drop can start between two pages.
+                page_rows = await self._run_gated(
                     self._client.query,
                     collection_name=self.final_namespace,
                     filter=filter_expr,
@@ -3034,15 +3079,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         try:
             # Past the buffer phase the _flush_lock is released, so a drop can
             # start before this reaches the client.
-            await self._await_collection_available()
-
             # Ensure collection is loaded before querying
-            await run_in_milvus_executor(self._ensure_collection_loaded)
+            await self._run_gated(self._ensure_collection_loaded)
 
             # Include all meta_fields (created_at is now always included) plus id
             output_fields = list(self.meta_fields) + ["id"]
 
-            result = await run_in_milvus_executor(
+            result = await self._run_gated(
                 self._client.query,
                 collection_name=self.final_namespace,
                 filter=f'id == "{_escape_milvus_str(id)}"',
@@ -3258,10 +3301,11 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         idle precondition MUST flush every aliased instance first.
 
         Readers of this instance (``query`` / ``get_by_id`` / ``get_by_ids`` /
-        ``get_vectors_by_ids``) are held at ``_await_collection_available``
-        for the rebuild instead of seeing a missing collection; writers are
-        already excluded by ``_flush_lock``. Readers in OTHER processes are
-        not, and cannot be -- see that method.
+        ``get_vectors_by_ids``) are held at ``_run_gated`` for the rebuild
+        instead of seeing a missing collection, including instances aliased
+        onto this same collection; writers are already excluded by
+        ``_flush_lock``. Readers in OTHER processes are not, and cannot be --
+        see that method for what the gate does not close.
 
         Cancellation: the drop + recreate pair is uninterruptible. A
         cancellation delivered once the collection is gone but before the

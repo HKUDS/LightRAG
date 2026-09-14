@@ -23,6 +23,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from lightrag.constants import MILVUS_SUBMIT_LIMIT
+from lightrag.kg import milvus_impl
 from lightrag.kg.milvus_impl import MilvusVectorDBStorage
 
 pytestmark = pytest.mark.offline
@@ -52,6 +53,14 @@ def patch_namespace_lock():
 
     with patch("lightrag.kg.milvus_impl.get_namespace_lock", side_effect=factory):
         yield cache
+
+
+@pytest.fixture(autouse=True)
+def reset_collection_gates():
+    """The gate registry is module-level; never let one leak between tests."""
+    milvus_impl._COLLECTION_GATES.clear()
+    yield
+    milvus_impl._COLLECTION_GATES.clear()
 
 
 def _make_storage(embed_func, *, namespace="entities", workspace="test"):
@@ -606,6 +615,71 @@ async def test_id_lookups_wait_at_the_gate_while_the_collection_is_gone(read):
     expected = {"id": "v1", "content": "hi"}
     assert result == (expected if read == "get_by_id" else [expected])
     s._client.query.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_query_re_gates_after_the_embedding_round_trip():
+    """A reader that cleared the gate at entry can then sit in an embedding
+    round trip for seconds. Checking once per method would leave that reader
+    free to issue its search into a rebuild that started meanwhile, so every
+    submission re-checks -- not just the first one in the method."""
+    order: list[str] = []
+    embedding_started = asyncio.Event()
+    release_embedding = asyncio.Event()
+
+    class SlowEmbeddingFunc(MockEmbeddingFunc):
+        async def __call__(self, texts, **kwargs):
+            embedding_started.set()
+            await release_embedding.wait()
+            return await super().__call__(texts, **kwargs)
+
+    s = _make_storage(SlowEmbeddingFunc())
+    s._client.create_collection = MagicMock(
+        side_effect=lambda *a, **k: order.append("create")
+    )
+    s._client.search = MagicMock(side_effect=lambda **k: order.append("search") or [[]])
+
+    # No query_embedding: the reader must go through embedding_func.
+    query_task = asyncio.ensure_future(s.query("hello", top_k=5))
+    await asyncio.wait_for(embedding_started.wait(), timeout=5)
+
+    # The reader is past its entry gate and suspended. Now start the drop.
+    drop_task, release_drop = await _drop_blocking_on(s, "drop_collection")
+    release_embedding.set()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert "search" not in order, "search was issued while the collection was gone"
+
+    release_drop()
+    assert (await asyncio.wait_for(drop_task, timeout=5))["status"] == "success"
+    assert await asyncio.wait_for(query_task, timeout=5) == []
+    assert order == ["create", "search"]
+
+
+@pytest.mark.asyncio
+async def test_aliased_instances_share_one_collection_gate():
+    """Two instances can resolve to the same collection (two LightRAG objects,
+    or workspaces collapsed by MILVUS_WORKSPACE). They already share
+    _flush_lock, keyed on final_namespace; the gate must be keyed the same way
+    or a drop through one leaves the other's readers free to hit the window."""
+    a = _make_storage(MockEmbeddingFunc())
+    b = _make_storage(MockEmbeddingFunc())
+    assert a.final_namespace == b.final_namespace
+    assert a._collection_available is b._collection_available
+
+    b._client.search = MagicMock(return_value=[[]])
+    drop_task, release = await _drop_blocking_on(a, "drop_collection")
+
+    read_task = asyncio.ensure_future(
+        b.query("hello", top_k=5, query_embedding=[0.1] * 8)
+    )
+    for _ in range(5):
+        await asyncio.sleep(0)
+    b._client.search.assert_not_called()
+
+    release()
+    assert (await asyncio.wait_for(drop_task, timeout=5))["status"] == "success"
+    assert await asyncio.wait_for(read_task, timeout=5) == []
 
 
 @pytest.mark.asyncio
