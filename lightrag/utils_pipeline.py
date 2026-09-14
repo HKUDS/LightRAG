@@ -376,6 +376,9 @@ _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     "source_file",
     "parse_warnings",
     "chunk_opts",
+    # Last attempted registry identity, explicitly non-authoritative. Retained
+    # for drift diagnostics, never for admission or dispatch decisions.
+    "custom_chunker",
     "parse_start_time",
     "parse_end_time",
     "parse_stage_skipped",
@@ -654,6 +657,16 @@ _DOC_STATUS_METADATA_ATTEMPT_KEYS: frozenset[str] = frozenset(
 )
 
 
+# Per-attempt OBSERVATIONS that must nevertheless survive a reset back to
+# PENDING.  A directive tells the next attempt what to do and is therefore
+# honoured; these only tell it what the previous attempt saw, so nothing may be
+# gated on one -- they exist to be reported (the custom-chunker drift WARNING),
+# never obeyed.  Kept as a named list rather than a special case in
+# ``doc_status_reset_metadata`` so the next field of this kind is one entry
+# here instead of a second bespoke branch there.
+_DOC_STATUS_METADATA_OBSERVATION_KEYS: tuple[str, ...] = ("custom_chunker",)
+
+
 def doc_status_reset_metadata(status_doc: Any) -> dict[str, Any]:
     """Build the ``metadata`` payload for a reset back to PENDING.
 
@@ -680,6 +693,15 @@ def doc_status_reset_metadata(status_doc: Any) -> dict[str, Any]:
         else:
             value = raw_metadata.get(key)
         if value not in (None, ""):
+            payload[key] = value
+    # Observations are neither directives nor per-attempt results: they carry
+    # nothing the next attempt must obey, but the next attempt compares against
+    # them, so they have to survive the reset the result fields are dropped by.
+    for key in _DOC_STATUS_METADATA_OBSERVATION_KEYS:
+        value = raw_metadata.get(key)
+        if isinstance(value, dict):
+            payload[key] = dict(value)
+        elif value not in (None, ""):
             payload[key] = value
     return payload
 
