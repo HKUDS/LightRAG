@@ -62,8 +62,8 @@
       "clearing": "Löschen...",
       "timeout": "Löschvorgang hat das Zeitlimit überschritten, bitte versuchen Sie es erneut",
       "success": "Dokumente erfolgreich gelöscht",
-      "cacheCleared": "Cache erfolgreich gelöscht",
-      "cacheClearFailed": "Cache konnte nicht gelöscht werden:\n{{error}}",
+      "successWithCache": "Dokumente und LLM-Cache erfolgreich gelöscht",
+      "partialSuccess": "Löschvorgang mit Fehlern abgeschlossen:\n{{message}}",
       "failed": "Dokumente löschen fehlgeschlagen:\n{{message}}",
       "error": "Dokumente löschen fehlgeschlagen:\n{{error}}"
     },
@@ -444,11 +444,17 @@
       "placeholder": "Geben Sie Ihre Abfrage ein (Präfix unterstützt: /<Abfragemodus>)",
       "error": "Fehler: Antwort konnte nicht abgerufen werden",
       "queryModeError": "Nur die folgenden Abfragemodi werden unterstützt: {{modes}}",
-      "queryModePrefixInvalid": "Ungültiges Abfragemodus-Präfix. Verwenden Sie: /<mode> [Leerzeichen] Ihre Abfrage"
+      "queryModePrefixInvalid": "Ungültiges Abfragemodus-Präfix. Verwenden Sie: /<mode> [Leerzeichen] Ihre Abfrage",
+      "queryEmpty": "Bitte geben Sie eine Frage ein, bevor Sie senden.",
+      "queryTooShort": "Ihre Abfrage ist zu kurz. Geben Sie mindestens 3 englische Zeichen oder eine gleichwertige Kombination ein; jedes chinesische, japanische oder koreanische Zeichen zählt doppelt.",
+      "dismissError": "Fehlermeldung schließen"
     },
     "querySettings": {
       "parametersTitle": "Parameter",
       "parametersDescription": "Konfigurieren Sie Ihre Abfrageparameter",
+      "parametersScopeNotice": "Gilt für Abfragen dieses Browsers",
+      "parametersScopeTooltip": "Diese Parameter werden in diesem Browser gespeichert und bleiben wirksam, bis Sie sie ändern; auch Abfragen aus dem darin geöffneten /workspace-Zugang verwenden sie. Sie sind ein browserlokaler Zustand und keine serverweite Richtlinie: Andere Browser und andere Geräte sind nicht betroffen.",
+      "parametersScopeHelpLabel": "Über den Geltungsbereich der Parameter",
       "queryMode": "Abfragemodus",
       "queryModeTooltip": "Abfragestrategie auswählen:\n• Naive: Traditionelle Text-Chunk-Vektorabfrage\n• Local: Fokus auf Entitätsabfrage\n• Global: Fokus auf Beziehungsabfrage\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Abfrage überspringen, Konversationsverlauf und aktuelle Frage an LLM senden",
       "queryModeWarning": "Kann die Abrufqualität verringern",
@@ -489,8 +495,10 @@
       "streamResponse": "Stream-Antwort",
       "streamResponseTooltip": "Wenn True, aktiviert Streaming-Ausgabe für Echtzeit-Antworten",
       "userPrompt": "Zusätzlicher Ausgabe-Prompt",
-      "userPromptTooltip": "Geben Sie zusätzliche Antwortanforderungen an das LLM an (unabhängig vom Abfrageinhalt, nur für die Ausgabeverarbeitung).",
+      "userPromptTooltip": "Zusätzliche Antwortanforderungen an das LLM (unabhängig vom Abfrageinhalt, nur zur Ausgabeverarbeitung). Der Server stellt diesem möglicherweise einen globalen Prompt voran. Leer lassen, um nur den globalen Prompt des Servers zu senden.",
       "userPromptPlaceholder": "Benutzerdefinierten Prompt eingeben (optional)",
+      "disableUserPromptPrefix": "Globalen Prompt ignorieren",
+      "disableUserPromptPrefixTooltip": "Den globalen Ausgabe-Prompt des Servers nicht vor den obigen zusätzlichen Ausgabe-Prompt setzen. Aktivieren, um die endgültigen Anweisungen vollständig hier zu steuern.",
       "enableRerank": "Rerank aktivieren",
       "enableRerankTooltip": "Reranking für abgerufene Text-Chunks aktivieren. Wenn True, aber kein Rerank-Modell konfiguriert ist, wird eine Warnung ausgegeben. Standard ist True."
     }

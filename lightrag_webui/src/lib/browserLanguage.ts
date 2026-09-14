@@ -21,7 +21,8 @@ export const SUPPORTED_UI_LANGUAGES = [
   'de',
   'uk',
   'ko',
-  'vi'
+  'vi',
+  'id'
 ] as const
 
 export type SupportedUiLanguage = (typeof SUPPORTED_UI_LANGUAGES)[number]

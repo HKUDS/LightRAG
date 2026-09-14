@@ -7,7 +7,8 @@ import {
   wasHistoryDroppedDuringMigration,
   acceptSettingsDataLoss,
   isSettingsDataLostError,
-  SETTINGS_STORAGE_VERSION_AFTER_SPLIT
+  SETTINGS_STORAGE_VERSION_AFTER_SPLIT,
+  QUERY_SETTINGS_STORE_VERSION
 } from './splitSettingsStorage'
 import { LEGACY_SETTINGS_VERSION_CAP } from './legacySettingsChain'
 import {
@@ -1132,5 +1133,34 @@ describe('a shed envelope stamped POST-SPLIT still requires acceptance', () => {
     expect(storage.getItem(QUERY_SETTINGS_STORAGE_KEY)).toBeNull()
     // …and the envelope still reaches the guard that actually owns it.
     expect(hasFutureSettingsEnvelope(storage)).toBe(true)
+  })
+})
+
+describe('query-settings store version stability', () => {
+  // disable_user_prompt_prefix was added to defaultQuerySettings without a
+  // version bump, deliberately. QUERY_SETTINGS_STORE_VERSION does double duty:
+  // it is the persist migrate version AND the stamp the split writes
+  // (splitSettingsStorage.ts:453). Bumping it makes split-derived envelopes
+  // skip any `version < 2` migrate branch, so a backfill would have to be
+  // duplicated inside writeTargetsAndClean.
+  //
+  // No backfill is needed anyway: an absent key hydrates as undefined, the
+  // serializer omits it, and the server default applies the prefix — the
+  // correct behaviour for an upgrading install.
+  test('stays at 1', () => {
+    expect(QUERY_SETTINGS_STORE_VERSION).toBe(1)
+  })
+
+  test('the split stamps query settings v1 and backfills no new key', () => {
+    storage.setItem(LEGACY_SETTINGS_STORAGE_KEY, legacyEnvelope(21, v21State()))
+
+    runSettingsStorageSplitMigration(storage)
+
+    const envelope = parsedFrom(storage, QUERY_SETTINGS_STORAGE_KEY)
+    expect(envelope.version).toBe(QUERY_SETTINGS_STORE_VERSION)
+    // Carried over, not defaulted: the split copies the legacy settings and
+    // leaves fields it has never heard of to the store's own defaults.
+    expect(envelope.state.querySettings.mode).toBe('hybrid')
+    expect('disable_user_prompt_prefix' in envelope.state.querySettings).toBe(false)
   })
 })

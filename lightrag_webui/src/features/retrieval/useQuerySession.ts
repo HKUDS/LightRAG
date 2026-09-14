@@ -140,11 +140,11 @@ export interface QuerySessionOptions {
 }
 
 export interface SubmitOptions {
-  /** Resolved by the page from its own input conventions (the admin page's
-   * `/mode` prefix). Applied onto the settings snapshot before serializing. */
+  /** Resolved by the page from the shared `/mode` prefix convention. Applied
+   * onto the settings snapshot before serializing. */
   modeOverride?: QueryMode
-  /** What to show as the user's message (the admin page shows the original
-   * input including its `/mode` prefix while sending the stripped query). */
+  /** What to show as the user's message (both pages show the original input
+   * including its `/mode` prefix while sending the stripped query). */
   displayedInput?: string
 }
 

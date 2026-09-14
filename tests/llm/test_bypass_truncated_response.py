@@ -35,7 +35,7 @@ async def test_bypass_truncated_response_is_not_misclassified_as_streaming():
     rag = _FakeRAG(_make_llm(TruncatedResponse("partial answer")))
 
     result = await LightRAG.aquery_llm(
-        rag, "question", param=QueryParam(mode="bypass", stream=False)
+        rag, "中", param=QueryParam(mode="bypass", stream=False)
     )
 
     llm_response = result["llm_response"]

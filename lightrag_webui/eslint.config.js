@@ -32,5 +32,19 @@ export default tseslint.config(
       '@stylistic/quotes': ['error', 'single'],
       '@typescript-eslint/no-explicit-any': ['off']
     }
+  },
+  {
+    // Test files and the test harness under src/test/ are never part of the
+    // production bundle or the HMR graph, so two rules that exist to protect
+    // those do not apply here.
+    files: ['src/test/**/*.{ts,tsx}', '**/*.test.{ts,tsx}'],
+    rules: {
+      // Merging jest-dom's matchers into bun:test's `Matchers` is by
+      // definition an interface that declares no members of its own.
+      '@typescript-eslint/no-empty-object-type': 'off',
+      // Render helpers legitimately export both a wrapper component and the
+      // helpers around it; Fast Refresh never sees this file.
+      'react-refresh/only-export-components': 'off'
+    }
   }
 )

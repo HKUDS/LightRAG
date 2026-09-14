@@ -668,6 +668,99 @@ class TestUvicornRootPathSemantics:
         )
 
 
+class TestSwaggerUIAssetURLs:
+    """custom_swagger_ui_html must prefix its asset URLs with root_path.
+
+    TestRoutesAtNaturalPaths above only pins that /docs returns 200 — that
+    alone doesn't catch this bug, because the /docs route itself always
+    answers 200 regardless of root_path; it's the *asset URLs embedded in
+    its HTML* (swagger-ui-bundle.js, swagger-ui.css, favicon, the
+    oauth2-redirect link, and the openapi_url) that were previously emitted
+    as fixed absolute paths, 404ing behind a proxy that strips the prefix
+    before forwarding. Mirrors the root_path handling already covered for
+    service_info_response / workspace_unavailable_response /
+    redirect_to_default_ui.
+    """
+
+    def test_asset_urls_prefixed_with_api_prefix(self, mock_args_api_prefix):
+        with patch("lightrag.api.lightrag_server.LightRAG") as mock_rag:
+            mock_rag.return_value = MagicMock()
+            from lightrag.api.lightrag_server import create_app
+
+            app = create_app(mock_args_api_prefix)
+            client = TestClient(app)
+
+            response = client.get("/test-api/docs")
+            assert response.status_code == 200
+            html = response.text
+
+            assert 'src="/test-api/static/swagger-ui/swagger-ui-bundle.js"' in html
+            assert 'href="/test-api/static/swagger-ui/swagger-ui.css"' in html
+            assert 'href="/test-api/static/swagger-ui/favicon-32x32.png"' in html
+            assert "'/test-api/docs/oauth2-redirect'" in html
+            assert "'/test-api/openapi.json'" in html
+
+            # The un-prefixed form must not appear — that's exactly what
+            # 404s behind a proxy that strips /test-api before forwarding.
+            assert 'src="/static/swagger-ui/swagger-ui-bundle.js"' not in html
+
+    def test_asset_urls_unprefixed_without_api_prefix(self, mock_args_no_prefix):
+        with patch("lightrag.api.lightrag_server.LightRAG") as mock_rag:
+            mock_rag.return_value = MagicMock()
+            from lightrag.api.lightrag_server import create_app
+
+            app = create_app(mock_args_no_prefix)
+            client = TestClient(app)
+
+            response = client.get("/docs")
+            assert response.status_code == 200
+            html = response.text
+
+            assert 'src="/static/swagger-ui/swagger-ui-bundle.js"' in html
+            assert 'href="/static/swagger-ui/swagger-ui.css"' in html
+            assert 'href="/static/swagger-ui/favicon-32x32.png"' in html
+            assert "'/docs/oauth2-redirect'" in html
+            assert "'/openapi.json'" in html
+
+    def test_redoc_link_in_description_prefixed_with_api_prefix(
+        self, mock_args_api_prefix
+    ):
+        """The [View ReDoc documentation](...) link in the OpenAPI info
+        description (rendered in the Swagger UI info panel) must also carry
+        root_path -- raised in review on PR #3864: this link was still
+        hardcoded to /redoc even after the asset-URL fix, so it 404s behind
+        a proxy the same way the assets did."""
+        with patch("lightrag.api.lightrag_server.LightRAG") as mock_rag:
+            mock_rag.return_value = MagicMock()
+            from lightrag.api.lightrag_server import create_app
+
+            app = create_app(mock_args_api_prefix)
+            client = TestClient(app)
+
+            response = client.get("/test-api/openapi.json")
+            assert response.status_code == 200
+            description = response.json()["info"]["description"]
+
+            assert "[View ReDoc documentation](/test-api/redoc)" in description
+            assert "(/redoc)" not in description
+
+    def test_redoc_link_in_description_unprefixed_without_api_prefix(
+        self, mock_args_no_prefix
+    ):
+        with patch("lightrag.api.lightrag_server.LightRAG") as mock_rag:
+            mock_rag.return_value = MagicMock()
+            from lightrag.api.lightrag_server import create_app
+
+            app = create_app(mock_args_no_prefix)
+            client = TestClient(app)
+
+            response = client.get("/openapi.json")
+            assert response.status_code == 200
+            description = response.json()["info"]["description"]
+
+            assert "[View ReDoc documentation](/redoc)" in description
+
+
 class TestWhitelistUnderApiPrefix:
     """WHITELIST_PATHS is matched against route paths, on the real application.
 
@@ -739,7 +832,6 @@ class TestWhitelistUnderApiPrefix:
             prefix = "" if mode == "strip" else "/api/v1"
 
             assert client.delete(f"{prefix}/documents").status_code == 401
-            assert client.get(f"{prefix}/documents").status_code == 401
 
     @pytest.mark.parametrize("mode", ["verbatim", "strip"])
     def test_whitelisted_routes_stay_open_under_a_prefix(

@@ -2,15 +2,15 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import Textarea from '@/components/ui/Textarea'
 import Input from '@/components/ui/Input'
 import Button from '@/components/ui/Button'
-import { EraserIcon, SendIcon, SquareIcon } from 'lucide-react'
+import { CircleAlertIcon, EraserIcon, SendIcon, SquareIcon, XIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 /**
  * Shared input layer: single/multi-line switching, draft handling, clear,
  * send/stop with the stop cooldown. Contains no QuerySettings and no admin
- * navigation. Page differences (the admin `/mode` prefix) live in `onSend`,
- * provided by the page composition layer: it returns an error string to show
- * under the input, or null to accept (which clears the draft).
+ * navigation. Request preparation lives in `onSend`, provided by the page
+ * composition layer: it returns an error string to show above the composer,
+ * or null to accept (which clears the draft).
  */
 export interface QueryComposerProps {
   isLoading: boolean
@@ -33,15 +33,19 @@ export default function QueryComposer({
   const [inputError, setInputError] = useState('')
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null)
 
+  const dismissInputError = useCallback(() => {
+    setInputError('')
+    requestAnimationFrame(() => inputRef.current?.focus())
+  }, [])
+
   // Smart switching logic: use Input for single line, Textarea for multi-line
   const hasMultipleLines = inputValue.includes('\n')
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       setInputValue(e.target.value)
-      if (inputError) setInputError('')
     },
-    [inputError]
+    []
   )
 
   // Unified height adjustment function for textarea
@@ -164,7 +168,7 @@ export default function QueryComposer({
   return (
     <form
       onSubmit={handleSubmit}
-      className="flex shrink-0 items-center gap-2"
+      className="relative flex shrink-0 items-center gap-2"
       autoComplete="on"
       method="post"
       action="#"
@@ -172,6 +176,24 @@ export default function QueryComposer({
     >
       {/* Hidden submit button to ensure form meets HTML standards */}
       <input type="submit" style={{ display: 'none' }} tabIndex={-1} />
+      {inputError && (
+        <div
+          id="query-input-error"
+          role="alert"
+          className="border-destructive/35 bg-background/95 text-destructive absolute inset-x-0 bottom-full z-20 mb-2 flex items-start gap-2 rounded-lg border px-3 py-2 text-sm shadow-lg backdrop-blur-sm"
+        >
+          <CircleAlertIcon className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 flex-1 break-words">{inputError}</span>
+          <button
+            type="button"
+            onClick={dismissInputError}
+            className="hover:bg-destructive/10 focus-visible:ring-ring relative -my-1 -me-1 flex size-8 shrink-0 items-center justify-center rounded-md after:absolute after:-inset-1.5 focus-visible:ring-2 focus-visible:outline-none"
+            aria-label={t('retrievePanel.retrieval.dismissError')}
+          >
+            <XIcon className="size-4" aria-hidden="true" />
+          </button>
+        </div>
+      )}
       <Button
         type="button"
         variant="outline"
@@ -183,7 +205,7 @@ export default function QueryComposer({
         <EraserIcon />
         {t('retrievePanel.retrieval.clear')}
       </Button>
-      <div className="flex-1 relative">
+      <div className="relative flex-1">
         <label htmlFor="query-input" className="sr-only">
           {t('retrievePanel.retrieval.placeholder')}
         </label>
@@ -192,13 +214,15 @@ export default function QueryComposer({
             ref={inputRef as React.RefObject<HTMLTextAreaElement>}
             id="query-input"
             autoComplete="on"
-            className="w-full min-h-[44px] max-h-[120px] overflow-y-auto"
+            className="max-h-[120px] min-h-[44px] w-full overflow-y-auto"
             value={inputValue}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder={t('retrievePanel.retrieval.placeholder')}
             disabled={isLoading}
+            aria-invalid={inputError ? true : undefined}
+            aria-describedby={inputError ? 'query-input-error' : undefined}
             rows={1}
             style={{
               resize: 'none',
@@ -219,20 +243,16 @@ export default function QueryComposer({
             ref={inputRef as React.RefObject<HTMLInputElement>}
             id="query-input"
             autoComplete="on"
-            className="w-full min-h-11"
+            className="min-h-11 w-full"
             value={inputValue}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder={t('retrievePanel.retrieval.placeholder')}
             disabled={isLoading}
+            aria-invalid={inputError ? true : undefined}
+            aria-describedby={inputError ? 'query-input-error' : undefined}
           />
-        )}
-        {/* Error message below input */}
-        {inputError && (
-          <div className="absolute left-0 top-full mt-1 text-xs text-red-500">
-            {inputError}
-          </div>
         )}
       </div>
       {/* Send and Stop swap in the SAME stable position (avoids stray taps);

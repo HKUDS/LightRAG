@@ -3,6 +3,7 @@ LightRAG FastAPI Server
 """
 
 from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, Response
 from fastapi.openapi.docs import (
@@ -61,6 +62,8 @@ from lightrag.api.routers.document_routes import (
 )
 from lightrag.parser.docx.smart_heading.nlp import SmartHeadingNLPError
 from lightrag.parser.plugins import load_third_party_parsers
+from lightrag.chunker.plugins import load_and_resolve_chunker
+from lightrag.chunker.registry import log_chunker_selection
 from lightrag.parser.routing import (
     parser_rules_from_env,
     validate_parser_routing_config,
@@ -1389,6 +1392,47 @@ def _create_llm_model_kwargs(binding: str, args, llm_timeout: int) -> dict:
     return {}
 
 
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Render a request-validation refusal in the shape each endpoint promises.
+
+    Module-level rather than a closure inside ``create_app`` so the real
+    handler can be exercised without standing up the whole application.
+    """
+    # Check if this is a request to /query/data endpoint
+    if request.url.path.endswith("/query/data"):
+        # Extract error details
+        error_details = []
+        for error in exc.errors():
+            field_path = " -> ".join(str(loc) for loc in error["loc"])
+            error_details.append(f"{field_path}: {error['msg']}")
+
+        error_message = "; ".join(error_details)
+
+        # Return in the expected format for /query/data
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "failure",
+                "message": f"Validation error: {error_message}",
+                "data": {},
+                "metadata": {},
+            },
+        )
+
+    # For other endpoints, return the default FastAPI validation error.
+    # `jsonable_encoder` is not optional here: a rejection raised as a
+    # ValueError inside a validator (the RAG query minimum, the non-empty
+    # check, the keyword and history checks, the aggregate text budget)
+    # carries the exception object itself in `ctx.error`, which json.dumps
+    # cannot serialize — without the encoder this handler raises and the
+    # client gets a 500 in place of the 422 the refusal actually is.
+    return JSONResponse(
+        status_code=422, content={"detail": jsonable_encoder(exc.errors())}
+    )
+
+
 def create_app(args):
     # Check frontend build first and get status. The two entries are checked
     # independently: an old build directory may carry only index.html, which
@@ -1417,7 +1461,7 @@ def create_app(args):
         ui_customization_snapshot = resolve_ui_customization_snapshot(ui_templates_dir)
     if ui_customization_snapshot is not None:
         logger.info(
-            "UI customization bundle active: bundle_revision=%s locales=%s",
+            "UI customization: bundle %s %s",
             ui_customization_snapshot.bundle_revision,
             sorted(ui_customization_snapshot.locales),
         )
@@ -1464,6 +1508,24 @@ def create_app(args):
     # Discover third-party parser engines (``lightrag.parsers`` entry points)
     # BEFORE validating routing rules, so LIGHTRAG_PARSER may reference them.
     load_third_party_parsers()
+    # Same reason as the smart_heading block below: an invalid CUSTOM_CHUNKER
+    # is an operator configuration mistake, and a raw ValueError traceback
+    # buries the one sentence that says how to fix it. Re-raised, never
+    # swallowed — an unselectable chunker must still abort startup (the
+    # deployment would otherwise chunk its C documents the wrong way).
+    try:
+        selected_chunker = load_and_resolve_chunker(getattr(args, "custom_chunker", ""))
+    except ValueError as exc:
+        # markup=False: ASCIIColors interprets "[...]" as rich markup tags.
+        ASCIIColors.red("\n" + "=" * 80, markup=False)
+        ASCIIColors.red("ERROR: invalid CUSTOM_CHUNKER selection", markup=False)
+        ASCIIColors.red("=" * 80, markup=False)
+        ASCIIColors.red(str(exc), markup=False)
+        ASCIIColors.red("\nAuthoring and selection guide:", markup=False)
+        ASCIIColors.cyan("    docs/ThirdPartyChunker.md", markup=False)
+        ASCIIColors.red("=" * 80 + "\n", markup=False)
+        raise
+    log_chunker_selection(selected_chunker)
     validate_parser_routing_config()
     # Fail fast when DOCX_SMART_HEADING / a LIGHTRAG_PARSER rule enables
     # smart_heading but the pinned spaCy models are missing — surfacing the
@@ -1607,8 +1669,7 @@ def create_app(args):
 
     # Single switch for every interactive API documentation surface: /docs,
     # /docs/oauth2-redirect, /redoc, /openapi.json and the /static/swagger-ui
-    # mount. All five must stay conditioned on this one flag (issue #3666,
-    # RFC #3671) — a route audit that special-cases only the APIRoutes would
+    # mount. All five must stay conditioned on this one flag (one flag) — a route audit that special-cases only the APIRoutes would
     # diverge from the real route table.
     api_docs_enabled = bool(getattr(args, "enable_api_docs", True))
 
@@ -1620,19 +1681,20 @@ def create_app(args):
     # create_app working for callers that build args programmatically.
     ai_content_notice_enabled = bool(getattr(args, "enable_ai_content_notice", False))
 
+    # The WebUI mount path is fixed at "/webui" — see
+    # docs/MultiSiteDeployment.md for the rationale. Computed before
+    # swagger_description below, which embeds it in the ReDoc link.
+    api_prefix = normalize_api_prefix(getattr(args, "api_prefix", None))
+    webui_path = WEBUI_PATH
+
     base_description = (
         "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
     )
     swagger_description = (
         base_description
         + (" (API-Key Enabled)" if api_key else "")
-        + "\n\n[View ReDoc documentation](/redoc)"
+        + f"\n\n[View ReDoc documentation]({api_prefix}/redoc)"
     )
-
-    # The WebUI mount path is fixed at "/webui" — see
-    # docs/MultiSiteDeployment.md for the rationale.
-    api_prefix = normalize_api_prefix(getattr(args, "api_prefix", None))
-    webui_path = WEBUI_PATH
 
     app_kwargs = {
         "title": "LightRAG Server API",
@@ -1654,34 +1716,9 @@ def create_app(args):
 
     app = FastAPI(**app_kwargs)
 
-    # Add custom validation error handler for /query/data endpoint
-    @app.exception_handler(RequestValidationError)
-    async def validation_exception_handler(
-        request: Request, exc: RequestValidationError
-    ):
-        # Check if this is a request to /query/data endpoint
-        if request.url.path.endswith("/query/data"):
-            # Extract error details
-            error_details = []
-            for error in exc.errors():
-                field_path = " -> ".join(str(loc) for loc in error["loc"])
-                error_details.append(f"{field_path}: {error['msg']}")
-
-            error_message = "; ".join(error_details)
-
-            # Return in the expected format for /query/data
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "status": "failure",
-                    "message": f"Validation error: {error_message}",
-                    "data": {},
-                    "metadata": {},
-                },
-            )
-        else:
-            # For other endpoints, return the default FastAPI validation error
-            return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    # Custom validation error handler, shaped per endpoint (see the
+    # module-level function for why it is not a closure).
+    app.add_exception_handler(RequestValidationError, validation_exception_handler)
 
     # Last-resort handler for any exception that escapes a route without being
     # converted to an HTTPException. It guarantees raw exception text never
@@ -2440,6 +2477,7 @@ def create_app(args):
     # Initialize RAG with unified configuration
     try:
         rag = LightRAG(
+            **({"chunking_func": selected_chunker} if selected_chunker else {}),
             working_dir=args.working_dir,
             workspace=args.workspace,
             llm_model_func=create_llm_model_func(args.llm_binding),
@@ -2540,13 +2578,14 @@ def create_app(args):
         @app.get("/docs", include_in_schema=False)
         async def custom_swagger_ui_html(request: Request):
             """Custom Swagger UI HTML with local static files"""
+            root = request.scope.get("root_path", "").rstrip("/")
             response = get_swagger_ui_html(
-                openapi_url=app.openapi_url,
+                openapi_url=f"{root}{app.openapi_url}",
                 title=app.title + " - Swagger UI",
-                oauth2_redirect_url="/docs/oauth2-redirect",
-                swagger_js_url="/static/swagger-ui/swagger-ui-bundle.js",
-                swagger_css_url="/static/swagger-ui/swagger-ui.css",
-                swagger_favicon_url="/static/swagger-ui/favicon-32x32.png",
+                oauth2_redirect_url=f"{root}/docs/oauth2-redirect",
+                swagger_js_url=f"{root}/static/swagger-ui/swagger-ui-bundle.js",
+                swagger_css_url=f"{root}/static/swagger-ui/swagger-ui.css",
+                swagger_favicon_url=f"{root}/static/swagger-ui/favicon-32x32.png",
                 swagger_ui_parameters=app.swagger_ui_parameters,
             )
             html = response.body.decode("utf-8")
@@ -2564,7 +2603,7 @@ def create_app(args):
         """Fixed JSON fallback when neither the WebUI nor /docs can be served.
 
         HTTP 200 with a root_path-aware health_url, so multi-site deployments
-        behind LIGHTRAG_API_PREFIX get a correct absolute path (RFC #3671).
+        behind LIGHTRAG_API_PREFIX get a correct absolute path.
         """
         root = request.scope.get("root_path", "")
         return JSONResponse(
@@ -2910,7 +2949,7 @@ def create_app(args):
             # Sensitive runtime configuration and operational diagnostics
             # (filesystem paths, LLM/embedding provider + model + host, storage
             # backends, queue status, keyed locks, ...) are revealed only to
-            # authenticated callers — see Issue #3294. The skipped queue-status
+            # authenticated callers. The skipped queue-status
             # and keyed-lock-cleanup calls also keep unauthenticated probes cheap.
             if not authenticated:
                 return status_data

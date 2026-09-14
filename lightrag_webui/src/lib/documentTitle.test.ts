@@ -6,6 +6,7 @@ import {
   resolveInitialDocumentTitle,
   resolveServerDocumentTitle
 } from './documentTitle'
+import { restoreDomGlobals, withoutDomGlobals } from '@/test/domGlobals'
 
 /**
  * Browser tab title resolution (WEBUI_TITLE).
@@ -28,8 +29,9 @@ const setInjectedTitle = (webuiTitle: string | null | undefined): void => {
 }
 
 afterEach(() => {
-  delete g.window
-  delete g.document
+  // Restore rather than delete: the DOM preload installs one window and
+  // document for the whole process (see src/test/domGlobals.ts).
+  restoreDomGlobals()
 })
 
 describe('resolveInitialDocumentTitle', () => {
@@ -77,8 +79,13 @@ describe('resolveInitialDocumentTitle', () => {
   })
 
   test('tolerates a missing window (SSR / non-browser import)', () => {
-    expect(resolveInitialDocumentTitle('My Graph KB')).toBe('My Graph KB')
-    expect(resolveInitialDocumentTitle(null)).toBe(DEFAULT_DOCUMENT_TITLE)
+    // Actually remove the global rather than leaving a config-less window
+    // behind: the `typeof window === 'undefined'` guard is the thing pinned
+    // here, and a present-but-empty window never exercises it.
+    withoutDomGlobals(() => {
+      expect(resolveInitialDocumentTitle('My Graph KB')).toBe('My Graph KB')
+      expect(resolveInitialDocumentTitle(null)).toBe(DEFAULT_DOCUMENT_TITLE)
+    })
   })
 })
 
@@ -147,7 +154,12 @@ describe('applying the title', () => {
 
   test('is a no-op without a document', () => {
     setInjectedTitle('My Graph KB')
-    expect(() => applyInitialDocumentTitle(null)).not.toThrow()
-    expect(() => applyServerDocumentTitle(null)).not.toThrow()
+    // Only `document` goes: with an injected title still readable from
+    // `window`, both entry points resolve a real title and then have
+    // nowhere to write it — which is the guard being pinned.
+    withoutDomGlobals(() => {
+      expect(() => applyInitialDocumentTitle(null)).not.toThrow()
+      expect(() => applyServerDocumentTitle(null)).not.toThrow()
+    }, ['document'])
   })
 })

@@ -740,10 +740,12 @@ async def test_edit_relation_truncation_failure_leaves_edge_and_vdb_untouched():
 
 async def test_edit_relation_vdb_delete_failure_still_leaves_graph_updated():
     """A *transient* VDB I/O failure (unlike a TokenBudgetError) must not
-    prevent the graph write: the graph write happens before the VDB delete,
-    so a delete failure still leaves the new relation content saved in the
-    graph -- the recoverable (graph-updated, VDB-stale) window the offline
-    rebuild tool is for."""
+    prevent the graph write: the vector records are written after the graph
+    commit and after the chunk-tracking shrink that commit justifies (issue
+    #3895), so a delete failure still leaves the new relation content saved in
+    the graph -- the recoverable (graph-updated, VDB-stale) window the offline
+    rebuild tool is for. It surfaces as `VectorStorageConsistencyError`, the
+    type that says the graph update IS durable, matching the entity path."""
     graph = _MemGraph()
     for name in ("A", "B"):
         await graph.upsert_node(name, {"entity_id": name, "description": name})
@@ -764,7 +766,9 @@ async def test_edit_relation_vdb_delete_failure_still_leaves_graph_updated():
 
     relationships_vdb.delete = _boom
 
-    with pytest.raises(RuntimeError, match="transient VDB backend error"):
+    with pytest.raises(
+        VectorStorageConsistencyError, match="transient VDB backend error"
+    ):
         await aedit_relation(
             graph,
             entities_vdb,

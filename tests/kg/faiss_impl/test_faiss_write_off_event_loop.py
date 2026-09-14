@@ -17,6 +17,7 @@ Two properties are pinned here:
 
 import asyncio
 import json
+import logging
 import os
 import threading
 import time
@@ -258,5 +259,62 @@ async def test_cancelled_commit_still_notifies_and_retires_the_redo_logs(
         )
         assert storage._index_dirty is False, "dirty bit survived a durable save"
         assert storage._unsaved_upserts == {}, "redo log kept rows that are on disk"
+    finally:
+        finalize_share_data()
+
+
+async def test_a_failed_notification_is_not_reported_as_a_failed_save(
+    tmp_path, monkeypatch, caplog
+):
+    """A publication failure must not be raised as a save failure.
+
+    `index_done_callback`'s contract is that a raise means the vectors were NOT
+    written, and `_insert_done` aborts the document batch on it. But the hook
+    runs only after both files are renamed into place, so an exception out of
+    `set_all_update_flags` reports a durable write as a lost one.
+
+    What failed is the cross-process reload notification. The residue heals:
+    `_index_dirty` stays True, so the next commit rewrites this snapshot and
+    notifies again.
+    """
+    from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
+
+    finalize_share_data()
+    initialize_share_data()
+    try:
+        storage = _make_storage(tmp_path)
+        await storage.initialize()
+        _seed(storage, "v1")
+        storage._index_dirty = True
+
+        async def failing_set_all_update_flags(namespace, workspace=None):
+            raise RuntimeError("shared-storage manager is down")
+
+        monkeypatch.setattr(
+            faiss_impl, "set_all_update_flags", failing_set_all_update_flags
+        )
+
+        # lightrag's logger does not propagate, so caplog cannot see it otherwise.
+        logger = logging.getLogger("lightrag")
+        monkeypatch.setattr(logger, "propagate", True)
+
+        with caplog.at_level(logging.ERROR, logger="lightrag"):
+            committed = await storage.index_done_callback()
+
+        assert committed is True
+        assert os.path.exists(storage._faiss_index_file), (
+            "the save did not land, so this proves nothing"
+        )
+        assert os.path.exists(storage._meta_file)
+        # The dirty bit stays set, which is what retries the publication.
+        assert storage._index_dirty is True
+        # The redo log is not asserted here: `_seed` materializes rows straight
+        # into the index, so nothing ever passed through the pending buffer.
+        # Its retention past a failed publication is pinned in
+        # test_faiss_deferred_embedding.py, on the real upsert path.
+        assert any(
+            "publishing that write failed" in record.getMessage()
+            for record in caplog.records
+        ), f"the deferred publication was not logged: {caplog.text}"
     finally:
         finalize_share_data()

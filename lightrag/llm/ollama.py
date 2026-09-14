@@ -393,7 +393,7 @@ async def _ollama_model_if_cache(
                     # Empty AND cut off: nothing was generated at all, which is
                     # structurally broken rather than merely short. Returning ""
                     # here indexed an empty knowledge graph and still reported
-                    # the document PROCESSED (issue #3601 gap 4, seen with
+                    # the document PROCESSED (seen with
                     # thinking models burning the whole num_predict budget on
                     # the reasoning trace). Raise like the OpenAI binding does,
                     # so the document ends FAILED and stays retryable.

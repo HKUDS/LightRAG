@@ -158,7 +158,6 @@ def chunking_by_token_size(
             f"chunk_overlap_token_size must be non-negative, got "
             f"{chunk_overlap_token_size}"
         )
-    tokens = tokenizer.encode(content)
     results: list[dict[str, Any]] = []
     if split_by_character:
         raw_chunks = content.split(split_by_character)
@@ -244,6 +243,11 @@ def chunking_by_token_size(
                 )
             )
     else:
+        # Only the fixed-window path needs the whole-document token list;
+        # the split_by_character path re-encodes each segment anyway (BPE
+        # boundaries differ on substrings), so the full encode is deferred
+        # here rather than paid on every call.
+        tokens = tokenizer.encode(content)
         anchor = (0, 0)
         for index, start in enumerate(
             range(

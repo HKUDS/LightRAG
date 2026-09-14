@@ -6,6 +6,7 @@ individual storage backends that build on it lives in
 ``test_atomic_write_faiss.py``, and ``test_atomic_write_nano.py``.
 """
 
+import logging
 import os
 import stat
 import sys
@@ -17,6 +18,8 @@ import pytest
 
 from lightrag.file_atomic import (
     TMP_REAP_AGE_SECONDS,
+    WINDOWS_REPLACE_MAX_ATTEMPTS,
+    _replace_file,
     atomic_write,
     reap_orphan_tmp_files,
     tmp_path_for,
@@ -203,3 +206,128 @@ def test_reap_orphan_tmp_files_extra_patterns_clean_legacy_residue(tmp_path):
     # Explicit migration pattern clears it.
     reap_orphan_tmp_files(dst, extra_patterns=(glob.escape(dst) + ".tmp",))
     assert not os.path.exists(legacy_tmp)
+
+
+@pytest.mark.offline
+def test_replace_file_windows_transient_permission_error_retries_and_succeeds(tmp_path):
+    """On Windows, a transient PermissionError (e.g. WinError 5) should trigger
+    exponential backoff retries and succeed once the file lock is released."""
+    src = str(tmp_path / "src.txt")
+    dst = str(tmp_path / "dst.txt")
+    with open(src, "w") as f:
+        f.write("payload")
+
+    real_replace = os.replace
+    call_count = 0
+
+    def mock_replace(s, d):
+        nonlocal call_count
+        call_count += 1
+        if call_count < 3:
+            raise PermissionError(13, "Permission denied (simulated WinError 5)")
+        real_replace(s, d)
+
+    with (
+        patch("lightrag.file_atomic.sys.platform", "win32"),
+        patch("lightrag.file_atomic.os.replace", side_effect=mock_replace),
+        patch("lightrag.file_atomic.time.sleep") as mock_sleep,
+    ):
+        _replace_file(src, dst)
+
+    assert call_count == 3
+    assert mock_sleep.call_count == 2
+    assert os.path.exists(dst)
+    assert open(dst).read() == "payload"
+
+
+@pytest.mark.offline
+def test_atomic_write_windows_retry_exhaustion_cleans_tmp_and_raises(tmp_path):
+    """When PermissionError persists on Windows up to
+    ``WINDOWS_REPLACE_MAX_ATTEMPTS``, atomic_write raises the PermissionError
+    and cleans up the in-flight tmp."""
+    dst = str(tmp_path / "out.txt")
+    with open(dst, "w") as f:
+        f.write("v1")
+
+    call_count = 0
+
+    def mock_replace(s, d):
+        nonlocal call_count
+        call_count += 1
+        raise PermissionError(13, "Permission denied (simulated WinError 5)")
+
+    with (
+        patch("lightrag.file_atomic.sys.platform", "win32"),
+        patch("lightrag.file_atomic.os.replace", side_effect=mock_replace),
+        patch("lightrag.file_atomic.time.sleep") as mock_sleep,
+    ):
+        with pytest.raises(PermissionError, match="Permission denied"):
+            atomic_write(dst, lambda tmp: open(tmp, "w").write("v2"))
+
+    assert call_count == WINDOWS_REPLACE_MAX_ATTEMPTS
+    assert mock_sleep.call_count == WINDOWS_REPLACE_MAX_ATTEMPTS - 1
+
+    # The sleeps run on the process-wide SINGLE-worker storage-io executor, so
+    # this total is the worst-case stall imposed on every file backend's flush.
+    stall = sum(call.args[0] for call in mock_sleep.call_args_list)
+    assert stall <= 1.05, f"worst-case storage-io stall grew to {stall:.2f}s"
+    assert open(dst).read() == "v1"
+    leftovers = [p for p in os.listdir(tmp_path) if ".tmp." in p]
+    assert leftovers == [], f"exhausted retry must clean tmp, got {leftovers}"
+
+
+@pytest.mark.offline
+def test_atomic_write_non_windows_does_not_retry_permission_error(tmp_path):
+    """On non-Windows platforms (e.g. Linux), PermissionError is not retried."""
+    dst = str(tmp_path / "out.txt")
+    call_count = 0
+
+    def mock_replace(s, d):
+        nonlocal call_count
+        call_count += 1
+        raise PermissionError(13, "Permission denied")
+
+    with (
+        patch("lightrag.file_atomic.sys.platform", "linux"),
+        patch("lightrag.file_atomic.os.replace", side_effect=mock_replace),
+        patch("lightrag.file_atomic.time.sleep") as mock_sleep,
+    ):
+        with pytest.raises(PermissionError, match="Permission denied"):
+            atomic_write(dst, lambda tmp: open(tmp, "w").write("v1"))
+
+    assert call_count == 1
+    assert mock_sleep.call_count == 0
+    leftovers = [p for p in os.listdir(tmp_path) if ".tmp." in p]
+    assert leftovers == [], f"failure must clean tmp, got {leftovers}"
+
+
+@pytest.mark.offline
+def test_replace_file_non_windows_permission_error_logs_nothing(tmp_path, caplog):
+    """A non-retrying platform must not log a misleading retry warning.
+
+    ``PermissionError`` on POSIX is a real permission problem, reported by the
+    caller (the pipeline turns it into a storage error). An extra
+    "after 1 attempts" warning here both implies a retry that never happened
+    and duplicates that report.
+    """
+    src = str(tmp_path / "src.txt")
+    dst = str(tmp_path / "dst.txt")
+
+    logger = logging.getLogger("lightrag")
+    previous_propagate = logger.propagate
+    logger.propagate = True  # lightrag's logger does not propagate by default
+    try:
+        with caplog.at_level(logging.DEBUG, logger="lightrag"):
+            with (
+                patch("lightrag.file_atomic.sys.platform", "linux"),
+                patch(
+                    "lightrag.file_atomic.os.replace",
+                    side_effect=PermissionError(13, "Permission denied"),
+                ),
+            ):
+                with pytest.raises(PermissionError, match="Permission denied"):
+                    _replace_file(src, dst)
+    finally:
+        logger.propagate = previous_propagate
+
+    assert caplog.records == []

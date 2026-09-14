@@ -62,8 +62,8 @@
       "clearing": "삭제하는 중...",
       "timeout": "삭제 작업 시간 초과, 다시 시도해주세요",
       "success": "문서가 성공적으로 삭제되었습니다",
-      "cacheCleared": "캐시가 성공적으로 삭제되었습니다",
-      "cacheClearFailed": "캐시 삭제 실패:\n{{error}}",
+      "successWithCache": "문서와 LLM 캐시가 성공적으로 삭제되었습니다",
+      "partialSuccess": "삭제 작업이 오류와 함께 완료되었습니다:\n{{message}}",
       "failed": "문서 삭제 실패:\n{{message}}",
       "error": "문서 삭제 실패:\n{{error}}"
     },
@@ -444,11 +444,17 @@
       "placeholder": "질문을 입력하세요 (접두사 지원: /<쿼리 모드>)",
       "error": "오류: 응답을 가져오지 못했습니다",
       "queryModeError": "다음 쿼리 모드만 지원합니다: {{modes}}",
-      "queryModePrefixInvalid": "잘못된 쿼리 모드 접두사입니다. 사용법: /<모드> [공백] 질문"
+      "queryModePrefixInvalid": "잘못된 쿼리 모드 접두사입니다. 사용법: /<모드> [공백] 질문",
+      "queryEmpty": "보내기 전에 질문을 입력하세요.",
+      "queryTooShort": "질문이 너무 짧습니다. 영문 3자 이상 또는 이에 해당하는 조합을 입력하세요. 한국어·중국어·일본어는 글자당 영문 2자로 계산됩니다.",
+      "dismissError": "오류 메시지 닫기"
     },
     "querySettings": {
       "parametersTitle": "매개변수",
       "parametersDescription": "쿼리 매개변수를 구성하세요",
+      "parametersScopeNotice": "이 브라우저의 쿼리에 적용",
+      "parametersScopeTooltip": "이 매개변수는 현재 브라우저에 저장되며 변경할 때까지 계속 적용됩니다. 같은 브라우저에서 연 /workspace 입구에서 보낸 쿼리에도 적용됩니다. 브라우저별 로컬 상태이며 서버 전체 정책이 아니므로 다른 브라우저와 다른 기기에는 영향을 주지 않습니다.",
+      "parametersScopeHelpLabel": "매개변수 적용 범위 정보",
       "queryMode": "쿼리 모드",
       "queryModeTooltip": "검색 전략을 선택하세요:\n• Naive: 전통적인 텍스트 청크 벡터 검색\n• Local: 엔티티 검색에 집중\n• Global: 관계 검색에 집중\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: 검색 건너뛰기, 대화 기록과 현재 질문을 LLM에 전송",
       "queryModeWarning": "검색 품질이 저하될 수 있습니다",
@@ -489,8 +495,10 @@
       "streamResponse": "스트림 응답",
       "streamResponseTooltip": "True일 경우, 실시간 응답을 위한 스트리밍 출력을 활성화합니다",
       "userPrompt": "추가 출력 프롬프트",
-      "userPromptTooltip": "LLM에 추가 응답 요구 사항을 제공합니다 (쿼리 내용과 무관, 출력 처리에만 사용).",
+      "userPromptTooltip": "LLM에 추가 응답 요구 사항을 제공합니다(쿼리 내용과 무관하며 출력 처리에만 사용). 서버가 이 앞에 전역 프롬프트를 붙일 수 있습니다. 비워 두면 서버의 전역 프롬프트만 전송됩니다.",
       "userPromptPlaceholder": "사용자 지정 프롬프트 입력 (선택 사항)",
+      "disableUserPromptPrefix": "전역 프롬프트 무시",
+      "disableUserPromptPrefixTooltip": "서버의 전역 출력 프롬프트를 위의 추가 출력 프롬프트 앞에 붙이지 않습니다. 활성화하면 최종 지시문을 여기에서 완전히 제어합니다.",
       "enableRerank": "Rerank 활성화",
       "enableRerankTooltip": "검색된 텍스트 청크에 대해 Rerank를 활성화합니다. True이지만 Rerank 모델이 구성되지 않은 경우 경고가 발생합니다. 기본값은 True입니다."
     }

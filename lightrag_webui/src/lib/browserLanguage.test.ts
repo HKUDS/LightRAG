@@ -22,6 +22,7 @@ describe('matchBrowserLanguageTag', () => {
     expect(matchBrowserLanguageTag('de-DE')).toBe('de')
     expect(matchBrowserLanguageTag('en-US')).toBe('en')
     expect(matchBrowserLanguageTag('fr-CA')).toBe('fr')
+    expect(matchBrowserLanguageTag('id-ID')).toBe('id')
   })
 
   test('bare base tags match case-insensitively', () => {
@@ -55,6 +56,7 @@ describe('matchBrowserLanguageTag', () => {
   test('underscore form is tolerated on input', () => {
     expect(matchBrowserLanguageTag('zh_TW')).toBe('zh_TW')
     expect(matchBrowserLanguageTag('de_DE')).toBe('de')
+    expect(matchBrowserLanguageTag('id_ID')).toBe('id')
   })
 })
 

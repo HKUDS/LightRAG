@@ -79,6 +79,7 @@ Notes:
 | **tokenizer** | `Tokenizer` | The function used to convert text into tokens (numbers) and back using .encode() and .decode() functions following `TokenizerInterface` protocol. If you don't specify one, it will use the default Tiktoken tokenizer. An injected tokenizer must be safe to call concurrently from multiple threads and must survive `copy.deepcopy` — see [Injecting a custom tokenizer](#injecting-a-custom-tokenizer). | `TiktokenTokenizer` |
 | **tiktoken_model_name** | `str` | If you're using the default Tiktoken tokenizer, this is the name of the specific Tiktoken model to use. This setting is ignored if you provide your own tokenizer. | `gpt-4o-mini` |
 | **entity_extract_max_gleaning** | `int` | Number of loops in the entity extraction process, appending history messages | `1` |
+| **kg_extraction_validator** | `Callable \| None` | Optional per-chunk hook run after extraction and **before the merge**, so rejected entities/relations never enter the graph, the vector stores, or a `source_id` chain. Signature `(chunk_key, chunk_text, maybe_nodes, maybe_edges)` returning a filtered pair; sync or async. See [Extraction quality hook](#extraction-quality-hook-kg_extraction_validator). | `None` |
 | **node_embedding_algorithm** | `str` | Algorithm for node embedding (currently not used) | `node2vec` |
 | **node2vec_params** | `dict` | Parameters for node embedding | `{"dimensions": 1536,"num_walks": 10,"walk_length": 40,"window_size": 2,"iterations": 3,"random_seed": 3,}` |
 | **embedding_func** | `EmbeddingFunc` | Function to generate embedding vectors from text | `openai_embed` |
@@ -88,7 +89,7 @@ Notes:
 | **llm_model_name** | `str` | LLM model name for generation | `gpt-4o-mini` |
 | **summary_context_size** | `int` | Maximum tokens send to LLM to generate summaries for entity relation merging | `10000`（configured by env var SUMMARY_CONTEXT_SIZE) |
 | **summary_max_tokens** | `int` | Maximum token size for entity/relation description | `500`（configured by env var SUMMARY_MAX_TOKENS) |
-| **llm_model_max_async** | `int` | Maximum number of concurrent asynchronous LLM processes | `4`（default value changed by env var MAX_ASYNC_LLM; MAX_ASYNC is still accepted as a deprecated alias) |
+| **llm_model_max_async** | `int` | Base maximum LLM concurrency; also caps per-document chunk extraction tasks, while each entity/relation merge phase uses twice this task limit | `4`（default value changed by env var MAX_ASYNC_LLM; MAX_ASYNC is still accepted as a deprecated alias; `EXTRACT_MAX_ASYNC_LLM` can independently limit actual Extract-role requests) |
 | **llm_model_kwargs** | `dict` | Additional parameters for LLM generation | |
 | **vector_db_storage_cls_kwargs** | `dict` | Additional parameters for vector database, like setting the threshold for nodes and relations retrieval | cosine_better_than_threshold: 0.2（default value changed by env var COSINE_THRESHOLD) |
 | **enable_llm_cache** | `bool` | If `TRUE`, stores LLM results in cache; repeated prompts return cached responses | `TRUE` |
@@ -285,9 +286,12 @@ class QueryParam:
 
     user_prompt: str | None = None
     """User-provided prompt for the query.
-    Addition instructions for LLM. If provided, this will be inject into the prompt template.
-    It's purpose is the let user customize the way LLM generate the response.
+    Additional instructions for LLM. If provided, this will be injected into the prompt template.
+    Its purpose is to let the user customize the way LLM generates the response.
     """
+
+    disable_user_prompt_prefix: bool = False
+    """If True, the server-side global prompt prefix is NOT prepended to `user_prompt`."""
 
     enable_rerank: bool = True
     """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.
@@ -559,6 +563,49 @@ rag = LightRAG(
 )
 ```
 
+### Custom Embedding Functions
+
+Use the `@wrap_embedding_func_with_attrs` decorator, and call `.func` when building on an already-decorated function — a decorated function cannot be wrapped again, so the underlying callable must be reached through `.func`:
+
+```python
+from lightrag.utils import wrap_embedding_func_with_attrs
+
+@wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)
+async def custom_embed(texts: list[str]) -> np.ndarray:
+    # Call the underlying function, not the wrapped version
+    return await openai_embed.func(texts, model="text-embedding-3-large")
+
+# Wrong: EmbeddingFunc(func=openai_embed)
+# Right: EmbeddingFunc(func=openai_embed.func)
+```
+
+`max_token_size` declares the model's real input limit. It is what keeps an over-long text from reaching a service that would split it internally and return one vector per segment — which the return contract below rejects as a vector count mismatch.
+
+> **Pitfall — switching embedding models**: when changing the embedding model you MUST clear the data directory (optionally keeping `kv_store_llm_response_cache.json` for the LLM cache). Existing vectors will not match the new model's space.
+
+### Embedding Function Return Contract
+
+Every embedding function — built-in or custom — MUST return a 2D numpy array of shape `(len(texts), embedding_dim)`: exactly one row per input text, in input order. Every vector storage backend consumes the result positionally (`embeddings[i]` is stored for `texts[i]`), so `EmbeddingFunc` validates the result on every call and raises `ValueError` on any mismatch. It never reshapes, slices or pads the result — once the row-to-input mapping is wrong it cannot be recovered, and a silent repair would store vectors under the wrong records.
+
+The array rank and the dimension are always checked. The row count is checked against the input batch, which is read from the first positional argument, or — for a keyword call — from the kwarg matching the wrapped function's first parameter name. If the batch cannot be resolved that way (a callable whose first parameter is positional-only or `*args`, or one exposing no signature), the row count alone is left unverified rather than guessed at.
+
+| Returned shape | Result |
+| --- | --- |
+| `(len(texts), embedding_dim)` | Accepted |
+| Empty array for an empty input list | Accepted (including a bare `np.array([])`) |
+| `(embedding_dim,)` for a single input | `ValueError` — a single input still returns `(1, embedding_dim)` |
+| More rows than inputs | `ValueError: Vector count mismatch` |
+| Fewer rows than inputs | `ValueError: Vector count mismatch` |
+| Wrong number of columns | `ValueError: Embedding dimension mismatch` |
+| Flattened (1D) or nested (3D) array | `ValueError: unexpected shape` |
+
+The two mismatches that look alike are distinguished deliberately, because their fixes differ:
+
+- **Vector count mismatch** (more rows than inputs) usually means the embedding service split an over-long input internally and returned one vector per segment. Declare the model's real token limit so texts are truncated before the call — `EMBEDDING_TOKEN_LIMIT` on the API server, or `max_token_size` on `@wrap_embedding_func_with_attrs` for a custom function. A provider that legitimately emits several vectors per input needs a dedicated adapter that normalizes its output to one vector per input, with an explicit mapping, before it reaches `EmbeddingFunc`.
+- **Embedding dimension mismatch** (wrong number of columns) means the declared `embedding_dim` does not match the model actually being called, or the endpoint ignored the requested output dimension. Reconcile `EMBEDDING_DIM` / `embedding_dim` with the model. Vectors already stored under the previously declared dimension do not match the corrected one, so clear the data directory as well unless nothing has been indexed yet.
+
+Each `ValueError` is accompanied by a `logger.error` carrying the likely cause and the remedy, so the diagnosis stays in the server log even when only the short exception message surfaces.
+
 ### Rerank Function Injection
 
 To enhance retrieval quality, documents can be re-ranked based on a more effective relevance scoring model. The `rerank.py` file provides three Reranker provider driver functions:
@@ -608,9 +655,128 @@ way to get isolation: `tiktoken` caches encodings in a process-wide registry, so
 every `TiktokenTokenizer` for a given model — copies included — resolves to the
 same underlying BPE engine.
 
+### Extraction Quality Hook (`kg_extraction_validator`)
+
+`kg_extraction_validator` is an optional per-chunk hook that runs after entity /
+relation extraction and **before the merge**, so anything it rejects never
+enters the knowledge graph, the vector stores, or an entity's `source_id`
+chain. Filtering here is cheaper than cleaning up afterwards: deleting an entity
+post-merge leaves its `source_id` contributions behind, and unwinding those
+takes a purge and a re-ingest.
+
+```python
+from lightrag.utils import logger, normalize_entity_name
+
+
+def validate(chunk_key, chunk_text, maybe_nodes, maybe_edges):
+    # maybe_nodes: entity_name -> list[entity_dict]
+    # maybe_edges: (src, tgt)  -> list[edge_dict]
+    # Both carry source_id / file_path already — these are the merge inputs.
+
+    # Canonicalize BOTH sides of the grounding comparison. Extraction runs
+    # every name through normalize_entity_name, which does more than case:
+    # full-width ＡＩ becomes AI, and spaces between Chinese and Latin are
+    # removed, so "北京 AI" in the source arrives as the entity 北京AI. Testing
+    # such a name against raw chunk text finds nothing and silently deletes a
+    # legitimate entity, so run the same normalization over the haystack.
+    # Case-folding on top: the prompt asks the model to title-case
+    # case-insensitive names, so "machine learning" arrives as
+    # "Machine Learning".
+    haystack = normalize_entity_name(chunk_text).casefold()
+
+    # The keys are already normalized by extraction, so only case-fold here.
+    def is_junk(name: str) -> bool:
+        return len(name) < 2 or name.casefold() not in haystack
+
+    # Apply it to entities...
+    for name in [n for n in maybe_nodes if is_junk(n)]:
+        logger.info("rejected entity %s from %s", name, chunk_key)
+        del maybe_nodes[name]
+    # ...and to relation endpoints. A name reaches the graph through either
+    # shape: an endpoint with no entity record is materialized as an UNKNOWN
+    # node, so skipping this loop lets the names you just deleted back in.
+    for key in [k for k in maybe_edges if is_junk(k[0]) or is_junk(k[1])]:
+        logger.info("rejected relation %s from %s", key, chunk_key)
+        del maybe_edges[key]
+    return maybe_nodes, maybe_edges
+
+rag = LightRAG(..., kg_extraction_validator=validate)
+```
+
+Contract:
+
+- **Signature** `(chunk_key, chunk_text, maybe_nodes, maybe_edges)`, returning a
+  `(maybe_nodes, maybe_edges)` pair of dicts with the same shapes. Filtering in
+  place and returning the same objects is fine.
+- **`chunk_text` is the text the model received** as the prompt's
+  `---Input Text---`, not the stored chunk content: parser-internal markup
+  (`<drawing id/path/src>`, `<table id>`, `<equation id>`, `<cite refid>`) is
+  stripped, and the result goes through `sanitize_text_for_encoding` just as
+  the LLM wrapper does before calling the provider — keeping the chunk's own
+  boundary whitespace, which the model sees because the chunk sits inside the
+  prompt's fenced `---Input Text---` section. Grounding against the
+  stored form would accept an entity named after a hidden identifier or file
+  path the model never saw, and reject one it did see wherever removing a
+  `<cite>` wrapper joins two words.
+- **It is the input text, not the whole prompt.** For a chunk with a heading,
+  the prompt also carries a `---Section Context---` block with the heading
+  path. That is deliberately excluded: the extraction prompt tells the model to
+  use the heading path as background only and **not** to extract entities or
+  relationships from the heading text. Folding it into `chunk_text` would make
+  a grounding rule accept precisely the names the prompt forbids, legitimising
+  heading-derived entities instead of catching them. Heading context can
+  legitimately shape a *description*, but descriptions are model-authored prose
+  that no substring check grounds anyway.
+- **Synchronous or async.** An awaitable return value is awaited. A sync hook
+  runs on the event loop, so a CPU-heavy validator should do its own
+  `asyncio.to_thread` — the same guidance as a custom `chunking_func`.
+- **`None` (the default) leaves the pipeline unchanged.**
+- **Coverage.** Every path that extracts goes through it: the document pipeline
+  and `ainsert_custom_chunks` alike. `ainsert_custom_kg` does not extract — the
+  caller supplies the graph directly — so it is not filtered.
+- **Multimodal entities are not shown to the hook.** For a drawing / table /
+  equation chunk, LightRAG synthesizes one entity from the sidecar and links it
+  to the chunk's surviving entities. That injection happens *after* the hook, so
+  a grounding rule like the one above cannot delete it, and an entity the hook
+  rejected cannot reappear as the endpoint of an injected edge.
+- **Filter relation endpoints too — core does not do it for you.** A name
+  reaches the graph through either shape: `_merge_edges_then_upsert`
+  materializes an endpoint that has no entity record as an `UNKNOWN`-typed
+  node, into the graph, the vector store and the `source_id` chain. So
+  deleting an entity while leaving a relation pointing at it undoes the
+  deletion, and a chunk where the name appears *only* as an endpoint stores it
+  even though another chunk rejected it. The example above closes both by
+  running the same `is_junk` over `maybe_edges`.
+- **Make the rule a function of the name**, so every chunk decides the same
+  way. Chunks are extracted concurrently and independently; a rule that is not
+  name-deterministic can reject a name in one chunk and keep it in the next,
+  and the entity survives through whichever chunk kept it. Core deliberately
+  does not aggregate rejections across chunks — a verdict on one chunk is not
+  a verdict on the document, and only your rule knows whether it was meant to
+  be.
+- **Failures are not swallowed.** A hook that raises, or that returns anything
+  other than a two-element sequence of dicts (`TypeError`), fails the chunk and
+  therefore the ingest. A validator that is silently skipped is a validator
+  that is not validating.
+- **What a failed ingest leaves behind depends on the path.** The pipeline
+  marks the document FAILED. `ainsert_custom_chunks` also marks it FAILED but
+  **retains** its journal and any staged data instead of rolling back:
+  repeating the same call resumes the operation (roll-forward belongs to the
+  SDK caller), while `/documents/scan` — through
+  `arollback_failed_custom_chunk_patches` — is what rolls it back. Do not
+  assume a failed custom-chunk call left no recoverable state.
+- **A stateful validator keeps its identity.** A bound method or callable object
+  that accumulates an audit log sees its own instance, not a per-document copy.
+  As with a custom tokenizer, however, `LightRAG` builds its internal config
+  with `dataclasses.asdict`, so a validator holding something `copy.deepcopy`
+  rejects (a bare `threading.Lock`) must declare `__deepcopy__` returning
+  `self` — see *Injecting a Custom Tokenizer* above.
+
 ### User Prompt vs. Query
 
 When using LightRAG for content queries, avoid combining the search process with unrelated output processing, as this significantly impacts query effectiveness. The `user_prompt` parameter in `QueryParam` does not participate in the RAG retrieval phase — it guides the LLM on how to process the retrieved results after the query is completed.
+
+"Does not participate in retrieval" means it does not influence *what* is found or *how* it is ranked: it is not used for keyword extraction, vector search, or reranking. It does still consume part of the token budget, because it genuinely occupies space in the final prompt alongside the retrieved context.
 
 ```python
 query_param = QueryParam(
@@ -625,6 +791,75 @@ response_default = rag.query(
 print(response_default)
 ```
 
+### A Global User Prompt Prefix
+
+`user_prompt` is supplied per request, so it cannot express an output policy
+that should hold for every caller. `LightRAG.user_prompt_prefix` is that policy:
+a server-side string prepended to each request's `user_prompt`.
+
+```python
+rag = LightRAG(..., user_prompt_prefix="Answer in the language of the question.\n\n")
+```
+
+For the API server it comes from the environment instead — `USER_PROMPT_PREFIX`
+for a short value, or `USER_PROMPT_PREFIX_FILE` (a `.md`/`.txt` file name under
+`PROMPT_DIR/user_prompt`) when the text is long, multi-paragraph, or contains
+`${...}`, which python-dotenv would otherwise interpolate away.
+
+The two strings are concatenated **verbatim, with no separator inserted** — end
+the prefix with your own `\n\n` so it does not run into the caller's text. The
+prefix comes first because a model weights later instructions more heavily on
+conflict, so the per-request prompt wins.
+
+**An empty `user_prompt` does not disable the prefix.** When a request sends no
+`user_prompt` — `None`, `""`, or the field omitted entirely — the prefix alone
+becomes the instructions sent to the LLM. This is the common deployment: the
+operator sets one policy and callers send nothing.
+
+```python
+# All three send exactly "Answer in the language of the question." to the model.
+rag.query("...", param=QueryParam(mode="hybrid"))
+rag.query("...", param=QueryParam(mode="hybrid", user_prompt=None))
+rag.query("...", param=QueryParam(mode="hybrid", user_prompt=""))
+```
+
+This matters for the WebUI in particular, which ships `user_prompt: ""` as its
+default: leaving the box blank applies the operator's policy rather than
+clearing it. The `Additional Instructions` section falls back to `n/a` only when
+**both** the prefix and the request's `user_prompt` are empty.
+
+A request opts out with `disable_user_prompt_prefix` — the only way to suppress
+the prefix — which is what lets a front-end take full control of the final
+instruction text:
+
+```python
+QueryParam(user_prompt="...", disable_user_prompt_prefix=True)
+```
+
+The prefix is configuration, not request data: a request can decline it but can
+never read or replace it. Three limits are worth knowing:
+
+- **`bypass` mode ignores it**, as it ignores `user_prompt` entirely — empty or
+  not. That path has no `{user_prompt}` slot and its `system_prompt` argument
+  belongs to the caller, so this is not an exception to the rule above: bypass
+  simply sends no user instructions at all.
+- **`only_need_prompt=True` returns the composed prompt**, so any client that
+  can set that debug flag can read the prefix verbatim.
+- **`only_need_context` and `only_need_prompt` are charged for the prefix**, even
+  though `only_need_context` returns before any prompt is sent. These switches
+  preview the real request: if retrieval-only calls skipped the charge they
+  would report more chunks than a live query retrieves, and context sized
+  against that number would be truncated at answer time. `/query/data`
+  (`aquery_data`) is retrieval-only and follows the same rule.
+- **A custom `system_prompt` without a `{user_prompt}` placeholder drops it**,
+  the same way it already drops `user_prompt`. The token budget accounts for
+  this: the prefix is charged against the context allowance only when the
+  template that will actually be rendered has somewhere to put it.
+
+The prefix participates in the answer cache key, so editing it invalidates
+answers generated under the old one. With no prefix configured the key is
+unchanged, so existing cache entries keep hitting.
+
 
 ## Storage Backends
 
@@ -638,6 +873,13 @@ LightRAG uses 4 types of storage for different purposes:
 | **VECTOR_STORAGE** | Entity/relation/chunk embedding vectors |
 | **GRAPH_STORAGE** | Entity-relation graph structure |
 | **DOC_STATUS_STORAGE** | Document indexing status |
+
+The default implementation of each storage type (marked `(default)` below) is an
+in-memory database persisted to local files under `working_dir`: the whole
+dataset resides in the process's memory, so capacity is bounded by available
+RAM. The defaults are suitable **only for small-scale testing, evaluation, and
+debugging, and are not suitable for production** — for production, PostgreSQL is
+the recommended backend and can serve all four storage types on its own.
 
 ### Supported Implementations
 
@@ -770,11 +1012,24 @@ Example connection configurations for each storage type can be found in the repo
 For production level scenarios you will most likely want to leverage an enterprise solution for KG storage. Running Neo4J in Docker is recommended for seamless local testing. See: https://hub.docker.com/_/neo4j
 
 ```bash
-export NEO4J_URI="neo4j://localhost:7687"
+export NEO4J_URI="bolt://localhost:7687"  # Single instance / Docker: direct connection
 export NEO4J_USERNAME="neo4j"
 export NEO4J_PASSWORD="password"
 export NEO4J_DATABASE="neo4j"  # Required for community edition
 ```
+
+**Choosing the URI scheme.** The scheme prefix of `NEO4J_URI` selects the driver's connection mode:
+
+- `bolt://` / `bolt+s://` — direct connection. The driver talks only to the host and port written in the URI. Use this for a single Neo4j instance, a single Docker container, or any deployment reached through a port mapping or proxy.
+- `neo4j://` / `neo4j+s://` — routing connection. The driver first asks the server for a routing table and then connects to the addresses the server advertises. Use this for Neo4j Aura and clustered deployments, where it provides read/write routing and failover.
+
+**Troubleshooting `Unable to retrieve routing information`.** This error is raised by the Neo4j driver, not by LightRAG, and it only occurs with the `neo4j://` scheme. It means none of the routers returned a routing table. Check, in order:
+
+1. The Neo4j server is actually running and reachable on the configured host and port (a stopped or restarting instance produces exactly this message).
+2. If the instance is a single node or a Docker container, switch `NEO4J_URI` to `bolt://`. A single instance advertises its own address in the routing table; when the server is reached through Docker port mapping or a proxy, that advertised address is often not reachable from the client, so the routing refresh fails even though the initial connection succeeded. The direct scheme skips the routing table entirely.
+3. If you must keep `neo4j://` against a single Docker container, set `server.default_advertised_address` on the Neo4j side to an address the client can reach.
+
+LightRAG retries transient `ServiceUnavailable` errors a few times with backoff, but it cannot recover from a database that stays unreachable; the storage call fails after the retries are exhausted.
 
 ```python
 from lightrag.utils import setup_logger
@@ -1170,7 +1425,11 @@ the complete post-edit shape, so `source_id` and `weight` can be changed
 together. Existing legacy relations are repaired upward when extraction adds
 evidence, an entity rename rewrites their endpoints, an unrelated relation edit
 rewrites the row, or a relation is rebuilt from surviving chunks (document
-purge, resume, and custom-chunk rollback). `lightrag-rebuild-vdb` is not such a
+purge, resume, and custom-chunk rollback). The one-time canonical-edge
+migrations on the MongoDB and OpenSearch backends repair the rows they rewrite
+too: folding duplicate edge documents into one lifts the merged weight to the
+merged evidence count. A fold that finds neither a usable weight nor a real
+source ID leaves the stored weight alone. `lightrag-rebuild-vdb` is not such a
 repair point: it mirrors each graph edge into the vector storage field for
 field, copying the stored weight verbatim without touching the graph.
 
@@ -1191,6 +1450,30 @@ merged weight = max(all input weights, distinct merged real source IDs)
 
 This preserves a larger manual boost while preventing the merged weight from
 falling below its evidence count.
+
+### Chunk tracking across a rename or merge
+
+A rename and a merge do not drop chunk tracking, they migrate it: the row moves
+to the surviving key. Two orderings have to hold at once for that migration to
+be crash-safe, and satisfying either one alone re-breaks the other:
+
+1. **The new row is written before the old one is deleted.** Otherwise a failure
+   in between leaves the row under neither key, which turns a curated row absent
+   and re-arms the reseed from a possibly stale graph `source_id`.
+2. **The old row is deleted only after a confirmed graph commit** has removed the
+   object it described. Otherwise the old object — which is what is still on disk
+   until that commit — sits there with no authoritative provenance, and a later
+   document purge can read its truncated `source_id` as "no remaining sources".
+
+The commit between them is checked, not assumed: a graph backend may *decline* to
+commit (`NetworkXStorage.index_done_callback` returns `False` when another process
+published a newer file, reloading from disk and discarding the in-memory change).
+A declined commit is treated as a failed operation, because the rename or merge it
+was supposed to persist no longer exists in memory either.
+
+Residue on failure is therefore always the recoverable direction: the old objects
+are live and still carry their rows, plus an orphaned row under the new key that a
+retry overwrites. Retrying the operation is the recovery step.
 
 All operations are available in both synchronous and asynchronous versions. Async versions have the prefix "a" (e.g., `acreate_entity`, `aedit_relation`).
 
@@ -1289,7 +1572,379 @@ When deleting an entity:
 - Removes the entity node from the knowledge graph
 - Deletes all associated relationships
 - Removes related embedding vectors from the vector database
+- Deletes and persists the entity and incident-relation chunk-tracking rows, so recreating the entity does not inherit pre-deletion provenance
 - Maintains knowledge graph integrity
+
+A deletion is staged so that no failure can leave a live entity without its
+authoritative provenance — the state from which a later document purge concludes
+"no remaining sources" and removes an entity other documents still reference.
+The graph object's removal is committed first, on its own; only then are the
+tracking rows deleted and committed; the vector storages are flushed last. This
+holds for any mix of backends, including a deferred graph with an immediate-write
+tracking store, which is why the staging is by *durability* rather than by call
+order.
+
+That one-directional rule — **a graph object must never be durable while the
+tracking row carrying its attribution is not** — governs the other admin paths
+too, and it makes their commit order the mirror of the deletion order. On a
+create or an edit the row is the half that starts out absent, so
+`_persist_graph_updates` commits the tracking rows first and the graph and
+vector stores second. A failure in the first phase skips the second entirely: a
+tracking commit that did not land is never followed by publishing the object it
+describes. Both directions therefore converge on the same tolerated residue, a
+row whose object is not (or no longer) in the graph.
+
+Callers writing directly against `lightrag.utils_graph` inherit that contract.
+A helper that *removes* a tracking row must commit the graph itself first via
+`_commit_graph_or_raise` and only then flush the tracking stores; passing a
+graph store and a tracking store to `_persist_graph_updates` together is
+correct only in the add/update direction.
+
+Removing the object and cleaning up its rows is additionally one region a
+cancellation cannot cut in half. It has to begin at the graph mutation: a cancel
+before the commit leaves the removal in the in-memory graph with the backend
+marked dirty, so the pipeline's next commit publishes it while the cleanup never
+runs, and a cancel *during* the commit is deferred by the storage-IO layer until
+the write and its notification hook have landed. Cancelling a deletion therefore
+waits for the object's removal and its tracking cleanup to finish; only the
+vector flush is skipped.
+
+That protection covers the *caller*'s cancellation. Cancelling the deletion task
+itself — which the event loop does to every remaining task at shutdown — is not
+deferred, because the exception says nothing about whether the write had been
+submitted, and assuming it had would delete the tracking rows of a node whose
+removal never left memory. The cleanup therefore runs only once the commit has
+demonstrably returned.
+
+Every remaining failure state is therefore recoverable, and repeating the
+deletion is always the recovery step:
+
+| Failure point | On-disk result | Recovery |
+| --- | --- | --- |
+| Graph commit | Entity live, rows live | Consistent; retry the deletion |
+| Tracking delete or commit | Entity gone, its row stale | Retry: a deletion reporting `not_found` sweeps a stale row for that name and flushes pending tracking state whether or not a row is still visible in memory |
+| A failing tracking delete leaves incident relation rows of an entity deletion | Entity gone, relation rows stale | Not reachable automatically — the node is gone, so its edges are unknowable. Logged with the exact storage keys; delete the relation directly to sweep its row, or run the [chunk-tracking repair](#repairing-chunk-tracking) |
+| The cleanup never runs although the graph commit landed — process exit before a **deferred** tracking backend (JSON) flushes, or a direct cancellation of the deletion task mid-write | Entity gone, its rows and its relations' rows stale | The entity's own row is swept by a repeated deletion; its incident relation rows are not, and their keys are not logged because nothing failed — so there is nothing to delete directly *by*. The recovery is the [chunk-tracking repair](#repairing-chunk-tracking). Not closed by this staging: neither a hard process exit nor a cancellation carries evidence about what landed. A commit notification that raises *after* the write does, and no longer reaches this row — it arrives as `CommitBookkeepingError` and `_commit_graph_or_raise` continues with the cleanup |
+| Vector flush | Entity and rows gone, vector record stale | The rebuildable window this codebase accepts elsewhere; `lightrag-rebuild-vdb` restores it |
+
+#### Concurrent admin writes
+
+On a graph storage that declares `requires_single_writer` — `NetworkXStorage`,
+the only one — every public admin graph writer (`acreate_entity`,
+`acreate_relation`, `aedit_entity`, `aedit_relation`, `adelete_by_entity`,
+`adelete_by_relation`, `amerge_entities`, `ainsert_custom_kg`, and therefore
+every `/graph/*` mutation endpoint) runs inside `LightRAG._admin_write_gate`
+(issue #3899), which serializes it in two directions for the whole
+mutate-and-commit body, embedding round-trip included:
+
+- **Against other admin writes**, through a workspace-wide admin lock
+  (`{workspace}:GraphAdmin`, key `admin`; cross-process). A second admin write
+  *queues* behind the first for up to `ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT`
+  (default 30 s, `LIGHTRAG_ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT`) and is refused
+  only on expiry. That timeout is the *only* bound on the wait — the
+  multiprocess keyed lock polls with backoff and has no timeout of its own.
+- **Against the document pipeline**, through the pipeline `busy` reservation
+  (`kind="admin"`, never `destructive_busy`, so uploads stay allowed). While an
+  admin write holds it, a pipeline start is *deferred*: the start is reduced to a
+  sticky auto-rescan request in the workspace ingress mailbox, and the gate
+  drives the queue once when it releases. A pipeline that is already running or
+  scanning refuses the admin write, as before.
+
+  That drive runs in the background on a long-lived loop (the API server), but is
+  **awaited inline under the synchronous wrappers** (`create_entity`,
+  `edit_relation`, …), because `run_until_complete` stops the loop as soon as the
+  admin call returns and a background task there would park after taking the
+  `busy` reservation, wedging the workspace under a live pid. A synchronous admin
+  write therefore blocks until the queue is drained — only when a pipeline start
+  was actually deferred during its hold.
+
+  **The background drive needs an event loop that outlives the admin call**, so
+  what an SDK caller of the `a*` methods gets depends on how the loop is driven.
+  Nothing here risks data: the auto-rescan request is sticky, so a drive that
+  does not run leaves it armed for the next scan or upload. What varies is
+  whether the queue is drained now.
+
+  | How the `a*` call is driven | What happens to the deferred drive |
+  |---|---|
+  | A loop that keeps running (an API server, any long-lived app) | Runs to completion. This is the case the background path is for. |
+  | `asyncio.run(main())` with further `await`s after the edit | Runs to completion. |
+  | `asyncio.run(main())` where the edit is the last step, or followed straight by `finalize_storages()` | Cancelled in flight. `finalize_storages` cancels pending drives and the pipeline's own cleanup releases `busy`, so the end state is clean and the request stays armed — the document simply waits for the next trigger. |
+  | A hand-managed loop stopped and restarted with repeated `loop.run_until_complete(...)`, never finalized | The task advances only while the loop happens to run, so it can take the `busy` reservation and then park. Dead-owner reclaim cannot clear a live pid, so the workspace stays busy until the process exits. **Not a supported pattern** — use `asyncio.run`, or `await finalize_storages()` before going idle. |
+
+  Note that `asyncio.run` **cancels** pending tasks on exit; it does not run them
+  to completion. That is why the third row is a cancellation rather than a drain,
+  and why the fourth row — which never reaches such a cancellation — is the only
+  one that can strand the reservation.
+
+The hold is bounded by `ADMIN_WRITE_MAX_HOLD_SECONDS`
+(`LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS`), which defaults to
+`max(180, 6 × EMBEDDING_TIMEOUT)` — 180 s at the default embedding timeout. On
+expiry the write fails with HTTP 500 and both gates release, so a hung embedding
+endpoint cannot fence ingestion indefinitely.
+
+The default is *derived* rather than fixed because the embedding round-trip runs
+inside the hold: raising `EMBEDDING_TIMEOUT` alone would otherwise leave a
+ceiling sized for the old value, killing every retry it was meant to allow. One
+hold has to cover an embedding retry storm (`3 × EMBEDDING_TIMEOUT` plus 8 s of
+backoff — 98 s at the default) plus one whole-graph GraphML commit (~17 s at
+200k nodes, since `write_nx_graph` rewrites the entire graph however small the
+edit was), so ~115 s; the remainder is headroom for the edges an edit touches.
+
+The ceiling is resolved per `LightRAG` instance from that instance's
+`default_embedding_timeout`, not from the environment at import, so a direct
+`LightRAG(default_embedding_timeout=300)` is followed without any environment
+variable. Setting it *below* the embedding timeout is refused at startup.
+Prefer erring high: a ceiling that is
+too high only defers ingestion, and a deferred start is sticky in the ingress
+mailbox so it self-heals, whereas one that is too low kills edits whose commit
+may already have landed.
+
+These two knobs are **not** derived from each other. The ceiling asks how long
+the worst legitimate write may run; the acquire timeout asks how long a caller
+should wait before being told to retry. Deriving one from the other would make
+them equal — which would park an interactive edit for the full worst case
+instead of returning the actionable 409. When the edit ahead runs long, the
+queue is *meant* to degrade to fast failure.
+
+An acquire timeout *above* the ceiling is not wasted, either. The admin lock is
+taken before the ceiling starts (the `pipeline_status` fetch and the reservation
+acquire run inside the lock and outside the ceiling) and released after it ends,
+and a cancellation-resistant commit runs to completion past the expiry — a 1 s
+ceiling was measured holding the lock for 5.01 s. So the lock always outlives
+the ceiling by an amount no static comparison can bound, and a queued write can
+still be rewarded for waiting.
+
+**A 500 from that ceiling does not mean the edit was undone.** The ceiling stops
+the operation by cancelling it, and an admin write withholds a cancellation while
+a storage commit is in flight, so a ceiling firing mid-commit lets that commit
+land. A multi-step flow can also have committed at an earlier step: a merge
+commits the merged node before it removes the source entities. The error message
+says which of the two happened, and either way the caller must **re-read the
+entity or relation before retrying** rather than assume the operation is undone.
+Retrying blind can hit `Entity 'X' already exists` or re-apply an edit that is
+already durable. The graph endpoints return that wording as the 500's `detail`
+rather than the sanitized generic body, because a REST client is the caller that
+has to act on it and does not read server logs. Every other failure on those
+endpoints keeps the sanitized body.
+
+Server-backed graph stores (Neo4j, PostgreSQL, Memgraph, MongoDB, OpenSearch)
+never take the gate, whatever the KV or vector storage beside them: only the
+graph storage can lose an uncommitted mutation to a peer commit
+(`NanoVectorDBStorage` / `FaissVectorDBStorage` replay their pending buffers over
+a reloaded snapshot, and `JsonKVStorage` has no reload path at all). There, two
+admin writes for different keys still run concurrently under per-entity keyed
+locks, as they always did.
+
+**Two 409s, told apart by the `detail` text.** The graph endpoints return
+HTTP 409 for two different reasons, and the retry semantics differ, so the
+`detail` starts with a stable phrase for each (the WebUI surfaces the response
+body verbatim, so no client change is needed):
+
+| Leading phrase | Cause | Clears when |
+|---|---|---|
+| `Another knowledge graph edit is in progress` | the admin lock was held by a peer admin write past the acquire timeout | that peer admin write finishes — retry the same request |
+| `Pipeline is busy with another operation` | the pipeline holds `busy` (a processing run or a destructive job) or `scanning` — from the router's early check or from the gate's reservation | ingestion or the scan finishes |
+
+The router's early check refuses on `busy` **except when an admin write owns
+it**. Without that exemption the second concurrent REST edit would be refused
+before it ever reached the admin lock, so the queueing above would exist only
+for direct SDK callers — and the client would be told to wait for document
+ingestion when what is ahead of it is another UI edit. A `busy` holder that
+cannot be identified is never exempt.
+
+**Accepted residue: queueing can still end in a refusal.** Every admin write
+drives the queue once when it releases, so with two of them in flight the first
+one's drive races the second one's reservation for `busy`. In one process the
+second write wins (it is woken by the lock release, while the drive is a task
+created after it). Across workers it may not: the second write waits on the
+lease lock with backoff, so the first one's drive can take `busy` first and the
+second write gets the pipeline-busy 409 despite having queued. No data is at
+risk — the write simply did not happen and the client retries — so this is
+accepted rather than fixed; treat it as the queued request having missed a turn.
+
+Why a lock rather than teaching the file backend to replay its pending work over
+a reloaded snapshot: graph payloads are accumulate-over-read (`source_id` is an
+evidence set merged from what the writer read; `weight` is floored by the
+evidence count it read), so a replay over a peer's newer state would drop the
+peer's evidence and republish a stale `weight`, silently violating the
+[relation weight contract](#relation-weight-contract). It would exchange a loss
+the reload fence can still see for one nothing can. The one part of that idea
+that was kept is loud: `NetworkXStorage` records when a reload discards
+uncommitted mutations and refuses the next commit in that process with
+`GraphMutationsDiscardedError`, so a writer that bypasses the gate fails instead
+of succeeding without its changes.
+
+What remains, and why it is tolerated:
+
+- Two admin requests a second apart, load-balanced to different workers, where a
+  lost reload notification lets the second mutate a stale snapshot: the admin
+  lock was released long before it was re-acquired, so it cannot help. That is
+  the file-fingerprint fence's case (issue #3854): the stale writer declines its
+  commit, the caller gets a 500, and retrying re-applies the edit against the
+  peer's snapshot. Loud, and recoverable by the operator.
+- A hard process exit can leave a tracking row whose graph object never became
+  durable. That row is harmless to queries, cannot be inherited as evidence by a
+  later object (the explicit creation paths reset attribution), and is removed by
+  the [chunk-tracking repair](#repairing-chunk-tracking).
+- The forbidden mirror — an object durable without the row that carries its
+  attribution — is not produced by a single-writer crash **on the creation
+  paths**, because there the tracking row is written *and committed before the
+  graph mutation is issued at all*. Ordering only the flushes would not have
+  been enough: on Neo4j or PostgreSQL the `upsert_node` is durable the moment it
+  returns, and on NetworkX it is already in the process-wide in-memory graph,
+  where the next flush by any co-tenant publishes it.
+- An edit that *removes* evidence IDs from a row cannot use the creation order —
+  a narrowed row landing ahead of the graph write is itself the over-deleting
+  state. `aedit_relation` therefore stages such an edit as grow-then-shrink: the
+  superset row, then the graph write, then the final row. If the last step
+  fails, the edit is already durable and the row keeps naming a chunk the
+  relation no longer cites — under-deletion, the accepted direction, repaired by
+  the [chunk-tracking repair](#repairing-chunk-tracking). The accepted *state*
+  does not make it a silent one: a failure of that last step raises
+  `VectorStorageConsistencyError` (a 500 naming the row and the repair tool),
+  because a retry cannot heal it — the second edit sees an unchanged `source_id`
+  and skips the tracking update — so the operator is the only recovery path, and
+  a 200 would guarantee they never learn to take it.
+  Both ways that last step could be *skipped* rather than fail are closed
+  (issue #3895): it runs *inside* a cancellation-deferring region alongside the
+  graph commit, so a cancellation deferred through that commit cannot walk past
+  it, and *before* the relation's vector work, so no vector failure can strand
+  it. The reverse exposure is the acceptable one — a shrink failure skips the
+  vector write, leaving records a re-issued edit rewrites and
+  `lightrag-rebuild-vdb` restores, and the message names both. A declined graph
+  commit still outranks a vector failure, because the commit is confirmed on its
+  own before any vector call is made.
+  **One residue stays open, deliberately, the same one the entity path carries
+  below:** a cancellation — or an ordinary error, an acknowledgement lost after
+  the fact carries the same ambiguity — delivered inside `upsert_edge`'s own
+  await tears the edit down before the shrink, so the edge may be narrowed while
+  the row keeps the superset. It cannot be deferred (the exception originates in
+  that coroutine) and must not be settled blind (narrowing a row whose write the
+  backend never accepted is the over-deleting mirror), so the row stays wide and
+  the failure is *logged* with the row key and the repair tool.
+- `aedit_entity`'s non-rename path stages its row the same way, for the same
+  reason: a **growing** edit there used to commit the node before flushing the
+  row that attributes it, leaving `rows ⊂ graph` — reachable from `POST
+  /graph/entity/edit`, whose `updated_data` accepts `source_id`. The superset
+  row is now durable before `upsert_node` is called at all, and the removals are
+  applied after the graph commit. Its shrink is staged exactly like the relation
+  one's: it runs *inside* the cancellation-deferring region and *before* the
+  vector write, so neither a cancellation nor a vector failure can skip it. It
+  either completes or raises with the row key and the repair tool named.
+  **One residue there stays open, deliberately:** a cancellation delivered
+  *inside* `upsert_node`'s own await — after an immediate-write backend accepted
+  the row, before control returns — tears the edit down before the shrink, so
+  the node is narrowed while the row keeps the superset. It cannot be deferred
+  (the `CancelledError` originates in that coroutine, so there is nothing for
+  `_finish_deferring_cancellation` to defer, and issuing the call from inside
+  that region gives the identical residue), and it must not be settled blind:
+  whether the backend accepted the write is unknowable there, and narrowing the
+  row when it did not would leave `rows ⊂ graph` — over-deletion, which this
+  ranking treats as losing data, traded against a residue that merely retains a
+  chunk ID. So the row stays wide and the failure is *logged* with the row key
+  and the repair tool, which is the part that was actually owed — for an
+  ordinary backend error as much as for a cancellation, since an
+  acknowledgement lost after the write was applied carries the same ambiguity
+  and the caller's error says only that the write failed. Its
+  **rename** path needs no such staging and deliberately keeps its own ordering:
+  it writes a fresh node whose `source_id` already equals the row it migrates,
+  and it retires the old key only after the commit that removes the old node
+  (see the [merge and rename failure model](design/PurgeRecoveryContract.md#merge-and-rename-failure-model)).
+- A graph backend that *declines* its commit (the NetworkX reload fence) raises
+  out of the create, edit, merge and delete paths alike, so the caller sees a
+  500 instead of a success for a write that was discarded.
+
+A workspace-wide admin lock was specified and dropped: it would not have changed
+what a crash can leave behind, since the same residue is reachable with no
+concurrency at all. If you drive the public Python admin API yourself
+(`acreate_entity`, `aedit_entity`, `amerge_entities`, `adelete_by_entity` and
+their relation counterparts) **do not call them concurrently on a file-backed
+workspace** — one at a time, or use a server-backed graph and KV store.
+`ainsert_custom_kg` is subject to the same rule.
+
+#### Repairing chunk tracking
+
+A stale or orphaned `entity_chunks` / `relation_chunks` row cannot be found, let
+alone pruned, one row at a time: `BaseKVStorage` has no enumeration API, so
+nothing can sweep for it. The repair is therefore whole-namespace — it replaces
+one or both namespaces from current graph keys, retaining authoritative rows for
+live objects and supplementing them from cached extraction results. Because that
+replacement cannot be coordinated with writers in other processes, it is
+available only as an offline tool.
+
+Before every run, stop **all** LightRAG API servers, pipeline workers, and SDK
+writers that use the same backing stores and workspace. The default invocation
+only scans and prints the complete replacement plan:
+
+```bash
+lightrag-repair-chunk-tracking
+lightrag-repair-chunk-tracking --apply
+lightrag-repair-chunk-tracking --apply --namespace entity  # or relation
+lightrag-repair-chunk-tracking --apply --resume-plan /path/from/failed/run.sqlite3
+# equivalent: python -m lightrag.tools.chunk_tracking_repair [--apply]
+```
+
+The repair scans document status and graph objects in bounded batches. Its
+deduplication and replacement plan live in a disk-backed SQLite database, so
+client memory is bounded by a batch plus the largest individual tracking row;
+local disk usage grows with the complete plan. Process-buffered KV backends are
+flushed after each repair batch; pending operations fail the apply instead of
+being counted as completed. Dry-run plans are temporary, while apply plans remain
+available for recovery until success.
+
+An apply durably seals that SQLite plan before the first namespace drop. If the
+apply fails or the process is interrupted, keep the workspace offline and use
+the printed `--resume-plan` path. Resume validates the configured storage
+identity and rewrites from the pre-drop snapshot without reading the partial
+tracking namespace. The plan is deleted only after all selected namespaces have
+been rebuilt successfully.
+
+The tool asks for an offline confirmation before initializing storage and asks
+again before the destructive apply. `--yes` is intended for an already-isolated
+maintenance environment. It prints the configured working directory, workspace,
+and concrete storage classes before planning. See
+[`README_CHUNK_TRACKING_REPAIR.md`](../lightrag/tools/README_CHUNK_TRACKING_REPAIR.md)
+for configuration and recovery instructions.
+
+It is deliberately **not** the startup migration:
+
+|                | startup chunk-tracking migration | offline repair tool |
+| --- | --- | --- |
+| When           | startup / first explicit creation | operator, on demand |
+| Gate           | only when the namespace `is_empty()` | never gated |
+| Seed           | graph `source_id` | live-object tracking rows + cached extraction results |
+| Existing rows  | left untouched | current graph keys retained; orphan keys removed |
+
+The seed is the point. Graph `source_id` is KEEP-truncated and chunk tracking
+outranks it, so re-seeding from it downgrades provenance across the whole
+install. The repair never reads it; the graph is consulted only for current
+object keys, so rows for deleted objects are not copied into the replacement.
+Rows for live objects remain authoritative: rename, merge, and manual creation
+can produce keys or attribution the extraction cache cannot reproduce. Cached
+extraction (`text_chunks.llm_cache_list` → `llm_response_cache`) supplements
+those rows at chunk granularity. The `full_entities` / `full_relations` anchors
+remain too coarse to write a tracking row from.
+
+Two consequences an operator has to plan for, both reported in the plan:
+
+- An object with neither an existing authoritative row nor matching cached
+  extraction remains without a row and is reported. An existing row—including
+  an authoritative empty row—is never discarded merely because cache evidence
+  is absent.
+- If retained rows plus cached evidence would leave a namespace **empty while
+  the graph contains corresponding objects**, apply fails before the first drop.
+- Any plan that leaves a current graph object without a row is blocked by
+  default. `--allow-missing-rows` accepts that explicitly after review of the
+  existing/planned row denominators printed by the dry run.
+- A completely empty graph also blocks apply by default: it may mean the wrong
+  backend/workspace or an unavailable graph index. `--allow-empty-graph` is an
+  explicit override after the operator independently verifies the empty graph.
+
+The tool computes the whole mapping before the first `drop()`, so a read failure
+leaves every existing row untouched. Each selected namespace is dropped and
+fully rewritten before the next namespace is touched, reducing the partial
+failure window. If an apply still fails after a drop, keep every writer stopped,
+fix the cause, and re-run the tool until it completes.
 
 ### Delete Relations
 
@@ -1304,7 +1959,12 @@ await rag.adelete_by_relation("Google", "Gmail")
 When deleting a relationship:
 - Removes the specified relationship edge
 - Deletes the relationship's embedding vector
+- Deletes and persists its chunk-tracking row regardless of endpoint order, so recreating the relation starts with new provenance
 - Preserves both entity nodes and their other relationships
+
+Relation deletion is staged exactly as entity deletion is (see the table above),
+and repeating a deletion that reports `not_found` sweeps a stale row and commits
+tracking state an earlier attempt left pending.
 
 ### Delete by Document ID
 

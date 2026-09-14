@@ -1,5 +1,6 @@
 import re
 import json
+import argparse
 import jsonlines
 
 from openai import OpenAI
@@ -109,4 +110,41 @@ def batch_eval(query_file, result1_file, result2_file, output_file_path):
 
 
 if __name__ == "__main__":
-    batch_eval()
+    parser = argparse.ArgumentParser(
+        description=(
+            "Build an OpenAI Batch API request file that compares the answers of "
+            "two RAG systems on the same questions."
+        )
+    )
+    parser.add_argument(
+        "-q",
+        "--query_file",
+        type=str,
+        required=True,
+        help="Questions file produced by Step_2.py.",
+    )
+    parser.add_argument(
+        "-r1",
+        "--result1_file",
+        type=str,
+        required=True,
+        help="First system's answers, as produced by Step_3.py.",
+    )
+    parser.add_argument(
+        "-r2",
+        "--result2_file",
+        type=str,
+        required=True,
+        help="Second system's answers, as produced by Step_3.py.",
+    )
+    parser.add_argument(
+        "-o",
+        "--output_file",
+        type=str,
+        default="batch_eval_requests.jsonl",
+        help="Where to write the Batch API request file.",
+    )
+
+    args = parser.parse_args()
+
+    batch_eval(args.query_file, args.result1_file, args.result2_file, args.output_file)

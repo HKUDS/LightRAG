@@ -1,12 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { resolveBrandTitle } from './brandTitle'
-
-type GlobalWithWindow = typeof globalThis & {
-  window?: { __LIGHTRAG_CONFIG__?: { webuiTitle?: string | null } }
-}
-
-const globalWithWindow = globalThis as GlobalWithWindow
-const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+import { restoreDomGlobals } from '@/test/domGlobals'
 
 const setRuntimeTitle = (webuiTitle: string | null | undefined): void => {
   Object.defineProperty(globalThis, 'window', {
@@ -16,11 +10,10 @@ const setRuntimeTitle = (webuiTitle: string | null | undefined): void => {
 }
 
 afterEach(() => {
-  if (previousWindow) {
-    Object.defineProperty(globalThis, 'window', previousWindow)
-  } else {
-    delete globalWithWindow.window
-  }
+  // The preloaded DOM is the state to return to; it is installed for the
+  // whole process, so leaving this stub in place would follow the run into
+  // every later test file.
+  restoreDomGlobals()
 })
 
 describe('resolveBrandTitle', () => {

@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
+import { relativePath, sourceFiles } from '@/test/sourceScan'
 import { WORKSPACE_RETRIEVAL_HISTORY_KEY } from '@/lib/storageKeys'
 
 /**
@@ -34,6 +35,7 @@ const stub = {
   }
 }
 
+/** Every non-test source file under `src/`, for the tree-wide prohibition below. */
 let previousDescriptor: PropertyDescriptor | undefined
 
 let applyLoginIdentity: typeof import('./loginIdentity').applyLoginIdentity
@@ -431,24 +433,62 @@ describe('activateLoginIdentityFromToken (the login form\'s only entry point)', 
   })
 
   test('no activation path decides the identity from anything but its token', () => {
-    // Structural pin: `applyLoginIdentity` takes a bare name, so any caller
-    // COULD pass a typed username again and every behavioral test above
-    // would still pass. The four activation sites must go through the
-    // token-derived entry point instead.
-    for (const file of [
+    // Structural pin, and deliberately not a rendered one: `applyLoginIdentity`
+    // takes a bare name, so any caller COULD pass a typed username again and
+    // every behavioral test above would still pass whenever the typed name and
+    // the token's `sub` happen to agree — which is most of the time, and never
+    // in the cases the cleanup exists for.
+    const ACTIVATION_SITES = [
       'features/LoginPage.tsx',
       'features/workspace/WorkspaceWelcome.tsx',
       'features/workspace/authBootstrap.ts',
       'App.tsx'
-    ]) {
+    ]
+
+    for (const file of ACTIVATION_SITES) {
       const source = readFileSync(join(import.meta.dir, '..', file), 'utf8')
-      expect({ file, calls: source.includes('applyLoginIdentity(') }).toEqual({
-        file,
-        calls: false
-      })
       expect({ file, activates: source.includes('activateLoginIdentityFromToken(') }).toEqual(
         { file, activates: true }
       )
     }
+
+    // The prohibition is scanned across the WHOLE tree rather than over the
+    // four known sites: a fifth activation path added tomorrow is the case
+    // this test exists for, and a fixed list cannot see it. `loginIdentity.ts`
+    // is the one legitimate caller — it is where the token-derived entry point
+    // delegates.
+    // Matched on the IDENTIFIER, anywhere in the file, rather than on any
+    // particular import or call shape. Every previous version of this guard
+    // enumerated forms and was then evaded by the next one: a bare call, an
+    // aliased static import, a destructured dynamic import, a namespace
+    // member call. Naming the symbol is the one thing every use has in common
+    // — `identity.applyLoginIdentity(n)`, `const apply =
+    // identity.applyLoginIdentity`, `m['applyLoginIdentity']` all contain it —
+    // so this is closeable where a form list is not.
+    const namesIt = (source: string): boolean => /\bapplyLoginIdentity\b/.test(source)
+
+    // Second net, for a namespace import that reached the symbol by a computed
+    // key. No module outside this one has a reason to take the namespace.
+    const takesNamespace = (source: string): boolean =>
+      /import\s*\*\s*as\s+\w+\s*from\s*['"`][^'"`]*loginIdentity['"`]/.test(source)
+
+    // Every segment `sourceFiles` appends below the root is `/`-separated on
+    // every platform (see `@/test/sourceScan`); the exclusion below is a
+    // forward-slash suffix strictly below that root, so it fires on Windows
+    // too. Against `join`'s native separators it would not, and this module
+    // would be reported as a violation of its own prohibition.
+    const srcDir = join(import.meta.dir, '..')
+    const callers = sourceFiles(
+      srcDir,
+      (path) => /\.tsx?$/.test(path) && !/\.test\.tsx?$/.test(path)
+    )
+      .filter((file) => !file.endsWith('/lib/loginIdentity.ts'))
+      .filter((file) => {
+        const source = readFileSync(file, 'utf8')
+        return namesIt(source) || takesNamespace(source)
+      })
+      .map((file) => relativePath(srcDir, file))
+
+    expect(callers).toEqual([])
   })
 })

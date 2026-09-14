@@ -40,6 +40,7 @@ export const defaultQuerySettings: QuerySettings = {
   stream: true,
   history_turns: 0,
   user_prompt: '',
+  disable_user_prompt_prefix: false,
   enable_rerank: true
 }
 

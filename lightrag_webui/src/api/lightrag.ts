@@ -218,8 +218,19 @@ export type QueryRequest = {
   conversation_history?: Message[]
   /** Number of complete conversation turns (user-assistant pairs) to consider in the response context. */
   history_turns?: number
-  /** User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template. */
+  /**
+   * Additional instructions for the LLM, injected into the "Additional
+   * Instructions" section of the answer prompt. Does not affect retrieval.
+   * The server may prepend a global prefix; see disable_user_prompt_prefix.
+   */
   user_prompt?: string
+  /**
+   * If true, the server-side global prompt prefix is not prepended to
+   * user_prompt, leaving this client in full control of the final instruction
+   * text. The prefix itself is server configuration and cannot be read or
+   * replaced from here. Default: false.
+   */
+  disable_user_prompt_prefix?: boolean
   /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
   enable_rerank?: boolean
   /** If True, emits retrieval progress events and a final response-time metadata line (streaming only). Default: false. */
@@ -300,10 +311,6 @@ export type DocStatusResponse = {
   file_path: string
 }
 
-export type DocsStatusesResponse = {
-  statuses: Partial<Record<DocStatus, DocStatusResponse[]>>
-}
-
 export type TrackStatusResponse = {
   track_id: string
   documents: DocStatusResponse[]
@@ -332,10 +339,6 @@ export type PaginationInfo = {
 export type PaginatedDocsResponse = {
   documents: DocStatusResponse[]
   pagination: PaginationInfo
-  status_counts: Record<string, number>
-}
-
-export type StatusCountsResponse = {
   status_counts: Record<string, number>
 }
 
@@ -647,11 +650,6 @@ export const checkHealth = async (): Promise<
  */
 export const verifyCredentials = async (): Promise<void> => {
   await axiosInstance.get('/auth/verify')
-}
-
-export const getDocuments = async (): Promise<DocsStatusesResponse> => {
-  const response = await axiosInstance.get('/documents')
-  return response.data
 }
 
 export const getSupportedFileTypes = async (signal?: AbortSignal): Promise<SupportedFileTypes> => {
@@ -1038,16 +1036,21 @@ export const batchUploadDocuments = async (
   )
 }
 
-export const clearDocuments = async (): Promise<DocActionResponse> => {
-  const response = await axiosInstance.delete('/documents')
-  return response.data
-}
-
-export const clearCache = async (): Promise<{
-  status: 'success' | 'fail'
-  message: string
-}> => {
-  const response = await axiosInstance.post('/documents/clear_cache', {})
+/**
+ * Clears every document from the RAG system.
+ *
+ * `clearLlmCache` folds what used to be a separate POST /documents/clear_cache
+ * into this call, so dropping the cache runs inside the destructive pipeline
+ * reservation this endpoint already takes. Off by default: the cache survives
+ * a clear so re-adding the same documents reuses the extraction results
+ * already paid for.
+ */
+export const clearDocuments = async (
+  clearLlmCache: boolean = false
+): Promise<DocActionResponse> => {
+  const response = await axiosInstance.delete('/documents', {
+    params: { clear_llm_cache: clearLlmCache }
+  })
   return response.data
 }
 
@@ -1402,13 +1405,4 @@ export const getDocumentsPaginatedWithTimeout = (
         reject(error)
       })
   })
-}
-
-/**
- * Get counts of documents by status
- * @returns Promise with status counts response
- */
-export const getDocumentStatusCounts = async (): Promise<StatusCountsResponse> => {
-  const response = await axiosInstance.get('/documents/status_counts')
-  return response.data
 }

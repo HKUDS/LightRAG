@@ -35,8 +35,9 @@ class NumberingResolver:
     # (not chineseCounting), which is why both are mapped here.
     FORMAT_CONVERTERS = {
         "decimal": lambda n: str(n),
-        "lowerLetter": lambda n: chr(ord("a") + (n - 1) % 26),
-        "upperLetter": lambda n: chr(ord("A") + (n - 1) % 26),
+        # Word repeats a letter after each alphabet: a...z, aa...zz, aaa...
+        "lowerLetter": lambda n: NumberingResolver._to_alpha(n),
+        "upperLetter": lambda n: NumberingResolver._to_alpha(n).upper(),
         "lowerRoman": lambda n: NumberingResolver._to_roman(n).lower(),
         "upperRoman": lambda n: NumberingResolver._to_roman(n),
         "chineseCounting": lambda n: NumberingResolver._to_chinese(n),
@@ -44,13 +45,13 @@ class NumberingResolver:
         "japaneseCounting": lambda n: NumberingResolver._to_chinese(n),
         "taiwaneseCounting": lambda n: NumberingResolver._to_chinese(n),
         "ideographDigital": lambda n: NumberingResolver._to_ideograph_digital(n),
-        "ideographTraditional": lambda n: "甲乙丙丁戊己庚辛壬癸"[(n - 1) % 10],
+        "ideographTraditional": lambda n: NumberingResolver._to_heavenly_stem(n),
         "bullet": lambda n: "•",
         "none": lambda n: "",
     }
 
-    #: numFmt -> the largest count its converter actually renders. Above the
-    #: limit the label degrades to the decimal string, which is legible and
+    #: numFmt -> the largest count its converter actually renders. Outside the
+    #: domain the label degrades to the decimal string, which is legible and
     #: obviously not a Chinese numeral (unlike the silent decimal default for an
     #: UNMAPPED numFmt, where `（1）` passes for `（一）`). The counting families
     #: all share ``_to_chinese``'s 1-99 domain, but they do NOT share a single
@@ -59,12 +60,39 @@ class NumberingResolver:
     #: while chineseCountingThousand keeps counting (一百) — three renderings, no
     #: corpus document that reaches any of them, so none is implemented. This
     #: table exists to make the event FINDABLE: a real document that gets there
-    #: is the evidence needed to implement the right one.
+    #: is the evidence needed to implement the right one. The Roman cutoff is
+    #: the converter's own (standard Roman numerals stop at 3999), not a
+    #: rendering choice; ideographTraditional renders only the ten Heavenly
+    #: Stems, and what Word shows past 癸 is likewise unimplemented.
+    #:
+    #: This table carries the UPPER bound only; the lower one is shared by
+    #: every converter and lives in :data:`POSITIVE_DOMAIN_FORMATS`.
     LIMITED_DOMAIN_FORMATS = {
+        "lowerLetter": 78,
+        "upperLetter": 78,
+        "lowerRoman": 3999,
+        "upperRoman": 3999,
+        "ideographTraditional": 10,
         "chineseCounting": 99,
         "chineseCountingThousand": 99,
         "japaneseCounting": 99,
         "taiwaneseCounting": 99,
+    }
+
+    #: numFmts whose converter renders from 1 upward and degrades to the decimal
+    #: string below that, exactly as an over-limit count degrades above the
+    #: LIMITED_DOMAIN_FORMATS entry. A zero or negative counter is reachable from
+    #: an untrusted w:start / w:startOverride, so the fallback is load-bearing —
+    #: and, like the upper bound, must be RECORDED rather than silent.
+    #:
+    #: Derived by exclusion so a newly mapped numFmt is covered by default: only
+    #: decimal / bullet / none render any count faithfully and are left out. A
+    #: future converter that genuinely renders 0 must be excluded here too — the
+    #: derivation errs toward a spurious warning rather than a silent wrong label.
+    POSITIVE_DOMAIN_FORMATS = frozenset(FORMAT_CONVERTERS) - {
+        "decimal",
+        "bullet",
+        "none",
     }
 
     def __init__(self, docx_path: str, *, warnings: Dict | None = None):
@@ -88,6 +116,10 @@ class NumberingResolver:
         self.last_numId: str = None  # Previous paragraph's numId
         self.last_abstract_id: str = None  # Previous paragraph's abstractNumId
         self.last_style_id: str = None  # Previous paragraph's style ID
+        # numFmt of the label get_label() rendered most recently; None when
+        # that paragraph carried no automatic numbering. Reset on every
+        # get_label call, so a reader never sees an earlier paragraph's value.
+        self.last_label_format: str | None = None
         # numFmt values this resolver cannot render, collected the first time
         # each is hit. An unknown numFmt is a legitimate OOXML value we simply
         # do not implement (not corruption), so the label still degrades to
@@ -95,8 +127,9 @@ class NumberingResolver:
         # harder to notice than an outright error.
         self.unsupported_formats: set[str] = set()
         # numFmt values that ARE implemented but were asked for a count outside
-        # their converter's domain (see LIMITED_DOMAIN_FORMATS), collected the
-        # first time each is hit.
+        # their converter's domain — above LIMITED_DOMAIN_FORMATS or, for a
+        # POSITIVE_DOMAIN_FORMATS member, below 1 — collected the first time
+        # each is hit.
         self.out_of_range_formats: set[str] = set()
         self._warnings = warnings
         self._parse_numbering_xml(docx_path)
@@ -122,21 +155,28 @@ class NumberingResolver:
     def _note_out_of_range(self, num_fmt: str, count: int) -> None:
         """Record a count a SUPPORTED numFmt cannot render, once per numFmt.
 
+        BOTH ends of the domain count: a converter degrades to decimal below 1
+        just as it does above its LIMITED_DOMAIN_FORMATS limit, and a caller
+        reading the warnings must be able to see either.
+
         Same contract as :meth:`_note_unsupported_format`: must never raise
         (the callers swallow exceptions, so a raise here would be invisible),
         and the label still renders — as decimal — rather than failing the
         document.
         """
         limit = self.LIMITED_DOMAIN_FORMATS.get(num_fmt)
-        if limit is None or count <= limit or num_fmt in self.out_of_range_formats:
+        out_of_range = (count < 1 and num_fmt in self.POSITIVE_DOMAIN_FORMATS) or (
+            limit is not None and count > limit
+        )
+        if not out_of_range or num_fmt in self.out_of_range_formats:
             return
         self.out_of_range_formats.add(num_fmt)
         logger.warning(
-            "Numbering format '%s' cannot render count %d (supported up to %d); "
+            "Numbering format '%s' cannot render count %d (renders %s); "
             "those labels fall back to decimal",
             num_fmt,
             count,
-            limit,
+            f"1-{limit}" if limit is not None else "1 and up",
         )
         if self._warnings is not None:
             self._warnings["numbering_out_of_range_formats"] = len(
@@ -374,6 +414,7 @@ class NumberingResolver:
         Returns:
             Rendered label string (e.g., "1.1", "a)", "第一章") or empty string
         """
+        self.last_label_format = None
         try:
             pPr = para_element.find(f"{{{NSMAP['w']}}}pPr")
             if pPr is None:
@@ -428,6 +469,18 @@ class NumberingResolver:
                 ilvl = self._resolve_ilvl_by_pstyle(num_id, style_id)
             if ilvl is None:
                 ilvl = 0
+
+            # OOXML defines w:ilvl over 0-8 (ECMA-376 ST_DecimalNumber for
+            # numbering levels). ilvl can reach here from numbering.xml,
+            # styles.xml, or a direct paragraph numPr -- none of those parse
+            # sites bound it, so a crafted document can smuggle an
+            # arbitrarily large value through. Below, it drives range(ilvl)
+            # and _format_label's range(ilvl + 1): unbounded, that turns one
+            # tiny paragraph into a CPU-bound loop of that many iterations.
+            if not 0 <= ilvl <= 8:
+                self.last_numId = None
+                self.last_abstract_id = None
+                return ""
 
             # Get abstract definition
             abstract_id = self.num_to_abstract.get(num_id)
@@ -492,7 +545,9 @@ class NumberingResolver:
             else:
                 self.counters[num_id][ilvl] += 1
 
-            # Format the label using lvlText template
+            # Format the label using lvlText template. _format_label records
+            # last_label_format itself: only it knows which placeholder
+            # actually supplied the leading token.
             label = self._format_label(num_id, ilvl, levels)
 
             # Update tracking state for next paragraph
@@ -506,11 +561,29 @@ class NumberingResolver:
             return ""
 
     def _format_label(self, num_id: str, ilvl: int, levels: dict) -> str:
-        """Format label string by replacing %1, %2, etc."""
+        """Format label string by replacing %1, %2, etc.
+
+        Also records :attr:`last_label_format`: the numFmt of the placeholder
+        that supplied the label's LEADING token. That is not necessarily the
+        current level's numFmt — a valid lvlText may reference only an
+        ancestor level (an ilvl-1 lowerLetter level with lvlText "%1." renders
+        its lowerRoman parent), and the heading classifier reads the leading
+        token, so tagging it with the current level's format makes it read
+        "ii" as alphabetic 35 instead of Roman 2.
+
+        A placeholder that renders empty (numFmt "none") contributes no token
+        and is skipped, so the leading token of "%1%2." with a "none" level 0
+        is still attributed to level 1.
+        """
         try:
             lvl_text = levels[ilvl]["lvlText"]
             result = lvl_text
             current_is_lgl = levels[ilvl].get("isLgl", False)
+            # numFmt of the leftmost placeholder that actually substituted a
+            # NON-EMPTY token, by its position in the ORIGINAL template
+            # (earlier substitutions shift offsets in `result`).
+            leading_fmt: str | None = None
+            leading_pos: int | None = None
 
             for i in range(ilvl + 1):
                 if i in levels and i in self.counters.get(num_id, {}):
@@ -525,11 +598,41 @@ class NumberingResolver:
                     else:
                         self._note_out_of_range(num_fmt, count)
                     formatted = converter(count)
-                    result = result.replace(f"%{i + 1}", formatted)
+                    placeholder = f"%{i + 1}"
+                    pos = lvl_text.find(placeholder)
+                    if (
+                        formatted
+                        and pos != -1
+                        and (leading_pos is None or pos < leading_pos)
+                    ):
+                        leading_pos = pos
+                        leading_fmt = num_fmt
+                    result = result.replace(placeholder, formatted)
 
+            # An empty render carries no token to attribute a format to.
+            self.last_label_format = leading_fmt if result else None
             return result
         except Exception:
             return ""
+
+    @staticmethod
+    def _to_alpha(n: int) -> str:
+        """Render Word's repeated letters within the classifier's 1-78 domain.
+
+        Check before multiplying: an untrusted DOCX startOverride can be a
+        32-bit integer, which must not allocate a label proportional to it.
+        """
+        if not 1 <= n <= 78:
+            return str(n)
+        return chr(ord("a") + (n - 1) % 26) * ((n - 1) // 26 + 1)
+
+    @staticmethod
+    def _to_heavenly_stem(n: int) -> str:
+        """Render the ten Heavenly Stems (甲…癸) and fall back to the decimal
+        string outside 1-10. Never wrap: item 11 must not pass for item 1."""
+        if not 1 <= n <= 10:
+            return str(n)
+        return "甲乙丙丁戊己庚辛壬癸"[n - 1]
 
     @staticmethod
     def _to_roman(n: int) -> str:
