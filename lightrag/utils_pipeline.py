@@ -17,7 +17,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import unquote, urlsplit
 
 from lightrag.base import (
     DocProcessingStatus,
@@ -1241,10 +1241,12 @@ def sidecar_uri_for(parsed_artifact_dir: Path | str) -> str:
 
     The result always ends with ``/`` so a reader can distinguish a directory
     from a file at the URI level. Non-ASCII characters are percent-encoded.
+    Uses ``Path.as_uri()`` so POSIX paths do not get an extra slash
+    (``file:////tmp/...``) after the authority.
     """
     p = Path(parsed_artifact_dir).resolve()
-    encoded = quote(str(p), safe="/")
-    return f"file://{encoded}/"
+    uri = p.as_uri()
+    return uri if uri.endswith("/") else uri + "/"
 
 
 def resolve_sidecar_uri(uri: str | None) -> Path | None:
@@ -1258,9 +1260,23 @@ def resolve_sidecar_uri(uri: str | None) -> Path | None:
     parts = urlsplit(uri)
     if parts.scheme != "file":
         return None
-    path_str = unquote(parts.path)
+    if parts.path and parts.path not in ("/", ""):
+        path_str = unquote(parts.path)
+    elif parts.netloc:
+        # Legacy Windows URIs where the drive path was encoded into netloc.
+        path_str = unquote(parts.netloc)
+    else:
+        return None
     if path_str.endswith("/") and len(path_str) > 1:
         path_str = path_str[:-1]
+    # ``file:///C:/...`` yields ``/C:/...``; strip the leading slash on Windows.
+    if (
+        os.name == "nt"
+        and len(path_str) >= 3
+        and path_str[0] == "/"
+        and path_str[2] == ":"
+    ):
+        path_str = path_str[1:]
     return Path(path_str)
 
 

@@ -77,6 +77,12 @@ from lightrag.chunk_schema import (
     strip_internal_multimodal_markup_for_extraction,
 )
 from lightrag.prompt import PROMPTS, resolve_entity_extraction_prompt_profile
+
+# PR-1: query-time figure Index (collect-once → metadata.drawing_candidate_whitelist).
+from lightrag.sidecar.query_attachments import (
+    apply_index_figures_to_raw_data,
+    index_figures_on_chunks,
+)
 from lightrag.constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_ENTITY_TOKENS,
@@ -4702,6 +4708,8 @@ async def kg_query(
     system_prompt: str | None = None,
     chunks_vdb: BaseVectorStorage = None,
     progress_callback: ProgressCallback | None = None,
+    # PR-1: full_docs KV (sidecar_location) for figure Index; wired from lightrag.aquery_*.
+    full_docs_db: BaseKVStorage | None = None,
 ) -> QueryResult | None:
     """
     Execute knowledge graph query and return unified QueryResult object.
@@ -4717,6 +4725,7 @@ async def kg_query(
         hashing_kv: Cache storage
         system_prompt: System prompt
         chunks_vdb: Document chunks vector database
+        full_docs_db: Full document storage for sidecar figure Index / attachments
 
     Returns:
         QueryResult | None: Unified query result object containing:
@@ -4781,6 +4790,8 @@ async def kg_query(
         # The token budget must be computed against the template this function
         # will actually render below, not the default one.
         system_prompt=system_prompt,
+        # PR-1: pass full_docs_db → _build_context_str → index_figures_on_chunks.
+        full_docs_db=full_docs_db,
     )
 
     if context_result is None:
@@ -5882,10 +5893,17 @@ async def _build_context_str(
     relation_id_to_original: dict = None,
     progress_callback: ProgressCallback | None = None,
     system_prompt: str | None = None,
+    text_chunks_db: BaseKVStorage | None = None,
+    # PR-1: sidecar / drawings.json lookup for figure Index (kg path hook point).
+    full_docs_db: BaseKVStorage | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
     Build the final LLM context string with token processing.
     This includes dynamic token calculation and final chunk truncation.
+
+    PR-1: After reference assignment, ``index_figures_on_chunks`` indexes figures on
+    truncated chunks (needs ``text_chunks_db`` + ``full_docs_db``); enrich runs in
+    ``lightrag.py`` after this returns.
     """
     tokenizer = global_config.get("tokenizer")
     if not tokenizer:
@@ -5995,6 +6013,14 @@ async def _build_context_str(
         truncated_chunks
     )
 
+    # PR-1 (kg): collect-once Index before LLM; whitelist only, no chunk figure_ids.
+    index_result = await index_figures_on_chunks(
+        truncated_chunks,
+        text_chunks_db,
+        full_docs_db,
+    )
+    # PR-1: Index returns whitelist only; keep truncated_chunks for prompt / data.chunks.
+
     # Rebuild chunks_context with truncated chunks
     # The actual tokens may be slightly less than available_chunk_tokens due to deduplication logic
     text_units_str = render_chunks_context_text(truncated_chunks)
@@ -6064,6 +6090,8 @@ async def _build_context_str(
         entity_id_to_original,
         relation_id_to_original,
     )
+    # PR-1: write metadata.drawing_candidate_whitelist (data.attachments enriched in lightrag).
+    apply_index_figures_to_raw_data(final_data, index_result)
     final_data_payload = final_data.get("data", {})
     logger.debug(
         f"[_build_context_str] Final data after conversion: {len(final_data_payload.get('entities', []))} entities, {len(final_data_payload.get('relationships', []))} relationships, {len(final_data_payload.get('chunks', []))} chunks"
@@ -6084,6 +6112,8 @@ async def _build_query_context(
     chunks_vdb: BaseVectorStorage = None,
     progress_callback: ProgressCallback | None = None,
     system_prompt: str | None = None,
+    # PR-1: forwarded to _build_context_str for figure Index.
+    full_docs_db: BaseKVStorage | None = None,
 ) -> QueryContextResult | None:
     """
     Main query context building function using the new 4-stage architecture:
@@ -6159,6 +6189,9 @@ async def _build_query_context(
         relation_id_to_original=truncation_result["relation_id_to_original"],
         progress_callback=progress_callback,
         system_prompt=system_prompt,
+        text_chunks_db=text_chunks_db,
+        # PR-1: full_docs_db → index_figures_on_chunks inside _build_context_str.
+        full_docs_db=full_docs_db,
     )
 
     # Convert keywords strings to lists and add complete metadata to raw_data
@@ -6858,6 +6891,8 @@ async def naive_query(
     system_prompt: str | None = None,
     text_chunks_db: BaseKVStorage | None = None,
     progress_callback: ProgressCallback | None = None,
+    # PR-1: full_docs KV for figure Index (same wiring as kg_query).
+    full_docs_db: BaseKVStorage | None = None,
 ) -> QueryResult | None:
     """
     Execute naive query and return unified QueryResult object.
@@ -6869,6 +6904,8 @@ async def naive_query(
         global_config: Global configuration
         hashing_kv: Cache storage
         system_prompt: System prompt
+        text_chunks_db: Text chunk KV (sidecar refs for figure Index)
+        full_docs_db: Full-doc KV for sidecar / drawings.json lookup
 
     Returns:
         QueryResult | None: Unified query result object containing:
@@ -6970,6 +7007,14 @@ async def naive_query(
         processed_chunks
     )
 
+    # PR-1 (naive): collect-once Index before LLM; whitelist only, no chunk figure_ids.
+    index_result = await index_figures_on_chunks(
+        processed_chunks_with_ref_ids,
+        text_chunks_db,
+        full_docs_db,
+    )
+    # PR-1: Index returns whitelist only; keep processed_chunks_with_ref_ids below.
+
     logger.info(f"Final context: {len(processed_chunks_with_ref_ids)} chunks")
 
     # Build raw data structure for naive mode using processed chunks with reference IDs
@@ -6980,6 +7025,8 @@ async def naive_query(
         reference_list,
         "naive",
     )
+    # PR-1: write metadata.drawing_candidate_whitelist (data.attachments enriched in lightrag).
+    apply_index_figures_to_raw_data(raw_data, index_result)
 
     # Add complete metadata for naive mode
     if "metadata" not in raw_data:
