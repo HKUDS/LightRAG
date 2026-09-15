@@ -155,9 +155,20 @@ class _CollectionGate:
 
     The lease spans one submission, never a whole method: it covers the wait
     for a pool permit and the SDK round trip, and nothing else. That bound is
-    the whole reason this is affordable -- a rebuild waits only for reads that
-    are actually in flight against the server, never for an embedding round
-    trip a reader happens to be sitting in between two of its calls.
+    the whole reason this is affordable -- a rebuild never waits for an
+    embedding round trip a reader happens to be sitting in between two of its
+    calls, which is what makes a drain viable on a destructive path at all.
+
+    It is NOT only the calls executing against the server, though: a read that
+    has a lease but is still queued for one of the ``MILVUS_SUBMIT_LIMIT``
+    permits holds it too, so a rebuild also waits out the backlog standing at
+    the moment the gate closed. Bounded and non-growing -- the closed gate
+    admits no new reader, and the backlog drains at full pool width -- but on a
+    saturated pool that is several round trips, not one. Counting only
+    submitted work would mean learning from ``bounded_submit`` when it hands a
+    call to a thread, and it deliberately declares no keyword arguments of its
+    own; that seam would have to be cut in ``lightrag/utils.py``, for every
+    pool that shares it.
 
     ``acquire_read`` takes the lease and then RE-CHECKS the gate, handing it
     back if a rebuild closed it in between. Both steps run without an await
@@ -3454,9 +3465,11 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
             # Close the reader gate for the window where the collection does
             # not exist: writers are excluded by _flush_lock, readers are not.
-            # Closing refuses new leases; draining waits out the reads already
-            # in flight against the server, so none of them is left querying a
-            # collection this is about to remove.
+            # Closing refuses new leases; draining waits out the reads that
+            # already hold one, so none of them is left querying a collection
+            # this is about to remove. That set includes reads still queued for
+            # a pool permit, so the drain can span a few round trips on a
+            # saturated pool -- see _CollectionGate.
             gate = get_collection_gate(self.final_namespace)
             gate.close()
             try:
