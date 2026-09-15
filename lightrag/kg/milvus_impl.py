@@ -2780,6 +2780,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             the exception propagates so the caller (``adelete_by_entity``
             in ``utils_graph.py``) can short-circuit before
             ``_persist_graph_updates`` flushes a half-cleaned buffer.
+            Cancellation arriving after the delete is submitted is
+            deferred until the delete and the prune both finish, same
+            idiom as ``_flush_pending_vector_ops`` -- otherwise a bare
+            cancel would release ``_flush_lock`` with the buffer unpruned
+            while the delete keeps running in the background, letting a
+            concurrent flush reinsert a relation the server already
+            deleted.
 
         Semantic note (deferred-buffer ↔ persisted divergence): pruning only
         consults the *current* buffered ``src_id`` / ``tgt_id`` view; we do
@@ -2810,11 +2817,12 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 _prune_pending()
                 return
 
-            self._ensure_collection_loaded()
+            await run_in_milvus_executor(self._ensure_collection_loaded)
 
             safe_name = _escape_milvus_str(entity_name)
             expr = f'src_id == "{safe_name}" or tgt_id == "{safe_name}"'
-            results = self._client.query(
+            results = await run_in_milvus_executor(
+                self._client.query,
                 collection_name=self.final_namespace,
                 filter=expr,
                 output_fields=["id"],
@@ -2830,14 +2838,38 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 return
 
             relation_ids = [item["id"] for item in results]
-            self._client.delete(collection_name=self.final_namespace, pks=relation_ids)
-            # Server-side delete succeeded — safe to prune the pending
-            # buffer so subsequent flushes don't re-upsert the deleted
-            # relations.
-            _prune_pending()
-            logger.debug(
-                f"[{self.workspace}] Deleted {len(relation_ids)} relations for {entity_name}"
-            )
+
+            async def _delete_and_prune() -> None:
+                await run_in_milvus_executor(
+                    self._client.delete,
+                    collection_name=self.final_namespace,
+                    pks=relation_ids,
+                )
+                # Server-side delete succeeded — safe to prune the pending
+                # buffer so subsequent flushes don't re-upsert the deleted
+                # relations.
+                _prune_pending()
+                logger.debug(
+                    f"[{self.workspace}] Deleted {len(relation_ids)} relations for {entity_name}"
+                )
+
+            # Defer the cancellation until the
+            # delete -- and its buffer bookkeeping -- has actually finished,
+            # same idiom as _flush_pending_vector_ops.
+            delete_future = asyncio.ensure_future(_delete_and_prune())
+            delete_future.add_done_callback(_consume_future_exception)
+            pending_cancel = await _wait_deferring_cancellation(delete_future, None)
+            if pending_cancel is not None:
+                if not delete_future.cancelled():
+                    delete_exc = delete_future.exception()
+                    if delete_exc is not None:
+                        logger.error(
+                            f"[{self.workspace}] {self.namespace} "
+                            f"delete_entity_relation completed while its caller "
+                            f"was cancelled: {delete_exc}"
+                        )
+                raise pending_cancel
+            delete_future.result()
 
     async def delete(self, ids: list[str]) -> None:
         """Buffer vector deletes for batched flush."""
@@ -2920,7 +2952,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         the pages that already succeeded, since callers treat an incomplete
         result as a storage-consistency signal, not a partial one.
         """
-        self._ensure_collection_loaded()
+        await run_in_milvus_executor(self._ensure_collection_loaded)
 
         page_size = self._resolve_query_page_size(includes_vector=includes_vector)
         rows: list[dict[str, Any]] = []
@@ -2932,7 +2964,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             filter_expr = f'id in ["{id_list}"]'
 
             try:
-                page_rows = self._client.query(
+                page_rows = await run_in_milvus_executor(
+                    self._client.query,
                     collection_name=self.final_namespace,
                     filter=filter_expr,
                     output_fields=output_fields,
@@ -2972,12 +3005,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         try:
             # Ensure collection is loaded before querying
-            self._ensure_collection_loaded()
+            await run_in_milvus_executor(self._ensure_collection_loaded)
 
             # Include all meta_fields (created_at is now always included) plus id
             output_fields = list(self.meta_fields) + ["id"]
 
-            result = self._client.query(
+            result = await run_in_milvus_executor(
+                self._client.query,
                 collection_name=self.final_namespace,
                 filter=f'id == "{_escape_milvus_str(id)}"',
                 output_fields=output_fields,

@@ -1,8 +1,14 @@
-"""MilvusVectorDBStorage.query() and _flush_pending_vector_ops() call the
-synchronous MilvusClient SDK (blocking gRPC) directly inside async methods.
-Calling it without offloading would block the whole event loop for the
-duration of every search/upsert/delete round trip, stalling every other
-concurrent task (LLM calls, other storage I/O) sharing the loop.
+"""MilvusVectorDBStorage.query(), _flush_pending_vector_ops(),
+delete_entity_relation(), _query_rows_by_ids() (used by get_by_ids() /
+get_vectors_by_ids()), and get_by_id() call the synchronous MilvusClient SDK
+(blocking gRPC) directly inside async methods. Calling it without offloading
+would block the whole event loop for the duration of every
+search/upsert/delete/query round trip, stalling every other concurrent task
+(LLM calls, other storage I/O) sharing the loop.
+
+The negative-case tests pin the other half of the contract: a call that
+never reaches the client (a buffer-only read/prune) must not touch the
+executor at all.
 
 All tests use mocks -- no running Milvus instance required. Mirrors the
 fixture setup in test_milvus_deferred_embedding.py.
@@ -211,6 +217,195 @@ async def test_blocking_calls_use_the_dedicated_milvus_pool():
         if not name.startswith("lightrag-milvus")
     }
     assert offenders == {}
+
+
+@pytest.mark.asyncio
+async def test_delete_entity_relation_runs_query_and_delete_off_the_event_loop_thread():
+    main_thread_id = threading.get_ident()
+    call_thread_id = {}
+
+    def fake_query(**kwargs):
+        call_thread_id["query"] = threading.get_ident()
+        return [{"id": "rel-1"}]
+
+    def fake_delete(**kwargs):
+        call_thread_id["delete"] = threading.get_ident()
+        return {"delete_count": 1}
+
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.query = MagicMock(side_effect=fake_query)
+    s._client.delete = MagicMock(side_effect=fake_delete)
+
+    await s.delete_entity_relation("entity-1")
+
+    assert call_thread_id["query"] != main_thread_id
+    assert call_thread_id["delete"] != main_thread_id
+
+
+@pytest.mark.asyncio
+async def test_delete_entity_relation_no_server_rows_still_offloads_the_query():
+    """No matching rows means delete() is never called, but the query()
+    that discovers that must still be offloaded -- it is the same blocking
+    round trip regardless of how many rows come back."""
+    main_thread_id = threading.get_ident()
+    call_thread_id = {}
+
+    def fake_query(**kwargs):
+        call_thread_id["query"] = threading.get_ident()
+        return []
+
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.query = MagicMock(side_effect=fake_query)
+    s._client.delete = MagicMock()
+
+    await s.delete_entity_relation("entity-1")
+
+    assert call_thread_id["query"] != main_thread_id
+    s._client.delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_entity_relation_without_client_does_not_touch_executor():
+    """Negative case: with no server client, delete_entity_relation only
+    prunes the in-memory pending-upsert buffer -- a path that already
+    worked correctly before this fix and must stay untouched by it."""
+    s = _make_storage(MockEmbeddingFunc())
+    s._client = None
+    s._pending_vector_docs = {
+        "v1": type("P", (), {"source": {"src_id": "entity-1", "tgt_id": "other"}})()
+    }
+
+    await s.delete_entity_relation("entity-1")
+
+    assert "v1" not in s._pending_vector_docs
+
+
+@pytest.mark.asyncio
+async def test_cancelling_delete_entity_relation_defers_until_delete_completes_then_prunes():
+    """run_in_milvus_executor only cancels the awaiting future -- an in-flight
+    Milvus delete keeps running in the background thread. A bare cancel here
+    would release _flush_lock and return to the caller while that delete (and
+    the pending-buffer prune that follows it) is still pending, letting a
+    concurrent flush reinsert a relation the server already deleted.
+    Cancellation must instead be deferred until the delete, and the prune
+    that follows it, have actually finished."""
+    call_started = threading.Event()
+    release_call = threading.Event()
+
+    def fake_delete(**kwargs):
+        call_started.set()
+        release_call.wait(timeout=5)
+        return {"delete_count": 1}
+
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.query = MagicMock(return_value=[{"id": "rel-1"}])
+    s._client.delete = MagicMock(side_effect=fake_delete)
+    s._pending_vector_docs = {
+        "rel-1": type("P", (), {"source": {"src_id": "entity-1", "tgt_id": "other"}})()
+    }
+
+    task = asyncio.ensure_future(s.delete_entity_relation("entity-1"))
+    for _ in range(500):
+        if call_started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert call_started.is_set()
+
+    task.cancel()
+    # Let the background delete finish so the deferred cancellation can
+    # resolve -- release_call must be set before awaiting the cancelled
+    # task, since the cancellation is held back until the delete completes.
+    release_call.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    s._client.delete.assert_called_once()
+    # The delete actually landed, so the buffer must reflect that outcome --
+    # not the stale "still pending" state a bare cancel would leave, which
+    # would let a later flush reinsert the relation the server just deleted.
+    assert s._pending_vector_docs == {}
+    assert not s._flush_lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_get_by_ids_runs_query_off_the_event_loop_thread():
+    """get_by_ids (and get_vectors_by_ids, which shares the same
+    _query_rows_by_ids helper) must offload the paged query() calls."""
+    main_thread_id = threading.get_ident()
+    call_thread_id = {}
+
+    def fake_query(**kwargs):
+        call_thread_id["query"] = threading.get_ident()
+        return [{"id": "v1", "content": "hello"}]
+
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.query = MagicMock(side_effect=fake_query)
+
+    result = await s.get_by_ids(["v1"])
+
+    assert result == [{"id": "v1", "content": "hello"}]
+    assert call_thread_id["query"] != main_thread_id
+
+
+@pytest.mark.asyncio
+async def test_get_by_id_runs_query_off_the_event_loop_thread():
+    main_thread_id = threading.get_ident()
+    call_thread_id = {}
+
+    def fake_query(**kwargs):
+        call_thread_id["query"] = threading.get_ident()
+        return [{"id": "v1", "content": "hello"}]
+
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.query = MagicMock(side_effect=fake_query)
+
+    result = await s.get_by_id("v1")
+
+    assert result == {"id": "v1", "content": "hello"}
+    assert call_thread_id["query"] != main_thread_id
+
+
+@pytest.mark.asyncio
+async def test_get_by_id_returns_buffered_value_without_touching_client():
+    """Negative case: a read-your-writes hit against the pending-upsert
+    buffer must short-circuit before ever reaching the client/executor --
+    unchanged behavior this fix must not disturb."""
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.query = MagicMock()
+    s._pending_vector_docs = {
+        "v1": type("P", (), {"source": {"content": "buffered"}})()
+    }
+
+    result = await s.get_by_id("v1")
+
+    assert result == {"content": "buffered", "id": "v1"}
+    s._client.query.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_new_call_sites_use_dedicated_pool_not_default():
+    """Same requirement as test_blocking_calls_use_the_dedicated_milvus_pool
+    above, extended to the three call sites this fix adds -- offloading to
+    the wrong (shared, unbounded-queue) pool reintroduces the exact
+    contention problem #3862 introduced this pool to avoid."""
+    thread_names: dict[str, str] = {}
+
+    def record(op, result):
+        def _fake(**kwargs):
+            thread_names[op] = threading.current_thread().name
+            return result
+
+        return _fake
+
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.query = MagicMock(side_effect=record("query", [{"id": "rel-1"}]))
+    s._client.delete = MagicMock(side_effect=record("delete", {"delete_count": 1}))
+
+    await s.delete_entity_relation("entity-1")
+
+    assert thread_names["query"].startswith("lightrag-milvus")
+    assert thread_names["delete"].startswith("lightrag-milvus")
 
 
 @pytest.mark.asyncio
