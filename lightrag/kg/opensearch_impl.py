@@ -11,8 +11,10 @@ Requirements:
 
 import hashlib
 import json
+import math
 import os
 import re
+import sys
 import time
 import asyncio
 from dataclasses import dataclass, field
@@ -55,6 +57,7 @@ from ..utils import (
     parse_cache_key,
     validate_workspace,
 )
+from ..utils_graph import relation_evidence_count
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import (
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
@@ -594,13 +597,23 @@ def _edge_source_id_list(doc: dict[str, Any]) -> list[str]:
 
 
 def _coerce_weight(weight: Any) -> float | None:
-    """Coerce a (possibly string) edge weight to float, or None if non-numeric."""
+    """Coerce a (possibly string) edge weight to float, or None if the value
+    is missing, non-numeric, or not finite.
+
+    NaN/+-inf pass ``float()`` (including via strings like "nan"), but none of
+    them is a storable graph attribute (see ``graph_attribute_value_rejection``
+    -- the rule is the portability intersection across the backends, not a
+    per-backend impossibility) and a NaN poisons every ``sum``/``max`` it later
+    reaches. A non-finite legacy weight is therefore unusable in exactly the
+    way a non-numeric one is, and is skipped the same way.
+    """
     if weight is None:
         return None
     try:
-        return float(weight)
+        coerced = float(weight)
     except (TypeError, ValueError):
         return None
+    return coerced if math.isfinite(coerced) else None
 
 
 def _merge_edge_payloads(docs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -612,8 +625,10 @@ def _merge_edge_payloads(docs: list[dict[str, Any]]) -> dict[str, Any]:
     summarisation): ``source_id``/``source_ids``/``file_path``/``description``
     union their ``GRAPH_FIELD_SEP`` components, ``keywords`` are comma-set-
     unioned, and ``weight`` is **summed across every fragment** (base + each
-    duplicate). Returns only the merged fields (to be layered onto the surviving
-    doc).
+    duplicate) then floored to the merged evidence count, so a fragment that
+    contributes new source_ids while carrying a missing/non-numeric legacy
+    weight cannot leave the result under its own evidence count. Returns only
+    the merged fields (to be layered onto the surviving doc).
 
     Weight summing deliberately does NOT dedup by ``source_id``: just like
     ``_merge_edges_then_upsert``, every edge fragment contributes its weight even
@@ -658,8 +673,30 @@ def _merge_edge_payloads(docs: list[dict[str, Any]]) -> dict[str, Any]:
         merged["description"] = GRAPH_FIELD_SEP.join(descriptions)
     if keywords:
         merged["keywords"] = ",".join(sorted(keywords))
-    if weights:
-        merged["weight"] = sum(weights)
+    # Floor the sum to the merged evidence count, per the relation weight
+    # contract: a fragment can contribute new source_ids while carrying a
+    # missing/non-numeric weight (skipped above), which would otherwise leave
+    # the merged weight below its own evidence count -- or, if no fragment had
+    # a coercible weight, omit "weight" even though source_ids just grew.
+    #
+    # The floor is computed from `relation_evidence_count` rather than through
+    # `apply_relation_weight_floor`, which validates the whole relation the way
+    # a caller ingress does: a legacy `source_id` no backend can store (an
+    # XML-incompatible character, say) would abort this one-time migration over
+    # a row it is supposed to carry through. Counting evidence needs no such
+    # validation.
+    evidence_count = relation_evidence_count(merged.get("source_id", ""))
+    if weights or evidence_count:
+        summed_weight = sum(weights) if weights else 0.0
+        if summed_weight == math.inf:
+            # Each weight was individually finite (_coerce_weight rejects
+            # nan/inf inputs), but their sum can still overflow past what a
+            # graph attribute may hold. Keep the largest representable weight
+            # instead of collapsing an absurd but real magnitude down to the
+            # evidence count. Only +inf is clamped: a sum of finite floats is
+            # never NaN, and -inf is absorbed by the evidence floor below.
+            summed_weight = sys.float_info.max
+        merged["weight"] = max(summed_weight, float(evidence_count))
     return merged
 
 

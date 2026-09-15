@@ -1425,7 +1425,11 @@ the complete post-edit shape, so `source_id` and `weight` can be changed
 together. Existing legacy relations are repaired upward when extraction adds
 evidence, an entity rename rewrites their endpoints, an unrelated relation edit
 rewrites the row, or a relation is rebuilt from surviving chunks (document
-purge, resume, and custom-chunk rollback). `lightrag-rebuild-vdb` is not such a
+purge, resume, and custom-chunk rollback). The one-time canonical-edge
+migrations on the MongoDB and OpenSearch backends repair the rows they rewrite
+too: folding duplicate edge documents into one lifts the merged weight to the
+merged evidence count. A fold that finds neither a usable weight nor a real
+source ID leaves the stored weight alone. `lightrag-rebuild-vdb` is not such a
 repair point: it mirrors each graph edge into the vector storage field for
 field, copying the stored weight verbatim without touching the graph.
 
