@@ -6100,7 +6100,13 @@ _MD_FENCE_REGION_PATTERN = re.compile(
     r"(?:^ {0,3}(?P=tfence)~*[ \t]*\r?$|\Z)",
     re.MULTILINE,
 )
-# Inline span, searched only in the gaps between fences. Opening and closing
+# A blank line ends a paragraph, and a code span is an inline inside ONE leaf
+# block, so backtick runs in two different paragraphs cannot pair. The blank
+# line must tolerate a \r or CRLF text keeps the exposure -- the same trap a
+# closing fence fell into.
+_MD_BLANK_LINE_PATTERN = re.compile(r"\n[ \t\r]*\n")
+# Inline span, searched only within one paragraph of one gap between fences.
+# Opening and closing
 # runs must be the same length, so BOTH are bounded on BOTH sides: without a
 # left guard the regex restarts inside a longer run -- as an opener, swallowing
 # the text after an unmatched run; as a closer, ending the span early.
@@ -6117,21 +6123,40 @@ _MD_INLINE_CODE_PATTERN = re.compile(
 )
 
 
+def _iter_inline_code_regions(
+    text: str, start: int, end: int
+) -> Iterator[tuple[int, int]]:
+    """Yield inline code spans in ``text[start:end]``, one paragraph at a time.
+
+    Searched in place rather than on a sliced copy so the opener's lookbehind
+    still sees the character before each range.
+    """
+    cursor = start
+    for blank in _MD_BLANK_LINE_PATTERN.finditer(text, start, end):
+        yield from (
+            span.span()
+            for span in _MD_INLINE_CODE_PATTERN.finditer(text, cursor, blank.start())
+        )
+        cursor = blank.end()
+    yield from (
+        span.span() for span in _MD_INLINE_CODE_PATTERN.finditer(text, cursor, end)
+    )
+
+
 def _iter_md_code_regions(text: str) -> Iterator[tuple[int, int]]:
     """Yield (start, end) of every Markdown code region, left to right.
 
-    Fences first, then inline spans within the text each pair of fences leaves
-    behind. Inline spans are searched in place rather than on a sliced copy so
-    the opener's lookbehind still sees the character before the gap.
+    Block structure first: fences, then inline spans within each paragraph of
+    the text the fences leave behind. Both boundaries are there for the same
+    reason -- an inline span cannot cross either, and letting one cross lets a
+    stray backtick eat a real span's opener and expose that span's own code.
     """
     cursor = 0
     for fence in _MD_FENCE_REGION_PATTERN.finditer(text):
-        for inline in _MD_INLINE_CODE_PATTERN.finditer(text, cursor, fence.start()):
-            yield inline.span()
+        yield from _iter_inline_code_regions(text, cursor, fence.start())
         yield fence.span()
         cursor = fence.end()
-    for inline in _MD_INLINE_CODE_PATTERN.finditer(text, cursor):
-        yield inline.span()
+    yield from _iter_inline_code_regions(text, cursor, len(text))
 
 
 # A span whose body carries these is code, not math: a double quote or a

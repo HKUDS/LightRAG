@@ -378,6 +378,43 @@ def test_a_stray_backtick_cannot_steal_a_fence_opener(stray):
     assert repair_vlm_json_escape_damage(damaged) == damaged
 
 
+@pytest.mark.parametrize(
+    "blank",
+    ["\n\n", "\r\n\r\n", "\n   \n"],
+    ids=["lf", "crlf", "spaces-only"],
+)
+@pytest.mark.offline
+def test_a_stray_backtick_cannot_cross_a_blank_line(blank):
+    """The other block boundary. A code span is an inline inside ONE leaf
+    block, so backtick runs in two paragraphs cannot pair -- and letting them
+    pair had the same cost as letting them cross a fence: the stray one ate
+    the real span's opener, leaving that span's closer unmatched and its code
+    exposed. CRLF is parametrized because a blank line written "\\n[ \\t]*\\n"
+    misses it, the same trap a closing fence fell into once.
+    """
+    damaged = f"A stray ` tick.{blank}Run `A=$X; \text=1; B=$Y` now."
+    assert repair_vlm_json_escape_damage(damaged) == damaged
+
+
+@pytest.mark.offline
+def test_an_inline_span_may_still_cross_a_single_line_break():
+    """The paragraph rule is a blank line, not any line break -- CommonMark
+    lets a code span run across an ordinary one, and this is what keeps
+    wrapped shell inside a real span protected."""
+    damaged = "Run `A=$X;\n\text=1; B=$Y` now."
+    assert repair_vlm_json_escape_damage(damaged) == damaged
+
+
+@pytest.mark.offline
+def test_paragraphs_no_longer_disappear_between_two_stray_backticks():
+    """Miss side of the same rule: two stray backticks paragraphs apart used
+    to swallow everything between them, real math included."""
+    damaged = "A stray ` tick.\n\nvalue $\tau$ here\n\nanother ` tick."
+    assert repair_vlm_json_escape_damage(damaged) == (
+        "A stray ` tick.\n\nvalue $" + r"\tau" + "$ here\n\nanother ` tick."
+    )
+
+
 @pytest.mark.offline
 def test_an_escaped_backtick_does_not_open_an_inline_span():
     """``\\` `` is a literal backtick. Treating it as an opener closed the span

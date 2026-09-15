@@ -144,7 +144,20 @@ region pass under-protected, which is the direction that costs a rewrite:
   express that: its inline branch wins by *position*, not by branch order, so
   a stray backtick anywhere earlier in the text paired with one inside a
   fenced block, swallowed the opening fence, and handed the rest of that
-  block's code to the scanner.
+  block's code to the scanner. A **blank line** is the same boundary by the
+  same argument — a code span is an inline inside one leaf block — and cost
+  the same thing: a stray backtick one paragraph earlier ate a real span's
+  opener, leaving that span's closer unmatched and its code exposed. Inline
+  spans are therefore searched one paragraph at a time. The rule is a blank
+  line, not any line break: CommonMark lets a code span cross an ordinary one,
+  and that is what keeps wrapped shell inside a real span protected. The blank
+  line must tolerate `\r`, or CRLF text keeps the exposure.
+
+  Other block boundaries — adjacent list items, an ATX heading with no blank
+  line under it, a block quote — are *not* handled, and enumerating them is
+  the blacklist this document rejects everywhere else. Fences and blank lines
+  are kept because generated Markdown produces them at scale; the rest is left
+  to the gate.
 - **Opener escape parity.** ``\` `` is a literal backtick and opens nothing;
   ``\\` `` is a literal backslash followed by a real opener, so the rule is
   parity over the backslash run, not a one-character lookbehind. Treating an
