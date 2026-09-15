@@ -3402,11 +3402,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         not, and cannot be -- see that method for what the gate does not
         close.
 
-        Cancellation: the drop + recreate pair is uninterruptible. A
-        cancellation delivered once the collection is gone but before the
-        empty replacement exists is deferred until the recreate finishes,
-        and is then re-raised (stamped, so a caller rewriting it knows the
-        drop did land). That residue does not self-heal like the ones
+        Cancellation: the drop + recreate pair is uninterruptible, because it
+        is ONE pool submission rather than a sequence of awaits -- see
+        ``_rebuild_collection`` for why awaiting cannot carry that guarantee.
+        A cancellation delivered to the caller is additionally deferred until
+        the rebuild finishes, and is then re-raised (stamped, so a caller
+        rewriting it knows the drop did land). The state this rules out does
+        not self-heal like the ones
         ``AGENTS.md`` *Consistency without transactions* accepts: nothing
         recreates the collection at run time, every later call fails on a
         missing collection, and the next ``initialize()`` would see the
@@ -3416,6 +3418,33 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         Returns:
             dict[str, str]: ``{"status": "success"|"error", "message": str}``
         """
+
+        def _rebuild_collection() -> None:
+            """Remove the collection and put an empty one back, in ONE worker
+            operation.
+
+            Not four submissions: a task cancelled between them leaves the
+            namespace with no collection, and nothing recreates it at run time.
+            Awaiting is not what protects this sequence -- a shutdown that
+            cancels every pending task (``asyncio.run``'s ``_cancel_all_tasks``,
+            an ASGI teardown) reaches the inner task DIRECTLY, and a direct
+            cancellation is one ``_wait_deferring_cancellation`` re-raises
+            rather than defers. Once this is submitted the pool thread carries
+            it to the end no matter what the loop does, which is the only form
+            the guarantee can actually take.
+
+            Recreating must NOT route through _create_collection_if_not_exist:
+            with the suffixed collection gone it would see the
+            intentionally-kept legacy collection and re-run the
+            legacy->suffixed migration, pulling the just-dropped rows back in.
+            That makes drop() non-empty (clear_documents would leave stale
+            legacy data behind) and forces a needless full migration on every
+            rebuild/clear.
+            """
+            if self._client.has_collection(self.final_namespace):
+                self._client.drop_collection(self.final_namespace)
+            self._create_collection_with_schema(self.final_namespace)
+            self._ensure_collection_loaded()
 
         async def _drop_and_recreate() -> None:
             # Discard any buffered writes before the collection is gone;
@@ -3432,30 +3461,17 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             gate.close()
             try:
                 await gate.wait_idle()
-                # Drop the collection and recreate it empty.
-                if await run_in_milvus_executor(
-                    self._client.has_collection, self.final_namespace
-                ):
-                    await run_in_milvus_executor(
-                        self._client.drop_collection, self.final_namespace
-                    )
-
-                # Recreate an EMPTY collection. Do NOT route through
-                # _create_collection_if_not_exist here: with the suffixed
-                # collection now gone it would see the intentionally-kept
-                # legacy collection and re-run the legacy->suffixed migration,
-                # pulling the just-dropped rows back in. That makes drop()
-                # non-empty (clear_documents would leave stale legacy data
-                # behind) and forces a needless full migration on every
-                # rebuild/clear.
-                await run_in_milvus_executor(
-                    self._create_collection_with_schema, self.final_namespace
-                )
-                await run_in_milvus_executor(self._ensure_collection_loaded)
+                await run_in_milvus_executor(_rebuild_collection)
             finally:
                 # Reopen even when the rebuild failed -- and even if the drain
                 # above was what failed: a waiting reader must get the server's
                 # real error, never hang behind a gate no later call reopens.
+                # On a direct cancellation this runs while the pool thread is
+                # still rebuilding, so a reader admitted in that sliver can see
+                # the collection mid-rebuild. That is the transient readers on
+                # another loop or process already get (see _run_gated), not the
+                # permanent missing-collection state, which the single
+                # submission above is what rules out.
                 gate.reopen()
 
         try:

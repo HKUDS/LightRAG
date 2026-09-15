@@ -760,6 +760,58 @@ async def test_drop_waits_for_an_in_flight_read_before_removing_the_collection()
 
 
 @pytest.mark.asyncio
+async def test_a_shutdown_cancelling_every_task_still_recreates_the_collection():
+    """drop() runs its rebuild in a task of its own, which a shutdown that
+    cancels every pending task (asyncio.run's _cancel_all_tasks, an ASGI
+    teardown) reaches DIRECTLY -- and a direct cancellation is one
+    _wait_deferring_cancellation re-raises rather than defers. Were the rebuild
+    a sequence of awaits, the cancel would land between them and leave the
+    namespace with no collection, which nothing recreates at run time. One
+    submission is what makes the pool thread carry it to the end regardless."""
+    order: list[str] = []
+    drop_started = threading.Event()
+    release_drop = threading.Event()
+
+    def blocking_drop(*args, **kwargs):
+        order.append("drop")
+        drop_started.set()
+        release_drop.wait(timeout=5)
+
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.drop_collection = MagicMock(side_effect=blocking_drop)
+    s._client.create_collection = MagicMock(
+        side_effect=lambda *a, **k: order.append("create")
+    )
+
+    task = asyncio.ensure_future(s.drop())
+    for _ in range(500):
+        if drop_started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert drop_started.is_set()
+
+    # The shutdown: cancel everything but this test's own task, which reaches
+    # drop()'s caller task and its inner rebuild task alike.
+    for pending in asyncio.all_tasks():
+        if pending is not asyncio.current_task():
+            pending.cancel()
+
+    release_drop.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The pool thread finished the rebuild even though every task was cancelled.
+    for _ in range(500):
+        if "create" in order:
+            break
+        await asyncio.sleep(0.01)
+    assert order == ["drop", "create"], (
+        "the collection was left missing after a shutdown cancellation"
+    )
+    s._client.load_collection.assert_called()
+
+
+@pytest.mark.asyncio
 async def test_a_failed_drop_reopens_the_reader_gate():
     """The gate must be reopened even when the rebuild raises: a reader held
     behind a gate nothing reopens would hang forever, which is strictly worse
