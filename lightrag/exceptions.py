@@ -283,22 +283,32 @@ class GraphMutationsDiscardedError(RuntimeError):
 class PipelineRecoveryRequiredError(RuntimeError):
     """The pipeline fenced its own workspace with ``recovery_required``.
 
-    Raised when a manual retry's DRAIN_TO_IDLE cannot make forward progress:
-    the same active ``doc_status`` rows blocked the drain for several
-    consecutive rounds without any of them changing state, so re-sweeping can
-    only spin (LR2 §7.2 "DRAIN_TO_IDLE 的前进性" / §13.2 case 16). The workspace
-    is fenced instead, every mutation is refused with 503, and
-    ``blocked_doc_ids`` carries the BOUNDED sample an operator needs to find the
-    offending rows — never the whole set.
+    Raised when a manual retry's DRAIN_TO_IDLE cannot make forward progress: it
+    waited on something that re-checking can only find unchanged (LR2 §7.2
+    "DRAIN_TO_IDLE 的前进性" / §13.2 case 16). The workspace is fenced instead,
+    mutations are refused with 503, and ``blocked_doc_ids`` carries the BOUNDED
+    sample an operator needs to find the offending rows — never the whole set,
+    and empty when the blocker is not a document.
 
-    Two causes reach this, distinguished by the fence record's ``kind``:
-    ``manual_drain_stalled`` (rows that look routable but never change state) and
+    One carve-out, for ``manual_drain_enqueue_stalled`` only: an enqueue whose
+    reservation this fence was raised ABOUT is still allowed to finish, so the
+    bound cannot destroy the payload of a producer that was merely slow (see
+    ``_stall_fence_exempts_reserved_token``). Its rows land as PENDING and stay
+    unprocessable until the fence is cleared.
+
+    Three causes reach this, distinguished by the fence record's ``kind``:
+    ``manual_drain_stalled`` (rows that look routable but never change state),
     ``manual_drain_blocked`` (rows the drain can never advance at all — an
-    unfinished custom-chunk operation). Both are cleared the same way:
+    unfinished custom-chunk operation) and ``manual_drain_enqueue_stalled`` (the
+    in-flight enqueue reservations the drain waits on, none of which finished
+    for the whole bounded window). All are cleared by
     ``POST /documents/recovery/force_reset``, which also cancels the queued manual
     intents, since a sticky request is itself what makes ``/documents/scan``
     refuse (``refuse_when_manual_pending``) and ``/scan`` is the remedy for the
-    blocked case.
+    blocked case. For ``manual_drain_enqueue_stalled`` it additionally drops the
+    in-flight enqueue reservations the drain was waiting on — there the fence
+    alone is not the blocker, and clearing only the fence would leave the
+    workspace just as stuck.
     """
 
     def __init__(self, message: str, *, blocked_doc_ids: tuple[str, ...] = ()) -> None:
