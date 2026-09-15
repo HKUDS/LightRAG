@@ -6050,18 +6050,12 @@ def strip_control_characters(text: str, replacement_char: str = "") -> str:
 # elsewhere (see _WS_LATEX_SUSPECT_PATTERN).
 _FORMFEED_LATEX_PATTERN = re.compile(r"\x0c(?=[A-Za-z])")
 _BACKSPACE_LATEX_PATTERN = re.compile(r"\x08(?=[A-Za-z])")
-# Whitespace + residue spelling that completes a common LaTeX command whose
-# remainder collides with no English word ("eq"/"o"/"exists" are deliberately
-# absent: "eq." abbreviations, the word "o"/"exists" would false-positive).
-# Two variants of the same whitelist:
-#   * _WS_LATEX_SUSPECT_PATTERN (\b) is the prose detector. The word boundary
-#     keeps "col\text_id" or "\tau2" out of the warning, at the cost of
-#     missing damage that is followed by a word character.
-#   * _WS_LATEX_MATH_PATTERN ((?![A-Za-z])) is used *inside* a confirmed math
-#     span, where "_", "{", "^" and digits are the most common characters to
-#     follow a command and the "it might be an English word" argument no
-#     longer applies. It is a strict superset of the prose pattern, so a span
-#     that was repaired can never re-trigger the prose warning afterwards.
+# Whitespace + residue spelling that completes a common LaTeX command. Two
+# variants of one whitelist: _WS_LATEX_SUSPECT_PATTERN (\b) only warns, about
+# prose; _WS_LATEX_MATH_PATTERN ((?![A-Za-z])) is the one that rewrites, and
+# only inside a confirmed math span. Never swap their guards -- see *Residue
+# whitelist and its two boundaries* in the contract doc,
+# docs/design/LatexEscapeRepairContract.md.
 # ``__END__`` is substituted with the trailing guard; a plain placeholder
 # rather than ``str.format`` so that adding a ``{n}`` quantifier to the
 # residue alternation below cannot break the substitution.
@@ -6079,32 +6073,33 @@ _WS_LATEX_MATH_PATTERN = re.compile(
 def _repair_ws_latex_in_dollar_math(text: str) -> tuple[str, int]:
     """Restore whitespace-class LaTeX escapes inside paired dollar math.
 
-    Outside an explicit ``$...$`` / ``$$...$$`` span, tab, carriage return,
-    and newline are legitimate whitespace and remain ambiguous. Inside one,
-    however, a whitespace character followed by a residue from
-    ``_WS_LATEX_MATH_PATTERN`` is strong evidence that JSON decoding ate the
-    command's leading ``\\t`` / ``\\r`` / ``\\n``.
+    Tab, CR and LF are legitimate whitespace outside an explicit ``$...$`` /
+    ``$$...$$`` span, so they are restored only inside one. Callers get back
+    the repaired text and the number of replacements; damage this function
+    declines to repair is reported by ``repair_vlm_json_escape_damage``
+    through the prose detector instead.
 
-    Dollar delimiters are ambiguous by construction -- prose contains stray
-    and currency dollars, and even Pandoc reads ``"$5 ... $x$"`` as one span
-    -- so no delimiter rule is correct in both directions. This scanner is
-    deliberately biased: it never rewrites text a Pandoc-style parser would
-    not call math, at the price of skipping damage it cannot prove is inside
-    math (that damage is still reported by the prose detector). Rewriting
-    prose is corruption; skipping a repair is a warned miss.
+    Rules a change here must keep:
 
-    Unpaired, mispaired and backslash-escaped dollar signs are therefore left
-    untouched, and an unusable ``$`` is skipped as an ordinary character
-    rather than ending the scan -- one stray dollar must not cost every later
-    formula its repair. The function operates on already-decoded strings, so
-    a correct LaTeX command still contains a real backslash and cannot match
-    the damage pattern.
+    - **Never rewrite text a Pandoc-style parser would not call math.**
+      Dollar delimiters are ambiguous, so this is a one-sided bias: a missed
+      repair leaves damage that was already there, a wrong one corrupts prose
+      on its way to storage.
+    - An inline ``$`` opens only before a non-whitespace character, EXCEPT
+      when the damage itself sits there. Removing that exception rejects
+      ``"$<tab>au$"`` -- the shape this function exists to repair.
+    - Only the very next unescaped delimiter may close a span, and a
+      delimiter that cannot pair is skipped as an ordinary character (a
+      failed ``$$`` whole, not one dollar at a time) rather than ending the
+      scan.
+    - The function operates on already-decoded strings, so a correct LaTeX
+      command still contains a real backslash and cannot match the damage
+      pattern. Repairing twice equals repairing once.
 
-    Accepted residue: a padded inline span (``"$ x $"``) is not recognized as
-    math, matching Pandoc, so damage inside it is only warned about. Likewise
-    a stray dollar directly against real math in text without spaces
-    (``"价格$5，公式$<tab>au$为"``) pairs the wrong way and the repair is
-    missed. Both are misses, not rewrites.
+    The mechanism, the accepted misses and two already-rejected pairing
+    designs are in docs/design/LatexEscapeRepairContract.md -- read
+    *Delimiter policy* and *Rejected alternatives* in the contract doc before
+    changing how spans pair.
     """
 
     def _is_escaped(index: int) -> bool:
@@ -6116,13 +6111,7 @@ def _repair_ws_latex_in_dollar_math(text: str) -> tuple[str, int]:
         return backslashes % 2 == 1
 
     def _opens_inline_math(index: int) -> bool:
-        """Pandoc requires a non-space character after an opening ``$``.
-
-        The one exception is the damage itself: JSON decoding puts the tab /
-        CR / LF immediately after the opener, so ``"$<tab>au$"`` -- the very
-        shape this function repairs -- would otherwise be rejected. A residue
-        match at that position is evidence of a command, not of whitespace.
-        """
+        """Non-whitespace after the opener, or the damage itself there."""
         if index + 1 >= len(text):
             return False
         return (
@@ -6131,12 +6120,7 @@ def _repair_ws_latex_in_dollar_math(text: str) -> tuple[str, int]:
         )
 
     def _closes_inline_math(index: int) -> bool:
-        """Pandoc's closer rule: no whitespace before, no digit after.
-
-        The digit clause is what keeps two currency amounts (``"$5 - $10"``)
-        from forming a span; the whitespace clause keeps a price from closing
-        against the opening delimiter of a later formula.
-        """
+        """Pandoc's closer rule: no whitespace before, no digit after."""
         if index == 0 or text[index - 1].isspace():
             return False
         return not (index + 1 < len(text) and text[index + 1].isdigit())
@@ -6173,9 +6157,12 @@ def _repair_ws_latex_in_dollar_math(text: str) -> tuple[str, int]:
                 close = -1
         if close < 0:
             # Not a usable delimiter here: emit it and keep scanning, so a
-            # later well-formed span is still reached.
-            pieces.append("$")
-            cursor += 1
+            # later well-formed span is still reached. A failed "$$" is
+            # skipped whole -- letting its second dollar open an inline span
+            # pairs it with the next single "$" and rewrites the prose in
+            # between.
+            pieces.append(delimiter)
+            cursor += len(delimiter)
             continue
 
         span_end = close + len(delimiter)

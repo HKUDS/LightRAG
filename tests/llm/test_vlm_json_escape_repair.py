@@ -191,6 +191,21 @@ def test_currency_dollar_is_rejected_as_an_opener():
 
 
 @pytest.mark.offline
+def test_unclosed_display_delimiter_is_skipped_whole():
+    """A "$$" with no display closer must be skipped as one token. Skipping
+    only its first dollar leaves the second one free to open an inline span
+    against the next single "$", which rewrites the prose in between -- the
+    same corruption as pairing across a span boundary, entered through a
+    malformed delimiter."""
+    damaged = "Unclosed $$x and\text$ suffix"
+    assert repair_vlm_json_escape_damage(damaged) == damaged
+    # An inline opener is still reached after the failed display delimiter.
+    assert repair_vlm_json_escape_damage("$$ broken and $\tau$ here") == (
+        "$$ broken and " + r"$\tau$" + " here"
+    )
+
+
+@pytest.mark.offline
 def test_display_math_with_newlines_is_repaired():
     """Display math is routinely formatted across lines; the "$$" branch must
     keep repairing it even though a newline is not a valid inline opener."""
