@@ -171,12 +171,14 @@ def _build_table(placeholder: str, spec: dict) -> IRTable:
             body_override=body_override,
         )
     # pipe table
-    rows = [[str(c) for c in row] for row in (spec.get("rows") or [])]
     header = spec.get("header")
+    # Header recovery expects the original header to remain in the table body.
+    rows = [
+        [str(c) for c in row]
+        for row in itertools.chain(header or [], spec.get("rows") or [])
+    ]
     num_rows = len(rows)
     num_cols = max((len(r) for r in rows), default=0)
-    if header:
-        num_cols = max(num_cols, max((len(h) for h in header), default=0))
     return IRTable(
         placeholder_key=placeholder,
         rows=rows,
