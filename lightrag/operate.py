@@ -2573,10 +2573,16 @@ async def _merge_nodes_then_upsert(
         # 6.1 Finalize source_id
         source_id = GRAPH_FIELD_SEP.join(source_ids)
 
-        # 6.2 Finalize entity type by highest count
+        # 6.2 Finalize entity type by highest count. already_entity_types
+        # holds at most one entry -- the currently stored type -- regardless
+        # of how many earlier merges established it, so a tie is common: one
+        # new extraction against the single carried-forward incumbent vote.
+        # sorted() is stable, so whichever list comes first here wins ties;
+        # already_entity_types goes first so an established type is not
+        # flipped by a single new, possibly noisy extraction.
         entity_type = sorted(
             Counter(
-                [dp["entity_type"] for dp in nodes_data] + already_entity_types
+                already_entity_types + [dp["entity_type"] for dp in nodes_data]
             ).items(),
             key=lambda x: x[1],
             reverse=True,
