@@ -223,17 +223,39 @@ def test_fence_like_line_inside_a_block_is_not_a_closer():
     )
 
 
+@pytest.mark.parametrize(
+    ("damaged", "expected"),
+    [
+        ("$\nabla f$", "$" + r"\nabla" + " f$"),
+        ("$x \notin A$", "$x " + r"\notin" + " A$"),
+        ("$\rho + 1$", "$" + r"\rho" + " + 1$"),
+        ("$x \right)$", "$x " + r"\right" + ")$"),
+    ],
+)
 @pytest.mark.offline
-def test_newline_commands_survive_the_inline_line_break_veto():
-    """The "\n" residues are the damage AND a line break at once: a decoded
-    "\nabla" IS a newline followed by "abla". A blanket line-break veto on
-    inline spans therefore makes those two commands unrepairable inside
-    "$...$" -- the veto has to skip newlines that are residue-shaped."""
-    assert repair_vlm_json_escape_damage("$\nabla f$") == "$" + r"\nabla" + " f$"
-    assert repair_vlm_json_escape_damage("$x \notin A$") == "$x " + r"\notin" + " A$"
-    # A line break that is NOT residue-shaped still rejects the span.
-    for multiline in ("see $a +\n\tau$ end", "see $a\r\n\tau$ end"):
-        assert repair_vlm_json_escape_damage(multiline) == multiline
+def test_line_break_commands_survive_the_inline_veto(damaged, expected):
+    """Every "\r" and "\n" residue is the damage AND a line break at once: a
+    decoded "\nabla" IS a newline followed by "abla", a decoded "\rho" IS a
+    carriage return followed by "ho". A blanket line-break veto on inline
+    spans rejects exactly the damage the gate exists to let through, so the
+    exemption covers the whole residue whitelist, not one line-ending."""
+    assert repair_vlm_json_escape_damage(damaged) == expected
+
+
+@pytest.mark.parametrize("line_break", ["\n", "\r", "\r\n"], ids=["lf", "cr", "crlf"])
+@pytest.mark.offline
+def test_inline_veto_covers_every_line_ending(line_break):
+    """The veto tests a character class, not one example. Looking only at
+    "\n" let the same text pass or fail on line ending alone -- CR-separated
+    shell was rewritten while its LF twin was correctly left alone."""
+    code = f"A=$X{line_break}\text=1{line_break}B=$Y"
+    assert repair_vlm_json_escape_damage(code) == code
+    prose = f"see $a +{line_break}\tau$ end"
+    assert repair_vlm_json_escape_damage(prose) == prose
+    # Display math stays exempt from the line-break limit on every ending.
+    assert repair_vlm_json_escape_damage(f"$$a +{line_break}\tau$$") == (
+        f"$$a +{line_break}" + r"\tau$$"
+    )
 
 
 @pytest.mark.offline

@@ -6128,12 +6128,14 @@ def _span_is_plausibly_math(span: str, delimiter: str) -> bool:
         return True
     if len(body) > _MAX_INLINE_MATH_CHARS:
         return False
-    # A decoded "\nabla" / "\notin" IS a newline followed by its residue, so
-    # the line-break veto has to skip the damage it exists to repair.
+    # Line breaks are rejected by CHARACTER CLASS, not by example: any CR or
+    # LF, whichever line ending the text uses. The exemption is equally
+    # general -- a decoded "\nabla" / "\rho" IS a line break followed by its
+    # residue, so a break the residue pattern matches is damage, not a break.
     return all(
         _WS_LATEX_MATH_PATTERN.match(body, offset) is not None
         for offset, char in enumerate(body)
-        if char == "\n"
+        if char in "\r\n"
     )
 
 

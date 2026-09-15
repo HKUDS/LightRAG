@@ -112,11 +112,16 @@ inside it is rewritten:
   ordinary in shell and effectively absent from LaTeX math.
 - an **inline** span whose body crosses a line break, or runs past
   `_MAX_INLINE_MATH_CHARS` (200), is not a formula. Display math is exempt
-  from both: `$$...$$` is routinely long and multi-line. The line-break test
-  skips newlines that are **residue-shaped**: a decoded `\nabla` / `\notin`
-  *is* a newline followed by its residue, so a blanket veto would make those
-  two commands unrepairable inside `$...$` — the gate would reject exactly
-  the damage it is there to let through.
+  from both: `$$...$$` is routinely long and multi-line.
+
+  The line-break test is stated by **character class and exemption**, never by
+  example, because both halves have been wrong once. A line break is any `\r`
+  or `\n` — looking only at `\n` let CR-separated code through while its LF
+  twin was refused. A break the residue pattern matches is **not** a break: a
+  decoded `\nabla` *is* a newline followed by `abla`, a decoded `\rho` *is* a
+  carriage return followed by `ho`, so a blanket veto rejects exactly the
+  damage the gate exists to let through. Both halves cover the whole residue
+  whitelist and every line ending; a fix phrased for one of them is the bug.
 
 A semicolon is deliberately **not** a marker: `$p(x; \theta)$` is ordinary
 notation in this corpus, and vetoing it would cost more than it saves.
