@@ -60,6 +60,7 @@ from lightrag.exceptions import (
     flush_may_have_lost_reference,
 )
 from lightrag.kg.shared_storage import (
+    ENQUEUE_RESERVATION_KIND,
     MANUAL_DRAIN_ENQUEUE_STALL_FENCE,
     MANUAL_PHASE_DRAIN_TO_IDLE,
     MANUAL_PHASE_EXCLUSIVE_RESET,
@@ -75,6 +76,7 @@ from lightrag.kg.shared_storage import (
     get_pipeline_ingress,
     make_manual_owner_record,
     reap_dead_reservations_locked,
+    reservation_kind,
     run_to_completion,
     with_reservation_lock,
 )
@@ -4293,18 +4295,51 @@ class _PipelineMixin:
                 if isinstance(meta, Mapping) and meta.get("pid") is not None
             }
         )
+        # Retained guards decide the remedy, so they are counted BEFORE the
+        # message is written: ``force_reset`` drops the ordinary enqueues out of
+        # this set but keeps a source-conflict repair's guard, and telling an
+        # operator to re-issue the retry straight away while one is held would
+        # only buy them another whole window and another fence.
+        guards = sum(
+            1
+            for meta in live_tokens.values()
+            if reservation_kind(meta) != ENQUEUE_RESERVATION_KIND
+        )
+        enqueues = len(live_tokens) - guards
+        if guards:
+            remedy = (
+                f"POST /documents/recovery/force_reset clears this fence, cancels "
+                f"the queued retry and drops the {enqueues} upload/insert "
+                f"reservation(s), but it does NOT drop the {guards} "
+                "source-conflict repair guard(s) — dropping one could corrupt "
+                "source ownership while its commit resumes. Wait for that repair "
+                "to finish, or restart the process holding it, BEFORE re-issuing "
+                "POST /documents/reprocess_failed: re-issuing while a guard is "
+                "held only stalls the drain again."
+            )
+        else:
+            remedy = (
+                "Clear this with POST /documents/recovery/force_reset, which "
+                "cancels the queued retry AND drops these reservations (an "
+                "upload that was merely slow is recovered by POST "
+                "/documents/scan; a /documents/text(s) must be re-sent), then "
+                "re-issue POST /documents/reprocess_failed."
+            )
+        # API-VISIBLE, and therefore free of reservation tokens and owner pids:
+        # this text reaches ``recovery_message`` (``describe_recovery_fence``),
+        # ``latest_message`` and ``history_messages``, none of which is filtered
+        # further. Those three are the sanitized window the /documents/
+        # pipeline_status projection exists to keep clean — it drops the whole
+        # internal fence record precisely so tokens and pids do not leave the
+        # process. The identities go to the server log below instead.
         detail = (
             f"manual retry drain stalled: {len(live_tokens)} in-flight enqueue "
-            f"reservation(s) have blocked DRAIN_TO_IDLE for "
+            f"reservation(s) ({enqueues} upload/insert, {guards} source-conflict "
+            "repair guard(s)) have blocked DRAIN_TO_IDLE for "
             f"{_MANUAL_DRAIN_ENQUEUE_STALL_SECONDS:.0f}s without one of them "
             "finishing, and the freeze admits no new ones, so waiting again "
-            "cannot change the count. Clear this with POST "
-            "/documents/recovery/force_reset, which cancels the queued retry "
-            "AND drops these reservations (an upload that was merely slow is "
-            "recovered by POST /documents/scan; a /documents/text(s) must be "
-            "re-sent), then re-issue POST /documents/reprocess_failed "
-            f"(reservation token sample: {', '.join(sample) or 'unavailable'}; "
-            f"owner pid(s): {', '.join(owners) or 'unavailable'})."
+            f"cannot change the count. {remedy} The holders' process identities "
+            "are in the server log."
         )
         observed = set(live_tokens)
 
@@ -4335,7 +4370,13 @@ class _PipelineMixin:
             )
             return
 
-        logger.error(detail)
+        # The log is the one surface that may carry the credentials: it is
+        # server-side, and an operator restarting a wedged holder needs its pid.
+        logger.error(
+            f"{detail} (reservation token sample: "
+            f"{', '.join(sample) or 'unavailable'}; owner pid(s): "
+            f"{', '.join(owners) or 'unavailable'})"
+        )
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = detail
             append_pipeline_history(pipeline_status, detail)

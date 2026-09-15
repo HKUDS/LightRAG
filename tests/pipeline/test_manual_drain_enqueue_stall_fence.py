@@ -22,6 +22,7 @@ The freeze admits no new reservation, so the set can only shrink — which is wh
 from __future__ import annotations
 
 import asyncio
+import os
 from uuid import uuid4
 
 import numpy as np
@@ -32,6 +33,7 @@ from lightrag import pipeline as pipeline_module
 from lightrag.exceptions import PipelineRecoveryRequiredError
 from lightrag.base import CURSOR_START
 from lightrag.kg.shared_storage import (
+    SOURCE_REPAIR_RESERVATION_KIND,
     acquire_enqueue_reservation,
     finalize_share_data,
     get_namespace_data,
@@ -109,9 +111,11 @@ async def _status_handles(rag):
     )
 
 
-async def _reserve(pipeline_status, lock, token: str) -> None:
+async def _reserve(
+    pipeline_status, lock, token: str, *, kind: str | None = None
+) -> None:
     result = await acquire_enqueue_reservation(
-        pipeline_status, lock, token=token, reject_when=(), weight=1
+        pipeline_status, lock, token=token, reject_when=(), weight=1, kind=kind
     )
     assert result.acquired
 
@@ -335,6 +339,85 @@ def test_a_shrink_since_the_poll_is_not_fenced_either(tmp_path):
                 assert not pipeline_status.get("recovery_required")
             with pytest.raises(PipelineRecoveryRequiredError, match="drain stalled"):
                 await _drain_wait_round(rag, pipeline_status, lock, progress)
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# What the fence message may say, and to whom
+# ---------------------------------------------------------------------------
+
+
+def test_the_fence_message_carries_no_token_or_pid(tmp_path):
+    """``recovery_message``, ``latest_message`` and ``history_messages`` all
+    carry this text to the API unfiltered, and the /documents/pipeline_status
+    projection drops the whole internal fence record precisely so reservation
+    tokens and owner pids do not leave the process. The message must not put
+    them back; the server log carries them instead."""
+
+    async def _run():
+        rag = await _build_rag(tmp_path)
+        try:
+            pipeline_status, lock = await _status_handles(rag)
+            token = uuid4().hex
+            await _reserve(pipeline_status, lock, token)
+            progress = _ManualDrainProgress()
+
+            for _ in range(_STALL_ROUNDS - 1):
+                await _drain_wait_round(rag, pipeline_status, lock, progress)
+            with pytest.raises(PipelineRecoveryRequiredError) as excinfo:
+                await _drain_wait_round(rag, pipeline_status, lock, progress)
+
+            async with lock:
+                fence = pipeline_status.get("recovery_required")
+                latest = pipeline_status.get("latest_message") or ""
+                history = " ".join(pipeline_status.get("history_messages") or [])
+            pid = str(os.getpid())
+            for surface in (fence["message"], latest, history, str(excinfo.value)):
+                assert token not in surface
+                assert pid not in surface
+            # The internal record still names the blockers for support: it is
+            # dropped from the API response, not surfaced.
+            assert token in fence["operation_record"]["scope"]
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_the_fence_message_says_a_repair_guard_is_not_dropped(tmp_path):
+    """force_reset keeps a source-conflict repair's guard, so the message must
+    not promise it drops ``these reservations`` and send the operator straight
+    back to /documents/reprocess_failed — the retry would be blocked by the
+    retained guard and fence again a whole window later."""
+
+    async def _run():
+        rag = await _build_rag(tmp_path)
+        try:
+            pipeline_status, lock = await _status_handles(rag)
+            await _reserve(pipeline_status, lock, uuid4().hex)
+            await _reserve(
+                pipeline_status,
+                lock,
+                f"source-repair-{uuid4().hex}",
+                kind=SOURCE_REPAIR_RESERVATION_KIND,
+            )
+            progress = _ManualDrainProgress()
+
+            for _ in range(_STALL_ROUNDS - 1):
+                await _drain_wait_round(rag, pipeline_status, lock, progress)
+            with pytest.raises(PipelineRecoveryRequiredError):
+                await _drain_wait_round(rag, pipeline_status, lock, progress)
+
+            async with lock:
+                message = pipeline_status.get("recovery_required")["message"]
+            assert "1 upload/insert, 1 source-conflict repair guard(s)" in message
+            assert "does NOT drop" in message
+            assert "restart the process holding it" in message
+            # The unconditional promise must be gone in this case.
+            assert "AND drops these reservations" not in message
         finally:
             await rag.finalize_storages()
 
