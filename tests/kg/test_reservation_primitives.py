@@ -180,6 +180,79 @@ async def test_enqueue_acquire_rejects_under_manual_freeze():
     assert ps["pending_enqueue_tokens"] == {} and ps["pending_enqueues"] == 0
 
 
+async def test_enqueue_reservation_kind_survives_a_reweight():
+    """A reservation's ``kind`` is set by the acquire that MINTS it.
+
+    A re-weight passes no kind and must keep the stored one. Otherwise any
+    caller re-weighting a token — the ``/texts`` body-parse adjustment, the
+    enqueue guard narrowing to the deduped count — would silently relabel a
+    source-conflict repair's guard as an ordinary enqueue, which is exactly the
+    label a ``manual_drain_enqueue_stalled`` force_reset is allowed to drop.
+    """
+    ps = {
+        "busy": False,
+        "busy_owner": None,
+        "scanning_owner": None,
+        "destructive_busy": False,
+        "pending_enqueue_tokens": {},
+        "pending_enqueues": 0,
+    }
+    lock = asyncio.Lock()
+
+    minted = await acquire_enqueue_reservation(
+        ps,
+        lock,
+        token="guard",
+        reject_when=(),
+        weight=0,
+        kind=shared_storage.SOURCE_REPAIR_RESERVATION_KIND,
+    )
+    assert minted.acquired
+
+    reweighted = await acquire_enqueue_reservation(
+        ps, lock, token="guard", reject_when=(), weight=4
+    )
+    assert reweighted.acquired
+
+    meta = ps["pending_enqueue_tokens"]["guard"]
+    assert meta["weight"] == 4
+    assert (
+        shared_storage.reservation_kind(meta)
+        == shared_storage.SOURCE_REPAIR_RESERVATION_KIND
+    )
+
+
+async def test_enqueue_reservation_defaults_to_the_enqueue_kind():
+    """An unlabelled holder reads as an ordinary enqueue, which is what every
+    caller that takes no position on the question means."""
+    ps = {
+        "busy": False,
+        "busy_owner": None,
+        "scanning_owner": None,
+        "destructive_busy": False,
+        "pending_enqueue_tokens": {},
+        "pending_enqueues": 0,
+    }
+
+    result = await acquire_enqueue_reservation(
+        ps, asyncio.Lock(), token="upload", reject_when=(), weight=1
+    )
+    assert result.acquired
+    assert (
+        shared_storage.reservation_kind(ps["pending_enqueue_tokens"]["upload"])
+        == shared_storage.ENQUEUE_RESERVATION_KIND
+    )
+    # Metadata that predates the field, or is not a mapping at all, reads the
+    # same way rather than raising.
+    assert (
+        shared_storage.reservation_kind({"pid": 1})
+        == shared_storage.ENQUEUE_RESERVATION_KIND
+    )
+    assert (
+        shared_storage.reservation_kind(None) == shared_storage.ENQUEUE_RESERVATION_KIND
+    )
+
+
 @pytest.mark.offline
 def test_manual_freeze_flag_maps_to_manual_freeze_conflict():
     assert (

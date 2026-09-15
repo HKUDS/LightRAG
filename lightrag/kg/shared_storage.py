@@ -1714,7 +1714,11 @@ async def initialize_pipeline_status(workspace: str | None = None):
                 # ``scanning_owner`` covers scanning + scanning_exclusive.
                 # ``pending_enqueue_tokens`` is a {token: metadata} set whose
                 # length is mirrored in ``pending_enqueues`` (concurrent enqueues
-                # are permitted, so it is a set, not a single owner).
+                # are permitted, so it is a set, not a single owner). Metadata is
+                # ``{pid, process_start_id, weight, kind}``: ``weight`` charges
+                # admission, ``kind`` says WHY the reservation is held (see
+                # ``ENQUEUE_RESERVATION_KIND``) and decides which holders a
+                # force_reset may drop.
                 "busy_owner": None,
                 "scanning_owner": None,
                 "pending_enqueue_tokens": {},

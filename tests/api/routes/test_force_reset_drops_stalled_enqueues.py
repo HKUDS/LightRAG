@@ -260,35 +260,3 @@ def test_force_reset_keeps_a_source_repair_guard_it_cannot_safely_drop(tmp_path)
             await rag.finalize_storages()
 
     asyncio.run(_run())
-
-
-def test_a_reweight_cannot_relabel_someone_elses_reservation(tmp_path):
-    """The kind is set by the acquire that MINTS the reservation. A re-weight
-    that passes no kind keeps the stored one — otherwise any caller re-weighting
-    a token would silently demote a repair guard to an ordinary enqueue and make
-    it droppable."""
-
-    async def _run():
-        rag = await _build_rag(tmp_path)
-        try:
-            pipeline_status, lock = await _status_handles(rag)
-            guard = f"source-repair-{uuid4().hex}"
-            await _reserve_repair_guard(rag, guard)
-
-            result = await acquire_enqueue_reservation(
-                pipeline_status,
-                lock,
-                token=guard,
-                reject_when=(),
-                weight=4,
-                capacity=0,
-            )
-            assert result.acquired
-
-            meta = dict(pipeline_status.get("pending_enqueue_tokens") or {})[guard]
-            assert meta["kind"] == SOURCE_REPAIR_RESERVATION_KIND
-            assert meta["weight"] == 4
-        finally:
-            await rag.finalize_storages()
-
-    asyncio.run(_run())
