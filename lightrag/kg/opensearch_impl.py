@@ -97,6 +97,28 @@ def _get_index_number_of_replicas() -> int:
     return int(_get_opensearch_env("OPENSEARCH_NUMBER_OF_REPLICAS", "0"))
 
 
+# OpenSearch refuses an index name longer than this many BYTES (not
+# characters). Reached far more easily now that the vector index name carries
+# a model suffix, so it is checked before the cluster is contacted rather than
+# surfacing as an opaque create-time rejection.
+_MAX_INDEX_NAME_BYTES = 255
+
+
+def _assert_index_name_within_limit(index_name: str, *, model_suffix: str) -> None:
+    """Raise unless ``index_name`` fits OpenSearch's index-name byte limit."""
+    encoded = len(index_name.encode("utf-8"))
+    if encoded <= _MAX_INDEX_NAME_BYTES:
+        return
+    raise ValueError(
+        f"OpenSearch index name '{index_name}' is {encoded} bytes, over the "
+        f"{_MAX_INDEX_NAME_BYTES}-byte limit, so the index cannot be created. "
+        f"The name is {{workspace}}_{{namespace}}_{{model}}_{{dim}}d and the "
+        f"model suffix contributes '{model_suffix}'. Shorten the workspace "
+        f"(WORKSPACE / OPENSEARCH_WORKSPACE) or the embedding function's "
+        f"model_name."
+    )
+
+
 def _sanitize_index_name(name: str) -> str:
     """Sanitize a string to be a valid OpenSearch index name."""
     sanitized = re.sub(r"[^a-z0-9_-]", "_", name.lower())
@@ -6289,6 +6311,12 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             self._index_name = _sanitize_index_name(
                 f"{self.final_namespace}_{self.model_suffix}"
             )
+            # The suffix is what makes this reachable for a workspace that was
+            # previously fine, so refuse here rather than letting the cluster
+            # reject the create with a less useful message.
+            _assert_index_name_within_limit(
+                self._index_name, model_suffix=self.model_suffix
+            )
         else:
             self._index_name = self._legacy_index_name
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
@@ -6774,7 +6802,22 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 f"legacy index is untouched."
             )
 
-        await self._mark_legacy_consumed(legacy, legacy_meta)
+        if not await self._mark_legacy_consumed(legacy, legacy_meta):
+            await self._abandon_failed_migration(
+                legacy, "the legacy index could not be marked as consumed"
+            )
+            raise DataMigrationError(
+                f"[{self.workspace}] Copied {copied} documents from '{legacy}' "
+                f"into '{self._index_name}' but could not record the migration "
+                f"on '{legacy}'. The copy has been removed rather than kept: "
+                f"an unrecorded migration leaves '{legacy}' indistinguishable "
+                f"from an untouched pre-isolation index, and a LATER start on "
+                f"a different same-dimension model would migrate these vectors "
+                f"into that model's index and serve them as its own. Grant "
+                f"mapping-write access to '{legacy}' and retry, or set "
+                f"OPENSEARCH_MIGRATE_UNMARKED_LEGACY=false and rebuild with "
+                f"`lightrag-rebuild-vdb` instead."
+            )
         logger.info(
             f"[{self.workspace}] Migrated {copied} documents from '{legacy}' "
             f"into '{self._index_name}'. The legacy index is kept as a backup."
@@ -6791,15 +6834,14 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         folding-equivalent workspace will adopt and later clear. The same
         reason ``_claim_index_for_workspace`` merges.
 
-        Best effort on purpose. A copy that already landed is durable and the
-        server is fully usable; refusing to start over a metadata write would
-        report a completed operation as one that did not happen. ``drop()``
-        retries this before it removes the suffixed index, which is the moment
-        the marker actually matters.
+        Returns whether it landed. ``_reindex_legacy`` treats ``False`` as
+        fatal and removes the copy: an unrecorded migration leaves the source
+        indistinguishable from an untouched pre-isolation index, so a later
+        start on a DIFFERENT same-dimension model would migrate these vectors
+        into that model's index and serve them as its own. That is a silent
+        wrong answer, and it does not heal -- so the copy is not accepted
+        unless it can be recorded.
 
-        Accepted residue, with both retries failing: if the suffixed index is
-        later deleted AND not recreated, the next start copies the legacy rows
-        back in. The ERROR below names the manual repair.
         """
         try:
             await self.client.indices.put_mapping(
@@ -6813,41 +6855,24 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             )
             return True
         except OpenSearchException as e:
+            # The repair command carries the COMPLETE _meta, not just the
+            # marker: put_mapping replaces _meta wholesale, so a payload
+            # holding only the marker would strip the ownership identity and
+            # hand the backup to any folding-equivalent deployment -- the
+            # failure this method exists to avoid, reintroduced by its own
+            # recovery instructions.
+            repair = json.dumps(
+                {"_meta": {**legacy_meta, _MIGRATED_TO_META_KEY: self._index_name}},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
             logger.error(
                 f"[{self.workspace}] Could not mark legacy index '{legacy}' as "
-                f"consumed by '{self._index_name}': {e}. The migrated data is "
-                f"intact, but if '{self._index_name}' is ever deleted and not "
-                f"recreated, the next start will copy '{legacy}' back in. Mark "
-                f"it manually: PUT {legacy}/_mapping "
-                f'{{"_meta": {{"{_MIGRATED_TO_META_KEY}": "{self._index_name}"}}}}'
+                f"consumed by '{self._index_name}': {e}. Repair it with the "
+                f"COMPLETE metadata (a partial _meta would replace, not merge): "
+                f"PUT {legacy}/_mapping {repair}"
             )
             return False
-
-    async def _remark_legacy_consumed_before_drop(self) -> None:
-        """Re-assert the consumption marker if the legacy index still lacks it.
-
-        Cheap and silent on the ordinary path -- there is no legacy index, or
-        it is already marked. Never raises: a drop must not be blocked by
-        bookkeeping about an index it is not touching.
-        """
-        legacy = self._legacy_index_name
-        if not self.model_suffix or legacy == self._index_name:
-            return
-        try:
-            if not await self.client.indices.exists(index=legacy):
-                return
-            mapping = await self.client.indices.get_mapping(index=legacy)
-        except OpenSearchException:
-            return
-        meta = (mapping.get(legacy) or {}).get("mappings", {}).get("_meta") or {}
-        if meta.get(_MIGRATED_TO_META_KEY):
-            return
-        stored = _stored_index_identity(meta)
-        expected = _workspace_index_meta(self.workspace, self.final_namespace)
-        if stored != expected and any(v is not None for v in stored.values()):
-            # Not ours to annotate.
-            return
-        await self._mark_legacy_consumed(legacy, meta)
 
     async def _abandon_failed_migration(self, legacy: str, reason: str) -> None:
         """Remove the half-populated new index so the next start can retry."""
@@ -6943,9 +6968,18 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             if "resource_already_exists_exception" not in str(e):
                 logger.error(f"[{self.workspace}] Error creating k-NN index: {e}")
                 raise
+            # Someone created it between our exists() and our create(). We are
+            # now ATTACHING to an index we did not build, which is exactly the
+            # situation the exists() branch above validates -- so validate it
+            # the same way. Ownership alone would let a deployment whose model
+            # name folds to this same suffix mark the winner's index ready and
+            # query vectors from an unrelated space.
+            lost_race = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error creating k-NN index: {e}")
             raise
+        else:
+            lost_race = False
 
         # Verify the index we just created (or attached to) is ours. The
         # workspace-to-index-name mapping is lossy, so a differently-named
@@ -6954,6 +6988,17 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         await _claim_index_for_workspace(
             self.client, self._index_name, self.workspace, self.final_namespace
         )
+        if lost_race:
+            try:
+                mapping = await self.client.indices.get_mapping(index=self._index_name)
+            except OpenSearchException as e:
+                logger.warning(
+                    f"[{self.workspace}] Could not read the mapping of "
+                    f"'{self._index_name}' after losing the create race: {e}; "
+                    f"skipping compatibility validation"
+                )
+            else:
+                self._assert_index_is_usable(mapping)
 
     async def finalize(self):
         """Flush pending writes and release the OpenSearch client connection.
@@ -7679,13 +7724,6 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             self._pending_vector_docs.clear()
             self._pending_vector_deletes.clear()
             try:
-                # Last chance to record that the legacy index was consumed.
-                # From here the suffixed index stops existing for a moment, and
-                # an unmarked legacy index is exactly what the next START would
-                # migrate back in. _mark_legacy_consumed is best effort at
-                # migration time; this is the retry, at the one moment the
-                # marker's absence can actually cost something.
-                await self._remark_legacy_consumed_before_drop()
                 try:
                     await self.client.indices.delete(index=self._index_name)
                     logger.info(

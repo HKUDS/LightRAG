@@ -23,6 +23,7 @@ from opensearchpy.exceptions import (  # type: ignore
     NotFoundError,
     OpenSearchException,
     ConflictError,
+    RequestError,
 )
 import lightrag.kg.opensearch_impl
 from lightrag.exceptions import (
@@ -4678,6 +4679,43 @@ class TestVectorStorage:
         assert s.final_namespace == "test_entities"
 
     @pytest.mark.asyncio
+    async def test_an_over_long_suffixed_name_is_refused_before_the_cluster(
+        self, global_config
+    ):
+        """The suffix is what makes the byte limit reachable for a valid workspace.
+
+        Letting it through would surface as an opaque create-time rejection
+        with no hint that the model name is what pushed it over.
+        """
+
+        class _LongModelName(MockEmbeddingFunc):
+            def __init__(self):
+                super().__init__()
+                self.model_name = "m" * 260
+
+        with pytest.raises(ValueError, match="over the 255-byte limit"):
+            self._make(global_config, _LongModelName())
+
+    @pytest.mark.asyncio
+    async def test_a_long_name_without_a_suffix_is_left_alone(self, global_config):
+        """No suffix, no new length: this PR must not start refusing names it
+        has always accepted."""
+
+        class _NoModelName(MockEmbeddingFunc):
+            def __init__(self):
+                super().__init__()
+                self.model_name = None
+
+        s = OpenSearchVectorDBStorage(
+            namespace="entities",
+            global_config=global_config,
+            embedding_func=_NoModelName(),
+            workspace="w" * 240,
+            meta_fields={"content"},
+        )
+        assert s._index_name == s._legacy_index_name
+
+    @pytest.mark.asyncio
     async def test_index_name_without_a_model_name_is_unchanged(self, global_config):
         """No model_name, no suffix -- and then no migration exists either."""
 
@@ -5386,6 +5424,48 @@ class TestVectorStorage:
                 await s.initialize()
 
     @pytest.mark.asyncio
+    async def test_losing_the_create_race_still_validates_compatibility(
+        self, global_config, embed_func, mock_client
+    ):
+        """Attaching is attaching, however you arrived at it.
+
+        Two deployments whose model names fold to one suffix can both see the
+        index as absent and both call create; the loser catches
+        resource_already_exists_exception and carries on. It is then attached
+        to an index it did not build, which is the case the exists() branch
+        validates -- ownership alone would let it query another model's space.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            mock_client.indices.exists = AsyncMock(return_value=False)
+            mock_client.indices.create = AsyncMock(
+                side_effect=RequestError(
+                    400, "resource_already_exists_exception", "already there"
+                )
+            )
+            mock_client.indices.get_mapping = AsyncMock(
+                return_value={
+                    s._index_name: {
+                        "mappings": {
+                            "_meta": {
+                                **_workspace_index_meta("test", "test_entities"),
+                                "lightrag_embedding_model": "Vendor/Model:V1",
+                            },
+                            "properties": {
+                                "vector": {
+                                    "type": "knn_vector",
+                                    "dimension": embed_func.embedding_dim,
+                                }
+                            },
+                        }
+                    }
+                }
+            )
+
+            with pytest.raises(ValueError, match="Embedding model mismatch"):
+                await s.initialize()
+
+    @pytest.mark.asyncio
     async def test_presence_recheck_refuses_a_foreign_model(
         self, global_config, embed_func, mock_client
     ):
@@ -5737,47 +5817,68 @@ class TestVectorLegacyMigration:
             )
 
     @staticmethod
-    def _marking_always_fails(client):
-        """No consumption marker can ever be written.
+    def _legacy_absent(client, storage):
+        """A cluster with no legacy index; one can be added later."""
+        indices: dict[str, dict] = {}
 
-        The migration's own marking is best effort and ``drop()`` retries it,
-        so with either one working the legacy index is marked and refuses a
-        second migration on its own. Only with BOTH denied does the placement
-        of the migration hook decide the outcome -- which is what these two
-        tests are about.
-        """
-        client.indices.put_mapping = AsyncMock(
-            side_effect=OpenSearchException("read-only account")
-        )
+        async def _exists(*, index, **_kw):
+            return index in indices
+
+        async def _get_mapping(*, index, **_kw):
+            if index not in indices:
+                raise _missing_index_error()
+            return {index: indices[index]}
+
+        async def _create(*, index, body=None, **_kw):
+            indices[index] = {"mappings": (body or {}).get("mappings", {})}
+            return {"acknowledged": True}
+
+        async def _delete(*, index, **_kw):
+            indices.pop(index, None)
+            return {"acknowledged": True}
+
+        async def _count(*, index, **_kw):
+            return {"count": 3 if index == storage._legacy_index_name else 0}
+
+        client.indices.exists = AsyncMock(side_effect=_exists)
+        client.indices.get_mapping = AsyncMock(side_effect=_get_mapping)
+        client.indices.create = AsyncMock(side_effect=_create)
+        client.indices.delete = AsyncMock(side_effect=_delete)
+        client.count = AsyncMock(side_effect=_count)
+        return indices
 
     @pytest.mark.asyncio
-    async def test_clear_does_not_migrate_the_legacy_index_back(
+    async def test_clear_does_not_migrate_a_legacy_index_that_appeared_later(
         self, global_config, embed_func, mock_client
     ):
         """drop() recreates the index through the same helper initialize() uses.
 
         If the migration hung off that helper, /documents/clear would delete
-        the suffixed index and immediately copy the just-cleared vectors back
-        in. Startup is the only moment at which a missing index means "never
-        existed here".
+        the suffixed index and repopulate it from whatever un-suffixed index
+        happens to be present -- a restored snapshot, or an older LightRAG
+        still writing one. Startup is the only moment at which a missing index
+        means "this has never existed here".
         """
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
-            self._legacy_present(
-                mock_client,
-                s,
-                meta=_workspace_index_meta("test", "test_entities"),
-                dimension=embed_func.embedding_dim,
-                count=7,
-            )
-            mock_client.reindex = AsyncMock(
-                return_value={"created": 7, "updated": 0, "failures": []}
-            )
-            self._marking_always_fails(mock_client)
+            indices = self._legacy_absent(mock_client, s)
+            mock_client.reindex = AsyncMock()
             await s.initialize()
-            assert mock_client.reindex.await_count == 1
+            mock_client.reindex.assert_not_awaited()
 
-            mock_client.reindex.reset_mock()
+            # An un-suffixed index turns up after this instance started.
+            indices[s._legacy_index_name] = {
+                "mappings": {
+                    "_meta": _workspace_index_meta("test", "test_entities"),
+                    "properties": {
+                        "vector": {
+                            "type": "knn_vector",
+                            "dimension": embed_func.embedding_dim,
+                        }
+                    },
+                }
+            }
+
             result = await s.drop()
 
             assert result["status"] == "success"
@@ -5790,6 +5891,42 @@ class TestVectorLegacyMigration:
         """_ensure_index_ready recreates a lost index; it must not repopulate it."""
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
+            indices = self._legacy_absent(mock_client, s)
+            mock_client.reindex = AsyncMock()
+            await s.initialize()
+
+            indices[s._legacy_index_name] = {
+                "mappings": {
+                    "_meta": _workspace_index_meta("test", "test_entities"),
+                    "properties": {
+                        "vector": {
+                            "type": "knn_vector",
+                            "dimension": embed_func.embedding_dim,
+                        }
+                    },
+                }
+            }
+            # The suffixed index vanished under a peer; a write recovers it.
+            indices.pop(s._index_name)
+            s._mark_index_missing()
+            await s._ensure_index_ready()
+
+            assert s._index_ready is True
+            mock_client.reindex.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_copy_that_cannot_be_recorded_is_not_kept(
+        self, global_config, embed_func, mock_client
+    ):
+        """An unrecorded migration is worse than no migration.
+
+        The source would stay indistinguishable from an untouched
+        pre-isolation index, so a later start on a different same-dimension
+        model would migrate these vectors into ITS index and serve them as its
+        own. The copy is removed instead, and the next start retries.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
             self._legacy_present(
                 mock_client,
                 s,
@@ -5800,17 +5937,50 @@ class TestVectorLegacyMigration:
             mock_client.reindex = AsyncMock(
                 return_value={"created": 7, "updated": 0, "failures": []}
             )
-            self._marking_always_fails(mock_client)
-            await s.initialize()
-            mock_client.reindex.reset_mock()
+            mock_client.indices.put_mapping = AsyncMock(
+                side_effect=OpenSearchException("read-only account")
+            )
 
-            # The index vanished under a peer; a write recovers it.
-            await mock_client.indices.delete(index=s._index_name)
-            s._mark_index_missing()
-            await s._ensure_index_ready()
+            with pytest.raises(DataMigrationError, match="could not record"):
+                await s.initialize()
 
-            assert s._index_ready is True
-            mock_client.reindex.assert_not_awaited()
+            assert (
+                mock_client.indices.delete.await_args.kwargs["index"] == s._index_name
+            )
+            assert s._index_ready is False
+
+    @pytest.mark.asyncio
+    async def test_the_logged_repair_command_carries_the_whole_meta(
+        self, global_config, embed_func, mock_client, caplog
+    ):
+        """A partial _meta in the repair would strip ownership -- the same bug.
+
+        put_mapping replaces _meta wholesale, so an operator following a
+        marker-only command would unclaim the backup they were told to protect.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            self._legacy_present(
+                mock_client,
+                s,
+                meta=_workspace_index_meta("test", "test_entities"),
+                dimension=embed_func.embedding_dim,
+                count=7,
+            )
+            mock_client.reindex = AsyncMock(
+                return_value={"created": 7, "updated": 0, "failures": []}
+            )
+            mock_client.indices.put_mapping = AsyncMock(
+                side_effect=OpenSearchException("read-only account")
+            )
+
+            with _capture_lightrag_logs(caplog, logging.ERROR):
+                with pytest.raises(DataMigrationError):
+                    await s.initialize()
+
+            assert "lightrag_workspace" in caplog.text
+            assert "lightrag_final_namespace" in caplog.text
+            assert "lightrag_migrated_to" in caplog.text
 
     @pytest.mark.asyncio
     async def test_a_legacy_index_built_by_another_model_is_not_migrated(
@@ -5910,137 +6080,6 @@ class TestVectorLegacyMigration:
             await s.initialize()
 
             mock_client.reindex.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_drop_remarks_a_legacy_index_the_migration_could_not_mark(
-        self, global_config, embed_func, mock_client
-    ):
-        """The marker matters exactly when the suffixed index stops existing.
-
-        Marking is best effort at migration time -- a copy that landed must not
-        be reported as a failure -- so drop() retries it at the one moment its
-        absence could cost a resurrection.
-        """
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            legacy = self._legacy_present(
-                mock_client,
-                s,
-                meta=_workspace_index_meta("test", "test_entities"),
-                dimension=embed_func.embedding_dim,
-                count=7,
-            )
-            mock_client.reindex = AsyncMock(
-                return_value={"created": 7, "updated": 0, "failures": []}
-            )
-            booked = mock_client.indices.put_mapping.side_effect
-
-            async def _refuse_once(*, index, body, **kw):
-                mock_client.indices.put_mapping.side_effect = booked
-                raise OpenSearchException("read-only account")
-
-            mock_client.indices.put_mapping.side_effect = _refuse_once
-
-            # The copy lands; marking the source does not.
-            await s.initialize()
-            assert mock_client.reindex.await_count == 1
-
-            await s.drop()
-
-            marked = mock_client.indices.put_mapping.await_args.kwargs
-            assert marked["index"] == legacy
-            assert marked["body"]["_meta"]["lightrag_migrated_to"] == s._index_name
-
-    @pytest.mark.asyncio
-    async def test_an_uninspectable_legacy_index_creates_nothing_and_raises(
-        self, global_config, embed_func, mock_client
-    ):
-        """A transient read must not become a permanently skipped migration.
-
-        The destination is created only after the legacy index has been ruled
-        on. Creating it first and then failing to inspect would leave an empty
-        index that every later start sees as present -- the migration would
-        never be attempted again.
-        """
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            self._legacy_present(
-                mock_client,
-                s,
-                meta=_workspace_index_meta("test", "test_entities"),
-                dimension=embed_func.embedding_dim,
-                count=7,
-            )
-            mock_client.indices.get_mapping = AsyncMock(
-                side_effect=OpenSearchException("cluster unreachable")
-            )
-            mock_client.reindex = AsyncMock()
-
-            with pytest.raises(DataMigrationError, match="Could not inspect"):
-                await s.initialize()
-
-            # Nothing was created, so the next start is a clean retry.
-            mock_client.indices.create.assert_not_awaited()
-            mock_client.reindex.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_an_uncountable_legacy_index_creates_nothing_and_raises(
-        self, global_config, embed_func, mock_client
-    ):
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            self._legacy_present(
-                mock_client,
-                s,
-                meta=_workspace_index_meta("test", "test_entities"),
-                dimension=embed_func.embedding_dim,
-                count=7,
-            )
-            mock_client.count = AsyncMock(
-                side_effect=OpenSearchException("cluster unreachable")
-            )
-            mock_client.reindex = AsyncMock()
-
-            with pytest.raises(DataMigrationError, match="Could not count"):
-                await s.initialize()
-
-            mock_client.indices.create.assert_not_awaited()
-            mock_client.reindex.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_marking_the_legacy_index_keeps_its_ownership_metadata(
-        self, global_config, embed_func, mock_client
-    ):
-        """put_mapping REPLACES _meta, so the marker must merge into it.
-
-        An unclaimed legacy index is one a folding-equivalent workspace will
-        adopt and later clear -- the marker would have destroyed the very
-        identity that stops it.
-        """
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            legacy = self._legacy_present(
-                mock_client,
-                s,
-                meta=_workspace_index_meta("test", "test_entities"),
-                dimension=embed_func.embedding_dim,
-                count=4,
-            )
-            mock_client.reindex = AsyncMock(
-                return_value={"created": 4, "updated": 0, "failures": []}
-            )
-
-            await s.initialize()
-
-            written = mock_client.indices.put_mapping.await_args.kwargs["body"]["_meta"]
-            assert written["lightrag_migrated_to"] == s._index_name
-            # The identity that keeps another workspace from adopting it.
-            assert written["lightrag_workspace"] == "test"
-            assert written["lightrag_final_namespace"] == "test_entities"
-            # And the index really still reads as claimed afterwards.
-            mapping = await mock_client.indices.get_mapping(index=legacy)
-            stored = mapping[legacy]["mappings"]["_meta"]
-            assert stored["lightrag_workspace"] == "test"
 
     @pytest.mark.asyncio
     async def test_no_model_name_means_no_migration_path_at_all(
