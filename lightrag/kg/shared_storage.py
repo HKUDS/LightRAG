@@ -13,6 +13,7 @@ from enum import Enum
 from contextvars import ContextVar
 from typing import (
     Any,
+    Callable,
     Dict,
     Generic,
     List,
@@ -2495,7 +2496,8 @@ async def fence_workspace_for_recovery(
     kind: str,
     message: str,
     operation_record: Optional[Dict[str, Any]] = None,
-) -> None:
+    precondition: Optional[Callable[[Mapping[str, Any]], bool]] = None,
+) -> bool:
     """Set ``recovery_required`` so every later mutation is refused with 503.
 
     The self-fencing counterpart of the dead-owner reclaim: a running owner that
@@ -2508,20 +2510,40 @@ async def fence_workspace_for_recovery(
 
     Runs to completion under cancellation: a fence that a cancel could skip would
     hand the next run the same spin.
+
+    ``precondition`` re-checks, INSIDE the critical section that writes the
+    fence, that the evidence the caller decided on still holds; the fence is
+    skipped when it does not. Evidence about shared state is gathered under an
+    earlier, separate lock hold — another process can invalidate it in between,
+    and fencing a workspace that just became healthy costs an operator a manual
+    ``force_reset``, which no amount of waiting undoes. Pass a pure predicate
+    over the status snapshot: it runs while the lock is held, so it must not
+    await, mutate or raise.
+
+    Returns True when the workspace is fenced on return (by this call or by an
+    earlier fence that is kept), False only when ``precondition`` refused.
     """
 
-    async def _run() -> None:
+    async def _run() -> bool:
         async with pipeline_status_lock:
-            if pipeline_status.get("recovery_required"):
-                return
+            # One snapshot serves both reads (a DictProxy charges a Manager RPC
+            # per field), and it is the same snapshot the precondition judges —
+            # so its verdict and the already-fenced check cannot disagree about
+            # what the status held.
+            snapshot = _pipeline_status_snapshot(pipeline_status)
+            if snapshot.get("recovery_required"):
+                return True
+            if precondition is not None and not precondition(snapshot):
+                return False
             pipeline_status["recovery_required"] = {
                 "kind": kind,
                 "owner_key": "busy_owner",
                 "operation_record": operation_record,
                 "message": message,
             }
+            return True
 
-    await run_to_completion(_run)
+    return await run_to_completion(_run)
 
 
 class PipelineReservationConflict(str, Enum):

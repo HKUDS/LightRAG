@@ -258,3 +258,84 @@ def test_an_empty_in_flight_set_is_not_a_stall(tmp_path):
             await rag.finalize_storages()
 
     asyncio.run(_run())
+
+
+def test_a_set_that_changed_since_the_poll_is_not_fenced(tmp_path):
+    """The stall evidence is read under an EARLIER lock hold than the write that
+    fences on it. A producer that releases in that gap has just proved the drain
+    can advance, so the fence must not be written from the stale snapshot — it
+    would refuse every mutation on a workspace that had already recovered, and
+    only a manual force_reset undoes that."""
+
+    async def _run():
+        rag = await _build_rag(tmp_path)
+        try:
+            pipeline_status, lock = await _status_handles(rag)
+            finishing = uuid4().hex
+            await _reserve(pipeline_status, lock, finishing)
+            async with lock:
+                observed = dict(pipeline_status.get("pending_enqueue_tokens") or {})
+            assert set(observed) == {finishing}
+
+            # The gap: the producer lands its documents and releases.
+            await release_token_set_reservation(
+                rag.workspace, tokens_key="pending_enqueue_tokens", token=finishing
+            )
+
+            # Fencing is now attempted on the stale snapshot — and must not
+            # happen, nor unwind the run.
+            await rag._fence_stalled_enqueue_drain(observed, pipeline_status, lock)
+
+            async with lock:
+                assert not pipeline_status.get("recovery_required")
+                assert pipeline_status["pending_enqueues"] == 0
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_a_shrink_since_the_poll_is_not_fenced_either(tmp_path):
+    """Same rule when the set only shrank: one of several producers finishing is
+    forward progress, and the drain goes on waiting for the rest."""
+
+    async def _run():
+        rag = await _build_rag(tmp_path)
+        try:
+            pipeline_status, lock = await _status_handles(rag)
+            slow = uuid4().hex
+            finishing = uuid4().hex
+            await _reserve(pipeline_status, lock, slow)
+            await _reserve(pipeline_status, lock, finishing)
+            async with lock:
+                observed = dict(pipeline_status.get("pending_enqueue_tokens") or {})
+
+            # Spend all but the last round of the window on the full set, with
+            # the SAME tracker the drain uses — so what follows tests the
+            # tracker's state, not a fresh one.
+            progress = _ManualDrainProgress()
+            for _ in range(_STALL_ROUNDS - 1):
+                await _drain_wait_round(rag, pipeline_status, lock, progress)
+
+            await release_token_set_reservation(
+                rag.workspace, tokens_key="pending_enqueue_tokens", token=finishing
+            )
+            await rag._fence_stalled_enqueue_drain(observed, pipeline_status, lock)
+
+            async with lock:
+                assert not pipeline_status.get("recovery_required")
+                assert set(pipeline_status["pending_enqueue_tokens"]) == {slow}
+
+            # The shrink resets the evidence: the remaining token must run out a
+            # WHOLE new window. Without the reset, the very next round would be
+            # the window's last and would fence here.
+            for _ in range(_STALL_ROUNDS - 1):
+                await _drain_wait_round(rag, pipeline_status, lock, progress)
+            async with lock:
+                assert not pipeline_status.get("recovery_required")
+            with pytest.raises(PipelineRecoveryRequiredError, match="drain stalled"):
+                await _drain_wait_round(rag, pipeline_status, lock, progress)
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())

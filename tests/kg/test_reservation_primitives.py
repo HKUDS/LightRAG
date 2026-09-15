@@ -13,6 +13,7 @@ import pytest
 import lightrag.kg.shared_storage as shared_storage
 from lightrag.kg.shared_storage import (
     acquire_enqueue_reservation,
+    fence_workspace_for_recovery,
     acquire_processing_reservation,
     acquire_reservation,
     check_pipeline_status_mutation,
@@ -251,6 +252,64 @@ async def test_enqueue_reservation_defaults_to_the_enqueue_kind():
     assert (
         shared_storage.reservation_kind(None) == shared_storage.ENQUEUE_RESERVATION_KIND
     )
+
+
+async def test_fence_precondition_is_evaluated_inside_the_writing_lock():
+    """A fence decided from evidence read under an earlier lock hold must be
+    able to re-check that evidence where it writes. Otherwise a workspace that
+    recovered in the gap is fenced anyway — and only a manual force_reset
+    undoes that."""
+    ps = {"pending_enqueue_tokens": {}}
+
+    fenced = await fence_workspace_for_recovery(
+        ps,
+        asyncio.Lock(),
+        kind="manual_drain_enqueue_stalled",
+        message="stalled",
+        precondition=lambda snapshot: bool(snapshot.get("pending_enqueue_tokens")),
+    )
+
+    assert fenced is False
+    assert ps.get("recovery_required") is None
+
+
+async def test_fence_writes_when_the_precondition_still_holds():
+    ps = {"pending_enqueue_tokens": {"t": {"pid": 1}}}
+
+    fenced = await fence_workspace_for_recovery(
+        ps,
+        asyncio.Lock(),
+        kind="manual_drain_enqueue_stalled",
+        message="stalled",
+        precondition=lambda snapshot: bool(snapshot.get("pending_enqueue_tokens")),
+    )
+
+    assert fenced is True
+    assert ps["recovery_required"]["kind"] == "manual_drain_enqueue_stalled"
+
+
+async def test_an_existing_fence_is_kept_without_consulting_the_precondition():
+    """First cause wins, as before: an earlier fence is more specific than a
+    later generic one, and the caller still has to treat the workspace as
+    fenced."""
+    calls = []
+    ps = {"recovery_required": {"kind": "delete", "message": "worker died"}}
+
+    def _precondition(snapshot):
+        calls.append(snapshot)
+        return False
+
+    fenced = await fence_workspace_for_recovery(
+        ps,
+        asyncio.Lock(),
+        kind="manual_drain_enqueue_stalled",
+        message="stalled",
+        precondition=_precondition,
+    )
+
+    assert fenced is True
+    assert ps["recovery_required"]["kind"] == "delete"
+    assert calls == []
 
 
 @pytest.mark.offline

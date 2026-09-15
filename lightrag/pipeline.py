@@ -4261,6 +4261,15 @@ class _PipelineMixin:
         so the latch is gone even though the fence survives to refuse mutations.
         The manual request stays sticky and un-ACKed, so no FAILED document is
         consumed by an attempt that never ran.
+
+        It does NOT raise — and does not fence — when the in-flight set changed
+        between the poll that observed the stall and the write that would fence
+        it: ``live_tokens`` was read under an EARLIER lock hold, and a producer
+        that releases in that gap has just proved the drain can still advance.
+        The caller simply waits again; the next poll sees a different set, which
+        resets :meth:`_ManualDrainProgress.observe_enqueue`'s counter. Fencing
+        from the stale snapshot would refuse every mutation on a workspace that
+        had already recovered, and only a manual ``force_reset`` undoes that.
         """
         sample = sorted(live_tokens)[:_MANUAL_DRAIN_ENQUEUE_STALL_SAMPLE]
         owners = sorted(
@@ -4283,14 +4292,36 @@ class _PipelineMixin:
             f"(reservation token sample: {', '.join(sample) or 'unavailable'}; "
             f"owner pid(s): {', '.join(owners) or 'unavailable'})."
         )
-        logger.error(detail)
-        await fence_workspace_for_recovery(
+        observed = set(live_tokens)
+
+        def _set_unchanged(snapshot: Mapping[str, Any]) -> bool:
+            # Any difference counts, in either direction: a set that is not the
+            # one observed is not the evidence this stall verdict was reached
+            # on. Under the freeze it can only shrink, but a future reservation
+            # kind the freeze does not refuse must not be able to grow it into
+            # a fence either.
+            return set(snapshot.get("pending_enqueue_tokens") or {}) == observed
+
+        # Nothing is logged at error level before this returns: a refused
+        # precondition is a drain that recovered, not a fault.
+        if not await fence_workspace_for_recovery(
             pipeline_status,
             pipeline_status_lock,
             kind="manual_drain_enqueue_stalled",
             message=detail,
             operation_record={"scope": ", ".join(sample)},
-        )
+            precondition=_set_unchanged,
+        ):
+            logger.warning(
+                "[pipeline] manual retry drain looked stalled on "
+                f"{len(observed)} in-flight enqueue reservation(s), but the set "
+                "changed before the fence was written (a producer finished, or a "
+                "dead holder was reaped), so the drain keeps waiting instead of "
+                "fencing the workspace."
+            )
+            return
+
+        logger.error(detail)
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = detail
             append_pipeline_history(pipeline_status, detail)
