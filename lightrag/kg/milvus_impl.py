@@ -4,7 +4,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, final, Optional, Dict
+from typing import Any, Awaitable, Callable, final, Optional, Dict
 from dataclasses import dataclass, fields
 import numpy as np
 from lightrag.utils import (
@@ -13,6 +13,7 @@ from lightrag.utils import (
     compute_mdhash_id,
     get_loop_semaphore,
     _cooperative_yield,
+    _bounded_submit_impl,
     _consume_future_exception,
     _wait_deferring_cancellation,
     validate_workspace,
@@ -117,6 +118,50 @@ async def run_in_milvus_executor(
     """
     semaphore = get_loop_semaphore("milvus", MILVUS_SUBMIT_LIMIT)
     return await bounded_submit(get_milvus_executor(), semaphore, fn, *args, **kwargs)
+
+
+async def run_in_milvus_executor_uninterruptible(
+    fn: Callable[..., Any],
+    args: tuple[Any, ...] = (),
+    kwargs: Optional[dict[str, Any]] = None,
+    *,
+    on_committed: Optional[Callable[[], Awaitable[Any]]] = None,
+) -> Any:
+    """Run one blocking MilvusClient call that the CALLER must not outlive.
+
+    `run_in_milvus_executor` lets a cancelled caller return while the thread
+    runs on. That is right for a read, and wrong wherever the caller holds
+    something the thread's work depends on -- `_flush_lock`, a closed reader
+    gate, the `destructive_busy` reservation its own caller took. Releasing
+    those while the SDK call is still in flight lets a writer land a row that
+    the still-running call then erases.
+
+    Deferring the caller's cancellation is not enough by itself, because a
+    cancellation can arrive at the awaiting task DIRECTLY -- a shutdown that
+    cancels every pending task does exactly that. `_bounded_submit_impl`'s
+    loop-and-shield holds through repeated cancellation and returns only once
+    the executor future is done, which is what makes the hold real rather than
+    nominal. The withheld cancellation is re-raised afterwards, stamped, so a
+    caller that rewrites it is never told the write did not happen.
+
+    `on_committed` is bookkeeping that must not be separated from a call that
+    landed (pruning a buffer the delete just made stale). It runs inside the
+    same uncancellable region, and only if the call actually succeeded.
+
+    Takes `args` / `kwargs` as containers rather than `*args, **kwargs`, for
+    the reason `_bounded_submit_impl` states: a control keyword on the
+    signature would otherwise collide with an argument meant for `fn`.
+    """
+    semaphore = get_loop_semaphore("milvus", MILVUS_SUBMIT_LIMIT)
+    return await _bounded_submit_impl(
+        get_milvus_executor(),
+        semaphore,
+        fn,
+        args,
+        kwargs or {},
+        wait_for_completion=True,
+        on_committed=on_committed,
+    )
 
 
 # "The collection exists" flag, keyed by (running loop, collection).
@@ -3015,37 +3060,28 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
             relation_ids = [item["id"] for item in results]
 
-            async def _delete_and_prune() -> None:
-                await run_in_milvus_executor(
-                    self._client.delete,
-                    collection_name=self.final_namespace,
-                    pks=relation_ids,
-                )
+            async def _prune_once_deleted() -> None:
                 # Server-side delete succeeded — safe to prune the pending
                 # buffer so subsequent flushes don't re-upsert the deleted
-                # relations.
+                # relations. As the commit hook it runs inside the SAME
+                # uncancellable region as the delete: a prune separated from
+                # the delete that made it necessary is how a later flush
+                # resurrects a relation the server already removed, and a
+                # shutdown cancelling this task directly is exactly what would
+                # separate them.
                 _prune_pending()
-                logger.debug(
-                    f"[{self.workspace}] Deleted {len(relation_ids)} relations for {entity_name}"
-                )
 
-            # Defer the cancellation until the
-            # delete -- and its buffer bookkeeping -- has actually finished,
-            # same idiom as _flush_pending_vector_ops.
-            delete_future = asyncio.ensure_future(_delete_and_prune())
-            delete_future.add_done_callback(_consume_future_exception)
-            pending_cancel = await _wait_deferring_cancellation(delete_future, None)
-            if pending_cancel is not None:
-                if not delete_future.cancelled():
-                    delete_exc = delete_future.exception()
-                    if delete_exc is not None:
-                        logger.error(
-                            f"[{self.workspace}] {self.namespace} "
-                            f"delete_entity_relation completed while its caller "
-                            f"was cancelled: {delete_exc}"
-                        )
-                raise pending_cancel
-            delete_future.result()
+            await run_in_milvus_executor_uninterruptible(
+                self._client.delete,
+                kwargs={
+                    "collection_name": self.final_namespace,
+                    "pks": relation_ids,
+                },
+                on_committed=_prune_once_deleted,
+            )
+            logger.debug(
+                f"[{self.workspace}] Deleted {len(relation_ids)} relations for {entity_name}"
+            )
 
     async def delete(self, ids: list[str]) -> None:
         """Buffer vector deletes for batched flush."""
@@ -3413,13 +3449,18 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         not, and cannot be -- see that method for what the gate does not
         close.
 
-        Cancellation: the drop + recreate pair is uninterruptible, because it
-        is ONE pool submission rather than a sequence of awaits -- see
-        ``_rebuild_collection`` for why awaiting cannot carry that guarantee.
-        A cancellation delivered to the caller is additionally deferred until
-        the rebuild finishes, and is then re-raised (stamped, so a caller
-        rewriting it knows the drop did land). The state this rules out does
-        not self-heal like the ones
+        Cancellation: the rebuild is uninterruptible, and no cancellation --
+        the caller's own, or a shutdown cancelling every task -- returns this
+        method before the pool thread is done. Two things carry that, and
+        neither alone is enough: it is ONE submission rather than a sequence
+        of awaits (see ``_rebuild_collection``), and it is submitted
+        uninterruptibly from the caller's own task (see
+        ``run_in_milvus_executor_uninterruptible``), so ``_flush_lock``, the
+        closed reader gate and the caller's own ``destructive_busy``
+        reservation all stay held for exactly as long as the work they exclude
+        is running. The cancellation is re-raised afterwards, stamped, so a
+        caller rewriting it knows the drop did land. The state this rules out
+        does not self-heal like the ones
         ``AGENTS.md`` *Consistency without transactions* accepts: nothing
         recreates the collection at run time, every later call fails on a
         missing collection, and the next ``initialize()`` would see the
@@ -3457,54 +3498,43 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             self._create_collection_with_schema(self.final_namespace)
             self._ensure_collection_loaded()
 
-        async def _drop_and_recreate() -> None:
-            # Discard any buffered writes before the collection is gone;
-            # a concurrent flush would otherwise resurrect them.
-            self._pending_vector_docs.clear()
-            self._pending_vector_deletes.clear()
-
-            # Close the reader gate for the window where the collection does
-            # not exist: writers are excluded by _flush_lock, readers are not.
-            # Closing refuses new leases; draining waits out the reads that
-            # already hold one, so none of them is left querying a collection
-            # this is about to remove. That set includes reads still queued for
-            # a pool permit, so the drain can span a few round trips on a
-            # saturated pool -- see _CollectionGate.
-            gate = get_collection_gate(self.final_namespace)
-            gate.close()
-            try:
-                await gate.wait_idle()
-                await run_in_milvus_executor(_rebuild_collection)
-            finally:
-                # Reopen even when the rebuild failed -- and even if the drain
-                # above was what failed: a waiting reader must get the server's
-                # real error, never hang behind a gate no later call reopens.
-                # On a direct cancellation this runs while the pool thread is
-                # still rebuilding, so a reader admitted in that sliver can see
-                # the collection mid-rebuild. That is the transient readers on
-                # another loop or process already get (see _run_gated), not the
-                # permanent missing-collection state, which the single
-                # submission above is what rules out.
-                gate.reopen()
-
         try:
             async with self._flush_lock:
-                # Defer any cancellation until the collection exists again --
-                # see the docstring. Same idiom as _flush_pending_vector_ops
-                # and delete_entity_relation.
-                drop_future = asyncio.ensure_future(_drop_and_recreate())
-                drop_future.add_done_callback(_consume_future_exception)
-                pending_cancel = await _wait_deferring_cancellation(drop_future, None)
-                if pending_cancel is not None:
-                    if not drop_future.cancelled():
-                        drop_exc = drop_future.exception()
-                        if drop_exc is not None:
-                            logger.error(
-                                f"[{self.workspace}] {self.namespace} drop "
-                                f"completed while its caller was cancelled: {drop_exc}"
-                            )
-                    raise pending_cancel
-                drop_future.result()
+                # Discard any buffered writes before the collection is gone;
+                # a concurrent flush would otherwise resurrect them.
+                self._pending_vector_docs.clear()
+                self._pending_vector_deletes.clear()
+
+                # Close the reader gate for the window where the collection
+                # does not exist: writers are excluded by _flush_lock, readers
+                # are not. Closing refuses new leases; draining waits out the
+                # reads that already hold one, so none of them is left querying
+                # a collection this is about to remove. That set includes reads
+                # still queued for a pool permit, so the drain can span a few
+                # round trips on a saturated pool -- see _CollectionGate.
+                gate = get_collection_gate(self.final_namespace)
+                gate.close()
+                try:
+                    await gate.wait_idle()
+                    # Inline, in the caller's own task, and submitted
+                    # uninterruptibly. No inner task: one registered separately
+                    # with the loop is one a shutdown can cancel on its own,
+                    # and the unwinding would then reopen the gate and release
+                    # _flush_lock -- and, above us, the destructive_busy
+                    # reservation -- while the thread still had the collection
+                    # to remove. A writer landing in that gap writes a row the
+                    # rebuild then erases, which is the one outcome
+                    # ``AGENTS.md`` *Consistency without transactions* never
+                    # allows. Holding the caller until the thread exits keeps
+                    # every one of those exclusions true for as long as the
+                    # work they protect is running.
+                    await run_in_milvus_executor_uninterruptible(_rebuild_collection)
+                finally:
+                    # Reopen even when the rebuild failed -- and even if the
+                    # drain above was what failed: a waiting reader must get
+                    # the server's real error, never hang behind a gate no
+                    # later call reopens.
+                    gate.reopen()
 
             logger.info(
                 f"[{self.workspace}] Process {os.getpid()} drop Milvus collection {self.namespace}"

@@ -812,6 +812,97 @@ async def test_a_shutdown_cancelling_every_task_still_recreates_the_collection()
 
 
 @pytest.mark.asyncio
+async def test_a_shutdown_cannot_release_the_writer_lock_mid_rebuild():
+    """The rebuild survives a shutdown, but that is only half of it: while the
+    pool thread still has a collection to remove, _flush_lock -- and above it
+    the caller's destructive_busy reservation -- must stay held. Unwinding
+    early would let a writer land a row the rebuild then erases, which is the
+    one outcome Consistency without transactions never allows. The submission
+    is uninterruptible and runs in the caller's own task precisely so no
+    cancellation can unwind it early."""
+    rebuild_started = threading.Event()
+    release_rebuild = threading.Event()
+
+    def blocking_has_collection(*args, **kwargs):
+        rebuild_started.set()
+        release_rebuild.wait(timeout=5)
+        return True
+
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.has_collection = MagicMock(side_effect=blocking_has_collection)
+
+    task = asyncio.ensure_future(s.drop())
+    for _ in range(500):
+        if rebuild_started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert rebuild_started.is_set()
+    assert s._flush_lock.locked()
+
+    for pending in asyncio.all_tasks():
+        if pending is not asyncio.current_task():
+            pending.cancel()
+
+    # Real time, so an unwinding caller would have every chance to release it.
+    for _ in range(25):
+        await asyncio.sleep(0.02)
+        if not s._flush_lock.locked():
+            break
+    assert s._flush_lock.locked(), "writer lock released while the rebuild ran"
+
+    release_rebuild.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not s._flush_lock.locked()
+    s._client.create_collection.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_a_shutdown_during_delete_entity_relation_still_prunes():
+    """The prune is bookkeeping that must not be separated from the delete
+    that made it necessary: a buffered upsert left behind is one a later flush
+    re-sends, resurrecting a relation the server already removed. A shutdown
+    cancelling every task must therefore not be able to land between them --
+    which is why the prune is the commit hook of the same uncancellable
+    submission rather than a statement after the await."""
+    delete_started = threading.Event()
+    release_delete = threading.Event()
+
+    def blocking_delete(**kwargs):
+        delete_started.set()
+        release_delete.wait(timeout=5)
+        return {"delete_count": 1}
+
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.query = MagicMock(return_value=[{"id": "rel-1"}])
+    s._client.delete = MagicMock(side_effect=blocking_delete)
+    s._pending_vector_docs = {
+        "rel-1": type("P", (), {"source": {"src_id": "entity-1", "tgt_id": "other"}})()
+    }
+
+    task = asyncio.ensure_future(s.delete_entity_relation("entity-1"))
+    for _ in range(500):
+        if delete_started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert delete_started.is_set()
+
+    for pending in asyncio.all_tasks():
+        if pending is not asyncio.current_task():
+            pending.cancel()
+
+    release_delete.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    s._client.delete.assert_called_once()
+    assert s._pending_vector_docs == {}, (
+        "the delete landed but its buffer prune was skipped"
+    )
+    assert not s._flush_lock.locked()
+
+
+@pytest.mark.asyncio
 async def test_a_failed_drop_reopens_the_reader_gate():
     """The gate must be reopened even when the rebuild raises: a reader held
     behind a gate nothing reopens would hang forever, which is strictly worse
