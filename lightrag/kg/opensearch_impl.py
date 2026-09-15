@@ -6259,8 +6259,59 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 self._index_ready = True
 
     def _mark_index_missing(self):
-        """Mark the vector index as unavailable for subsequent read short-circuiting."""
+        """Mark the vector index as unavailable for subsequent read short-circuiting.
+
+        Reads do NOT stay marked forever: each one calls
+        ``_recheck_index_presence`` first and lifts the mark once the index is
+        back. Only a write (or ``initialize()``) ever re-CREATES it.
+        """
         self._index_ready = False
+
+    async def _recheck_index_presence(self) -> None:
+        """Lift a stale missing-index mark when the index is back. Never creates.
+
+        Call at the top of every read, BEFORE taking ``_flush_lock`` -- the
+        existence probe is a network round trip and must not hold that lock.
+
+        This is what keeps the reads' empty answers honest. ``query()`` returns
+        ``[]`` only for a CONFIRMED missing index; a mark this instance set in
+        an earlier call is not a confirmation once the index is back, so every
+        read re-verifies before honouring it.
+
+        Free on the healthy path: ``_index_ready`` is True, so this returns
+        without touching the client. It costs one ``indices.exists`` only while
+        this instance believes the index is gone, which is already the degraded
+        state.
+
+        Why reads must re-verify: ``_index_ready`` is per-INSTANCE, so a peer
+        worker that happened to read inside ``drop()``'s rebuild window marks
+        itself and then short-circuits forever -- the vector read paths have no
+        write to heal them, and ``/documents/clear``'s post-drop
+        ``initialize()`` runs only in the worker that served the request (and
+        only for ``doc_status``). Re-verifying is what lets a peer observe the
+        recreate that already happened on the server.
+
+        Creating the index here instead would be wrong, not merely more
+        expensive: a read that provisions an empty index turns "cannot tell"
+        into a confident "no results" over data that may still be recoverable.
+        Recreating stays with the write paths, which have the buffered rows to
+        put back.
+        """
+        if self._index_ready:
+            return
+        if self.client is None:
+            return
+        try:
+            if await self.client.indices.exists(index=self._index_name):
+                self._index_ready = True
+        except OpenSearchException as e:
+            # Probe failure leaves the mark in place: the caller's own
+            # short-circuit then reports the degraded state, which is what it
+            # would have done without this probe at all.
+            logger.debug(
+                f"[{self.workspace}] Vector index presence re-check failed for "
+                f"{self._index_name}: {e}"
+            )
 
     async def _create_knn_index_if_not_exists(self):
         try:
@@ -6663,7 +6714,14 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
     async def query(
         self, query: str, top_k: int, query_embedding: list[float] = None
     ) -> list[dict[str, Any]]:
-        """k-NN similarity search with cosine score conversion for lucene engine."""
+        """k-NN similarity search with cosine score conversion for lucene engine.
+
+        An empty list here means a CONFIRMED missing index (or no hits), never
+        an unconfirmed failure -- see the transport-error branch below. The
+        re-check is what keeps "confirmed" true: a mark this instance set in an
+        earlier call is not a confirmation once the index is back.
+        """
+        await self._recheck_index_presence()
         if not self._index_ready:
             return []
         if query_embedding is not None:
@@ -6774,6 +6832,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         LightRAG vector backend (see ``NanoVectorDBStorage.get_by_id``).
         Callers that need the embedding itself must use ``get_vectors_by_ids``.
         """
+        await self._recheck_index_presence()
         # Buffer lookups happen under the namespace lock so an in-flight
         # flush is observed as either "completely before" or "completely
         # after" -- never as a snapshot-swapped intermediate state.
@@ -6818,6 +6877,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         """
         if not ids:
             return []
+        await self._recheck_index_presence()
         buffered: dict[str, dict[str, Any] | None] = {}
         remaining: list[str] = []
         async with self._flush_lock:
@@ -6866,6 +6926,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         """Get vector embeddings for given IDs, with read-your-writes."""
         if not ids:
             return {}
+        await self._recheck_index_presence()
         result: dict[str, list[float]] = {}
         remaining: list[str] = []
         async with self._flush_lock:

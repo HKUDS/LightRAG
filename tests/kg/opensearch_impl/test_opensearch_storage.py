@@ -4922,6 +4922,11 @@ class TestVectorStorage:
     async def test_reads_short_circuit_when_index_not_ready(
         self, global_config, embed_func, mock_client
     ):
+        """Reads short-circuit only on a CONFIRMED missing index.
+
+        ``mock_client.indices.exists`` returns False, so the presence re-check
+        confirms the index really is gone and the mark is honoured.
+        """
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
@@ -4938,15 +4943,147 @@ class TestVectorStorage:
     async def test_read_missing_index_demotes_readiness(
         self, global_config, embed_func, mock_client
     ):
+        """A live index_not_found leaves the instance marked.
+
+        The second query re-checks presence (``indices.exists`` -> False),
+        finds the index still gone and honours the mark without a second
+        search.
+        """
         mock_client.search = AsyncMock(side_effect=_missing_index_error())
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
 
             assert await s.query("test", top_k=5) == []
+            assert s._index_ready is False
+            assert await s.query("test", top_k=5) == []
+            assert mock_client.search.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_reads_recover_once_the_index_is_back(
+        self, global_config, embed_func, mock_client
+    ):
+        """A peer that marked itself during drop()'s window heals on its next read.
+
+        ``_index_ready`` is per-instance, so the worker that recreated the
+        index cannot clear a peer's mark. Without the presence re-check the
+        peer short-circuits forever: vector reads have no write to heal them,
+        and /documents/clear re-initializes doc_status only.
+        """
+        mock_client.search = AsyncMock(
+            return_value={
+                "hits": {
+                    "hits": [{"_id": "v1", "_score": 0.9, "_source": {"content": "c"}}]
+                }
+            }
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            # initialize() provisions the index; only what the READ does counts.
+            mock_client.indices.create.reset_mock()
+            s._index_ready = False
+
+            # The index is back on the server (another worker recreated it).
+            mock_client.indices.exists = AsyncMock(return_value=True)
+
+            results = await s.query("test", top_k=5)
+
+            assert s._index_ready is True
+            assert [r["id"] for r in results] == ["v1"]
+            mock_client.indices.create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_presence_recheck_never_creates_the_index(
+        self, global_config, embed_func, mock_client
+    ):
+        """Reads verify, they do not provision.
+
+        A read that created an empty index would manufacture the very
+        confirmation it is supposed to be checking for.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            # initialize() both probes and provisions; count only the reads.
+            mock_client.indices.create.reset_mock()
+            mock_client.indices.exists.reset_mock()
+            s._index_ready = False
+
+            assert await s.query("test", top_k=5) == []
+            assert await s.get_by_id("v1") is None
+            assert await s.get_by_ids(["v1"]) == [None]
+            assert await s.get_vectors_by_ids(["v1"]) == {}
+
+            assert s._index_ready is False
+            # Every read probed; none of them provisioned.
+            assert mock_client.indices.exists.await_count == 4
+            mock_client.indices.create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_presence_recheck_is_free_while_the_index_is_ready(
+        self, global_config, embed_func, mock_client
+    ):
+        """The healthy path costs no extra round trip.
+
+        Without this the re-check would be a probe on every read, which is
+        the kind of cost a fallback hides -- assert the call count, not just
+        the result.
+        """
+        mock_client.search = AsyncMock(return_value={"hits": {"hits": []}})
+        mock_client.mget = AsyncMock(
+            return_value={"docs": [{"_id": "v1", "found": False}]}
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            mock_client.indices.exists.reset_mock()
+
+            await s.query("test", top_k=5)
+            await s.get_by_id("v1")
+            await s.get_vectors_by_ids(["v1"])
+
+            mock_client.indices.exists.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_presence_recheck_runs_outside_the_flush_lock(
+        self, global_config, embed_func, mock_client
+    ):
+        """The probe is a round trip; holding _flush_lock across it would
+        stall every concurrent upsert flush for its duration."""
+        observed: list[bool] = []
+
+        async def _exists(**_kwargs):
+            observed.append(s._flush_lock.locked())
+            return False
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            mock_client.indices.exists = AsyncMock(side_effect=_exists)
+            s._index_ready = False
+
+            assert await s.get_by_id("v1") is None
+            assert await s.get_vectors_by_ids(["v1"]) == {}
+
+            assert observed == [False, False]
+
+    @pytest.mark.asyncio
+    async def test_presence_recheck_failure_keeps_the_mark(
+        self, global_config, embed_func, mock_client
+    ):
+        """A probe that cannot answer leaves the degraded state as it found it."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            mock_client.indices.exists = AsyncMock(
+                side_effect=OpenSearchException("transport down")
+            )
+            s._index_ready = False
+
             assert await s.query("test", top_k=5) == []
             assert s._index_ready is False
-            assert mock_client.search.await_count == 1
+            mock_client.indices.exists.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
