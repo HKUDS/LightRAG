@@ -1023,10 +1023,13 @@ class ForceResetRecoveryResponse(BaseModel):
             "waited out its whole bounded window on this set and the set IS the "
             "blocker: leaving it would keep /documents/scan and /documents/clear "
             "refused and make a re-issued /documents/reprocess_failed fence again. "
-            "A dropped reservation whose producer was alive and merely slow may "
-            "have its enqueue refused after the client already got 200 — an "
-            "/upload is recovered by the next /documents/scan, a /documents/text "
-            "or /documents/texts must be re-sent."
+            "The fence alone does not void an admitted enqueue (a registered "
+            "token is exempt from this fence kind, so a producer that comes back "
+            "still lands its documents); dropping its reservation does. A "
+            "producer that was alive and merely slow and returns AFTER this reset "
+            "may have its enqueue refused although the client already got 200 — "
+            "an /upload is recovered by the next /documents/scan, a "
+            "/documents/text or /documents/texts must be re-sent."
         ),
     )
     retained_enqueue_reservations: int = Field(
@@ -7135,6 +7138,7 @@ def create_document_routes(
         from lightrag.exceptions import PipelineNotInitializedError
         from lightrag.kg.shared_storage import (
             ENQUEUE_RESERVATION_KIND,
+            MANUAL_DRAIN_ENQUEUE_STALL_FENCE,
             MANUAL_PHASE_IDLE,
             get_namespace_data,
             get_namespace_lock,
@@ -7291,18 +7295,35 @@ def create_document_routes(
             # the reservation is labelled with its ``kind`` at acquire time.
             #
             # Cost of the drop, when the holder was in fact alive and merely slow
-            # (the false positive the bounded window accepts): its token is gone,
-            # so with admission ENABLED the enqueue's re-weight is no longer a
-            # re-weight — ``_reserve_ingress_slot`` treats it as a new reservation
-            # and may refuse it after the client already got 200. /upload survives
-            # that (the file is in INPUT/, recovered by the next /documents/scan);
+            # (the false positive the bounded window accepts). The fence alone
+            # costs it nothing — a registered token is exempt from this fence
+            # kind, so a producer that comes back still lands its documents. This
+            # drop is what takes that away: its token is gone, so with admission
+            # ENABLED the enqueue's re-weight is no longer a re-weight
+            # (``_reserve_ingress_slot`` treats it as a new reservation) and may
+            # be refused after the client already got 200. /upload survives that
+            # (the file is in INPUT/, recovered by the next /documents/scan);
             # /text and /texts do not (nothing was written, the client must
             # re-send). With admission disabled the enqueue proceeds untouched and
             # only loses its mutual exclusion against a concurrent destructive job
             # — which is the partial-commit risk this endpoint already declares.
+            # Waiting a little longer before force-resetting is therefore not
+            # nothing: a producer that returns first keeps its work.
+            #
+            # The exemption also makes one already-declared residue easier to
+            # reach, and it is worth naming: an exempted producer that is MID-
+            # WRITE when this drop lands has lost the ``pending_enqueues`` count
+            # that keeps a destructive job out, so a /documents/clear issued
+            # immediately after may drop storages under it. Before the exemption
+            # such a producer was refused before writing anything, so the window
+            # did not exist. It stays within what this endpoint already declares
+            # (an unsafe manual override over a possibly partially-committed
+            # workspace) rather than being closed here: distinguishing "resumed
+            # and writing" from "still wedged" would need the holder to report
+            # progress, which is the thing a wedged holder cannot do.
             if (
                 isinstance(fence, dict)
-                and fence.get("kind") == "manual_drain_enqueue_stalled"
+                and fence.get("kind") == MANUAL_DRAIN_ENQUEUE_STALL_FENCE
             ):
                 tokens = dict(snapshot.get("pending_enqueue_tokens") or {})
                 kept = {

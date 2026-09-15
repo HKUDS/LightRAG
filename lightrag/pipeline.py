@@ -60,6 +60,7 @@ from lightrag.exceptions import (
     flush_may_have_lost_reference,
 )
 from lightrag.kg.shared_storage import (
+    MANUAL_DRAIN_ENQUEUE_STALL_FENCE,
     MANUAL_PHASE_DRAIN_TO_IDLE,
     MANUAL_PHASE_EXCLUSIVE_RESET,
     MANUAL_PHASE_IDLE,
@@ -241,15 +242,19 @@ _MANUAL_DRAIN_BLOCKER_SAMPLE = 8
 # silent and permanent; the bound is sized so that reaching it means something is
 # genuinely stuck.
 #
-# What a false positive costs the slow-but-healthy producer is decided by that
-# remedy, not here: ``force_reset`` DROPS the in-flight reservation set for this
-# fence kind (it is the blocker — clearing the fence alone changes nothing), so
-# the producer's enqueue loses its reservation mid-flight. With admission enabled
-# its re-weight is then treated as a new reservation and may be refused after the
-# client already got 200 — an ``/upload`` is recovered by the next
-# ``/documents/scan``, a ``/documents/text``/``/texts`` must be re-sent. The
-# force_reset response says so; that is the cost of a wall-clock bound sized for
-# a producer that is stuck, applied to one that was only slow.
+# What a false positive costs the slow-but-healthy producer depends on who moves
+# first. The fence itself costs it nothing: a registered token is exempt from
+# THIS fence kind (``_stall_fence_exempts_reserved_token``), so a producer that
+# comes back still lands its rows as PENDING — unprocessable until an operator
+# clears the fence, but not lost. The loss window is the operator's remedy:
+# ``force_reset`` DROPS the in-flight reservation set for this kind (it is the
+# blocker — clearing the fence alone changes nothing), and a producer that
+# returns after that has no reservation left, so with admission enabled its
+# re-weight is treated as a new reservation and may be refused after the client
+# already got 200. An ``/upload`` is recovered by the next ``/documents/scan``; a
+# ``/documents/text``/``/texts`` must be re-sent. That is the cost of a
+# wall-clock bound sized for a producer that is stuck, applied to one that was
+# only slow.
 _MANUAL_DRAIN_ENQUEUE_STALL_SECONDS = 600.0
 _MANUAL_DRAIN_ENQUEUE_STALL_ROUNDS = max(
     1, int(_MANUAL_DRAIN_ENQUEUE_STALL_SECONDS / _MANUAL_DRAIN_POLL_SECONDS)
@@ -890,6 +895,10 @@ class _PipelineMixin:
             # it (LR2 §9.2). Refusing here would drop the work of a request whose
             # client was already told it was accepted — and for /text there is no
             # input file to rediscover, so the content would simply be lost.
+            # That reasoning covers the enqueue-stall RECOVERY fence too, which
+            # is raised by the drain that gave up waiting for these very
+            # reservations; the exemption is applied there inside
+            # ``check_pipeline_status_mutation``.
             exempt_if_reserved=admission_token,
         )
         if not mutation_result.acquired:
@@ -4262,6 +4271,11 @@ class _PipelineMixin:
         The manual request stays sticky and un-ACKed, so no FAILED document is
         consumed by an attempt that never ran.
 
+        Fencing does not void the holders it names: a registered token is exempt
+        from this fence kind alone, so a producer that comes back still lands
+        its documents (see ``_stall_fence_exempts_reserved_token``). The fence
+        stops the workspace, not the work already admitted into it.
+
         It does NOT raise — and does not fence — when the in-flight set changed
         between the poll that observed the stall and the write that would fence
         it: ``live_tokens`` was read under an EARLIER lock hold, and a producer
@@ -4307,7 +4321,7 @@ class _PipelineMixin:
         if not await fence_workspace_for_recovery(
             pipeline_status,
             pipeline_status_lock,
-            kind="manual_drain_enqueue_stalled",
+            kind=MANUAL_DRAIN_ENQUEUE_STALL_FENCE,
             message=detail,
             operation_record={"scope": ", ".join(sample)},
             precondition=_set_unchanged,

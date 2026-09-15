@@ -2799,6 +2799,46 @@ async def acquire_reservation(
 ENQUEUE_RESERVATION_KIND = "enqueue"
 SOURCE_REPAIR_RESERVATION_KIND = "source_repair"
 
+# The one ``recovery_required`` kind raised BY the in-flight enqueue set itself:
+# a manual retry's DRAIN_TO_IDLE gave up waiting for these very reservations.
+MANUAL_DRAIN_ENQUEUE_STALL_FENCE = "manual_drain_enqueue_stalled"
+
+
+def _stall_fence_exempts_reserved_token(
+    snapshot: Mapping[str, Any], token: Optional[str]
+) -> bool:
+    """Whether the fence in ``snapshot`` must let ``token``'s enqueue finish.
+
+    The recovery fence is otherwise absolute, and stays so for every other kind:
+    a worker that died mid custom_chunks/delete/clear may have left storage
+    half-committed, and a new write is exactly what must not happen next.
+
+    :data:`MANUAL_DRAIN_ENQUEUE_STALL_FENCE` is different in kind — it was
+    raised BECAUSE these reservations were in flight, and nothing is
+    half-committed. Refusing them would make the fence destroy the very work it
+    was raised about: the holder was admitted before the freeze, the drain was
+    contractually WAITING for it (LR2 §9.2), and for ``/documents/text(s)`` the
+    payload lives only in the request's background task — there is no input file
+    for a later scan to rediscover, so a refusal loses it after the client was
+    already told it was accepted.
+
+    It costs nothing in the case the bound is FOR: a holder that is genuinely
+    wedged never reaches this check. It only spares the false positive, and the
+    rows it writes cannot be processed until the fence is cleared anyway — the
+    processing reservation still refuses.
+
+    Registration is read from the snapshot, never taken on the caller's word.
+    """
+    if token is None:
+        return False
+    fence = snapshot.get("recovery_required")
+    if (
+        not isinstance(fence, dict)
+        or fence.get("kind") != MANUAL_DRAIN_ENQUEUE_STALL_FENCE
+    ):
+        return False
+    return token in (snapshot.get("pending_enqueue_tokens") or {})
+
 
 def reservation_kind(metadata: Any) -> str:
     """Why the reservation holding this token exists.
@@ -2870,6 +2910,11 @@ async def acquire_enqueue_reservation(
       The new/existing decision is read from THIS snapshot rather than taken on
       the caller's word: a caller that merely passes a token string cannot talk
       its way past a fence.
+
+      The recovery fence outranks all of this and refuses every caller — except
+      a registered token under a :data:`MANUAL_DRAIN_ENQUEUE_STALL_FENCE`, the
+      one kind raised BY these reservations (see
+      :func:`_stall_fence_exempts_reserved_token`).
     * no capacity → :class:`~lightrag.exceptions.PipelineBackpressureError`
       (→ 429) carrying the numbers the client needs.
 
@@ -2891,7 +2936,9 @@ async def acquire_enqueue_reservation(
         snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
             pipeline_status
         )
-        if snapshot.get("recovery_required"):
+        if snapshot.get(
+            "recovery_required"
+        ) and not _stall_fence_exempts_reserved_token(snapshot, token):
             _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
             return _recovery_required_result(snapshot)
         tokens = dict(snapshot.get("pending_enqueue_tokens", {}))
@@ -2953,8 +3000,9 @@ async def check_pipeline_status_mutation(
 ) -> PipelineReservationResult:
     """Reconcile and evaluate a mutation fence without taking a reservation.
 
-    The recovery fence is mandatory. Optional status conflicts are evaluated
-    from the same local snapshot, and recovery writes use at most one update.
+    The recovery fence is mandatory (with the single carve-out described at the
+    end). Optional status conflicts are evaluated from the same local snapshot,
+    and recovery writes use at most one update.
 
     ``exempt_if_reserved`` is a pending-enqueue token: when this snapshot shows
     it REGISTERED in ``pending_enqueue_tokens``, the optional ``reject_when``
@@ -2965,17 +3013,25 @@ async def check_pipeline_status_mutation(
     work of a request the protocol promised to let finish, and the client has
     usually already been told it was accepted. Registration is verified from the
     snapshot, never taken on the caller's word.
+
+    The recovery fence is mandatory with ONE exception, which is not a weakening
+    of it: a registered token is let through a
+    :data:`MANUAL_DRAIN_ENQUEUE_STALL_FENCE`, the one fence kind raised BY those
+    reservations — see :func:`_stall_fence_exempts_reserved_token`.
     """
     async with pipeline_status_lock:
         snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
             pipeline_status
         )
-        if snapshot.get("recovery_required"):
+        reserved = exempt_if_reserved is not None and exempt_if_reserved in (
+            snapshot.get("pending_enqueue_tokens") or {}
+        )
+        if snapshot.get(
+            "recovery_required"
+        ) and not _stall_fence_exempts_reserved_token(snapshot, exempt_if_reserved):
             _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
             return _recovery_required_result(snapshot)
-        if exempt_if_reserved is not None and exempt_if_reserved in (
-            snapshot.get("pending_enqueue_tokens") or {}
-        ):
+        if reserved:
             reject_when = ()
         for flag_key, reason in reject_when:
             if snapshot.get(flag_key):

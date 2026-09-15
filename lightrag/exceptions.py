@@ -286,9 +286,15 @@ class PipelineRecoveryRequiredError(RuntimeError):
     Raised when a manual retry's DRAIN_TO_IDLE cannot make forward progress: it
     waited on something that re-checking can only find unchanged (LR2 §7.2
     "DRAIN_TO_IDLE 的前进性" / §13.2 case 16). The workspace is fenced instead,
-    every mutation is refused with 503, and ``blocked_doc_ids`` carries the
-    BOUNDED sample an operator needs to find the offending rows — never the
-    whole set, and empty when the blocker is not a document.
+    mutations are refused with 503, and ``blocked_doc_ids`` carries the BOUNDED
+    sample an operator needs to find the offending rows — never the whole set,
+    and empty when the blocker is not a document.
+
+    One carve-out, for ``manual_drain_enqueue_stalled`` only: an enqueue whose
+    reservation this fence was raised ABOUT is still allowed to finish, so the
+    bound cannot destroy the payload of a producer that was merely slow (see
+    ``_stall_fence_exempts_reserved_token``). Its rows land as PENDING and stay
+    unprocessable until the fence is cleared.
 
     Three causes reach this, distinguished by the fence record's ``kind``:
     ``manual_drain_stalled`` (rows that look routable but never change state),
