@@ -106,7 +106,13 @@ Each is a miss, never a rewrite, and each keeps the prose warning.
 ## Rejected alternatives
 
 Both were implemented and measured. Do not reopen either without addressing
-the counterexample.
+the counterexample. A candidate pairing rule is only as good as the corpus it
+was run against: the shapes that decided these three rounds — currency amounts
+beside math, CJK prose with no spaces around the delimiters, display math
+formatted across lines, padded spans, escaped dollars, a stray `$$` — are
+pinned in `tests/llm/test_vlm_json_escape_repair.py`. Run a fourth design
+against all of them before proposing it; each of the two below passed the
+cases its author had in mind and failed a shape they had not thought to try.
 
 **Soft closer fallback.** Accept a whitespace-preceded `$` as a closer when no
 stricter candidate remains, so that `$ x $` still pairs. The fallback scans
