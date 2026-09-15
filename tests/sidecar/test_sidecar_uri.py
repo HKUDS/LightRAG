@@ -52,6 +52,7 @@ def test_sidecar_uri_round_trip_ascii(tmp_path):
     uri = sidecar_uri_for(sidecar_dir)
     assert uri.startswith("file://")
     assert uri.endswith("/")
+    assert "file:////" not in uri
     resolved = resolve_sidecar_uri(uri)
     assert resolved == sidecar_dir.resolve()
 
@@ -63,8 +64,19 @@ def test_sidecar_uri_round_trip_unicode_and_spaces(tmp_path):
     uri = sidecar_uri_for(sidecar_dir)
     assert uri.startswith("file://")
     assert " " not in uri  # spaces are percent-encoded
+    assert "file:////" not in uri
     resolved = resolve_sidecar_uri(uri)
     assert resolved == sidecar_dir.resolve()
+
+
+@pytest.mark.offline
+def test_sidecar_uri_has_no_extra_slash_after_authority(tmp_path):
+    """Path.as_uri() must not emit file://// on POSIX absolute paths."""
+    sidecar_dir = tmp_path / "abc.docx.parsed"
+    sidecar_dir.mkdir()
+    uri = sidecar_uri_for(sidecar_dir)
+    assert "file:////" not in uri
+    assert uri.endswith("/")
 
 
 @pytest.mark.offline

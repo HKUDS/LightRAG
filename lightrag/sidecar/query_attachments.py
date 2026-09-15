@@ -35,7 +35,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from lightrag.chunk_schema import normalize_chunk_sidecar
-from lightrag.utils import logger
+from lightrag.utils import logger, validate_file_path_security
 from lightrag.utils_pipeline import (
     resolve_sidecar_uri,
     sidecar_assets_dir_for_uri,
@@ -639,29 +639,29 @@ def clear_drawings_index_cache() -> None:
         _drawings_index_cache.clear()
 
 
-def _path_within_root(candidate: Path, root: Path) -> bool:
-    """Return True if ``candidate`` resolves under ``root`` (path-traversal guard)."""
-    try:
-        candidate.resolve().relative_to(root.resolve())
-        return True
-    except ValueError:
-        return False
-
-
 def resolve_asset_path(sidecar_uri: str | None, relative_path: str) -> Path | None:
-    """Resolve a drawings.json relative path under the sidecar root (path-traversal safe)."""
+    """Resolve a drawings.json relative path under the sidecar root (path-traversal safe).
+
+    Delegates to :func:`validate_file_path_security` so embedded NUL / other
+    malformed paths become ``None`` instead of raising ``ValueError`` from
+    ``Path.resolve()`` (which Enrich would fail-loud on). Callers treat
+    ``None`` as skip — same as a missing jpg.
+    """
     root = resolve_sidecar_uri(sidecar_uri)
     if root is None or not relative_path:
         return None
-    root_resolved = root.resolve()
-    candidate = (root / relative_path).resolve()
-    if candidate.is_file() and _path_within_root(candidate, root_resolved):
+
+    candidate = validate_file_path_security(relative_path, root)
+    if candidate is not None and candidate.is_file():
         return candidate
+
+    # Basename fallback under ``*.blocks.assets`` (same layout Index/Enrich use).
     assets_dir = sidecar_assets_dir_for_uri(sidecar_uri)
-    if assets_dir is not None:
-        nested = (assets_dir / Path(relative_path).name).resolve()
-        if nested.is_file() and _path_within_root(nested, root_resolved):
-            return nested
+    if assets_dir is None:
+        return None
+    nested = validate_file_path_security(Path(relative_path).name, assets_dir)
+    if nested is not None and nested.is_file():
+        return nested
     return None
 
 
@@ -765,7 +765,15 @@ async def _prefetch_drawings_indexes_by_doc(
         if not doc_record:
             continue
         sidecar_uri = doc_record.get("sidecar_location")
-        drawings_index = await aload_drawings_index(sidecar_uri)
+        try:
+            drawings_index = await aload_drawings_index(sidecar_uri)
+        except _SIDECAR_DEGRADE_ERRORS as exc:
+            logger.warning(
+                "[query_attachments] drawings index load failed for %s: %s",
+                doc_id,
+                exc,
+            )
+            continue
         if not drawings_index:
             continue
         sidecar_uri_by_doc[doc_id] = sidecar_uri

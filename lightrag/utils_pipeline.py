@@ -17,7 +17,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import unquote, urlsplit
 
 from lightrag.base import (
     DocProcessingStatus,
@@ -1219,11 +1219,12 @@ def sidecar_uri_for(parsed_artifact_dir: Path | str) -> str:
 
     The result always ends with ``/`` so a reader can distinguish a directory
     from a file at the URI level. Non-ASCII characters are percent-encoded.
+    Uses ``Path.as_uri()`` so POSIX paths do not get an extra slash
+    (``file:////tmp/...``) after the authority.
     """
     p = Path(parsed_artifact_dir).resolve()
-    # Use POSIX separators so ``file:///C:/...`` round-trips on Windows.
-    encoded = quote(p.as_posix(), safe="/")
-    return f"file:///{encoded}/"
+    uri = p.as_uri()
+    return uri if uri.endswith("/") else uri + "/"
 
 
 def resolve_sidecar_uri(uri: str | None) -> Path | None:

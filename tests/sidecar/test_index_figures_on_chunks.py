@@ -282,3 +282,31 @@ class TestIndexFiguresOnChunks:
             full_docs_db=FakeFullDocs(synthetic_sidecar_uri),
         )
         assert result.whitelist == []
+
+    @pytest.mark.asyncio
+    async def test_index_degrades_when_drawings_index_raises_oserror(
+        self, synthetic_sidecar_uri, monkeypatch
+    ):
+        """Sidecar FS errors during prefetch must not abort Index (empty whitelist)."""
+
+        async def boom(_uri):
+            raise OSError("sidecar mount unavailable")
+
+        monkeypatch.setattr(
+            "lightrag.sidecar.query_attachments.aload_drawings_index",
+            boom,
+        )
+        chunks = [
+            {
+                "reference_id": "1",
+                "content": f'<drawing id="{SYNTH_IM_0001}"/>',
+                "chunk_id": f"{SYNTH_DOC_ID}-chunk-010",
+                "file_path": "doc.md",
+            }
+        ]
+        result = await index_figures_on_chunks(
+            chunks,
+            text_chunks_db=None,
+            full_docs_db=FakeFullDocs(synthetic_sidecar_uri),
+        )
+        assert result.whitelist == []

@@ -22,6 +22,7 @@ from tests.sidecar.conftest_query_attachments import (
     SYNTH_IM_0001,
     SYNTH_IM_0002,
     SYNTH_IM_0002_TITLE,
+    SYNTH_JPG_1,
     SYNTH_JPG_2,
     corrupt_drawings_json,
 )
@@ -138,6 +139,36 @@ class TestDrawingsResolve:
                 "id": SYNTH_IM_0001,
                 "format": "jpg",
                 "path": "assets/no-such-file.jpg",
+            }
+        }
+        assert (
+            await resolve_single_drawing(
+                im_id=SYNTH_IM_0001,
+                doc_id=SYNTH_DOC_ID,
+                sidecar_uri=synthetic_sidecar_uri,
+                drawings_index=index,
+            )
+            is None
+        )
+
+    def test_resolve_asset_path_embedded_nul_returns_none(self, synthetic_sidecar_uri):
+        """Malformed drawings.json path with NUL must not raise (Enrich fail-loud seam)."""
+        assert (
+            resolve_asset_path(synthetic_sidecar_uri, f"assets/{SYNTH_JPG_2}\x00evil")
+            is None
+        )
+        assert resolve_asset_path(synthetic_sidecar_uri, "\x00") is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_single_drawing_embedded_nul_path_skipped(
+        self, synthetic_sidecar_uri
+    ):
+        """verify_file: path with embedded NUL → None (skip attachment, no raise)."""
+        index = {
+            SYNTH_IM_0001: {
+                "id": SYNTH_IM_0001,
+                "format": "jpg",
+                "path": f"assets/{SYNTH_JPG_1}\x00evil",
             }
         }
         assert (

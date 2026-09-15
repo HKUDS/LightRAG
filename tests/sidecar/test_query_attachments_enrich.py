@@ -20,6 +20,7 @@ from tests.sidecar.conftest_query_attachments import (
     SYNTH_JPG_2,
     assert_valid_attachment,
     remove_sidecar_asset,
+    write_drawings_json,
 )
 
 
@@ -151,6 +152,29 @@ class TestEnrichRawDataAttachments:
         assert result["data"]["attachments"] == []
 
     @pytest.mark.asyncio
+    async def test_enrich_degrades_when_drawings_index_raises_oserror(
+        self, synthetic_sidecar_uri, monkeypatch
+    ):
+        """Prefetch OSError on aload_drawings_index → attachments [] (no query abort)."""
+
+        async def boom(_uri):
+            raise OSError("sidecar mount unavailable")
+
+        monkeypatch.setattr(
+            "lightrag.sidecar.query_attachments.aload_drawings_index",
+            boom,
+        )
+        raw = {
+            "data": {"chunks": []},
+            "metadata": {"drawing_candidate_whitelist": [SYNTH_IM_0001]},
+        }
+        result = await enrich_raw_data_attachments(
+            raw,
+            FakeFullDocs(synthetic_sidecar_uri),
+        )
+        assert result["data"]["attachments"] == []
+
+    @pytest.mark.asyncio
     async def test_enrich_propagates_unexpected_exception(self):
         """Unexpected Exception subclasses outside the degrade tuple propagate."""
 
@@ -202,3 +226,37 @@ class TestEnrichRawDataAttachments:
         attachments = result["data"]["attachments"]
         assert len(attachments) == 1
         assert attachments[0]["im_id"] == SYNTH_IM_0002
+
+    @pytest.mark.asyncio
+    async def test_enrich_skips_embedded_nul_path_without_raising(
+        self, synthetic_sidecar, synthetic_sidecar_uri
+    ):
+        """Corrupt drawings.json path with NUL → skip that im-id; query must not fail."""
+        write_drawings_json(
+            synthetic_sidecar,
+            {
+                SYNTH_IM_0001: {
+                    "id": SYNTH_IM_0001,
+                    "format": "jpg",
+                    "path": f"assets/{SYNTH_JPG_1}\x00evil",
+                },
+                SYNTH_IM_0002: {
+                    "id": SYNTH_IM_0002,
+                    "format": "jpg",
+                    "path": f"assets/{SYNTH_JPG_2}",
+                    "llm_analyze_result": {"name": SYNTH_IM_0002_TITLE},
+                },
+            },
+        )
+        raw = {
+            "data": {"chunks": []},
+            "metadata": {
+                "drawing_candidate_whitelist": [SYNTH_IM_0001, SYNTH_IM_0002],
+            },
+        }
+        result = await enrich_raw_data_attachments(
+            raw,
+            FakeFullDocs(synthetic_sidecar_uri),
+        )
+        attachments = result["data"]["attachments"]
+        assert [a["im_id"] for a in attachments] == [SYNTH_IM_0002]
