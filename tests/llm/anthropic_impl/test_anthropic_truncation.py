@@ -50,3 +50,26 @@ async def test_anthropic_end_turn_stop_reason_remains_plain_string():
     assert type(result) is str
     assert is_truncated_response(result) is False
     client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_anthropic_extracts_text_after_a_leading_thinking_block():
+    """Extended thinking puts a ThinkingBlock (no .text attribute) before the
+    TextBlock. content[0].text must not be assumed to be the answer."""
+    thinking_block = SimpleNamespace(type="thinking", thinking="reasoning...")
+    text_block = SimpleNamespace(type="text", text="final answer")
+    response = SimpleNamespace(
+        content=[thinking_block, text_block], stop_reason="end_turn"
+    )
+    client = SimpleNamespace(
+        messages=SimpleNamespace(create=AsyncMock(return_value=response)),
+        close=AsyncMock(),
+    )
+
+    with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=client):
+        result = await anthropic_complete_if_cache.__wrapped__(
+            model="claude-test", prompt="hi", api_key="test-key"
+        )
+
+    assert result == "final answer"
+    client.close.assert_awaited_once()
