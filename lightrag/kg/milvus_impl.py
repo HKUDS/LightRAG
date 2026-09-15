@@ -2652,6 +2652,20 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         report a missing COLLECTION as missing ROWS, which is why this gate
         exists; changing that reporting is a separate contract change, not
         something to slip in here.
+
+        And one more, accepted rather than closed: a reader CANCELLED after
+        submitting (an HTTP timeout, a shutdown) returns from
+        ``run_in_milvus_executor`` at once while its call runs on, so the
+        ``finally`` below hands the lease back and a rebuild can remove the
+        collection under a call still executing. Harmless in the direction
+        that matters -- nothing durable is touched by a read, and the call's
+        result and its error both go nowhere, because the caller that would
+        have received them is already gone. Holding the lease to the thread's
+        actual exit would mean either releasing it from the executor future's
+        completion (the ``bounded_submit`` seam this file does not cut -- see
+        :class:`_CollectionGate`) or submitting reads uninterruptibly, which
+        would make an HTTP timeout wait out a full Milvus round trip before
+        the request could be abandoned. Both cost more than the overlap does.
         """
         gate = get_collection_gate(self.final_namespace)
         await gate.acquire_read()
@@ -3060,25 +3074,34 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
             relation_ids = [item["id"] for item in results]
 
-            async def _prune_once_deleted() -> None:
+            def _delete_then_prune() -> None:
+                """Delete the rows and prune the buffer they made stale, in ONE
+                worker operation.
+
+                Not the delete with the prune as ``on_committed``: that hook is
+                an ``ensure_future`` task of its own, which an all-tasks
+                shutdown sweep can cancel directly in the window between the
+                delete landing and the hook's first step -- the same shape of
+                hole as an inner task, one layer down. Inside the callable the
+                thread carries both to the end, so nothing can land between
+                them; a delete that raises skips the prune by falling out of
+                this function, which is the ordering the buffer contract wants.
+
+                Mutating the buffer from a pool thread is safe here and only
+                here: every reader and writer of ``_pending_vector_docs`` takes
+                ``_flush_lock``, the caller holds it across this submission,
+                and the submission is uninterruptible, so no one else can
+                touch the dict while this runs.
+                """
+                self._client.delete(
+                    collection_name=self.final_namespace, pks=relation_ids
+                )
                 # Server-side delete succeeded — safe to prune the pending
                 # buffer so subsequent flushes don't re-upsert the deleted
-                # relations. As the commit hook it runs inside the SAME
-                # uncancellable region as the delete: a prune separated from
-                # the delete that made it necessary is how a later flush
-                # resurrects a relation the server already removed, and a
-                # shutdown cancelling this task directly is exactly what would
-                # separate them.
+                # relations.
                 _prune_pending()
 
-            await run_in_milvus_executor_uninterruptible(
-                self._client.delete,
-                kwargs={
-                    "collection_name": self.final_namespace,
-                    "pks": relation_ids,
-                },
-                on_committed=_prune_once_deleted,
-            )
+            await run_in_milvus_executor_uninterruptible(_delete_then_prune)
             logger.debug(
                 f"[{self.workspace}] Deleted {len(relation_ids)} relations for {entity_name}"
             )

@@ -903,6 +903,45 @@ async def test_a_shutdown_during_delete_entity_relation_still_prunes():
 
 
 @pytest.mark.asyncio
+async def test_the_relation_prune_runs_inside_the_delete_submission():
+    """Structural pin for the case above. The prune is not a statement after
+    the await, nor on_committed -- that hook is an ensure_future task of its
+    own, which an all-tasks sweep can cancel in the window between the delete
+    landing and the hook's first step. It is inside the submitted callable, so
+    the pool thread carries delete and prune to the end together. Asserting the
+    prune happens on a pool thread is what pins that."""
+
+    class _RecordingDocs(dict):
+        popped_on: list[str] = []
+
+        def pop(self, *args, **kwargs):
+            _RecordingDocs.popped_on.append(threading.current_thread().name)
+            return super().pop(*args, **kwargs)
+
+    _RecordingDocs.popped_on = []
+
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.query = MagicMock(return_value=[{"id": "rel-1"}])
+    s._client.delete = MagicMock(return_value={"delete_count": 1})
+    s._pending_vector_docs = _RecordingDocs(
+        {
+            "rel-1": type(
+                "P", (), {"source": {"src_id": "entity-1", "tgt_id": "other"}}
+            )()
+        }
+    )
+
+    await s.delete_entity_relation("entity-1")
+
+    assert s._pending_vector_docs == {}
+    assert _RecordingDocs.popped_on, "the prune never ran"
+    for name in _RecordingDocs.popped_on:
+        assert name.startswith("lightrag-milvus"), (
+            f"the prune ran on {name}, not inside the delete submission"
+        )
+
+
+@pytest.mark.asyncio
 async def test_a_failed_drop_reopens_the_reader_gate():
     """The gate must be reopened even when the rebuild raises: a reader held
     behind a gate nothing reopens would hang forever, which is strictly worse
