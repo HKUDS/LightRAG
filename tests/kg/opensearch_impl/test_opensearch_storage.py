@@ -5230,6 +5230,66 @@ class TestVectorStorage:
             assert storage._index_ready is False
             mock_client.search.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_a_concurrent_404_probe_outranks_one_that_saw_the_index(
+        self, global_config, embed_func, mock_client
+    ):
+        """A probe answered 404 read the server later than one that saw the index.
+
+        Both are in flight against the same marked instance. If the 404 simply
+        returned without recording what it learned, the older probe would
+        resume and restore readiness for an index that is now absent, and the
+        next upsert would skip _ensure_index_ready and flush against nothing.
+
+        Only this order needs the guarantee. If the stale probe writes True
+        first, the other read short-circuits on the flag and its own search
+        raises index_not_found, which re-marks the instance -- the next server
+        contact is the correction.
+        """
+        started = asyncio.Event()
+        released = asyncio.Event()
+        seen: list[str] = []
+
+        async def _probe(**_kwargs):
+            if not seen:
+                # Probe A: reached the server while the index was still there.
+                seen.append("stale")
+                started.set()
+                await released.wait()
+                return {
+                    storage._index_name: {
+                        "mappings": {
+                            "_meta": _workspace_index_meta(
+                                storage.workspace, storage.final_namespace
+                            )
+                        }
+                    }
+                }
+            # Probe B: reached the server after the delete.
+            seen.append("fresh")
+            raise _missing_index_error()
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            storage = self._make(global_config, embed_func)
+            await storage.initialize()
+            storage._index_ready = False
+            mock_client.indices.get_mapping = AsyncMock(side_effect=_probe)
+
+            stale = asyncio.create_task(storage.query("a", top_k=5))
+            await started.wait()
+
+            # B lands, and records the absence, while A is still suspended.
+            assert await storage.query("b", top_k=5) == []
+            assert storage._index_ready is False
+
+            released.set()
+            assert await stale == []
+
+            assert seen == ["stale", "fresh"]
+            # A's answer predates B's; it must not put readiness back.
+            assert storage._index_ready is False
+            mock_client.search.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Vector storage write batching (issue #2785)

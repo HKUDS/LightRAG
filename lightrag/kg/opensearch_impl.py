@@ -6302,8 +6302,9 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
 
         Rules:
 
-        * Still absent -- the mark stands and this returns normally. That is
-          the confirmation the readers' empty answers rest on.
+        * Still absent -- the mark is re-applied (bumping the generation) and
+          this returns normally. That is the confirmation the readers' empty
+          answers rest on.
         * Back, and the ``_meta`` marker names THIS workspace (or names nobody
           -- an index predating the marker, unprotected exactly as it was
           before the check existed) -- the mark is lifted.
@@ -6325,14 +6326,22 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         confirmation it is checking for. Recreating stays with the write paths,
         which hold the buffered rows to put back.
 
-        The answer is only acted on if no ``_mark_index_missing`` landed while
-        it was in flight. This probe runs OUTSIDE ``_flush_lock``, so a
-        ``drop()`` can delete the index and fail to recreate it between the
-        request and the response; restoring readiness on what the probe saw
-        before that would leave ``_index_ready`` True with no index behind it,
-        and the next ``upsert`` would then skip ``_ensure_index_ready`` and
-        flush against nothing. The generation is the ordering the lock does not
-        provide here.
+        Readiness is only restored if no ``_mark_index_missing`` landed while
+        the answer was in flight. This probe runs OUTSIDE ``_flush_lock``, so
+        the state can move under it two ways: a ``drop()`` can delete the index
+        and fail to recreate it, and a CONCURRENT PROBE can come back 404 after
+        reading the server later than this one did. Restoring readiness on the
+        older observation would leave ``_index_ready`` True with no index
+        behind it, and the next ``upsert`` would then skip
+        ``_ensure_index_ready`` -- the one path that would have rebuilt it --
+        and flush against nothing. Ordering is all this needs, which is what
+        the generation gives and the lock cannot without being held across the
+        round trip.
+
+        The ordering is one-sided on purpose: confirmed absence always writes,
+        restored readiness only writes when nothing moved. Absence is the safe
+        direction -- reads short-circuit and the next probe lifts the mark if
+        the index returned -- while a wrong True disables the rebuild.
         """
         if self._index_ready:
             return
@@ -6343,6 +6352,14 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             mapping = await self.client.indices.get_mapping(index=self._index_name)
         except OpenSearchException as e:
             if _is_missing_index_error(e):
+                # Record the absence rather than discard it. Two probes can be
+                # in flight at once, and the one answered 404 read the server
+                # LATER than one that still saw the index; marking here is what
+                # lets the newer fact outrank the older, in either resumption
+                # order -- it bumps the generation the stale probe is about to
+                # test, and if that probe already lifted the flag it puts it
+                # back.
+                self._mark_index_missing()
                 return
             raise
         if generation != self._missing_mark_generation:
