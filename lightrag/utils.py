@@ -6083,11 +6083,13 @@ _MD_CODE_REGION_PATTERN = re.compile(
     # than the opener -- accepting a trailing info string on the closer lets
     # a fence-like line INSIDE the block end the region early. The optional
     # \r keeps CRLF text working: MULTILINE "$" matches before the \n, with
-    # the \r still ahead of it.
-    r"^[ \t]{0,3}(?P<bfence>`{3,})[^\n`]*$[\s\S]*?"
-    r"(?:^[ \t]{0,3}(?P=bfence)`*[ \t]*\r?$|\Z)"
-    r"|^[ \t]{0,3}(?P<tfence>~{3,})[^\n]*$[\s\S]*?"
-    r"(?:^[ \t]{0,3}(?P=tfence)~*[ \t]*\r?$|\Z)"
+    # the \r still ahead of it. Fence indentation is SPACES only -- a leading
+    # tab advances to the fourth column and is code content, so accepting one
+    # lets a tab-indented fence-like line close a real block early.
+    r"^ {0,3}(?P<bfence>`{3,})[^\n`]*$[\s\S]*?"
+    r"(?:^ {0,3}(?P=bfence)`*[ \t]*\r?$|\Z)"
+    r"|^ {0,3}(?P<tfence>~{3,})[^\n]*$[\s\S]*?"
+    r"(?:^ {0,3}(?P=tfence)~*[ \t]*\r?$|\Z)"
     # Inline span: opening and closing runs must be the same length, so
     # BOTH are bounded on BOTH sides. Without a left guard the regex
     # restarts inside a longer run -- as an opener, swallowing the text
@@ -6122,9 +6124,17 @@ def _span_is_plausibly_math(span: str, delimiter: str) -> bool:
     body = span[len(delimiter) : -len(delimiter)]
     if any(mark in body for mark in _CODE_MARKS_IN_MATH_SPAN):
         return False
-    if delimiter == "$" and ("\n" in body or len(body) > _MAX_INLINE_MATH_CHARS):
+    if delimiter != "$":
+        return True
+    if len(body) > _MAX_INLINE_MATH_CHARS:
         return False
-    return True
+    # A decoded "\nabla" / "\notin" IS a newline followed by its residue, so
+    # the line-break veto has to skip the damage it exists to repair.
+    return all(
+        _WS_LATEX_MATH_PATTERN.match(body, offset) is not None
+        for offset, char in enumerate(body)
+        if char == "\n"
+    )
 
 
 def _scan_dollar_spans(text: str) -> tuple[str, int, list[str]]:

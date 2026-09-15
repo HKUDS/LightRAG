@@ -112,7 +112,11 @@ inside it is rewritten:
   ordinary in shell and effectively absent from LaTeX math.
 - an **inline** span whose body crosses a line break, or runs past
   `_MAX_INLINE_MATH_CHARS` (200), is not a formula. Display math is exempt
-  from both: `$$...$$` is routinely long and multi-line.
+  from both: `$$...$$` is routinely long and multi-line. The line-break test
+  skips newlines that are **residue-shaped**: a decoded `\nabla` / `\notin`
+  *is* a newline followed by its residue, so a blanket veto would make those
+  two commands unrepairable inside `$...$` — the gate would reject exactly
+  the damage it is there to let through.
 
 A semicolon is deliberately **not** a marker: `$p(x; \theta)$` is ordinary
 notation in this corpus, and vetoing it would cost more than it saves.

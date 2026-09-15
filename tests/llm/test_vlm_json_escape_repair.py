@@ -224,6 +224,32 @@ def test_fence_like_line_inside_a_block_is_not_a_closer():
 
 
 @pytest.mark.offline
+def test_newline_commands_survive_the_inline_line_break_veto():
+    """The "\n" residues are the damage AND a line break at once: a decoded
+    "\nabla" IS a newline followed by "abla". A blanket line-break veto on
+    inline spans therefore makes those two commands unrepairable inside
+    "$...$" -- the veto has to skip newlines that are residue-shaped."""
+    assert repair_vlm_json_escape_damage("$\nabla f$") == "$" + r"\nabla" + " f$"
+    assert repair_vlm_json_escape_damage("$x \notin A$") == "$x " + r"\notin" + " A$"
+    # A line break that is NOT residue-shaped still rejects the span.
+    for multiline in ("see $a +\n\tau$ end", "see $a\r\n\tau$ end"):
+        assert repair_vlm_json_escape_damage(multiline) == multiline
+
+
+@pytest.mark.offline
+def test_fence_indentation_is_spaces_only():
+    """CommonMark allows at most three leading SPACES before a fence; a tab
+    advances to the fourth column and is code content. Accepting one lets a
+    tab-indented fence-like line close a real block early, and the code
+    after it is then scanned as math -- a rewrite, not a miss."""
+    damaged = "```sh\n\t```\nA=$X; \text=1; B=$Y\n```"
+    assert repair_vlm_json_escape_damage(damaged) == damaged
+    # Three spaces are still legal indentation for a real fence.
+    indented = "   ```sh\n   A=$X; \text=1; B=$Y\n   ```"
+    assert repair_vlm_json_escape_damage(indented) == indented
+
+
+@pytest.mark.offline
 def test_backtick_fence_info_string_may_not_carry_a_backtick():
     """CommonMark forbids a backtick inside a backtick fence's info string,
     to keep it unambiguous with an inline span; a tilde fence allows it.
