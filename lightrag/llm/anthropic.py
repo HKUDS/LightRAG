@@ -245,7 +245,19 @@ async def anthropic_complete_if_cache(
                         "total_tokens": prompt_tokens + output_tokens,
                     }
                 )
-            content = response.content[0].text
+            # When extended thinking is enabled, the first content block is a
+            # ThinkingBlock/RedactedThinkingBlock (no `.text` attribute) and the
+            # visible answer follows in a later block. Pick the first block that
+            # carries a text payload instead of assuming content[0] is it.
+            content = next(
+                (block.text for block in response.content if hasattr(block, "text")),
+                None,
+            )
+            if content is None:
+                raise InvalidResponseError(
+                    "Anthropic API returned no text content block "
+                    f"(stop_reason={getattr(response, 'stop_reason', None)})"
+                )
             if getattr(response, "stop_reason", None) == "max_tokens":
                 content = TruncatedResponse(content)
             return content
