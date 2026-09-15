@@ -1048,7 +1048,7 @@ POST /documents/recovery/force_reset
 |---|---|
 | `manual_drain_blocked` | `POST /documents/recovery/force_reset`，然后 `POST /documents/scan` —— scan 会回滚未完成的操作**并且**自己执行 `FAILED` 重置，无需再单独调重试。 |
 | `manual_drain_stalled` | `POST /documents/recovery/force_reset`，然后排查 `recovery_message` 中列出的文档——它们卡住的原因这个栅栏无法给出。处理完后重新调 `POST /documents/reprocess_failed`。 |
-| `manual_drain_enqueue_stalled` | `POST /documents/recovery/force_reset`，然后重新调 `POST /documents/reprocess_failed`。`recovery_message` 会列出卡住的预约 token 及其属主进程号——若是某个 worker 真的卡死而非只是慢，重启它。 |
+| `manual_drain_enqueue_stalled` | `POST /documents/recovery/force_reset`，然后重新调 `POST /documents/reprocess_failed`。这一种栅栏下 `force_reset` 会**连同卡住的预约一起清掉**——它们本身就是阻塞源，只清栅栏的话 `/documents/scan` 与 `/documents/clear` 仍被拒，重发的重试也会再次触发栅栏。响应里的 `dropped_enqueue_reservations` 给出清掉的数量，`recovery_message` 会列出这些 token 及其属主进程号——若是某个 worker 真的卡死而非只是慢，重启它。若持有者其实活着只是慢，它的入队可能在客户端已收到 200 之后被拒：`/upload` 会被下一次 `/documents/scan` 捞回，`/documents/text` 与 `/documents/texts` 必须重发。 |
 | worker 死于 `custom_chunks` / `delete` / `clear` 途中 | 不要直接 `force_reset`——按下面「半提交存储怎么修」处理。 |
 
 **能不能直接重启服务了事？** 判断标准只有一条——**堵塞源在内存里还是在存储里**。重启清掉的只有运行时协调状态（`pipeline_status` 里的栅栏与 owner 记录、ingress 里排队的手动重试请求，都不持久化），写进 `doc_status` / `full_docs` / 存储的东西一样都清不掉。
@@ -1057,7 +1057,7 @@ POST /documents/recovery/force_reset
 | --- | :-: | --- |
 | owner 生死无法判定 | ✅ 能 | 卡住的 reservation 记录本身就活在跨进程共享状态里，进程组一起重启就没了，且没有任何存储被动过——这是最干净的办法 |
 | `manual_drain_stalled` | ⚠️ 多半能 | 栅栏与排队请求随重启消失；那些"反复回来又不变状态"的活跃行若是死进程遗留的 `PROCESSING` / `PARSING` / `ANALYZING` 孤儿，重启后会被自动重置为 `PENDING` 并在下次触发时重跑，堵塞源自然消失。但重启不诊断根因：若它们是因别的原因每轮都停在同一状态，下一次 `/documents/reprocess_failed` 会再次 stall |
-| `manual_drain_enqueue_stalled` | ✅ 能 | 卡住的预约只存在于 `pipeline_status` 这份运行时状态里，重启会连同栅栏一起清掉。真正在途的那次上传，其文档要么已经是 `PENDING`（下次触发会重跑），要么根本没写入，不存在半提交 |
+| `manual_drain_enqueue_stalled` | ✅ 能 | 卡住的预约只存在于 `pipeline_status` 这份运行时状态里，重启会连同栅栏一起清掉。真正在途的那次上传，其文档要么已经是 `PENDING`（下次触发会重跑），要么根本没写入，不存在半提交。这一种情况下重启其实比 `force_reset` *更干净*：生产者随预约一起被终止，不会有谁在客户端已收到 200 之后才被拒 |
 | `manual_drain_blocked` | ❌ 不能 | 阻塞源是 `doc_status.metadata` 里未完成的 custom-chunk 操作日志，它**是持久化的**，重启原样还在。重启只清掉栅栏和排队请求（这一步仍是必要的，否则排队请求会让 `/scan` 拒绝自己的 reservation），真正的回滚必须由 `POST /documents/scan` 执行 |
 | worker 死于 `custom_chunks` / `delete` / `clear` | ❌ 不能 | 半提交的是存储本身，见下 |
 

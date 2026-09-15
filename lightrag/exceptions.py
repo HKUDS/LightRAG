@@ -295,11 +295,14 @@ class PipelineRecoveryRequiredError(RuntimeError):
     ``manual_drain_blocked`` (rows the drain can never advance at all — an
     unfinished custom-chunk operation) and ``manual_drain_enqueue_stalled`` (the
     in-flight enqueue reservations the drain waits on, none of which finished
-    for the whole bounded window). All are cleared the same way:
+    for the whole bounded window). All are cleared by
     ``POST /documents/recovery/force_reset``, which also cancels the queued manual
     intents, since a sticky request is itself what makes ``/documents/scan``
     refuse (``refuse_when_manual_pending``) and ``/scan`` is the remedy for the
-    blocked case.
+    blocked case. For ``manual_drain_enqueue_stalled`` it additionally drops the
+    in-flight enqueue reservations the drain was waiting on — there the fence
+    alone is not the blocker, and clearing only the fence would leave the
+    workspace just as stuck.
     """
 
     def __init__(self, message: str, *, blocked_doc_ids: tuple[str, ...] = ()) -> None:

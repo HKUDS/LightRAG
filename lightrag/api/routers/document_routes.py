@@ -1015,6 +1015,20 @@ class ForceResetRecoveryResponse(BaseModel):
             "reset cover them."
         ),
     )
+    dropped_enqueue_reservations: int = Field(
+        default=0,
+        description=(
+            "In-flight enqueue reservations dropped along with the fence. Non-zero "
+            "only for a ``manual_drain_enqueue_stalled`` fence, where the drain "
+            "waited out its whole bounded window on this set and the set IS the "
+            "blocker: leaving it would keep /documents/scan and /documents/clear "
+            "refused and make a re-issued /documents/reprocess_failed fence again. "
+            "A dropped reservation whose producer was alive and merely slow may "
+            "have its enqueue refused after the client already got 200 — an "
+            "/upload is recovered by the next /documents/scan, a /documents/text "
+            "or /documents/texts must be re-sent."
+        ),
+    )
 
 
 """Response model for document status
@@ -5466,14 +5480,19 @@ def create_document_routes(
 
             track_id = generate_track_id("upload")
 
-            # Bg task: enqueue + trigger processing, then release the slot.
-            # ``pipeline_index_file`` does both: it calls
-            # ``pipeline_enqueue_file`` (writes doc_status / full_docs) and
-            # then ``apipeline_process_enqueue_documents``.  The latter is
-            # safe to invoke even when the loop is already busy — its
-            # refused reservation arms the auto-rescan flag and returns,
-            # so concurrent uploads/inserts cooperate via the running
-            # loop's quiescence decision.
+            # Bg task: enqueue -> release the admission slot -> drive
+            # processing, in that order. ``pipeline_index_file`` calls
+            # ``pipeline_enqueue_file`` (writes doc_status / full_docs), then
+            # ``_release_admission_after_enqueue``, and only then
+            # ``apipeline_process_enqueue_documents``. Holding the slot across
+            # that last call self-deadlocks a manual retry's DRAIN_TO_IDLE — the
+            # run would be waiting on a token only it can release, and only by
+            # returning. The ``finally`` below is an idempotent backstop; it does
+            # real work only when the enqueue itself raised before the release.
+            # Driving processing is safe even when the loop is already busy — its
+            # refused reservation arms the auto-rescan flag and returns, so
+            # concurrent uploads/inserts cooperate via the running loop's
+            # quiescence decision.
             async def _indexing_work(started):
                 # started.set() first (no await before it) so the endpoint's
                 # start-barrier confirms takeover before returning; a body-send
@@ -7063,10 +7082,19 @@ def create_document_routes(
         clear (Linux multi-worker), which may have left storage partially
         committed, or when a manual retry's drain cannot reach idle — so every
         mutation is refused until the workspace is recovered. This endpoint does
-        NOT repair anything; it only drops the fence (and any lingering
-        reservation flags), re-opening a possibly-inconsistent workspace. Requires
-        ``confirm=true``. A true idempotent replay of the interrupted operation is
-        a separate concern (core atomicity).
+        NOT repair anything; it only drops the fence (and the reservation state
+        that fence is blocked on), re-opening a possibly-inconsistent workspace.
+        Requires ``confirm=true``. A true idempotent replay of the interrupted
+        operation is a separate concern (core atomicity).
+
+        For a ``manual_drain_enqueue_stalled`` fence it ALSO drops the in-flight
+        enqueue reservation set, because there that set is the blocker rather
+        than a bystander — clearing the fence alone would leave /documents/scan
+        and /documents/clear refused and make a re-issued
+        /documents/reprocess_failed fence again. Any other fence kind leaves the
+        set untouched. A producer that was alive and merely slow loses its
+        reservation: see ``dropped_enqueue_reservations`` for what that costs per
+        entry point.
 
         It ALSO cancels the workspace's queued manual retry requests, and that is
         load-bearing rather than housekeeping: a sticky un-ACKed request makes
@@ -7142,8 +7170,16 @@ def create_document_routes(
             )
 
         cancelled = 0
+        dropped_reservations = 0
         async with pipeline_status_lock:
-            if not pipeline_status.get("recovery_required"):
+            # One snapshot, not a field-at-a-time read: this critical section
+            # needs both ``recovery_required`` and (for one fence kind)
+            # ``pending_enqueue_tokens``, and a DictProxy serves each ``get`` as
+            # its own Manager RPC, while ``copy()`` is a single one (the same
+            # reason every reservation path in shared_storage snapshots first).
+            snapshot = pipeline_status.copy()
+            fence = snapshot.get("recovery_required")
+            if not fence:
                 return ForceResetRecoveryResponse(
                     status="no_recovery_required",
                     message="No recovery_required fence is set.",
@@ -7186,42 +7222,89 @@ def create_document_routes(
                     ),
                 )
 
-            # Drop the fence and any lingering reservation state in one atomic
+            # Drop the fence and the owner-held reservation flags in one atomic
             # update. This is deliberately owner-agnostic — it is a manual
             # override, not a normal owner-checked release. The manual freeze goes
             # with it: it is held BY a run that this reset is abandoning, so
             # leaving it would wedge every upload behind an owner that is gone.
-            pipeline_status.update(
-                {
-                    "recovery_required": None,
-                    "operation_record": None,
-                    "busy": False,
-                    "destructive_busy": False,
-                    "busy_owner": None,
-                    "scanning": False,
-                    "scanning_exclusive": False,
-                    "scanning_owner": None,
-                    "manual_freeze_requested": False,
-                    "manual_freeze_started_at": None,
-                    "manual_resetting": False,
-                    "manual_phase": MANUAL_PHASE_IDLE,
-                    "manual_owner": None,
-                }
-            )
+            updates = {
+                "recovery_required": None,
+                "operation_record": None,
+                "busy": False,
+                "destructive_busy": False,
+                "busy_owner": None,
+                "scanning": False,
+                "scanning_exclusive": False,
+                "scanning_owner": None,
+                "manual_freeze_requested": False,
+                "manual_freeze_started_at": None,
+                "manual_resetting": False,
+                "manual_phase": MANUAL_PHASE_IDLE,
+                "manual_owner": None,
+            }
 
+            # The in-flight enqueue set is dropped for ONE fence kind, because for
+            # that one it IS the blocker rather than a bystander: an enqueue-stall
+            # fence says the drain waited out its whole bounded window on a
+            # reservation set that never changed. Leaving the set behind would
+            # clear the fence and change nothing — /documents/scan and
+            # /documents/clear both refuse on ``pending_enqueues``, and a re-issued
+            # /documents/reprocess_failed starts a fresh ``_ManualDrainProgress``
+            # that waits out the window again and fences again. The only exit left
+            # would be a process restart: exactly the dead end the bound exists to
+            # remove (see ``_MANUAL_DRAIN_ENQUEUE_STALL_SECONDS``).
+            #
+            # Every OTHER fence kind keeps the set. It is not owner-held state this
+            # reset is abandoning: a healthy upload/insert, or a source-conflict
+            # repair's weighted-0 guard, may hold a token for reasons unrelated to
+            # the fence being cleared. The rule is that force_reset clears exactly
+            # what the fence message told the operator it would clear.
+            #
+            # Cost of the drop, when the holder was in fact alive and merely slow
+            # (the false positive the bounded window accepts): its token is gone,
+            # so with admission ENABLED the enqueue's re-weight is no longer a
+            # re-weight — ``_reserve_ingress_slot`` treats it as a new reservation
+            # and may refuse it after the client already got 200. /upload survives
+            # that (the file is in INPUT/, recovered by the next /documents/scan);
+            # /text and /texts do not (nothing was written, the client must
+            # re-send). With admission disabled the enqueue proceeds untouched and
+            # only loses its mutual exclusion against a concurrent destructive job
+            # — which is the partial-commit risk this endpoint already declares.
+            if (
+                isinstance(fence, dict)
+                and fence.get("kind") == "manual_drain_enqueue_stalled"
+            ):
+                dropped_reservations = len(snapshot.get("pending_enqueue_tokens") or {})
+                updates.update({"pending_enqueue_tokens": {}, "pending_enqueues": 0})
+
+            pipeline_status.update(updates)
+
+        # The enqueue-stall fence named the tokens it was blocked on; this is its
+        # counterpart, so the count of what was actually dropped has to be in the
+        # log too or the two records cannot be reconciled after the fact.
         logger.warning(
             "recovery_required fence force-reset (unsafe manual override) for "
             f"workspace {rag.workspace}; cancelled {cancelled} queued manual "
-            "retry request(s)"
+            f"retry request(s), dropped {dropped_reservations} stalled in-flight "
+            "enqueue reservation(s)"
         )
         return ForceResetRecoveryResponse(
             status="reset",
             cancelled_manual_retries=cancelled,
+            dropped_enqueue_reservations=dropped_reservations,
             message=(
                 "recovery_required fence cleared"
                 + (
                     f" and {cancelled} queued manual retry request(s) cancelled"
                     if cancelled
+                    else ""
+                )
+                + (
+                    f"; {dropped_reservations} stalled in-flight enqueue "
+                    "reservation(s) dropped — re-send any /documents/text or "
+                    "/documents/texts request that was in flight (an /upload is "
+                    "recovered by /documents/scan)"
+                    if dropped_reservations
                     else ""
                 )
                 + ". The workspace may still be "

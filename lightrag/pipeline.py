@@ -240,6 +240,16 @@ _MANUAL_DRAIN_BLOCKER_SAMPLE = 8
 # and no way out short of restarting the process. Loud and recoverable beats
 # silent and permanent; the bound is sized so that reaching it means something is
 # genuinely stuck.
+#
+# What a false positive costs the slow-but-healthy producer is decided by that
+# remedy, not here: ``force_reset`` DROPS the in-flight reservation set for this
+# fence kind (it is the blocker — clearing the fence alone changes nothing), so
+# the producer's enqueue loses its reservation mid-flight. With admission enabled
+# its re-weight is then treated as a new reservation and may be refused after the
+# client already got 200 — an ``/upload`` is recovered by the next
+# ``/documents/scan``, a ``/documents/text``/``/texts`` must be re-sent. The
+# force_reset response says so; that is the cost of a wall-clock bound sized for
+# a producer that is stuck, applied to one that was only slow.
 _MANUAL_DRAIN_ENQUEUE_STALL_SECONDS = 600.0
 _MANUAL_DRAIN_ENQUEUE_STALL_ROUNDS = max(
     1, int(_MANUAL_DRAIN_ENQUEUE_STALL_SECONDS / _MANUAL_DRAIN_POLL_SECONDS)
@@ -4266,8 +4276,10 @@ class _PipelineMixin:
             f"{_MANUAL_DRAIN_ENQUEUE_STALL_SECONDS:.0f}s without one of them "
             "finishing, and the freeze admits no new ones, so waiting again "
             "cannot change the count. Clear this with POST "
-            "/documents/recovery/force_reset (which also cancels the queued "
-            "retry), then re-issue POST /documents/reprocess_failed "
+            "/documents/recovery/force_reset, which cancels the queued retry "
+            "AND drops these reservations (an upload that was merely slow is "
+            "recovered by POST /documents/scan; a /documents/text(s) must be "
+            "re-sent), then re-issue POST /documents/reprocess_failed "
             f"(reservation token sample: {', '.join(sample) or 'unavailable'}; "
             f"owner pid(s): {', '.join(owners) or 'unavailable'})."
         )
