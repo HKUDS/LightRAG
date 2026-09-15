@@ -3,11 +3,46 @@
 from __future__ import annotations
 
 import json
+import logging
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
 from lightrag.parser.external.mineru import MinerUIRBuilder
+from lightrag.utils import logger as lightrag_logger
+
+
+@contextmanager
+def _captured_logs(caplog, level):
+    """Capture lightrag logger records.
+
+    The lightrag logger sets ``propagate = False``, so caplog cannot see it
+    unless propagation is re-enabled for the duration of the call.
+    """
+    original_propagate = lightrag_logger.propagate
+    lightrag_logger.propagate = True
+    try:
+        with caplog.at_level(level, logger=lightrag_logger.name):
+            yield
+    finally:
+        lightrag_logger.propagate = original_propagate
+
+
+def _distinct_records(caplog, needle: str, level: int) -> list[logging.LogRecord]:
+    """Records at ``level`` whose message contains ``needle``, deduplicated.
+
+    caplog sees each record twice (the lightrag logger's own handler, plus the
+    propagated copy at root), so the raw list says nothing about how many times
+    the code logged. One ``logger`` call emits ONE ``LogRecord`` object handed
+    to both handlers, so deduplicating by identity counts calls — unlike
+    deduplicating by message, which cannot tell one call from two.
+    """
+    seen: dict[int, logging.LogRecord] = {}
+    for record in caplog.records:
+        if record.levelno == level and needle in record.getMessage():
+            seen.setdefault(id(record), record)
+    return list(seen.values())
 
 
 def _write_bundle(tmp_path: Path, content_list: list[dict]) -> Path:
@@ -516,6 +551,129 @@ def test_adapter_empty_table_dropped(tmp_path: Path) -> None:
     joined = "\n".join(b.content_template for b in ir.blocks)
     assert "TBL:" not in joined
     assert "kept" in joined
+
+
+@pytest.mark.offline
+def test_adapter_logs_structural_item_dropped_without_text(
+    tmp_path: Path, caplog
+) -> None:
+    """An item the dispatch does not know and that carries no usable text is
+    lost without a trace — that is how the dropped ``chart`` items stayed
+    invisible. Leave a debug breadcrumb for those, but not for text-typed
+    items whose emptiness is ordinary layout noise.
+
+    The breadcrumb carries ``self_ref`` and the item's key set: the type alone
+    does not identify which item to look at, nor what payload shape the
+    dispatch failed to map.
+    """
+    raw = _write_bundle(
+        tmp_path,
+        [
+            # Picture-like type the dispatch does not handle: worth a log line.
+            {"type": "header_image", "img_path": "images/logo.png", "page_idx": 3},
+            # Blank running head: expected to be empty, must stay silent.
+            {"type": "header", "text": "", "page_idx": 3},
+        ],
+    )
+    with _captured_logs(caplog, logging.DEBUG):
+        MinerUIRBuilder().normalize_from_workdir(raw, document_name="h.pdf")
+
+    records = _distinct_records(caplog, "no usable text", logging.DEBUG)
+    assert len(records) == 1
+    assert records[0].getMessage() == (
+        "[mineru_ir_builder] 'h.pdf': dropping item with no usable text "
+        "(type=header_image, page_idx=3, self_ref=content_list.json#/0, "
+        "keys=['img_path', 'page_idx', 'type'])"
+    )
+
+
+@pytest.mark.offline
+def test_adapter_warns_once_per_document_about_dropped_items(
+    tmp_path: Path, caplog
+) -> None:
+    """The per-item breadcrumb is DEBUG, which a deployment running at INFO
+    never sees. One WARNING per document names the types that went missing, so
+    the loss is visible on the first ingest instead of after a manual audit.
+
+    It names the document: parse workers run concurrently and no log formatter
+    supplies per-document context, so a bare type/count line in an interleaved
+    batch cannot be attributed to an input file.
+    """
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {"type": "header_image", "img_path": "images/a.png", "page_idx": 1},
+            {"type": "header_image", "img_path": "images/b.png", "page_idx": 2},
+            # Neither ``type`` nor ``label``: renders as ``<untyped>``.
+            {"img_path": "images/c.png", "page_idx": 2},
+            # Layout noise on both counts: must not be counted nor logged.
+            {"type": "header", "text": "", "page_idx": 1},
+            {"type": "text", "text": "Kept body.", "page_idx": 1},
+        ],
+    )
+    with _captured_logs(caplog, logging.DEBUG):
+        ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="w.pdf")
+
+    records = _distinct_records(caplog, "item(s) dropped", logging.WARNING)
+    assert len(records) == 1
+    assert records[0].getMessage() == (
+        "[mineru_ir_builder] 'w.pdf': 3 content_list item(s) dropped with no "
+        "usable text: <untyped>=1, header_image=2"
+    )
+    # The warning is a report, not a behaviour change: the body still carries
+    # the text item and nothing else entered the IR.
+    assert "Kept body." in "\n".join(b.content_template for b in ir.blocks)
+
+
+@pytest.mark.offline
+def test_adapter_no_warning_when_nothing_dropped(tmp_path: Path, caplog) -> None:
+    """A document whose items the dispatch handles must stay silent — a
+    per-document warning that fires on ordinary input is noise an operator
+    learns to ignore.
+    """
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {"type": "text", "text": "Title", "text_level": 1},
+            {"type": "text", "text": "Body."},
+            {"type": "image", "img_path": "images/x.png", "page_idx": 1},
+            # Empty text-typed items: known layout noise, not a drop to report.
+            {"type": "header", "text": "", "page_idx": 1},
+            {"type": "page_number", "text": "12", "page_idx": 1},
+        ],
+    )
+    with _captured_logs(caplog, logging.DEBUG):
+        MinerUIRBuilder().normalize_from_workdir(raw, document_name="q.pdf")
+
+    assert _distinct_records(caplog, "dropped", logging.WARNING) == []
+    assert _distinct_records(caplog, "no usable text", logging.DEBUG) == []
+
+
+@pytest.mark.offline
+def test_adapter_logs_empty_equation_dropped(tmp_path: Path, caplog) -> None:
+    """An empty ``equation`` is dropped by its own branch so it never reaches
+    the sidecar. That drop was the one silent hole left: the empty-table branch
+    logs, the text fallback logs, this one did not.
+    """
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {"type": "text", "text": "Body."},
+            {"type": "equation", "text": "   ", "page_idx": 4},
+        ],
+    )
+    with _captured_logs(caplog, logging.DEBUG):
+        ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="e.pdf")
+
+    records = _distinct_records(caplog, "empty equation", logging.DEBUG)
+    assert len(records) == 1
+    assert records[0].getMessage() == (
+        "[mineru_ir_builder] 'e.pdf': dropping empty equation item "
+        "(page_idx=4, self_ref=content_list.json#/1)"
+    )
+    # A local drop of a known type stays out of the per-document summary.
+    assert _distinct_records(caplog, "item(s) dropped", logging.WARNING) == []
+    assert sum(len(b.equations) for b in ir.blocks) == 0
 
 
 @pytest.mark.offline

@@ -34,6 +34,7 @@ from typing import (
     NamedTuple,
     Optional,
     Iterable,
+    Iterator,
     Sequence,
     Collection,
 )
@@ -6045,19 +6046,309 @@ def strip_control_characters(text: str, replacement_char: str = "") -> str:
 # destroyed. Form feed (\x0c) and backspace (\x08) followed by a letter have
 # no legitimate use in LLM-generated prose, so restoring the backslash is
 # unconditionally safe. The other three decodable escapes (\t, \n, \r) map to
-# legitimate whitespace and cannot be restored without guessing; they are only
-# *detected* (see _WS_LATEX_SUSPECT_PATTERN) so real-world frequency can be
-# observed before deciding on heuristic restoration.
+# legitimate whitespace and cannot be restored globally without guessing. They
+# are repaired only inside paired dollar-math spans and merely detected
+# elsewhere (see _WS_LATEX_SUSPECT_PATTERN).
 _FORMFEED_LATEX_PATTERN = re.compile(r"\x0c(?=[A-Za-z])")
 _BACKSPACE_LATEX_PATTERN = re.compile(r"\x08(?=[A-Za-z])")
-# Whitespace + residue spelling that completes a common LaTeX command whose
-# remainder collides with no English word ("eq"/"o"/"exists" are deliberately
-# absent: "eq." abbreviations, the word "o"/"exists" would false-positive).
-_WS_LATEX_SUSPECT_PATTERN = re.compile(
-    r"\t(?=(?:au|heta|imes|ext|ilde|herefore|riangle)\b)"
-    r"|\r(?=(?:ho|ight|angle|ceil)\b)"
-    r"|\n(?=(?:abla|otin)\b)"
+# Whitespace + residue spelling that completes a common LaTeX command. Two
+# variants of one whitelist: _WS_LATEX_SUSPECT_PATTERN (a word boundary OR a
+# following non-ASCII character) only warns, about prose;
+# _WS_LATEX_MATH_PATTERN ((?![A-Za-z])) is the one that rewrites, and only
+# inside a confirmed math span. Never swap their guards -- see *Residue
+# whitelist and its two boundaries* in the contract doc,
+# docs/design/LatexEscapeRepairContract.md.
+# ``__END__`` is substituted with the trailing guard; a plain placeholder
+# rather than ``str.format`` so that adding a ``{n}`` quantifier to the
+# residue alternation below cannot break the substitution.
+_WS_LATEX_RESIDUES = (
+    r"\t(?=(?:au|heta|imes|ext|ilde|herefore|riangle)__END__)"
+    r"|\r(?=(?:ho|ight|angle|ceil)__END__)"
+    r"|\n(?=(?:abla|otin)__END__)"
 )
+# A bare ``\b`` reports nothing when a word character follows, and Python's
+# ``re`` counts a CJK ideograph as a word character -- so a damaged command
+# sitting in Chinese prose with no dollar math around it was neither repaired
+# nor warned about. Hence the second alternative: a Latin fragment pressed
+# against a non-ASCII character with no space between them is essentially only
+# produced by this damage. ASCII word characters stay excluded -- in
+# tab-separated data ``col<tab>ext_id`` and ``<tab>au2`` are plausible values,
+# and the log noise is not worth them.
+_WS_LATEX_SUSPECT_PATTERN = re.compile(
+    _WS_LATEX_RESIDUES.replace("__END__", r"(?:\b|(?=[^\x00-\x7F]))")
+)
+_WS_LATEX_MATH_PATTERN = re.compile(
+    _WS_LATEX_RESIDUES.replace("__END__", r"(?![A-Za-z])")
+)
+
+
+# Markdown regions whose content is verbatim: a fenced block (closed, or
+# running to the end of the text when the model never closed it) and a closed
+# inline code span. An unclosed single backtick matches nothing, so it cannot
+# suppress repairs in the rest of the text -- the same reading CommonMark
+# gives it.
+#
+# Fences and inline spans are matched in SEPARATE passes, fences first, because
+# CommonMark settles block structure before it looks for inline spans: an
+# inline span can never cross a fence boundary. One alternation cannot express
+# that -- the inline branch wins by POSITION, not by branch order, so a stray
+# backtick anywhere earlier in the text pairs with one inside the block, eats
+# the opening fence, and leaves the rest of the code exposed to the scanner.
+_MD_FENCE_REGION_PATTERN = re.compile(
+    # One branch per fence character because their info strings differ: a
+    # backtick fence may not carry a backtick in its info string (CommonMark,
+    # to keep it unambiguous with an inline span), a tilde fence may. Closing
+    # fence: only whitespace may follow, and it may be longer than the opener
+    # -- accepting a trailing info string on the closer lets a fence-like line
+    # INSIDE the block end the region early. The optional \r keeps CRLF text
+    # working: MULTILINE "$" matches before the \n, with the \r still ahead of
+    # it. Fence indentation is SPACES only -- a leading tab advances to the
+    # fourth column and is code content, so accepting one lets a tab-indented
+    # fence-like line close a real block early.
+    r"^ {0,3}(?P<bfence>`{3,})[^\n`]*$[\s\S]*?"
+    r"(?:^ {0,3}(?P=bfence)`*[ \t]*\r?$|\Z)"
+    r"|^ {0,3}(?P<tfence>~{3,})[^\n]*$[\s\S]*?"
+    r"(?:^ {0,3}(?P=tfence)~*[ \t]*\r?$|\Z)",
+    re.MULTILINE,
+)
+# A blank line ends a paragraph, and a code span is an inline inside ONE leaf
+# block, so backtick runs in two different paragraphs cannot pair. The blank
+# line must tolerate a \r or CRLF text keeps the exposure -- the same trap a
+# closing fence fell into.
+_MD_BLANK_LINE_PATTERN = re.compile(r"\n[ \t\r]*\n")
+# Inline span, searched only within one paragraph of one gap between fences.
+# Opening and closing
+# runs must be the same length, so BOTH are bounded on BOTH sides: without a
+# left guard the regex restarts inside a longer run -- as an opener, swallowing
+# the text after an unmatched run; as a closer, ending the span early.
+#
+# The opener also honours backslash escapes, by parity: ``\` `` is a literal
+# backtick and opens nothing, ``\\` `` is a literal backslash followed by a
+# real opener. The leading backslashes fall inside the region, which is
+# harmless. The CLOSER deliberately does NOT honour them -- CommonMark gives
+# backslash escapes no effect inside a code span, so ``\` `` closes it. Adding
+# parity there would leave such a span unclosed, and an unclosed run protects
+# nothing: its code would be handed straight to the scanner.
+_MD_INLINE_CODE_PATTERN = re.compile(
+    r"(?<![\\`])(?:\\\\)*(?P<ticks>`+)(?!`)[\s\S]*?(?<!`)(?P=ticks)(?!`)"
+)
+
+
+def _iter_inline_code_regions(
+    text: str, start: int, end: int
+) -> Iterator[tuple[int, int]]:
+    """Yield inline code spans in ``text[start:end]``, one paragraph at a time.
+
+    Searched in place rather than on a sliced copy so the opener's lookbehind
+    still sees the character before each range.
+    """
+    cursor = start
+    for blank in _MD_BLANK_LINE_PATTERN.finditer(text, start, end):
+        yield from (
+            span.span()
+            for span in _MD_INLINE_CODE_PATTERN.finditer(text, cursor, blank.start())
+        )
+        cursor = blank.end()
+    yield from (
+        span.span() for span in _MD_INLINE_CODE_PATTERN.finditer(text, cursor, end)
+    )
+
+
+def _iter_md_code_regions(text: str) -> Iterator[tuple[int, int]]:
+    """Yield (start, end) of every Markdown code region, left to right.
+
+    Block structure first: fences, then inline spans within each paragraph of
+    the text the fences leave behind. Both boundaries are there for the same
+    reason -- an inline span cannot cross either, and letting one cross lets a
+    stray backtick eat a real span's opener and expose that span's own code.
+    """
+    cursor = 0
+    for fence in _MD_FENCE_REGION_PATTERN.finditer(text):
+        yield from _iter_inline_code_regions(text, cursor, fence.start())
+        yield fence.span()
+        cursor = fence.end()
+    yield from _iter_inline_code_regions(text, cursor, len(text))
+
+
+# A span whose body carries these is code, not math: a double quote or a
+# backtick is ordinary in shell and ~absent from LaTeX math. Together with the
+# inline-only newline and length limits below, this is the general defense
+# against dollars that pair for some reason other than math -- it does not
+# grow with Markdown's grammar the way a list of code constructs does.
+_CODE_MARKS_IN_MATH_SPAN = ('"', "`")
+# No formula in a VLM description runs this long on one line; a shell command
+# between two "$VAR" expansions frequently does. Display math is exempt --
+# "$$...$$" is routinely long and multi-line.
+_MAX_INLINE_MATH_CHARS = 200
+# How much of a rewritten span reaches the log. A count alone tells an
+# operator that text changed but not what changed, which is no way to spot
+# a wrong rewrite in a real corpus.
+_LOGGED_SPAN_CHARS = 80
+
+
+def _span_is_plausibly_math(span: str, delimiter: str) -> bool:
+    """Content gate: pairing says *where* a span is, this says whether it is math.
+
+    See *Content gate* in the contract doc,
+    docs/design/LatexEscapeRepairContract.md, for what it costs.
+    """
+    body = span[len(delimiter) : -len(delimiter)]
+    if any(mark in body for mark in _CODE_MARKS_IN_MATH_SPAN):
+        return False
+    if delimiter != "$":
+        return True
+    if len(body) > _MAX_INLINE_MATH_CHARS:
+        return False
+    # Line breaks are rejected by CHARACTER CLASS, not by example: any CR or
+    # LF, whichever line ending the text uses. The exemption is equally
+    # general -- a decoded "\nabla" / "\rho" IS a line break followed by its
+    # residue, so a break the residue pattern matches is damage, not a break.
+    return all(
+        _WS_LATEX_MATH_PATTERN.match(body, offset) is not None
+        for offset, char in enumerate(body)
+        if char in "\r\n"
+    )
+
+
+def _scan_dollar_spans(text: str) -> tuple[str, int, list[str]]:
+    """Restore whitespace-class LaTeX escapes inside paired dollar math.
+
+    Tab, CR and LF are legitimate whitespace outside an explicit ``$...$`` /
+    ``$$...$$`` span, so they are restored only inside one. Callers get back
+    the repaired text and the number of replacements; damage this function
+    declines to repair is reported by ``repair_vlm_json_escape_damage``
+    through the prose detector instead.
+
+    Rules a change here must keep:
+
+    - **Never rewrite text a Pandoc-style parser would not call math.**
+      Dollar delimiters are ambiguous, so this is a one-sided bias: a missed
+      repair leaves damage that was already there, a wrong one corrupts prose
+      on its way to storage.
+    - An inline ``$`` opens only before a non-whitespace character, EXCEPT
+      when the damage itself sits there. Removing that exception rejects
+      ``"$<tab>au$"`` -- the shape this function exists to repair.
+    - Only the very next unescaped delimiter may close a span, and a
+      delimiter that cannot pair is skipped as an ordinary character (a
+      failed ``$$`` whole, not one dollar at a time) rather than ending the
+      scan.
+    - The function operates on already-decoded strings, so a correct LaTeX
+      command still contains a real backslash and cannot match the damage
+      pattern. Repairing twice equals repairing once.
+
+    The mechanism, the accepted misses and two already-rejected pairing
+    designs are in docs/design/LatexEscapeRepairContract.md -- read
+    *Delimiter policy* and *Rejected alternatives* in the contract doc before
+    changing how spans pair.
+    """
+
+    def _is_escaped(index: int) -> bool:
+        backslashes = 0
+        cursor = index - 1
+        while cursor >= 0 and text[cursor] == "\\":
+            backslashes += 1
+            cursor -= 1
+        return backslashes % 2 == 1
+
+    def _opens_inline_math(index: int) -> bool:
+        """Non-whitespace after the opener, or the damage itself there."""
+        if index + 1 >= len(text):
+            return False
+        return (
+            not text[index + 1].isspace()
+            or _WS_LATEX_MATH_PATTERN.match(text, index + 1) is not None
+        )
+
+    def _closes_inline_math(index: int) -> bool:
+        """Pandoc's closer rule: no whitespace before, no digit after."""
+        if index == 0 or text[index - 1].isspace():
+            return False
+        return not (index + 1 < len(text) and text[index + 1].isdigit())
+
+    def _next_delimiter(start: int, delimiter: str) -> int:
+        cursor = start
+        while cursor < len(text):
+            if text.startswith(delimiter, cursor) and not _is_escaped(cursor):
+                return cursor
+            cursor += 1
+        return -1
+
+    def _restore(match: re.Match[str]) -> str:
+        return {"\t": r"\t", "\r": r"\r", "\n": r"\n"}[match.group(0)]
+
+    pieces: list[str] = []
+    repaired_spans: list[str] = []
+    replacements = 0
+    cursor = 0
+    while cursor < len(text):
+        if text[cursor] != "$" or _is_escaped(cursor):
+            pieces.append(text[cursor])
+            cursor += 1
+            continue
+
+        delimiter = "$$" if text.startswith("$$", cursor) else "$"
+        close = -1
+        if delimiter == "$$" or _opens_inline_math(cursor):
+            # Only the very next unescaped delimiter may close: a span that
+            # has to reach over another dollar is not one span but a stray
+            # dollar plus a real span, and consuming it swallows the prose
+            # (and the real span's opener) in between.
+            close = _next_delimiter(cursor + len(delimiter), delimiter)
+            if delimiter == "$" and close >= 0 and not _closes_inline_math(close):
+                close = -1
+        if close < 0:
+            # Not a usable delimiter here: emit it and keep scanning, so a
+            # later well-formed span is still reached. A failed "$$" is
+            # skipped whole -- letting its second dollar open an inline span
+            # pairs it with the next single "$" and rewrites the prose in
+            # between.
+            pieces.append(delimiter)
+            cursor += len(delimiter)
+            continue
+
+        span_end = close + len(delimiter)
+        math_span = text[cursor:span_end]
+        if _span_is_plausibly_math(math_span, delimiter):
+            repaired_span, count = _WS_LATEX_MATH_PATTERN.subn(_restore, math_span)
+        else:
+            repaired_span, count = math_span, 0
+        pieces.append(repaired_span)
+        if count:
+            replacements += count
+            repaired_spans.append(repaired_span[:_LOGGED_SPAN_CHARS])
+        cursor = span_end
+
+    return "".join(pieces), replacements, repaired_spans
+
+
+def _repair_ws_latex_in_dollar_math(text: str) -> tuple[str, int, list[str]]:
+    """Repair dollar math outside Markdown code, which is read verbatim.
+
+    Code quotes dollars for its own reasons -- ``echo "$HOME" ... "$PATH"``
+    pairs as neatly as a formula does -- so a fenced block or an inline code
+    span is copied through untouched and no span may cross one. Callers get
+    back the repaired text and the number of replacements.
+
+    See docs/design/LatexEscapeRepairContract.md for what this does and does
+    not cover; code written without Markdown markers is indistinguishable
+    from prose here and is listed there among the accepted misses.
+    """
+    pieces: list[str] = []
+    spans: list[str] = []
+    replacements = 0
+    last = 0
+    for start, end in _iter_md_code_regions(text):
+        repaired, count, repaired_spans = _scan_dollar_spans(text[last:start])
+        pieces.append(repaired)
+        replacements += count
+        spans.extend(repaired_spans)
+        pieces.append(text[start:end])
+        last = end
+    repaired, count, repaired_spans = _scan_dollar_spans(text[last:])
+    pieces.append(repaired)
+    replacements += count
+    spans.extend(repaired_spans)
+    return "".join(pieces), replacements, spans
 
 
 def repair_vlm_json_escape_damage(text: str, *, context: str = "") -> str:
@@ -6072,8 +6363,9 @@ def repair_vlm_json_escape_damage(text: str, *, context: str = "") -> str:
 
     Isolated control characters (not followed by a letter) are left alone for
     downstream sanitization to drop. Whitespace-class damage (``\\tau`` ->
-    tab + ``au`` etc.) is ambiguous with legitimate whitespace and is only
-    logged at WARNING level, never rewritten.
+    tab + ``au`` etc.) is repaired only inside paired dollar-math spans.
+    Outside explicit math it remains ambiguous with legitimate whitespace and
+    is only logged, never rewritten.
 
     Args:
         text: Parsed string value to repair.
@@ -6089,6 +6381,19 @@ def repair_vlm_json_escape_damage(text: str, *, context: str = "") -> str:
         logger.warning(
             "Repaired LaTeX escape damage (\\f/\\b decoded by JSON parser)%s",
             f" in {context}" if context else "",
+        )
+
+    repaired, ws_repair_count, ws_repaired_spans = _repair_ws_latex_in_dollar_math(
+        repaired
+    )
+    if ws_repair_count:
+        logger.warning(
+            "Repaired whitespace-class LaTeX escape damage inside dollar math%s "
+            "(%d occurrence%s): %s",
+            f" in {context}" if context else "",
+            ws_repair_count,
+            "" if ws_repair_count == 1 else "s",
+            " | ".join(repr(span) for span in ws_repaired_spans),
         )
 
     suspect = _WS_LATEX_SUSPECT_PATTERN.search(repaired)
