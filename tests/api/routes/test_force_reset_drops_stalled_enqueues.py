@@ -10,10 +10,17 @@ process restart stays the only exit, which is the dead end the bounded wait
 exists to remove.
 
 Every OTHER fence kind keeps the set: it is not owner-held state the reset is
-abandoning. A healthy upload/insert, or a source-conflict repair's weighted-0
-guard, may hold a token for reasons unrelated to the fence being cleared. The
-rule is that force_reset clears exactly what the fence message told the operator
-it would clear.
+abandoning. A healthy upload/insert may hold a token for reasons unrelated to
+the fence being cleared. The rule is that force_reset clears exactly what the
+fence message told the operator it would clear.
+
+And within the enqueue-stall kind, only ORDINARY enqueues are dropped. A
+source-conflict repair parks a weighted-0 token in the same set to exclude
+clear/delete, scan classification and the manual reset for the whole span in
+which it re-reads the candidate set and demotes the losers — dropping that guard
+would re-open all three against a coroutine that may still resume. Weight cannot
+tell them apart (an enqueue whose documents all dedup away re-weights to 0 too),
+so the kind is stamped into the reservation at acquire time.
 """
 
 from __future__ import annotations
@@ -33,6 +40,8 @@ sys.argv = _original_argv
 
 from lightrag import LightRAG  # noqa: E402
 from lightrag.kg.shared_storage import (  # noqa: E402
+    SOURCE_REPAIR_RESERVATION_KIND,
+    acquire_enqueue_reservation,
     fence_workspace_for_recovery,
     finalize_share_data,
     get_namespace_data,
@@ -188,6 +197,97 @@ def test_force_reset_keeps_reservations_for_every_other_fence_kind(tmp_path, kin
             assert response.dropped_enqueue_reservations == 0
             assert pipeline_status.get("pending_enqueues") == 1
             assert live in dict(pipeline_status.get("pending_enqueue_tokens") or {})
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+async def _reserve_repair_guard(rag, token: str) -> None:
+    """Register what ``_repair_ingress_reservation`` registers: a weighted-0
+    token labelled as a source-conflict repair."""
+    pipeline_status, lock = await _status_handles(rag)
+    result = await acquire_enqueue_reservation(
+        pipeline_status,
+        lock,
+        token=token,
+        reject_when=(),
+        weight=0,
+        capacity=0,
+        kind=SOURCE_REPAIR_RESERVATION_KIND,
+    )
+    assert result.acquired
+
+
+def test_force_reset_keeps_a_source_repair_guard_it_cannot_safely_drop(tmp_path):
+    """The repair's guard is the one token in this set that must outlive the
+    reset: clear/delete, scan classification and the manual reset all race its
+    candidate re-read and demotion span. An operational wedge is recoverable;
+    corrupted source ownership is not."""
+
+    async def _run():
+        rag = await _build_rag(tmp_path)
+        try:
+            pipeline_status, _ = await _status_handles(rag)
+            stuck = uuid4().hex
+            guard = f"source-repair-{uuid4().hex}"
+            assert await _reserve_enqueue_slot(rag, stuck)
+            await _reserve_repair_guard(rag, guard)
+            await _fence(rag, "manual_drain_enqueue_stalled")
+
+            endpoint = _force_reset_endpoint(rag, tmp_path)
+            response = await endpoint(ForceResetRecoveryRequest(confirm=True))
+
+            assert response.status == "reset"
+            # The ordinary enqueue went; the guard stayed, and the count mirrors
+            # what is left rather than the reset's intent.
+            tokens = dict(pipeline_status.get("pending_enqueue_tokens") or {})
+            assert list(tokens) == [guard]
+            assert pipeline_status.get("pending_enqueues") == 1
+            assert response.dropped_enqueue_reservations == 1
+            assert response.retained_enqueue_reservations == 1
+
+            # And the exclusion the guard exists for still holds.
+            acquired, reason = await _acquire_destructive_busy(
+                rag,
+                uuid4().hex,
+                kind="clear",
+                operation_record={"kind": "clear"},
+            )
+            assert acquired is False
+            assert "in flight" in (reason or "")
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_a_reweight_cannot_relabel_someone_elses_reservation(tmp_path):
+    """The kind is set by the acquire that MINTS the reservation. A re-weight
+    that passes no kind keeps the stored one — otherwise any caller re-weighting
+    a token would silently demote a repair guard to an ordinary enqueue and make
+    it droppable."""
+
+    async def _run():
+        rag = await _build_rag(tmp_path)
+        try:
+            pipeline_status, lock = await _status_handles(rag)
+            guard = f"source-repair-{uuid4().hex}"
+            await _reserve_repair_guard(rag, guard)
+
+            result = await acquire_enqueue_reservation(
+                pipeline_status,
+                lock,
+                token=guard,
+                reject_when=(),
+                weight=4,
+                capacity=0,
+            )
+            assert result.acquired
+
+            meta = dict(pipeline_status.get("pending_enqueue_tokens") or {})[guard]
+            assert meta["kind"] == SOURCE_REPAIR_RESERVATION_KIND
+            assert meta["weight"] == 4
         finally:
             await rag.finalize_storages()
 

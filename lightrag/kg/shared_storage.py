@@ -2760,6 +2760,33 @@ async def acquire_reservation(
     return PipelineReservationResult(acquired=True, snapshot=snapshot)
 
 
+# Why a pending-enqueue reservation is held. Stamped into the token's metadata so
+# a reader can tell the holders apart WITHOUT parsing token strings: they share
+# one set and one count, but they are not interchangeable. ``force_reset`` drops
+# the stalled ones for a ``manual_drain_enqueue_stalled`` fence, and a
+# source-conflict repair's guard must survive that — dropping it would re-open
+# clear/delete, scan classification and the manual reset against a repair whose
+# candidate re-read/demotion span is still running.
+#
+# Weight is NOT a discriminator: an ordinary enqueue whose documents all dedup
+# away re-weights itself to 0, exactly like the repair's guard.
+ENQUEUE_RESERVATION_KIND = "enqueue"
+SOURCE_REPAIR_RESERVATION_KIND = "source_repair"
+
+
+def reservation_kind(metadata: Any) -> str:
+    """Why the reservation holding this token exists.
+
+    Defaults to :data:`ENQUEUE_RESERVATION_KIND` for metadata that carries no
+    kind, which is also the safe reading: an unlabelled holder is an ordinary
+    enqueue, and every special kind labels itself at acquire time.
+    """
+    if not isinstance(metadata, Mapping):
+        return ENQUEUE_RESERVATION_KIND
+    kind = metadata.get("kind")
+    return kind if isinstance(kind, str) and kind else ENQUEUE_RESERVATION_KIND
+
+
 def _reservation_weight(metadata: Any) -> int:
     """Documents an in-flight reservation intends to write (0 when unweighted)."""
     if not isinstance(metadata, Mapping):
@@ -2777,6 +2804,7 @@ async def acquire_enqueue_reservation(
     weight: int = 0,
     capacity: int = 0,
     active_count: Optional[int] = None,
+    kind: Optional[str] = None,
 ) -> PipelineReservationResult:
     """Take (or re-weight) one of the concurrent pending-enqueue reservations.
 
@@ -2822,6 +2850,11 @@ async def acquire_enqueue_reservation(
     ``capacity > 0`` requires ``active_count``: the caller must have taken a
     strict count under its serialisation lock. Passing ``None`` is a programming
     error, not a licence to assume there is room.
+
+    ``kind`` records WHY the reservation is held (see
+    :data:`ENQUEUE_RESERVATION_KIND`). Pass it whenever the holder is not an
+    ordinary enqueue; a re-weight that omits it KEEPS the stored kind, so a
+    re-weighting caller can never silently relabel someone else's guard.
     """
     if capacity > 0 and active_count is None:
         raise ValueError(
@@ -2872,6 +2905,9 @@ async def acquire_enqueue_reservation(
             "pid": os.getpid(),
             "process_start_id": _my_start_id(),
             "weight": weight,
+            # A re-weight keeps the kind it was admitted with: only the acquire
+            # that MINTS the reservation gets to say what it is.
+            "kind": kind or reservation_kind(tokens.get(token)),
         }
         updates = {
             "pending_enqueue_tokens": tokens,

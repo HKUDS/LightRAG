@@ -1029,6 +1029,19 @@ class ForceResetRecoveryResponse(BaseModel):
             "or /documents/texts must be re-sent."
         ),
     )
+    retained_enqueue_reservations: int = Field(
+        default=0,
+        description=(
+            "Reservations in that same set that were deliberately NOT dropped "
+            "because they are not ordinary enqueues — currently a source-conflict "
+            "repair's guard, which excludes clear/delete, scan classification and "
+            "the manual reset for the whole span in which the repair re-reads the "
+            "candidate set and demotes the losers. Dropping it could corrupt "
+            "source ownership, so it outranks re-opening the workspace. Non-zero "
+            "means the workspace is still closed to scan/clear: wait for the "
+            "holder to finish, or restart the process that owns it."
+        ),
+    )
 
 
 """Response model for document status
@@ -7087,14 +7100,17 @@ def create_document_routes(
         Requires ``confirm=true``. A true idempotent replay of the interrupted
         operation is a separate concern (core atomicity).
 
-        For a ``manual_drain_enqueue_stalled`` fence it ALSO drops the in-flight
-        enqueue reservation set, because there that set is the blocker rather
-        than a bystander — clearing the fence alone would leave /documents/scan
-        and /documents/clear refused and make a re-issued
+        For a ``manual_drain_enqueue_stalled`` fence it ALSO drops the stalled
+        ORDINARY enqueue reservations, because there that set is the blocker
+        rather than a bystander — clearing the fence alone would leave
+        /documents/scan and /documents/clear refused and make a re-issued
         /documents/reprocess_failed fence again. Any other fence kind leaves the
-        set untouched. A producer that was alive and merely slow loses its
-        reservation: see ``dropped_enqueue_reservations`` for what that costs per
-        entry point.
+        set untouched, and a non-enqueue holder (a source-conflict repair's
+        guard) is never dropped by any of them. A producer that was alive and
+        merely slow loses its reservation: see ``dropped_enqueue_reservations``
+        for what that costs per entry point, and
+        ``retained_enqueue_reservations`` for when the workspace stays closed
+        anyway.
 
         It ALSO cancels the workspace's queued manual retry requests, and that is
         load-bearing rather than housekeeping: a sticky un-ACKed request makes
@@ -7118,10 +7134,12 @@ def create_document_routes(
         """
         from lightrag.exceptions import PipelineNotInitializedError
         from lightrag.kg.shared_storage import (
+            ENQUEUE_RESERVATION_KIND,
             MANUAL_PHASE_IDLE,
             get_namespace_data,
             get_namespace_lock,
             get_pipeline_ingress,
+            reservation_kind,
         )
 
         if not request.confirm:
@@ -7171,6 +7189,7 @@ def create_document_routes(
 
         cancelled = 0
         dropped_reservations = 0
+        retained_reservations = 0
         async with pipeline_status_lock:
             # One snapshot, not a field-at-a-time read: this critical section
             # needs both ``recovery_required`` and (for one fence kind)
@@ -7255,10 +7274,21 @@ def create_document_routes(
             # remove (see ``_MANUAL_DRAIN_ENQUEUE_STALL_SECONDS``).
             #
             # Every OTHER fence kind keeps the set. It is not owner-held state this
-            # reset is abandoning: a healthy upload/insert, or a source-conflict
-            # repair's weighted-0 guard, may hold a token for reasons unrelated to
-            # the fence being cleared. The rule is that force_reset clears exactly
-            # what the fence message told the operator it would clear.
+            # reset is abandoning: a healthy upload/insert may hold a token for
+            # reasons unrelated to the fence being cleared. The rule is that
+            # force_reset clears exactly what the fence message told the operator
+            # it would clear.
+            #
+            # And even for THIS fence kind, only reservations held by an ordinary
+            # enqueue are dropped. A source-conflict repair parks a weighted-0
+            # token in the same set to exclude clear/delete, scan classification
+            # and the manual reset for the whole span in which it re-reads the
+            # candidate set and demotes the losers; dropping that guard would
+            # re-open all three against a repair coroutine that may still resume,
+            # corrupting source ownership. An operational wedge is recoverable,
+            # that is not. Weight cannot make the distinction — an ordinary
+            # enqueue whose documents all dedup away re-weights itself to 0 — so
+            # the reservation is labelled with its ``kind`` at acquire time.
             #
             # Cost of the drop, when the holder was in fact alive and merely slow
             # (the false positive the bounded window accepts): its token is gone,
@@ -7274,24 +7304,37 @@ def create_document_routes(
                 isinstance(fence, dict)
                 and fence.get("kind") == "manual_drain_enqueue_stalled"
             ):
-                dropped_reservations = len(snapshot.get("pending_enqueue_tokens") or {})
-                updates.update({"pending_enqueue_tokens": {}, "pending_enqueues": 0})
+                tokens = dict(snapshot.get("pending_enqueue_tokens") or {})
+                kept = {
+                    token: meta
+                    for token, meta in tokens.items()
+                    if reservation_kind(meta) != ENQUEUE_RESERVATION_KIND
+                }
+                dropped_reservations = len(tokens) - len(kept)
+                retained_reservations = len(kept)
+                updates.update(
+                    {"pending_enqueue_tokens": kept, "pending_enqueues": len(kept)}
+                )
 
             pipeline_status.update(updates)
 
         # The enqueue-stall fence named the tokens it was blocked on; this is its
-        # counterpart, so the count of what was actually dropped has to be in the
-        # log too or the two records cannot be reconciled after the fact.
+        # counterpart, so what was actually dropped — and what was deliberately
+        # KEPT — has to be in the log too, or the two records cannot be
+        # reconciled after the fact and a workspace still blocked by a retained
+        # guard looks like the reset simply failed.
         logger.warning(
             "recovery_required fence force-reset (unsafe manual override) for "
             f"workspace {rag.workspace}; cancelled {cancelled} queued manual "
             f"retry request(s), dropped {dropped_reservations} stalled in-flight "
-            "enqueue reservation(s)"
+            f"enqueue reservation(s), kept {retained_reservations} non-enqueue "
+            "reservation(s) (e.g. a source-conflict repair guard)"
         )
         return ForceResetRecoveryResponse(
             status="reset",
             cancelled_manual_retries=cancelled,
             dropped_enqueue_reservations=dropped_reservations,
+            retained_enqueue_reservations=retained_reservations,
             message=(
                 "recovery_required fence cleared"
                 + (
@@ -7305,6 +7348,15 @@ def create_document_routes(
                     "/documents/texts request that was in flight (an /upload is "
                     "recovered by /documents/scan)"
                     if dropped_reservations
+                    else ""
+                )
+                + (
+                    f"; {retained_reservations} non-enqueue reservation(s) KEPT "
+                    "(a source-conflict repair guard is not safe to drop while "
+                    "its commit may still resume) — the workspace stays closed "
+                    "to scan/clear until the holding process releases it or is "
+                    "restarted"
+                    if retained_reservations
                     else ""
                 )
                 + ". The workspace may still be "
