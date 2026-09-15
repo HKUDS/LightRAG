@@ -62,8 +62,9 @@ below.
 
 Dollar delimiters are ambiguous by construction. Prose contains stray and
 currency dollars, and even Pandoc reads `$5 ... $x$` as one span, so **no
-delimiter rule is correct in both directions**. The scanner is therefore
-deliberately biased:
+delimiter rule is correct in both directions**. Pairing is therefore only the
+*necessary* half of the decision — the sufficient half is the content gate in
+the next section. The scanner is deliberately biased:
 
 > Never rewrite text a Pandoc-style parser would not call math, and accept the
 > misses that follow.
@@ -100,6 +101,33 @@ The rules, all applied left to right:
    an inline span pairs it with the next single `$` and rewrites the prose in
    between (`Unclosed $$x and<tab>ext$ suffix`).
 
+## Content gate
+
+Pairing says *where* a span is; it cannot say whether the span is math. Code
+pairs dollars for reasons of its own — `echo "$HOME" ... "$PATH"` satisfies
+every delimiter rule — and so the span's own body is tested before anything
+inside it is rewritten:
+
+- a body containing a **double quote or a backtick** is code. Both are
+  ordinary in shell and effectively absent from LaTeX math.
+- an **inline** span whose body crosses a line break, or runs past
+  `_MAX_INLINE_MATH_CHARS` (200), is not a formula. Display math is exempt
+  from both: `$$...$$` is routinely long and multi-line.
+
+A semicolon is deliberately **not** a marker: `$p(x; \theta)$` is ordinary
+notation in this corpus, and vetoing it would cost more than it saves.
+
+This is the general defense, and the reason the Markdown code regions above
+are a *secondary* one. Identifying the constructs that contain code — fenced,
+indented, inline, block-quoted, HTML — is a blacklist that never closes; each
+new construct is another way for the same code to reach the scanner. The gate
+tests what the span contains, so it does not grow with Markdown's grammar. The
+region pass is kept because it is cheap and still right for code whose content
+does look like math (a fence quoting `$x^2$` verbatim).
+
+Every rewritten span is logged with its content, not just counted. Five review
+rounds of "silently rewrites X" is what a count-only log buys.
+
 ## Accepted misses
 
 Each keeps the prose warning. All but the last are misses rather than rewrites.
@@ -109,7 +137,9 @@ Each keeps the prose warning. All but the last are misses rather than rewrites.
 | `$ x $` (padded inline span) | not math | Pandoc does not read it as math either. Recognizing it required a fallback that scanned past the span's own closer, which is how prose between two spans got rewritten. |
 | `价格$5，公式$<tab>au$为` (stray dollar against math, no spaces) | first pair wins, repair missed | Only a content heuristic could tell this from a real span, and the CJK shape below shows what such symmetry costs. |
 | `$$<tab>au$` (display open, inline close) | not math | Malformed either way; Pandoc finds no display closer. Consistent with rule 5. |
-| `echo "$HOME"; <tab>ext=1; echo "$PATH"` written as plain prose, with no code fence or backticks | paired as math, **and rewritten** | The one entry in this table that is a rewrite, not a miss. Rule 0 covers code the text marks as code; unmarked code is indistinguishable from `$x ... $y$` by any delimiter rule, and the same ambiguity as `$5 ... $x$`. Marking code as code is the available remedy. |
+| `$\text{"x"}$` (a double quote inside real math) | not math | The gate's price. A quote in a formula is rarer than a quote in code, and the gate cannot have both. |
+| `$a +<newline><tab>au$` (inline span across a line break) | not math | Same trade: an inline formula split across lines is rarer than a shell command that is. Display math is exempt. |
+| `A=$X; <tab>ext=1; B=$Y` (one line, no quotes, no backticks) | paired as math, **and rewritten** | The one rewrite left in this table. Nothing in the content separates it from `$x ... $y$`. The gate narrows the exposure from all code to this shape; it does not close it. |
 
 ## Rejected alternatives
 
@@ -121,6 +151,16 @@ formatted across lines, padded spans, escaped dollars, a stray `$$` — are
 pinned in `tests/llm/test_vlm_json_escape_repair.py`. Run a fourth design
 against all of them before proposing it; each of the two below passed the
 cases its author had in mind and failed a shape they had not thought to try.
+
+**Enumerating the Markdown constructs that hold code.** Five review rounds
+walked this path — fenced blocks, then their closing-fence and backtick-run
+edge cases, then inline spans, then indented blocks — and each round found
+another construct or another boundary. The list does not converge (HTML
+blocks, block-quoted fences, tables and `$` in URLs are all still out there),
+and every entry defends against the *container* rather than against the thing
+that actually matters, which is that the span's content is code. The content
+gate replaced this direction; the region pass that survives is a cheap
+secondary defense, not the argument.
 
 **Soft closer fallback.** Accept a whitespace-preceded `$` as a closer when no
 stricter candidate remains, so that `$ x $` still pairs. The fallback scans

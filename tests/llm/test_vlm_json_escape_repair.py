@@ -254,15 +254,79 @@ def test_math_after_a_code_region_is_still_repaired():
     )
 
 
+@pytest.mark.parametrize(
+    "damaged",
+    [
+        # Unmarked: no fence, no backticks -- nothing identifies it as code,
+        # so only the span's own content can.
+        'echo "$HOME"; \text=1; echo "$PATH"',
+        # Marked, but reached through delimiters the region pass gets wrong:
+        # a stray backtick before a fence, and a four-space indented block.
+        'stray ` tick\n```sh\nrun `cmd` now\necho "$HOME"\n\text=1\necho "$PATH"\n```',
+        'Example:\n\n    echo "$HOME"\n    \text=1\n    echo "$PATH"\n\ndone',
+        # Unquoted, but spanning lines -- no inline formula does.
+        "A=$X\n\text=1\nB=$Y",
+    ],
+)
 @pytest.mark.offline
-def test_unmarked_code_is_indistinguishable_from_math():
-    """Stability test for the one accepted rewrite: shell written as plain
-    prose, with no fence and no backticks, pairs its two variable expansions
-    and the text between them is rewritten. No delimiter rule can tell this
-    from "$x ... $y$"; marking code as code is the remedy. Pinned so the
-    limit is a decision rather than a surprise."""
-    assert repair_vlm_json_escape_damage('echo "$HOME"; \text=1; echo "$PATH"') == (
-        'echo "$HOME"; ' + r"\text" + '=1; echo "$PATH"'
+def test_code_content_is_not_repaired_however_it_is_reached(damaged):
+    """Pairing says WHERE a span is; the content gate says whether it is math.
+
+    Dollars pair in code for reasons of their own (two "$VAR" expansions
+    satisfy every delimiter rule), so enumerating the Markdown constructs
+    that contain code is a blacklist that never closes -- each of these
+    inputs reaches the scanner through a different one. A body carrying a
+    double quote or a backtick, or an inline span that spans lines, is code
+    whichever construct delivered it.
+    """
+    assert repair_vlm_json_escape_damage(damaged) == damaged
+
+
+@pytest.mark.offline
+def test_unquoted_single_line_shell_is_still_rewritten():
+    """Stability test for what the gate does NOT cover: one line, no quotes,
+    no backticks -- nothing separates it from "$x ... $y$". Pinned so the
+    remaining exposure is a known boundary rather than a surprise."""
+    assert repair_vlm_json_escape_damage("A=$X; \text=1; B=$Y") == (
+        "A=$X; " + r"\text" + "=1; B=$Y"
+    )
+
+
+@pytest.mark.parametrize(
+    "damaged",
+    [
+        '$\text{"x"} + \tau$',  # a double quote inside real math
+        "see $a +\n\tau$ end",  # an inline span across a line break
+    ],
+)
+@pytest.mark.offline
+def test_accepted_cost_of_the_content_gate(damaged):
+    """The gate's price, pinned: real math carrying a quote, and inline math
+    written across a line break, are no longer repaired. Display math is
+    exempt from the line-break limit, so a multi-line "$$...$$" still is."""
+    assert repair_vlm_json_escape_damage(damaged) == damaged
+    assert repair_vlm_json_escape_damage("$$a +\n\tau$$") == "$$a +\n" + r"\tau$$"
+
+
+@pytest.mark.offline
+def test_unmatched_backtick_run_does_not_open_a_span():
+    """An opening run is bounded on both sides like a closing one. Without a
+    left guard the regex restarts inside a longer unmatched run and swallows
+    the math after it, costing a repair CommonMark never protected."""
+    assert repair_vlm_json_escape_damage("x `` unmatched $\tau$ then ` end") == (
+        "x `` unmatched " + r"$\tau$" + " then ` end"
+    )
+
+
+@pytest.mark.offline
+def test_repair_log_names_what_it_rewrote(caplog, _propagate_lightrag_logger):
+    """A count alone cannot be checked against a corpus. Every rewritten span
+    reaches the log, so a wrong rewrite is visible rather than silent."""
+    with caplog.at_level(logging.WARNING, logger="lightrag"):
+        repair_vlm_json_escape_damage("domain is $\tau^2$", context="table/t1")
+    assert any(
+        "inside dollar math" in rec.message and r"\\tau^2" in rec.getMessage()
+        for rec in caplog.records
     )
 
 

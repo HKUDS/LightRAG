@@ -6082,15 +6082,46 @@ _MD_CODE_REGION_PATTERN = re.compile(
     # fence-like line INSIDE the block end the region early.
     r"^[ \t]{0,3}(?P<fence>(?P<fchar>[`~])(?P=fchar){2,})[^\n]*$[\s\S]*?"
     r"(?:^[ \t]{0,3}(?P=fence)(?P=fchar)*[ \t]*$|\Z)"
-    # Inline span: the closing run must be the same length as the opening
-    # one, so it is bounded on BOTH sides -- without the left guard the
-    # backreference matches inside a longer run and ends the span early.
-    r"|(?P<ticks>`+)(?!`)[\s\S]*?(?<!`)(?P=ticks)(?!`)",
+    # Inline span: opening and closing runs must be the same length, so
+    # BOTH are bounded on BOTH sides. Without a left guard the regex
+    # restarts inside a longer run -- as an opener, swallowing the text
+    # after an unmatched run; as a closer, ending the span early.
+    r"|(?<!`)(?P<ticks>`+)(?!`)[\s\S]*?(?<!`)(?P=ticks)(?!`)",
     re.MULTILINE,
 )
 
 
-def _scan_dollar_spans(text: str) -> tuple[str, int]:
+# A span whose body carries these is code, not math: a double quote or a
+# backtick is ordinary in shell and ~absent from LaTeX math. Together with the
+# inline-only newline and length limits below, this is the general defense
+# against dollars that pair for some reason other than math -- it does not
+# grow with Markdown's grammar the way a list of code constructs does.
+_CODE_MARKS_IN_MATH_SPAN = ('"', "`")
+# No formula in a VLM description runs this long on one line; a shell command
+# between two "$VAR" expansions frequently does. Display math is exempt --
+# "$$...$$" is routinely long and multi-line.
+_MAX_INLINE_MATH_CHARS = 200
+# How much of a rewritten span reaches the log. A count alone tells an
+# operator that text changed but not what changed, which is no way to spot
+# a wrong rewrite in a real corpus.
+_LOGGED_SPAN_CHARS = 80
+
+
+def _span_is_plausibly_math(span: str, delimiter: str) -> bool:
+    """Content gate: pairing says *where* a span is, this says whether it is math.
+
+    See *Content gate* in the contract doc,
+    docs/design/LatexEscapeRepairContract.md, for what it costs.
+    """
+    body = span[len(delimiter) : -len(delimiter)]
+    if any(mark in body for mark in _CODE_MARKS_IN_MATH_SPAN):
+        return False
+    if delimiter == "$" and ("\n" in body or len(body) > _MAX_INLINE_MATH_CHARS):
+        return False
+    return True
+
+
+def _scan_dollar_spans(text: str) -> tuple[str, int, list[str]]:
     """Restore whitespace-class LaTeX escapes inside paired dollar math.
 
     Tab, CR and LF are legitimate whitespace outside an explicit ``$...$`` /
@@ -6157,6 +6188,7 @@ def _scan_dollar_spans(text: str) -> tuple[str, int]:
         return {"\t": r"\t", "\r": r"\r", "\n": r"\n"}[match.group(0)]
 
     pieces: list[str] = []
+    repaired_spans: list[str] = []
     replacements = 0
     cursor = 0
     while cursor < len(text):
@@ -6187,15 +6219,20 @@ def _scan_dollar_spans(text: str) -> tuple[str, int]:
 
         span_end = close + len(delimiter)
         math_span = text[cursor:span_end]
-        repaired_span, count = _WS_LATEX_MATH_PATTERN.subn(_restore, math_span)
+        if _span_is_plausibly_math(math_span, delimiter):
+            repaired_span, count = _WS_LATEX_MATH_PATTERN.subn(_restore, math_span)
+        else:
+            repaired_span, count = math_span, 0
         pieces.append(repaired_span)
-        replacements += count
+        if count:
+            replacements += count
+            repaired_spans.append(repaired_span[:_LOGGED_SPAN_CHARS])
         cursor = span_end
 
-    return "".join(pieces), replacements
+    return "".join(pieces), replacements, repaired_spans
 
 
-def _repair_ws_latex_in_dollar_math(text: str) -> tuple[str, int]:
+def _repair_ws_latex_in_dollar_math(text: str) -> tuple[str, int, list[str]]:
     """Repair dollar math outside Markdown code, which is read verbatim.
 
     Code quotes dollars for its own reasons -- ``echo "$HOME" ... "$PATH"``
@@ -6208,18 +6245,23 @@ def _repair_ws_latex_in_dollar_math(text: str) -> tuple[str, int]:
     from prose here and is listed there among the accepted misses.
     """
     pieces: list[str] = []
+    spans: list[str] = []
     replacements = 0
     last = 0
     for region in _MD_CODE_REGION_PATTERN.finditer(text):
-        repaired, count = _scan_dollar_spans(text[last : region.start()])
+        repaired, count, repaired_spans = _scan_dollar_spans(
+            text[last : region.start()]
+        )
         pieces.append(repaired)
         replacements += count
+        spans.extend(repaired_spans)
         pieces.append(region.group(0))
         last = region.end()
-    repaired, count = _scan_dollar_spans(text[last:])
+    repaired, count, repaired_spans = _scan_dollar_spans(text[last:])
     pieces.append(repaired)
     replacements += count
-    return "".join(pieces), replacements
+    spans.extend(repaired_spans)
+    return "".join(pieces), replacements, spans
 
 
 def repair_vlm_json_escape_damage(text: str, *, context: str = "") -> str:
@@ -6254,14 +6296,17 @@ def repair_vlm_json_escape_damage(text: str, *, context: str = "") -> str:
             f" in {context}" if context else "",
         )
 
-    repaired, ws_repair_count = _repair_ws_latex_in_dollar_math(repaired)
+    repaired, ws_repair_count, ws_repaired_spans = _repair_ws_latex_in_dollar_math(
+        repaired
+    )
     if ws_repair_count:
         logger.warning(
             "Repaired whitespace-class LaTeX escape damage inside dollar math%s "
-            "(%d occurrence%s)",
+            "(%d occurrence%s): %s",
             f" in {context}" if context else "",
             ws_repair_count,
             "" if ws_repair_count == 1 else "s",
+            " | ".join(repr(span) for span in ws_repaired_spans),
         )
 
     suspect = _WS_LATEX_SUSPECT_PATTERN.search(repaired)
