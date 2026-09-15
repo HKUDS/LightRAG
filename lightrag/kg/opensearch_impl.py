@@ -11,6 +11,7 @@ Requirements:
 
 import hashlib
 import json
+import math
 import os
 import re
 import time
@@ -62,6 +63,7 @@ from ..constants import (
     DEFAULT_QUERY_PRIORITY,
 )
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
+from ..utils_graph import apply_relation_weight_floor
 
 import pipmaster as pm
 
@@ -594,13 +596,21 @@ def _edge_source_id_list(doc: dict[str, Any]) -> list[str]:
 
 
 def _coerce_weight(weight: Any) -> float | None:
-    """Coerce a (possibly string) edge weight to float, or None if non-numeric."""
+    """Coerce a (possibly string) edge weight to float, or None if the value
+    is missing, non-numeric, or not finite.
+
+    NaN/+-inf pass ``float()`` (including via strings like "nan"), but
+    ``apply_relation_weight_floor`` rejects a non-finite weight outright --
+    letting one through here would abort the canonical-edge migration on a
+    malformed legacy row instead of just skipping its weight.
+    """
     if weight is None:
         return None
     try:
-        return float(weight)
+        coerced = float(weight)
     except (TypeError, ValueError):
         return None
+    return coerced if math.isfinite(coerced) else None
 
 
 def _merge_edge_payloads(docs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -624,7 +634,11 @@ def _merge_edge_payloads(docs: list[dict[str, Any]]) -> dict[str, Any]:
     this math: each folded reverse doc is deleted right after the canonical write
     (see ``_merge_into_canonical_edge``), so a re-scan never re-presents an
     already-folded reverse for summing. Legacy string weights are coerced;
-    non-numeric values are skipped so a bad value cannot crash the migration.
+    non-numeric or non-finite values are skipped so a bad value cannot crash
+    the migration, and the summed weight is floored to the merged evidence
+    count via ``apply_relation_weight_floor`` so a fragment with new
+    source_ids but no usable weight cannot leave the result under its own
+    evidence count.
     """
     source_ids: list[str] = []
     file_paths: list[str] = []
@@ -658,7 +672,23 @@ def _merge_edge_payloads(docs: list[dict[str, Any]]) -> dict[str, Any]:
         merged["description"] = GRAPH_FIELD_SEP.join(descriptions)
     if keywords:
         merged["keywords"] = ",".join(sorted(keywords))
-    if weights:
+    if source_ids:
+        # A fragment can contribute new source_ids while carrying a
+        # missing/non-numeric weight (skipped above), which would otherwise
+        # let the summed weight fall below the merged evidence count -- or,
+        # if every fragment lacked a coercible weight, leave "weight" unset
+        # even though source_ids just grew. Floor it to the evidence count,
+        # per the relation weight contract. The sum is also guarded against
+        # overflow: each weight is individually finite, but their sum can
+        # still overflow to +inf, which apply_relation_weight_floor would
+        # otherwise reject outright and abort the migration.
+        summed_weight = sum(weights) if weights else 0.0
+        if not math.isfinite(summed_weight):
+            summed_weight = 0.0
+        merged["weight"] = apply_relation_weight_floor(
+            summed_weight, merged["source_id"]
+        )
+    elif weights:
         merged["weight"] = sum(weights)
     return merged
 
