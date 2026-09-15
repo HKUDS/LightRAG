@@ -87,6 +87,24 @@ def _owned_probe(storage) -> AsyncMock:
     )
 
 
+def _owned_probe_with_dim(storage, dimension) -> AsyncMock:
+    """indices.get_mapping for our index, declaring a knn_vector dimension."""
+    return AsyncMock(
+        return_value={
+            storage._index_name: {
+                "mappings": {
+                    "_meta": _workspace_index_meta(
+                        storage.workspace, storage.final_namespace
+                    ),
+                    "properties": {
+                        "vector": {"type": "knn_vector", "dimension": dimension}
+                    },
+                }
+            }
+        }
+    )
+
+
 def _foreign_probe(storage) -> AsyncMock:
     """indices.get_mapping for an index a DIFFERENT workspace has claimed."""
     return AsyncMock(
@@ -5289,6 +5307,76 @@ class TestVectorStorage:
             # A's answer predates B's; it must not put readiness back.
             assert storage._index_ready is False
             mock_client.search.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_presence_recheck_refuses_a_foreign_dimension(
+        self, global_config, embed_func, mock_client
+    ):
+        """Ownership is only half of what makes an index usable by this instance.
+
+        The index name carries no model suffix on this backend, so an index
+        rebuilt under a different embedding model keeps this workspace's
+        marker and differs only in the vector dimension. Restoring readiness
+        on the marker alone would let upsert skip _ensure_index_ready, which
+        is the path that raises something an operator can act on.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            s._index_ready = False
+            wrong = s.embedding_func.embedding_dim + 1
+            mock_client.indices.get_mapping = _owned_probe_with_dim(s, wrong)
+
+            for read in (
+                lambda: s.query("test", top_k=5),
+                lambda: s.get_by_id("v1"),
+                lambda: s.get_by_ids(["v1"]),
+                lambda: s.get_vectors_by_ids(["v1"]),
+            ):
+                with pytest.raises(ValueError, match="dimension"):
+                    await read()
+
+            assert s._index_ready is False
+            mock_client.search.assert_not_awaited()
+            mock_client.mget.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_presence_recheck_accepts_a_matching_dimension(
+        self, global_config, embed_func, mock_client
+    ):
+        """The same index, rebuilt under the same model, is usable."""
+        mock_client.search = AsyncMock(return_value={"hits": {"hits": []}})
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            s._index_ready = False
+            mock_client.indices.get_mapping = _owned_probe_with_dim(
+                s, s.embedding_func.embedding_dim
+            )
+
+            assert await s.query("test", top_k=5) == []
+            assert s._index_ready is True
+
+    @pytest.mark.asyncio
+    async def test_presence_recheck_tolerates_an_unreadable_dimension(
+        self, global_config, embed_func, mock_client
+    ):
+        """A mapping this code cannot parse is not evidence of a mismatch.
+
+        Mirrors _create_knn_index_if_not_exists, which logs and skips the
+        dimension check rather than refusing the index.
+        """
+        mock_client.search = AsyncMock(return_value={"hits": {"hits": []}})
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            s._index_ready = False
+            mock_client.indices.get_mapping = AsyncMock(
+                return_value={s._index_name: {"mappings": {"properties": {}}}}
+            )
+
+            assert await s.query("test", top_k=5) == []
+            assert s._index_ready is True
 
 
 # ---------------------------------------------------------------------------

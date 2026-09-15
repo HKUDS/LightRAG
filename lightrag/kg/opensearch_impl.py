@@ -456,6 +456,41 @@ def _describe_index_identity(identity: dict[str, str | None]) -> str:
     )
 
 
+def _read_vector_dimension(mapping: dict, index_name: str) -> int | None:
+    """The knn_vector dimension recorded in an index mapping, or None.
+
+    None means "could not be read" as well as "not recorded", and both are
+    treated the same by every caller: the dimension check is skipped rather
+    than turned into a refusal. A mapping this code cannot parse is not
+    evidence of a mismatch.
+    """
+    try:
+        return (
+            mapping[index_name]["mappings"]["properties"]
+            .get("vector", {})
+            .get("dimension")
+        )
+    except (KeyError, TypeError):
+        return None
+
+
+def _dimension_mismatch_error(
+    index_name: str, existing_dim: int, expected_dim: int
+) -> ValueError:
+    """Build the dimension-mismatch error, naming both sides and the way out.
+
+    One builder because two places reject the same condition -- index
+    provisioning and the read path's readiness probe -- and an operator who
+    hits it from either should be told the same thing.
+    """
+    return ValueError(
+        f"Vector dimension mismatch! Index '{index_name}' has "
+        f"dimension {existing_dim}, but current embedding model expects "
+        f"dimension {expected_dim}. Please drop the existing index or "
+        f"use an embedding model with matching dimensions."
+    )
+
+
 def _workspace_collision_error(
     index_name: str,
     stored: dict[str, str | None],
@@ -6314,6 +6349,11 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
           back can belong to another deployment, and reads would serve its
           vectors as ours. This is the only ownership check on a read path; an
           instance that was never marked still reads without one.
+        * Back and ours, but built for a different embedding dimension --
+          raise. Readiness means "this index is usable by THIS instance", and
+          that is the same pair of facts ``_create_knn_index_if_not_exists``
+          establishes before trusting an existing index. A dimension that
+          cannot be read is not a mismatch and does not refuse.
         * The probe itself fails -- propagate. "It was missing when I last
           looked and I cannot reach the cluster now" is not a confirmation, and
           an unconfirmed failure must never become an empty result set. Each
@@ -6378,6 +6418,21 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             # _claim_index_for_workspace: an identity we cannot fully match is
             # not ours to read.
             raise _workspace_collision_error(self._index_name, stored, expected)
+        # Ownership is only half of what _create_knn_index_if_not_exists checks
+        # before trusting an index that already exists. The index name carries
+        # no model suffix on this backend, so an index rebuilt under a
+        # different embedding model keeps this workspace's marker and differs
+        # only here; without this the probe would restore readiness, queries
+        # would fail on a raw dimension error, and upsert would skip
+        # _ensure_index_ready -- the one path that raises something an operator
+        # can act on. The mapping is already in hand, so this costs no round
+        # trip.
+        expected_dim = self.embedding_func.embedding_dim
+        existing_dim = _read_vector_dimension(mapping, self._index_name)
+        if existing_dim is not None and existing_dim != expected_dim:
+            raise _dimension_mismatch_error(
+                self._index_name, existing_dim, expected_dim
+            )
         self._index_ready = True
 
     async def _create_knn_index_if_not_exists(self):
@@ -6396,18 +6451,11 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     mapping = await self.client.indices.get_mapping(
                         index=self._index_name
                     )
-                    existing_dim = (
-                        mapping[self._index_name]["mappings"]["properties"]
-                        .get("vector", {})
-                        .get("dimension")
-                    )
+                    existing_dim = _read_vector_dimension(mapping, self._index_name)
                     expected_dim = self.embedding_func.embedding_dim
                     if existing_dim is not None and existing_dim != expected_dim:
-                        raise ValueError(
-                            f"Vector dimension mismatch! Index '{self._index_name}' has "
-                            f"dimension {existing_dim}, but current embedding model expects "
-                            f"dimension {expected_dim}. Please drop the existing index or "
-                            f"use an embedding model with matching dimensions."
+                        raise _dimension_mismatch_error(
+                            self._index_name, existing_dim, expected_dim
                         )
                 except (KeyError, TypeError):
                     logger.warning(
