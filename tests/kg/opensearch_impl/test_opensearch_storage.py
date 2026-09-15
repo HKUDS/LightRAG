@@ -36,6 +36,8 @@ from lightrag.kg.opensearch_impl import (
     _resolve_workspace,
     _sanitize_index_name,
     _verify_mirrored_id_mapping,
+    _workspace_index_meta,
+    WorkspaceIndexCollisionError,
     _resolve_bulk_batch_limits,
     _run_chunked_async_bulk,
     _canonical_edge_id,
@@ -63,6 +65,37 @@ async def _mock_lock():
 
 def _mock_lock_factory():
     return _mock_lock()
+
+
+def _gone_probe() -> AsyncMock:
+    """indices.get_mapping for an index that is still absent."""
+    return AsyncMock(side_effect=_missing_index_error())
+
+
+def _owned_probe(storage) -> AsyncMock:
+    """indices.get_mapping for an index that is back and marked as ours."""
+    return AsyncMock(
+        return_value={
+            storage._index_name: {
+                "mappings": {
+                    "_meta": _workspace_index_meta(
+                        storage.workspace, storage.final_namespace
+                    )
+                }
+            }
+        }
+    )
+
+
+def _foreign_probe(storage) -> AsyncMock:
+    """indices.get_mapping for an index a DIFFERENT workspace has claimed."""
+    return AsyncMock(
+        return_value={
+            storage._index_name: {
+                "mappings": {"_meta": _workspace_index_meta("other_ws", "other_ns")}
+            }
+        }
+    )
 
 
 def _missing_index_error() -> NotFoundError:
@@ -4924,13 +4957,14 @@ class TestVectorStorage:
     ):
         """Reads short-circuit only on a CONFIRMED missing index.
 
-        ``mock_client.indices.exists`` returns False, so the presence re-check
-        confirms the index really is gone and the mark is honoured.
+        The presence probe answers index_not_found, so the re-check confirms
+        the index really is gone and the mark is honoured.
         """
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
             s._index_ready = False
+            mock_client.indices.get_mapping = _gone_probe()
 
             assert await s.query("test", top_k=5) == []
             assert await s.get_by_id("v1") is None
@@ -4945,14 +4979,15 @@ class TestVectorStorage:
     ):
         """A live index_not_found leaves the instance marked.
 
-        The second query re-checks presence (``indices.exists`` -> False),
-        finds the index still gone and honours the mark without a second
-        search.
+        The second query re-checks presence (the probe answers
+        index_not_found), finds the index still gone and honours the mark
+        without a second search.
         """
         mock_client.search = AsyncMock(side_effect=_missing_index_error())
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
+            mock_client.indices.get_mapping = _gone_probe()
 
             assert await s.query("test", top_k=5) == []
             assert s._index_ready is False
@@ -4984,8 +5019,9 @@ class TestVectorStorage:
             mock_client.indices.create.reset_mock()
             s._index_ready = False
 
-            # The index is back on the server (another worker recreated it).
-            mock_client.indices.exists = AsyncMock(return_value=True)
+            # The index is back on the server (another worker recreated it),
+            # carrying this workspace's marker.
+            mock_client.indices.get_mapping = _owned_probe(s)
 
             results = await s.query("test", top_k=5)
 
@@ -5007,7 +5043,7 @@ class TestVectorStorage:
             await s.initialize()
             # initialize() both probes and provisions; count only the reads.
             mock_client.indices.create.reset_mock()
-            mock_client.indices.exists.reset_mock()
+            mock_client.indices.get_mapping = _gone_probe()
             s._index_ready = False
 
             assert await s.query("test", top_k=5) == []
@@ -5017,7 +5053,7 @@ class TestVectorStorage:
 
             assert s._index_ready is False
             # Every read probed; none of them provisioned.
-            assert mock_client.indices.exists.await_count == 4
+            assert mock_client.indices.get_mapping.await_count == 4
             mock_client.indices.create.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -5037,13 +5073,13 @@ class TestVectorStorage:
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
-            mock_client.indices.exists.reset_mock()
+            mock_client.indices.get_mapping.reset_mock()
 
             await s.query("test", top_k=5)
             await s.get_by_id("v1")
             await s.get_vectors_by_ids(["v1"])
 
-            mock_client.indices.exists.assert_not_awaited()
+            mock_client.indices.get_mapping.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_presence_recheck_runs_outside_the_flush_lock(
@@ -5053,14 +5089,14 @@ class TestVectorStorage:
         stall every concurrent upsert flush for its duration."""
         observed: list[bool] = []
 
-        async def _exists(**_kwargs):
+        async def _probe(**_kwargs):
             observed.append(s._flush_lock.locked())
-            return False
+            raise _missing_index_error()
 
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
-            mock_client.indices.exists = AsyncMock(side_effect=_exists)
+            mock_client.indices.get_mapping = AsyncMock(side_effect=_probe)
             s._index_ready = False
 
             assert await s.get_by_id("v1") is None
@@ -5072,18 +5108,80 @@ class TestVectorStorage:
     async def test_presence_recheck_failure_keeps_the_mark(
         self, global_config, embed_func, mock_client
     ):
-        """A probe that cannot answer leaves the degraded state as it found it."""
+        """A probe that cannot answer must not let the stale mark answer for it.
+
+        "It was missing when I last looked and I cannot reach the cluster now"
+        is not a confirmation, so query() raises rather than returning [].
+        The point reads keep their own leniency and still report a miss.
+        """
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
-            mock_client.indices.exists = AsyncMock(
+            mock_client.indices.get_mapping = AsyncMock(
                 side_effect=OpenSearchException("transport down")
             )
             s._index_ready = False
 
-            assert await s.query("test", top_k=5) == []
+            with pytest.raises(OpenSearchException):
+                await s.query("test", top_k=5)
+            assert await s.get_by_id("v1") is None
+            assert await s.get_vectors_by_ids(["v1"]) == {}
             assert s._index_ready is False
-            mock_client.indices.exists.assert_awaited_once()
+            mock_client.search.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_presence_recheck_refuses_a_foreign_index(
+        self, global_config, embed_func, mock_client
+    ):
+        """Existence alone must not restore readiness.
+
+        ``_sanitize_index_name`` is lossy, so the name that came back can
+        belong to another deployment. Lifting the mark on existence alone
+        would serve that deployment's vectors as ours -- the collision the
+        startup guard exists to catch, reached by a different door.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            s._index_ready = False
+            mock_client.indices.get_mapping = _foreign_probe(s)
+
+            # A ValueError, not an OpenSearchException: the point reads'
+            # leniency must not swallow a misconfiguration this serious.
+            for read in (
+                lambda: s.query("test", top_k=5),
+                lambda: s.get_by_id("v1"),
+                lambda: s.get_by_ids(["v1"]),
+                lambda: s.get_vectors_by_ids(["v1"]),
+            ):
+                with pytest.raises(WorkspaceIndexCollisionError):
+                    await read()
+
+            assert s._index_ready is False
+            mock_client.search.assert_not_awaited()
+            mock_client.mget.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_presence_recheck_adopts_an_unmarked_index(
+        self, global_config, embed_func, mock_client
+    ):
+        """An index predating the ownership marker stays readable.
+
+        Deliberate: it is unprotected exactly as it was before the marker
+        existed, and refusing it would wedge a read-only worker against an
+        index written by an older LightRAG release.
+        """
+        mock_client.search = AsyncMock(return_value={"hits": {"hits": []}})
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            s._index_ready = False
+            mock_client.indices.get_mapping = AsyncMock(
+                return_value={s._index_name: {"mappings": {}}}
+            )
+
+            assert await s.query("test", top_k=5) == []
+            assert s._index_ready is True
 
 
 # ---------------------------------------------------------------------------

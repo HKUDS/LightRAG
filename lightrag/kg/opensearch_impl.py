@@ -6268,10 +6268,10 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         self._index_ready = False
 
     async def _recheck_index_presence(self) -> None:
-        """Lift a stale missing-index mark when the index is back. Never creates.
+        """Lift a stale missing-index mark when OUR index is back. Never creates.
 
         Call at the top of every read, BEFORE taking ``_flush_lock`` -- the
-        existence probe is a network round trip and must not hold that lock.
+        probe is a network round trip and must not hold that lock.
 
         This is what keeps the reads' empty answers honest. ``query()`` returns
         ``[]`` only for a CONFIRMED missing index; a mark this instance set in
@@ -6279,9 +6279,9 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         read re-verifies before honouring it.
 
         Free on the healthy path: ``_index_ready`` is True, so this returns
-        without touching the client. It costs one ``indices.exists`` only while
-        this instance believes the index is gone, which is already the degraded
-        state.
+        without touching the client. It costs one ``get_mapping`` only while
+        this instance believes the index is gone, which is already the
+        degraded state.
 
         Why reads must re-verify: ``_index_ready`` is per-INSTANCE, so a peer
         worker that happened to read inside ``drop()``'s rebuild window marks
@@ -6291,27 +6291,52 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         only for ``doc_status``). Re-verifying is what lets a peer observe the
         recreate that already happened on the server.
 
+        Rules:
+
+        * Still absent -- the mark stands and this returns normally. That is
+          the confirmation the readers' empty answers rest on.
+        * Back, and the ``_meta`` marker names THIS workspace (or names nobody
+          -- an index predating the marker, unprotected exactly as it was
+          before the check existed) -- the mark is lifted.
+        * Back, but claimed by a different workspace -- raise
+          ``WorkspaceIndexCollisionError``. Existence alone must not restore
+          readiness: ``_sanitize_index_name`` is lossy, so the name that came
+          back can belong to another deployment, and reads would serve its
+          vectors as ours. This is the only ownership check on a read path; an
+          instance that was never marked still reads without one.
+        * The probe itself fails -- propagate. "It was missing when I last
+          looked and I cannot reach the cluster now" is not a confirmation, and
+          an unconfirmed failure must never become an empty result set. Each
+          caller then applies its own convention: ``query`` lets it out, the
+          point reads swallow it the way they swallow their own transport
+          errors.
+
         Creating the index here instead would be wrong, not merely more
-        expensive: a read that provisions an empty index turns "cannot tell"
-        into a confident "no results" over data that may still be recoverable.
-        Recreating stays with the write paths, which have the buffered rows to
-        put back.
+        expensive: a read that provisions an empty index manufactures the very
+        confirmation it is checking for. Recreating stays with the write paths,
+        which hold the buffered rows to put back.
         """
         if self._index_ready:
             return
         if self.client is None:
             return
         try:
-            if await self.client.indices.exists(index=self._index_name):
-                self._index_ready = True
+            mapping = await self.client.indices.get_mapping(index=self._index_name)
         except OpenSearchException as e:
-            # Probe failure leaves the mark in place: the caller's own
-            # short-circuit then reports the degraded state, which is what it
-            # would have done without this probe at all.
-            logger.debug(
-                f"[{self.workspace}] Vector index presence re-check failed for "
-                f"{self._index_name}: {e}"
-            )
+            if _is_missing_index_error(e):
+                return
+            raise
+        meta = (mapping.get(self._index_name) or {}).get("mappings", {}).get(
+            "_meta"
+        ) or {}
+        stored = _stored_index_identity(meta)
+        expected = _workspace_index_meta(self.workspace, self.final_namespace)
+        if stored != expected and any(v is not None for v in stored.values()):
+            # A partially written marker counts as claimed, exactly as in
+            # _claim_index_for_workspace: an identity we cannot fully match is
+            # not ours to read.
+            raise _workspace_collision_error(self._index_name, stored, expected)
+        self._index_ready = True
 
     async def _create_knn_index_if_not_exists(self):
         try:
@@ -6719,7 +6744,9 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         An empty list here means a CONFIRMED missing index (or no hits), never
         an unconfirmed failure -- see the transport-error branch below. The
         re-check is what keeps "confirmed" true: a mark this instance set in an
-        earlier call is not a confirmation once the index is back.
+        earlier call is not a confirmation once the index is back, and a
+        re-check that cannot reach the cluster raises rather than letting the
+        stale mark answer for it.
         """
         await self._recheck_index_presence()
         if not self._index_ready:
@@ -6832,7 +6859,14 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         LightRAG vector backend (see ``NanoVectorDBStorage.get_by_id``).
         Callers that need the embedding itself must use ``get_vectors_by_ids``.
         """
-        await self._recheck_index_presence()
+        # These reads answer a transport failure with a miss rather than an
+        # error (see the except blocks below), so the readiness probe follows
+        # the same convention. A WorkspaceIndexCollisionError is NOT swallowed
+        # -- it is a ValueError, and a misconfigured index must stay loud.
+        try:
+            await self._recheck_index_presence()
+        except OpenSearchException:
+            pass
         # Buffer lookups happen under the namespace lock so an in-flight
         # flush is observed as either "completely before" or "completely
         # after" -- never as a snapshot-swapped intermediate state.
@@ -6877,7 +6911,14 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         """
         if not ids:
             return []
-        await self._recheck_index_presence()
+        # These reads answer a transport failure with a miss rather than an
+        # error (see the except blocks below), so the readiness probe follows
+        # the same convention. A WorkspaceIndexCollisionError is NOT swallowed
+        # -- it is a ValueError, and a misconfigured index must stay loud.
+        try:
+            await self._recheck_index_presence()
+        except OpenSearchException:
+            pass
         buffered: dict[str, dict[str, Any] | None] = {}
         remaining: list[str] = []
         async with self._flush_lock:
@@ -6926,7 +6967,14 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         """Get vector embeddings for given IDs, with read-your-writes."""
         if not ids:
             return {}
-        await self._recheck_index_presence()
+        # These reads answer a transport failure with a miss rather than an
+        # error (see the except blocks below), so the readiness probe follows
+        # the same convention. A WorkspaceIndexCollisionError is NOT swallowed
+        # -- it is a ValueError, and a misconfigured index must stay loud.
+        try:
+            await self._recheck_index_presence()
+        except OpenSearchException:
+            pass
         result: dict[str, list[float]] = {}
         remaining: list[str] = []
         async with self._flush_lock:
