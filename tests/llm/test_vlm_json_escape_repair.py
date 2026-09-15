@@ -223,6 +223,22 @@ def test_fence_like_line_inside_a_block_is_not_a_closer():
     )
 
 
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+@pytest.mark.offline
+def test_fence_regions_behave_the_same_on_both_line_endings(newline):
+    """MULTILINE "$" matches before the "\n", with a CRLF's "\r" still ahead
+    of it, so a closer suffix of only spaces and tabs never matches on
+    Windows line endings. The block then looks unclosed and protects the
+    whole rest of the text, costing every repair after it."""
+    block = newline.join(["```sh", "a", "```"])
+    assert repair_vlm_json_escape_damage(block + newline + "after $\tau$") == (
+        block + newline + "after " + r"$\tau$"
+    )
+    # The block itself stays protected on both line endings.
+    code = newline.join(["```sh", 'echo "$HOME"', "\text=1", 'echo "$PATH"', "```"])
+    assert repair_vlm_json_escape_damage(code) == code
+
+
 @pytest.mark.offline
 def test_closing_fence_may_be_longer_than_the_opener():
     """CommonMark lets the closing fence exceed the opening one. Requiring

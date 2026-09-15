@@ -6079,9 +6079,11 @@ _MD_CODE_REGION_PATTERN = re.compile(
     # Opening fence: an info string may follow it. Closing fence: only
     # whitespace may, and it may be longer than the opener -- CommonMark on
     # both counts. Accepting a trailing info string on the closer lets a
-    # fence-like line INSIDE the block end the region early.
+    # fence-like line INSIDE the block end the region early. The optional
+    # \r keeps CRLF text working: MULTILINE "$" matches before the \n,
+    # with the \r still ahead of it.
     r"^[ \t]{0,3}(?P<fence>(?P<fchar>[`~])(?P=fchar){2,})[^\n]*$[\s\S]*?"
-    r"(?:^[ \t]{0,3}(?P=fence)(?P=fchar)*[ \t]*$|\Z)"
+    r"(?:^[ \t]{0,3}(?P=fence)(?P=fchar)*[ \t]*\r?$|\Z)"
     # Inline span: opening and closing runs must be the same length, so
     # BOTH are bounded on BOTH sides. Without a left guard the regex
     # restarts inside a longer run -- as an opener, swallowing the text
