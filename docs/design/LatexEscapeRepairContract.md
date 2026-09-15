@@ -117,6 +117,15 @@ inside it is rewritten:
 A semicolon is deliberately **not** a marker: `$p(x; \theta)$` is ordinary
 notation in this corpus, and vetoing it would cost more than it saves.
 
+The region pass is **heuristic and secondary**, and completeness with respect
+to CommonMark is explicitly **not** a goal. Where it reads a construct wrongly
+it over-protects, and over-protection costs a repair, never a rewrite -- the
+same direction as every other trade here. Fix a deviation when it is cheap and
+its direction is clear (a closing fence's trailing text, a closer longer than
+its opener, CRLF line endings, a backtick in a backtick fence's info string
+have each been fixed on those grounds); do not grow it toward a Markdown
+parser. The gate is what has to be right.
+
 This is the general defense, and the reason the Markdown code regions above
 are a *secondary* one. Identifying the constructs that contain code — fenced,
 indented, inline, block-quoted, HTML — is a blacklist that never closes; each

@@ -6076,14 +6076,18 @@ _WS_LATEX_MATH_PATTERN = re.compile(
 # suppress repairs in the rest of the text -- the same reading CommonMark
 # gives it.
 _MD_CODE_REGION_PATTERN = re.compile(
-    # Opening fence: an info string may follow it. Closing fence: only
-    # whitespace may, and it may be longer than the opener -- CommonMark on
-    # both counts. Accepting a trailing info string on the closer lets a
-    # fence-like line INSIDE the block end the region early. The optional
-    # \r keeps CRLF text working: MULTILINE "$" matches before the \n,
-    # with the \r still ahead of it.
-    r"^[ \t]{0,3}(?P<fence>(?P<fchar>[`~])(?P=fchar){2,})[^\n]*$[\s\S]*?"
-    r"(?:^[ \t]{0,3}(?P=fence)(?P=fchar)*[ \t]*\r?$|\Z)"
+    # Fences, one branch per fence character because their info strings
+    # differ: a backtick fence may not carry a backtick in its info string
+    # (CommonMark, to keep it unambiguous with an inline span), a tilde fence
+    # may. Closing fence: only whitespace may follow, and it may be longer
+    # than the opener -- accepting a trailing info string on the closer lets
+    # a fence-like line INSIDE the block end the region early. The optional
+    # \r keeps CRLF text working: MULTILINE "$" matches before the \n, with
+    # the \r still ahead of it.
+    r"^[ \t]{0,3}(?P<bfence>`{3,})[^\n`]*$[\s\S]*?"
+    r"(?:^[ \t]{0,3}(?P=bfence)`*[ \t]*\r?$|\Z)"
+    r"|^[ \t]{0,3}(?P<tfence>~{3,})[^\n]*$[\s\S]*?"
+    r"(?:^[ \t]{0,3}(?P=tfence)~*[ \t]*\r?$|\Z)"
     # Inline span: opening and closing runs must be the same length, so
     # BOTH are bounded on BOTH sides. Without a left guard the regex
     # restarts inside a longer run -- as an opener, swallowing the text

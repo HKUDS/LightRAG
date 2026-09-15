@@ -223,6 +223,22 @@ def test_fence_like_line_inside_a_block_is_not_a_closer():
     )
 
 
+@pytest.mark.offline
+def test_backtick_fence_info_string_may_not_carry_a_backtick():
+    """CommonMark forbids a backtick inside a backtick fence's info string,
+    to keep it unambiguous with an inline span; a tilde fence allows it.
+    Reading such a line as an opener leaves the block unclosed, so the
+    protection runs to the end of the text and costs every repair after it.
+    """
+    assert repair_vlm_json_escape_damage("```foo`bar\nafter $\tau$") == (
+        "```foo`bar\nafter " + r"$\tau$"
+    )
+    # A real opener with no closer does protect the rest -- that IS
+    # CommonMark -- and a tilde fence may carry the backtick.
+    for protected in ("```foo\nafter $\tau$", "~~~foo`bar\nafter $\tau$"):
+        assert repair_vlm_json_escape_damage(protected) == protected
+
+
 @pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
 @pytest.mark.offline
 def test_fence_regions_behave_the_same_on_both_line_endings(newline):
