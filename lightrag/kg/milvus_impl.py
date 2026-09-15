@@ -138,16 +138,74 @@ async def run_in_milvus_executor(
 # way and for the same reason.
 #
 # So a drop on one loop does not gate readers on another loop in the same
-# process, exactly as it does not gate other processes: those readers fall back
-# to the documented residue on `_run_gated` -- the read fails loudly during the
-# clear and succeeds on retry. The deployment shape is one active loop per
-# process anyway (gunicorn forks a worker per loop), which is what
+# process, exactly as it does not gate other processes. What those readers get
+# is on `_run_gated`. The deployment shape is one active loop per process
+# anyway (gunicorn forks a worker per loop), which is what
 # `run_in_milvus_executor` says about its own per-loop/per-process split.
-_COLLECTION_GATES: dict[int, tuple[Any, dict[str, asyncio.Event]]] = {}
+
+
+class _CollectionGate:
+    """Reader lease and drop barrier for one collection on one event loop.
+
+    Two halves, and the pair is what makes the guarantee: readers hold a LEASE
+    across each blocking SDK call, and a rebuild first CLOSES the gate (no new
+    lease is granted) and then waits for the outstanding leases to drain. A
+    flag alone cannot do it -- between a reader checking the flag and its call
+    reaching a pool thread, a rebuild can remove the collection underneath it.
+
+    The lease spans one submission, never a whole method: it covers the wait
+    for a pool permit and the SDK round trip, and nothing else. That bound is
+    the whole reason this is affordable -- a rebuild waits only for reads that
+    are actually in flight against the server, never for an embedding round
+    trip a reader happens to be sitting in between two of its calls.
+
+    ``acquire_read`` takes the lease and then RE-CHECKS the gate, handing it
+    back if a rebuild closed it in between. Both steps run without an await
+    between them, so a rebuild sees either the lease (and waits for it) or a
+    reader that has backed off -- never a lease it missed.
+    """
+
+    def __init__(self) -> None:
+        self._open = asyncio.Event()
+        self._open.set()
+        self._idle = asyncio.Event()
+        self._idle.set()
+        self._leases = 0
+
+    def is_open(self) -> bool:
+        return self._open.is_set()
+
+    async def acquire_read(self) -> None:
+        while True:
+            await self._open.wait()
+            self._leases += 1
+            self._idle.clear()
+            if self._open.is_set():
+                return
+            self.release_read()
+
+    def release_read(self) -> None:
+        self._leases -= 1
+        if self._leases <= 0:
+            self._idle.set()
+
+    def close(self) -> None:
+        """Refuse new leases. Call ``reopen`` from a ``finally``."""
+        self._open.clear()
+
+    async def wait_idle(self) -> None:
+        """Wait for the in-flight reads to finish. Bounded by their round trips."""
+        await self._idle.wait()
+
+    def reopen(self) -> None:
+        self._open.set()
+
+
+_COLLECTION_GATES: dict[int, tuple[Any, dict[str, _CollectionGate]]] = {}
 _COLLECTION_GATES_GUARD = threading.Lock()
 
 
-def get_collection_gate(final_namespace: str) -> asyncio.Event:
+def get_collection_gate(final_namespace: str) -> _CollectionGate:
     """The running loop's reader gate for one Milvus collection, open when idle.
 
     Must be called from inside the loop that will await it -- never cached on
@@ -171,8 +229,7 @@ def get_collection_gate(final_namespace: str) -> asyncio.Event:
             _COLLECTION_GATES[key] = entry
         gate = entry[1].get(final_namespace)
         if gate is None:
-            gate = asyncio.Event()
-            gate.set()
+            gate = _CollectionGate()
             entry[1][final_namespace] = gate
         return gate
 
@@ -2516,30 +2573,36 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         for seconds, and a drop starting in that gap would leave the check
         behind it worthless.
 
+        The lease, not just the check, is what closes the window. Waiting on a
+        flag and then submitting leaves room for a rebuild to start between the
+        two; holding a lease across the submission makes ``drop()`` wait for
+        this read instead. The wait it costs is bounded by the SDK round trip
+        (plus the pool permit it queues for), never by a reader's embedding
+        work -- see :class:`_CollectionGate`.
+
         Writers must NOT use this. They run under ``_flush_lock``, which
         ``drop()`` holds for the whole rebuild, so they are already excluded --
         and ``drop()`` itself, which closes this gate, would wait on itself.
 
-        Free when no drop is running: ``Event.wait()`` on a set event returns
-        without suspending.
+        Free when no drop is running: the gate is open, so taking the lease
+        costs an ``Event.wait()`` on a set event, which does not suspend.
 
-        Two windows stay open, both narrowed rather than closed, and both
-        recovered the same way -- the read fails loudly and the caller retries
-        once the clear it raced is over:
-
-        * between this check and the call reaching a pool thread, bounded by
-          pool scheduling rather than by the rebuild;
-        * readers in other processes, which no in-process gate reaches:
-          gunicorn forks a loop per process and Milvus has no atomic
-          drop-and-replace, so a clear is a real server-side window there.
-
-        Closing the first would mean ``drop()`` waiting for in-flight readers
-        to drain. Rejected: a reader suspended in an embedding round trip would
-        then stall a destructive admin operation for as long as that takes, and
-        one that never completes would hang it outright.
+        What stays open is readers this loop's gate does not reach -- another
+        loop in this process, or another process, where a rebuild really does
+        remove the collection under them. Their reads fail, and each entry
+        point then reports it the way it always has: ``query`` propagates,
+        ``get_by_id`` returns ``None``, ``get_by_ids`` returns ``[]``, and
+        ``get_vectors_by_ids`` returns what it had buffered. Two of those
+        report a missing COLLECTION as missing ROWS, which is why this gate
+        exists; changing that reporting is a separate contract change, not
+        something to slip in here.
         """
-        await get_collection_gate(self.final_namespace).wait()
-        return await run_in_milvus_executor(fn, *args, **kwargs)
+        gate = get_collection_gate(self.final_namespace)
+        await gate.acquire_read()
+        try:
+            return await run_in_milvus_executor(fn, *args, **kwargs)
+        finally:
+            gate.release_read()
 
     async def query(
         self, query: str, top_k: int, query_embedding: list[float] = None
@@ -3333,9 +3396,11 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         Readers of this instance (``query`` / ``get_by_id`` / ``get_by_ids`` /
         ``get_vectors_by_ids``) are held at ``_run_gated`` for the rebuild
         instead of seeing a missing collection, including instances aliased
-        onto this same collection; writers are already excluded by
-        ``_flush_lock``. Readers in OTHER processes are not, and cannot be --
-        see that method for what the gate does not close.
+        onto this same collection; reads already in flight are waited out
+        before the collection is removed. Writers are already excluded by
+        ``_flush_lock``. Readers on another loop or in another process are
+        not, and cannot be -- see that method for what the gate does not
+        close.
 
         Cancellation: the drop + recreate pair is uninterruptible. A
         cancellation delivered once the collection is gone but before the
@@ -3360,9 +3425,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
             # Close the reader gate for the window where the collection does
             # not exist: writers are excluded by _flush_lock, readers are not.
+            # Closing refuses new leases; draining waits out the reads already
+            # in flight against the server, so none of them is left querying a
+            # collection this is about to remove.
             gate = get_collection_gate(self.final_namespace)
-            gate.clear()
+            gate.close()
             try:
+                await gate.wait_idle()
                 # Drop the collection and recreate it empty.
                 if await run_in_milvus_executor(
                     self._client.has_collection, self.final_namespace
@@ -3384,10 +3453,10 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 )
                 await run_in_milvus_executor(self._ensure_collection_loaded)
             finally:
-                # Reopen even when the rebuild failed: a waiting reader must
-                # get the server's real error, never hang behind a gate no
-                # later call reopens.
-                gate.set()
+                # Reopen even when the rebuild failed -- and even if the drain
+                # above was what failed: a waiting reader must get the server's
+                # real error, never hang behind a gate no later call reopens.
+                gate.reopen()
 
         try:
             async with self._flush_lock:

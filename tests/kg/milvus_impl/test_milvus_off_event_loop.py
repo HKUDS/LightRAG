@@ -594,7 +594,7 @@ async def test_id_lookups_wait_at_the_gate_while_the_collection_is_gone(read):
     s._client.query = MagicMock(return_value=[{"id": "v1", "content": "hi"}])
 
     gate = milvus_impl.get_collection_gate(s.final_namespace)
-    gate.clear()
+    gate.close()
     task = asyncio.ensure_future(
         s.get_by_id("v1") if read == "get_by_id" else s.get_by_ids(["v1"])
     )
@@ -602,7 +602,7 @@ async def test_id_lookups_wait_at_the_gate_while_the_collection_is_gone(read):
         await asyncio.sleep(0)
     s._client.query.assert_not_called()
 
-    gate.set()
+    gate.reopen()
     result = await asyncio.wait_for(task, timeout=5)
 
     expected = {"id": "v1", "content": "hi"}
@@ -689,33 +689,74 @@ def test_each_loop_gets_its_own_collection_gate():
 
     seen = {}
 
-    async def bind_the_gate():
+    async def bind_the_gate(key):
         gate = milvus_impl.get_collection_gate(namespace)
-        seen["first"] = gate
-        # Make it actually block, which is what binds the event to this loop.
-        gate.clear()
-        waiter = asyncio.ensure_future(gate.wait())
+        seen[key] = gate
+        # Make a reader actually block, which is what binds the event.
+        gate.close()
+        waiter = asyncio.ensure_future(gate.acquire_read())
         await asyncio.sleep(0)
-        gate.set()
+        gate.reopen()
         await asyncio.wait_for(waiter, timeout=5)
+        gate.release_read()
 
-    asyncio.run(bind_the_gate())
-
-    async def reuse_from_a_new_loop():
-        gate = milvus_impl.get_collection_gate(namespace)
-        seen["second"] = gate
-        gate.clear()
-        waiter = asyncio.ensure_future(gate.wait())
-        await asyncio.sleep(0)
-        gate.set()
-        # Would raise "bound to a different event loop" on a shared gate.
-        await asyncio.wait_for(waiter, timeout=5)
-
-    asyncio.run(reuse_from_a_new_loop())
+    asyncio.run(bind_the_gate("first"))
+    # Would raise "bound to a different event loop" on a shared gate.
+    asyncio.run(bind_the_gate("second"))
 
     assert seen["first"] is not seen["second"]
     # The closed first loop must not be retained.
     assert len(milvus_impl._COLLECTION_GATES) <= 1
+
+
+@pytest.mark.asyncio
+async def test_drop_waits_for_an_in_flight_read_before_removing_the_collection():
+    """The gate is a lease, not just a flag. A reader that cleared the flag can
+    still be between that check and its call landing on a pool thread, so a
+    rebuild starting there would remove the collection underneath a read that
+    is already on its way. drop() must wait for the reads in flight -- and only
+    for those: the lease covers one SDK round trip, never a reader's embedding
+    work."""
+    order: list[str] = []
+    read_started = threading.Event()
+    release_read = threading.Event()
+
+    def slow_search(**kwargs):
+        order.append("search")
+        read_started.set()
+        release_read.wait(timeout=5)
+        return [[]]
+
+    s = _make_storage(MockEmbeddingFunc())
+    s._client.search = MagicMock(side_effect=slow_search)
+    s._client.drop_collection = MagicMock(
+        side_effect=lambda *a, **k: order.append("drop")
+    )
+
+    query_task = asyncio.ensure_future(
+        s.query("hello", top_k=5, query_embedding=[0.1] * 8)
+    )
+    for _ in range(500):
+        if read_started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert read_started.is_set()
+
+    drop_task = asyncio.ensure_future(s.drop())
+    # Real time, not bare ticks: drop() has to take _flush_lock, spawn its
+    # inner task and round-trip has_collection through the pool before it could
+    # reach drop_collection, which is far more than a few loop iterations. Give
+    # an ungated drop ample room to violate this, and break as soon as it does.
+    for _ in range(50):
+        if "drop" in order:
+            break
+        await asyncio.sleep(0.02)
+    assert "drop" not in order, "collection was removed under an in-flight read"
+
+    release_read.set()
+    assert await asyncio.wait_for(query_task, timeout=5) == []
+    assert (await asyncio.wait_for(drop_task, timeout=5))["status"] == "success"
+    assert order == ["search", "drop"]
 
 
 @pytest.mark.asyncio
