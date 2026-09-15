@@ -74,6 +74,13 @@ prose warning. The two are not symmetric, and the bias follows that asymmetry.
 
 The rules, all applied left to right:
 
+0. Markdown code is verbatim and is never scanned: a fenced block (closed, or
+   running to the end of the text when the model never closed it) and a closed
+   inline code span are copied through, and no span may cross one. Code quotes
+   dollars for its own reasons — `echo "$HOME" ... "$PATH"` pairs exactly as
+   neatly as a formula — and Pandoc does not parse math inside code either. An
+   unclosed single backtick protects nothing, which is also CommonMark's
+   reading and keeps one stray backtick from suppressing the rest of the text.
 1. A backslash-escaped `$` is not a delimiter.
 2. `$$` opens a display span, closed by the next unescaped `$$`. Display math
    is routinely formatted across lines, so no flanking rule applies to it.
@@ -95,13 +102,14 @@ The rules, all applied left to right:
 
 ## Accepted misses
 
-Each is a miss, never a rewrite, and each keeps the prose warning.
+Each keeps the prose warning. All but the last are misses rather than rewrites.
 
 | Shape | Outcome | Why it is accepted |
 | --- | --- | --- |
 | `$ x $` (padded inline span) | not math | Pandoc does not read it as math either. Recognizing it required a fallback that scanned past the span's own closer, which is how prose between two spans got rewritten. |
 | `价格$5，公式$<tab>au$为` (stray dollar against math, no spaces) | first pair wins, repair missed | Only a content heuristic could tell this from a real span, and the CJK shape below shows what such symmetry costs. |
 | `$$<tab>au$` (display open, inline close) | not math | Malformed either way; Pandoc finds no display closer. Consistent with rule 5. |
+| `echo "$HOME"; <tab>ext=1; echo "$PATH"` written as plain prose, with no code fence or backticks | paired as math, **and rewritten** | The one entry in this table that is a rewrite, not a miss. Rule 0 covers code the text marks as code; unmarked code is indistinguishable from `$x ... $y$` by any delimiter rule, and the same ambiguity as `$5 ... $x$`. Marking code as code is the available remedy. |
 
 ## Rejected alternatives
 

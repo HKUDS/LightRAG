@@ -191,6 +191,47 @@ def test_currency_dollar_is_rejected_as_an_opener():
 
 
 @pytest.mark.offline
+def test_markdown_code_is_not_scanned_for_math():
+    """Code quotes dollars for its own reasons -- two shell variable
+    expansions pair exactly as neatly as a formula does -- so a fenced block
+    or an inline code span is copied through verbatim."""
+    fenced = '```sh\necho "$HOME"\n\text=1\necho "$PATH"\n```'
+    assert repair_vlm_json_escape_damage(fenced) == fenced
+    inline = 'inline `echo "$HOME"; \text=1; echo "$PATH"` done'
+    assert repair_vlm_json_escape_damage(inline) == inline
+    # An unclosed fence protects the rest of the text (CommonMark reads it
+    # the same way); an unclosed single backtick protects nothing, so one
+    # stray backtick cannot suppress every later repair.
+    unclosed_fence = "text\n```sh\n$A \text $B\n"
+    assert repair_vlm_json_escape_damage(unclosed_fence) == unclosed_fence
+    assert repair_vlm_json_escape_damage("stray ` tick then $\tau$ ok") == (
+        "stray ` tick then " + r"$\tau$" + " ok"
+    )
+
+
+@pytest.mark.offline
+def test_math_after_a_code_region_is_still_repaired():
+    """Protecting code must not end the scan: spans are repaired in every
+    region between code, not just before the first one."""
+    damaged = '```sh\necho "$HOME"\n```\nthen $\tau$ here'
+    assert repair_vlm_json_escape_damage(damaged) == (
+        '```sh\necho "$HOME"\n```\nthen ' + r"$\tau$" + " here"
+    )
+
+
+@pytest.mark.offline
+def test_unmarked_code_is_indistinguishable_from_math():
+    """Stability test for the one accepted rewrite: shell written as plain
+    prose, with no fence and no backticks, pairs its two variable expansions
+    and the text between them is rewritten. No delimiter rule can tell this
+    from "$x ... $y$"; marking code as code is the remedy. Pinned so the
+    limit is a decision rather than a surprise."""
+    assert repair_vlm_json_escape_damage('echo "$HOME"; \text=1; echo "$PATH"') == (
+        'echo "$HOME"; ' + r"\text" + '=1; echo "$PATH"'
+    )
+
+
+@pytest.mark.offline
 def test_unclosed_display_delimiter_is_skipped_whole():
     """A "$$" with no display closer must be skipped as one token. Skipping
     only its first dollar leaves the second one free to open an inline span

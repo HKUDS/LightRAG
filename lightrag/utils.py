@@ -6070,7 +6070,20 @@ _WS_LATEX_MATH_PATTERN = re.compile(
 )
 
 
-def _repair_ws_latex_in_dollar_math(text: str) -> tuple[str, int]:
+# Markdown regions whose content is verbatim: a fenced block (closed, or
+# running to the end of the text when the model never closed it) and a closed
+# inline code span. An unclosed single backtick matches nothing, so it cannot
+# suppress repairs in the rest of the text -- the same reading CommonMark
+# gives it.
+_MD_CODE_REGION_PATTERN = re.compile(
+    r"^[ \t]{0,3}(?P<fence>`{3,}|~{3,})[^\n]*$[\s\S]*?"
+    r"(?:^[ \t]{0,3}(?P=fence)[^\n]*$|\Z)"
+    r"|(?P<ticks>`+)(?!`)[\s\S]*?(?P=ticks)(?!`)",
+    re.MULTILINE,
+)
+
+
+def _scan_dollar_spans(text: str) -> tuple[str, int]:
     """Restore whitespace-class LaTeX escapes inside paired dollar math.
 
     Tab, CR and LF are legitimate whitespace outside an explicit ``$...$`` /
@@ -6172,6 +6185,33 @@ def _repair_ws_latex_in_dollar_math(text: str) -> tuple[str, int]:
         replacements += count
         cursor = span_end
 
+    return "".join(pieces), replacements
+
+
+def _repair_ws_latex_in_dollar_math(text: str) -> tuple[str, int]:
+    """Repair dollar math outside Markdown code, which is read verbatim.
+
+    Code quotes dollars for its own reasons -- ``echo "$HOME" ... "$PATH"``
+    pairs as neatly as a formula does -- so a fenced block or an inline code
+    span is copied through untouched and no span may cross one. Callers get
+    back the repaired text and the number of replacements.
+
+    See docs/design/LatexEscapeRepairContract.md for what this does and does
+    not cover; code written without Markdown markers is indistinguishable
+    from prose here and is listed there among the accepted misses.
+    """
+    pieces: list[str] = []
+    replacements = 0
+    last = 0
+    for region in _MD_CODE_REGION_PATTERN.finditer(text):
+        repaired, count = _scan_dollar_spans(text[last : region.start()])
+        pieces.append(repaired)
+        replacements += count
+        pieces.append(region.group(0))
+        last = region.end()
+    repaired, count = _scan_dollar_spans(text[last:])
+    pieces.append(repaired)
+    replacements += count
     return "".join(pieces), replacements
 
 
