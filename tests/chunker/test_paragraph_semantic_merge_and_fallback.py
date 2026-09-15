@@ -25,7 +25,9 @@ def _make_tokenizer() -> Tokenizer:
     return Tokenizer(model_name="char", tokenizer=_CharTokenizer())
 
 
-def _make_block(text: str, *, tokenizer: Tokenizer, level: int = 1) -> dict:
+def _make_block(
+    text: str, *, tokenizer: Tokenizer, level: int = 1, blockids: list[str] = ()
+) -> dict:
     return {
         "heading": "H",
         "parent_headings": [],
@@ -34,6 +36,8 @@ def _make_block(text: str, *, tokenizer: Tokenizer, level: int = 1) -> dict:
         "content": text,
         "tokens": len(tokenizer.encode(text)),
         "table_chunk_role": "none",
+        "is_title_block": False,
+        "blockids": list(blockids),
     }
 
 
@@ -105,6 +109,32 @@ def test_tail_absorption_still_fires_when_joined_size_fits():
     assert len(merged) == 1
     assert merged[0]["tokens"] == 83
     assert merged[0]["content"] == "x" * 80 + "\n\n" + "y" * 1
+
+
+@pytest.mark.offline
+def test_tail_absorption_preserves_blockids():
+    """Tail absorption built its result as a raw dict literal, omitting
+    blockids/is_title_block entirely (unlike _merged_pair, which unions
+    them). A chunk assembled from an absorbed block then lost its
+    sidecar block-provenance silently -- no error, just a missing field
+    that multimodal citation resolution and delete-cache cleanup rely on."""
+    tokenizer = _make_tokenizer()
+    blocks = [
+        _make_block("x" * 80, tokenizer=tokenizer, blockids=["blk-1"]),
+        _make_block("y" * 1, tokenizer=tokenizer, blockids=["blk-2"]),
+    ]
+
+    merged = _merge_small_blocks(
+        blocks,
+        tokenizer=tokenizer,
+        target_max=100,
+        target_ideal=80,
+        small_tail_threshold=12,
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["blockids"] == ["blk-1", "blk-2"]
+    assert merged[0]["is_title_block"] is False
 
 
 @pytest.mark.offline
