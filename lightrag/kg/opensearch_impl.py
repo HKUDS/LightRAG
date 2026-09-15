@@ -44,6 +44,7 @@ from ..base import (
     SourceUnique,
 )
 from ..exceptions import (
+    DataMigrationError,
     ReferencesIntactFlushError,
     SourceConflictRepairCASError,
     StorageControlPlaneError,
@@ -425,6 +426,15 @@ _FINAL_NAMESPACE_META_KEY = "lightrag_final_namespace"
 # real LightRAG namespaces), so the workspace must be compared alongside it.
 _WORKSPACE_IDENTITY_KEYS = (_WORKSPACE_META_KEY, _FINAL_NAMESPACE_META_KEY)
 
+# Provenance recorded on a vector index: which embedding model built it, and
+# -- on a legacy index -- which suffixed index has already consumed its rows.
+# None of these take part in the ownership identity above; they exist so a
+# later migration can reason about what it is looking at instead of inferring
+# the model from the vector dimension alone.
+_EMBEDDING_MODEL_META_KEY = "lightrag_embedding_model"
+_EMBEDDING_DIM_META_KEY = "lightrag_embedding_dim"
+_MIGRATED_TO_META_KEY = "lightrag_migrated_to"
+
 
 class WorkspaceIndexCollisionError(ValueError):
     """An index is already claimed by a different LightRAG workspace.
@@ -488,6 +498,23 @@ def _dimension_mismatch_error(
         f"dimension {existing_dim}, but current embedding model expects "
         f"dimension {expected_dim}. Please drop the existing index or "
         f"use an embedding model with matching dimensions."
+    )
+
+
+def _model_mismatch_error(
+    index_name: str, existing_model: str, expected_model: str | None
+) -> ValueError:
+    """Build the model-mismatch error, naming both sides and the way out."""
+    return ValueError(
+        f"Embedding model mismatch! Index '{index_name}' was built by "
+        f"'{existing_model}', but this instance runs "
+        f"'{expected_model or 'an embedding function that declares no model'}'. "
+        f"Two models can share a vector dimension and still have unrelated "
+        f"spaces, so this index cannot be read as if it were ours. Model "
+        f"names are folded into the index name (case and punctuation collapse "
+        f"to '_'), which is how two different models can arrive at the same "
+        f"one. Point this deployment at a different index, or drop this one "
+        f"and rebuild with `lightrag-rebuild-vdb`."
     )
 
 
@@ -6243,9 +6270,27 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
     def __post_init__(self):
         validate_workspace(self.workspace)
         self._validate_embedding_func()
-        self.workspace, self.final_namespace, self._index_name = _build_index_name(
-            self.workspace, self.namespace
+        self.workspace, self.final_namespace, self._legacy_index_name = (
+            _build_index_name(self.workspace, self.namespace)
         )
+        # Model isolation: a different embedding model gets a different index
+        # instead of colliding with the previous model's vectors on the shared
+        # `{workspace}_{namespace}` name. Only the physical index name carries
+        # the suffix -- `final_namespace` stays the LOGICAL identity, which is
+        # what the ownership marker records, so a legacy index written by an
+        # earlier release still matches this instance and can be claimed
+        # before migration.
+        #
+        # `_generate_collection_suffix` returns None when the embedding
+        # function declares no `model_name`; the index name is then exactly
+        # what it has always been, and no migration exists to run.
+        self.model_suffix = self._generate_collection_suffix()
+        if self.model_suffix:
+            self._index_name = _sanitize_index_name(
+                f"{self.final_namespace}_{self.model_suffix}"
+            )
+        else:
+            self._index_name = self._legacy_index_name
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = kwargs.get("cosine_better_than_threshold")
         if cosine_threshold is None:
@@ -6272,11 +6317,32 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         ) = _resolve_bulk_batch_limits()
 
     async def initialize(self):
-        """Initialize client and create k-NN vector index."""
+        """Initialize client and create k-NN vector index.
+
+        The one-time migration from a pre-model-isolation index runs HERE and
+        nowhere else. ``_create_knn_index_if_not_exists`` is shared with
+        ``drop()``'s recreate and with ``_ensure_index_ready``'s write-path
+        self-heal, and neither may migrate: a ``/documents/clear`` that
+        recreated the index would copy the just-cleared vectors straight back
+        in, and a write recovering a lost index would resurrect a corpus the
+        operator had already removed. Startup is the only moment at which
+        "this index has never existed here" is the right reading of its
+        absence.
+        """
         async with get_data_init_lock():
             if self.client is None:
                 self.client = await ClientManager.get_client()
+            existed = await self.client.indices.exists(index=self._index_name)
+            # Decide about the legacy index BEFORE the destination exists.
+            # Creating it first and then failing to inspect would leave an
+            # empty index behind, and every later start would see it present
+            # and skip the migration -- a transient read turned into permanent
+            # data loss. Inspecting first means a failure here creates nothing
+            # and the next start retries from an untouched cluster.
+            pending = await self._plan_legacy_migration() if not existed else None
             await self._create_knn_index_if_not_exists()
+            if pending is not None:
+                await self._reindex_legacy(*pending)
             self._index_ready = True
             logger.debug(
                 f"[{self.workspace}] OpenSearch Vector storage initialized: {self._index_name}"
@@ -6296,6 +6362,116 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             if not self._index_ready:
                 await self._create_knn_index_if_not_exists()
                 self._index_ready = True
+
+    def _assert_index_is_usable(self, mapping: dict) -> None:
+        """Raise unless an existing index matches this instance's embedding.
+
+        Ownership says the index is OURS; this says we can actually read it.
+        Both must hold before readiness is granted, and both are checked at
+        every point that attaches to an index it did not just create --
+        ``_create_knn_index_if_not_exists`` and the read path's
+        ``_recheck_index_presence``. Keeping them in one place is the point:
+        the two drifted apart once already, and the half that was missing was
+        the one that catches a model change.
+
+        Two facts, both read from a mapping the caller already has:
+
+        * the vector dimension, which rejects a different-sized model;
+        * the recorded model name, which rejects a same-sized one. The suffix
+          cannot do this alone -- ``_generate_collection_suffix`` and
+          ``_sanitize_index_name`` both fold case and punctuation, so
+          ``vendor/model:v1`` and ``vendor_model/v1`` resolve to one index
+          name. The provenance in ``_meta`` is the unfolded name.
+
+        Absent evidence never refuses. An index that records no dimension or
+        no model predates that provenance; treating silence as a mismatch
+        would refuse every index created before it was written.
+        """
+        existing_dim = _read_vector_dimension(mapping, self._index_name)
+        expected_dim = self.embedding_func.embedding_dim
+        if existing_dim is not None and existing_dim != expected_dim:
+            raise _dimension_mismatch_error(
+                self._index_name, existing_dim, expected_dim
+            )
+        meta = (mapping.get(self._index_name) or {}).get("mappings", {}).get(
+            "_meta"
+        ) or {}
+        existing_model = meta.get(_EMBEDDING_MODEL_META_KEY)
+        expected_model = self._declared_model_name()
+        if existing_model is not None and existing_model != expected_model:
+            raise _model_mismatch_error(
+                self._index_name, existing_model, expected_model
+            )
+
+    def _declared_model_name(self) -> str | None:
+        """The embedding model this instance declares, or None if it declares none."""
+        model_name = getattr(self.embedding_func, "model_name", None)
+        if isinstance(model_name, str) and model_name.strip():
+            return model_name.strip()
+        return None
+
+    def _unmarked_legacy_is_migratable(self, legacy: str, legacy_count: int) -> bool:
+        """Whether to adopt a legacy index that records no embedding model.
+
+        Every index predating model isolation is in this state, so this is the
+        ordinary upgrade path. It is also indistinguishable from an upgrade
+        where the operator switched to a DIFFERENT model that happens to share
+        a dimension -- the vectors would then be copied into a space they do
+        not belong to.
+
+        Migrating is the default: the common case is an upgrade with no model
+        change, and refusing it would make every existing deployment re-embed
+        its whole corpus. The ambiguity is not hidden, though -- the WARNING
+        below states the assumption being made and how to undo it, so the
+        narrow case is loud even though it is not blocked.
+        ``OPENSEARCH_MIGRATE_UNMARKED_LEGACY=false`` refuses instead, for a
+        deployment that would rather rebuild than assume.
+
+        Indices created from here on record their model, so this ambiguity
+        exists exactly once per index: the first start after the upgrade.
+        """
+        if _get_opensearch_env(
+            "OPENSEARCH_MIGRATE_UNMARKED_LEGACY", "true"
+        ).lower() not in ("true", "1", "yes"):
+            logger.warning(
+                f"[{self.workspace}] Legacy index '{legacy}' records no "
+                f"embedding model and OPENSEARCH_MIGRATE_UNMARKED_LEGACY is "
+                f"disabled, so its {legacy_count} documents were NOT migrated "
+                f"into '{self._index_name}'. The legacy index is left intact -- "
+                f"run `lightrag-rebuild-vdb` to re-embed from the knowledge "
+                f"graph, which is the authoritative source."
+            )
+            return False
+        logger.warning(
+            f"[{self.workspace}] Legacy index '{legacy}' predates model "
+            f"isolation and records no embedding model, so its {legacy_count} "
+            f"documents are being migrated into '{self._index_name}' on the "
+            f"assumption that '{self._declared_model_name()}' is the model that "
+            f"built them. If you changed embedding models in this same upgrade, "
+            f"that assumption is WRONG and retrieval will be quietly incorrect: "
+            f"delete '{self._index_name}', then run `lightrag-rebuild-vdb` to "
+            f"re-embed from the knowledge graph. Set "
+            f"OPENSEARCH_MIGRATE_UNMARKED_LEGACY=false to refuse this migration "
+            f"instead of assuming."
+        )
+        return True
+
+    def _embedding_provenance_meta(self) -> dict[str, Any]:
+        """``_meta`` fields recording which embedding model built this index.
+
+        Not part of the ownership identity (`_WORKSPACE_IDENTITY_KEYS`) and
+        never compared: the index NAME already isolates models that declare a
+        ``model_name``. This is provenance for a later migration, which would
+        otherwise have only the vector dimension to reason from and could not
+        tell two same-dimension models apart.
+        """
+        meta: dict[str, Any] = {
+            _EMBEDDING_DIM_META_KEY: self.embedding_func.embedding_dim,
+        }
+        model_name = self._declared_model_name()
+        if model_name is not None:
+            meta[_EMBEDDING_MODEL_META_KEY] = model_name
+        return meta
 
     def _mark_index_missing(self):
         """Mark the vector index as unavailable for subsequent read short-circuiting.
@@ -6427,13 +6603,268 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         # _ensure_index_ready -- the one path that raises something an operator
         # can act on. The mapping is already in hand, so this costs no round
         # trip.
-        expected_dim = self.embedding_func.embedding_dim
-        existing_dim = _read_vector_dimension(mapping, self._index_name)
-        if existing_dim is not None and existing_dim != expected_dim:
-            raise _dimension_mismatch_error(
-                self._index_name, existing_dim, expected_dim
-            )
+        self._assert_index_is_usable(mapping)
         self._index_ready = True
+
+    async def _plan_legacy_migration(self) -> tuple[str, int, dict[str, Any]] | None:
+        """What to carry over from a pre-model-isolation index, if anything.
+
+        Call ONLY from ``initialize()``, and only when the suffixed index did
+        not already exist -- see there for why ``drop()``'s recreate and the
+        write-path self-heal must not reach this, and why this runs before the
+        destination is created.
+
+        ``None`` is a DECISION to start empty and is final; an inspection that
+        could not be completed raises instead, so the next start retries.
+        """
+        legacy = self._legacy_index_name
+        if not self.model_suffix or legacy == self._index_name:
+            return None
+        return await self._legacy_migration_source(legacy)
+
+    async def _legacy_migration_source(
+        self, legacy: str
+    ) -> tuple[str, int, dict[str, Any]] | None:
+        """The legacy index, its document count and its ``_meta``, or ``None``.
+
+        Refuses, rather than migrates, when:
+
+        * no legacy index exists, or it is empty;
+        * it is claimed by a DIFFERENT workspace. Index names are lossy
+          (``_sanitize_index_name``, and ``OPENSEARCH_WORKSPACE`` collapsing
+          distinct workspaces), so the un-suffixed name can belong to another
+          deployment and reindexing it would steal its vectors. This is why
+          ``final_namespace`` keeps the un-suffixed identity: a legacy index
+          written by an earlier release still matches this instance;
+        * it was already consumed by a previous migration
+          (``lightrag_migrated_to``);
+        * it records a DIFFERENT embedding model. Two models can share a
+          dimension and still have unrelated vector spaces, so the dimension
+          alone is not proof;
+        * it records no model at all -- see ``_unmarked_legacy_is_migratable``;
+        * its vectors have a different dimension. A model switch and an upgrade
+          happening together: they cannot be reused, this backend does not
+          re-embed, and the legacy index stays as a backup.
+
+        A failure to READ any of this is also a refusal, never an exception: an
+        unreachable legacy index must not stop the server from starting.
+        """
+        try:
+            if not await self.client.indices.exists(index=legacy):
+                return None
+            mapping = await self.client.indices.get_mapping(index=legacy)
+        except OpenSearchException as e:
+            raise DataMigrationError(
+                f"[{self.workspace}] Could not inspect legacy index '{legacy}' "
+                f"to decide whether it should be migrated into "
+                f"'{self._index_name}': {e}. Nothing was created; retry once "
+                f"the cluster is reachable. This is deliberately fatal -- "
+                f"creating the index and skipping the migration would make "
+                f"every later start see it present and never migrate again."
+            ) from e
+
+        meta = (mapping.get(legacy) or {}).get("mappings", {}).get("_meta") or {}
+
+        stored = _stored_index_identity(meta)
+        expected = _workspace_index_meta(self.workspace, self.final_namespace)
+        if stored != expected and any(v is not None for v in stored.values()):
+            logger.warning(
+                f"[{self.workspace}] Legacy index '{legacy}' belongs to "
+                f"{_describe_index_identity(stored)}, not to "
+                f"{_describe_index_identity(expected)}; NOT migrating it into "
+                f"'{self._index_name}'. Creating an empty index instead."
+            )
+            return None
+
+        already = meta.get(_MIGRATED_TO_META_KEY)
+        if already:
+            logger.info(
+                f"[{self.workspace}] Legacy index '{legacy}' was already "
+                f"migrated into '{already}'; not migrating it again."
+            )
+            return None
+
+        try:
+            legacy_count = (await self.client.count(index=legacy))["count"]
+        except (OpenSearchException, KeyError, TypeError) as e:
+            raise DataMigrationError(
+                f"[{self.workspace}] Could not count legacy index '{legacy}' "
+                f"before migrating it into '{self._index_name}': {e}. Nothing "
+                f"was created; retry once the cluster is reachable."
+            ) from e
+        if legacy_count == 0:
+            return None
+
+        legacy_dim = _read_vector_dimension(mapping, legacy)
+        expected_dim = self.embedding_func.embedding_dim
+        if legacy_dim is not None and legacy_dim != expected_dim:
+            logger.warning(
+                f"[{self.workspace}] Legacy index '{legacy}' holds {legacy_dim}d "
+                f"vectors but the current embedding model expects "
+                f"{expected_dim}d; its {legacy_count} documents were NOT "
+                f"migrated into '{self._index_name}'. The legacy index is left "
+                f"intact as a backup -- re-ingest, or run `lightrag-rebuild-vdb` "
+                f"with the new model to rebuild from the knowledge graph."
+            )
+            return None
+
+        legacy_model = meta.get(_EMBEDDING_MODEL_META_KEY)
+        current_model = self._declared_model_name()
+        if legacy_model is not None:
+            if legacy_model != current_model:
+                logger.warning(
+                    f"[{self.workspace}] Legacy index '{legacy}' was built by "
+                    f"embedding model '{legacy_model}' but this instance runs "
+                    f"'{current_model}'; its {legacy_count} documents were NOT "
+                    f"migrated into '{self._index_name}'. Two models can share "
+                    f"a dimension and still have unrelated vector spaces. The "
+                    f"legacy index is left intact -- run `lightrag-rebuild-vdb` "
+                    f"with the new model to rebuild from the knowledge graph."
+                )
+                return None
+        elif not self._unmarked_legacy_is_migratable(legacy, legacy_count):
+            return None
+
+        return legacy, legacy_count, meta
+
+    async def _reindex_legacy(
+        self, legacy: str, legacy_count: int, legacy_meta: dict[str, Any]
+    ) -> None:
+        """Copy every row of the legacy index into the freshly created one.
+
+        Called only just after ``indices.create`` succeeded, so the destination
+        already carries the k-NN mapping; letting ``_reindex`` auto-create it
+        would produce a plain index whose vectors are unsearchable.
+
+        Completion is CHECKED, not assumed. A half-copied suffixed index would
+        permanently shadow the legacy one -- every later start would see the
+        suffixed index present, skip migration, and serve a subset -- so a
+        short or partially failed copy deletes the new index and raises,
+        leaving the next start to try again against untouched data.
+        """
+        logger.info(
+            f"[{self.workspace}] Migrating {legacy_count} documents from legacy "
+            f"index '{legacy}' into '{self._index_name}'"
+        )
+        try:
+            result = await self.client.reindex(
+                body={
+                    "source": {"index": legacy},
+                    "dest": {"index": self._index_name},
+                },
+                params={"refresh": "true", "wait_for_completion": "true"},
+            )
+        except Exception as e:
+            await self._abandon_failed_migration(legacy, f"reindex failed: {e}")
+            raise
+
+        failures = result.get("failures") or []
+        copied = (result.get("created") or 0) + (result.get("updated") or 0)
+        if failures or copied != legacy_count:
+            await self._abandon_failed_migration(
+                legacy,
+                f"copied {copied} of {legacy_count} documents"
+                + (f", {len(failures)} failures" if failures else ""),
+            )
+            raise DataMigrationError(
+                f"[{self.workspace}] Migration from legacy index '{legacy}' into "
+                f"'{self._index_name}' is incomplete: copied {copied} of "
+                f"{legacy_count} documents, {len(failures)} failures. The new "
+                f"index has been removed so the next start can retry; the "
+                f"legacy index is untouched."
+            )
+
+        await self._mark_legacy_consumed(legacy, legacy_meta)
+        logger.info(
+            f"[{self.workspace}] Migrated {copied} documents from '{legacy}' "
+            f"into '{self._index_name}'. The legacy index is kept as a backup."
+        )
+
+    async def _mark_legacy_consumed(
+        self, legacy: str, legacy_meta: dict[str, Any]
+    ) -> bool:
+        """Record on the SOURCE that its rows now live in the suffixed index.
+
+        Merges into the ``_meta`` it was given. ``put_mapping`` REPLACES
+        ``_meta`` wholesale, so writing the marker alone would strip the
+        legacy index's ownership identity -- and an unclaimed index is one a
+        folding-equivalent workspace will adopt and later clear. The same
+        reason ``_claim_index_for_workspace`` merges.
+
+        Best effort on purpose. A copy that already landed is durable and the
+        server is fully usable; refusing to start over a metadata write would
+        report a completed operation as one that did not happen. ``drop()``
+        retries this before it removes the suffixed index, which is the moment
+        the marker actually matters.
+
+        Accepted residue, with both retries failing: if the suffixed index is
+        later deleted AND not recreated, the next start copies the legacy rows
+        back in. The ERROR below names the manual repair.
+        """
+        try:
+            await self.client.indices.put_mapping(
+                index=legacy,
+                body={
+                    "_meta": {
+                        **legacy_meta,
+                        _MIGRATED_TO_META_KEY: self._index_name,
+                    }
+                },
+            )
+            return True
+        except OpenSearchException as e:
+            logger.error(
+                f"[{self.workspace}] Could not mark legacy index '{legacy}' as "
+                f"consumed by '{self._index_name}': {e}. The migrated data is "
+                f"intact, but if '{self._index_name}' is ever deleted and not "
+                f"recreated, the next start will copy '{legacy}' back in. Mark "
+                f"it manually: PUT {legacy}/_mapping "
+                f'{{"_meta": {{"{_MIGRATED_TO_META_KEY}": "{self._index_name}"}}}}'
+            )
+            return False
+
+    async def _remark_legacy_consumed_before_drop(self) -> None:
+        """Re-assert the consumption marker if the legacy index still lacks it.
+
+        Cheap and silent on the ordinary path -- there is no legacy index, or
+        it is already marked. Never raises: a drop must not be blocked by
+        bookkeeping about an index it is not touching.
+        """
+        legacy = self._legacy_index_name
+        if not self.model_suffix or legacy == self._index_name:
+            return
+        try:
+            if not await self.client.indices.exists(index=legacy):
+                return
+            mapping = await self.client.indices.get_mapping(index=legacy)
+        except OpenSearchException:
+            return
+        meta = (mapping.get(legacy) or {}).get("mappings", {}).get("_meta") or {}
+        if meta.get(_MIGRATED_TO_META_KEY):
+            return
+        stored = _stored_index_identity(meta)
+        expected = _workspace_index_meta(self.workspace, self.final_namespace)
+        if stored != expected and any(v is not None for v in stored.values()):
+            # Not ours to annotate.
+            return
+        await self._mark_legacy_consumed(legacy, meta)
+
+    async def _abandon_failed_migration(self, legacy: str, reason: str) -> None:
+        """Remove the half-populated new index so the next start can retry."""
+        logger.error(
+            f"[{self.workspace}] Migration from '{legacy}' into "
+            f"'{self._index_name}' failed ({reason}); removing the incomplete "
+            f"index so it cannot shadow the legacy one."
+        )
+        try:
+            await self.client.indices.delete(index=self._index_name)
+        except OpenSearchException as e:
+            logger.error(
+                f"[{self.workspace}] Could not remove the incomplete index "
+                f"'{self._index_name}': {e}. It must be deleted manually before "
+                f"the next start, or it will shadow '{legacy}'."
+            )
+        self._mark_index_missing()
 
     async def _create_knn_index_if_not_exists(self):
         try:
@@ -6451,12 +6882,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     mapping = await self.client.indices.get_mapping(
                         index=self._index_name
                     )
-                    existing_dim = _read_vector_dimension(mapping, self._index_name)
-                    expected_dim = self.embedding_func.embedding_dim
-                    if existing_dim is not None and existing_dim != expected_dim:
-                        raise _dimension_mismatch_error(
-                            self._index_name, existing_dim, expected_dim
-                        )
+                    self._assert_index_is_usable(mapping)
                 except (KeyError, TypeError):
                     logger.warning(
                         f"[{self.workspace}] Could not read vector mapping for index "
@@ -6502,9 +6928,10 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                         "created_at": {"type": "long"},
                     },
                     "dynamic": True,
-                    "_meta": _workspace_index_meta(
-                        self.workspace, self.final_namespace
-                    ),
+                    "_meta": {
+                        **_workspace_index_meta(self.workspace, self.final_namespace),
+                        **self._embedding_provenance_meta(),
+                    },
                 },
             }
             await self.client.indices.create(index=self._index_name, body=body)
@@ -7252,6 +7679,13 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             self._pending_vector_docs.clear()
             self._pending_vector_deletes.clear()
             try:
+                # Last chance to record that the legacy index was consumed.
+                # From here the suffixed index stops existing for a moment, and
+                # an unmarked legacy index is exactly what the next START would
+                # migrate back in. _mark_legacy_consumed is best effort at
+                # migration time; this is the retry, at the one moment the
+                # marker's absence can actually cost something.
+                await self._remark_legacy_consumed_before_drop()
                 try:
                     await self.client.indices.delete(index=self._index_name)
                     logger.info(
