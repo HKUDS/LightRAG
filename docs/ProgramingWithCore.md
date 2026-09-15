@@ -2065,8 +2065,16 @@ When merging entities:
 
 Vectors produced by one embedding model are meaningless in another's space, so a model switch must never reuse the previous model's container. Backends differ in whether they arrange that for you.
 
-**Backends that isolate by model.** Milvus, Qdrant, PostgreSQL and OpenSearch append `{model_name}_{embedding_dim}d` to the collection / table / index name, so a different model simply lands in a different container. Switching models needs no manual step, the previous model's data is left intact, and switching back reaches it again. The first start after a switch reports an empty knowledge graph for the new model — that is the isolation working, not data loss.
+**Backends that isolate by model.** Milvus, Qdrant, PostgreSQL and OpenSearch append `{model_name}_{embedding_dim}d` to the collection / table / index name, so a different model lands in a different container. What this buys you is *isolation*, not a free switch: the previous model's vectors are never overwritten, switching back reaches them again, and startup no longer fails on a dimension mismatch.
 
-This requires the embedding function to declare a `model_name`. When it does not, the suffix cannot be derived and these backends fall back to the un-suffixed name, where a switch collides exactly as below.
+**You still have to rebuild the vectors.** The new model's container starts empty, and nothing repopulates it on its own — `doc_status` rows stay `PROCESSED`, so ingestion does not re-run. Until you rebuild, graph and naive retrieval return nothing. Run:
+
+```bash
+lightrag-rebuild-vdb
+```
+
+with the new embedding configuration. It re-embeds from the knowledge graph and the `text_chunks` KV store, which are the authoritative sources — so this costs embedding calls, not a re-ingestion of your documents.
+
+This all requires the embedding function to declare a `model_name`. When it does not, the suffix cannot be derived and these backends fall back to the un-suffixed name, where a switch collides exactly as below.
 
 **Everything else** — the file-backed defaults (`NanoVectorDBStorage`, `FaissVectorDBStorage`) and any embedding function without a `model_name` — shares one container per namespace. Clear the data directory before switching; the only file worth preserving is `kv_store_llm_response_cache.json`, if you want to keep the LLM cache.
