@@ -2771,6 +2771,15 @@ async def pipeline_index_texts(
         # See pipeline_enqueue_file: only forwarded when a reservation exists.
         enqueue_kwargs["admission_token"] = admission_token
     await rag.apipeline_enqueue_documents(**enqueue_kwargs)
+    
+    # Release the admission reservation NOW (after enqueue, before process).
+    # The reservation was taken to serialize the enqueue decision against
+    # manual freezes and scans; once the documents are enqueued, the slot
+    # must be released so a mid-run manual retry does not wait forever on
+    # the supervisor's own token (issue #3948).
+    if admission_token is not None:
+        await _release_enqueue_slot(rag, admission_token)
+    
     await rag.apipeline_process_enqueue_documents()
 
 
