@@ -40,9 +40,17 @@ words "o"/"exists" would false-positive.
 The same whitelist is compiled twice, and the difference is the trailing
 guard:
 
-- **`_WS_LATEX_SUSPECT_PATTERN`** (`\b`) is the prose detector, used only to
-  warn. The word boundary keeps `col<tab>ext_id` and `<tab>au2` — plausible
-  values in tab-separated data — out of the log.
+- **`_WS_LATEX_SUSPECT_PATTERN`** (`(?:\b|(?=[^\x00-\x7F]))`) is the prose
+  detector, used only to warn. The word boundary keeps `col<tab>ext_id` and
+  `<tab>au2` — plausible values in tab-separated data — out of the log. The
+  second alternative exists because `\b` alone reported *nothing* when a word
+  character followed, and Python's `re` counts a CJK ideograph as a word
+  character: `阈值<tab>au为0.5`, the shape Chinese corpora actually produce,
+  was neither repaired (no math span) nor warned about. A Latin fragment
+  pressed against a non-ASCII character with no space between them is
+  essentially only produced by this damage, so the false-positive risk is low
+  and the ceiling on being wrong is one WARNING line — this path never
+  rewrites text. ASCII word characters stay excluded deliberately.
 - **`_WS_LATEX_MATH_PATTERN`** (`(?![A-Za-z])`) is used inside a confirmed
   math span. There, `_`, `{`, `^` and digits are the most common characters to
   follow a command, and the "the residue might be an English word" argument
@@ -52,11 +60,12 @@ guard:
 The in-math pattern is a strict superset of the prose pattern, which is why a
 repaired span can never re-trigger the prose warning afterwards.
 
-Accepted gap: the prose detector is silent whenever a word character follows
-the residue, and a CJK ideograph is a word character, so `阈值<tab>au为0.5` in
-ordinary Chinese prose is neither repaired (no math span) nor warned about.
-This is a detector-side decision, tracked separately from the pairing rules
-below.
+Accepted gap: the prose detector is still silent when an **ASCII** word
+character follows the residue — `col<tab>ext_id` and `<tab>au2` are damage as
+often as they are data, and in tab-separated values the data reading is common
+enough that the warning would cost more than it buys. Such a residue is
+neither repaired (no math span) nor warned about. This is a detector-side
+decision, tracked separately from the pairing rules below.
 
 ## Delimiter policy
 

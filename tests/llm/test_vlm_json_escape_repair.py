@@ -18,7 +18,11 @@ import logging
 
 import pytest
 
-from lightrag.utils import repair_vlm_json_escape_damage
+from lightrag.utils import (
+    _WS_LATEX_MATH_PATTERN,
+    _WS_LATEX_SUSPECT_PATTERN,
+    repair_vlm_json_escape_damage,
+)
 
 
 @pytest.fixture
@@ -98,6 +102,99 @@ def test_whitespace_class_damage_outside_math_is_logged_not_rewritten(
         and "table/t1" in rec.getMessage()
         for rec in caplog.records
     )
+
+
+@pytest.mark.parametrize(
+    "damaged",
+    [
+        # CJK ideographs: the shape Chinese corpora actually produce, where a
+        # model writes an inline formula into prose without $ delimiters.
+        "阈值\tau为0.5",
+        "数据\times倍",
+        "算子\nabla作用于 f",
+        "密度\rho的分布",
+        # Non-ASCII that is not CJK: a Greek letter is a word character too.
+        "Δ\theta角",
+    ],
+)
+@pytest.mark.offline
+def test_damage_followed_by_a_non_ascii_character_is_reported(
+    damaged, caplog, _propagate_lightrag_logger
+):
+    """A word boundary alone hid every one of these: Python's ``re`` counts a
+    CJK ideograph as a word character, so no boundary exists between the
+    residue and what follows it. Outside math nothing is rewritten, which
+    makes the WARNING the only trace the command was ever there."""
+    with caplog.at_level(logging.WARNING, logger="lightrag"):
+        result = repair_vlm_json_escape_damage(damaged, context="table/t1")
+    assert result == damaged
+    assert any(
+        "not auto-repaired" in rec.message and "table/t1" in rec.getMessage()
+        for rec in caplog.records
+    )
+
+
+@pytest.mark.parametrize(
+    "damaged",
+    [
+        "阈值\tau。",  # ideographic full stop
+        "参数\tilde，如下",  # full-width comma
+        "the \tau value",  # space
+        "label:\tau",  # end of string
+        "$5 costs \rho.",  # ASCII punctuation
+    ],
+)
+@pytest.mark.offline
+def test_word_boundary_shapes_are_still_reported(
+    damaged, caplog, _propagate_lightrag_logger
+):
+    r"""Widening the guard must not cost the cases ``\b`` already caught."""
+    with caplog.at_level(logging.WARNING, logger="lightrag"):
+        result = repair_vlm_json_escape_damage(damaged, context="table/t1")
+    assert result == damaged
+    assert any("not auto-repaired" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "legit",
+    [
+        "col1\tauthor list",  # residue starts an English word
+        "col\text_id header",  # ASCII underscore follows
+        "the \tau2 value",  # ASCII digit follows
+        "row\rightmost column",
+    ],
+)
+@pytest.mark.offline
+def test_ascii_word_characters_after_the_residue_stay_silent(
+    legit, caplog, _propagate_lightrag_logger
+):
+    """The accepted gap: in tab-separated data these are plausible values, so
+    only NON-ASCII is admitted as the alternative to a word boundary."""
+    with caplog.at_level(logging.WARNING, logger="lightrag"):
+        result = repair_vlm_json_escape_damage(legit)
+    assert result == legit
+    assert not caplog.records
+
+
+@pytest.mark.offline
+def test_in_math_pattern_stays_a_superset_of_the_prose_pattern():
+    """The contract's reason a repaired span never re-triggers the prose
+    warning. Widening the prose guard is only safe while this holds."""
+    probes = [
+        f"{residue}{tail}"
+        for residue, tails in (
+            ("\t", ("au", "heta", "imes", "ext", "ilde", "herefore", "riangle")),
+            ("\r", ("ho", "ight", "angle", "ceil")),
+            ("\n", ("abla", "otin")),
+        )
+        for tail in tails
+    ]
+    followers = ["", " ", ".", "_", "2", "x", "为", "。", "Δ"]
+    for probe in probes:
+        for follower in followers:
+            text = f"prefix{probe}{follower}"
+            if _WS_LATEX_SUSPECT_PATTERN.search(text):
+                assert _WS_LATEX_MATH_PATTERN.search(text), text
 
 
 @pytest.mark.parametrize(
