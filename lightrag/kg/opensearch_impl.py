@@ -44,6 +44,7 @@ from ..base import (
     SourceUnique,
 )
 from ..exceptions import (
+    DataMigrationError,
     ReferencesIntactFlushError,
     SourceConflictRepairCASError,
     StorageControlPlaneError,
@@ -424,6 +425,15 @@ _FINAL_NAMESPACE_META_KEY = "lightrag_final_namespace"
 # same string as workspace ``foo_text`` + namespace ``chunks``, and both are
 # real LightRAG namespaces), so the workspace must be compared alongside it.
 _WORKSPACE_IDENTITY_KEYS = (_WORKSPACE_META_KEY, _FINAL_NAMESPACE_META_KEY)
+
+# Provenance recorded on a vector index: which embedding model built it, and
+# -- on a legacy index -- which suffixed index has already consumed its rows.
+# None of these take part in the ownership identity above; they exist so a
+# later migration can reason about what it is looking at instead of inferring
+# the model from the vector dimension alone.
+_EMBEDDING_MODEL_META_KEY = "lightrag_embedding_model"
+_EMBEDDING_DIM_META_KEY = "lightrag_embedding_dim"
+_MIGRATED_TO_META_KEY = "lightrag_migrated_to"
 
 
 class WorkspaceIndexCollisionError(ValueError):
@@ -6243,9 +6253,27 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
     def __post_init__(self):
         validate_workspace(self.workspace)
         self._validate_embedding_func()
-        self.workspace, self.final_namespace, self._index_name = _build_index_name(
-            self.workspace, self.namespace
+        self.workspace, self.final_namespace, self._legacy_index_name = (
+            _build_index_name(self.workspace, self.namespace)
         )
+        # Model isolation: a different embedding model gets a different index
+        # instead of colliding with the previous model's vectors on the shared
+        # `{workspace}_{namespace}` name. Only the physical index name carries
+        # the suffix -- `final_namespace` stays the LOGICAL identity, which is
+        # what the ownership marker records, so a legacy index written by an
+        # earlier release still matches this instance and can be claimed
+        # before migration.
+        #
+        # `_generate_collection_suffix` returns None when the embedding
+        # function declares no `model_name`; the index name is then exactly
+        # what it has always been, and no migration exists to run.
+        self.model_suffix = self._generate_collection_suffix()
+        if self.model_suffix:
+            self._index_name = _sanitize_index_name(
+                f"{self.final_namespace}_{self.model_suffix}"
+            )
+        else:
+            self._index_name = self._legacy_index_name
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = kwargs.get("cosine_better_than_threshold")
         if cosine_threshold is None:
@@ -6296,6 +6324,23 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             if not self._index_ready:
                 await self._create_knn_index_if_not_exists()
                 self._index_ready = True
+
+    def _embedding_provenance_meta(self) -> dict[str, Any]:
+        """``_meta`` fields recording which embedding model built this index.
+
+        Not part of the ownership identity (`_WORKSPACE_IDENTITY_KEYS`) and
+        never compared: the index NAME already isolates models that declare a
+        ``model_name``. This is provenance for a later migration, which would
+        otherwise have only the vector dimension to reason from and could not
+        tell two same-dimension models apart.
+        """
+        meta: dict[str, Any] = {
+            _EMBEDDING_DIM_META_KEY: self.embedding_func.embedding_dim,
+        }
+        model_name = getattr(self.embedding_func, "model_name", None)
+        if isinstance(model_name, str) and model_name.strip():
+            meta[_EMBEDDING_MODEL_META_KEY] = model_name.strip()
+        return meta
 
     def _mark_index_missing(self):
         """Mark the vector index as unavailable for subsequent read short-circuiting.
@@ -6435,6 +6480,185 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             )
         self._index_ready = True
 
+    async def _resolve_legacy_migration_source(self) -> tuple[str, int] | None:
+        """The un-suffixed index whose rows this index should adopt, and its count.
+
+        ``None`` means "create an empty index": there is nothing to carry over,
+        or carrying it over would be wrong. Every such decision is logged with
+        the index it is about, because the operator's next question is always
+        "where did my data go".
+
+        Refuses, rather than migrates, when:
+
+        * this instance has no model suffix -- the suffixed and legacy names
+          are the same index and there is no migration to speak of;
+        * no legacy index exists, or it is empty;
+        * the legacy index is claimed by a DIFFERENT workspace. Index names are
+          lossy (``_sanitize_index_name``, and ``OPENSEARCH_WORKSPACE``
+          collapsing distinct workspaces), so the un-suffixed name can belong
+          to another deployment and reindexing it would steal its vectors.
+          This is the ownership marker's job here, and it is why
+          ``final_namespace`` keeps the un-suffixed identity: a legacy index
+          written by an earlier release still matches this instance;
+        * the legacy index was already consumed by a previous migration
+          (``lightrag_migrated_to``). Without this, a ``/documents/clear``
+          whose recreate failed would leave no suffixed index, and the next
+          start would migrate the just-cleared rows back;
+        * the legacy vectors have a different dimension -- a model switch and
+          an upgrade happening together. They cannot be reused and this
+          backend does not re-embed, so the new index starts empty and the
+          legacy index stays untouched as a backup.
+
+        A failure to READ any of this is also a refusal, never an exception:
+        an unreachable legacy index must not stop the server from starting.
+        """
+        if not self.model_suffix or self._legacy_index_name == self._index_name:
+            return None
+        legacy = self._legacy_index_name
+        try:
+            if not await self.client.indices.exists(index=legacy):
+                return None
+            mapping = await self.client.indices.get_mapping(index=legacy)
+        except OpenSearchException as e:
+            logger.warning(
+                f"[{self.workspace}] Could not inspect legacy index '{legacy}' "
+                f"for migration into '{self._index_name}': {e}. Creating an "
+                f"empty index; the legacy index is untouched."
+            )
+            return None
+
+        meta = (mapping.get(legacy) or {}).get("mappings", {}).get("_meta") or {}
+
+        stored = _stored_index_identity(meta)
+        expected = _workspace_index_meta(self.workspace, self.final_namespace)
+        if stored != expected and any(v is not None for v in stored.values()):
+            logger.warning(
+                f"[{self.workspace}] Legacy index '{legacy}' belongs to "
+                f"{_describe_index_identity(stored)}, not to "
+                f"{_describe_index_identity(expected)}; NOT migrating it into "
+                f"'{self._index_name}'. Creating an empty index instead."
+            )
+            return None
+
+        already = meta.get(_MIGRATED_TO_META_KEY)
+        if already:
+            logger.info(
+                f"[{self.workspace}] Legacy index '{legacy}' was already "
+                f"migrated into '{already}'; not migrating it again."
+            )
+            return None
+
+        try:
+            legacy_count = (await self.client.count(index=legacy))["count"]
+        except (OpenSearchException, KeyError, TypeError) as e:
+            logger.warning(
+                f"[{self.workspace}] Could not count legacy index '{legacy}': "
+                f"{e}. Creating an empty index; the legacy index is untouched."
+            )
+            return None
+        if legacy_count == 0:
+            return None
+
+        legacy_dim = _read_vector_dimension(mapping, legacy)
+        expected_dim = self.embedding_func.embedding_dim
+        if legacy_dim is not None and legacy_dim != expected_dim:
+            logger.warning(
+                f"[{self.workspace}] Legacy index '{legacy}' holds {legacy_dim}d "
+                f"vectors but the current embedding model expects "
+                f"{expected_dim}d; its {legacy_count} documents were NOT "
+                f"migrated into '{self._index_name}'. The legacy index is left "
+                f"intact as a backup -- re-ingest, or switch back to the "
+                f"previous embedding model to reach it."
+            )
+            return None
+
+        return legacy, legacy_count
+
+    async def _migrate_legacy_index(self, legacy: str, legacy_count: int) -> None:
+        """Copy every row of the legacy index into the freshly created one.
+
+        Called only just after ``indices.create`` succeeded, so the destination
+        already carries the k-NN mapping; letting ``_reindex`` auto-create it
+        would produce a plain index whose vectors are unsearchable.
+
+        Completion is CHECKED, not assumed. A half-copied suffixed index would
+        permanently shadow the legacy one -- every later start would see the
+        suffixed index present, skip migration, and serve a subset -- so a
+        short or partially failed copy deletes the new index and raises,
+        leaving the next start to try again against untouched data.
+        """
+        logger.info(
+            f"[{self.workspace}] Migrating {legacy_count} documents from legacy "
+            f"index '{legacy}' into '{self._index_name}'"
+        )
+        try:
+            result = await self.client.reindex(
+                body={
+                    "source": {"index": legacy},
+                    "dest": {"index": self._index_name},
+                },
+                params={"refresh": "true", "wait_for_completion": "true"},
+            )
+        except Exception as e:
+            await self._abandon_failed_migration(legacy, f"reindex failed: {e}")
+            raise
+
+        failures = result.get("failures") or []
+        copied = (result.get("created") or 0) + (result.get("updated") or 0)
+        if failures or copied != legacy_count:
+            await self._abandon_failed_migration(
+                legacy,
+                f"copied {copied} of {legacy_count} documents"
+                + (f", {len(failures)} failures" if failures else ""),
+            )
+            raise DataMigrationError(
+                f"[{self.workspace}] Migration from legacy index '{legacy}' into "
+                f"'{self._index_name}' is incomplete: copied {copied} of "
+                f"{legacy_count} documents, {len(failures)} failures. The new "
+                f"index has been removed so the next start can retry; the "
+                f"legacy index is untouched."
+            )
+
+        # Record the consumption on the SOURCE, so a later start that finds no
+        # suffixed index (a clear whose recreate failed) does not migrate these
+        # rows a second time. Best effort: a read-only account or a write block
+        # must not undo a copy that already succeeded -- the cost of failing
+        # here is a repeat migration, which is idempotent by document id.
+        try:
+            await self.client.indices.put_mapping(
+                index=legacy,
+                body={"_meta": {_MIGRATED_TO_META_KEY: self._index_name}},
+            )
+        except OpenSearchException as e:
+            logger.warning(
+                f"[{self.workspace}] Migrated '{legacy}' into "
+                f"'{self._index_name}' but could not mark the legacy index as "
+                f"consumed: {e}. A later migration would repeat the copy, "
+                f"which is idempotent by document id."
+            )
+
+        logger.info(
+            f"[{self.workspace}] Migrated {copied} documents from '{legacy}' "
+            f"into '{self._index_name}'. The legacy index is kept as a backup."
+        )
+
+    async def _abandon_failed_migration(self, legacy: str, reason: str) -> None:
+        """Remove the half-populated new index so the next start can retry."""
+        logger.error(
+            f"[{self.workspace}] Migration from '{legacy}' into "
+            f"'{self._index_name}' failed ({reason}); removing the incomplete "
+            f"index so it cannot shadow the legacy one."
+        )
+        try:
+            await self.client.indices.delete(index=self._index_name)
+        except OpenSearchException as e:
+            logger.error(
+                f"[{self.workspace}] Could not remove the incomplete index "
+                f"'{self._index_name}': {e}. It must be deleted manually before "
+                f"the next start, or it will shadow '{legacy}'."
+            )
+        self._mark_index_missing()
+
     async def _create_knn_index_if_not_exists(self):
         try:
             if await self.client.indices.exists(index=self._index_name):
@@ -6463,6 +6687,13 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                         f"'{self._index_name}'; skipping dimension validation"
                     )
                 return
+
+            # The suffixed index does not exist yet. Before creating an empty
+            # one, see whether an un-suffixed index from before model
+            # isolation holds this workspace's vectors, and carry them over.
+            # Runs only on the path that creates the index, so it cannot
+            # re-run against an index that already exists.
+            legacy_source = await self._resolve_legacy_migration_source()
 
             ef_construction = int(
                 _get_opensearch_env("OPENSEARCH_KNN_EF_CONSTRUCTION", "200")
@@ -6502,9 +6733,10 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                         "created_at": {"type": "long"},
                     },
                     "dynamic": True,
-                    "_meta": _workspace_index_meta(
-                        self.workspace, self.final_namespace
-                    ),
+                    "_meta": {
+                        **_workspace_index_meta(self.workspace, self.final_namespace),
+                        **self._embedding_provenance_meta(),
+                    },
                 },
             }
             await self.client.indices.create(index=self._index_name, body=body)
@@ -6512,6 +6744,8 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Created k-NN index: {self._index_name} "
                 f"(dim={self.embedding_func.embedding_dim})"
             )
+            if legacy_source is not None:
+                await self._migrate_legacy_index(*legacy_source)
         except RequestError as e:
             if "resource_already_exists_exception" not in str(e):
                 logger.error(f"[{self.workspace}] Error creating k-NN index: {e}")
