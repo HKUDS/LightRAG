@@ -2034,10 +2034,14 @@ async def _release_enqueue_slot(rag: LightRAG, token: str) -> None:
     Removes ``token`` from ``pending_enqueue_tokens`` and mirrors the count into
     ``pending_enqueues`` in a single atomic update. Idempotent (a no-op if the
     token is absent, so an endpoint and its background task may both release)
-    and cancellation-resistant. The bg task itself drives processing via
-    ``apipeline_process_enqueue_documents`` after enqueue; no cross-task drain
-    coordination is needed. Never raises (except a re-raised cancellation after
-    the release has completed).
+    and cancellation-resistant. Never raises (except a re-raised cancellation
+    after the release has completed).
+
+    Call it as soon as the enqueue is done — see
+    :func:`_release_admission_after_enqueue`, which every bg task that goes on
+    to drive processing must use. Holding the slot across
+    ``apipeline_process_enqueue_documents`` is what self-deadlocks a manual
+    retry drain.
 
     The namespace fetch runs INSIDE ``run_to_completion`` (via
     ``release_token_set_reservation``) so a cancellation delivered during the
@@ -2051,6 +2055,44 @@ async def _release_enqueue_slot(rag: LightRAG, token: str) -> None:
         tokens_key="pending_enqueue_tokens",
         token=token,
     )
+
+
+async def _release_admission_after_enqueue(
+    rag: LightRAG, admission_token: str | None
+) -> None:
+    """Hand the pending-enqueue slot back BEFORE driving the processing loop.
+
+    Every bg task that enqueues and then calls
+    ``apipeline_process_enqueue_documents`` MUST call this in between. The
+    reservation exists to serialize the ENQUEUE decision against manual
+    freezes, scans and destructive clears (see :func:`_reserve_enqueue_slot`);
+    once the documents are in ``doc_status`` it has nothing left to protect,
+    and the core enqueue releases its own self-minted token at exactly this
+    point (``_reserve_ingress_slot``'s exit stack).
+
+    Holding it one step longer is a self-deadlock, not a stricter lock: when
+    the pipeline was idle, ``apipeline_process_enqueue_documents`` BECOMES the
+    processing run, so the run owns the token it is about to wait for. A manual
+    retry queued mid-run sets ``DRAIN_TO_IDLE``, which waits for
+    ``pending_enqueues`` to reach 0 — a count only this run can lower, and only
+    by returning, which it cannot do until the count reaches 0.
+
+    Releasing here narrows what ``pending_enqueues`` covers, and that is the
+    point: it counts enqueues that are MID-FLIGHT, not bg tasks that have moved
+    on to processing. Everything the wider count used to gate is still gated —
+    a scan and a destructive clear both also refuse on ``busy``, which the
+    processing run holds. The one window it opens is between this release and
+    the run's ``busy`` reservation, where a scan or clear may now slip in; that
+    window is identical to the SDK's (``ainsert`` releases at the same point)
+    and heals the same way — the documents are already durable PENDING rows,
+    and the refused processing call arms the auto-rescan flag, so the next run
+    picks them up.
+
+    A no-op when the caller holds no reservation. Never raises.
+    """
+    if admission_token is None:
+        return
+    await _release_enqueue_slot(rag, admission_token)
 
 
 def _release_scanning_action(status) -> None:
@@ -2498,12 +2540,21 @@ async def pipeline_index_file(
         track_id: Optional tracking ID
         admission_token: the endpoint's pending-enqueue reservation, forwarded
             so the admission guard re-weights THAT token to the deduped count
-            instead of counting this request twice (LR2 §9.2)
+            instead of counting this request twice (LR2 §9.2). Released here,
+            between enqueue and processing — see
+            :func:`_release_admission_after_enqueue`.
     """
     try:
         success, _ = await pipeline_enqueue_file(
             rag, file_path, track_id, admission_token=admission_token
         )
+        # The enqueue is over (its writes and, on failure, its error-document
+        # writes are all behind us), so the reservation has nothing left to
+        # protect. Release it BEFORE driving the loop below: this call may
+        # become the processing run, and a run holding its own reservation
+        # self-deadlocks a concurrent manual retry drain. The caller's
+        # ``finally`` release is idempotent, so it stays a safe no-op.
+        await _release_admission_after_enqueue(rag, admission_token)
         if success:
             await rag.apipeline_process_enqueue_documents()
 
@@ -2742,7 +2793,8 @@ async def pipeline_index_texts(
             managed task starts. Direct callers may omit it to resolve here.
         admission_token: the endpoint's pending-enqueue reservation, forwarded so
             the admission guard re-weights that token to the deduped count
-            (LR2 §9.2)
+            (LR2 §9.2). Released here, between enqueue and processing — see
+            :func:`_release_admission_after_enqueue`.
     """
     if not texts:
         return
@@ -2771,15 +2823,11 @@ async def pipeline_index_texts(
         # See pipeline_enqueue_file: only forwarded when a reservation exists.
         enqueue_kwargs["admission_token"] = admission_token
     await rag.apipeline_enqueue_documents(**enqueue_kwargs)
-    
-    # Release the admission reservation NOW (after enqueue, before process).
-    # The reservation was taken to serialize the enqueue decision against
-    # manual freezes and scans; once the documents are enqueued, the slot
-    # must be released so a mid-run manual retry does not wait forever on
-    # the supervisor's own token (issue #3948).
-    if admission_token is not None:
-        await _release_enqueue_slot(rag, admission_token)
-    
+    # Documents are in doc_status now, so the reservation is spent. Release it
+    # BEFORE driving the loop below: this call may become the processing run,
+    # and a run holding its own reservation self-deadlocks a concurrent manual
+    # retry drain. The caller's ``finally`` release is idempotent.
+    await _release_admission_after_enqueue(rag, admission_token)
     await rag.apipeline_process_enqueue_documents()
 
 
