@@ -362,6 +362,61 @@ def test_code_content_is_not_repaired_however_it_is_reached(damaged):
     assert repair_vlm_json_escape_damage(damaged) == damaged
 
 
+@pytest.mark.parametrize("stray", ["`", "\\`"], ids=["bare", "escaped"])
+@pytest.mark.offline
+def test_a_stray_backtick_cannot_steal_a_fence_opener(stray):
+    """CommonMark settles block structure before inline spans, so an inline
+    span can never cross a fence boundary. One alternation cannot say that --
+    the inline branch wins by position, so a backtick anywhere earlier paired
+    with one inside the block, swallowed the opening fence, and handed the
+    rest of the code to the scanner. Parametrized over an escaped backtick
+    too, to record that the escape is not the mechanism: a bare one does it.
+    """
+    damaged = (
+        f"A stray {stray} tick.\n\n```sh\necho `date` ; A=$X; \text=1; B=$Y\n```\n"
+    )
+    assert repair_vlm_json_escape_damage(damaged) == damaged
+
+
+@pytest.mark.offline
+def test_an_escaped_backtick_does_not_open_an_inline_span():
+    """``\\` `` is a literal backtick. Treating it as an opener closed the span
+    on the NEXT run -- the real code span's opener -- leaving that span's own
+    closer as an unclosed single backtick, which protects nothing.
+    """
+    damaged = "Type \\`x then `A=$X; \text=1; B=$Y`"
+    assert repair_vlm_json_escape_damage(damaged) == damaged
+
+
+@pytest.mark.offline
+def test_a_doubled_backslash_still_leaves_a_real_opener():
+    """Parity, not a bare lookbehind: an even run of backslashes is a literal
+    backslash and the backtick after it opens a span for real."""
+    damaged = "Path C:\\\\ then `A=$X; \text=1; B=$Y`"
+    assert repair_vlm_json_escape_damage(damaged) == damaged
+
+
+@pytest.mark.offline
+def test_an_escaped_backtick_does_not_close_an_inline_span_either():
+    """Stability test for the half of the escape rule deliberately NOT
+    applied. CommonMark gives backslash escapes no effect inside a code span,
+    so ``\\` `` closes it. Honouring the escape there would leave the span
+    unclosed and hand its code to the scanner -- protection turned into a
+    rewrite, which is the direction this whole path is organized against.
+    """
+    damaged = "`A=$X; \text=1; B=$Y\\`"
+    assert repair_vlm_json_escape_damage(damaged) == damaged
+
+
+@pytest.mark.offline
+def test_escaped_backticks_no_longer_shield_prose_between_them():
+    """The other side of the opener rule: two escaped backticks are literal
+    text, not a code span, so math between them is reached and repaired."""
+    assert repair_vlm_json_escape_damage("Use \\`foo, then $\tau$ and \\`bar") == (
+        "Use \\`foo, then $" + r"\tau" + "$ and \\`bar"
+    )
+
+
 @pytest.mark.offline
 def test_unquoted_single_line_shell_is_still_rewritten():
     """Stability test for what the gate does NOT cover: one line, no quotes,

@@ -135,6 +135,23 @@ its opener, CRLF line endings, a backtick in a backtick fence's info string
 have each been fixed on those grounds); do not grow it toward a Markdown
 parser. The gate is what has to be right.
 
+Two of those fixes went the *other* direction — they were cases where the
+region pass under-protected, which is the direction that costs a rewrite:
+
+- **Block structure before inlines.** Fences are matched in their own pass,
+  before inline spans, because CommonMark settles block structure first and an
+  inline span can never cross a fence boundary. A single alternation cannot
+  express that: its inline branch wins by *position*, not by branch order, so
+  a stray backtick anywhere earlier in the text paired with one inside a
+  fenced block, swallowed the opening fence, and handed the rest of that
+  block's code to the scanner.
+- **Opener escape parity.** ``\` `` is a literal backtick and opens nothing;
+  ``\\` `` is a literal backslash followed by a real opener, so the rule is
+  parity over the backslash run, not a one-character lookbehind. Treating an
+  escaped backtick as an opener closed the region on the *next* run — a real
+  code span's opener — which left that span's own closer as an unclosed single
+  backtick, protecting nothing.
+
 This is the general defense, and the reason the Markdown code regions above
 are a *secondary* one. Identifying the constructs that contain code — fenced,
 indented, inline, block-quoted, HTML — is a blacklist that never closes; each
@@ -179,6 +196,13 @@ and every entry defends against the *container* rather than against the thing
 that actually matters, which is that the span's content is code. The content
 gate replaced this direction; the region pass that survives is a cheap
 secondary defense, not the argument.
+
+**Closer escape parity.** Apply the opener's backslash-parity rule to the
+closing run as well, for symmetry. CommonMark gives backslash escapes no
+effect inside a code span, so ``\` `` *closes* it and the text after is
+prose. Honouring the escape there leaves the span unclosed, and an unclosed
+run protects nothing — the span's own code would go to the scanner. The
+symmetry is the bug: the two runs sit on opposite sides of the escape rule.
 
 **Soft closer fallback.** Accept a whitespace-preceded `$` as a closer when no
 stricter candidate remains, so that `$ x $` still pairs. The fallback scans

@@ -34,6 +34,7 @@ from typing import (
     NamedTuple,
     Optional,
     Iterable,
+    Iterator,
     Sequence,
     Collection,
 )
@@ -6075,28 +6076,62 @@ _WS_LATEX_MATH_PATTERN = re.compile(
 # inline code span. An unclosed single backtick matches nothing, so it cannot
 # suppress repairs in the rest of the text -- the same reading CommonMark
 # gives it.
-_MD_CODE_REGION_PATTERN = re.compile(
-    # Fences, one branch per fence character because their info strings
-    # differ: a backtick fence may not carry a backtick in its info string
-    # (CommonMark, to keep it unambiguous with an inline span), a tilde fence
-    # may. Closing fence: only whitespace may follow, and it may be longer
-    # than the opener -- accepting a trailing info string on the closer lets
-    # a fence-like line INSIDE the block end the region early. The optional
-    # \r keeps CRLF text working: MULTILINE "$" matches before the \n, with
-    # the \r still ahead of it. Fence indentation is SPACES only -- a leading
-    # tab advances to the fourth column and is code content, so accepting one
-    # lets a tab-indented fence-like line close a real block early.
+#
+# Fences and inline spans are matched in SEPARATE passes, fences first, because
+# CommonMark settles block structure before it looks for inline spans: an
+# inline span can never cross a fence boundary. One alternation cannot express
+# that -- the inline branch wins by POSITION, not by branch order, so a stray
+# backtick anywhere earlier in the text pairs with one inside the block, eats
+# the opening fence, and leaves the rest of the code exposed to the scanner.
+_MD_FENCE_REGION_PATTERN = re.compile(
+    # One branch per fence character because their info strings differ: a
+    # backtick fence may not carry a backtick in its info string (CommonMark,
+    # to keep it unambiguous with an inline span), a tilde fence may. Closing
+    # fence: only whitespace may follow, and it may be longer than the opener
+    # -- accepting a trailing info string on the closer lets a fence-like line
+    # INSIDE the block end the region early. The optional \r keeps CRLF text
+    # working: MULTILINE "$" matches before the \n, with the \r still ahead of
+    # it. Fence indentation is SPACES only -- a leading tab advances to the
+    # fourth column and is code content, so accepting one lets a tab-indented
+    # fence-like line close a real block early.
     r"^ {0,3}(?P<bfence>`{3,})[^\n`]*$[\s\S]*?"
     r"(?:^ {0,3}(?P=bfence)`*[ \t]*\r?$|\Z)"
     r"|^ {0,3}(?P<tfence>~{3,})[^\n]*$[\s\S]*?"
-    r"(?:^ {0,3}(?P=tfence)~*[ \t]*\r?$|\Z)"
-    # Inline span: opening and closing runs must be the same length, so
-    # BOTH are bounded on BOTH sides. Without a left guard the regex
-    # restarts inside a longer run -- as an opener, swallowing the text
-    # after an unmatched run; as a closer, ending the span early.
-    r"|(?<!`)(?P<ticks>`+)(?!`)[\s\S]*?(?<!`)(?P=ticks)(?!`)",
+    r"(?:^ {0,3}(?P=tfence)~*[ \t]*\r?$|\Z)",
     re.MULTILINE,
 )
+# Inline span, searched only in the gaps between fences. Opening and closing
+# runs must be the same length, so BOTH are bounded on BOTH sides: without a
+# left guard the regex restarts inside a longer run -- as an opener, swallowing
+# the text after an unmatched run; as a closer, ending the span early.
+#
+# The opener also honours backslash escapes, by parity: ``\` `` is a literal
+# backtick and opens nothing, ``\\` `` is a literal backslash followed by a
+# real opener. The leading backslashes fall inside the region, which is
+# harmless. The CLOSER deliberately does NOT honour them -- CommonMark gives
+# backslash escapes no effect inside a code span, so ``\` `` closes it. Adding
+# parity there would leave such a span unclosed, and an unclosed run protects
+# nothing: its code would be handed straight to the scanner.
+_MD_INLINE_CODE_PATTERN = re.compile(
+    r"(?<![\\`])(?:\\\\)*(?P<ticks>`+)(?!`)[\s\S]*?(?<!`)(?P=ticks)(?!`)"
+)
+
+
+def _iter_md_code_regions(text: str) -> Iterator[tuple[int, int]]:
+    """Yield (start, end) of every Markdown code region, left to right.
+
+    Fences first, then inline spans within the text each pair of fences leaves
+    behind. Inline spans are searched in place rather than on a sliced copy so
+    the opener's lookbehind still sees the character before the gap.
+    """
+    cursor = 0
+    for fence in _MD_FENCE_REGION_PATTERN.finditer(text):
+        for inline in _MD_INLINE_CODE_PATTERN.finditer(text, cursor, fence.start()):
+            yield inline.span()
+        yield fence.span()
+        cursor = fence.end()
+    for inline in _MD_INLINE_CODE_PATTERN.finditer(text, cursor):
+        yield inline.span()
 
 
 # A span whose body carries these is code, not math: a double quote or a
@@ -6266,15 +6301,13 @@ def _repair_ws_latex_in_dollar_math(text: str) -> tuple[str, int, list[str]]:
     spans: list[str] = []
     replacements = 0
     last = 0
-    for region in _MD_CODE_REGION_PATTERN.finditer(text):
-        repaired, count, repaired_spans = _scan_dollar_spans(
-            text[last : region.start()]
-        )
+    for start, end in _iter_md_code_regions(text):
+        repaired, count, repaired_spans = _scan_dollar_spans(text[last:start])
         pieces.append(repaired)
         replacements += count
         spans.extend(repaired_spans)
-        pieces.append(region.group(0))
-        last = region.end()
+        pieces.append(text[start:end])
+        last = end
     repaired, count, repaired_spans = _scan_dollar_spans(text[last:])
     pieces.append(repaired)
     replacements += count
