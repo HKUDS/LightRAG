@@ -210,6 +210,41 @@ def test_markdown_code_is_not_scanned_for_math():
 
 
 @pytest.mark.offline
+def test_fence_like_line_inside_a_block_is_not_a_closer():
+    """A closing fence may carry only whitespace after it -- an info string
+    is the opening fence's privilege. Accepting one on the closer lets a
+    fence-like line inside the block end the protected region early and the
+    rest of the code gets scanned as math."""
+    damaged = '```sh\n```not a closer\necho "$HOME"\n\text=1\necho "$PATH"\n```'
+    assert repair_vlm_json_escape_damage(damaged) == damaged
+    # The block still ends where it really ends.
+    assert repair_vlm_json_escape_damage(damaged + "\nafter $\tau$") == (
+        damaged + "\nafter " + r"$\tau$"
+    )
+
+
+@pytest.mark.offline
+def test_closing_fence_may_be_longer_than_the_opener():
+    """CommonMark lets the closing fence exceed the opening one. Requiring
+    an exact length match leaves the block unterminated, which protects the
+    whole rest of the text and loses every repair after it."""
+    fenced = '````sh\necho "$A"\n\text=1\necho "$B"\n`````'
+    assert repair_vlm_json_escape_damage(fenced + "\nthen $\tau$") == (
+        fenced + "\nthen " + r"$\tau$"
+    )
+
+
+@pytest.mark.offline
+def test_inline_span_closer_is_bounded_on_both_sides():
+    """The closing backtick run must match the opening one exactly, so it is
+    bounded on both sides. Guarding only its right let the backreference land
+    inside a longer run within the span, ending the protected region early
+    and exposing the rest of the code to the scanner."""
+    damaged = 'see `A ``B "$HOME" \text=1 "$PATH"` end'
+    assert repair_vlm_json_escape_damage(damaged) == damaged
+
+
+@pytest.mark.offline
 def test_math_after_a_code_region_is_still_repaired():
     """Protecting code must not end the scan: spans are repaired in every
     region between code, not just before the first one."""

@@ -6076,9 +6076,16 @@ _WS_LATEX_MATH_PATTERN = re.compile(
 # suppress repairs in the rest of the text -- the same reading CommonMark
 # gives it.
 _MD_CODE_REGION_PATTERN = re.compile(
-    r"^[ \t]{0,3}(?P<fence>`{3,}|~{3,})[^\n]*$[\s\S]*?"
-    r"(?:^[ \t]{0,3}(?P=fence)[^\n]*$|\Z)"
-    r"|(?P<ticks>`+)(?!`)[\s\S]*?(?P=ticks)(?!`)",
+    # Opening fence: an info string may follow it. Closing fence: only
+    # whitespace may, and it may be longer than the opener -- CommonMark on
+    # both counts. Accepting a trailing info string on the closer lets a
+    # fence-like line INSIDE the block end the region early.
+    r"^[ \t]{0,3}(?P<fence>(?P<fchar>[`~])(?P=fchar){2,})[^\n]*$[\s\S]*?"
+    r"(?:^[ \t]{0,3}(?P=fence)(?P=fchar)*[ \t]*$|\Z)"
+    # Inline span: the closing run must be the same length as the opening
+    # one, so it is bounded on BOTH sides -- without the left guard the
+    # backreference matches inside a longer run and ends the span early.
+    r"|(?P<ticks>`+)(?!`)[\s\S]*?(?<!`)(?P=ticks)(?!`)",
     re.MULTILINE,
 )
 
