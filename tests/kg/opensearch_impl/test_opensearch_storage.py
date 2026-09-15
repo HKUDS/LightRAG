@@ -5183,6 +5183,53 @@ class TestVectorStorage:
             assert await s.query("test", top_k=5) == []
             assert s._index_ready is True
 
+    @pytest.mark.asyncio
+    async def test_probe_in_flight_does_not_outrank_a_later_missing_mark(
+        self, global_config, embed_func, mock_client
+    ):
+        """A stale probe answer must not restore readiness over a newer mark.
+
+        The probe runs outside _flush_lock, so a drop() can delete the index
+        and fail to recreate it while the mapping request is in flight. If the
+        probe then wrote its pre-delete observation back, _index_ready would be
+        True with no index behind it, and the next upsert would skip
+        _ensure_index_ready and flush against nothing.
+        """
+        drop_ran = asyncio.Event()
+
+        async def _probe_then_drop(**_kwargs):
+            # The mapping request has been issued; let drop() run to completion
+            # before this answer comes back.
+            mock_client.indices.delete = AsyncMock()
+            mock_client.indices.create = AsyncMock(
+                side_effect=OpenSearchException("recreate failed")
+            )
+            await storage.drop()
+            drop_ran.set()
+            return {
+                storage._index_name: {
+                    "mappings": {
+                        "_meta": _workspace_index_meta(
+                            storage.workspace, storage.final_namespace
+                        )
+                    }
+                }
+            }
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            storage = self._make(global_config, embed_func)
+            await storage.initialize()
+            storage._index_ready = False
+            mock_client.indices.get_mapping = AsyncMock(side_effect=_probe_then_drop)
+
+            assert await storage.query("test", top_k=5) == []
+
+            assert drop_ran.is_set()
+            # drop()'s failed recreate marked the index missing AFTER the probe
+            # was issued; the probe's answer must not undo that.
+            assert storage._index_ready is False
+            mock_client.search.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Vector storage write batching (issue #2785)

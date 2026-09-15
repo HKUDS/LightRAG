@@ -6188,6 +6188,10 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
     client: AsyncOpenSearch = field(default=None)
     _index_name: str = field(default="", init=False)
     _index_ready: bool = field(default=False, init=False)
+    # Bumped by every _mark_index_missing. _recheck_index_presence samples it
+    # before its round trip and refuses to act on an answer that a later mark
+    # has already outdated -- see there.
+    _missing_mark_generation: int = field(default=0, init=False)
 
     def __init__(
         self, namespace, global_config, embedding_func, workspace=None, meta_fields=None
@@ -6264,8 +6268,13 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         Reads do NOT stay marked forever: each one calls
         ``_recheck_index_presence`` first and lifts the mark once the index is
         back. Only a write (or ``initialize()``) ever re-CREATES it.
+
+        Bumping the generation is what keeps that lift from going backwards: a
+        probe already in flight must not restore readiness with what it saw
+        before this mark.
         """
         self._index_ready = False
+        self._missing_mark_generation += 1
 
     async def _recheck_index_presence(self) -> None:
         """Lift a stale missing-index mark when OUR index is back. Never creates.
@@ -6315,17 +6324,33 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         expensive: a read that provisions an empty index manufactures the very
         confirmation it is checking for. Recreating stays with the write paths,
         which hold the buffered rows to put back.
+
+        The answer is only acted on if no ``_mark_index_missing`` landed while
+        it was in flight. This probe runs OUTSIDE ``_flush_lock``, so a
+        ``drop()`` can delete the index and fail to recreate it between the
+        request and the response; restoring readiness on what the probe saw
+        before that would leave ``_index_ready`` True with no index behind it,
+        and the next ``upsert`` would then skip ``_ensure_index_ready`` and
+        flush against nothing. The generation is the ordering the lock does not
+        provide here.
         """
         if self._index_ready:
             return
         if self.client is None:
             return
+        generation = self._missing_mark_generation
         try:
             mapping = await self.client.indices.get_mapping(index=self._index_name)
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 return
             raise
+        if generation != self._missing_mark_generation:
+            # The index was marked missing again while this was in flight, so
+            # what came back describes a world that no longer holds. Act on
+            # nothing -- neither lifting nor raising -- and let the next read
+            # probe the current one.
+            return
         meta = (mapping.get(self._index_name) or {}).get("mappings", {}).get(
             "_meta"
         ) or {}
