@@ -501,6 +501,23 @@ def _dimension_mismatch_error(
     )
 
 
+def _model_mismatch_error(
+    index_name: str, existing_model: str, expected_model: str | None
+) -> ValueError:
+    """Build the model-mismatch error, naming both sides and the way out."""
+    return ValueError(
+        f"Embedding model mismatch! Index '{index_name}' was built by "
+        f"'{existing_model}', but this instance runs "
+        f"'{expected_model or 'an embedding function that declares no model'}'. "
+        f"Two models can share a vector dimension and still have unrelated "
+        f"spaces, so this index cannot be read as if it were ours. Model "
+        f"names are folded into the index name (case and punctuation collapse "
+        f"to '_'), which is how two different models can arrive at the same "
+        f"one. Point this deployment at a different index, or drop this one "
+        f"and rebuild with `lightrag-rebuild-vdb`."
+    )
+
+
 def _workspace_collision_error(
     index_name: str,
     stored: dict[str, str | None],
@@ -6316,9 +6333,16 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             if self.client is None:
                 self.client = await ClientManager.get_client()
             existed = await self.client.indices.exists(index=self._index_name)
+            # Decide about the legacy index BEFORE the destination exists.
+            # Creating it first and then failing to inspect would leave an
+            # empty index behind, and every later start would see it present
+            # and skip the migration -- a transient read turned into permanent
+            # data loss. Inspecting first means a failure here creates nothing
+            # and the next start retries from an untouched cluster.
+            pending = await self._plan_legacy_migration() if not existed else None
             await self._create_knn_index_if_not_exists()
-            if not existed:
-                await self._migrate_legacy_index_if_any()
+            if pending is not None:
+                await self._reindex_legacy(*pending)
             self._index_ready = True
             logger.debug(
                 f"[{self.workspace}] OpenSearch Vector storage initialized: {self._index_name}"
@@ -6338,6 +6362,46 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             if not self._index_ready:
                 await self._create_knn_index_if_not_exists()
                 self._index_ready = True
+
+    def _assert_index_is_usable(self, mapping: dict) -> None:
+        """Raise unless an existing index matches this instance's embedding.
+
+        Ownership says the index is OURS; this says we can actually read it.
+        Both must hold before readiness is granted, and both are checked at
+        every point that attaches to an index it did not just create --
+        ``_create_knn_index_if_not_exists`` and the read path's
+        ``_recheck_index_presence``. Keeping them in one place is the point:
+        the two drifted apart once already, and the half that was missing was
+        the one that catches a model change.
+
+        Two facts, both read from a mapping the caller already has:
+
+        * the vector dimension, which rejects a different-sized model;
+        * the recorded model name, which rejects a same-sized one. The suffix
+          cannot do this alone -- ``_generate_collection_suffix`` and
+          ``_sanitize_index_name`` both fold case and punctuation, so
+          ``vendor/model:v1`` and ``vendor_model/v1`` resolve to one index
+          name. The provenance in ``_meta`` is the unfolded name.
+
+        Absent evidence never refuses. An index that records no dimension or
+        no model predates that provenance; treating silence as a mismatch
+        would refuse every index created before it was written.
+        """
+        existing_dim = _read_vector_dimension(mapping, self._index_name)
+        expected_dim = self.embedding_func.embedding_dim
+        if existing_dim is not None and existing_dim != expected_dim:
+            raise _dimension_mismatch_error(
+                self._index_name, existing_dim, expected_dim
+            )
+        meta = (mapping.get(self._index_name) or {}).get("mappings", {}).get(
+            "_meta"
+        ) or {}
+        existing_model = meta.get(_EMBEDDING_MODEL_META_KEY)
+        expected_model = self._declared_model_name()
+        if existing_model is not None and existing_model != expected_model:
+            raise _model_mismatch_error(
+                self._index_name, existing_model, expected_model
+            )
 
     def _declared_model_name(self) -> str | None:
         """The embedding model this instance declares, or None if it declares none."""
@@ -6539,34 +6603,29 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         # _ensure_index_ready -- the one path that raises something an operator
         # can act on. The mapping is already in hand, so this costs no round
         # trip.
-        expected_dim = self.embedding_func.embedding_dim
-        existing_dim = _read_vector_dimension(mapping, self._index_name)
-        if existing_dim is not None and existing_dim != expected_dim:
-            raise _dimension_mismatch_error(
-                self._index_name, existing_dim, expected_dim
-            )
+        self._assert_index_is_usable(mapping)
         self._index_ready = True
 
-    async def _migrate_legacy_index_if_any(self) -> None:
-        """Carry a pre-model-isolation index's rows into the one just created.
+    async def _plan_legacy_migration(self) -> tuple[str, int, dict[str, Any]] | None:
+        """What to carry over from a pre-model-isolation index, if anything.
 
         Call ONLY from ``initialize()``, and only when the suffixed index did
         not already exist -- see there for why ``drop()``'s recreate and the
-        write-path self-heal must not reach this.
+        write-path self-heal must not reach this, and why this runs before the
+        destination is created.
 
-        Every refusal below logs the index it is about, because the operator's
-        next question is always where the data went.
+        ``None`` is a DECISION to start empty and is final; an inspection that
+        could not be completed raises instead, so the next start retries.
         """
         legacy = self._legacy_index_name
         if not self.model_suffix or legacy == self._index_name:
-            return
-        source = await self._legacy_migration_source(legacy)
-        if source is None:
-            return
-        await self._reindex_legacy(legacy, source)
+            return None
+        return await self._legacy_migration_source(legacy)
 
-    async def _legacy_migration_source(self, legacy: str) -> int | None:
-        """The legacy index's document count, or ``None`` to leave it alone.
+    async def _legacy_migration_source(
+        self, legacy: str
+    ) -> tuple[str, int, dict[str, Any]] | None:
+        """The legacy index, its document count and its ``_meta``, or ``None``.
 
         Refuses, rather than migrates, when:
 
@@ -6595,12 +6654,14 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 return None
             mapping = await self.client.indices.get_mapping(index=legacy)
         except OpenSearchException as e:
-            logger.warning(
+            raise DataMigrationError(
                 f"[{self.workspace}] Could not inspect legacy index '{legacy}' "
-                f"for migration into '{self._index_name}': {e}. Creating an "
-                f"empty index; the legacy index is untouched."
-            )
-            return None
+                f"to decide whether it should be migrated into "
+                f"'{self._index_name}': {e}. Nothing was created; retry once "
+                f"the cluster is reachable. This is deliberately fatal -- "
+                f"creating the index and skipping the migration would make "
+                f"every later start see it present and never migrate again."
+            ) from e
 
         meta = (mapping.get(legacy) or {}).get("mappings", {}).get("_meta") or {}
 
@@ -6626,11 +6687,11 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         try:
             legacy_count = (await self.client.count(index=legacy))["count"]
         except (OpenSearchException, KeyError, TypeError) as e:
-            logger.warning(
-                f"[{self.workspace}] Could not count legacy index '{legacy}': "
-                f"{e}. Creating an empty index; the legacy index is untouched."
-            )
-            return None
+            raise DataMigrationError(
+                f"[{self.workspace}] Could not count legacy index '{legacy}' "
+                f"before migrating it into '{self._index_name}': {e}. Nothing "
+                f"was created; retry once the cluster is reachable."
+            ) from e
         if legacy_count == 0:
             return None
 
@@ -6664,9 +6725,11 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         elif not self._unmarked_legacy_is_migratable(legacy, legacy_count):
             return None
 
-        return legacy_count
+        return legacy, legacy_count, meta
 
-    async def _reindex_legacy(self, legacy: str, legacy_count: int) -> None:
+    async def _reindex_legacy(
+        self, legacy: str, legacy_count: int, legacy_meta: dict[str, Any]
+    ) -> None:
         """Copy every row of the legacy index into the freshly created one.
 
         Called only just after ``indices.create`` succeeded, so the destination
@@ -6711,14 +6774,22 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 f"legacy index is untouched."
             )
 
-        await self._mark_legacy_consumed(legacy)
+        await self._mark_legacy_consumed(legacy, legacy_meta)
         logger.info(
             f"[{self.workspace}] Migrated {copied} documents from '{legacy}' "
             f"into '{self._index_name}'. The legacy index is kept as a backup."
         )
 
-    async def _mark_legacy_consumed(self, legacy: str) -> bool:
+    async def _mark_legacy_consumed(
+        self, legacy: str, legacy_meta: dict[str, Any]
+    ) -> bool:
         """Record on the SOURCE that its rows now live in the suffixed index.
+
+        Merges into the ``_meta`` it was given. ``put_mapping`` REPLACES
+        ``_meta`` wholesale, so writing the marker alone would strip the
+        legacy index's ownership identity -- and an unclaimed index is one a
+        folding-equivalent workspace will adopt and later clear. The same
+        reason ``_claim_index_for_workspace`` merges.
 
         Best effort on purpose. A copy that already landed is durable and the
         server is fully usable; refusing to start over a metadata write would
@@ -6733,7 +6804,12 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         try:
             await self.client.indices.put_mapping(
                 index=legacy,
-                body={"_meta": {_MIGRATED_TO_META_KEY: self._index_name}},
+                body={
+                    "_meta": {
+                        **legacy_meta,
+                        _MIGRATED_TO_META_KEY: self._index_name,
+                    }
+                },
             )
             return True
         except OpenSearchException as e:
@@ -6771,7 +6847,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         if stored != expected and any(v is not None for v in stored.values()):
             # Not ours to annotate.
             return
-        await self._mark_legacy_consumed(legacy)
+        await self._mark_legacy_consumed(legacy, meta)
 
     async def _abandon_failed_migration(self, legacy: str, reason: str) -> None:
         """Remove the half-populated new index so the next start can retry."""
@@ -6806,12 +6882,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     mapping = await self.client.indices.get_mapping(
                         index=self._index_name
                     )
-                    existing_dim = _read_vector_dimension(mapping, self._index_name)
-                    expected_dim = self.embedding_func.embedding_dim
-                    if existing_dim is not None and existing_dim != expected_dim:
-                        raise _dimension_mismatch_error(
-                            self._index_name, existing_dim, expected_dim
-                        )
+                    self._assert_index_is_usable(mapping)
                 except (KeyError, TypeError):
                     logger.warning(
                         f"[{self.workspace}] Could not read vector mapping for index "
