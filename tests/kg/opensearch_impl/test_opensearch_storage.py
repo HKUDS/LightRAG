@@ -6039,6 +6039,85 @@ class TestVectorLegacyMigration:
                 == s._index_name
             )
 
+    @staticmethod
+    def _claim_fails_on_the_new_index(client, storage):
+        """The destination is created, then its ownership check refuses it.
+
+        Reproduces the shape of any failure that lands AFTER creation and
+        BEFORE the copy -- the window in which an empty index gets left
+        behind.
+        """
+        booked = client.indices.get_mapping.side_effect
+
+        async def _foreign_new_index(*, index, **kw):
+            if index == storage._index_name:
+                return {
+                    index: {
+                        "mappings": {
+                            "_meta": _workspace_index_meta("other_ws", "other_ns")
+                        }
+                    }
+                }
+            return await booked(index=index, **kw)
+
+        client.indices.get_mapping = AsyncMock(side_effect=_foreign_new_index)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_start_removes_the_empty_destination_it_created(
+        self, global_config, embed_func, mock_client
+    ):
+        """ "The index exists" is how the next start decides the migration ran.
+
+        An empty one left behind by a failure between creation and copy would
+        make every later start skip a migration that never happened.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            self._legacy_present(
+                mock_client,
+                s,
+                meta=_workspace_index_meta("test", "test_entities"),
+                dimension=embed_func.embedding_dim,
+                count=7,
+            )
+            mock_client.reindex = AsyncMock()
+            self._claim_fails_on_the_new_index(mock_client, s)
+
+            with pytest.raises(WorkspaceIndexCollisionError):
+                await s.initialize()
+
+            mock_client.reindex.assert_not_awaited()
+            assert (
+                mock_client.indices.delete.await_args.kwargs["index"] == s._index_name
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_failed_start_leaves_a_populated_destination_alone(
+        self, global_config, embed_func, mock_client
+    ):
+        """Rows in it mean another worker got there first. Report, do not delete."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            self._legacy_present(
+                mock_client,
+                s,
+                meta=_workspace_index_meta("test", "test_entities"),
+                dimension=embed_func.embedding_dim,
+                count=7,
+            )
+            mock_client.reindex = AsyncMock()
+            self._claim_fails_on_the_new_index(mock_client, s)
+
+            async def _populated(*, index, **_kw):
+                return {"count": 7}
+
+            mock_client.count = AsyncMock(side_effect=_populated)
+
+            with pytest.raises(WorkspaceIndexCollisionError):
+                await s.initialize()
+
+            mock_client.indices.delete.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_an_unconfirmable_marker_undoes_nothing_and_stops(
         self, global_config, embed_func, mock_client

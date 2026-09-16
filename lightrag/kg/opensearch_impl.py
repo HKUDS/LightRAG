@@ -6941,7 +6941,9 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 {
                     "_meta": {
                         **legacy_meta,
-                        **_workspace_index_meta(self.workspace, self.final_namespace),
+                        **_workspace_index_meta(
+                            self.workspace, self.final_namespace
+                        ),
                         _MIGRATED_TO_META_KEY: self._index_name,
                     }
                 },
