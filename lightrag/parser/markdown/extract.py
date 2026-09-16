@@ -62,6 +62,9 @@ _DELIMITER_ROW_RE = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$")
 # A single delimiter cell (after splitting on ``|``): ``---`` with optional
 # ``:`` alignment markers, nothing else.
 _DELIMITER_CELL_RE = re.compile(r"^:?-+:?$")
+# A column separator: a ``|`` after an even run of backslashes, so not the
+# escaped ``\|`` (``\\|`` is an escaped backslash and still separates).
+_UNESCAPED_PIPE_RE = re.compile(r"(?<!\\)(?:\\\\)*\|")
 
 
 def table_marker(ref: str) -> str:
@@ -517,7 +520,11 @@ def extract_markdown(
                 continue
 
         # --- pipe table ----------------------------------------------------
-        if "|" in line and i + 1 < n and _is_pipe_table_delimiter(line, lines[i + 1]):
+        if (
+            _UNESCAPED_PIPE_RE.search(line)
+            and i + 1 < n
+            and _is_pipe_table_delimiter(line, lines[i + 1])
+        ):
             consumed, rows, header = _consume_pipe_table(lines, i)
             if consumed > 0:
                 ref = _next_ref("t")

@@ -163,6 +163,15 @@ def test_pipe_table_escaped_backslash_still_splits():
     assert table["rows"] == [["a \\", "b"]]
 
 
+def test_escaped_pipe_only_line_over_thematic_break_is_not_a_table():
+    # With no unescaped ``|`` the line has no column separator at all, so it is
+    # a paragraph, even though its single cell matches the one-cell ``---``.
+    md = "foo \\| bar\n---\nnext paragraph\n"
+    ex = _extract(md)
+    assert not ex.tables
+    assert "foo \\| bar" in ex.blocks[0]["content"]
+
+
 def test_html_table_captured_verbatim_spanning_lines():
     md = (
         "<table>\n"
