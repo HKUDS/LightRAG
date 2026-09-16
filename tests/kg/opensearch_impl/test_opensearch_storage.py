@@ -23,6 +23,7 @@ from opensearchpy.exceptions import (  # type: ignore
     NotFoundError,
     OpenSearchException,
     ConflictError,
+    ConnectionTimeout,
     RequestError,
 )
 import lightrag.kg.opensearch_impl
@@ -5466,6 +5467,51 @@ class TestVectorStorage:
                 await s.initialize()
 
     @pytest.mark.asyncio
+    async def test_an_unreadable_mapping_after_the_create_race_fails_closed(
+        self, global_config, embed_func, mock_client
+    ):
+        """A mapping that could not be fetched is not evidence of anything.
+
+        Swallowing it would mark this storage ready against an index that, on
+        this path, another deployment built. The exists() branch tolerates a
+        MALFORMED mapping and not an unreachable one; this matches it.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            mock_client.indices.exists = AsyncMock(return_value=False)
+            mock_client.indices.create = AsyncMock(
+                side_effect=RequestError(
+                    400, "resource_already_exists_exception", "already there"
+                )
+            )
+            # _claim_index_for_workspace reads the mapping first and does not
+            # tolerate a transport failure either; let ITS read succeed so the
+            # exception can only come from the validation that follows.
+            calls: list[int] = []
+
+            async def _claim_ok_then_unreachable(*, index, **_kw):
+                calls.append(1)
+                if len(calls) == 1:
+                    return {
+                        index: {
+                            "mappings": {
+                                "_meta": _workspace_index_meta("test", "test_entities")
+                            }
+                        }
+                    }
+                raise OpenSearchException("cluster unreachable")
+
+            mock_client.indices.get_mapping = AsyncMock(
+                side_effect=_claim_ok_then_unreachable
+            )
+
+            with pytest.raises(OpenSearchException, match="cluster unreachable"):
+                await s.initialize()
+
+            assert len(calls) == 2
+            assert s._index_ready is False
+
+    @pytest.mark.asyncio
     async def test_presence_recheck_refuses_a_foreign_model(
         self, global_config, embed_func, mock_client
     ):
@@ -5948,6 +5994,50 @@ class TestVectorLegacyMigration:
                 mock_client.indices.delete.await_args.kwargs["index"] == s._index_name
             )
             assert s._index_ready is False
+
+    @pytest.mark.asyncio
+    async def test_a_lost_marker_response_does_not_discard_the_copy(
+        self, global_config, embed_func, mock_client
+    ):
+        """A committed write whose response was lost must not read as a failure.
+
+        Discarding the copy on that assumption is the worst outcome available:
+        the next start finds the durable marker, skips the source, and creates
+        an empty destination -- the rows stranded behind a marker saying they
+        were moved.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            legacy = self._legacy_present(
+                mock_client,
+                s,
+                meta=_workspace_index_meta("test", "test_entities"),
+                dimension=embed_func.embedding_dim,
+                count=7,
+            )
+            mock_client.reindex = AsyncMock(
+                return_value={"created": 7, "updated": 0, "failures": []}
+            )
+            booked = mock_client.indices.put_mapping.side_effect
+
+            async def _commit_then_lose_the_response(*, index, body, **kw):
+                await booked(index=index, body=body, **kw)
+                raise ConnectionTimeout("N/A", "read timed out", Exception("timeout"))
+
+            mock_client.indices.put_mapping = AsyncMock(
+                side_effect=_commit_then_lose_the_response
+            )
+
+            await s.initialize()
+
+            # The copy survives, and the marker really is there.
+            assert s._index_ready is True
+            mock_client.indices.delete.assert_not_awaited()
+            mapping = await mock_client.indices.get_mapping(index=legacy)
+            assert (
+                mapping[legacy]["mappings"]["_meta"]["lightrag_migrated_to"]
+                == s._index_name
+            )
 
     @pytest.mark.asyncio
     async def test_the_logged_repair_command_carries_the_whole_meta(

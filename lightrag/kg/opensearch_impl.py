@@ -6855,6 +6855,21 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             )
             return True
         except OpenSearchException as e:
+            # The write may have COMMITTED and only its response been lost -- a
+            # timeout, a dropped connection. Believing the failure would be the
+            # worst outcome available here: the caller discards the copy, and
+            # the next start then finds the durable marker, skips the source,
+            # and creates an empty destination. The rows end up stranded behind
+            # a marker saying they were moved. So confirm before believing it.
+            if await self._consumption_marker_is_present(legacy):
+                logger.warning(
+                    f"[{self.workspace}] Marking legacy index '{legacy}' as "
+                    f"consumed by '{self._index_name}' reported a failure "
+                    f"({e}), but the marker is present on re-read -- the write "
+                    f"landed and only its response was lost. Keeping the "
+                    f"migrated copy."
+                )
+                return True
             # The repair command carries the COMPLETE _meta, not just the
             # marker: put_mapping replaces _meta wholesale, so a payload
             # holding only the marker would strip the ownership identity and
@@ -6868,11 +6883,30 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             )
             logger.error(
                 f"[{self.workspace}] Could not mark legacy index '{legacy}' as "
-                f"consumed by '{self._index_name}': {e}. Repair it with the "
-                f"COMPLETE metadata (a partial _meta would replace, not merge): "
-                f"PUT {legacy}/_mapping {repair}"
+                f"consumed by '{self._index_name}': {e}. The re-read could not "
+                f"confirm the marker either, so the migration is being "
+                f"discarded. If a later inspection shows '{legacy}' DOES carry "
+                f"'{_MIGRATED_TO_META_KEY}', remove that key before retrying or "
+                f"the source will be skipped and the destination left empty. To "
+                f"repair by hand instead, write the COMPLETE metadata (a partial "
+                f"_meta would replace, not merge): PUT {legacy}/_mapping {repair}"
             )
             return False
+
+    async def _consumption_marker_is_present(self, legacy: str) -> bool:
+        """Whether this instance's consumption marker is durably on ``legacy``.
+
+        Only ever used to disambiguate a ``put_mapping`` whose response was
+        lost. A read that itself fails answers ``False``: it has not confirmed
+        anything, and an unconfirmed migration must not be kept -- the caller
+        says why, and names the one state that then needs a manual undo.
+        """
+        try:
+            mapping = await self.client.indices.get_mapping(index=legacy)
+        except OpenSearchException:
+            return False
+        meta = (mapping.get(legacy) or {}).get("mappings", {}).get("_meta") or {}
+        return meta.get(_MIGRATED_TO_META_KEY) == self._index_name
 
     async def _abandon_failed_migration(self, legacy: str, reason: str) -> None:
         """Remove the half-populated new index so the next start can retry."""
@@ -6989,16 +7023,21 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             self.client, self._index_name, self.workspace, self.final_namespace
         )
         if lost_race:
+            # Same tolerance as the exists() branch, and no more: a MALFORMED
+            # mapping is absent evidence and does not refuse, but a mapping we
+            # could not fetch is not evidence of anything. Skipping the check
+            # there would mark this storage ready against an index we never
+            # validated -- which on this path is, by construction, an index
+            # another deployment built.
             try:
                 mapping = await self.client.indices.get_mapping(index=self._index_name)
-            except OpenSearchException as e:
-                logger.warning(
-                    f"[{self.workspace}] Could not read the mapping of "
-                    f"'{self._index_name}' after losing the create race: {e}; "
-                    f"skipping compatibility validation"
-                )
-            else:
                 self._assert_index_is_usable(mapping)
+            except (KeyError, TypeError):
+                logger.warning(
+                    f"[{self.workspace}] Could not read vector mapping for index "
+                    f"'{self._index_name}' after losing the create race; "
+                    f"skipping dimension validation"
+                )
 
     async def finalize(self):
         """Flush pending writes and release the OpenSearch client connection.
