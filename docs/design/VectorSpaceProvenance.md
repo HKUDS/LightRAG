@@ -98,6 +98,18 @@ payload that cannot be parsed reads as absent for the same reason.
 The direct consequence is that silence never ends by itself, which is why an
 unmarked container has to be *adopted* — see the transition below.
 
+**Nothing but adoption may end the silence**, and that includes the write path.
+A backend that records its marker when it *saves* is performing a backfill just
+as surely as one that records it on attach, and a worse one: the rows it stamps
+are mostly rows a previous model wrote. So a save may record the marker only
+over a container this process can vouch for — one that was **empty** when this
+process attached (every row since is one it wrote), or one that **already names
+a model**, which the attach check has just confirmed is ours. A non-empty
+container recording no model stays unmarked no matter how much is written to it,
+until `drop()` empties it or the adoption probe certifies it. Getting this wrong
+does not merely miss a detection: it records a false marker that every later
+start believes, and that the adoption probe then sees no conflict in.
+
 ## Where the marker lives: never in the data plane
 
 A marker must not be an ordinary vector record. The rule and the reason:

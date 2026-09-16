@@ -249,6 +249,51 @@ def _strip_marker(backend, working_dir):
         json.dump(payload, f)
 
 
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.asyncio
+async def test_writing_to_an_unverified_legacy_store_does_not_certify_it(
+    backend, tmp_path
+):
+    """A save must not stamp a model onto rows this process did not write.
+
+    The sequence: a pre-marker store written by model A, an operator who
+    upgrades AND switches to a same-dimension model B in one step, and the
+    absent-evidence rule letting startup proceed. If the first flush then
+    records B, the lie is permanent -- every later start reads a marker that
+    agrees with itself, the gate can never fire, and the adoption probe that
+    is supposed to catch this case is defeated too, because it sees no
+    conflict.
+
+    Guarding the attach path alone is not enough; the save path is a backfill
+    just as much.
+    """
+    await _seed(backend, tmp_path, _Embed("bge-m3", 8))
+    _strip_marker(backend, tmp_path)
+
+    storage = backend.storage(tmp_path, _Embed("e5-large", 8))
+    await storage.initialize()
+    await storage.upsert({"v2": {"content": "world"}})
+    await storage.index_done_callback()
+
+    assert backend.read_marker(tmp_path) == (None, None)
+
+    # And the silence persists, rather than hardening into a false claim.
+    again = backend.storage(tmp_path, _Embed("another-model", 8))
+    await again.initialize()
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.asyncio
+async def test_writing_to_an_already_marked_store_keeps_certifying_it(
+    backend, tmp_path
+):
+    """The healthy path is unaffected: a marked store stays marked."""
+    storage = await _seed(backend, tmp_path, _Embed("bge-m3", 8))
+    await storage.upsert({"v2": {"content": "world"}})
+    await storage.index_done_callback()
+    assert backend.read_marker(tmp_path) == ("bge-m3", 8)
+
+
 # ---------------------------------------------------------------------------
 # A refusal must be constructible, droppable, and must converge
 # ---------------------------------------------------------------------------

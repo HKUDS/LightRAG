@@ -163,6 +163,8 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # ``kg.file_fingerprint`` for why the order matters. ``self._client``
         # is already None from the attribute block at the top.
         self._construction_fingerprint = fingerprint
+        # Set by _build_client / drop(); see _build_client for the rule.
+        self._vector_space_certified = False
 
         # Minimal pending area for deferred embedding: id -> _PendingNanoDoc.
         # Holds only records not yet embedded+materialized into self._client;
@@ -256,13 +258,24 @@ class NanoVectorDBStorage(BaseVectorStorage):
             # not be reported as one.
             raise e
 
+        stored_model = read_vector_space_marker(client.get_additional_data())[0]
         assert_vector_space_matches(
             backend=type(self).__name__,
             container=self._client_file_name,
             embedding_func=self.embedding_func,
-            stored_model=read_vector_space_marker(client.get_additional_data())[0],
+            stored_model=stored_model,
             stored_dim=None,
         )
+        # May a later save record THIS process's model over this snapshot?
+        # Only if the snapshot is ours to vouch for: empty (every row from here
+        # on is one we wrote) or already naming a model (which the check above
+        # just confirmed is ours). A NON-EMPTY snapshot with no model recorded
+        # is the pre-marker legacy case, and the absent-evidence rule let it
+        # through without establishing anything about its rows -- stamping it
+        # would record a model over another model's vectors and make the lie
+        # permanent, which is the very thing the attach path refuses to do.
+        # Certification for that case needs the adoption probe, one layer up.
+        self._vector_space_certified = stored_model is not None or len(client) == 0
         return client
 
     def _read_stored_dimension(self) -> int | None:
@@ -752,12 +765,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
             original = self._client.storage_file
             # Stamp the embedding space into the same JSON object as the rows,
             # so the marker is published by the same atomic rename and cannot
-            # drift from the vectors it describes. Refreshed on every save
-            # rather than written once: a file whose rows this process wrote is
-            # a file whose space this process can vouch for.
-            self._client.store_additional_data(
-                **vector_space_marker(self.embedding_func)
-            )
+            # drift from the vectors it describes -- but only over a snapshot
+            # this process can vouch for. See ``_build_client``.
+            if self._vector_space_certified:
+                self._client.store_additional_data(
+                    **vector_space_marker(self.embedding_func)
+                )
             self._client.storage_file = tmp
             try:
                 self._client.save()
@@ -1527,6 +1540,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
             self._pending_deletes.clear()
             self._unsaved_deletes.clear()
             self._unsaved_upserts.clear()
+
+            # The rows are gone, so every row from here on is one this process
+            # wrote: the next save may record this instance's embedding space.
+            self._vector_space_certified = True
 
             # Reset the in-memory snapshot to the post-drop state. Guarded like
             # every other post-removal step — the file is already gone, so

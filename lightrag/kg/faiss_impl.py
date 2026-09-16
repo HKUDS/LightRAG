@@ -226,6 +226,8 @@ class FaissVectorDBStorage(BaseVectorStorage):
         reap_orphan_tmp_files(self._vector_space_file, self.workspace or "_")
 
         # The on-disk index is NOT loaded here; see initialize().
+        # Set by _load_faiss_index / drop(); see _load_faiss_index for the rule.
+        self._vector_space_certified = False
 
     async def initialize(self):
         """Initialize storage data, refusing a foreign embedding space.
@@ -1256,7 +1258,8 @@ class FaissVectorDBStorage(BaseVectorStorage):
             # thing that happens -- that rename is this storage's commit point,
             # and a third write after it would make a complete publication look
             # torn to ``file_fingerprint.publication_complete``.
-            self._write_vector_space_file()
+            if self._vector_space_certified:
+                self._write_vector_space_file()
             atomic_write(
                 index_file,
                 lambda tmp: faiss.write_index(index, tmp),
@@ -1389,6 +1392,8 @@ class FaissVectorDBStorage(BaseVectorStorage):
             logger.warning(
                 f"[{self.workspace}] No existing Faiss index file found for {self.namespace}"
             )
+            # Nothing here but what this process writes from now on.
+            self._vector_space_certified = True
             return
 
         space_mismatch = False
@@ -1420,6 +1425,20 @@ class FaissVectorDBStorage(BaseVectorStorage):
             except Exception:
                 space_mismatch = True
                 raise
+
+            # May a later save record THIS process's model over this snapshot?
+            # Only if the snapshot is ours to vouch for: empty (every row from
+            # here on is one we wrote) or already naming a model (which the
+            # check above just confirmed is ours). A NON-EMPTY snapshot with no
+            # model recorded is the pre-marker legacy case, and the
+            # absent-evidence rule let it through without establishing anything
+            # about its rows -- stamping it would record a model over another
+            # model's vectors and make the lie permanent, which is the very
+            # thing the attach path refuses to do. Certification for that case
+            # needs the adoption probe, one layer up.
+            self._vector_space_certified = (
+                stored_model is not None or self._index.ntotal == 0
+            )
 
             # Convert string keys back to int and reconstruct vectors from index
             self._id_to_meta = {}
@@ -1461,6 +1480,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             logger.warning(f"[{self.workspace}] Starting with an empty Faiss index.")
             self._index = faiss.IndexFlatIP(self._dim)
             self._id_to_meta = {}
+            self._vector_space_certified = True
 
     async def drop_pending_index_ops(self) -> None:
         """Discard buffered upserts on an aborting batch.
@@ -1896,6 +1916,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
             self._pending_deletes.clear()
             self._unsaved_deletes.clear()
             self._unsaved_upserts.clear()
+
+            # The rows are gone, so every row from here on is one this process
+            # wrote: the next save may record this instance's embedding space.
+            self._vector_space_certified = True
 
             # Reset the in-memory snapshot to the post-drop state directly.
             # No ``_load_faiss_index`` re-parse: ``_storage_lock`` spans
