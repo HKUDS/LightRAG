@@ -1892,13 +1892,25 @@ class Neo4JStorage(BaseGraphStorage):
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
+            # `-[r]-` is undirected with both endpoints free, so the pattern
+            # matcher yields one row per orientation of every relationship --
+            # {a:X, b:Y} and {a:Y, b:X}. DISTINCT on the projected columns
+            # does not collapse them (source/target are swapped between the
+            # two rows), so every edge came back twice. Dedupe on the
+            # relationship's own identity instead, exactly as
+            # get_knowledge_graph already does with `collect(DISTINCT r)`.
             query = f"""
             MATCH (a:`{workspace_label}`)-[r]-(b:`{workspace_label}`)
-            RETURN DISTINCT a.entity_id AS source, b.entity_id AS target, properties(r) AS properties
+            RETURN id(r) AS rel_id, a.entity_id AS source, b.entity_id AS target, properties(r) AS properties
             """
             result = await session.run(query)
             edges = []
+            seen_rel_ids = set()
             async for record in result:
+                rel_id = record["rel_id"]
+                if rel_id in seen_rel_ids:
+                    continue
+                seen_rel_ids.add(rel_id)
                 edge_properties = record["properties"]
                 edge_properties["source"] = record["source"]
                 edge_properties["target"] = record["target"]
@@ -1913,16 +1925,23 @@ class Neo4JStorage(BaseGraphStorage):
         async with self._driver.session(
             database=self._DATABASE, default_access_mode="READ"
         ) as session:
+            # Same undirected-double-count trap as get_all_edges: dedupe on
+            # the relationship's own identity, not the projected endpoints.
             result = await session.run(
                 f"""
                 MATCH (a:`{workspace_label}`)-[r]-(b:`{workspace_label}`)
-                RETURN DISTINCT a.entity_id AS source, b.entity_id AS target,
+                RETURN id(r) AS rel_id, a.entity_id AS source, b.entity_id AS target,
                        properties(r) AS properties
                 """
             )
             batch: list[dict] = []
+            seen_rel_ids = set()
             try:
                 async for record in result:
+                    rel_id = record["rel_id"]
+                    if rel_id in seen_rel_ids:
+                        continue
+                    seen_rel_ids.add(rel_id)
                     edge = dict(record["properties"])
                     edge["source"] = record["source"]
                     edge["target"] = record["target"]
