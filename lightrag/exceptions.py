@@ -697,3 +697,77 @@ class MultimodalAnalysisError(RuntimeError):
     an unusable analyze result. Callers persist a ``status="failure"``
     sidecar entry alongside the raise so a re-run sees the failure.
     """
+
+
+class VectorSpaceMismatchError(RuntimeError):
+    """The persisted vectors were written in a different embedding space.
+
+    Raised by a vector storage while it attaches to an existing container
+    (index / collection / table / file) whose recorded embedding model or
+    dimension does not match the one this process is configured with. It is a
+    *refusal to serve*, not a migration failure: nothing has been read, written
+    or deleted when it is raised.
+
+    Why it is a distinct type and not ``DataMigrationError`` or a bare
+    ``ValueError``: ``lightrag-rebuild-vdb`` is the sanctioned way out of this
+    condition, and it can only tolerate the refusal (drop the container and
+    rebuild it from the graph) if the refusal is distinguishable from a cluster
+    outage, a bad credential or a corrupt file. A tool that caught ``Exception``
+    here would drop data on a false positive. Never raise this for anything a
+    rebuild would not fix.
+
+    Rules for raisers:
+
+    * Absent evidence never refuses. A container that records no model, or no
+      dimension, predates the provenance marker; silence is not a mismatch.
+      The same applies to the *declared* side -- an ``embedding_func`` with no
+      ``model_name`` cannot contradict anything.
+    * Raise before the first storage mutation, and leave the instance able to
+      serve ``drop()``. The tool's recovery is ``drop()`` then ``initialize()``
+      again, so a refusal that leaves the object half-constructed (no client,
+      no lock) turns a recoverable condition into a wedge.
+
+    Args:
+        backend: Storage class name, e.g. ``"OpenSearchVectorDBStorage"``.
+        container: The physical container that refused, e.g. an index name.
+        expected_model / expected_dim: what this process is configured with.
+        stored_model / stored_dim: what the container records. ``None`` means
+            "not recorded" and is never by itself a reason to raise.
+    """
+
+    def __init__(
+        self,
+        *,
+        backend: str,
+        container: str,
+        expected_model: str | None = None,
+        expected_dim: int | None = None,
+        stored_model: str | None = None,
+        stored_dim: int | None = None,
+        detail: str | None = None,
+    ) -> None:
+        changed: list[str] = []
+        if stored_dim is not None and expected_dim is not None:
+            if stored_dim != expected_dim:
+                changed.append(f"dimension {stored_dim} -> {expected_dim}")
+        if stored_model is not None and expected_model is not None:
+            if stored_model != expected_model:
+                changed.append(f"model '{stored_model}' -> '{expected_model}'")
+        change_note = "; ".join(changed) if changed else "the embedding space changed"
+        message = (
+            f"{backend} refuses to serve '{container}': it holds vectors from a "
+            f"different embedding space ({change_note}). Querying it would return "
+            f"nothing, or confidently wrong neighbours. Rebuild the vector "
+            f"storages from the knowledge graph with `lightrag-rebuild-vdb` "
+            f"(run it with this embedding configuration), or point this instance "
+            f"back at the previous embedding configuration."
+        )
+        if detail:
+            message = f"{message} {detail}"
+        super().__init__(message)
+        self.backend = backend
+        self.container = container
+        self.expected_model = expected_model
+        self.expected_dim = expected_dim
+        self.stored_model = stored_model
+        self.stored_dim = stored_dim
