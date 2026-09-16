@@ -6,12 +6,19 @@ dimension AND the model. A dimension is not an identity -- two models can both
 emit 1024 floats and have unrelated vector spaces -- so the model name has to
 be *recorded* next to the vectors, never inferred from the dimension.
 
-This module owns the three pieces every backend needs and nothing else: what
-"this instance's model" means, what gets written into the container's marker,
-and the comparison that decides whether to refuse. The place each backend puts
-the marker is its own choice (index ``_meta``, a marker document, a table
-comment, a sidecar key); the *contents* and the *verdict* are here so the
-seven backends cannot drift apart on them.
+Only the backends whose container NAME carries no model information need this:
+Nano, FAISS, MongoDB and OpenSearch. Milvus, Qdrant and PostgreSQL encode
+``{folded_model}_{dim}d`` in the collection or table name, so a model change
+already lands in a different container and a second copy of that fact would
+only drift.
+
+This module owns the three pieces those four need and nothing else: what "this
+instance's model" means, what gets written into the container's marker, and the
+comparison that decides whether to refuse. Where the marker lives is each
+backend's choice among its own METADATA (index ``_meta``, a collection
+validator, a file's own header) -- never a vector record, which would enter the
+ANN index and be returned by a search. The *contents* and the *verdict* are
+here so the four cannot drift apart on them.
 
 Read ``docs/design/VectorSpaceProvenance.md`` before changing the verdict
 rules -- in particular before making absent evidence refuse.
