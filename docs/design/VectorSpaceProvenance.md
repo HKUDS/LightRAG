@@ -329,7 +329,7 @@ Each row lands with its own change; a row is only true once that change is in.
 | change | backend | work |
 | --- | --- | --- |
 | PR 2 | OpenSearch | marker in `_meta`; drop-capable while refused; fix the lost-`indices.create`-race attach that validates ownership but not compatibility |
-| PR 3 | MongoDB | marker in the JSON Schema validator `description`; `drop()` must drop and recreate the Atlas search index, and rewrite the description |
+| PR 3 | MongoDB | marker in the JSON Schema validator `description`; `drop()` must rewrite that description and rebuild the Atlas search index when the DIMENSION changed (the index definition records a dimension and nothing else, so a same-dimension model change leaves a usable index) |
 | PR 4 / 5 | FAISS, Nano | marker in `.meta.json` / `additional_data`; move the refusal out of `__post_init__` so the object survives it and stays droppable |
 | PR 6 / 7 / 8 | Milvus, Qdrant, PostgreSQL | no marker. Replace the legacy-path `DataMigrationError` with the typed refusal so the tool can tolerate it, and make a refused instance drop-capable (Qdrant assigns `_flush_lock` *after* its init block, the same shape as the OpenSearch bug) |
 | gate | — | the empty-container gate and the adoption probe in `LightRAG.initialize_storages()` |
