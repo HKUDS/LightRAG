@@ -2704,13 +2704,20 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         # Build search params from index config
         search_params_base = self.index_config.build_search_params()
 
-        # Merge with metric type and radius threshold
+        # Merge with metric type and, for COSINE, the radius threshold.
+        # cosine_better_than_threshold is always a raw cosine-similarity value
+        # (see every other backend). Milvus's "radius" is metric-dependent: for
+        # L2 it is an UPPER distance bound (smaller is closer) and for IP it is
+        # unbounded unless vectors happen to be unit-normalized, so passing the
+        # cosine threshold straight through would silently filter on the wrong
+        # scale instead of the intended similarity cutoff. Only apply it when
+        # the collection's own metric is COSINE, where the semantics match.
+        search_params_inner = dict(search_params_base.get("params", {}))
+        if self.index_config.metric_type == "COSINE":
+            search_params_inner["radius"] = self.cosine_better_than_threshold
         search_params = {
             "metric_type": self.index_config.metric_type,
-            "params": {
-                **search_params_base.get("params", {}),
-                "radius": self.cosine_better_than_threshold,
-            },
+            "params": search_params_inner,
         }
 
         # Re-gated: the embedding round trip above can have taken seconds.
