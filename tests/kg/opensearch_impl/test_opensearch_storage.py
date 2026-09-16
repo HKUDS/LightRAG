@@ -5808,10 +5808,16 @@ class TestVectorLegacyMigration:
             mock_client.reindex.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_short_copy_removes_the_new_index_and_raises(
+    async def test_a_short_copy_stops_startup_and_undoes_nothing(
         self, global_config, embed_func, mock_client
     ):
-        """A half-copied index would shadow the legacy one on every later start."""
+        """Incomplete is not complete -- but nothing is taken back either.
+
+        The copy is insert-only and the source stays unmarked, so the next
+        start resumes it. Deleting the destination would risk taking a peer's
+        rows with it, and there is nothing to gain: presence is not what the
+        next start reads.
+        """
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             self._legacy_present(
@@ -5828,13 +5834,11 @@ class TestVectorLegacyMigration:
             with pytest.raises(DataMigrationError, match="incomplete"):
                 await s.initialize()
 
-            assert (
-                mock_client.indices.delete.await_args.kwargs["index"] == s._index_name
-            )
+            mock_client.indices.delete.assert_not_awaited()
             assert s._index_ready is False
 
     @pytest.mark.asyncio
-    async def test_per_document_failures_also_abandon_the_migration(
+    async def test_per_document_failures_also_stop_the_migration(
         self, global_config, embed_func, mock_client
     ):
         """reindex answers 200 with a non-empty failures[]; the count alone can match."""
@@ -5858,9 +5862,7 @@ class TestVectorLegacyMigration:
             with pytest.raises(DataMigrationError):
                 await s.initialize()
 
-            assert (
-                mock_client.indices.delete.await_args.kwargs["index"] == s._index_name
-            )
+            mock_client.indices.delete.assert_not_awaited()
 
     @staticmethod
     def _legacy_absent(client, storage):
@@ -5961,15 +5963,16 @@ class TestVectorLegacyMigration:
             mock_client.reindex.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_copy_that_cannot_be_recorded_is_not_kept(
+    async def test_a_copy_that_cannot_be_recorded_does_not_complete(
         self, global_config, embed_func, mock_client
     ):
-        """An unrecorded migration is worse than no migration.
+        """An unrecorded migration must not be treated as done.
 
         The source would stay indistinguishable from an untouched
         pre-isolation index, so a later start on a different same-dimension
-        model would migrate these vectors into ITS index and serve them as its
-        own. The copy is removed instead, and the next start retries.
+        model would migrate these vectors into ITS index. Startup stops --
+        but takes nothing back: the source stays unmarked, which is exactly
+        what makes the next start resume.
         """
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
@@ -5990,9 +5993,7 @@ class TestVectorLegacyMigration:
             with pytest.raises(DataMigrationError, match="could not record"):
                 await s.initialize()
 
-            assert (
-                mock_client.indices.delete.await_args.kwargs["index"] == s._index_name
-            )
+            mock_client.indices.delete.assert_not_awaited()
             assert s._index_ready is False
 
     @pytest.mark.asyncio
@@ -6063,13 +6064,16 @@ class TestVectorLegacyMigration:
         client.indices.get_mapping = AsyncMock(side_effect=_foreign_new_index)
 
     @pytest.mark.asyncio
-    async def test_a_failed_start_removes_the_empty_destination_it_created(
+    async def test_a_failed_start_leaves_everything_and_the_next_one_resumes(
         self, global_config, embed_func, mock_client
     ):
-        """ "The index exists" is how the next start decides the migration ran.
+        """The destination existing is NOT how the next start decides.
 
-        An empty one left behind by a failure between creation and copy would
-        make every later start skip a migration that never happened.
+        A failure between creating the index and copying into it used to leave
+        an empty index that every later start read as "already migrated". The
+        gate is the consumption marker on the SOURCE instead, so the leftover
+        index is harmless -- and nothing has to be deleted to make it so,
+        which is what keeps the failure path from destroying a peer's rows.
         """
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
@@ -6081,21 +6085,36 @@ class TestVectorLegacyMigration:
                 count=7,
             )
             mock_client.reindex = AsyncMock()
+            booked_get_mapping = mock_client.indices.get_mapping.side_effect
             self._claim_fails_on_the_new_index(mock_client, s)
 
             with pytest.raises(WorkspaceIndexCollisionError):
                 await s.initialize()
 
+            # The index was created and is still there; nothing was deleted.
             mock_client.reindex.assert_not_awaited()
-            assert (
-                mock_client.indices.delete.await_args.kwargs["index"] == s._index_name
+            mock_client.indices.delete.assert_not_awaited()
+            assert await mock_client.indices.exists(index=s._index_name) is True
+
+            # Next start: the source is still unmarked, so the copy still runs.
+            mock_client.indices.get_mapping = AsyncMock(side_effect=booked_get_mapping)
+            mock_client.reindex = AsyncMock(
+                return_value={
+                    "created": 7,
+                    "version_conflicts": 0,
+                    "failures": [],
+                }
             )
+            s2 = self._make(global_config, embed_func)
+            await s2.initialize()
+
+            assert mock_client.reindex.await_count == 1
 
     @pytest.mark.asyncio
     async def test_a_failed_start_leaves_a_populated_destination_alone(
         self, global_config, embed_func, mock_client
     ):
-        """Rows in it mean another worker got there first. Report, do not delete."""
+        """Rows in the destination may be a peer's. Never delete them."""
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             self._legacy_present(

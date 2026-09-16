@@ -6360,28 +6360,12 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         async with get_data_init_lock():
             if self.client is None:
                 self.client = await ClientManager.get_client()
-            existed = await self.client.indices.exists(index=self._index_name)
-            # Decide about the legacy index BEFORE the destination exists.
-            # Creating it first and then failing to inspect would leave an
-            # empty index behind, and every later start would see it present
-            # and skip the migration -- a transient read turned into permanent
-            # data loss. Inspecting first means a failure here creates nothing
-            # and the next start retries from an untouched cluster.
-            pending = await self._plan_legacy_migration() if not existed else None
-            try:
-                await self._create_knn_index_if_not_exists()
-                if pending is not None:
-                    await self._reindex_legacy(*pending)
-            except Exception:
-                # Startup is ending here either way. What must not be left
-                # behind is an EMPTY destination: "the index exists" is how
-                # the next start decides the migration is already done, so an
-                # empty one created moments before this failure would make
-                # every later start skip a migration that never ran, silently
-                # and permanently.
-                if pending is not None:
-                    await self._discard_empty_destination()
-                raise
+            # Decide about the legacy index before the destination is created,
+            # so a failure to inspect it leaves nothing behind to interpret.
+            pending = await self._plan_legacy_migration()
+            await self._create_knn_index_if_not_exists()
+            if pending is not None:
+                await self._reindex_legacy(*pending)
             self._index_ready = True
             logger.debug(
                 f"[{self.workspace}] OpenSearch Vector storage initialized: {self._index_name}"
@@ -6648,13 +6632,22 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
     async def _plan_legacy_migration(self) -> tuple[str, int, dict[str, Any]] | None:
         """What to carry over from a pre-model-isolation index, if anything.
 
-        Call ONLY from ``initialize()``, and only when the suffixed index did
-        not already exist -- see there for why ``drop()``'s recreate and the
-        write-path self-heal must not reach this, and why this runs before the
-        destination is created.
+        Call ONLY from ``initialize()`` -- see there for why ``drop()``'s
+        recreate and the write-path self-heal must not reach this.
 
-        ``None`` is a DECISION to start empty and is final; an inspection that
-        could not be completed raises instead, so the next start retries.
+        The question asked is "has this source been consumed", never "does the
+        destination exist". Those came apart once: a start that created the
+        index and then failed left an empty one behind, and every later start
+        read its presence as proof the migration had run. The consumption
+        marker on the SOURCE is the only record of that, it is written last,
+        and a migration that cannot write it does not complete -- so an
+        unmarked source means the copy is still owed, whatever the destination
+        looks like. Re-running into a destination that already holds rows is
+        safe because the copy is insert-only; see ``_reindex_legacy``.
+
+        ``None`` is a DECISION to leave the source alone and is final; an
+        inspection that could not be completed raises instead, so the next
+        start retries.
         """
         legacy = self._legacy_index_name
         if not self.model_suffix or legacy == self._index_name:
@@ -6803,7 +6796,12 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 params={"refresh": "true", "wait_for_completion": "true"},
             )
         except Exception as e:
-            await self._abandon_failed_migration(legacy, f"reindex failed: {e}")
+            logger.error(
+                f"[{self.workspace}] Copying '{legacy}' into "
+                f"'{self._index_name}' failed: {e}. Nothing has been undone -- "
+                f"the copy is insert-only and '{legacy}' is unchanged, so the "
+                f"next start resumes it."
+            )
             raise
 
         failures = result.get("failures") or []
@@ -6815,35 +6813,31 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         conflicts = result.get("version_conflicts") or 0
         covered = created + conflicts
         if failures or covered != legacy_count:
-            await self._abandon_failed_migration(
-                legacy,
-                f"covered {covered} of {legacy_count} documents "
-                f"({created} copied, {conflicts} already present)"
-                + (f", {len(failures)} failures" if failures else ""),
-            )
             raise DataMigrationError(
                 f"[{self.workspace}] Migration from legacy index '{legacy}' into "
                 f"'{self._index_name}' is incomplete: {covered} of "
                 f"{legacy_count} documents are accounted for ({created} copied, "
-                f"{conflicts} already present), {len(failures)} failures. The "
-                f"new index has been removed so the next start can retry; the "
-                f"legacy index is untouched."
+                f"{conflicts} already present), {len(failures)} failures. "
+                f"Nothing has been undone: '{legacy}' is unchanged and stays "
+                f"unmarked, so the next start copies the remainder. The rows "
+                f"already in '{self._index_name}' are left alone -- a peer may "
+                f"have put them there. Fix the underlying failure and restart."
             )
         copied = created
 
         if not await self._mark_legacy_consumed(legacy, legacy_meta):
-            await self._abandon_failed_migration(
-                legacy, "the legacy index could not be marked as consumed"
-            )
             raise DataMigrationError(
                 f"[{self.workspace}] Copied {copied} documents from '{legacy}' "
                 f"into '{self._index_name}' but could not record the migration "
-                f"on '{legacy}'. The copy has been removed rather than kept: "
-                f"an unrecorded migration leaves '{legacy}' indistinguishable "
-                f"from an untouched pre-isolation index, and a LATER start on "
-                f"a different same-dimension model would migrate these vectors "
-                f"into that model's index and serve them as its own. Grant "
-                f"mapping-write access to '{legacy}' and retry, or set "
+                f"on '{legacy}', so it is not complete. Nothing has been undone: "
+                f"the copy stands and '{legacy}' stays unmarked, which is what "
+                f"makes the next start resume rather than skip. Startup stops "
+                f"here rather than continuing, because an unrecorded migration "
+                f"leaves '{legacy}' indistinguishable from an untouched "
+                f"pre-isolation index, and a LATER start on a different "
+                f"same-dimension model would migrate these vectors into that "
+                f"model's index and serve them as its own. Grant mapping-write "
+                f"access to '{legacy}' and restart, or set "
                 f"OPENSEARCH_MIGRATE_UNMARKED_LEGACY=false and rebuild with "
                 f"`lightrag-rebuild-vdb` instead."
             )
@@ -6928,8 +6922,9 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     f"'{legacy}': if it carries '{_MIGRATED_TO_META_KEY}' "
                     f"pointing at '{self._index_name}', the migration is "
                     f"complete and this start can simply be retried; if it does "
-                    f"not, either add it (see the command below) or delete "
-                    f"'{self._index_name}' so the next start migrates again."
+                    f"not, the next start copies again into the same "
+                    f"destination, which is insert-only and will not disturb "
+                    f"what is already there."
                 )
             # The repair command carries the COMPLETE _meta, not just the
             # marker: put_mapping replaces _meta wholesale, so a payload
@@ -6941,9 +6936,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 {
                     "_meta": {
                         **legacy_meta,
-                        **_workspace_index_meta(
-                            self.workspace, self.final_namespace
-                        ),
+                        **_workspace_index_meta(self.workspace, self.final_namespace),
                         _MIGRATED_TO_META_KEY: self._index_name,
                     }
                 },
@@ -6953,9 +6946,10 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             logger.error(
                 f"[{self.workspace}] Could not mark legacy index '{legacy}' as "
                 f"consumed by '{self._index_name}': {e}. A re-read confirms the "
-                f"marker is NOT there, so the copy is being discarded and the "
-                f"next start will migrate again from untouched data. To repair "
-                f"by hand instead, write the COMPLETE metadata (a partial _meta "
+                f"marker is NOT there, so the migration is not complete. "
+                f"Nothing has been undone -- the next start copies again into "
+                f"the same destination, which is insert-only. To finish it by "
+                f"hand instead, write the COMPLETE metadata (a partial _meta "
                 f"would replace, not merge): PUT {legacy}/_mapping {repair}"
             )
             return False
@@ -6974,72 +6968,6 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             return None
         meta = (mapping.get(legacy) or {}).get("mappings", {}).get("_meta") or {}
         return meta.get(_MIGRATED_TO_META_KEY) == self._index_name
-
-    async def _discard_empty_destination(self) -> None:
-        """Remove the destination index, but ONLY while it is provably empty.
-
-        Deleting an index that holds nothing cannot lose anything, and leaving
-        it would trap every later start into skipping the migration. Deleting
-        one that holds something could destroy another worker's rows -- a
-        concurrent start may have won the create and populated it -- so that
-        case is left alone and merely reported: the operator is told what is
-        there, and the next start sees a non-empty index and correctly leaves
-        it alone.
-
-        Never raises. It runs while another failure is already propagating,
-        and replacing that failure with this one would hide the cause.
-        """
-        try:
-            count = (await self.client.count(index=self._index_name))["count"]
-        except (OpenSearchException, KeyError, TypeError) as e:
-            logger.error(
-                f"[{self.workspace}] Startup failed with a legacy migration "
-                f"pending, and '{self._index_name}' could not be counted to "
-                f"decide whether it is safe to remove: {e}. Check it by hand: "
-                f"if it exists and is EMPTY, delete it, or the next start will "
-                f"treat the migration as already done and skip it."
-            )
-            return
-        if count:
-            logger.error(
-                f"[{self.workspace}] Startup failed with a legacy migration "
-                f"pending, and '{self._index_name}' holds {count} documents so "
-                f"it has NOT been removed. It was most likely populated by "
-                f"another worker; the next start will see it and leave the "
-                f"legacy index alone. Verify before removing anything."
-            )
-            return
-        try:
-            await self.client.indices.delete(index=self._index_name)
-            logger.info(
-                f"[{self.workspace}] Removed the empty index "
-                f"'{self._index_name}' left by a failed start, so the next one "
-                f"retries the legacy migration instead of skipping it."
-            )
-        except OpenSearchException as e:
-            logger.error(
-                f"[{self.workspace}] Could not remove the empty index "
-                f"'{self._index_name}' left by a failed start: {e}. Delete it "
-                f"manually, or the next start will treat the legacy migration "
-                f"as already done and skip it."
-            )
-
-    async def _abandon_failed_migration(self, legacy: str, reason: str) -> None:
-        """Remove the half-populated new index so the next start can retry."""
-        logger.error(
-            f"[{self.workspace}] Migration from '{legacy}' into "
-            f"'{self._index_name}' failed ({reason}); removing the incomplete "
-            f"index so it cannot shadow the legacy one."
-        )
-        try:
-            await self.client.indices.delete(index=self._index_name)
-        except OpenSearchException as e:
-            logger.error(
-                f"[{self.workspace}] Could not remove the incomplete index "
-                f"'{self._index_name}': {e}. It must be deleted manually before "
-                f"the next start, or it will shadow '{legacy}'."
-            )
-        self._mark_index_missing()
 
     async def _create_knn_index_if_not_exists(self):
         try:
