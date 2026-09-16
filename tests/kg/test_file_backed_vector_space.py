@@ -346,6 +346,37 @@ async def test_drop_then_initialize_converges(backend, tmp_path):
     assert await storage.get_by_id("v1") is None
 
 
+@pytest.mark.asyncio
+async def test_a_stuck_marker_file_cannot_fail_a_completed_drop(tmp_path):
+    """FAISS only: the marker is a third file, and it is past the point of no return.
+
+    Once both authoritative files are gone every persisted vector is gone, and
+    this storage's contract is that no step after that may report the completed
+    destruction as an error -- ``/documents/clear`` reads that status to decide
+    whether the input files are safe to delete. An orphan marker is harmless:
+    with the index absent the load returns early and never reads it, and the
+    next save replaces it.
+    """
+    backend = _Backend("faiss")
+    storage = await _seed(backend, tmp_path, _Embed("bge-m3", 8))
+    marker = backend.marker_path(tmp_path)
+    real_remove = os.remove
+
+    def _remove(path, *args, **kwargs):
+        if str(path) == marker:
+            raise PermissionError("marker file is locked")
+        return real_remove(path, *args, **kwargs)
+
+    with patch("lightrag.kg.faiss_impl.os.remove", side_effect=_remove):
+        result = await storage.drop()
+
+    assert result["status"] == "success"
+    # The bookkeeping that follows the removal really did run.
+    assert storage._index.ntotal == 0
+    assert storage._id_to_meta == {}
+    assert not os.path.exists(os.path.join(tmp_path, "faiss_index_entities.index"))
+
+
 @pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.asyncio
 async def test_drop_leaves_no_marker_behind(backend, tmp_path):

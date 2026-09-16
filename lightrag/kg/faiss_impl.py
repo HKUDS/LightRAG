@@ -1904,10 +1904,27 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 os.remove(self._faiss_index_file)
             if os.path.exists(self._meta_file):
                 os.remove(self._meta_file)
-            # The marker describes rows that no longer exist; leaving it would
-            # let a later instance refuse against a store that is empty.
-            if os.path.exists(self._vector_space_file):
-                os.remove(self._vector_space_file)
+            # The marker is cleaned up LAST and its failure is swallowed,
+            # because by this line the drop has already happened: both
+            # authoritative files are gone, so every persisted vector is gone.
+            # Nothing past that point may report the completed destruction as
+            # an error -- ``/documents/clear`` reads this status to decide
+            # whether the input files are safe to delete, and a false failure
+            # leaves them queued for re-ingestion against storage that no
+            # longer matches. An orphan marker is harmless: with the index file
+            # absent ``_load_faiss_index`` takes its early return and never
+            # reads the marker, and the next save replaces it.
+            try:
+                if os.path.exists(self._vector_space_file):
+                    os.remove(self._vector_space_file)
+            except OSError as e:
+                log_without_raising(
+                    logger.warning,
+                    f"[{self.workspace}] Dropped {self.namespace}, but could not "
+                    f"remove the embedding-space marker at "
+                    f"{self._vector_space_file}: {e}. It describes rows that no "
+                    f"longer exist and is ignored while the index is absent.",
+                )
 
         async def _committed() -> None:
             # Discard buffered (unflushed) upserts, queued deletes and
