@@ -27,6 +27,7 @@ from lightrag.tools.migrate_graph_storage import (
     count_parallel_edges,
     derive_written_node_ids,
     detect_duplicate_node_ids,
+    detect_self_loop_edges,
     detect_reciprocal_pairs,
     find_non_jsonb_representable,
     dry_run_migration,
@@ -622,6 +623,52 @@ class TestSourceNodeIdentity:
         assert "drop" not in target.calls
         assert target.calls.count("upsert_nodes_batch") == 0
         assert target.nodes == {"pre": {"entity_id": "pre"}}
+
+
+class TestDetectSelfLoopEdges:
+    """The migration tool refuses a source graph that contains a self-loop.
+
+    ``BaseGraphStorage.node_degree`` states a graph must not hold one, so the
+    source is invariant-violating. Neither alternative to refusing is safe:
+    carrying it across propagates the violation, and DROPPING it orphans the
+    relation's ``relationships_vdb`` row -- this tool migrates the graph only,
+    and ``adelete_by_relation`` 404s once the graph edge is gone, so the row
+    becomes unreachable through every public API. Refusing keeps the cleanup
+    possible at the source, where the graph edge still exists.
+    """
+
+    def test_reports_the_node_ids_carrying_a_self_loop(self):
+        edges = [
+            {"source": "a", "target": "b"},
+            {"source": "loop", "target": "loop"},
+            {"source": "b", "target": "c"},
+        ]
+
+        assert detect_self_loop_edges(edges) == ["loop"]
+
+    def test_reports_every_offender_sorted_and_deduped(self):
+        """The message names what the operator has to clean up, so the list
+        must be complete and stable."""
+        edges = [
+            {"source": "z", "target": "z"},
+            {"source": "a", "target": "a"},
+            {"source": "z", "target": "z"},
+        ]
+
+        assert detect_self_loop_edges(edges) == ["a", "z"]
+
+    def test_a_clean_graph_reports_nothing(self):
+        edges = [{"source": "a", "target": "b"}, {"source": "b", "target": "a"}]
+
+        assert detect_self_loop_edges(edges) == []
+
+    def test_reciprocals_are_not_self_loops(self):
+        """Only ``src == tgt``: a reciprocal pair is a different refusal, and
+        folding it in here would hide what detect_reciprocal_pairs reports."""
+        edges = [{"source": "a", "target": "b"}, {"source": "b", "target": "a"}]
+
+        assert detect_self_loop_edges(edges) == []
+        assert detect_reciprocal_pairs(edges) == [("a", "b")]
 
 
 class TestCardinalityPreservingPolicy:

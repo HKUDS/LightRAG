@@ -464,7 +464,7 @@ class PostgreSQLDB:
 
         # AGE graphs this process has already confirmed to exist.  Graph
         # creation is one-time DDL, not connection session state, so it must
-        # not ride along on every AGE operation (issue #1866).
+        # not ride along on every AGE operation.
         self._ensured_age_graphs: set[str] = set()
         self._age_graph_ensure_lock = asyncio.Lock()
 
@@ -1238,7 +1238,7 @@ class PostgreSQLDB:
         - The graph itself is one-time DDL.  Creating it here unconditionally
           made PostgreSQL log an ERROR/STATEMENT pair for *every* graph read
           and write, because the server writes its log entry before the client
-          ever sees the error and can swallow it (issue #1866).  Graph
+          ever sees the error and can swallow it.  Graph
           existence is now handled by :meth:`_ensure_age_graph`, which reaches
           the database at most once per process.
         """
@@ -3795,27 +3795,27 @@ class PGKVStorage(BaseKVStorage):
 
         delete_sql = f"DELETE FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
 
-        # Chunk the id list so each statement's ANY($2) array stays bounded
-        # (a non-positive cap disables chunking). All chunks run in ONE
-        # transaction so a mid-delete failure rolls every chunk back, preserving
+        # Batch the id list so each statement's ANY($2) array stays bounded
+        # (a non-positive cap disables batching). All batches run in ONE
+        # transaction so a mid-delete failure rolls every batch back, preserving
         # the original single-statement all-or-nothing behaviour; _run_with_retry
         # re-runs the whole closure on transient errors (DELETE is idempotent).
-        chunk = (
+        delete_batch_size = (
             self._max_delete_records_per_batch
             if self._max_delete_records_per_batch > 0
             else len(ids)
         )
-        if len(ids) > chunk:
+        if len(ids) > delete_batch_size:
             logger.info(
                 f"[{self.workspace}] {self.namespace} delete: {len(ids)} ids "
-                f"split into chunks (chunk={chunk})"
+                f"split into batches (batch_size={delete_batch_size})"
             )
 
         async def _batch_delete(connection: asyncpg.Connection) -> None:
             async with connection.transaction():
-                for i in range(0, len(ids), chunk):
+                for i in range(0, len(ids), delete_batch_size):
                     await connection.execute(
-                        delete_sql, self.workspace, ids[i : i + chunk]
+                        delete_sql, self.workspace, ids[i : i + delete_batch_size]
                     )
 
         try:
@@ -4781,15 +4781,15 @@ class PGVectorStorage(BaseVectorStorage):
             # (<= 0) and no pending deletes, the fallback would be 0 and the
             # range() step below would raise even though there is nothing to
             # delete. The empty-list loop then simply no-ops.
-            delete_chunk = (
+            delete_batch_size = (
                 self._max_delete_records_per_batch
                 if self._max_delete_records_per_batch > 0
                 else len(pending_delete_ids) or 1
             )
-            if pending_delete_ids and len(pending_delete_ids) > delete_chunk:
+            if pending_delete_ids and len(pending_delete_ids) > delete_batch_size:
                 logger.info(
                     f"{log_prefix} delete {len(pending_delete_ids)} ids split "
-                    f"into chunks (chunk={delete_chunk})"
+                    f"into batches (batch_size={delete_batch_size})"
                 )
             delete_sql = (
                 f"DELETE FROM {self.table_name} WHERE workspace=$1 AND id = ANY($2)"
@@ -4832,8 +4832,8 @@ class PGVectorStorage(BaseVectorStorage):
                         _flush_upsert, timing_label=timing_label
                     )
 
-                for i in range(0, len(pending_delete_ids), delete_chunk):
-                    id_slice = pending_delete_ids[i : i + delete_chunk]
+                for i in range(0, len(pending_delete_ids), delete_batch_size):
+                    id_slice = pending_delete_ids[i : i + delete_batch_size]
 
                     async def _flush_delete(
                         connection: asyncpg.Connection,
@@ -6861,27 +6861,27 @@ class PGDocStatusStorage(DocStatusStorage):
 
         delete_sql = f"DELETE FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
 
-        # Chunk the id list so each statement's ANY($2) array stays bounded
-        # (a non-positive cap disables chunking). All chunks run in ONE
-        # transaction so a mid-delete failure rolls every chunk back, preserving
+        # Batch the id list so each statement's ANY($2) array stays bounded
+        # (a non-positive cap disables batching). All batches run in ONE
+        # transaction so a mid-delete failure rolls every batch back, preserving
         # the original single-statement all-or-nothing behaviour; _run_with_retry
         # re-runs the whole closure on transient errors (DELETE is idempotent).
-        chunk = (
+        delete_batch_size = (
             self._max_delete_records_per_batch
             if self._max_delete_records_per_batch > 0
             else len(ids)
         )
-        if len(ids) > chunk:
+        if len(ids) > delete_batch_size:
             logger.info(
                 f"[{self.workspace}] {self.namespace} delete: {len(ids)} ids "
-                f"split into chunks (chunk={chunk})"
+                f"split into batches (batch_size={delete_batch_size})"
             )
 
         async def _batch_delete(connection: asyncpg.Connection) -> None:
             async with connection.transaction():
-                for i in range(0, len(ids), chunk):
+                for i in range(0, len(ids), delete_batch_size):
                     await connection.execute(
-                        delete_sql, self.workspace, ids[i : i + chunk]
+                        delete_sql, self.workspace, ids[i : i + delete_batch_size]
                     )
 
         try:
@@ -7315,7 +7315,7 @@ class PGGraphStorage(BaseGraphStorage):
             # Only create the labels that are actually missing. create_vlabel /
             # create_elabel have no IF NOT EXISTS form, so calling them for an
             # existing label makes PostgreSQL log an ERROR on every startup
-            # (issue #1866). with_age=True here also guarantees the graph
+            # with_age=True here also guarantees the graph
             # itself exists before we read its labels.
             existing_labels = await self.db.query(
                 "SELECT l.name::text AS name "
@@ -7335,7 +7335,7 @@ class PGGraphStorage(BaseGraphStorage):
             # with with_age=True, and the first one to do so has already had
             # PostgreSQLDB._ensure_age_graph() create the graph. Repeating it
             # here would only add one more "graph already exists" line to the
-            # PostgreSQL log (issue #1866).
+            # PostgreSQL log.
             #
             # The index statements carry IF NOT EXISTS for the same reason: a
             # plain CREATE INDEX on an existing index is an ERROR the server
@@ -8754,6 +8754,13 @@ class PGGraphStorage(BaseGraphStorage):
 
             for result in incoming_results:
                 if result["node_id"] and result["connected_id"]:
+                    # A self-loop satisfies BOTH directed matches above, so the
+                    # outbound pass already listed it; appending here would
+                    # report one edge as two. Same guard pgtable_impl,
+                    # mongo_impl and opensearch_impl carry, and the rule stated
+                    # on BaseGraphStorage.get_node_edges.
+                    if result["connected_id"] == result["node_id"]:
+                        continue
                     edges_norm[result["node_id"]].append(
                         (result["connected_id"], result["node_id"])
                     )
@@ -8787,6 +8794,29 @@ class PGGraphStorage(BaseGraphStorage):
             if result and isinstance(result, dict) and "label" in result:
                 labels.append(result["label"])
         return labels
+
+    async def iter_labels(self, batch_size: int):
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        offset = 0
+        while True:
+            query = """SELECT * FROM cypher('%s', $$
+                     MATCH (n:base)
+                     WHERE n.entity_id IS NOT NULL
+                     RETURN DISTINCT n.entity_id AS label
+                     ORDER BY n.entity_id
+                     SKIP %d LIMIT %d
+                   $$) AS (label text)""" % (self.graph_name, offset, batch_size)
+            results = await self._query(query)
+            batch = [
+                result["label"]
+                for result in results
+                if result and isinstance(result, dict) and "label" in result
+            ]
+            if not batch:
+                break
+            yield batch
+            offset += len(batch)
 
     async def _bfs_subgraph(
         self, node_label: str, max_depth: int, max_nodes: int
@@ -9251,6 +9281,45 @@ class PGGraphStorage(BaseGraphStorage):
             edge_properties["target"] = result["target"]
             edges.append(edge_properties)
         return edges
+
+    async def iter_edges(self, batch_size: int):
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        offset = 0
+        while True:
+            query = f"""
+                SELECT
+                    (ag_catalog.agtype_access_operator(VARIADIC ARRAY[a.properties, '"entity_id"'::agtype]))::text AS source,
+                    (ag_catalog.agtype_access_operator(VARIADIC ARRAY[b.properties, '"entity_id"'::agtype]))::text AS target,
+                    r.properties
+                FROM {self.graph_name}."DIRECTED" r
+                JOIN {self.graph_name}.base a ON r.start_id = a.id
+                JOIN {self.graph_name}.base b ON r.end_id = b.id
+                ORDER BY r.id
+                LIMIT {int(batch_size)} OFFSET {int(offset)}
+            """
+            results = await self._query(query)
+            if not results:
+                break
+            batch: list[dict] = []
+            for result in results:
+                properties = result["properties"]
+                if isinstance(properties, str):
+                    try:
+                        properties = json.loads(properties)
+                    except json.JSONDecodeError as exc:
+                        raise PGGraphQueryException(
+                            {
+                                "message": f"Corrupt edge properties in graph {self.graph_name}: {exc}",
+                                "details": properties[:200],
+                            }
+                        ) from exc
+                edge = dict(properties)
+                edge["source"] = result["source"]
+                edge["target"] = result["target"]
+                batch.append(edge)
+            yield batch
+            offset += len(results)
 
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
         """Get popular labels by node degree (most connected entities) using native SQL for performance.

@@ -63,7 +63,18 @@ READ_RETRY = retry(
 )
 
 
-# @final (removed per request in Issue #3130)
+# Deliberately NOT ``@final``, unlike every other storage class in this package:
+# the decorator was removed by request so this backend can be subclassed. What
+# the tree can show is that nothing in it subclasses this class, so the
+# extension point exists for code outside the repository and cannot be verified
+# from here -- which is a reason to leave it alone, not evidence that restoring
+# it is safe.
+#
+# Before restoring it, note what it would and would not do. ``typing.final`` has
+# no runtime effect: a downstream subclass keeps working, and only a type
+# checker starts rejecting it. So the restore breaks nobody's deployment and
+# silences nobody's tests; it re-asserts the constraint whose removal was asked
+# for, somewhere its author will not see it.
 @dataclass
 class Neo4JStorage(BaseGraphStorage):
     # Lucene query-syntax reserved characters. The full-text query parser
@@ -1712,6 +1723,33 @@ class Neo4JStorage(BaseGraphStorage):
                 )  # Ensure results are consumed even if processing fails
             return labels
 
+    async def iter_labels(self, batch_size: int):
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        workspace_label = self._get_workspace_label()
+        async with self._driver.session(
+            database=self._DATABASE, default_access_mode="READ"
+        ) as session:
+            result = await session.run(
+                f"""
+                MATCH (n:`{workspace_label}`)
+                WHERE n.entity_id IS NOT NULL
+                RETURN DISTINCT n.entity_id AS label
+                ORDER BY label
+                """
+            )
+            batch: list[str] = []
+            try:
+                async for record in result:
+                    batch.append(record["label"])
+                    if len(batch) == batch_size:
+                        yield batch
+                        batch = []
+                if batch:
+                    yield batch
+            finally:
+                await result.consume()
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -1867,6 +1905,35 @@ class Neo4JStorage(BaseGraphStorage):
                 edges.append(edge_properties)
             await result.consume()
             return edges
+
+    async def iter_edges(self, batch_size: int):
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        workspace_label = self._get_workspace_label()
+        async with self._driver.session(
+            database=self._DATABASE, default_access_mode="READ"
+        ) as session:
+            result = await session.run(
+                f"""
+                MATCH (a:`{workspace_label}`)-[r]-(b:`{workspace_label}`)
+                RETURN DISTINCT a.entity_id AS source, b.entity_id AS target,
+                       properties(r) AS properties
+                """
+            )
+            batch: list[dict] = []
+            try:
+                async for record in result:
+                    edge = dict(record["properties"])
+                    edge["source"] = record["source"]
+                    edge["target"] = record["target"]
+                    batch.append(edge)
+                    if len(batch) == batch_size:
+                        yield batch
+                        batch = []
+                if batch:
+                    yield batch
+            finally:
+                await result.consume()
 
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
         """Get popular labels(entity names) by node degree (most connected entities)

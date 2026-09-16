@@ -16,6 +16,8 @@ could not be cancelled at all.
 """
 
 import asyncio
+import json
+import logging
 import threading
 import time
 
@@ -217,3 +219,128 @@ async def test_cancelled_commit_still_notifies_and_retires_the_redo_logs(
     )
     assert storage._client_dirty is False, "the dirty bit survived a durable save"
     assert storage._unsaved_upserts == {}, "redo log kept rows that are on disk"
+
+
+async def test_a_failed_notification_is_not_reported_as_a_failed_save(
+    tmp_path, monkeypatch, caplog
+):
+    """A publication failure must not be raised as a save failure.
+
+    ``index_done_callback``'s contract is that a raise means the vectors were
+    NOT written, and ``_insert_done`` aborts the document batch on it. But the
+    hook runs only after ``atomic_write`` renamed the file into place, so an
+    exception out of ``set_all_update_flags`` reports a durable write as a lost
+    one.
+
+    What failed is the cross-process reload notification. The residue heals:
+    ``_client_dirty`` stays True, so the next commit rewrites this snapshot and
+    notifies again.
+    """
+    storage = await _make_storage(tmp_path)
+    await storage.upsert({"id1": {"content": "alpha"}})
+
+    async def failing_set_all_update_flags(namespace, workspace=None):
+        raise RuntimeError("shared-storage manager is down")
+
+    monkeypatch.setattr(nano_impl, "set_all_update_flags", failing_set_all_update_flags)
+
+    # lightrag's logger does not propagate, so caplog cannot see it otherwise.
+    logger = logging.getLogger("lightrag")
+    monkeypatch.setattr(logger, "propagate", True)
+
+    with caplog.at_level(logging.ERROR, logger="lightrag"):
+        committed = await storage.index_done_callback()
+
+    assert committed is True
+    with open(storage._client_file_name, encoding="utf-8") as f:
+        persisted = json.load(f)
+    assert persisted["data"], "the save did not land, so this proves nothing"
+    # The dirty bit stays set, which is what retries the publication...
+    assert storage._client_dirty is True
+    # ...and the redo log is NOT retired, because an unnotified peer can still
+    # save its older snapshot over these rows. See the recovery test below.
+    assert set(storage._unsaved_upserts) == {"id1"}
+    assert any(
+        "publishing that write failed" in record.getMessage()
+        for record in caplog.records
+    ), f"the deferred publication was not logged: {caplog.text}"
+
+
+async def test_rows_lost_to_an_unnotified_peer_are_replayed_back(tmp_path, monkeypatch):
+    """The recovery the retained redo log buys, end to end.
+
+    ``other`` never learns of ``writer``'s commit, so its own commit saves a
+    whole-file snapshot that has never seen ``id1`` over this file. That
+    overwrite is the fence gap tracked in #3854 and no commit-status choice
+    prevents it; what the retained redo log decides is whether the rows come
+    back. ``writer``'s next flush reloads the foreign snapshot and replays them
+    on top -- the path issue #3688 built for a failed save.
+
+    Fix-proof: retire the redo logs before ``set_all_update_flags`` instead, and
+    ``id1`` is gone from disk for good. ``FaissVectorDBStorage`` has the same
+    shape; its mirror lives in tests/kg/faiss_impl/.
+    """
+    writer = await _make_storage(tmp_path)
+    other = await _make_storage(tmp_path)
+
+    await writer.upsert({"id1": {"content": "ours"}})
+
+    async def failing_set_all_update_flags(namespace, workspace=None):
+        raise RuntimeError("shared-storage manager is down")
+
+    monkeypatch.setattr(nano_impl, "set_all_update_flags", failing_set_all_update_flags)
+    assert await writer.index_done_callback() is True
+    monkeypatch.undo()
+
+    # `other` was never flagged, so it does not reload: its commit publishes a
+    # whole-file snapshot in which `id1` has never existed.
+    await other.upsert({"id2": {"content": "theirs"}})
+    assert await other.index_done_callback() is True
+    assert await other.get_by_id("id1") is None, (
+        "the peer was supposed to be unaware of id1; the scenario did not set up"
+    )
+
+    # `other`'s own commit notifies `writer`, so this flush reloads its snapshot.
+    assert await writer.index_done_callback() is True
+
+    with open(writer._client_file_name, encoding="utf-8") as f:
+        persisted = json.load(f)
+    ids = {row["__id__"] for row in persisted["data"]}
+    assert ids == {"id1", "id2"}, (
+        "the row the peer overwrote was not replayed back; the loss would be "
+        f"permanent and silent (persisted={ids})"
+    )
+
+
+async def test_a_broken_sink_cannot_turn_a_landed_save_into_a_failure(
+    tmp_path, monkeypatch
+):
+    """The publication-failure diagnostic is past the point of no return.
+
+    The rows are on disk by the time that handler runs, so a logging handler,
+    formatter or output target that raises must not escape it: `index_done_callback`
+    would then report a durable write as one that never happened, and
+    `_insert_done` marks the document FAILED and re-runs mutations that already
+    landed. Same reasoning, and same remedy (`log_without_raising`), as the
+    post-removal `drop` diagnostics.
+
+    Fix-proof: call `logger.error` directly in the handler and this raises.
+    """
+    storage = await _make_storage(tmp_path)
+    await storage.upsert({"id1": {"content": "alpha"}})
+
+    async def failing_set_all_update_flags(namespace, workspace=None):
+        raise RuntimeError("shared-storage manager is down")
+
+    def log_boom(msg):
+        raise RuntimeError("log sink boom")
+
+    monkeypatch.setattr(nano_impl, "set_all_update_flags", failing_set_all_update_flags)
+    monkeypatch.setattr(nano_impl.logger, "error", log_boom)
+
+    assert await storage.index_done_callback() is True
+
+    with open(storage._client_file_name, encoding="utf-8") as f:
+        persisted = json.load(f)
+    assert persisted["data"], "the save did not land, so this proves nothing"
+    assert set(storage._unsaved_upserts) == {"id1"}

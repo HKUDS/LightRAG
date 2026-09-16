@@ -66,7 +66,7 @@ class APITimeoutError(APIConnectionError):
 class EmptyTruncatedResponseError(RuntimeError):
     """A token-limit-truncated LLM response that carried nothing usable.
 
-    Two raise surfaces share it (issue #3601 gap 4):
+    Two raise surfaces share it:
 
     - the provider bindings (OpenAI/Gemini), when the response is empty and
       the finish reason is the output token limit;
@@ -192,6 +192,94 @@ class PipelineReservationConflictError(RuntimeError):
         return getattr(self.conflict, "value", self.conflict) == "recovery_required"
 
 
+class AdminWriteGateRefusedError(PipelineReservationConflictError):
+    """The workspace admin-write gate refused an admin graph write (→ HTTP 409).
+
+    Raised by ``LightRAG._admin_write_gate`` on a graph storage
+    that declares ``requires_single_writer``, in exactly two situations, each
+    with its own stable leading phrase so a client can tell them apart from the
+    ``detail`` text alone (text, not a machine-readable code,
+    is the contract):
+
+    * ``ADMIN_WRITE_LOCK_BUSY_PREFIX`` -- another admin write held the
+      workspace admin lock for longer than ``ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT``.
+      Clears when that peer admin write finishes; retry the same request.
+      ``fence`` is ``"admin_lock"`` and ``conflict`` is ``None`` (no
+      ``pipeline_status`` flag refused).
+    * ``ADMIN_WRITE_PIPELINE_BUSY_PREFIX`` -- the pipeline ``busy`` reservation
+      was refused because a processing run, a destructive job or a scan holds
+      the workspace. Clears when ingestion finishes. ``conflict`` and
+      ``fence`` carry the refusing ``pipeline_status`` flag, as for the parent.
+
+    A fenced workspace (``recovery_required``) is reported through the parent's
+    ``recovery_required`` property and maps to 503, as everywhere else.
+    """
+
+
+ADMIN_WRITE_LOCK_BUSY_PREFIX = "Another knowledge graph edit is in progress"
+ADMIN_WRITE_PIPELINE_BUSY_PREFIX = "Pipeline is busy with another operation"
+
+
+class AdminWriteHoldExceededError(TimeoutError):
+    """An admin graph write ran past ``admin_write_max_hold_seconds`` and was
+    stopped.
+
+    While an admin write holds the pipeline ``busy`` reservation it defers every
+    pipeline start in its workspace, so the hold is bounded. Expiry is a loud
+    failure (HTTP 500 through the graph routes), never a silent release: the
+    gate's ``finally`` releases the admin lock and the reservation, and the
+    caller sees this error instead of a success.
+
+    **This error does not mean nothing was written**, and its message says so in
+    the two ways it can happen -- ``LightRAG._AdminHoldCeiling`` distinguishes
+    them from the stamp ``lightrag.utils.cancellation_was_deferred`` reads:
+
+    * The ceiling fired while a storage commit was in flight AND that commit
+      succeeded. The admin flows withhold a cancellation across such a region,
+      so the write LANDED and only the work after it was skipped.
+    * Otherwise. Either nothing was mid-commit, or one was and it FAILED -- the
+      cancellation takes precedence over the write error, so the two are
+      indistinguishable downstream and the message claims neither. Either way an
+      EARLIER step of the same operation may already have committed:
+      ``_merge_entities_impl`` commits the merged node before it removes the
+      sources.
+
+    A caller must therefore re-read the entity or relation before retrying rather
+    than assume the operation is undone; retrying blind can hit "already exists"
+    or re-apply an edit that is already durable. Reporting it any other way would
+    break ``AGENTS.md`` *Consistency without transactions*: a durable write must
+    never be reported as one that did not happen.
+
+    Beyond a committed step, a stopped admin write leaves what a hard process
+    exit inside one leaves: a chunk-tracking row whose graph object never became
+    durable -- harmless to queries, never inherited as evidence by a later
+    object, and repairable offline with the chunk-tracking rebuild tool. The
+    mirror state, a graph object durable without its tracking row, is the
+    forbidden one and the write paths order themselves to keep it out of reach.
+    The graph store's contract doc covers this under *Accepted residue (crash)*:
+    ``docs/design/NetworkXSingleWriterContract.md``.
+    """
+
+
+class GraphMutationsDiscardedError(RuntimeError):
+    """``NetworkXStorage.index_done_callback`` refused to commit because a reload
+    discarded uncommitted in-memory mutations earlier in this process.
+
+    The fail-loud backstop. A reload that replaces a *dirty*
+    graph (one holding mutations no commit has published) loses those
+    mutations; the reload itself stays correct and does not raise -- the
+    coroutine that triggered it may be an innocent reader -- and instead arms a
+    sticky ``_dirty_discard_pending`` flag that the NEXT commit turns into this
+    exception, clearing the flag in the same step so a later commit is not
+    blocked forever. The operation that owns the commit therefore fails loud
+    (a pipeline batch takes the FAILED path and is reprocessed; an admin
+    request returns 500) instead of succeeding without its mutations.
+
+    Under the admin-write gate and the pipeline ``busy`` reservation this is
+    unreachable; it exists for a caller that bypasses them.
+    """
+
+
 class PipelineRecoveryRequiredError(RuntimeError):
     """The pipeline fenced its own workspace with ``recovery_required``.
 
@@ -281,7 +369,7 @@ class SourceConflictPrimaryUnusableError(ValueError):
 class RecoveryAnchorMissingError(RuntimeError):
     """A destructive KG purge has no recovery proof, so it refused to start.
 
-    Issue #3400: a whole-document purge discovers what a document contributed
+    A whole-document purge discovers what a document contributed
     to the shared knowledge graph from its write-ahead recovery anchors
     (``full_entities`` / ``full_relations``). Without them the reverse lookup
     is impossible — it runs graph ``source_id`` → ``text_chunks`` →
@@ -338,7 +426,7 @@ class RecoveryAnchorMissingError(RuntimeError):
 class KGPurgeOperationConflictError(RuntimeError):
     """A resumed purge does not match the journal already on the document.
 
-    Issue #3400: a whole-document purge journals its progress in
+    A whole-document purge journals its progress in
     ``doc_status.metadata.kg_purge`` so a retry can resume instead of redoing
     the expensive candidate re-analysis and rebuild — and so it can tell
     "anchors were legitimately deleted by a purge that got that far" from
@@ -424,6 +512,105 @@ class IndexFlushError(Exception):
         self.storage_name = storage_name
         self.namespace = namespace
         super().__init__(f"{storage_name}[{namespace}] index flush failed: {cause}")
+
+
+class ReferencesIntactFlushError(Exception):
+    """A failed storage commit that PROVABLY lost no durable reference.
+
+    Answers the ONE question a caller of ``index_done_callback`` has to answer
+    when the commit raises: *could this raise have lost a durable reference?*
+    Raising this type is the backend saying **no** -- nothing buffered was
+    discarded, and nothing already durable was unwritten. Every other
+    exception means **yes, assume one may be gone**, which is what a backend
+    that says nothing keeps.
+
+    Two situations qualify, and a backend must be able to prove one of them
+    for the WHOLE flush rather than for one operation:
+
+    * every buffered operation is still buffered and replays on the next
+      flush (a transport error from the bulk call) -- the caller defers;
+    * the commit itself landed and only a step after it failed (a refresh) --
+      the references are already durable.
+
+    A flush that mixes permanent and retryable per-item failures qualifies as
+    NEITHER: it dropped something, so the honest answer stays "yes".
+
+    Read it through ``flush_may_have_lost_reference``, not with a bare
+    ``isinstance``: that predicate also unwraps the ``IndexFlushError`` every
+    flush failure reaches ``_flush_storages``' callers wearing.
+
+    Why the distinction earns a type: an ``extract`` LLM-cache row is
+    reachable only through its chunk's ``llm_cache_list``, so a caller that
+    cannot tell these apart must quarantine every buffered extract row in the
+    process to stay safe -- discarding completed LLM calls that nothing could
+    have orphaned. See *LLM extraction cache reachability* in
+    ``docs/design/PurgeRecoveryContract.md``.
+    """
+
+
+def flush_may_have_lost_reference(error: BaseException | None) -> bool:
+    """Could this failed commit have lost a durable reference?
+
+    ``True`` is the safe default and the answer for anything unrecognized:
+    only a backend that raised ``ReferencesIntactFlushError`` has proven
+    otherwise, so a backend that implements nothing keeps the fail-safe
+    quarantine it has today. ``None`` means there was no failure to judge.
+
+    ``IndexFlushError`` is unwrapped into its ``__cause__``, since it is the
+    transport wrapper ``LightRAG._flush_storages`` puts around whatever the
+    backend raised; one carrying no cause answers ``True``. **Nothing else is
+    unwrapped.** An exception re-raised ``from`` an intact one has made a new
+    claim of its own, and ``OpenSearchKVStorage.finalize`` is exactly that
+    case: it chains a "these writes have been lost" ``RuntimeError`` onto a
+    flush whose buffers were intact, because it then releases the client and
+    nothing will ever replay them.
+    """
+    if error is None:
+        return False
+    # Bounded rather than recursive: __cause__ is attacker-free here, but a
+    # self-referential chain must not turn a diagnostic into a hang.
+    for _ in range(8):
+        if not isinstance(error, IndexFlushError):
+            break
+        if error.__cause__ is None:
+            return True
+        error = error.__cause__
+    return not isinstance(error, ReferencesIntactFlushError)
+
+
+class CommitBookkeepingError(RuntimeError):
+    """The offloaded write LANDED; the bookkeeping that had to follow it did not.
+
+    Raised by ``_bounded_submit_impl`` (``lightrag/utils.py``) when the callable
+    handed to ``commit_in_storage_io`` succeeded and its ``on_committed`` hook
+    then failed. The hook is publication, not persistence — flipping the other
+    processes' ``storage_updated`` flags, clearing the dirty bit, reloading a
+    sanitized file — so what it reports is a **visibility lag**, never a lost
+    write.
+
+    It exists because those two outcomes used to be indistinguishable: the hook's
+    own exception was re-raised as-is, landed in the call site's ``except
+    Exception``, and was handled by reasoning that only holds for a write that
+    never happened (roll the in-memory state back to the file, report failure).
+    Every caller inherited that lie — the deletion paths in ``utils_graph``
+    skipped the chunk-tracking retirement they still owed for an object that is
+    durably gone, and ``_insert_done`` marked a document FAILED whose writes were
+    on disk.
+
+    Contract for a handler: **treat the write as committed.** Log the deferred
+    visibility (an unknown remainder of the other workers keeps serving the
+    previous snapshot until the next commit anywhere notifies them, and this
+    process may redundantly reload the file it just wrote), then continue.
+    Reporting it as a failed write is forbidden; so is swallowing it silently.
+
+    ``result`` carries whatever the write callable returned, so a handler that
+    needs the write's own answer does not have to re-run it. The hook's failure
+    is preserved as ``__cause__`` (set via ``raise ... from``).
+    """
+
+    def __init__(self, message: str, *, result: Any = None) -> None:
+        super().__init__(message)
+        self.result = result
 
 
 class ChunkTokenLimitExceededError(ValueError):

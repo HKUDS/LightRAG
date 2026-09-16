@@ -1865,3 +1865,97 @@ def test_chunk_opts_metadata_records_only_drop_rf():
     assert "drop_rf=True" in line
     assert "drop_references" not in line  # aliased, not the verbose name
     assert "rf_tail" not in line and "rf_heads" not in line
+
+
+@pytest.mark.offline
+def test_v_strategy_forwards_embedding_request_bounds(tmp_path, monkeypatch):
+    """The dispatcher must hand V the deployment's embedding request bounds.
+
+    ``chunking_by_semantic_vector`` defaults these when unset, so a missing
+    forward would silently substitute the library defaults for whatever the
+    deployment configured — and nothing else would notice.
+    """
+    import lightrag.chunker as chunker_pkg
+
+    captured: dict = {}
+
+    async def _v_spy(
+        tokenizer, content, chunk_token_size, *, embedding_func=None, **kwargs
+    ):
+        captured["kwargs"] = dict(kwargs)
+        return [{"tokens": 5, "content": "stub", "chunk_order_index": 0}]
+
+    monkeypatch.setattr(chunker_pkg, "chunking_by_semantic_vector", _v_spy)
+
+    async def _run():
+        rag = _new_rag(tmp_path, embedding_batch_num=7, embedding_func_max_async=5)
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "stand-in body for semantic-vector chunker",
+                file_paths="bounds.[native-V].txt",
+                track_id="track-v-bounds",
+                process_options="V",
+            )
+            await rag.apipeline_process_enqueue_documents()
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+    kwargs = captured["kwargs"]
+    assert kwargs.get("embedding_batch_num") == 7
+    assert kwargs.get("embedding_max_async") == 5
+
+
+@pytest.mark.offline
+def test_v_strategy_discards_addon_embedding_bounds(tmp_path, monkeypatch):
+    """A same-named key in the V addon slot must not collide with the forward.
+
+    These two are deployment config, not per-doc chunk params. The HTTP model
+    rejects extras, but ``addon_params['chunker']['semantic_vector']`` is
+    free-form SDK input and a persisted snapshot outlives schema changes — so
+    without popping them first, ``**v_opts`` would raise "got multiple values
+    for keyword argument" instead of chunking the document.
+    """
+    import lightrag.chunker as chunker_pkg
+
+    captured: dict = {}
+
+    async def _v_spy(
+        tokenizer, content, chunk_token_size, *, embedding_func=None, **kwargs
+    ):
+        captured["kwargs"] = dict(kwargs)
+        return [{"tokens": 5, "content": "stub", "chunk_order_index": 0}]
+
+    monkeypatch.setattr(chunker_pkg, "chunking_by_semantic_vector", _v_spy)
+
+    async def _run():
+        rag = _new_rag(tmp_path, embedding_batch_num=7, embedding_func_max_async=5)
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "stand-in body for semantic-vector chunker",
+                file_paths="collide.[native-V].txt",
+                track_id="track-v-collide",
+                process_options="V",
+                chunk_options={
+                    "semantic_vector": {
+                        "embedding_batch_num": 999,
+                        "embedding_max_async": 999,
+                    }
+                },
+            )
+            await rag.apipeline_process_enqueue_documents()
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+    # The chunker ran at all (a duplicate keyword would have aborted the
+    # document), and the global deployment config still wins: the addon
+    # values were discarded, not honored.
+    assert "kwargs" in captured, "the V chunker was never dispatched"
+    kwargs = captured["kwargs"]
+    assert kwargs.get("embedding_batch_num") == 7
+    assert kwargs.get("embedding_max_async") == 5

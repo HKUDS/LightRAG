@@ -13,3 +13,47 @@ spec:
       name: http
   selector:
     {{- include "lightrag.selectorLabels" . | nindent 4 }}
+{{- if eq (include "lightrag.workloadKind" .) "StatefulSet" }}
+---
+# Governing Service for the StatefulSet: gives each pod a stable DNS name
+# (<pod>.<svc>), which is how you address one specific instance -- for
+# example to route document ingestion to pod 0 only.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "lightrag.headlessServiceName" . }}
+  labels:
+    {{- include "lightrag.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: {{ .Values.env.PORT }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "lightrag.selectorLabels" . | nindent 4 }}
+---
+# Routing target for writes: resolves to pod 0 only, so document ingestion and
+# the graph mutations can be pinned to a single instance while the Service
+# above keeps load-balancing reads. Nothing in LightRAG enforces the split --
+# point your Ingress write rules at this Service and give the load-balanced
+# one an allow-list of read-only endpoints. See K8S-README.md "Replica Count".
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "lightrag.writerServiceName" . }}
+  labels:
+    {{- include "lightrag.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: {{ .Values.env.PORT }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "lightrag.selectorLabels" . | nindent 4 }}
+    statefulset.kubernetes.io/pod-name: {{ include "lightrag.fullname" . }}-0
+{{- end }}

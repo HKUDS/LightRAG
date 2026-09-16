@@ -192,6 +192,66 @@ def test_invalid_auth_accounts_raises(monkeypatch):
     sys.modules.pop("lightrag.api.auth", None)
 
 
+def load_auth_handler(monkeypatch, auth_accounts: str):
+    """Build the module-level AuthHandler from an AUTH_ACCOUNTS value."""
+    config = import_real_api_module("lightrag.api.config")
+
+    mock_global_args = SimpleNamespace(
+        token_secret="test-jwt-secret",
+        jwt_algorithm="HS256",
+        token_expire_hours=48,
+        guest_token_expire_hours=24,
+        auth_accounts=auth_accounts,
+    )
+
+    monkeypatch.setattr(config, "global_args", mock_global_args)
+
+    try:
+        return import_real_api_module("lightrag.api.auth").auth_handler
+    finally:
+        sys.modules.pop("lightrag.api.auth", None)
+
+
+def test_auth_accounts_ignore_whitespace_around_usernames(monkeypatch):
+    """A space after the comma (``admin:a, user1:b``) or before the colon must
+    not become part of the username: the account would be registered as
+    `` user1`` and every login as ``user1`` would fail with no hint why.
+    """
+    handler = load_auth_handler(monkeypatch, "admin:admin_pass, user1 :user_pass")
+
+    assert handler.accounts == {"admin": "admin_pass", "user1": "user_pass"}
+
+
+@pytest.mark.parametrize(
+    ("auth_accounts", "expected"),
+    [
+        ("admin:secret ", {"admin": "secret "}),
+        ("admin: secret", {"admin": " secret"}),
+        ("admin:   ", {"admin": "   "}),
+        ("admin:a:b, user1:c", {"admin": "a:b", "user1": "c"}),
+    ],
+)
+def test_auth_accounts_keep_password_bytes(monkeypatch, auth_accounts, expected):
+    """Everything after the first ``:`` is the credential, whitespace included.
+    Plaintext verification compares exact bytes, so trimming ``secret `` to
+    ``secret`` would reject the configured password (PR #3944 review).
+    """
+    handler = load_auth_handler(monkeypatch, auth_accounts)
+
+    assert handler.accounts == expected
+    for username, password in expected.items():
+        assert handler.verify_password(username, password)
+    assert not handler.verify_password("admin", "secret")
+
+
+def test_auth_accounts_bcrypt_entry_after_comma_space(monkeypatch):
+    spec = hash_password("user_pass")
+    handler = load_auth_handler(monkeypatch, f"admin:admin_pass, user1:{spec}")
+
+    assert handler.accounts["user1"] == spec
+    assert handler.verify_password("user1", "user_pass")
+
+
 def test_initialize_config_rejects_default_token_secret_with_auth_accounts():
     config = import_real_api_module("lightrag.api.config")
 

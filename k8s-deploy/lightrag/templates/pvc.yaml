@@ -1,9 +1,19 @@
-{{- if .Values.persistence.enabled }}
+{{- /* A StatefulSet provisions its storage through volumeClaimTemplates */ -}}
+{{- if and .Values.persistence.enabled (eq (include "lightrag.workloadKind" .) "Deployment") }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ include "lightrag.fullname" . }}-rag-storage
+  annotations:
+    # Never let an upgrade that stops rendering these claims take the volume
+    # with it. Helm deletes resources that disappear from the manifest, and a
+    # dynamically provisioned PV with the default Delete reclaim policy is
+    # destroyed along with its claim -- so switching workload.kind to
+    # StatefulSet, which drops these two, would erase the workspace. Retained
+    # claims are the operator's to remove once the data has been copied or is
+    # confirmed unwanted; this also keeps them across `helm uninstall`.
+    "helm.sh/resource-policy": keep
   labels:
     {{- include "lightrag.labels" . | nindent 4 }}
 spec:
@@ -17,6 +27,15 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ include "lightrag.fullname" . }}-inputs
+  annotations:
+    # Never let an upgrade that stops rendering these claims take the volume
+    # with it. Helm deletes resources that disappear from the manifest, and a
+    # dynamically provisioned PV with the default Delete reclaim policy is
+    # destroyed along with its claim -- so switching workload.kind to
+    # StatefulSet, which drops these two, would erase the workspace. Retained
+    # claims are the operator's to remove once the data has been copied or is
+    # confirmed unwanted; this also keeps them across `helm uninstall`.
+    "helm.sh/resource-policy": keep
   labels:
     {{- include "lightrag.labels" . | nindent 4 }}
 spec:

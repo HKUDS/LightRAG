@@ -9,8 +9,10 @@ the document/auto channels are emptied.
 
 import importlib
 import sys
+from pathlib import Path
 from uuid import uuid4
 
+import numpy as np
 import pytest
 
 _original_argv = sys.argv[:]
@@ -22,8 +24,10 @@ from lightrag.kg.pipeline_ingress import (  # noqa: E402
     ManualRetryPublishResult,
     PipelineIngressMessage,
 )
+from lightrag.kg.networkx_impl import NetworkXStorage  # noqa: E402
 from lightrag.kg.scan_job_store import ScanJobStatus  # noqa: E402
 from lightrag.kg.shared_storage import get_pipeline_ingress  # noqa: E402
+from lightrag.utils import EmbeddingFunc  # noqa: E402
 
 DocumentManager = _document_routes.DocumentManager
 create_document_routes = _document_routes.create_document_routes
@@ -176,6 +180,68 @@ async def test_clear_documents_survives_ingress_clear_failure(tmp_path):
     )
     assert pipeline_status.get("busy") is False
     assert pipeline_status.get("destructive_busy") is False
+
+
+async def test_clear_documents_counts_notification_failed_networkx_drop_as_success(
+    tmp_path, monkeypatch
+):
+    """A peer reload-notification failure happens after the graph is gone.
+
+    Other storages succeed in this fixture, so input files are deleted even
+    before the fix. The regression assertion is the response status: a
+    completed graph drop must not be counted as a storage error and turn
+    success into partial_success.
+    """
+    workspace = f"clear-networkx-notify-{uuid4().hex[:8]}"
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    networkx_impl = importlib.import_module("lightrag.kg.networkx_impl")
+    shared_storage.initialize_share_data()
+    await shared_storage.initialize_pipeline_status(workspace=workspace)
+
+    async def embed(texts):
+        return np.random.rand(len(texts), 8)
+
+    graph = NetworkXStorage(
+        namespace="chunk_entity_relation",
+        workspace=workspace,
+        global_config={
+            "working_dir": str(tmp_path),
+            "embedding_batch_num": 10,
+            "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.5},
+        },
+        embedding_func=EmbeddingFunc(embedding_dim=8, max_token_size=512, func=embed),
+    )
+    await graph.initialize()
+    try:
+        await graph.upsert_node("n1", {"entity_id": "n1"})
+        await graph.index_done_callback()
+
+        async def notification_boom(namespace, workspace=None):
+            raise RuntimeError("notification boom")
+
+        monkeypatch.setattr(networkx_impl, "set_all_update_flags", notification_boom)
+        input_file = tmp_path / "cleared-input.txt"
+        input_file.write_text("already cleared graph data")
+
+        rag = _ClearRag(workspace)
+        rag.chunk_entity_relation_graph = graph
+        router = create_document_routes(rag, DocumentManager(str(tmp_path)))
+        clear_endpoint = [
+            route.endpoint
+            for route in router.routes
+            if getattr(route, "name", "") == "clear_documents"
+        ][-1]
+
+        logged_errors = []
+        monkeypatch.setattr(networkx_impl.logger, "error", logged_errors.append)
+        response = await clear_endpoint()
+
+        assert response.status == "success"
+        assert not input_file.exists()
+        assert not Path(graph._graphml_xml_file).exists()
+        assert any("some processes may not reload" in msg for msg in logged_errors)
+    finally:
+        await graph.finalize()
 
 
 async def test_clear_documents_retires_finished_scan_jobs_only(tmp_path):

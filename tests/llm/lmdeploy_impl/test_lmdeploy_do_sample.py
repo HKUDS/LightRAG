@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from lightrag.llm.lmdeploy import lmdeploy_model_if_cache
+from lightrag.utils import TruncatedResponse
 
 pytestmark = [pytest.mark.offline, pytest.mark.asyncio]
 
@@ -39,7 +40,7 @@ def _install_fake_lmdeploy(monkeypatch, *, less_than_0_6_0: bool) -> dict:
             captured_gen_config_kwargs.update(kwargs)
 
     async def fake_generate(*_args, **_kwargs):
-        yield SimpleNamespace(response="{}")
+        yield SimpleNamespace(response="{}", finish_reason="stop")
 
     monkeypatch.setattr(
         "lightrag.llm.lmdeploy.initialize_lmdeploy_pipeline",
@@ -135,3 +136,44 @@ async def test_pre_0_6_0_version_guard_still_raises(monkeypatch, do_sample_kwarg
             prompt="hello",
             **do_sample_kwarg,
         )
+
+
+@pytest.mark.parametrize(
+    ("finish_reason", "expected_type"),
+    [
+        pytest.param("stop", str, id="natural-stop"),
+        pytest.param("length", TruncatedResponse, id="token-limit"),
+    ],
+)
+async def test_generation_finish_reason_controls_truncation_marker(
+    monkeypatch, finish_reason, expected_type
+):
+    async def fake_generate(*_args, **_kwargs):
+        yield SimpleNamespace(text="generated text", finish_reason=finish_reason)
+
+    _install_fake_lmdeploy(monkeypatch, less_than_0_6_0=False)
+    monkeypatch.setattr(
+        "lightrag.llm.lmdeploy.initialize_lmdeploy_pipeline",
+        lambda **_kwargs: SimpleNamespace(generate=fake_generate),
+    )
+
+    result = await lmdeploy_model_if_cache(model="lmdeploy-model", prompt="hello")
+
+    assert type(result) is expected_type
+    assert result == "generated text"
+
+
+async def test_legacy_response_attribute_remains_supported(monkeypatch):
+    async def fake_generate(*_args, **_kwargs):
+        yield SimpleNamespace(response="legacy text", finish_reason="stop")
+
+    _install_fake_lmdeploy(monkeypatch, less_than_0_6_0=False)
+    monkeypatch.setattr(
+        "lightrag.llm.lmdeploy.initialize_lmdeploy_pipeline",
+        lambda **_kwargs: SimpleNamespace(generate=fake_generate),
+    )
+
+    result = await lmdeploy_model_if_cache(model="lmdeploy-model", prompt="hello")
+
+    assert type(result) is str
+    assert result == "legacy text"
