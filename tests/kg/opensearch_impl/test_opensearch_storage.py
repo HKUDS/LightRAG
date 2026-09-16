@@ -5699,7 +5699,7 @@ class TestVectorLegacyMigration:
                 count=7,
             )
             mock_client.reindex = AsyncMock(
-                return_value={"created": 7, "updated": 0, "failures": []}
+                return_value={"created": 7, "version_conflicts": 0, "failures": []}
             )
 
             await s.initialize()
@@ -5822,7 +5822,7 @@ class TestVectorLegacyMigration:
                 count=7,
             )
             mock_client.reindex = AsyncMock(
-                return_value={"created": 3, "updated": 0, "failures": []}
+                return_value={"created": 3, "version_conflicts": 0, "failures": []}
             )
 
             with pytest.raises(DataMigrationError, match="incomplete"):
@@ -5981,7 +5981,7 @@ class TestVectorLegacyMigration:
                 count=7,
             )
             mock_client.reindex = AsyncMock(
-                return_value={"created": 7, "updated": 0, "failures": []}
+                return_value={"created": 7, "version_conflicts": 0, "failures": []}
             )
             mock_client.indices.put_mapping = AsyncMock(
                 side_effect=OpenSearchException("read-only account")
@@ -6016,7 +6016,7 @@ class TestVectorLegacyMigration:
                 count=7,
             )
             mock_client.reindex = AsyncMock(
-                return_value={"created": 7, "updated": 0, "failures": []}
+                return_value={"created": 7, "version_conflicts": 0, "failures": []}
             )
             booked = mock_client.indices.put_mapping.side_effect
 
@@ -6040,6 +6040,156 @@ class TestVectorLegacyMigration:
             )
 
     @pytest.mark.asyncio
+    async def test_an_unconfirmable_marker_undoes_nothing_and_stops(
+        self, global_config, embed_func, mock_client
+    ):
+        """When the state cannot be determined, change nothing and terminate.
+
+        Deleting the copy would strand the rows if the marker did land -- the
+        next start reads it, skips the source and creates an empty index --
+        and keeping it unrecorded risks a later same-dimension model adopting
+        the source. Neither is safe to choose blind, so startup stops with
+        both sides intact and the operator is told what to look at.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            legacy = self._legacy_present(
+                mock_client,
+                s,
+                meta=_workspace_index_meta("test", "test_entities"),
+                dimension=embed_func.embedding_dim,
+                count=7,
+            )
+            mock_client.reindex = AsyncMock(
+                return_value={
+                    "created": 7,
+                    "version_conflicts": 0,
+                    "failures": [],
+                }
+            )
+            mock_client.indices.put_mapping = AsyncMock(
+                side_effect=OpenSearchException("write refused")
+            )
+            booked_get_mapping = mock_client.indices.get_mapping.side_effect
+
+            async def _unreadable_after_the_copy(*, index, **kw):
+                if index == legacy and mock_client.reindex.await_count:
+                    raise OpenSearchException("cluster unreachable")
+                return await booked_get_mapping(index=index, **kw)
+
+            mock_client.indices.get_mapping = AsyncMock(
+                side_effect=_unreadable_after_the_copy
+            )
+
+            # The copy landed, so the destination is NOT empty -- which is what
+            # keeps the failure path from removing it.
+            async def _counts(*, index, **_kw):
+                return {"count": 7}
+
+            mock_client.count = AsyncMock(side_effect=_counts)
+
+            with pytest.raises(DataMigrationError, match="NOTHING has been undone"):
+                await s.initialize()
+
+            # Both sides are exactly as they were.
+            mock_client.indices.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_marking_an_unowned_legacy_index_also_claims_it(
+        self, global_config, embed_func, mock_client
+    ):
+        """An index predating the ownership marker has an EMPTY _meta.
+
+        Merging alone would leave it unowned, and an unowned un-suffixed index
+        is one a folding-equivalent workspace adopts, reads our vectors from,
+        and can later delete through drop().
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            legacy = self._legacy_present(
+                mock_client,
+                s,
+                meta={},
+                dimension=embed_func.embedding_dim,
+                count=4,
+            )
+            mock_client.reindex = AsyncMock(
+                return_value={
+                    "created": 4,
+                    "version_conflicts": 0,
+                    "failures": [],
+                }
+            )
+
+            await s.initialize()
+
+            mapping = await mock_client.indices.get_mapping(index=legacy)
+            stored = mapping[legacy]["mappings"]["_meta"]
+            assert stored["lightrag_migrated_to"] == s._index_name
+            assert stored["lightrag_workspace"] == "test"
+            assert stored["lightrag_final_namespace"] == "test_entities"
+
+    @pytest.mark.asyncio
+    async def test_the_copy_never_overwrites_a_row_already_there(
+        self, global_config, embed_func, mock_client
+    ):
+        """A peer may have finished and begun ingesting into the destination.
+
+        Overwriting a vector written moments ago with the legacy version would
+        then be invisible: the consumption marker stops anyone from ever
+        migrating again, so nothing would revisit it.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            self._legacy_present(
+                mock_client,
+                s,
+                meta=_workspace_index_meta("test", "test_entities"),
+                dimension=embed_func.embedding_dim,
+                count=7,
+            )
+            mock_client.reindex = AsyncMock(
+                return_value={
+                    "created": 5,
+                    "version_conflicts": 2,
+                    "failures": [],
+                }
+            )
+
+            await s.initialize()
+
+            body = mock_client.reindex.await_args.kwargs["body"]
+            assert body["dest"]["op_type"] == "create"
+            assert body["conflicts"] == "proceed"
+            # 5 copied + 2 already present accounts for all 7: complete.
+            assert s._index_ready is True
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_does_not_paper_over_a_short_copy(
+        self, global_config, embed_func, mock_client
+    ):
+        """Conflicts count as covered, but only for what they actually cover."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            self._legacy_present(
+                mock_client,
+                s,
+                meta=_workspace_index_meta("test", "test_entities"),
+                dimension=embed_func.embedding_dim,
+                count=7,
+            )
+            mock_client.reindex = AsyncMock(
+                return_value={
+                    "created": 3,
+                    "version_conflicts": 1,
+                    "failures": [],
+                }
+            )
+
+            with pytest.raises(DataMigrationError, match="4 of 7"):
+                await s.initialize()
+
+    @pytest.mark.asyncio
     async def test_the_logged_repair_command_carries_the_whole_meta(
         self, global_config, embed_func, mock_client, caplog
     ):
@@ -6058,7 +6208,7 @@ class TestVectorLegacyMigration:
                 count=7,
             )
             mock_client.reindex = AsyncMock(
-                return_value={"created": 7, "updated": 0, "failures": []}
+                return_value={"created": 7, "version_conflicts": 0, "failures": []}
             )
             mock_client.indices.put_mapping = AsyncMock(
                 side_effect=OpenSearchException("read-only account")
@@ -6116,7 +6266,7 @@ class TestVectorLegacyMigration:
                 count=3,
             )
             mock_client.reindex = AsyncMock(
-                return_value={"created": 3, "updated": 0, "failures": []}
+                return_value={"created": 3, "version_conflicts": 0, "failures": []}
             )
 
             with _capture_lightrag_logs(caplog, logging.WARNING):
@@ -6140,7 +6290,7 @@ class TestVectorLegacyMigration:
                 count=5,
             )
             mock_client.reindex = AsyncMock(
-                return_value={"created": 5, "updated": 0, "failures": []}
+                return_value={"created": 5, "version_conflicts": 0, "failures": []}
             )
 
             with _capture_lightrag_logs(caplog, logging.WARNING):
