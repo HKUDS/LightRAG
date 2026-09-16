@@ -52,6 +52,7 @@ from ..exceptions import (
     SourceConflictRepairCASError,
     StorageControlPlaneError,
     StorageRecordNotFoundError,
+    VectorSpaceMismatchError,
 )
 from .._version import __version__
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
@@ -4144,19 +4145,32 @@ class MongoGraphStorage(BaseGraphStorage):
 _VECTOR_SPACE_DESCRIPTION_PREFIX = "LightRAG embedding space: "
 
 
-def _vector_space_validator(embedding_func) -> dict:
-    """The collection validator carrying this instance's embedding space.
+def _vector_space_validator(embedding_func, existing: Any = None) -> dict:
+    """``existing`` with this instance's embedding space recorded in it.
 
-    ``bsonType: object`` matches every document, so the validator rejects
-    nothing -- it exists purely to carry the description.
+    MERGED, never replaced. ``collMod`` takes the whole validator, so writing a
+    bare marker schema would drop every rule an operator put on the collection
+    -- their ``required`` list, their ``properties`` -- from all future writes,
+    silently, on an ordinary ``/documents/clear``. That is the same hazard
+    OpenSearch's ``put_mapping`` has with ``_meta``, and it is answered the same
+    way: read what is there and add to it.
+
+    Only ``$jsonSchema.description`` is taken over, because that is the field
+    the marker lives in. An operator who used it for prose loses that prose;
+    that is the documented cost of this marker home, and it is a far smaller
+    one than losing validation rules. A validator with no ``$jsonSchema`` (a
+    plain query expression) keeps its operators: a validator is an implicit
+    AND, so the added ``$jsonSchema`` sits beside them, and ``bsonType:
+    object`` matches every document, so it rejects nothing on its own.
     """
     payload = json.dumps(vector_space_marker(embedding_func), sort_keys=True)
-    return {
-        "$jsonSchema": {
-            "bsonType": "object",
-            "description": _VECTOR_SPACE_DESCRIPTION_PREFIX + payload,
-        }
-    }
+    merged = dict(existing) if isinstance(existing, dict) else {}
+    schema = merged.get("$jsonSchema")
+    schema = dict(schema) if isinstance(schema, dict) else {}
+    schema.setdefault("bsonType", "object")
+    schema["description"] = _VECTOR_SPACE_DESCRIPTION_PREFIX + payload
+    merged["$jsonSchema"] = schema
+    return merged
 
 
 def _read_validator_vector_space(validator: Any) -> tuple[str | None, int | None]:
@@ -4371,7 +4385,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
                     return dim if isinstance(dim, int) else None
         return None
 
-    async def _record_vector_space_marker(self) -> None:
+    async def _record_vector_space_marker(self) -> bool:
         """Stamp this instance's embedding space onto the collection.
 
         Called only where the marker is trivially TRUE: right after ``drop()``
@@ -4380,23 +4394,29 @@ class MongoVectorDBStorage(BaseVectorStorage):
         model's name recorded over the old model's vectors, permanently, after
         which the gate can never fire.
 
-        A failed write degrades to unmarked rather than refusing: a restricted
-        Atlas role without ``collMod`` leaves the collection exactly where it
-        was before this feature existed, which is worse than marked but far
-        better than a deployment that will not start.
+        Returns whether the write landed. A denial is NOT automatically benign,
+        and the caller has to decide: it leaves whatever marker is already
+        there, which on a collection previously marked for another model is the
+        PREVIOUS model's name -- see ``_reprovision_vector_space``. Only when
+        nothing conflicting is recorded does a denial reduce to "unmarked",
+        which is where every collection was before this feature existed.
         """
         try:
             await self.db.command(
                 "collMod",
                 self._collection_name,
-                validator=_vector_space_validator(self.embedding_func),
+                validator=_vector_space_validator(
+                    self.embedding_func,
+                    await _read_collection_validator(self.db, self._collection_name),
+                ),
             )
+            return True
         except PyMongoError as e:
             logger.warning(
                 f"[{self.workspace}] Could not record the embedding-space marker on "
-                f"collection '{self._collection_name}' ({e}); it stays unmarked, so a "
-                f"later same-dimension model change cannot be detected"
+                f"collection '{self._collection_name}': {e}"
             )
+            return False
 
     async def finalize(self):
         """Flush pending vector ops, release the Mongo client, surface unflushed data."""
@@ -5102,7 +5122,30 @@ class MongoVectorDBStorage(BaseVectorStorage):
             )
             await self._data.drop_search_index(self._index_name)
             await self._wait_for_search_index_absent(self._index_name)
-        await self._record_vector_space_marker()
+        if not await self._record_vector_space_marker():
+            # A denied write does not leave the collection unmarked -- it
+            # leaves whatever was there. On a collection previously marked for
+            # another model that is the PREVIOUS model's name, and the attach
+            # that ``clear_vector_space_refusal`` runs straight after this drop
+            # is refused all over again. Every vector is already gone by then,
+            # so the one thing this must not do is report success: that would
+            # send the tool off to rebuild into a collection it cannot attach
+            # to. Fail loud instead, naming the permission that is missing.
+            #
+            # When nothing conflicting is recorded the denial really does
+            # reduce to "unmarked", and that is not a failure -- it is where
+            # every collection was before this feature existed.
+            try:
+                await self._assert_collection_is_usable()
+            except VectorSpaceMismatchError as e:
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] Dropped every vector in "
+                    f"'{self._collection_name}', but could not rewrite its "
+                    f"embedding-space marker: the collection still records the "
+                    f"previous model, so the rebuild would be refused. Grant "
+                    f"collMod on this collection and run lightrag-rebuild-vdb "
+                    f"again."
+                ) from e
         await self.create_vector_index_if_not_exists()
 
     async def drop(self) -> dict[str, str]:
@@ -5154,6 +5197,13 @@ class MongoVectorDBStorage(BaseVectorStorage):
             logger.error(
                 f"[{self.workspace}] Error dropping vector storage {self._collection_name}: {e}"
             )
+            return {"status": "error", "message": str(e)}
+        except StorageControlPlaneError as e:
+            # Re-provisioning failed after the documents were already deleted.
+            # The deletion is real and irreversible; what is NOT true is that
+            # the collection is ready to be rebuilt, so this must not be
+            # reported as a success. See _reprovision_vector_space.
+            logger.error(f"[{self.workspace}] {e}")
             return {"status": "error", "message": str(e)}
 
 

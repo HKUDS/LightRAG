@@ -424,7 +424,65 @@ async def test_drop_without_a_space_change_leaves_the_index_alone(mongo):
 
 
 @pytest.mark.asyncio
-async def test_a_denied_collmod_leaves_the_collection_unmarked_and_serving(mongo):
+async def test_a_denied_collmod_cannot_report_a_recovery_that_did_not_happen(mongo):
+    """A denied write leaves the PREVIOUS marker, not no marker.
+
+    The dangerous case: the collection is already marked for model A, the
+    operator switches to model B, and the role cannot write the validator.
+    drop() deletes every vector, the marker still says A, and the next
+    initialize() -- which clear_vector_space_refusal() runs immediately -- is
+    refused all over again. Reporting success there would tell the tool to
+    rebuild into a collection it is about to be refused from, after the
+    destructive work is already done.
+    """
+    await _initialize(_storage(_Embed("bge-m3", 8)), mongo)
+    storage = _storage(_Embed("e5-large", 8))
+
+    with patch.object(ClientManager, "get_client", return_value=mongo.db()):
+        with pytest.raises(VectorSpaceMismatchError):
+            await storage.initialize()
+
+        mongo.collmod_error = OperationFailure("not authorized to execute collMod")
+        result = await storage.drop()
+
+        assert result["status"] == "error"
+        assert "marker" in result["message"] or "collMod" in result["message"]
+        # And the condition it reports is real: the attach still refuses.
+        with pytest.raises(VectorSpaceMismatchError):
+            await storage.initialize()
+
+
+@pytest.mark.asyncio
+async def test_drop_preserves_an_operator_defined_validator(mongo):
+    """An ordinary /documents/clear must not silently disable validation.
+
+    The marker takes over the schema's ``description`` -- that is the field it
+    lives in -- but everything else an operator put on the collection is theirs
+    and has to survive. Replacing the validator wholesale would drop their
+    rules from every future write, the same hazard OpenSearch's ``put_mapping``
+    has with ``_meta``.
+    """
+    operator_schema = {
+        "$jsonSchema": {
+            "bsonType": "object",
+            "required": ["content"],
+            "properties": {"content": {"bsonType": "string"}},
+        }
+    }
+    mongo.seed_collection(validator=operator_schema, index_dim=8)
+    storage = await _initialize(_storage(_Embed("bge-m3", 8)), mongo)
+
+    with patch.object(ClientManager, "get_client", return_value=mongo.db()):
+        assert (await storage.drop())["status"] == "success"
+
+    schema = mongo.validator_of()["$jsonSchema"]
+    assert schema["required"] == ["content"]
+    assert schema["properties"] == {"content": {"bsonType": "string"}}
+    assert _marker(mongo) == ("bge-m3", 8)
+
+
+@pytest.mark.asyncio
+async def test_a_denied_collmod_on_an_unmarked_collection_still_serves(mongo):
     """A restricted Atlas role must not turn a safeguard into an outage.
 
     Unmarked is where every collection was before this feature existed: worse
