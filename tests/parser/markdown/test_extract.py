@@ -135,6 +135,34 @@ def test_pipe_table_column_count_must_match_header():
     assert not ex.tables
 
 
+def test_pipe_table_escaped_pipe_is_cell_text():
+    # ``\|`` is content, not a column separator, so the row keeps the header's
+    # column count instead of silently shifting values under the wrong header.
+    md = "| h1 | h2 |\n| --- | --- |\n| a \\| b | c |\n"
+    ex = _extract(md)
+    (table,) = ex.tables.values()
+    assert table["header"] == [["h1", "h2"]]
+    assert table["rows"] == [["a | b", "c"]]
+
+
+def test_pipe_table_escaped_pipe_in_header_keeps_table():
+    # An escaped pipe in the header must not inflate its column count, or the
+    # delimiter row stops matching and the table is not recognised at all.
+    md = "| a \\| b | h2 |\n| --- | --- |\n| 1 | 2 |\n"
+    ex = _extract(md)
+    (table,) = ex.tables.values()
+    assert table["header"] == [["a | b", "h2"]]
+    assert table["rows"] == [["1", "2"]]
+
+
+def test_pipe_table_escaped_backslash_still_splits():
+    # ``\\`` is a literal backslash, so the ``|`` after it is a real separator.
+    md = "| h1 | h2 |\n| --- | --- |\n| a \\\\| b |\n"
+    ex = _extract(md)
+    (table,) = ex.tables.values()
+    assert table["rows"] == [["a \\", "b"]]
+
+
 def test_html_table_captured_verbatim_spanning_lines():
     md = (
         "<table>\n"

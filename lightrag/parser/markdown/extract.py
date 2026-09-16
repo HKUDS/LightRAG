@@ -24,9 +24,10 @@ the content string entirely.
 
 Supported subset (NOT full CommonMark/GFM, by design — see the parser plan):
 ATX headings, simple pipe tables (with a header row), block-level ``$$`` math,
-inline ``![alt](src)`` images, and HTML ``<table>`` blocks. Reference-style
-images, escaped pipes, nested tables, setext headings and list/quote-nested
-structures are left as verbatim text rather than misrecognised.
+inline ``![alt](src)`` images, and HTML ``<table>`` blocks. Escaped pipes
+(``\\|``) inside a table cell are unescaped into cell text. Reference-style
+images, nested tables, setext headings and list/quote-nested structures are
+left as verbatim text rather than misrecognised.
 """
 
 from __future__ import annotations
@@ -129,13 +130,35 @@ def _clean_heading(text: str) -> str:
 
 
 def _split_pipe_row(line: str) -> list[str]:
-    """Split a pipe-table row into trimmed cells (no escaped-pipe handling)."""
+    """Split a pipe-table row into trimmed cells, honouring GFM escapes.
+
+    ``\\|`` is cell content, not a column separator, and ``\\\\`` is a literal
+    backslash; both are unescaped here so a cell carries the text the author
+    wrote. A trailing unescaped ``|`` closes the last cell rather than opening
+    an empty one, which keeps ``| a | b |`` and ``a | b`` at two columns."""
     s = line.strip()
     if s.startswith("|"):
         s = s[1:]
-    if s.endswith("|"):
-        s = s[:-1]
-    return [cell.strip() for cell in s.split("|")]
+    cells: list[str] = []
+    buf: list[str] = []
+    i = 0
+    while i < len(s):
+        char = s[i]
+        if char == "\\" and i + 1 < len(s) and s[i + 1] in "\\|":
+            buf.append(s[i + 1])
+            i += 2
+            continue
+        if char == "|":
+            cells.append("".join(buf).strip())
+            buf = []
+            i += 1
+            continue
+        buf.append(char)
+        i += 1
+    tail = "".join(buf).strip()
+    if tail or not cells:
+        cells.append(tail)
+    return cells
 
 
 def _is_pipe_table_delimiter(header_line: str, delim_line: str) -> bool:
