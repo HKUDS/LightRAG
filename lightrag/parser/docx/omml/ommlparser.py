@@ -220,8 +220,8 @@ class OMMLParser:
             ")": "\\right)",
             "[": "\\left[",
             "]": "\\right]",
-            "{": "\\left{",
-            "}": "\\right}",
+            "{": "\\left\\{",
+            "}": "\\right\\}",
             "〈": "\\left\\langle",
             "〉": "\\right\\rangle",
             "⟨": "\\left\\langle",
@@ -292,6 +292,12 @@ class OMMLParser:
                             text = text.replace("\\begin{eqnarray*}", "")
                             text = text.replace("\\end{eqnarray*}", "")
                             return "\\begin{cases} " + text + " \\end{cases}"
+        # \left and \right must come in pairs; "." is the empty delimiter
+        # used when Word only specifies one side (e.g. a single opening brace).
+        if start and not end:
+            end = " \\right."
+        elif end and not start:
+            start = "\\left. "
         if is_matrix:
             if start_bracket == "(" and end_bracket == ")":
                 return text.replace("{matrix}", "{pmatrix}")
