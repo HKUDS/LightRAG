@@ -61,3 +61,20 @@ def test_one_sided_delimiters_are_paired_with_the_empty_delimiter(beg, end, expe
     # Word writes only one of begChr/endChr for e.g. a single opening brace;
     # an unmatched \left or \right is a parse error.
     assert convert_omml_to_latex(_delimited(beg, end)) == expected
+
+
+@pytest.mark.parametrize(
+    ("beg", "end", "expected"),
+    [
+        ("⟦", "⟧", r"[\![ x ]\!]"),
+        ("⟦", "", r"[\![ x"),
+        ("", "⟧", r"x ]\!]"),
+        ("⟦", ")", r"\left. [\![ x \right)"),
+        ("(", "⟧", r"\left( x ]\!] \right."),
+    ],
+)
+@pytest.mark.offline
+def test_fixed_size_double_brackets_only_pair_scalable_sides(beg, end, expected):
+    # ``⟦``/``⟧`` render as fixed-size ``[\![``/``]\!]``, not \left/\right, so
+    # the empty delimiter is added only opposite a side that is scalable.
+    assert convert_omml_to_latex(_delimited(beg, end)) == expected

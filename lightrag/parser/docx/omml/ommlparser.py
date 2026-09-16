@@ -294,10 +294,11 @@ class OMMLParser:
                             return "\\begin{cases} " + text + " \\end{cases}"
         # \left and \right must come in pairs; "." is the empty delimiter
         # used when Word only specifies one side (e.g. a single opening brace).
-        if start and not end:
-            end = " \\right."
-        elif end and not start:
-            start = "\\left. "
+        # The double brackets map to fixed-size sequences, not \left/\right.
+        if "\\left" in start and "\\right" not in end:
+            end += " \\right."
+        elif "\\right" in end and "\\left" not in start:
+            start = "\\left. " + start
         if is_matrix:
             if start_bracket == "(" and end_bracket == ")":
                 return text.replace("{matrix}", "{pmatrix}")
