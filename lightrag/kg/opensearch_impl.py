@@ -6773,11 +6773,22 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         already carries the k-NN mapping; letting ``_reindex`` auto-create it
         would produce a plain index whose vectors are unsearchable.
 
-        Completion is CHECKED, not assumed. A half-copied suffixed index would
-        permanently shadow the legacy one -- every later start would see the
-        suffixed index present, skip migration, and serve a subset -- so a
-        short or partially failed copy deletes the new index and raises,
-        leaving the next start to try again against untouched data.
+        Assumes nothing is still WRITING to the legacy index. Its rows are
+        read once, and a write landing after that read is neither copied nor
+        noticed -- the source is then marked consumed and no later start looks
+        at it again. Closing that would need the legacy writers quiesced or a
+        migration fence, and it is out of scope on purpose: LightRAG does not
+        support rolling upgrades, so two versions of a worker are never meant
+        to serve one workspace at once, and none of the other model-isolated
+        backends fences its legacy either -- Qdrant scrolls it, PostgreSQL
+        batch-inserts from it, Milvus copies it, all assuming it is idle. An
+        upgrade stops the old workers first.
+
+        Completion is CHECKED, not assumed, and a short copy raises. Nothing
+        is deleted on that path: the destination holds a partial copy, and
+        removing it could take rows a peer put there. The source stays
+        unmarked, which is what lets the next start resume -- the copy is
+        insert-only, so re-running adds the remainder and disturbs nothing.
         """
         logger.info(
             f"[{self.workspace}] Migrating {legacy_count} documents from legacy "
@@ -7809,6 +7820,26 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         Runs entirely under ``_flush_lock`` so a concurrent flush / upsert
         cannot land writes against an index that is being deleted and
         rebuilt.
+
+        Scope: the index THIS instance is configured for, and nothing else.
+        With model isolation a workspace can own one index per embedding
+        model, so a clear run under model B leaves model A's index in place --
+        switch back to A and its vectors are still there, including chunks the
+        clear was meant to remove. Accepted, and shared with every other
+        model-isolated backend: Milvus drops ``final_namespace``, PostgreSQL
+        deletes from ``table_name``, Qdrant deletes the workspace's points from
+        ``final_namespace``, and none of them touches a sibling model's
+        container. Widening it is a decision for all four at once, not for
+        this backend alone, and it has to settle what happens to the legacy
+        backup as well -- see the cross-backend issue.
+
+        The legacy index is NOT cleared here, which is where this diverges
+        from Qdrant and PostgreSQL. They gate migration on the destination
+        being empty, so a clear that left the legacy populated would see it
+        re-migrated on the next start; clearing it is how they close that. The
+        record here is the consumption marker on the source, which a clear
+        does not touch, so there is no such path and no reason to take the
+        backup with it.
         """
         async with self._flush_lock:
             # Pending writes are meaningless once the index is dropped.
