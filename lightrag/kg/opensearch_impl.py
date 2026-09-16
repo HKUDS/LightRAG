@@ -6733,10 +6733,13 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             logger.warning(
                 f"[{self.workspace}] Legacy index '{legacy}' holds {legacy_dim}d "
                 f"vectors but the current embedding model expects "
-                f"{expected_dim}d; its {legacy_count} documents were NOT "
-                f"migrated into '{self._index_name}'. The legacy index is left "
-                f"intact as a backup -- re-ingest, or run `lightrag-rebuild-vdb` "
-                f"with the new model to rebuild from the knowledge graph."
+                f"{expected_dim}d, so its {legacy_count} documents were NOT "
+                f"migrated into '{self._index_name}'. Changing the embedding "
+                f"dimension is NOT an automatic migration: the stored vectors "
+                f"belong to another space and this backend does not re-embed. "
+                f"Run `lightrag-rebuild-vdb` with the new configuration to "
+                f"rebuild from the knowledge graph, which is the authoritative "
+                f"source. '{legacy}' is left intact."
             )
             return None
 
@@ -6747,11 +6750,13 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 logger.warning(
                     f"[{self.workspace}] Legacy index '{legacy}' was built by "
                     f"embedding model '{legacy_model}' but this instance runs "
-                    f"'{current_model}'; its {legacy_count} documents were NOT "
-                    f"migrated into '{self._index_name}'. Two models can share "
-                    f"a dimension and still have unrelated vector spaces. The "
-                    f"legacy index is left intact -- run `lightrag-rebuild-vdb` "
-                    f"with the new model to rebuild from the knowledge graph."
+                    f"'{current_model}', so its {legacy_count} documents were "
+                    f"NOT migrated into '{self._index_name}'. Changing the "
+                    f"embedding model is NOT an automatic migration: two models "
+                    f"can share a dimension and still have unrelated vector "
+                    f"spaces. Run `lightrag-rebuild-vdb` with the new "
+                    f"configuration to rebuild from the knowledge graph, which "
+                    f"is the authoritative source. '{legacy}' is left intact."
                 )
                 return None
         elif not self._unmarked_legacy_is_migratable(legacy, legacy_count):
@@ -6841,9 +6846,12 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 f"OPENSEARCH_MIGRATE_UNMARKED_LEGACY=false and rebuild with "
                 f"`lightrag-rebuild-vdb` instead."
             )
-        logger.info(
+        logger.warning(
             f"[{self.workspace}] Migrated {copied} documents from '{legacy}' "
-            f"into '{self._index_name}'. The legacy index is kept as a backup."
+            f"into '{self._index_name}'. '{legacy}' has NOT been deleted -- it "
+            f"is the backup that makes switching back to the previous model "
+            f"possible. Delete it manually once the migration has been "
+            f"verified."
         )
 
     async def _mark_legacy_consumed(

@@ -6420,6 +6420,102 @@ class TestVectorLegacyMigration:
             mock_client.reindex.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_the_legacy_index_is_never_deleted(
+        self, global_config, embed_func, mock_client, caplog
+    ):
+        """The source is the backup. Nothing here removes it -- not even a
+        successful migration, which is where the other vector backends also
+        stop and ask for a manual delete.
+
+        A drop() afterwards must not take it either: /documents/clear is about
+        this workspace's current index, not about the corpus it was migrated
+        from.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            legacy = self._legacy_present(
+                mock_client,
+                s,
+                meta=_workspace_index_meta("test", "test_entities"),
+                dimension=embed_func.embedding_dim,
+                count=6,
+            )
+            mock_client.reindex = AsyncMock(
+                return_value={
+                    "created": 6,
+                    "version_conflicts": 0,
+                    "failures": [],
+                }
+            )
+
+            with _capture_lightrag_logs(caplog, logging.WARNING):
+                await s.initialize()
+                await s.drop()
+
+            deleted = [
+                call.kwargs["index"]
+                for call in mock_client.indices.delete.await_args_list
+            ]
+            assert legacy not in deleted
+            assert await mock_client.indices.exists(index=legacy) is True
+            # And the operator is told it is theirs to remove.
+            assert "has NOT been deleted" in caplog.text
+            assert "manually" in caplog.text
+
+    @pytest.mark.parametrize(
+        "legacy_meta_extra, legacy_dimension",
+        [
+            ({"lightrag_embedding_model": "some-other-model"}, None),
+            ({}, "bump"),
+        ],
+        ids=["model-changed", "dimension-changed"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_changed_model_or_dimension_points_at_the_rebuild_script(
+        self,
+        global_config,
+        embed_func,
+        mock_client,
+        caplog,
+        legacy_meta_extra,
+        legacy_dimension,
+    ):
+        """Changing either is not an automatic migration.
+
+        The vectors belong to another space and this backend does not
+        re-embed, so startup carries on with an empty index and the warning
+        names the tool that does the work.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            dimension = (
+                embed_func.embedding_dim + 1
+                if legacy_dimension == "bump"
+                else embed_func.embedding_dim
+            )
+            self._legacy_present(
+                mock_client,
+                s,
+                meta={
+                    **_workspace_index_meta("test", "test_entities"),
+                    **legacy_meta_extra,
+                },
+                dimension=dimension,
+                count=11,
+            )
+            mock_client.reindex = AsyncMock()
+
+            with _capture_lightrag_logs(caplog, logging.WARNING):
+                await s.initialize()
+
+            # Startup succeeds; the warning is the whole intervention.
+            assert s._index_ready is True
+            mock_client.reindex.assert_not_awaited()
+            assert "NOT an automatic migration" in caplog.text
+            assert "lightrag-rebuild-vdb" in caplog.text
+            assert "left intact" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_no_model_name_means_no_migration_path_at_all(
         self, global_config, mock_client
     ):
