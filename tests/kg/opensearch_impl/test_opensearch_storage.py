@@ -24,7 +24,7 @@ from opensearchpy.exceptions import (  # type: ignore
     ConflictError,
 )
 import lightrag.kg.opensearch_impl
-from lightrag.exceptions import flush_may_have_lost_reference
+from lightrag.exceptions import VectorSpaceMismatchError, flush_may_have_lost_reference
 from lightrag.kg.opensearch_impl import (
     OpenSearchReferencesIntactError,
     OpenSearchKVStorage,
@@ -5319,6 +5319,11 @@ class TestVectorStorage:
         marker and differs only in the vector dimension. Restoring readiness
         on the marker alone would let upsert skip _ensure_index_ready, which
         is the path that raises something an operator can act on.
+
+        The refusal is typed: lightrag-rebuild-vdb responds to it by DROPPING
+        the index, so it must be distinguishable from a cluster outage or a bad
+        credential. A bare ValueError here would force that tool to catch
+        Exception and destroy data on a false positive.
         """
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
@@ -5333,7 +5338,7 @@ class TestVectorStorage:
                 lambda: s.get_by_ids(["v1"]),
                 lambda: s.get_vectors_by_ids(["v1"]),
             ):
-                with pytest.raises(ValueError, match="dimension"):
+                with pytest.raises(VectorSpaceMismatchError, match="dimension"):
                     await read()
 
             assert s._index_ready is False
