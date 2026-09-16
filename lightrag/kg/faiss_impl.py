@@ -21,6 +21,11 @@ from lightrag.base import BaseVectorStorage
 from lightrag.constants import DEFAULT_QUERY_PRIORITY
 
 from . import file_fingerprint
+from .vector_space import (
+    assert_vector_space_matches,
+    read_vector_space_marker,
+    vector_space_marker,
+)
 from .shared_storage import (
     get_namespace_lock,
     get_update_flag,
@@ -131,6 +136,20 @@ class FaissVectorDBStorage(BaseVectorStorage):
             workspace_dir, f"faiss_index_{self.namespace}.index"
         )
         self._meta_file = self._faiss_index_file + ".meta.json"
+        # Embedding-space marker. A THIRD file rather than a reserved key in
+        # ``.meta.json``, and the reason is downgrade safety: that map is
+        # ``{str(faiss_id): metadata}`` and ``_load_faiss_index`` calls
+        # ``int()`` on every key, with a broad ``except Exception`` that falls
+        # back to "start with an empty index". An older LightRAG reading a
+        # reserved key would therefore discard every metadata row and the next
+        # save would persist that emptiness -- silent total loss of the store
+        # on a rollback. A file an old reader never opens cannot do that.
+        #
+        # Deliberately NOT part of ``_fingerprint_paths``: it carries no rows,
+        # so a peer has nothing to reload because of it, and adding a third
+        # path would change the two-file publication fence. See
+        # ``docs/design/VectorSpaceProvenance.md``.
+        self._vector_space_file = self._faiss_index_file + ".space.json"
 
         self._max_batch_size = self.global_config["embedding_batch_num"]
         # Embedding dimension (e.g. 768) must match your embedding function
@@ -204,14 +223,23 @@ class FaissVectorDBStorage(BaseVectorStorage):
             self.workspace or "_",
             extra_patterns=(glob.escape(self._meta_file) + ".tmp",),
         )
+        reap_orphan_tmp_files(self._vector_space_file, self.workspace or "_")
 
-        # Sampled BEFORE the load, never after -- see ``kg.file_fingerprint``.
-        fingerprint = self._stat_fingerprint()
-        self._load_faiss_index()
-        self._adopt_fingerprint(fingerprint)
+        # The on-disk index is NOT loaded here; see initialize().
 
     async def initialize(self):
-        """Initialize storage data"""
+        """Initialize storage data, refusing a foreign embedding space.
+
+        The load happens HERE and not in ``__post_init__``, which is where it
+        used to be. Loading at construction meant the refusal was raised by the
+        constructor, so ``lightrag-rebuild-vdb`` could not even build the
+        object, let alone call ``drop()`` on it -- the operator had to delete
+        the files by hand. The object must survive its own refusal.
+
+        Order matters for the same reason: the update flag and the storage lock
+        are taken FIRST, so a storage that refuses below is still able to serve
+        ``drop()``. See ``docs/design/VectorSpaceProvenance.md``.
+        """
         # Get the update flag for cross-process update notification
         self.storage_updated = await get_update_flag(
             self.namespace, workspace=self.workspace
@@ -220,6 +248,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
         self._storage_lock = get_namespace_lock(
             self.namespace, workspace=self.workspace
         )
+        # Sampled BEFORE the load, never after -- see ``kg.file_fingerprint``.
+        fingerprint = self._stat_fingerprint()
+        self._load_faiss_index()
+        self._adopt_fingerprint(fingerprint)
 
     def _fingerprint_paths(self) -> tuple[str, str]:
         """Both files this storage's state spans, **in publication order**.
@@ -1218,6 +1250,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
             # newer. See ``_fingerprint_paths`` and
             # ``file_fingerprint.publication_complete``. Reversing this makes
             # a torn pair indistinguishable from a committed one.
+            # The marker goes FIRST, before the fenced pair. It is not part of
+            # the two-file publication fence (see ``_vector_space_file``), and
+            # writing it ahead of the rows keeps the metadata rename the last
+            # thing that happens -- that rename is this storage's commit point,
+            # and a third write after it would make a complete publication look
+            # torn to ``file_fingerprint.publication_complete``.
+            self._write_vector_space_file()
             atomic_write(
                 index_file,
                 lambda tmp: faiss.write_index(index, tmp),
@@ -1301,6 +1340,46 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 "wrote.",
             )
 
+    def _dump_vector_space_marker(self, path: str) -> None:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(vector_space_marker(self.embedding_func), f)
+
+    def _read_vector_space_file(self) -> tuple[str | None, int | None]:
+        """The recorded ``(model, dim)``, or ``(None, None)``.
+
+        Every way this can fail reads as "not recorded": no file (a store
+        written before the marker existed, or one whose sidecar write did not
+        land), unreadable JSON, a payload this version cannot parse. Absent
+        evidence never refuses.
+        """
+        try:
+            with open(self._vector_space_file, encoding="utf-8") as f:
+                return read_vector_space_marker(json.load(f))
+        except (OSError, ValueError):
+            return None, None
+
+    def _write_vector_space_file(self) -> None:
+        """Record this instance's embedding space beside the index.
+
+        Called from the save path, so the marker describes rows this process
+        wrote. A failure is logged and swallowed: the vectors are what matter,
+        and an unwritable marker degrades to the pre-marker state (unmarked,
+        undetectable) rather than failing a save that otherwise succeeded.
+        """
+        try:
+            atomic_write(
+                self._vector_space_file,
+                self._dump_vector_space_marker,
+                workspace=self.workspace or "_",
+            )
+        except Exception as e:
+            log_without_raising(
+                logger.warning,
+                f"[{self.workspace}] Could not record the embedding-space marker at "
+                f"{self._vector_space_file}: {e}. The store stays unmarked, so a "
+                f"later same-dimension model change cannot be detected.",
+            )
+
     def _load_faiss_index(self):
         """
         Load the Faiss index + metadata from disk if it exists,
@@ -1312,25 +1391,35 @@ class FaissVectorDBStorage(BaseVectorStorage):
             )
             return
 
-        dim_mismatch = False
+        space_mismatch = False
         try:
             # Load the Faiss index
             self._index = faiss.read_index(self._faiss_index_file)
 
-            # Verify dimension consistency between loaded index and embedding function
-            if self._index.d != self._dim:
-                error_msg = (
-                    f"Dimension mismatch: loaded Faiss index has dimension {self._index.d}, "
-                    f"but embedding function expects dimension {self._dim}. "
-                    f"Please ensure the embedding model matches the stored index or rebuild the index."
-                )
-                logger.error(error_msg)
-                dim_mismatch = True
-                raise ValueError(error_msg)
-
             # Load metadata
             with open(self._meta_file, "r", encoding="utf-8") as f:
                 stored_dict = json.load(f)
+
+            # The embedding-space verdict, before anything is served. The
+            # dimension comes from the index itself -- the physical truth it
+            # enforces -- and the model from the marker, which is the only
+            # record of it: this backend's file name carries no model, so a
+            # same-dimension model swap reuses these very vectors and every
+            # query returns the previous model's neighbours. Absent evidence
+            # never refuses, so a file written before the marker existed still
+            # loads.
+            stored_model, _marker_dim = self._read_vector_space_file()
+            try:
+                assert_vector_space_matches(
+                    backend=type(self).__name__,
+                    container=self._faiss_index_file,
+                    embedding_func=self.embedding_func,
+                    stored_model=stored_model,
+                    stored_dim=self._index.d,
+                )
+            except Exception:
+                space_mismatch = True
+                raise
 
             # Convert string keys back to int and reconstruct vectors from index
             self._id_to_meta = {}
@@ -1364,7 +1453,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Faiss index loaded with {self._index.ntotal} vectors from {self._faiss_index_file}"
             )
         except Exception as e:
-            if dim_mismatch:
+            if space_mismatch:
                 raise
             logger.error(
                 f"[{self.workspace}] Failed to load Faiss index or metadata: {e}"
@@ -1795,6 +1884,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 os.remove(self._faiss_index_file)
             if os.path.exists(self._meta_file):
                 os.remove(self._meta_file)
+            # The marker describes rows that no longer exist; leaving it would
+            # let a later instance refuse against a store that is empty.
+            if os.path.exists(self._vector_space_file):
+                os.remove(self._vector_space_file)
 
         async def _committed() -> None:
             # Discard buffered (unflushed) upserts, queued deletes and

@@ -111,7 +111,7 @@ A marker must not be an ordinary vector record. The rule and the reason:
 | OpenSearch | index mapping `_meta`, beside the existing workspace identity | not a document |
 | MongoDB | the collection's JSON Schema validator `description` | not a document |
 | Nano | `additional_data` in the vdb JSON file | not a row in `data` / `matrix`; `query()` cannot see it |
-| FAISS | a reserved key in the `.meta.json` sidecar | not in the `.index` file, so `index.search()` cannot return it |
+| FAISS | a `<index>.space.json` sidecar file | not in the `.index` file, so `index.search()` cannot return it |
 | Milvus, Qdrant, PostgreSQL | none — the container name is the provenance | nothing is stored |
 
 Three approaches were considered and rejected:
@@ -132,6 +132,28 @@ Three approaches were considered and rejected:
   path, and every other read filters by `_id` / `src_id` / `tgt_id`), but it puts
   a row in the data collection and makes every future full-collection scan owe it
   an exclusion. The validator `description` is metadata and owes nothing.
+
+FAISS is the one backend whose marker does **not** ride in a file the storage
+already writes, and the reason is downgrade safety. Its `.meta.json` is
+`{str(faiss_id): metadata}`, `_load_faiss_index` calls `int()` on every key, and
+its `except Exception` falls back to "start with an empty index". An older
+LightRAG reading a reserved key would therefore discard every metadata row, and
+the next save would persist that emptiness — silent total loss of the store on a
+rollback. A file an old reader never opens cannot do that.
+
+The sidecar is deliberately **not** part of `_fingerprint_paths`: it carries no
+rows, so a peer has nothing to reload because of it, and a third path would
+change the two-file publication fence. It is written *before* the fenced pair,
+so the metadata rename stays the last thing that happens — that rename is the
+storage's commit point, and a third write after it would make a complete
+publication look torn. Accepted residue: a crash between the marker write and
+the pair leaves a marker describing rows that were not written. The marker only
+changes when the operator changes the embedding configuration, and that is
+exactly when the store is rebuilt anyway.
+
+Nano needs none of this: `additional_data` is a key `NanoVectorDB` itself
+round-trips through the same JSON object as the rows, so the marker is published
+by the same atomic rename, and an older reader preserves and ignores it.
 
 Two things the Mongo validator home requires, both easy to get wrong:
 
@@ -330,6 +352,6 @@ Each row lands with its own change; a row is only true once that change is in.
 | --- | --- | --- |
 | PR 2 | OpenSearch | marker in `_meta`; drop-capable while refused; fix the lost-`indices.create`-race attach that validates ownership but not compatibility |
 | PR 3 | MongoDB | marker in the JSON Schema validator `description`; `drop()` must rewrite that description and rebuild the Atlas search index when the DIMENSION changed (the index definition records a dimension and nothing else, so a same-dimension model change leaves a usable index) |
-| PR 4 / 5 | FAISS, Nano | marker in `.meta.json` / `additional_data`; move the refusal out of `__post_init__` so the object survives it and stays droppable |
+| PR 4 / 5 | FAISS, Nano | marker in a `.space.json` sidecar / `additional_data`; move the refusal out of `__post_init__` so the object survives it and stays droppable |
 | PR 6 / 7 / 8 | Milvus, Qdrant, PostgreSQL | no marker. Replace the legacy-path `DataMigrationError` with the typed refusal so the tool can tolerate it, and make a refused instance drop-capable (Qdrant assigns `_flush_lock` *after* its init block, the same shape as the OpenSearch bug) |
 | gate | — | the empty-container gate and the adoption probe in `LightRAG.initialize_storages()` |
