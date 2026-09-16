@@ -6870,108 +6870,88 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
     ) -> bool:
         """Record on the SOURCE that its rows now live in the suffixed index.
 
-        Merges into the ``_meta`` it was given. ``put_mapping`` REPLACES
-        ``_meta`` wholesale, so writing the marker alone would strip the
-        legacy index's ownership identity -- and an unclaimed index is one a
-        folding-equivalent workspace will adopt and later clear. The same
-        reason ``_claim_index_for_workspace`` merges.
+        Merges into the ``_meta`` it was given, and claims the index while it
+        is there. ``put_mapping`` REPLACES ``_meta`` wholesale, so writing the
+        marker alone would strip the ownership identity -- and an unclaimed
+        un-suffixed index is one a folding-equivalent workspace adopts on its
+        next start and can later delete through ``drop()``. An index predating
+        the ownership marker has an empty ``_meta``, so there is nothing to
+        preserve and everything to add. Same reason
+        ``_claim_index_for_workspace`` merges.
 
-        Returns whether it landed. ``_reindex_legacy`` treats ``False`` as
-        fatal and removes the copy: an unrecorded migration leaves the source
+        Returns whether the marker is durable. ``_reindex_legacy`` stops the
+        start on ``False``: an unrecorded migration leaves the source
         indistinguishable from an untouched pre-isolation index, so a later
         start on a DIFFERENT same-dimension model would migrate these vectors
         into that model's index and serve them as its own. That is a silent
-        wrong answer, and it does not heal -- so the copy is not accepted
-        unless it can be recorded.
+        wrong answer and it does not heal.
 
+        TWO answers are ambiguous, not negative, and both go through the same
+        confirmation: an exception (the write may have committed and only its
+        response been lost) and ``acknowledged: false`` (the cluster took the
+        change but did not confirm it within the timeout). Neither is proof of
+        anything, so neither is believed without a re-read.
         """
+        body = {
+            "_meta": {
+                **legacy_meta,
+                **_workspace_index_meta(self.workspace, self.final_namespace),
+                _MIGRATED_TO_META_KEY: self._index_name,
+            }
+        }
         try:
-            await self.client.indices.put_mapping(
-                index=legacy,
-                body={
-                    "_meta": {
-                        **legacy_meta,
-                        # Claim it while we are here. An index predating the
-                        # ownership marker has an EMPTY _meta, so merging
-                        # alone would leave the source unowned -- and an
-                        # unowned un-suffixed index is one a folding-equivalent
-                        # workspace adopts on its next start, reads our vectors
-                        # from, and can later delete through drop(). We have
-                        # just established this index is ours (nobody else
-                        # claims it, and its model and dimension match), which
-                        # is the same ground _claim_index_for_workspace adopts
-                        # an unmarked index on.
-                        **_workspace_index_meta(self.workspace, self.final_namespace),
-                        _MIGRATED_TO_META_KEY: self._index_name,
-                    }
-                },
+            response = await self.client.indices.put_mapping(index=legacy, body=body)
+        except OpenSearchException as e:
+            doubt = f"the write reported a failure ({e})"
+        else:
+            if not (
+                isinstance(response, dict) and response.get("acknowledged") is False
+            ):
+                return True
+            doubt = "the cluster did not acknowledge the write within its timeout"
+
+        confirmed = await self._consumption_marker_state(legacy)
+        if confirmed is True:
+            logger.warning(
+                f"[{self.workspace}] Marking legacy index '{legacy}' as "
+                f"consumed by '{self._index_name}': {doubt}, but the marker is "
+                f"present on re-read -- it landed. Keeping the migrated copy."
             )
             return True
-        except OpenSearchException as e:
-            # The write may have COMMITTED and only its response been lost -- a
-            # timeout, a dropped connection. Believing the failure would be the
-            # worst outcome available here: the caller discards the copy, and
-            # the next start then finds the durable marker, skips the source,
-            # and creates an empty destination. The rows end up stranded behind
-            # a marker saying they were moved. So confirm before believing it.
-            confirmed = await self._consumption_marker_state(legacy)
-            if confirmed is True:
-                logger.warning(
-                    f"[{self.workspace}] Marking legacy index '{legacy}' as "
-                    f"consumed by '{self._index_name}' reported a failure "
-                    f"({e}), but the marker is present on re-read -- the write "
-                    f"landed and only its response was lost. Keeping the "
-                    f"migrated copy."
-                )
-                return True
-            if confirmed is None:
-                # The write may or may not have committed and the cluster
-                # cannot say. Nothing here is safe to undo: deleting the copy
-                # would strand the rows if the marker DID land (the next start
-                # reads it, skips the source, and creates an empty index),
-                # while keeping it unrecorded risks a later same-dimension
-                # model adopting the source. Change nothing, stop, and let a
-                # person decide with the cluster in front of them.
-                raise DataMigrationError(
-                    f"[{self.workspace}] Copied the rows of '{legacy}' into "
-                    f"'{self._index_name}', but could not record the migration "
-                    f"on '{legacy}' ({e}) and could not re-read it to find out "
-                    f"whether the write landed. NOTHING has been undone -- the "
-                    f"copy is intact and the source is untouched. Inspect "
-                    f"'{legacy}': if it carries '{_MIGRATED_TO_META_KEY}' "
-                    f"pointing at '{self._index_name}', the migration is "
-                    f"complete and this start can simply be retried; if it does "
-                    f"not, the next start copies again into the same "
-                    f"destination, which is insert-only and will not disturb "
-                    f"what is already there."
-                )
-            # The repair command carries the COMPLETE _meta, not just the
-            # marker: put_mapping replaces _meta wholesale, so a payload
-            # holding only the marker would strip the ownership identity and
-            # hand the backup to any folding-equivalent deployment -- the
-            # failure this method exists to avoid, reintroduced by its own
-            # recovery instructions.
-            repair = json.dumps(
-                {
-                    "_meta": {
-                        **legacy_meta,
-                        **_workspace_index_meta(self.workspace, self.final_namespace),
-                        _MIGRATED_TO_META_KEY: self._index_name,
-                    }
-                },
-                ensure_ascii=False,
-                sort_keys=True,
+        if confirmed is None:
+            # Neither answer is safe to act on. Discarding the copy would
+            # strand the rows if the marker DID land (the next start reads it,
+            # skips the source, and creates an empty index); keeping it
+            # unrecorded risks a later same-dimension model adopting the
+            # source. Change nothing, stop, and let a person decide with the
+            # cluster in front of them.
+            raise DataMigrationError(
+                f"[{self.workspace}] Copied the rows of '{legacy}' into "
+                f"'{self._index_name}', but {doubt} and the re-read could not "
+                f"say whether it landed. NOTHING has been undone -- the copy is "
+                f"intact and the source is untouched. Inspect '{legacy}': if it "
+                f"carries '{_MIGRATED_TO_META_KEY}' pointing at "
+                f"'{self._index_name}', the migration is complete and this "
+                f"start can simply be retried; if it does not, the next start "
+                f"copies again into the same destination, which is insert-only "
+                f"and will not disturb what is already there."
             )
-            logger.error(
-                f"[{self.workspace}] Could not mark legacy index '{legacy}' as "
-                f"consumed by '{self._index_name}': {e}. A re-read confirms the "
-                f"marker is NOT there, so the migration is not complete. "
-                f"Nothing has been undone -- the next start copies again into "
-                f"the same destination, which is insert-only. To finish it by "
-                f"hand instead, write the COMPLETE metadata (a partial _meta "
-                f"would replace, not merge): PUT {legacy}/_mapping {repair}"
-            )
-            return False
+        # The repair command carries the COMPLETE _meta, not just the marker:
+        # put_mapping replaces _meta wholesale, so a payload holding only the
+        # marker would strip the ownership identity and hand the backup to any
+        # folding-equivalent deployment -- the failure this method exists to
+        # avoid, reintroduced by its own recovery instructions.
+        repair = json.dumps(body, ensure_ascii=False, sort_keys=True)
+        logger.error(
+            f"[{self.workspace}] Could not mark legacy index '{legacy}' as "
+            f"consumed by '{self._index_name}': {doubt}, and a re-read confirms "
+            f"the marker is NOT there, so the migration is not complete. "
+            f"Nothing has been undone -- the next start copies again into the "
+            f"same destination, which is insert-only. To finish it by hand "
+            f"instead, write the COMPLETE metadata (a partial _meta would "
+            f"replace, not merge): PUT {legacy}/_mapping {repair}"
+        )
+        return False
 
     async def _consumption_marker_state(self, legacy: str) -> bool | None:
         """Whether this instance's marker is durably on ``legacy``.

@@ -6288,6 +6288,83 @@ class TestVectorLegacyMigration:
                 await s.initialize()
 
     @pytest.mark.asyncio
+    async def test_an_unacknowledged_marker_write_is_confirmed_not_assumed(
+        self, global_config, embed_func, mock_client
+    ):
+        """`acknowledged: false` is not a success and not a failure.
+
+        The cluster took the change but did not confirm it within its timeout.
+        Treating that as done would record a migration that may not be
+        recorded; it goes through the same re-read an exception does, and here
+        the marker did land.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            legacy = self._legacy_present(
+                mock_client,
+                s,
+                meta=_workspace_index_meta("test", "test_entities"),
+                dimension=embed_func.embedding_dim,
+                count=7,
+            )
+            mock_client.reindex = AsyncMock(
+                return_value={
+                    "created": 7,
+                    "version_conflicts": 0,
+                    "failures": [],
+                }
+            )
+            booked = mock_client.indices.put_mapping.side_effect
+
+            async def _applied_but_unacknowledged(*, index, body, **kw):
+                await booked(index=index, body=body, **kw)
+                return {"acknowledged": False}
+
+            mock_client.indices.put_mapping = AsyncMock(
+                side_effect=_applied_but_unacknowledged
+            )
+
+            await s.initialize()
+
+            assert s._index_ready is True
+            mapping = await mock_client.indices.get_mapping(index=legacy)
+            assert (
+                mapping[legacy]["mappings"]["_meta"]["lightrag_migrated_to"]
+                == s._index_name
+            )
+
+    @pytest.mark.asyncio
+    async def test_an_unacknowledged_write_that_did_not_land_stops_the_start(
+        self, global_config, embed_func, mock_client
+    ):
+        """Same answer, opposite fact: the re-read shows the marker absent."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            self._legacy_present(
+                mock_client,
+                s,
+                meta=_workspace_index_meta("test", "test_entities"),
+                dimension=embed_func.embedding_dim,
+                count=7,
+            )
+            mock_client.reindex = AsyncMock(
+                return_value={
+                    "created": 7,
+                    "version_conflicts": 0,
+                    "failures": [],
+                }
+            )
+            # Nothing is applied, and the cluster does not acknowledge either.
+            mock_client.indices.put_mapping = AsyncMock(
+                return_value={"acknowledged": False}
+            )
+
+            with pytest.raises(DataMigrationError, match="could not record"):
+                await s.initialize()
+
+            mock_client.indices.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_the_logged_repair_command_carries_the_whole_meta(
         self, global_config, embed_func, mock_client, caplog
     ):
