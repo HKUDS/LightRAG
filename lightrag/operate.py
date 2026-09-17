@@ -5350,7 +5350,10 @@ async def _perform_kg_search(
         if texts_to_embed:
             try:
                 all_embeddings = await actual_embedding_func(
-                    texts_to_embed, context="query", _priority=DEFAULT_QUERY_PRIORITY
+                    texts_to_embed,
+                    context="query",
+                    _priority=DEFAULT_QUERY_PRIORITY,
+                    **(query_param.extra_embedding_kwargs or {}),
                 )
                 for i, purpose in enumerate(text_purposes):
                     if purpose == "query":
@@ -5365,6 +5368,10 @@ async def _perform_kg_search(
                     ", ".join(text_purposes),
                 )
             except Exception as e:
+                # extra_embedding_kwargs must not silently degrade into an
+                # un-tagged retry.
+                if query_param.extra_embedding_kwargs:
+                    raise
                 logger.warning(f"Failed to batch pre-compute embeddings: {e}")
 
     # Handle local and global modes
@@ -6901,7 +6908,21 @@ async def naive_query(
 
     if progress_callback:
         await progress_callback(QueryProgress.RETRIEVING_CHUNKS)
-    chunks = await _get_vector_context(query, chunks_vdb, query_param, None)
+
+    # Only pre-compute when extra_embedding_kwargs is set, to skip a
+    # redundant round-trip for the common case; no broad try/except, so a
+    # failure never silently retries without the caller's requested data.
+    query_embedding = None
+    if query_param.extra_embedding_kwargs and chunks_vdb.embedding_func:
+        embeddings = await chunks_vdb.embedding_func(
+            [query],
+            context="query",
+            _priority=DEFAULT_QUERY_PRIORITY,
+            **query_param.extra_embedding_kwargs,
+        )
+        query_embedding = embeddings[0]
+
+    chunks = await _get_vector_context(query, chunks_vdb, query_param, query_embedding)
 
     if chunks is None or len(chunks) == 0:
         logger.info(

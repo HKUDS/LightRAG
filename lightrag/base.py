@@ -208,7 +208,39 @@ class QueryParam:
     ``RoleLLMConfig.kwargs``, or the queue's own ``_priority`` /
     ``_timeout`` / ``_queue_timeout`` -- is silently overridden rather than
     rejected, because ``partial``'s call-time keywords take precedence over
-    its bound ones. See docs/design/QueryTimeExtraLLMKwargs.md.
+    its bound ones. See docs/design/QueryTimeExtraProviderKwargs.md.
+    """
+
+    extra_embedding_kwargs: dict[str, Any] | None = None
+    """Extra keyword arguments merged into this query's embedding call(s).
+
+    Covers the query-text (and, in local/global/hybrid/mix mode, keyword)
+    embedding a query triggers to do vector search -- the same per-call
+    forwarding problem and fix as ``extra_llm_kwargs``, for the embedding
+    queue instead of an LLM role's. Reaches the configured ``embedding_func``
+    as plain ``**kwargs``.
+
+    Unlike ``extra_llm_kwargs``, a collision here is not guaranteed to raise:
+    the embedding pre-compute step normally degrades gracefully on any error
+    (falls back to per-backend on-demand embedding rather than failing the
+    whole query). Setting this field disables that fallback for this call --
+    an error here, collision or not, propagates instead of silently
+    retrying without the extra data. See
+    docs/design/QueryTimeExtraProviderKwargs.md.
+    """
+
+    extra_rerank_kwargs: dict[str, Any] | None = None
+    """Extra keyword arguments merged into this query's rerank call.
+
+    Only takes effect when ``enable_rerank`` is True and a rerank model is
+    configured. Same per-call forwarding problem and fix as
+    ``extra_llm_kwargs``/``extra_embedding_kwargs``, for the rerank queue.
+    Reaches the configured rerank function as plain ``**kwargs``.
+
+    Like ``extra_embedding_kwargs``, this disables the call's normal graceful
+    degradation (falling back to unreranked results on any error): once set,
+    an error propagates instead of silently reranking without the extra
+    data. See docs/design/QueryTimeExtraProviderKwargs.md.
     """
 
 
