@@ -181,6 +181,15 @@ class _MemGraph:
         for s, t, edge_data in edges:
             await self.upsert_edge(s, t, edge_data)
 
+    async def get_edges_batch(self, pairs: list[dict]) -> dict[tuple[str, str], dict]:
+        result = {}
+        for pair in pairs:
+            s, t = pair["src"], pair["tgt"]
+            edge = await self.get_edge(s, t)
+            if edge is not None:
+                result[(s, t)] = edge
+        return result
+
 
 class _MemVDB:
     """Minimal in-memory vector storage recording every upsert payload."""

@@ -194,6 +194,7 @@ from lightrag.utils import (
     convert_to_user_format,
     logger,
     make_relation_vdb_ids,
+    merge_source_ids,
     subtract_source_ids,
     make_relation_chunk_key,
     normalize_entity_name,
@@ -4380,6 +4381,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             interrupted: BaseException | None = None
             try:
                 from lightrag.utils_graph import (
+                    apply_relation_weight_floor,
                     relation_evidence_source_ids,
                     validate_relation_weight,
                 )
@@ -4653,6 +4655,27 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         )
                     )
 
+                    # Batch-fetch any relation already on the graph for these
+                    # pairs. upsert_edges_batch below writes edge_data's keys
+                    # wholesale (no per-backend merge), so a relation that
+                    # already exists needs its weight/source_id combined with
+                    # what this call is about to write -- otherwise this
+                    # call's evidence silently replaces, and can shrink, the
+                    # prior evidence instead of adding to it. The per-call
+                    # validation above cannot catch this: it only checks this
+                    # call's own source_id against this call's own weight.
+                    existing_edges = (
+                        await self.chunk_entity_relation_graph.get_edges_batch(
+                            [
+                                {
+                                    "src": relationship_data["src_id"],
+                                    "tgt": relationship_data["tgt_id"],
+                                }
+                                for relationship_data in deduped_relationships.values()
+                            ]
+                        )
+                    )
+
                     # Create missing nodes in batch
                     missing_nodes: list[tuple[str, dict[str, str]]] = []
                     for relationship_data in deduped_relationships.values():
@@ -4687,8 +4710,24 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
                         normalized_src_id, normalized_tgt_id = sorted((src_id, tgt_id))
 
+                        weight = relationship_data["weight"]
+                        existing_edge = existing_edges.get(
+                            (src_id, tgt_id)
+                        ) or existing_edges.get((tgt_id, src_id))
+                        if existing_edge is not None:
+                            source_id = GRAPH_FIELD_SEP.join(
+                                merge_source_ids(
+                                    [existing_edge.get("source_id") or ""],
+                                    [source_id],
+                                )
+                            )
+                            weight = apply_relation_weight_floor(
+                                max(weight, existing_edge.get("weight") or 0.0),
+                                source_id,
+                            )
+
                         edge_data = {
-                            "weight": relationship_data["weight"],
+                            "weight": weight,
                             "description": relationship_data["description"],
                             "keywords": relationship_data["keywords"],
                             "source_id": source_id,
@@ -4704,7 +4743,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                                 "description": relationship_data["description"],
                                 "keywords": relationship_data["keywords"],
                                 "source_id": source_id,
-                                "weight": relationship_data["weight"],
+                                "weight": weight,
                                 "file_path": file_path,
                                 "created_at": int(time.time()),
                             }
