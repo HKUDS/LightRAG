@@ -1232,22 +1232,34 @@ def resolve_sidecar_uri(uri: str | None) -> Path | None:
 
     Returns None for the unknown sentinel, empty input, or any non-``file://``
     scheme (remote schemes will get their own resolvers).
+
+    Windows UNC shares are encoded by ``Path.as_uri()`` as
+    ``file://server/share/path/`` (server in ``netloc``, share path in ``path``).
+    Both parts must be recombined; using ``path`` alone drops the authority and
+    yields a rooted ``\\share\\...`` that cannot reach the share.
     """
     if not uri or uri == SIDECAR_LOCATION_UNKNOWN:
         return None
     parts = urlsplit(uri)
     if parts.scheme != "file":
         return None
-    if parts.path and parts.path not in ("/", ""):
-        path_str = unquote(parts.path)
-    elif parts.netloc:
+    netloc = unquote(parts.netloc) if parts.netloc else ""
+    raw_path = unquote(parts.path) if parts.path else ""
+    if netloc and raw_path and raw_path not in ("/", ""):
+        # UNC: ``file://server/share/...`` → ``//server/share/...``.
+        path_str = f"//{netloc}{raw_path}"
+    elif raw_path and raw_path not in ("/", ""):
+        # Local absolute path: ``file:///C:/...`` or ``file:///tmp/...``.
+        path_str = raw_path
+    elif netloc:
         # Legacy Windows URIs where the drive path was encoded into netloc.
-        path_str = unquote(parts.netloc)
+        path_str = netloc
     else:
         return None
     if path_str.endswith("/") and len(path_str) > 1:
         path_str = path_str[:-1]
     # ``file:///C:/...`` yields ``/C:/...``; strip the leading slash on Windows.
+    # UNC strings start with ``//`` and must not enter this branch.
     if (
         os.name == "nt"
         and len(path_str) >= 3

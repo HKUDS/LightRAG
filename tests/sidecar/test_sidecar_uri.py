@@ -117,6 +117,35 @@ def test_resolve_sidecar_uri_windows_drive_without_nt_keeps_leading_slash(
 
 
 @pytest.mark.offline
+def test_resolve_sidecar_uri_preserves_unc_authority(monkeypatch):
+    """``file://server/share/...`` keeps the host (Path.as_uri UNC round trip)."""
+    monkeypatch.setattr(os, "name", "nt")
+    uri = "file://fileserver/docs/report.docx.parsed/"
+    resolved = resolve_sidecar_uri(uri)
+    assert resolved == Path("//fileserver/docs/report.docx.parsed")
+    # Drive-letter strip must not apply to UNC (still starts with //).
+    assert str(resolved).replace("\\", "/").startswith("//fileserver/")
+
+
+@pytest.mark.offline
+def test_resolve_sidecar_uri_unc_with_percent_encoding(monkeypatch):
+    """UNC share segments remain unquoted after authority+path join."""
+    monkeypatch.setattr(os, "name", "nt")
+    uri = "file://fileserver/share/my%20doc.parsed/"
+    resolved = resolve_sidecar_uri(uri)
+    assert resolved == Path("//fileserver/share/my doc.parsed")
+
+
+@pytest.mark.offline
+def test_resolve_sidecar_uri_legacy_netloc_only_drive(monkeypatch):
+    """Empty path + netloc still uses the legacy drive-in-netloc branch."""
+    monkeypatch.setattr(os, "name", "nt")
+    uri = "file://E:"
+    resolved = resolve_sidecar_uri(uri)
+    assert resolved == Path("E:")
+
+
+@pytest.mark.offline
 def test_sidecar_blocks_path_locates_jsonl(tmp_path):
     sidecar_dir = tmp_path / "demo.docx.parsed"
     sidecar_dir.mkdir()

@@ -73,12 +73,85 @@ _drawings_index_cache: OrderedDict[str, tuple[float | None, dict[str, Any]]] = (
 )
 _drawings_index_cache_lock = threading.Lock()
 
+
+def _backend_kv_degrade_errors() -> tuple[type[BaseException], ...]:
+    """Driver operational errors for remote ``KV_STORAGE`` backends used by ``text_chunks`` / ``full_docs``.
+
+    Matches ``lightrag.kg`` registrations (not graph/vector/doc_status): soft-import each
+    client library so ``JsonKVStorage``-only installs stay import-cheap. Builtin
+    ``ConnectionError`` / ``TimeoutError`` do not cover these families (e.g.
+    ``redis.exceptions.ConnectionError`` is a separate type).
+    """
+    extras: list[type[BaseException]] = []
+    # ``redis`` → ``RedisKVStorage`` (``text_chunks``, ``full_docs``, …)
+    try:
+        from redis.exceptions import ConnectionError as RedisConnectionError
+        from redis.exceptions import TimeoutError as RedisTimeoutError
+
+        extras.extend((RedisConnectionError, RedisTimeoutError))
+    except ImportError:
+        pass
+    # ``pymongo`` → ``MongoKVStorage``
+    try:
+        from pymongo.errors import PyMongoError
+
+        extras.append(PyMongoError)
+    except ImportError:
+        pass
+    # ``asyncpg`` → ``PGKVStorage`` (connection/transient family aligned with postgres_impl)
+    try:
+        from asyncpg.exceptions import (
+            CannotConnectNowError,
+            ConnectionDoesNotExistError,
+            ConnectionFailureError,
+            InterfaceError,
+            PostgresConnectionError,
+            TooManyConnectionsError,
+        )
+
+        extras.extend(
+            (
+                InterfaceError,
+                TooManyConnectionsError,
+                CannotConnectNowError,
+                PostgresConnectionError,
+                ConnectionDoesNotExistError,
+                ConnectionFailureError,
+            )
+        )
+    except ImportError:
+        pass
+    # ``opensearch-py`` → ``OpenSearchKVStorage``
+    try:
+        from opensearchpy.exceptions import OpenSearchException
+
+        extras.append(OpenSearchException)
+    except ImportError:
+        pass
+    return tuple(extras)
+
+
+def _merged_sidecar_degrade_errors() -> tuple[type[BaseException], ...]:
+    """Stdlib / disk I/O plus registered remote KV driver families."""
+    base: tuple[type[BaseException], ...] = (
+        OSError,
+        json.JSONDecodeError,
+        ConnectionError,
+        TimeoutError,
+    )
+    seen: set[type[BaseException]] = set()
+    merged: list[type[BaseException]] = []
+    for exc_type in base + _backend_kv_degrade_errors():
+        if exc_type in seen:
+            continue
+        seen.add(exc_type)
+        merged.append(exc_type)
+    return tuple(merged)
+
+
 # Storage / I/O failures that may degrade attachments or Index prefetch — not bugs.
 _SIDECAR_DEGRADE_ERRORS: tuple[type[BaseException], ...] = (
-    OSError,
-    json.JSONDecodeError,
-    ConnectionError,
-    TimeoutError,
+    _merged_sidecar_degrade_errors()
 )
 
 
@@ -373,8 +446,8 @@ async def index_figures_on_chunks(
 ) -> IndexFiguresResult:
     """Collect-once Index: build resolvable im-id whitelist for metadata.
 
-    PR-1 does not attach ``figure_ids`` to chunks and does not write letter
-    labels / Figure List / References lines (those are PR-5).
+    This function does not attach ``figure_ids`` to chunks and does not write letter
+    labels / Figure List / References lines.
 
     Input:
         truncated_chunks: Retrieval chunks after token truncation (same set for LLM).
