@@ -390,6 +390,37 @@ async def _edge_source_ids(graph, limit: int) -> list[Any]:
             await aclose()
 
 
+async def _finished_doc_chunk_ids(doc_status, limit: int) -> list[str]:
+    """Chunk ids belonging to documents that have FINISHED.
+
+    The chunk pairing's equivalent of the graph probes, and it has to come from
+    doc-status rather than from the source: ``BaseKVStorage`` has no enumeration
+    API, so ``text_chunks`` can say it is non-empty but not which rows it holds.
+    Inverting the question -- ask doc-status for chunks a retry will NOT rewrite,
+    then confirm they are really in ``text_chunks`` -- needs only bounded reads.
+
+    One page of PROCESSED documents, hydrated for their ``chunks_list``: the
+    pattern ``get_full_docs_by_ids`` documents for itself. Both reads are
+    strict, so an incomplete answer raises rather than under-reporting into a
+    refusal.
+    """
+    if doc_status is None:
+        return []
+    page = await doc_status.get_docs_by_statuses_page(
+        [DocStatus.PROCESSED], limit=limit, strict=True
+    )
+    doc_ids = list((page.docs or {}).keys())
+    if not doc_ids:
+        return []
+    records = await doc_status.get_full_docs_by_ids(doc_ids, strict=True)
+    chunk_ids: list[str] = []
+    for record in (records or {}).values():
+        for chunk_id in getattr(record, "chunks_list", None) or []:
+            if isinstance(chunk_id, str) and chunk_id.strip():
+                chunk_ids.append(chunk_id.strip())
+    return chunk_ids
+
+
 async def _is_owned_by_unfinished_doc(chunk_ids, text_chunks, doc_status) -> bool:
     """Whether a retry of an unfinished document would rewrite these chunks.
 
@@ -794,6 +825,9 @@ async def check_vector_space_at_startup(
             source="the text chunk storage",
             vdb=chunks_vdb,
             source_probe=lambda: _source_is_empty_inverted(text_chunks),
+            no_healing_probe=lambda: _finished_doc_chunk_ids(
+                doc_status, DOCUMENTLESS_SAMPLE_SIZE
+            ),
         )
 
     await gate.check(

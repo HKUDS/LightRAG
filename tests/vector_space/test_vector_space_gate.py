@@ -96,7 +96,14 @@ class FakeGraph:
 class FakeDocStatus:
     """Doc-status with just the one question the gate asks."""
 
-    def __init__(self, processed=1, error=None, unfinished=0, doc_statuses=None):
+    def __init__(
+        self,
+        processed=1,
+        error=None,
+        unfinished=0,
+        doc_statuses=None,
+        chunks_by_doc=None,
+    ):
         self._processed = processed
         self._error = error
         self._unfinished = unfinished
@@ -108,6 +115,32 @@ class FakeDocStatus:
             if doc_statuses is not None
             else {"doc-1": DocStatus.PROCESSING}
         )
+        # chunks_list per document, for the chunk pairing's probe.
+        self._chunks_by_doc = dict(chunks_by_doc or {})
+
+    async def get_docs_by_statuses_page(self, statuses, *, limit, strict=True):
+        if self._error is not None:
+            raise self._error
+        wanted = set(statuses)
+        docs = {
+            doc_id: SimpleNamespace(id=doc_id, status=status)
+            for doc_id, status in self._doc_statuses.items()
+            if status in wanted
+        }
+        return SimpleNamespace(docs=docs, next_position=None)
+
+    async def get_full_docs_by_ids(self, doc_ids, *, strict=True):
+        if self._error is not None:
+            raise self._error
+        return {
+            doc_id: SimpleNamespace(
+                id=doc_id,
+                status=self._doc_statuses[doc_id],
+                chunks_list=list(self._chunks_by_doc.get(doc_id, [])),
+            )
+            for doc_id in doc_ids
+            if doc_id in self._doc_statuses
+        }
 
     async def get_docs_by_ids(self, doc_ids, *, strict=True):
         if self._error is not None:
@@ -608,6 +641,71 @@ class TestUnfinishedWorkExemption:
                 doc_statuses={"doc-1": DocStatus.PROCESSING},
             ),
             text_chunks=FakeKVStorage(rows=3, chunk_owner="doc-1"),
+        )
+
+    async def test_chunks_of_a_finished_document_are_not_healed_by_a_pending_one(
+        self,
+    ):
+        """The chunk pairing had no healability probe at all, so it still used
+        the raw workspace-wide count: any unrelated PENDING row excused an empty
+        chunks_vdb even when every existing chunk belonged to a document that
+        had finished. `naive` / `mix` then serve nothing, permanently once the
+        pending document writes one chunk vector."""
+        with pytest.raises(VectorStorageEmptyError) as excinfo:
+            await _run(
+                FakeGraph(labels=[]),
+                FakeVectorStorage(rows=[]),
+                FakeEmbedding(),
+                doc_status=FakeDocStatus(
+                    processed=1,
+                    unfinished=1,
+                    doc_statuses={
+                        "doc-done": DocStatus.PROCESSED,
+                        "doc-new": DocStatus.PENDING,
+                    },
+                    chunks_by_doc={"doc-done": ["chunk-done-1"]},
+                ),
+                chunks_vdb=FakeVectorStorage(rows=[]),
+                text_chunks=FakeKVStorage(rows=4, chunk_owner="doc-done"),
+            )
+
+        assert excinfo.value.vdb_name == "chunks"
+
+    async def test_chunks_of_only_unfinished_documents_stay_exempt(self):
+        """The case the exemption exists for, on the chunk pairing: every chunk
+        belongs to a document still in flight, so its retry rewrites them."""
+        await _run(
+            FakeGraph(labels=[]),
+            FakeVectorStorage(rows=[]),
+            FakeEmbedding(),
+            doc_status=FakeDocStatus(
+                processed=0,
+                unfinished=1,
+                doc_statuses={"doc-new": DocStatus.PROCESSING},
+                chunks_by_doc={"doc-new": ["chunk-new-1"]},
+            ),
+            chunks_vdb=FakeVectorStorage(rows=[]),
+            text_chunks=FakeKVStorage(rows=4, chunk_owner="doc-new"),
+        )
+
+    async def test_a_finished_document_whose_chunks_are_gone_stays_exempt(self):
+        """Same cannot-tell rule as the graph trail: an empty KV read is as
+        often a swallowed transport error as a real absence."""
+        await _run(
+            FakeGraph(labels=[]),
+            FakeVectorStorage(rows=[]),
+            FakeEmbedding(),
+            doc_status=FakeDocStatus(
+                processed=1,
+                unfinished=1,
+                doc_statuses={
+                    "doc-done": DocStatus.PROCESSED,
+                    "doc-new": DocStatus.PENDING,
+                },
+                chunks_by_doc={"doc-done": ["chunk-done-1"]},
+            ),
+            chunks_vdb=FakeVectorStorage(rows=[]),
+            text_chunks=FakeKVStorage(rows=4, chunk_owner=None),
         )
 
     async def test_an_unreadable_chunk_trail_keeps_the_exemption(self):

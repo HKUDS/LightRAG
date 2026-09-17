@@ -529,6 +529,22 @@ or like the `manual_creation` placeholder?" — which was wrong twice over:
 Following the trail settles all three, because it asks the actual question
 instead of inferring it from the shape of an id.
 
+**The chunk pairing asks the same question from the other end.** `text_chunks`
+can say it is non-empty but not *which* rows it holds — `BaseKVStorage` has no
+enumeration API — so there is nothing to sample. The question is inverted
+instead: ask doc-status for chunks a retry will **not** rewrite (one bounded
+page of `PROCESSED` documents, hydrated for their `chunks_list` through
+`get_full_docs_by_ids`, which documents exactly this page-then-hydrate pattern),
+then confirm through the same trail that those chunks really are in
+`text_chunks`. Both reads are strict, so an incomplete answer raises rather than
+under-reporting into a refusal.
+
+Without it that pairing kept the raw workspace-wide count while the graph
+pairings had moved on, so an unrelated `PENDING` row excused an empty
+`chunks_vdb` even when every chunk in the store belonged to a finished
+document — and `naive` / `mix` then serve no context at all, permanently once
+the pending document writes one chunk vector.
+
 **An empty chunk read is "cannot tell", not "orphan".** `BaseKVStorage.get_by_ids`
 catches its transport errors and returns an empty list, so a blip and a genuinely
 absent chunk arrive as the same value. Reading it as "no document owns this"
