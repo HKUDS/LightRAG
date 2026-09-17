@@ -108,9 +108,7 @@ async def test_ainsert_custom_kg_merges_source_id_and_weight_into_existing_edge(
     # Old evidence must survive alongside the new one, not be replaced by it.
     assert "chunk-old" in edge_data["source_id"].split(GRAPH_FIELD_SEP)
     new_source = [
-        s
-        for s in edge_data["source_id"].split(GRAPH_FIELD_SEP)
-        if s != "chunk-old"
+        s for s in edge_data["source_id"].split(GRAPH_FIELD_SEP) if s != "chunk-old"
     ]
     assert len(new_source) == 1
     # Two distinct real sources now back this relation, so weight must be >= 2.
