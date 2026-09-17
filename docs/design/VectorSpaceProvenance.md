@@ -238,7 +238,7 @@ the *dimension* of a container they are about to read against the one they are
 configured with. That comparison is the same refusal, so it raises the same
 type — and the two raiser rules apply to it unchanged.
 
-Three things that were wrong before and are now part of the contract:
+Four things that were wrong before and are now part of the contract:
 
 - **It is `VectorSpaceMismatchError`, not `DataMigrationError`.** Nothing is
   being migrated when it fires; the container is simply in another embedding
@@ -251,6 +251,19 @@ Three things that were wrong before and are now part of the contract:
   anything that can refuse, and `drop()` tolerates a container that does not
   exist, because the refusal is raised *before* the new collection or table is
   created.
+- **A missing dimension on either side is a schema error, not the refusal.**
+  *Absent evidence never refuses* binds the dimension comparison exactly as it
+  binds the marker. `None != 768` reads as a mismatch, and the tool answers a
+  mismatch by dropping the container — so a malformed `describe_collection`
+  response, or an `embedding_func` that never declared a dimension, would
+  authorise destroying live vectors over a fact nobody reported. Milvus checks
+  both sides before comparing and raises a plain, non-droppable `ValueError` on
+  either. PostgreSQL raises the same error for an undeclared dimension at the
+  top of `setup_table()` rather than at the comparison, because that check sits
+  inside a `try` whose `except Exception` reframes everything it catches as
+  `DataMigrationError`; a *legacy* dimension it could not read is simply not
+  compared, and the migration that follows fails closed at insert — the
+  acceptable direction, since nothing is dropped.
 - **The refusal is scoped to what THIS workspace would migrate.** Qdrant's
   legacy collection can be shared across tenants, and its gate counted every
   tenant's points. That refused a workspace with nothing to migrate, and the

@@ -98,6 +98,40 @@ class TestPostgresVectorSpaceRefusal:
         assert error.container == "LIGHTRAG_VDB_CHUNKS"
         assert (error.stored_dim, error.expected_dim) == (1536, 768)
 
+    async def test_an_undeclared_embedding_dimension_is_a_schema_error_not_a_refusal(
+        self,
+    ):
+        """A dimension nobody declared is not evidence of a changed space.
+
+        `1536 != None` would raise the typed refusal, which
+        ``lightrag-rebuild-vdb`` answers by DROPPING the container -- deleting
+        this workspace's legacy rows over a fact nobody reported. Same rule
+        Milvus applies on both sides of its own comparison; see "Absent
+        evidence never refuses" in docs/design/VectorSpaceProvenance.md.
+        """
+        from lightrag.kg.postgres_impl import PGVectorStorage
+
+        db = self._db(
+            legacy_table="LIGHTRAG_VDB_CHUNKS", legacy_dim=1536, legacy_rows=100
+        )
+
+        with pytest.raises(ValueError) as excinfo:
+            await PGVectorStorage.setup_table(
+                db,
+                "LIGHTRAG_VDB_CHUNKS_test_model_768d",
+                workspace="test_ws",
+                embedding_dim=None,
+                legacy_table_name="LIGHTRAG_VDB_CHUNKS",
+                base_table="LIGHTRAG_VDB_CHUNKS",
+            )
+
+        error = excinfo.value
+        assert not isinstance(error, VectorSpaceMismatchError)
+        assert not isinstance(error, DataMigrationError)
+        # Raised before the first storage mutation, so nothing was written and
+        # no table was probed for a dimension it could not be compared against.
+        db.execute.assert_not_awaited()
+
     async def test_a_refused_instance_can_still_be_dropped(self):
         from lightrag.kg.postgres_impl import PGVectorStorage
 
