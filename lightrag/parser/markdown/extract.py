@@ -24,15 +24,16 @@ the content string entirely.
 
 Supported subset (NOT full CommonMark/GFM, by design — see the parser plan):
 ATX headings, simple pipe tables (with a header row), block-level ``$$`` math,
-inline ``![alt](src)`` images, and HTML ``<table>`` blocks. Reference-style
-images, escaped pipes, nested tables, setext headings and list/quote-nested
-structures are left as verbatim text rather than misrecognised.
+inline ``![alt](src)`` images, and HTML ``<table>`` blocks. Escaped pipes
+(``\\|``) inside a table cell are unescaped into cell text. Reference-style
+images, nested tables, setext headings and list/quote-nested structures are
+left as verbatim text rather than misrecognised.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Protocol
@@ -128,14 +129,62 @@ def _clean_heading(text: str) -> str:
     return _HEADING_TRAILING_HASHES_RE.sub("", text).strip()
 
 
+def _iter_row_cells(s: str) -> Iterator[str]:
+    """Yield ``s`` split on its column separators, unescaping as it goes.
+
+    The one statement of what a column separator is: ``\\|`` is cell content and
+    ``\\\\`` is a literal backslash, so only a bare ``|`` splits. Always yields one
+    cell more than ``s`` has separators, so a caller that only needs to know
+    whether a separator exists may stop after the second."""
+    buf: list[str] = []
+    i = 0
+    while i < len(s):
+        char = s[i]
+        if char == "\\" and i + 1 < len(s) and s[i + 1] in "\\|":
+            buf.append(s[i + 1])
+            i += 2
+            continue
+        if char == "|":
+            yield "".join(buf)
+            buf = []
+            i += 1
+            continue
+        buf.append(char)
+        i += 1
+    yield "".join(buf)
+
+
+def _has_unescaped_pipe(s: str) -> bool:
+    """True iff ``s`` carries at least one column separator.
+
+    Asked by the header gate, where no table exists yet and a raw ``|`` is not
+    evidence of one: ``foo \\| bar`` over ``---`` is a paragraph, not a column.
+    :func:`_consume_pipe_table` must NOT ask it — once the delimiter row has
+    established the table, escaping is cell content and no longer decides
+    structure, so a body row is admitted on a raw ``|``.
+    Shares :func:`_iter_row_cells` with :func:`_split_pipe_row`, so the gate and
+    the split can never disagree about a case such as ``\\\\|``."""
+    if "|" not in s:
+        return False
+    cells = _iter_row_cells(s)
+    next(cells, None)
+    return next(cells, None) is not None
+
+
 def _split_pipe_row(line: str) -> list[str]:
-    """Split a pipe-table row into trimmed cells (no escaped-pipe handling)."""
+    """Split a pipe-table row into trimmed cells, honouring GFM escapes.
+
+    ``\\|`` is cell content, not a column separator, and ``\\\\`` is a literal
+    backslash; both are unescaped here so a cell carries the text the author
+    wrote. A trailing unescaped ``|`` closes the last cell rather than opening
+    an empty one, which keeps ``| a | b |`` and ``a | b`` at two columns."""
     s = line.strip()
     if s.startswith("|"):
         s = s[1:]
-    if s.endswith("|"):
-        s = s[:-1]
-    return [cell.strip() for cell in s.split("|")]
+    cells = [cell.strip() for cell in _iter_row_cells(s)]
+    if len(cells) > 1 and not cells[-1]:
+        cells.pop()
+    return cells
 
 
 def _is_pipe_table_delimiter(header_line: str, delim_line: str) -> bool:
@@ -494,7 +543,11 @@ def extract_markdown(
                 continue
 
         # --- pipe table ----------------------------------------------------
-        if "|" in line and i + 1 < n and _is_pipe_table_delimiter(line, lines[i + 1]):
+        if (
+            _has_unescaped_pipe(line)
+            and i + 1 < n
+            and _is_pipe_table_delimiter(line, lines[i + 1])
+        ):
             consumed, rows, header = _consume_pipe_table(lines, i)
             if consumed > 0:
                 ref = _next_ref("t")
@@ -637,7 +690,15 @@ def _consume_pipe_table(
     lines: list[str], start: int
 ) -> tuple[int, list[list[str]], list[list[str]] | None]:
     """Parse a GFM pipe table whose header is ``lines[start]`` and delimiter is
-    ``lines[start+1]``. Returns ``(consumed, body_rows, header_grid)``."""
+    ``lines[start+1]``. Returns ``(consumed, body_rows, header_grid)``.
+
+    A body row is any following line that is non-blank and contains a ``|``,
+    escaped or not — deliberately NOT the header gate's unescaped-``|`` test.
+    The table is established by this point, so an escape is cell content and
+    must not push a row out into a paragraph. Requiring a ``|`` at all is this
+    parser's narrowing: GFM ends the table only at a blank line or the start of
+    another block, which needs block-structure detection the subset omits.
+    A row may carry fewer cells than the header; the IR builder pads it."""
     header = _split_pipe_row(lines[start])
     body: list[list[str]] = []
     j = start + 2  # skip header + delimiter

@@ -168,6 +168,15 @@ async def _repair_ingress_reservation(workspace: str):
     the scan and destructive acquires already refuse on. The fences above are
     evaluated in the same atomic step, so the exclusion holds in both directions.
 
+    Registered with ``kind=SOURCE_REPAIR_RESERVATION_KIND``, and that label is
+    load-bearing rather than descriptive: a ``manual_drain_enqueue_stalled``
+    fence's ``force_reset`` drops the stalled ORDINARY enqueues out of the same
+    set, and this guard has to survive it — dropping it would re-open
+    clear/delete, scan classification and the manual reset against a repair whose
+    candidate re-read and demotion span may still be running. Weight cannot carry
+    that distinction: an ordinary enqueue whose documents all dedup away
+    re-weights itself to 0 too.
+
     An uninitialised ``pipeline_status`` does NOT prove there is no server: it
     proves only that THIS process has none, and a standalone CLI never
     initialises one even when a server is running elsewhere (its shared state is
@@ -179,6 +188,7 @@ async def _repair_ingress_reservation(workspace: str):
     """
     from lightrag.exceptions import PipelineNotInitializedError
     from lightrag.kg.shared_storage import (
+        SOURCE_REPAIR_RESERVATION_KIND,
         acquire_enqueue_reservation,
         get_namespace_data,
         get_namespace_lock,
@@ -212,6 +222,7 @@ async def _repair_ingress_reservation(workspace: str):
         reject_when=_REPAIR_INGRESS_FENCES,
         weight=0,
         capacity=0,
+        kind=SOURCE_REPAIR_RESERVATION_KIND,
     )
     if not result.acquired:
         raise StorageControlPlaneError(result.message)

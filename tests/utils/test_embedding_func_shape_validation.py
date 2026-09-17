@@ -274,8 +274,14 @@ async def test_dimension_mismatch_logs_declared_dimension_remedy(
     caplog, _propagate_lightrag_logs
 ):
     """The actionable fix for (N, 2D) is reconciling the declared dimension
-    with the model actually being called -- and clearing the data directory
-    afterwards, since existing vectors live in the old space."""
+    with the model actually being called -- and then rebuilding the vectors,
+    since the ones already stored live in the old space.
+
+    The remedy is pinned, not just the diagnosis: this message used to tell
+    operators to clear the data directory, which destroys the knowledge graph
+    and text chunks `lightrag-rebuild-vdb` rebuilds the vectors FROM. Following
+    it turned a re-embedding job into a full re-ingestion of every document.
+    """
 
     async def embed(texts):
         return np.zeros((len(texts), 8), dtype=np.float32)
@@ -287,3 +293,5 @@ async def test_dimension_mismatch_logs_declared_dimension_remedy(
     assert "EMBEDDING_DIM" in caplog.text
     assert "returned 8-dimensional" in caplog.text
     assert "declares 4" in caplog.text
+    assert "lightrag-rebuild-vdb" in caplog.text
+    assert "Do NOT clear the working directory" in caplog.text

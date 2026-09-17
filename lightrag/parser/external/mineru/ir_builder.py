@@ -27,8 +27,16 @@ Conversion rules (informed by spec §3-§六):
   is reserved for explicit 2D-array / non-HTML compatibility inputs. A real
   HTML ``<thead>`` populates ``table_header`` (per spec §5); otherwise the
   adapter does not guess a header row.
-- ``image`` / ``picture`` / ``drawing`` → IRDrawing + ``{{IMG:k}}`` placeholder.
-  Asset bytes are referenced via ``img_path`` relative to the raw dir.
+- ``image`` / ``picture`` / ``drawing`` / ``chart`` → IRDrawing + ``{{IMG:k}}``
+  placeholder. Asset bytes are referenced via ``img_path`` relative to the raw
+  dir. ``chart`` items (MinerU >= 3.x) carry their text in ``chart_caption`` /
+  ``chart_footnote`` instead of ``image_caption`` / ``image_footnote``. The
+  item's text payload (``_coerce_text``: the first non-empty STRING among
+  ``text`` / ``content`` / ``body`` / ``code_body`` — MinerU's recognised
+  picture body, often empty but populated e.g. with a chart's data table) is
+  appended after the placeholder. When image analysis runs, that recognised
+  text and the VLM's own description of the same picture both end up in the
+  body; upstream's markdown does the same (image + chart content block).
 - ``equation`` → IREquation. ``is_block`` is decided by whether
   ``text_format=="block"`` (MinerU explicit flag) OR ``text_level==0`` with
   no inline neighbours; otherwise inline. The latex string is preserved
@@ -77,6 +85,28 @@ from lightrag.utils import logger
 
 PREFACE_HEADING = "Preface/Uncategorized"
 CONTENT_LIST_FILENAME = "content_list.json"
+
+# MinerU item types whose payload IS plain text: an empty one is layout noise
+# (a blank running head, a heading the model could not read), not information
+# the builder failed to map. Everything else that reaches the text fallback
+# without usable text is a structural item — a picture-like type or a payload
+# shape the dispatch does not know yet — so it gets a debug breadcrumb and is
+# counted into the end-of-parse WARNING summary.
+# ``text`` / ``list`` / ``code`` / ``equation`` / ``table`` / the drawing types
+# and ``page_number`` never reach the fallback: they have their own branch.
+_KNOWN_EMPTY_TYPES = frozenset(
+    {
+        "title",
+        "section_header",
+        "header",
+        "footer",
+        "ref_text",
+        "aside_text",
+        "page_footnote",
+        "phonetic",
+        "discarded",
+    }
+)
 
 
 class MinerUIRBuilder:
@@ -268,6 +298,10 @@ class MinerUIRBuilder:
             cb_lines.append(text)
             return True
 
+        # Types whose items reached the text fallback with nothing usable,
+        # counted for the end-of-parse summary below.
+        dropped_by_type: dict[str, int] = {}
+
         for item_index, item in enumerate(content_list):
             if not isinstance(item, dict):
                 continue
@@ -329,6 +363,17 @@ class MinerUIRBuilder:
                 latex_raw = _coerce_text(item)
                 if not latex_raw:
                     # Spec compliance fix: empty equation must not enter sidecar.
+                    # Local drop of a known type, like the empty-table branch in
+                    # ``_build_ir_table``: a debug breadcrumb, not the summary
+                    # below, which is reserved for content the dispatch could
+                    # not map at all.
+                    logger.debug(
+                        "[mineru_ir_builder] %r: dropping empty equation item "
+                        "(page_idx=%s, self_ref=%s)",
+                        document_name,
+                        item.get("page_idx"),
+                        _content_list_self_ref(item_index),
+                    )
                     continue
                 # Preserve MinerU's raw latex (including any ``$$``/``$``
                 # wrappers); the writer strips them when emitting
@@ -368,7 +413,7 @@ class MinerUIRBuilder:
                 _record_position(item)
                 continue
 
-            if item_type in {"image", "picture", "drawing"}:
+            if item_type in {"image", "picture", "drawing", "chart"}:
                 drawing, asset = self._build_ir_drawing(item, raw_dir, seen_assets)
                 placeholder = _next_key("im")
                 drawing.placeholder_key = placeholder
@@ -377,6 +422,17 @@ class MinerUIRBuilder:
                     assets.append(asset)
                 cb_drawings.append(drawing)
                 cb_lines.append(f"{{{{IMG:{placeholder}}}}}")
+                # MinerU fills a text payload when the model recognised the
+                # picture's data (a chart's data table, OCR'd labels). Keep it
+                # in the block body — it is the only retrievable form of that
+                # text when no VLM analysis runs. Reuse ``_coerce_text`` rather
+                # than reading ``content`` alone: it covers the other keys the
+                # text fallback used to reach for these items, and its
+                # ``isinstance(val, str)`` guard keeps a non-string payload
+                # (the v2 content_list shape) from entering the body as a repr.
+                body_text = _coerce_text(item).strip()
+                if body_text:
+                    cb_lines.append(body_text)
                 _record_position(item)
                 continue
 
@@ -386,8 +442,44 @@ class MinerUIRBuilder:
             # not leak their page_idx into the current block.
             if _append_text(_coerce_text(item)):
                 _record_position(item)
+            elif item_type not in _KNOWN_EMPTY_TYPES:
+                # ``self_ref`` and the key set are the diagnostic part: they
+                # point at the offending item in content_list.json and name the
+                # payload shape the dispatch does not know yet. Neither carries
+                # document content.
+                logger.debug(
+                    "[mineru_ir_builder] %r: dropping item with no usable text "
+                    "(type=%s, page_idx=%s, self_ref=%s, keys=%s)",
+                    document_name,
+                    item_type,
+                    item.get("page_idx"),
+                    _content_list_self_ref(item_index),
+                    sorted(item),
+                )
+                dropped_by_type[item_type] = dropped_by_type.get(item_type, 0) + 1
 
         _flush_block()
+
+        # The per-item breadcrumbs above are DEBUG, which a deployment running
+        # at INFO never sees — an operator would have to suspect the loss first
+        # and re-parse the document to confirm it. Summarize once per document
+        # at WARNING so an unmapped item type is visible on the first ingest,
+        # naming the types to go looking for. Silent when nothing was dropped.
+        # ``document_name`` is part of every one of these lines: parse workers
+        # run concurrently (``max_parallel_insert``) and neither log formatter
+        # carries per-document context, so without it an interleaved batch
+        # reports a loss the operator cannot attribute to an input file.
+        if dropped_by_type:
+            logger.warning(
+                "[mineru_ir_builder] %r: %d content_list item(s) dropped with "
+                "no usable text: %s",
+                document_name,
+                sum(dropped_by_type.values()),
+                ", ".join(
+                    f"{t or '<untyped>'}={n}"
+                    for t, n in sorted(dropped_by_type.items())
+                ),
+            )
 
         if not doc_title:
             doc_title = Path(document_name).stem or document_name
@@ -521,7 +613,11 @@ class MinerUIRBuilder:
     ) -> tuple[IRDrawing, AssetSpec | None]:
         img_path = str(item.get("img_path") or item.get("path") or "")
         src_val = str(item.get("src") or "")
-        captions = item.get("image_caption") or item.get("captions")
+        captions = (
+            item.get("image_caption")
+            or item.get("chart_caption")
+            or item.get("captions")
+        )
         caption = str(item.get("caption") or "")
         if not caption and isinstance(captions, list) and captions:
             caption = str(captions[0])
@@ -563,7 +659,11 @@ class MinerUIRBuilder:
             asset_ref=ref,
             fmt=fmt,
             caption=caption,
-            footnotes=_as_str_list(item.get("image_footnote") or item.get("footnotes")),
+            footnotes=_as_str_list(
+                item.get("image_footnote")
+                or item.get("chart_footnote")
+                or item.get("footnotes")
+            ),
             src=src_val,
         )
         return drawing, asset

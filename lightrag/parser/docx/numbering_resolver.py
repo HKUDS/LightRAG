@@ -45,13 +45,13 @@ class NumberingResolver:
         "japaneseCounting": lambda n: NumberingResolver._to_chinese(n),
         "taiwaneseCounting": lambda n: NumberingResolver._to_chinese(n),
         "ideographDigital": lambda n: NumberingResolver._to_ideograph_digital(n),
-        "ideographTraditional": lambda n: "甲乙丙丁戊己庚辛壬癸"[(n - 1) % 10],
+        "ideographTraditional": lambda n: NumberingResolver._to_heavenly_stem(n),
         "bullet": lambda n: "•",
         "none": lambda n: "",
     }
 
-    #: numFmt -> the largest count its converter actually renders. Above the
-    #: limit the label degrades to the decimal string, which is legible and
+    #: numFmt -> the largest count its converter actually renders. Outside the
+    #: domain the label degrades to the decimal string, which is legible and
     #: obviously not a Chinese numeral (unlike the silent decimal default for an
     #: UNMAPPED numFmt, where `（1）` passes for `（一）`). The counting families
     #: all share ``_to_chinese``'s 1-99 domain, but they do NOT share a single
@@ -60,14 +60,39 @@ class NumberingResolver:
     #: while chineseCountingThousand keeps counting (一百) — three renderings, no
     #: corpus document that reaches any of them, so none is implemented. This
     #: table exists to make the event FINDABLE: a real document that gets there
-    #: is the evidence needed to implement the right one.
+    #: is the evidence needed to implement the right one. The Roman cutoff is
+    #: the converter's own (standard Roman numerals stop at 3999), not a
+    #: rendering choice; ideographTraditional renders only the ten Heavenly
+    #: Stems, and what Word shows past 癸 is likewise unimplemented.
+    #:
+    #: This table carries the UPPER bound only; the lower one is shared by
+    #: every converter and lives in :data:`POSITIVE_DOMAIN_FORMATS`.
     LIMITED_DOMAIN_FORMATS = {
         "lowerLetter": 78,
         "upperLetter": 78,
+        "lowerRoman": 3999,
+        "upperRoman": 3999,
+        "ideographTraditional": 10,
         "chineseCounting": 99,
         "chineseCountingThousand": 99,
         "japaneseCounting": 99,
         "taiwaneseCounting": 99,
+    }
+
+    #: numFmts whose converter renders from 1 upward and degrades to the decimal
+    #: string below that, exactly as an over-limit count degrades above the
+    #: LIMITED_DOMAIN_FORMATS entry. A zero or negative counter is reachable from
+    #: an untrusted w:start / w:startOverride, so the fallback is load-bearing —
+    #: and, like the upper bound, must be RECORDED rather than silent.
+    #:
+    #: Derived by exclusion so a newly mapped numFmt is covered by default: only
+    #: decimal / bullet / none render any count faithfully and are left out. A
+    #: future converter that genuinely renders 0 must be excluded here too — the
+    #: derivation errs toward a spurious warning rather than a silent wrong label.
+    POSITIVE_DOMAIN_FORMATS = frozenset(FORMAT_CONVERTERS) - {
+        "decimal",
+        "bullet",
+        "none",
     }
 
     def __init__(self, docx_path: str, *, warnings: Dict | None = None):
@@ -102,8 +127,9 @@ class NumberingResolver:
         # harder to notice than an outright error.
         self.unsupported_formats: set[str] = set()
         # numFmt values that ARE implemented but were asked for a count outside
-        # their converter's domain (see LIMITED_DOMAIN_FORMATS), collected the
-        # first time each is hit.
+        # their converter's domain — above LIMITED_DOMAIN_FORMATS or, for a
+        # POSITIVE_DOMAIN_FORMATS member, below 1 — collected the first time
+        # each is hit.
         self.out_of_range_formats: set[str] = set()
         self._warnings = warnings
         self._parse_numbering_xml(docx_path)
@@ -129,21 +155,28 @@ class NumberingResolver:
     def _note_out_of_range(self, num_fmt: str, count: int) -> None:
         """Record a count a SUPPORTED numFmt cannot render, once per numFmt.
 
+        BOTH ends of the domain count: a converter degrades to decimal below 1
+        just as it does above its LIMITED_DOMAIN_FORMATS limit, and a caller
+        reading the warnings must be able to see either.
+
         Same contract as :meth:`_note_unsupported_format`: must never raise
         (the callers swallow exceptions, so a raise here would be invisible),
         and the label still renders — as decimal — rather than failing the
         document.
         """
         limit = self.LIMITED_DOMAIN_FORMATS.get(num_fmt)
-        if limit is None or count <= limit or num_fmt in self.out_of_range_formats:
+        out_of_range = (count < 1 and num_fmt in self.POSITIVE_DOMAIN_FORMATS) or (
+            limit is not None and count > limit
+        )
+        if not out_of_range or num_fmt in self.out_of_range_formats:
             return
         self.out_of_range_formats.add(num_fmt)
         logger.warning(
-            "Numbering format '%s' cannot render count %d (supported up to %d); "
+            "Numbering format '%s' cannot render count %d (renders %s); "
             "those labels fall back to decimal",
             num_fmt,
             count,
-            limit,
+            f"1-{limit}" if limit is not None else "1 and up",
         )
         if self._warnings is not None:
             self._warnings["numbering_out_of_range_formats"] = len(
@@ -592,6 +625,14 @@ class NumberingResolver:
         if not 1 <= n <= 78:
             return str(n)
         return chr(ord("a") + (n - 1) % 26) * ((n - 1) // 26 + 1)
+
+    @staticmethod
+    def _to_heavenly_stem(n: int) -> str:
+        """Render the ten Heavenly Stems (甲…癸) and fall back to the decimal
+        string outside 1-10. Never wrap: item 11 must not pass for item 1."""
+        if not 1 <= n <= 10:
+            return str(n)
+        return "甲乙丙丁戊己庚辛壬癸"[n - 1]
 
     @staticmethod
     def _to_roman(n: int) -> str:

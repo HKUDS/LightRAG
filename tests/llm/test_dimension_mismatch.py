@@ -4,6 +4,11 @@ Tests for dimension mismatch handling during migration.
 This test module verifies that both PostgreSQL and Qdrant storage backends
 properly detect and handle vector dimension mismatches when migrating from
 legacy collections/tables to new ones with different embedding models.
+
+The refusal is ``VectorSpaceMismatchError``, not ``DataMigrationError``:
+nothing is migrated when it fires, and ``lightrag-rebuild-vdb`` recovers from
+this specific condition by dropping the container. See issue #3978 and
+``docs/design/VectorSpaceProvenance.md``.
 """
 
 import json
@@ -12,7 +17,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 
 from lightrag.kg.qdrant_impl import QdrantVectorDBStorage
 from lightrag.kg.postgres_impl import PGVectorStorage
-from lightrag.exceptions import DataMigrationError
+from lightrag.exceptions import VectorSpaceMismatchError
 
 
 # Note: Tests should use proper table names that have DDL templates
@@ -25,10 +30,10 @@ class TestQdrantDimensionMismatch:
 
     def test_qdrant_dimension_mismatch_raises_error(self):
         """
-        Test that Qdrant raises DataMigrationError when dimensions don't match.
+        Test that Qdrant raises VectorSpaceMismatchError when dimensions don't match.
 
         Scenario: Legacy collection has 1536d vectors, new model expects 3072d.
-        Expected: DataMigrationError is raised to prevent data corruption.
+        Expected: VectorSpaceMismatchError is raised to prevent data corruption.
         """
         from qdrant_client import models
 
@@ -52,6 +57,10 @@ class TestQdrantDimensionMismatch:
         client.collection_exists.side_effect = collection_exists_side_effect
         client.get_collection.return_value = legacy_collection_info
         client.count.return_value.count = 100  # Legacy has data
+        # Untagged (pre-isolation) legacy: no workspace_id anywhere, so every
+        # one of its points is this workspace's migration source.
+        legacy_collection_info.payload_schema = {}
+        client.scroll.return_value = ([], None)
 
         # Patch _find_legacy_collection to return the legacy collection name
         with patch(
@@ -59,8 +68,8 @@ class TestQdrantDimensionMismatch:
             return_value="lightrag_vdb_chunks",
         ):
             # Call setup_collection with 3072d (different from legacy 1536d)
-            # Should raise DataMigrationError due to dimension mismatch
-            with pytest.raises(DataMigrationError) as exc_info:
+            # Should raise VectorSpaceMismatchError due to dimension mismatch
+            with pytest.raises(VectorSpaceMismatchError) as exc_info:
                 QdrantVectorDBStorage.setup_collection(
                     client,
                     "lightrag_chunks_model_3072d",
@@ -82,8 +91,10 @@ class TestQdrantDimensionMismatch:
         # Verify new collection was NOT created (error raised before creation)
         client.create_collection.assert_not_called()
 
-        # Verify migration was NOT attempted
-        client.scroll.assert_not_called()
+        # Verify migration was NOT attempted. ``scroll`` is not asserted on:
+        # the refusal path samples the legacy payloads to find out whether the
+        # collection is workspace-tagged, which is how the refusal is scoped to
+        # what THIS workspace would migrate.
         client.upsert.assert_not_called()
 
     def test_qdrant_dimension_match_proceed_migration(self):
@@ -175,10 +186,10 @@ class TestPostgresDimensionMismatch:
 
     async def test_postgres_dimension_mismatch_raises_error_metadata(self):
         """
-        Test that PostgreSQL raises DataMigrationError when dimensions don't match.
+        Test that PostgreSQL raises VectorSpaceMismatchError when dimensions don't match.
 
         Scenario: Legacy table has 1536d vectors, new model expects 3072d.
-        Expected: DataMigrationError is raised to prevent data corruption.
+        Expected: VectorSpaceMismatchError is raised to prevent data corruption.
         """
         # Setup mock database
         db = AsyncMock()
@@ -207,8 +218,8 @@ class TestPostgresDimensionMismatch:
         db._create_vector_index = AsyncMock()
 
         # Call setup_table with 3072d (different from legacy 1536d)
-        # Should raise DataMigrationError due to dimension mismatch
-        with pytest.raises(DataMigrationError) as exc_info:
+        # Should raise VectorSpaceMismatchError due to dimension mismatch
+        with pytest.raises(VectorSpaceMismatchError) as exc_info:
             await PGVectorStorage.setup_table(
                 db,
                 "LIGHTRAG_DOC_CHUNKS_model_3072d",
@@ -226,7 +237,7 @@ class TestPostgresDimensionMismatch:
         Test that PostgreSQL raises error when dimensions don't match (via sampling).
 
         Scenario: Legacy table vector sampling detects 1536d vs expected 3072d.
-        Expected: DataMigrationError is raised to prevent data corruption.
+        Expected: VectorSpaceMismatchError is raised to prevent data corruption.
         """
         db = AsyncMock()
 
@@ -259,8 +270,8 @@ class TestPostgresDimensionMismatch:
         db._create_vector_index = AsyncMock()
 
         # Call setup_table with 3072d (different from legacy 1536d)
-        # Should raise DataMigrationError due to dimension mismatch
-        with pytest.raises(DataMigrationError) as exc_info:
+        # Should raise VectorSpaceMismatchError due to dimension mismatch
+        with pytest.raises(VectorSpaceMismatchError) as exc_info:
             await PGVectorStorage.setup_table(
                 db,
                 "LIGHTRAG_DOC_CHUNKS_model_3072d",
