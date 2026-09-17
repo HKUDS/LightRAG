@@ -215,23 +215,31 @@ class OMMLParser:
         return text
 
     def parse_d(self, root: Element) -> str:
-        bracket_map = {
-            "(": "\\left(",
-            ")": "\\right)",
-            "[": "\\left[",
-            "]": "\\right]",
-            "{": "\\left{",
-            "}": "\\right}",
-            "〈": "\\left\\langle",
-            "〉": "\\right\\rangle",
-            "⟨": "\\left\\langle",
-            "⟩": "\\right\\rangle",
-            "⌊": "\\left\\lfloor",
-            "⌋": "\\right\\rfloor",
-            "⌈": "\\left\\lceil",
-            "⌉": "\\right\\rceil",
-            "|": "\\left|",
-            "‖": "\\left\\|",
+        # A delimiter character selects the glyph; the side it lands on selects
+        # \left or \right. Word writes an opening character as endChr for a
+        # half-open interval ("[0,1["), so a map with the side baked in needs
+        # patch tables, and still emits \left in the end position for every
+        # entry those tables miss.
+        delimiter_map = {
+            "(": "(",
+            ")": ")",
+            "[": "[",
+            "]": "]",
+            "{": "\\{",
+            "}": "\\}",
+            "〈": "\\langle",
+            "〉": "\\rangle",
+            "⟨": "\\langle",
+            "⟩": "\\rangle",
+            "⌊": "\\lfloor",
+            "⌋": "\\rfloor",
+            "⌈": "\\lceil",
+            "⌉": "\\rceil",
+            "|": "|",
+            "‖": "\\|",
+        }
+        # These render at a fixed size, so they carry no \left / \right.
+        fixed_size_map = {
             "⟦": "[\\![",
             "⟧": "]\\!]",
         }
@@ -257,30 +265,18 @@ class OMMLParser:
                 if text:
                     text += seperator
                 text += self.parse(child)
-        end_bracket_replacements = {
-            "|": "\\right|",
-            "‖": "\\right\\|",
-            "[": "\\right[",
-        }
-        start_bracket_replacements = {
-            "]": "\\left]",
-        }
         start = ""
         end = ""
         if start_bracket:
-            if start_bracket in start_bracket_replacements:
-                start = start_bracket_replacements[start_bracket] + " "
-            elif start_bracket in bracket_map:
-                start = bracket_map[start_bracket] + " "
+            if start_bracket in fixed_size_map:
+                start = fixed_size_map[start_bracket] + " "
             else:
-                start = "\\left(" + " "
+                start = "\\left" + delimiter_map.get(start_bracket, "(") + " "
         if end_bracket:
-            if end_bracket in end_bracket_replacements:
-                end = " " + end_bracket_replacements[end_bracket]
-            elif end_bracket in bracket_map:
-                end = " " + bracket_map[end_bracket]
+            if end_bracket in fixed_size_map:
+                end = " " + fixed_size_map[end_bracket]
             else:
-                end = " " + "\\right)"
+                end = " " + "\\right" + delimiter_map.get(end_bracket, ")")
         # If there is no end bracket and this tag contains an m:eqArr tag as a
         # child, we assume that the eqArr should be translated to a cases environment
         # instead of an eqnarray* environment.
@@ -292,6 +288,13 @@ class OMMLParser:
                             text = text.replace("\\begin{eqnarray*}", "")
                             text = text.replace("\\end{eqnarray*}", "")
                             return "\\begin{cases} " + text + " \\end{cases}"
+        # \left and \right must come in pairs; "." is the empty delimiter
+        # used when Word only specifies one side (e.g. a single opening brace).
+        # The double brackets map to fixed-size sequences, not \left/\right.
+        if "\\left" in start and "\\right" not in end:
+            end += " \\right."
+        elif "\\right" in end and "\\left" not in start:
+            start = "\\left. " + start
         if is_matrix:
             if start_bracket == "(" and end_bracket == ")":
                 return text.replace("{matrix}", "{pmatrix}")
