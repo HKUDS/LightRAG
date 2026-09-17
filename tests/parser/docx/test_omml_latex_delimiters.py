@@ -206,18 +206,43 @@ def test_matrix_flavour_follows_the_normalized_delimiter(beg, end, expected):
     assert convert_omml_to_latex(_matrix(beg, end)) == expected
 
 
+@pytest.mark.parametrize(("sep", "expected"), [("｜", "|"), ("，", ","), ("；", ";")])
 @pytest.mark.offline
-def test_fullwidth_separator_is_normalized():
+def test_fullwidth_separator_is_normalized(sep, expected):
     # sepChr is emitted verbatim between the elements, so a fullwidth bar would
     # otherwise put a CJK codepoint into math mode.
-    node = ET.fromstring(
+    assert convert_omml_to_latex(_separated(sep)) == f"\\left( x{expected}y \\right)"
+
+
+def _separated(sep: str) -> ET.Element:
+    """Build an ``m:oMath`` holding two elements split by ``sep``."""
+    return ET.fromstring(
         f"<m:oMath {MATH_NS}><m:d>"
-        '<m:dPr><m:begChr m:val="（"/><m:endChr m:val="）"/><m:sepChr m:val="｜"/></m:dPr>'
+        f'<m:dPr><m:begChr m:val="("/><m:endChr m:val=")"/><m:sepChr m:val="{sep}"/></m:dPr>'
         "<m:e><m:r><m:t>x</m:t></m:r></m:e>"
         "<m:e><m:r><m:t>y</m:t></m:r></m:e>"
         "</m:d></m:oMath>"
     )
-    assert convert_omml_to_latex(node) == r"\left( x|y \right)"
+
+
+@pytest.mark.parametrize(
+    "sep", ["＃", "＄", "％", "＆", "＼", "＾", "＿", "｛", "｝", "～"]
+)
+@pytest.mark.offline
+def test_separator_keeps_the_character_word_wrote_when_folding_makes_syntax(sep):
+    # Unlike a delimiter, the separator is emitted verbatim, and these fold
+    # straight onto LaTeX's special characters: ＆ would become an alignment
+    # tab, ＼ the start of a command, ＾/＿ a script, and ％ would comment out
+    # the rest of the line. Folding has to stop short of making syntax.
+    assert convert_omml_to_latex(_separated(sep)) == f"\\left( x{sep}y \\right)"
+
+
+@pytest.mark.offline
+def test_delimiter_of_a_latex_special_character_never_reaches_the_output():
+    # The guard above is only needed for the separator: a delimiter character
+    # is a lookup key, and one that is not in either map falls back to the
+    # parenthesis instead of being emitted.
+    assert convert_omml_to_latex(_delimited("＆", "％")) == r"\left( x \right)"
 
 
 @pytest.mark.offline

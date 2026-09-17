@@ -47,19 +47,43 @@ FIXED_SIZE_DELIMITER_MAP = {
 }
 
 
+# LaTeX's own special characters, which change the structure of an expression
+# rather than printing. NFKC folds the fullwidth forms straight onto them
+# (＆ -> &, ％ -> %), so a separator has to be guarded against them; see
+# _normalize_separator. A delimiter needs no such guard: its normalized
+# character is only ever a lookup key, and an unmapped one falls back to the
+# parenthesis rather than reaching the output.
+_LATEX_SPECIAL_CHARS = frozenset("#$%&\\^_{}~")
+
+
 def _normalize_delimiter(char: str | None) -> str | None:
     """Fold a Word delimiter character to the form the delimiter maps key on.
 
-    Pass the value of a single ``m:begChr`` / ``m:endChr`` / ``m:sepChr``
-    attribute and nothing else: NFKC is lossy over running text - it flattens
-    superscripts, mathematical alphanumerics and ligatures - so it must never
-    reach equation content. Normalizing here rather than at the lookup keeps
-    every consumer of the character (the maps, and the matrix-flavour test
-    below them) on one spelling.
+    Pass the value of a single ``m:begChr`` / ``m:endChr`` attribute and
+    nothing else: NFKC is lossy over running text - it flattens superscripts,
+    mathematical alphanumerics and ligatures - so it must never reach equation
+    content. Normalizing here rather than at the lookup keeps every consumer of
+    the character (the maps, and the matrix-flavour test below them) on one
+    spelling. For ``m:sepChr`` use _normalize_separator instead.
     """
     if not char:
         return char
     return unicodedata.normalize("NFKC", char)
+
+
+def _normalize_separator(char: str | None) -> str | None:
+    """Fold a Word ``m:sepChr`` character, unless folding it would make syntax.
+
+    The separator is emitted verbatim between the elements, so normalizing it
+    has to stop where the result would stop printing: ＆ ＼ ｛ and friends fold
+    onto LaTeX's special characters, and ％ in particular would comment out the
+    rest of the line. Such a character keeps the spelling Word wrote, which is
+    the glyph the author chose and what this parser emitted before the fold.
+    """
+    normalized = _normalize_delimiter(char)
+    if normalized and any(c in _LATEX_SPECIAL_CHARS for c in normalized):
+        return char
+    return normalized
 
 
 class OMMLParser:
@@ -302,7 +326,7 @@ class OMMLParser:
                             child2.attrib.get(qn("m:val"))
                         )
                     if child2.tag == qn("m:sepChr"):
-                        seperator = _normalize_delimiter(child2.attrib.get(qn("m:val")))
+                        seperator = _normalize_separator(child2.attrib.get(qn("m:val")))
                 if child2.tag == qn("m:m"):
                     is_matrix = True
 
