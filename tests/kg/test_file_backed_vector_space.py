@@ -385,3 +385,96 @@ async def test_drop_leaves_no_marker_behind(backend, tmp_path):
 
     assert (await storage.drop())["status"] == "success"
     assert backend.read_marker(tmp_path) == (None, None)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.asyncio
+async def test_an_unnamed_model_does_not_erase_recorded_provenance(backend, tmp_path):
+    """An ordinary write must not delete a model name it cannot replace.
+
+    Attach accepts a process with no configured model against a marked store —
+    absent evidence never refuses. Writing the marker is a stronger claim: with
+    no name to record, the payload is dimension-only, so certifying here would
+    ERASE the model that was already established and reopen the same-dimension
+    swap it was recorded to catch.
+    """
+    await _seed(backend, tmp_path, _Embed("bge-m3", 8))
+
+    unnamed = backend.storage(tmp_path, _Embed(None, 8))
+    await unnamed.initialize()  # accepted: absent declared evidence
+    await unnamed.upsert({"v2": {"content": "world"}})
+    await unnamed.index_done_callback()
+
+    assert backend.read_marker(tmp_path)[0] == "bge-m3"
+
+    # And the provenance still bites afterwards.
+    with pytest.raises(VectorSpaceMismatchError):
+        await backend.storage(tmp_path, _Embed("e5-large", 8)).initialize()
+
+
+@pytest.mark.asyncio
+async def test_nano_rechecks_provenance_when_reloading_a_peer_commit(tmp_path):
+    """Nano only: the peer-reload path built a client without the check.
+
+    A peer that rebuilt the namespace under a different same-dimension model
+    would have been adopted and served with this process's embedder. A rolling
+    embedding change is not supported, so the honest answer to finding one is
+    to stop — at runtime if that is when it surfaces.
+    """
+    backend = _Backend("nano")
+    storage = await _seed(backend, tmp_path, _Embed("bge-m3", 8))
+
+    # A peer rebuilds the same files under another model of the same dimension,
+    # by the supported route: refused attach, drop, attach again.
+    peer = backend.storage(tmp_path, _Embed("e5-large", 8))
+    with pytest.raises(VectorSpaceMismatchError):
+        await peer.initialize()
+    assert (await peer.drop())["status"] == "success"
+    await peer.initialize()
+    await peer.upsert({"vp": {"content": "peer"}})
+    await peer.index_done_callback()
+
+    storage.storage_updated.value = True
+    with pytest.raises(VectorSpaceMismatchError, match="'e5-large' -> 'bge-m3'"):
+        await storage.get_by_id("vp")
+
+
+@pytest.mark.asyncio
+async def test_faiss_refuses_to_publish_beside_a_contradicting_marker(tmp_path):
+    """FAISS only: an unwritable marker must not wedge the rebuild.
+
+    ``drop()`` swallows a marker it cannot remove — correctly, the vectors are
+    already gone by then. If the save then also swallowed a marker it cannot
+    replace, it would publish the rebuilt pair beside the OLD model's marker,
+    every later attach would refuse, and repeated drops could never clear it.
+    Failing before publishing is what keeps that from becoming permanent.
+    """
+    backend = _Backend("faiss")
+    await _seed(backend, tmp_path, _Embed("bge-m3", 8))
+
+    storage = backend.storage(tmp_path, _Embed("e5-large", 8))
+    with pytest.raises(VectorSpaceMismatchError):
+        await storage.initialize()
+
+    marker = backend.marker_path(tmp_path)
+    real_remove = os.remove
+
+    def _remove(path, *args, **kwargs):
+        if str(path) == marker:
+            raise PermissionError("marker file is locked")
+        return real_remove(path, *args, **kwargs)
+
+    with patch("lightrag.kg.faiss_impl.os.remove", side_effect=_remove):
+        assert (await storage.drop())["status"] == "success"
+
+    await storage.initialize()
+    await storage.upsert({"v2": {"content": "world"}})
+
+    # The marker on disk still says bge-m3 and cannot be replaced, so the save
+    # must refuse rather than publish e5-large rows next to it.
+    with patch(
+        "lightrag.kg.faiss_impl.atomic_write",
+        side_effect=PermissionError("marker file is locked"),
+    ):
+        with pytest.raises(VectorSpaceMismatchError, match="'bge-m3' -> 'e5-large'"):
+            await storage.index_done_callback()

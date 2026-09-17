@@ -23,6 +23,7 @@ from lightrag.constants import DEFAULT_QUERY_PRIORITY
 from . import file_fingerprint
 from .vector_space import (
     assert_vector_space_matches,
+    declared_model_name,
     read_vector_space_marker,
     vector_space_marker,
 )
@@ -1364,10 +1365,24 @@ class FaissVectorDBStorage(BaseVectorStorage):
     def _write_vector_space_file(self) -> None:
         """Record this instance's embedding space beside the index.
 
-        Called from the save path, so the marker describes rows this process
-        wrote. A failure is logged and swallowed: the vectors are what matter,
-        and an unwritable marker degrades to the pre-marker state (unmarked,
-        undetectable) rather than failing a save that otherwise succeeded.
+        Called from the save path, before the fenced pair, so the marker
+        describes rows this process is about to write.
+
+        A failure degrades to unmarked -- the vectors are what matter, and an
+        unwritable marker puts the store back where it was before this feature
+        existed -- EXCEPT when what is already on disk contradicts us. Then
+        degrading would publish rows in this instance's embedding space beside
+        a marker naming another one, and every later attach would refuse a
+        store it cannot be talked out of: the sidecar cannot be removed (its
+        drop swallows that too, correctly, because by then the vectors are
+        already gone) and cannot be replaced, so repeated drops would never
+        clear it. Raising here is what keeps that from becoming permanent --
+        the pair is not published, so nothing new is written into the
+        contradiction.
+
+        Raises:
+            VectorSpaceMismatchError: the marker could not be written and the
+                one on disk names a different embedding space.
         """
         try:
             atomic_write(
@@ -1375,13 +1390,30 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 self._dump_vector_space_marker,
                 workspace=self.workspace or "_",
             )
+            return
         except Exception as e:
-            log_without_raising(
-                logger.warning,
-                f"[{self.workspace}] Could not record the embedding-space marker at "
-                f"{self._vector_space_file}: {e}. The store stays unmarked, so a "
-                f"later same-dimension model change cannot be detected.",
-            )
+            write_error = e
+
+        stored_model, stored_dim = self._read_vector_space_file()
+        assert_vector_space_matches(
+            backend=type(self).__name__,
+            container=self._vector_space_file,
+            embedding_func=self.embedding_func,
+            stored_model=stored_model,
+            stored_dim=stored_dim,
+            detail=(
+                f"The marker could not be rewritten ({write_error}), so this save "
+                f"was abandoned rather than publishing vectors beside a marker "
+                f"that contradicts them. Remove {self._vector_space_file} by hand "
+                f"and re-run the rebuild."
+            ),
+        )
+        log_without_raising(
+            logger.warning,
+            f"[{self.workspace}] Could not record the embedding-space marker at "
+            f"{self._vector_space_file}: {write_error}. The store stays unmarked, "
+            f"so a later same-dimension model change cannot be detected.",
+        )
 
     def _load_faiss_index(self):
         """
@@ -1436,8 +1468,16 @@ class FaissVectorDBStorage(BaseVectorStorage):
             # model's vectors and make the lie permanent, which is the very
             # thing the attach path refuses to do. Certification for that case
             # needs the adoption probe, one layer up.
-            self._vector_space_certified = (
-                stored_model is not None or self._index.ntotal == 0
+            # Certification needs BOTH sides named. A process with no
+            # configured model that certified a marked store would, on its next
+            # save, replace the marker with a dimension-only payload -- erasing
+            # provenance that was already established and reopening the
+            # same-dimension swap it was recorded to catch. Attach accepts such
+            # a process (absent evidence never refuses); writing the marker is a
+            # different, stronger claim.
+            self._vector_space_certified = self._index.ntotal == 0 or (
+                stored_model is not None
+                and declared_model_name(self.embedding_func) is not None
             )
 
             # Convert string keys back to int and reconstruct vectors from index

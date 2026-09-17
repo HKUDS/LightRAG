@@ -26,6 +26,7 @@ from nano_vectordb import NanoVectorDB
 from . import file_fingerprint
 from .vector_space import (
     assert_vector_space_matches,
+    declared_model_name,
     read_vector_space_marker,
     vector_space_marker,
 )
@@ -275,7 +276,16 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # would record a model over another model's vectors and make the lie
         # permanent, which is the very thing the attach path refuses to do.
         # Certification for that case needs the adoption probe, one layer up.
-        self._vector_space_certified = stored_model is not None or len(client) == 0
+        # Certification needs BOTH sides named. A process with no configured
+        # model that certified a marked store would, on its next save, replace
+        # the marker with a dimension-only payload -- erasing provenance that
+        # was already established and reopening the same-dimension swap it was
+        # recorded to catch. Attach accepts such a process (absent evidence
+        # never refuses); writing the marker is a different, stronger claim.
+        self._vector_space_certified = len(client) == 0 or (
+            stored_model is not None
+            and declared_model_name(self.embedding_func) is not None
+        )
         return client
 
     def _read_stored_dimension(self) -> int | None:
@@ -403,10 +413,15 @@ class NanoVectorDBStorage(BaseVectorStorage):
                     "its stat failed; this is a retry of a reload that did not "
                     "land, not a second lost notification."
                 )
-        self._client = NanoVectorDB(
-            self.embedding_func.embedding_dim,
-            storage_file=self._client_file_name,
-        )
+        # Through the CHECKED loader, not a bare NanoVectorDB: a peer may have
+        # rebuilt this namespace under a different model of the same dimension,
+        # and adopting that snapshot would serve its vectors with this
+        # process's embedder. Refusing here is a runtime raise rather than a
+        # startup one, which is the intended shape -- a rolling embedding-model
+        # change is not supported, so the honest answer to finding one is to
+        # stop, not to serve. It also re-derives certification, which the
+        # previous snapshot's value must not outlive.
+        self._client = self._build_client()
         self._adopt_fingerprint(fingerprint)
         self.storage_updated.value = False
         return True

@@ -110,6 +110,35 @@ until `drop()` empties it or the adoption probe certifies it. Getting this wrong
 does not merely miss a detection: it records a false marker that every later
 start believes, and that the adoption probe then sees no conflict in.
 
+The same rule closes a second door: a process whose `embedding_func` has no
+`model_name` is *accepted* against a marked container (it cannot contradict the
+name), but it may not certify one either. If it did, its next save would replace
+a payload naming a model with a dimension-only payload — erasing provenance that
+was already established and reopening the very same-dimension swap the name was
+recorded to catch. Certification needs **both** sides named; attach needs
+neither.
+
+### The server refuses to start unnamed
+
+The library keeps working without `model_name` — and `lightrag-rebuild-vdb`
+must, because it is the way out of a refusal. The **server** does not: it
+refuses to start when `EMBEDDING_MODEL` is unset, empty, or whitespace.
+
+A server with no name to record provisions containers that are unprotected for
+life, and the rule above means that silence never ends on its own. There is also
+no in-place way to fix it later: LightRAG propagates no configuration between
+worker processes and supports no rolling update, so an embedding-model change is
+always stop → `lightrag-rebuild-vdb` → start. A deployment that cannot say which
+model wrote its vectors has no safe path through that sequence, and the failure
+it is heading for is not an error — it is confidently wrong neighbours, returned
+silently.
+
+The refusal names `EMBEDDING_MODEL`, `lightrag-rebuild-vdb`, and why rolling is
+not an option, because an operator who hits it at startup is exactly the
+operator who needs all three. An `args` object that never carried the field is
+refused the same way: a safety guard exempting "the attribute was never set" is
+a guard with a bypass.
+
 ## Where the marker lives: never in the data plane
 
 A marker must not be an ordinary vector record. The rule and the reason:
