@@ -174,21 +174,22 @@ def test_escaped_pipe_only_line_over_thematic_break_is_not_a_table():
     assert "foo \\| bar" in ex.blocks[0]["content"]
 
 
-def test_escaped_pipe_only_line_ends_the_table_body():
-    # A trailing line whose only pipe is escaped carries no column separator,
-    # so it ends the table and stays a paragraph -- the body terminator reads
-    # the same rule as the header gate instead of absorbing a bogus row.
+def test_escaped_pipe_only_line_stays_in_the_table_body():
+    # Escaping is content-level. Once the delimiter row has established the
+    # table, a line whose only pipe is escaped is still a body row -- GFM keeps
+    # it, as one cell padded to the header width. Requiring an unescaped ``|``
+    # here would move table data out into a paragraph; only the header gate,
+    # where no table is established yet, may demand structural evidence.
     md = "| h1 | h2 |\n| --- | --- |\n| a | b |\ntail \\| text\n"
     ex = _extract(md)
     (table,) = ex.tables.values()
-    assert table["rows"] == [["a", "b"]]
-    assert "tail \\| text" in ex.blocks[0]["content"]
+    assert table["rows"] == [["a", "b"], ["tail | text"]]
+    assert "tail \\| text" not in ex.blocks[0]["content"]
 
 
-def test_escaped_backslash_line_stays_in_the_table_body():
-    # Stability (green before and after): ``\\|`` is an escaped backslash
-    # followed by a real separator, so this line is still a body row. The
-    # terminator honours the whole escape rule, not "a pipe after a backslash".
+def test_escaped_backslash_body_row_splits_into_two_cells():
+    # ``\\|`` is an escaped backslash followed by a real separator, so the row
+    # carries two cells and the backslash stays in the first one.
     md = "| h1 | h2 |\n| --- | --- |\n| a | b |\nc \\\\| d\n"
     ex = _extract(md)
     (table,) = ex.tables.values()

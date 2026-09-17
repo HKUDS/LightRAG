@@ -157,9 +157,11 @@ def _iter_row_cells(s: str) -> Iterator[str]:
 def _has_unescaped_pipe(s: str) -> bool:
     """True iff ``s`` carries at least one column separator.
 
-    Both places that decide whether a line belongs to a pipe table — the header
-    gate and the body-row terminator — must ask this instead of testing for a
-    raw ``|``, or a paragraph whose only pipe is escaped is read as a table.
+    Asked by the header gate, where no table exists yet and a raw ``|`` is not
+    evidence of one: ``foo \\| bar`` over ``---`` is a paragraph, not a column.
+    :func:`_consume_pipe_table` must NOT ask it — once the delimiter row has
+    established the table, escaping is cell content and no longer decides
+    structure, so a body row is admitted on a raw ``|``.
     Shares :func:`_iter_row_cells` with :func:`_split_pipe_row`, so the gate and
     the split can never disagree about a case such as ``\\\\|``."""
     if "|" not in s:
@@ -690,15 +692,19 @@ def _consume_pipe_table(
     """Parse a GFM pipe table whose header is ``lines[start]`` and delimiter is
     ``lines[start+1]``. Returns ``(consumed, body_rows, header_grid)``.
 
-    A body row must carry an unescaped ``|``: a following line whose only pipes
-    are escaped has no column separator, so it ends the table and is left to the
-    caller as plain text — the same rule that gates the header."""
+    A body row is any following line that is non-blank and contains a ``|``,
+    escaped or not — deliberately NOT the header gate's unescaped-``|`` test.
+    The table is established by this point, so an escape is cell content and
+    must not push a row out into a paragraph. Requiring a ``|`` at all is this
+    parser's narrowing: GFM ends the table only at a blank line or the start of
+    another block, which needs block-structure detection the subset omits.
+    A row may carry fewer cells than the header; the IR builder pads it."""
     header = _split_pipe_row(lines[start])
     body: list[list[str]] = []
     j = start + 2  # skip header + delimiter
     while j < len(lines):
         s = lines[j].strip()
-        if not s or not _has_unescaped_pipe(s):
+        if not s or "|" not in s:
             break
         body.append(_split_pipe_row(lines[j]))
         j += 1
