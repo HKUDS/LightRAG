@@ -1,8 +1,12 @@
 """Regression tests for paragraph-semantic LevelMerge merging and the top-level R fallback."""
 
+import json
+from collections.abc import Sequence
+
 import pytest
 
 from lightrag.chunker.paragraph_semantic import (
+    _IDEAL_RATIO,
     _glue_heading_only_blocks,
     _is_heading_only,
     _merge_small_blocks,
@@ -25,7 +29,9 @@ def _make_tokenizer() -> Tokenizer:
     return Tokenizer(model_name="char", tokenizer=_CharTokenizer())
 
 
-def _make_block(text: str, *, tokenizer: Tokenizer, level: int = 1) -> dict:
+def _make_block(
+    text: str, *, tokenizer: Tokenizer, level: int = 1, blockids: Sequence[str] = ()
+) -> dict:
     return {
         "heading": "H",
         "parent_headings": [],
@@ -34,6 +40,8 @@ def _make_block(text: str, *, tokenizer: Tokenizer, level: int = 1) -> dict:
         "content": text,
         "tokens": len(tokenizer.encode(text)),
         "table_chunk_role": "none",
+        "is_title_block": False,
+        "blockids": list(blockids),
     }
 
 
@@ -105,6 +113,119 @@ def test_tail_absorption_still_fires_when_joined_size_fits():
     assert len(merged) == 1
     assert merged[0]["tokens"] == 83
     assert merged[0]["content"] == "x" * 80 + "\n\n" + "y" * 1
+
+
+@pytest.mark.offline
+def test_tail_absorption_preserves_blockids():
+    """Tail absorption built its result as a raw dict literal, omitting
+    ``blockids`` -- unlike _new_block and _merged_pair, the other two block
+    constructors, which both carry it. The absorbed block then reached chunk
+    assembly with no provenance at all, so the chunk was emitted without its
+    ``sidecar`` (see the end-to-end test below).
+
+    ``is_title_block`` is asserted for schema consistency only: every reader
+    goes through _is_pinned -> ``.get``, so its absence was already falsy and
+    changed no behaviour. Tail absorption is gated on ``not _is_pinned(cur)``,
+    which is why False is the right value.
+    """
+    tokenizer = _make_tokenizer()
+    blocks = [
+        _make_block("x" * 80, tokenizer=tokenizer, blockids=["blk-1"]),
+        _make_block("y" * 1, tokenizer=tokenizer, blockids=["blk-2"]),
+    ]
+
+    merged = _merge_small_blocks(
+        blocks,
+        tokenizer=tokenizer,
+        target_max=100,
+        target_ideal=80,
+        small_tail_threshold=12,
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["blockids"] == ["blk-1", "blk-2"]
+    assert merged[0]["is_title_block"] is False
+
+
+@pytest.mark.offline
+def test_tail_absorption_unions_multi_block_run_and_dedups():
+    # A run of more than one absorbed block, where the absorber and the first
+    # tail block share a blockid -- exactly what AnchorSplit produces when it
+    # slices one blocks.jsonl row into fragments and the last sliver is then
+    # tail-absorbed. Exercises the absorption loop across >1 iteration AND the
+    # _dedup_preserving_order call; a plain concatenation would emit blk-1
+    # twice and a per-block overwrite would keep only the last id.
+    tokenizer = _make_tokenizer()
+    blocks = [
+        _make_block("x" * 80, tokenizer=tokenizer, blockids=["blk-1"]),
+        _make_block("y" * 1, tokenizer=tokenizer, blockids=["blk-1"]),
+        _make_block("z" * 1, tokenizer=tokenizer, blockids=["blk-2"]),
+    ]
+
+    merged = _merge_small_blocks(
+        blocks,
+        tokenizer=tokenizer,
+        target_max=100,
+        target_ideal=80,
+        small_tail_threshold=12,
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["content"] == "x" * 80 + "\n\n" + "y" + "\n\n" + "z"
+    assert merged[0]["blockids"] == ["blk-1", "blk-2"]
+
+
+@pytest.mark.offline
+def test_tail_absorbed_chunk_still_emits_sidecar(tmp_path):
+    # The user-visible half of the same defect, through the public entry point:
+    # a chunk built by tail absorption carried no "sidecar" key at all -- the
+    # ABSORBER's own blockid was lost too, not just the absorbed tail's. P is
+    # the only strategy that emits its own sidecars (the pipeline never sets
+    # sidecar_backfill_eligible for it, because P chunks carry no _source_span),
+    # so nothing downstream repairs this.
+    #
+    # Sizes are derived from _IDEAL_RATIO so a future ratio change cannot
+    # silently move this onto the _merged_pair path, which unions blockids
+    # correctly and would let the test pass while covering nothing: the
+    # absorber must stay at-or-above IDEAL to reach tail absorption at all.
+    target_max = 1000
+    ideal = int(target_max * _IDEAL_RATIO)
+    rows = [
+        {
+            "blockid": "blk-1",
+            "type": "content",
+            "level": 1,
+            "heading": "A",
+            "parent_headings": [],
+            "content": "# A\n\n" + "x" * (ideal + 100),
+        },
+        {
+            "blockid": "blk-2",
+            "type": "content",
+            "level": 1,
+            "heading": "A",
+            "parent_headings": [],
+            "content": "# A\n\n" + "y" * 5,
+        },
+    ]
+    blocks_path = tmp_path / "doc.blocks.jsonl"
+    blocks_path.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+    )
+
+    chunks = chunking_by_paragraph_semantic(
+        _make_tokenizer(),
+        "",
+        target_max,
+        blocks_path=str(blocks_path),
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0]["sidecar"] == {
+        "type": "block",
+        "id": "blk-1",
+        "refs": [{"type": "block", "id": "blk-1"}, {"type": "block", "id": "blk-2"}],
+    }
 
 
 @pytest.mark.offline
