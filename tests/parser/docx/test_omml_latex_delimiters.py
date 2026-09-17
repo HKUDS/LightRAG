@@ -202,6 +202,11 @@ def test_double_angle_brackets_are_fixed_size(beg, end, expected):
         ("｜", "｜", r"\begin{vmatrix} a \end{vmatrix}"),
         ("(", ")", r"\begin{pmatrix} a \end{pmatrix}"),
         ("‖", "‖", r"\begin{Vmatrix} a \end{Vmatrix}"),
+        # bmatrix is reached through the square bracket these map to.
+        ("[", "]", r"\begin{bmatrix} a \end{bmatrix}"),
+        ("［", "］", r"\begin{bmatrix} a \end{bmatrix}"),
+        ("【", "】", r"\begin{bmatrix} a \end{bmatrix}"),
+        ("〔", "〕", r"\begin{bmatrix} a \end{bmatrix}"),
     ],
 )
 @pytest.mark.offline
@@ -209,6 +214,31 @@ def test_matrix_flavour_follows_the_normalized_delimiter(beg, end, expected):
     # The matrix branch compares the character itself rather than looking it up,
     # so normalizing at the lookup alone would leave a fullwidth-delimited
     # matrix falling through to bmatrix.
+    assert convert_omml_to_latex(_matrix(beg, end)) == expected
+
+
+@pytest.mark.parametrize(
+    ("beg", "end", "expected"),
+    [
+        (
+            "《",
+            "》",
+            r"\langle\!\langle \begin{matrix} a \end{matrix} \rangle\!\rangle",
+        ),
+        ("〈", "〉", r"\left\langle \begin{matrix} a \end{matrix} \right\rangle"),
+        ("⟦", "⟧", r"[\![ \begin{matrix} a \end{matrix} ]\!]"),
+        ("⌊", "⌋", r"\left\lfloor \begin{matrix} a \end{matrix} \right\rfloor"),
+        ("[", "", r"\left[ \begin{matrix} a \end{matrix} \right."),
+    ],
+)
+@pytest.mark.offline
+def test_matrix_without_a_named_environment_keeps_its_own_delimiters(
+    beg, end, expected
+):
+    # A named environment carries its own brackets, so choosing one for a
+    # delimiter it does not match asserts a glyph the author did not write -
+    # every pair here used to come out as bmatrix, and the one-sided case had
+    # a closing bracket invented for it.
     assert convert_omml_to_latex(_matrix(beg, end)) == expected
 
 

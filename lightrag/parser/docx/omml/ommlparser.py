@@ -369,15 +369,23 @@ class OMMLParser:
         elif "\\right" in end and "\\left" not in start:
             start = "\\left. " + start
         if is_matrix:
-            # Normalized above, so a fullwidth ( or | selects the same flavour
-            # as its ASCII counterpart instead of falling through to bmatrix.
+            # A named environment carries its own brackets, so one may only be
+            # chosen when the delimiters ARE those brackets. Normalized above,
+            # so a fullwidth ( or | selects the same flavour as its ASCII
+            # counterpart; 【 】 and 〔 〕 reach bmatrix the same way, through
+            # the square bracket they map to. Anything else - an angle, a
+            # floor, a one-sided pair - keeps the delimiters the author wrote
+            # around a plain matrix, rather than being told it is a bmatrix.
             if start_bracket == "(" and end_bracket == ")":
                 return text.replace("{matrix}", "{pmatrix}")
             elif start_bracket == "|" and end_bracket == "|":
                 return text.replace("{matrix}", "{vmatrix}")
             elif start_bracket == "‖" and end_bracket == "‖":
                 return text.replace("{matrix}", "{Vmatrix}")
-            else:
+            elif (
+                DELIMITER_MAP.get(start_bracket) == "["
+                and DELIMITER_MAP.get(end_bracket) == "]"
+            ):
                 return text.replace("{matrix}", "{bmatrix}")
         return start + text + end
 
