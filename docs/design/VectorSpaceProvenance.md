@@ -646,6 +646,40 @@ reason.
 Per *Consistency without transactions* in `AGENTS.md`, each of these is a
 decision with a recovery path, not an oversight.
 
+**Partial vector loss is invisible to this gate.** `is_empty()` answers only the
+total case: a container that lost 40% of its rows reads as non-empty and passes,
+serving degraded retrieval silently. This is a real cost of asking rather than
+sampling — the old 32-id sample caught a store that had lost 99% of its rows
+about half the time — and it is accepted because the case the gate exists for, a
+model change on a named-container backend, produces a *completely* empty
+container, never a partial one.
+
+The right home for the partial case is the offline
+`lightrag.tools.kg_integrity_repair` audit, which already enumerates the whole
+graph and already reports rather than refuses. It is deliberately not a startup
+check, for three reasons that compound:
+
+- **The counts are not supposed to be equal.** *Consistency without transactions*
+  in `AGENTS.md` explicitly accepts residues where one store retains an object
+  another dropped, and `PurgeRecoveryContract.md` enumerates them for merge and
+  rename. A count check would convert every documented accepted residue into a
+  startup refusal — contradicting a design decision rather than tightening one.
+- **Nothing can count.** `BaseKVStorage` has no count (only `get_by_id(s)` /
+  `filter_keys` / `is_empty`), `BaseGraphStorage` has no node or edge count
+  (`get_all_labels` / `get_all_edges` materialize everything), and
+  `BaseVectorStorage` has none either. Supplying them means a full graph scan on
+  every startup — precisely what `kg_integrity_repair` documents as
+  "deliberately OFFLINE-only; the ingestion/retry/delete/scan hot paths never do
+  this".
+- **A count mismatch is not a negative verdict** about the embedding space, which
+  is the only thing the governing invariant permits a refusal on. Three rows out
+  of 200,000 is noise, and separating noise from loss needs a threshold — a
+  tunable knob on a fail-closed gate is the thing that gets silenced.
+
+An audit can afford exact counts, can attribute a shortfall to specific documents
+through `source_id` → `text_chunks` → `full_doc_id`, and its output is advice
+rather than an outage.
+
 **Fold collision on Milvus / Qdrant / PostgreSQL.** The suffix lowercases and
 folds punctuation, so two models whose names differ only in case or punctuation
 share a container undetected. Accepted because a *harmful* collision needs two
