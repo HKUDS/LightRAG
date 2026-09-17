@@ -1178,28 +1178,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     them cannot be instantiated in the first place.
     """
 
-    rebuilding_vector_storage: bool = field(default=False)
-    """Declare that this instance exists to REPOPULATE the vector storages.
-
-    Startup normally refuses a vector storage that holds nothing while the graph
-    holds entities and at least one document is PROCESSED — the shape a changed
-    embedding model leaves on a backend that names its container after the model,
-    and equally the shape of a deleted vector file. An in-process rebuild starts
-    from exactly that state on purpose, so it has to say so.
-
-    Two callers need it, both of which own the repopulation that follows:
-    ``lightrag/tools/rebuild_vdb.py`` does not (it drives the storages directly
-    and never reaches this check), but a program that rebuilds through a
-    ``LightRAG`` instance does — including the supported switch from
-    ``NoopVectorDBStorage`` (graph-only ingestion) to a real vector backend.
-
-    Constructor-only, deliberately: there is no environment variable. A
-    fail-closed check whose bypass can be exported in a shell is a check an
-    operator silences at 3am and never revisits, and what it is silencing is a
-    deployment that answers every vector query with nothing. Declaring it in
-    code keeps the claim attached to the program that makes it true.
-    """
-
     max_pending_documents: int = field(
         default=get_env_value(
             "MAX_PENDING_DOCUMENTS",
@@ -1381,6 +1359,34 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     order is public API, and a field inserted mid-class silently rebinds every
     positional argument after it. Placing it next to its logical neighbour
     shifted 43 of them. See ``tests/test_dataclass_positional_compatibility.py``.
+    """
+
+    # Declared last for the same reason as the fields above: new fields go at
+    # the END of this dataclass, never mid-class. Placing this one next to the
+    # other startup-behaviour flags shifted 55 of the constructor's parameters.
+    # See ``tests/test_dataclass_positional_compatibility.py``.
+    rebuilding_vector_storage: bool = field(default=False)
+    """Declare that this instance exists to REPOPULATE the vector storages.
+
+    Startup normally refuses a vector storage that holds nothing while the graph
+    holds entities and at least one document is PROCESSED — the shape a changed
+    embedding model leaves on a backend that names its container after the
+    model, and equally the shape of a deleted vector file. An in-process rebuild
+    starts from exactly that state on purpose, so it has to say so.
+
+    ``lightrag/tools/rebuild_vdb.py`` does NOT need this: it drives the storages
+    directly and never reaches the check. A program that rebuilds through a
+    ``LightRAG`` instance does -- including the supported switch from
+    ``NoopVectorDBStorage`` (graph-only ingestion, which writes no vectors by
+    design) to a real vector backend.
+
+    Constructor-only, deliberately: there is no environment variable. A
+    fail-closed check whose bypass can be exported in a shell is one an operator
+    silences at 3am and never revisits, and what it silences is a deployment
+    that answers every vector query with nothing. Declaring it in code keeps the
+    claim attached to the program that makes it true.
+
+    See ``docs/design/VectorSpaceProvenance.md``.
     """
 
     def _mark_addon_params_dirty(self) -> None:
