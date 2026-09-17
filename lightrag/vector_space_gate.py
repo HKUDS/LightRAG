@@ -74,10 +74,10 @@ from lightrag.utils import compute_mdhash_id, logger
 # not sample at all; it asks ``is_empty()``.
 SAMPLE_SIZE = 32
 
-# How many graph objects to inspect for "no document produced this". Bounded
-# because it reads payloads rather than names, and sampling is sound here: a
-# miss only declines to refuse (see ``_nothing_will_heal``). Paid only on the
-# branch that was already about to exempt, never on a healthy start.
+# How many graph objects to trace back to their owning document. Bounded
+# because each one costs payload reads rather than names, and sampling is sound
+# here: a miss only declines to refuse (see ``_nothing_will_heal``). Paid only
+# on the branch that was already about to exempt, never on a healthy start.
 DOCUMENTLESS_SAMPLE_SIZE = 32
 
 # Adoption needs near-identity. The same model re-embedding the same text lands
@@ -346,64 +346,116 @@ async def _graph_has_edges(graph) -> bool:
             await aclose()
 
 
-def _has_document_source(source_id: Any) -> bool:
-    """Whether this ``source_id`` names a chunk a document actually produced.
+def _chunk_ids_of(source_id: Any) -> list[str]:
+    """The real chunk ids a graph object's ``source_id`` names, if any.
 
-    ``RELATION_NO_EVIDENCE_SOURCE_IDS`` is the repo's existing name for the
-    placeholders the admin writers stamp instead of a real chunk id
-    (``acreate_entity`` defaults ``source_id`` to ``"manual_creation"``), and an
-    empty field means the same thing. Reusing that set keeps one definition of
-    "no document behind this" rather than a second one that can drift.
+    Placeholders are dropped: ``RELATION_NO_EVIDENCE_SOURCE_IDS`` is the repo's
+    existing name for what the admin writers stamp instead of a chunk id
+    (``acreate_entity`` defaults to ``"manual_creation"``), and an empty field
+    means the same thing. Reusing that set keeps one definition rather than a
+    second that can drift.
     """
     if not isinstance(source_id, str):
-        return False
-    return any(
-        part.strip() and part.strip() not in RELATION_NO_EVIDENCE_SOURCE_IDS
+        return []
+    return [
+        part.strip()
         for part in source_id.split(GRAPH_FIELD_SEP)
-    )
+        if part.strip() and part.strip() not in RELATION_NO_EVIDENCE_SOURCE_IDS
+    ]
 
 
-async def _graph_has_documentless_nodes(graph, limit: int) -> bool:
-    """Whether the sample holds an entity no document produced."""
+async def _node_source_ids(graph, limit: int) -> list[Any]:
+    """``source_id`` of up to ``limit`` graph entities."""
     labels = await graph.get_popular_labels(limit=limit)
     if not labels:
-        return False
+        return []
     nodes = await graph.get_nodes_batch(list(labels))
-    return any(
-        isinstance(node, dict) and not _has_document_source(node.get("source_id"))
+    return [
+        node.get("source_id")
         for node in (nodes or {}).values()
-    )
+        if isinstance(node, dict)
+    ]
 
 
-async def _graph_has_documentless_edges(graph, limit: int) -> bool:
-    """Whether the first batch of edges holds a relation no document produced."""
+async def _edge_source_ids(graph, limit: int) -> list[Any]:
+    """``source_id`` of the first batch of graph relations."""
     iterator = graph.iter_edges(batch_size=limit)
     try:
         async for batch in iterator:
-            return any(
-                isinstance(edge, dict)
-                and not _has_document_source(edge.get("source_id"))
-                for edge in batch
-            )
-        return False
+            return [edge.get("source_id") for edge in batch if isinstance(edge, dict)]
+        return []
     finally:
         aclose = getattr(iterator, "aclose", None)
         if aclose is not None:
             await aclose()
 
 
-async def _nothing_will_heal(name: str, probe) -> bool:
+async def _is_owned_by_unfinished_doc(chunk_ids, text_chunks, doc_status) -> bool:
+    """Whether a retry of an unfinished document would rewrite these chunks.
+
+    The actual question behind the doc-status exemption. Resolved by following
+    the object's own trail -- ``source_id`` -> ``text_chunks`` -> ``full_doc_id``
+    -> ``doc_status`` -- rather than by guessing from the shape of the id, which
+    is what an earlier version did and got wrong twice:
+
+    * ``acreate_entity`` stamps the placeholder ``"manual_creation"``, so a
+      placeholder test caught it;
+    * but ``ainsert_custom_kg`` maps its entities onto the call's OWN chunks, so
+      their ``source_id`` is a real ``chunk-*`` id while the chunk's
+      ``full_doc_id`` names no doc-status row at all. A placeholder test reads
+      that as document-produced and hands it the exemption it must not get.
+
+    Following the trail settles both, and a third case the placeholder test
+    never reached: an object produced by a document that has FINISHED, in a
+    workspace where some OTHER document is unfinished. That document's retry
+    will not rewrite this object either.
+
+    Every read is bounded by the sample. Unreadable answers ``True`` -- "assume
+    a retry covers it" -- because only positive evidence may refuse.
+    """
+    if not chunk_ids:
+        # Placeholders only: no chunk, so no document, so no retry.
+        return False
+    if text_chunks is None or doc_status is None:
+        return True
+
+    rows = await text_chunks.get_by_ids(sorted(set(chunk_ids)))
+    doc_ids = {
+        row.get("full_doc_id")
+        for row in (rows or [])
+        if isinstance(row, dict) and row.get("full_doc_id")
+    }
+    if not doc_ids:
+        # Nothing came back. That is NOT evidence of an orphan: like every
+        # other read on these backends, ``BaseKVStorage.get_by_ids`` catches
+        # its transport errors and returns an empty list, so a cluster blip and
+        # a genuinely missing chunk arrive as the same value -- and reading it
+        # as "no document" would refuse a healthy deployment, the exact defect
+        # ``is_empty()`` exists to avoid on the vector side.
+        #
+        # This costs a miss, not a false refusal: an object whose chunk really
+        # is gone gets the exemption it should not have. The custom-KG case is
+        # unaffected, because those chunks EXIST and name a ``full_doc_id`` that
+        # has no doc-status row -- resolved below, not here.
+        return True
+
+    records = await doc_status.get_docs_by_ids(sorted(doc_ids), strict=True)
+    return any(
+        getattr(record, "status", None) is not DocStatus.PROCESSED
+        for record in (records or {}).values()
+    )
+
+
+async def _nothing_will_heal(name: str, probe, text_chunks, doc_status) -> bool:
     """Whether a retry provably cannot restore what is missing here.
 
-    Answers the one thing the doc-status exemption cannot: an unfinished
-    document explains missing vectors for the objects THAT document produces,
-    and nothing else. A workspace built with ``acreate_entity`` /
-    ``ainsert_custom_kg`` holds objects no document produced, and no pipeline
-    run will ever recreate them -- so letting an unrelated PENDING row excuse
-    their empty container leaves them permanently unretrievable.
+    Answers the one thing the doc-status COUNT cannot: that count is
+    workspace-wide, while an unfinished document only ever rewrites the objects
+    it produces. This resolves each sampled object to its owning document and
+    asks whether THAT document is unfinished.
 
     **Sampling is sound here, unlike for emptiness.** A sample that misses the
-    documentless object answers ``False``, which only declines to refuse -- the
+    unhealable object answers ``False``, which only declines to refuse -- the
     behaviour without this check at all. It can add refusals for what it finds,
     never remove one. ``is_empty()`` had the opposite exposure, which is why
     that one had to be asked rather than sampled.
@@ -413,12 +465,19 @@ async def _nothing_will_heal(name: str, probe) -> bool:
     if probe is None:
         return False
     try:
-        return await probe()
+        source_ids = await probe()
+        for source_id in source_ids:
+            owned = await _is_owned_by_unfinished_doc(
+                _chunk_ids_of(source_id), text_chunks, doc_status
+            )
+            if not owned:
+                return True
+        return False
     except Exception as e:
         logger.warning(
-            f"Could not tell whether {name} holds objects no document "
-            f"produced ({type(e).__name__}: {e}); treating the missing vectors "
-            f"as work a retry will heal"
+            f"Could not tell whether a retry would restore {name} "
+            f"({type(e).__name__}: {e}); treating the missing vectors as work "
+            f"a retry will heal"
         )
         return False
 
@@ -474,8 +533,13 @@ class _PairingGate:
     that branch, and never on the healthy path.
     """
 
-    def __init__(self, *, doc_status, expect_empty_vector_storage: bool) -> None:
+    def __init__(
+        self, *, doc_status, text_chunks=None, expect_empty_vector_storage: bool
+    ) -> None:
         self._doc_status = doc_status
+        # Held for the healability trail (source_id -> chunk -> document), not
+        # for the chunk pairing, which reads it through its own source probe.
+        self._text_chunks = text_chunks
         self._expect_empty = expect_empty_vector_storage
         self._vectors_expected: bool | None = None
 
@@ -537,7 +601,9 @@ class _PairingGate:
             # nothing else. When the source also holds objects no document
             # produced, no retry will recreate them, so the exemption does not
             # reach them and the refusal stands.
-            if not await _nothing_will_heal(source, no_healing_probe):
+            if not await _nothing_will_heal(
+                source, no_healing_probe, self._text_chunks, self._doc_status
+            ):
                 logger.warning(
                     f"The {name} vector storage holds no vectors while {source} "
                     f"is not empty, but this workspace has unfinished "
@@ -549,8 +615,8 @@ class _PairingGate:
             logger.warning(
                 f"The {name} vector storage holds no vectors while {source} is "
                 f"not empty. This workspace has unfinished documents, but it "
-                f"also holds objects no document produced (created through the "
-                f"admin API), which no pipeline run can recreate. Refusing."
+                f"also holds objects no unfinished document would rewrite, so "
+                f"no pipeline run can recreate their vectors. Refusing."
             )
 
         raise VectorStorageEmptyError(
@@ -718,6 +784,7 @@ async def check_vector_space_at_startup(
     """
     gate = _PairingGate(
         doc_status=doc_status,
+        text_chunks=text_chunks,
         expect_empty_vector_storage=expect_empty_vector_storage,
     )
 
@@ -734,9 +801,7 @@ async def check_vector_space_at_startup(
         source="the knowledge graph",
         vdb=entities_vdb,
         source_probe=lambda: _graph_has_nodes(graph),
-        no_healing_probe=lambda: _graph_has_documentless_nodes(
-            graph, DOCUMENTLESS_SAMPLE_SIZE
-        ),
+        no_healing_probe=lambda: _node_source_ids(graph, DOCUMENTLESS_SAMPLE_SIZE),
     )
 
     await gate.check(
@@ -744,9 +809,7 @@ async def check_vector_space_at_startup(
         source="the knowledge graph",
         vdb=relationships_vdb,
         source_probe=lambda: _graph_has_edges(graph),
-        no_healing_probe=lambda: _graph_has_documentless_edges(
-            graph, DOCUMENTLESS_SAMPLE_SIZE
-        ),
+        no_healing_probe=lambda: _edge_source_ids(graph, DOCUMENTLESS_SAMPLE_SIZE),
     )
 
     if entities_vdb is not None and getattr(entities_vdb, "persists_vectors", True):

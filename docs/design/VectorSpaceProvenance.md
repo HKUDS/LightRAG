@@ -503,17 +503,39 @@ any previously written vector makes the container non-empty, so only a first
 ingest crashing mid-way produces the shape at all — but the discriminator is
 kept, because that first-ingest case is real and heals by being retried.
 
-**The exemption is workspace-wide; the evidence it excuses is per-container.**
-An unfinished document explains the missing vectors for the objects *that*
-document produces, and nothing else. A workspace also holding objects no
-document produced — `acreate_entity` stamps `source_id = "manual_creation"`,
-`ainsert_custom_kg` likewise — would otherwise have an unrelated `PENDING` row
-excuse their empty container, and no pipeline run recreates them, so they stay
-unretrievable with nothing reporting it. So before the exemption is applied to a
-graph-sourced pairing, the gate samples graph objects (node payloads via
-`get_nodes_batch`, edge payloads from `iter_edges`) and refuses anyway if any
-names no real chunk — reusing `RELATION_NO_EVIDENCE_SOURCE_IDS`, the repo's
-existing name for those placeholders, rather than defining a second one.
+**The count is workspace-wide; what a retry rewrites is per-object.** An
+unfinished document only ever rewrites the objects *it* produces. So before the
+exemption is applied to a graph-sourced pairing, the gate samples graph objects
+(node payloads via `get_nodes_batch`, edge payloads from `iter_edges`) and
+follows each one's own trail:
+
+    source_id → text_chunks → full_doc_id → doc_status
+
+If any sampled object is **not** owned by an unfinished document, no retry will
+restore its vector and the refusal stands.
+
+The trail replaced a cheaper test — "does `source_id` look like a real chunk id,
+or like the `manual_creation` placeholder?" — which was wrong twice over:
+
+- `acreate_entity` does stamp the placeholder, so that test caught it;
+- but **`ainsert_custom_kg` maps its entities onto the call's own chunks**, so
+  their `source_id` is a real `chunk-*` id while the chunk's `full_doc_id` names
+  no doc-status row at all. The shape test read that as document-produced and
+  handed it the exemption it must not get.
+- and it never reached a third case: an object produced by a document that has
+  **finished**, in a workspace where some *other* document is unfinished. That
+  document's retry does not rewrite this object either.
+
+Following the trail settles all three, because it asks the actual question
+instead of inferring it from the shape of an id.
+
+**An empty chunk read is "cannot tell", not "orphan".** `BaseKVStorage.get_by_ids`
+catches its transport errors and returns an empty list, so a blip and a genuinely
+absent chunk arrive as the same value. Reading it as "no document owns this"
+would refuse a healthy deployment — the same defect `is_empty()` exists to avoid
+on the vector side. It is read as healable instead, which costs a miss rather
+than a false refusal. The custom-KG case is unaffected: those chunks *exist* and
+name a `full_doc_id` that doc-status has never heard of.
 
 **Sampling is sound here, unlike for emptiness**, and the asymmetry is the whole
 reason one is sampled and the other asked. A sample that misses the documentless

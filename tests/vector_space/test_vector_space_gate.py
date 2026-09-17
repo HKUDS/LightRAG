@@ -14,6 +14,7 @@ See docs/design/VectorSpaceProvenance.md.
 """
 
 import asyncio
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -95,10 +96,27 @@ class FakeGraph:
 class FakeDocStatus:
     """Doc-status with just the one question the gate asks."""
 
-    def __init__(self, processed=1, error=None, unfinished=0):
+    def __init__(self, processed=1, error=None, unfinished=0, doc_statuses=None):
         self._processed = processed
         self._error = error
         self._unfinished = unfinished
+        # Per-document status for the healability trail. Default: the document
+        # that owns the sampled chunks is itself unfinished, i.e. a retry
+        # WOULD rewrite those objects.
+        self._doc_statuses = (
+            dict(doc_statuses)
+            if doc_statuses is not None
+            else {"doc-1": DocStatus.PROCESSING}
+        )
+
+    async def get_docs_by_ids(self, doc_ids, *, strict=True):
+        if self._error is not None:
+            raise self._error
+        return {
+            doc_id: SimpleNamespace(id=doc_id, status=status)
+            for doc_id in doc_ids
+            if (status := self._doc_statuses.get(doc_id)) is not None
+        }
 
     async def count_docs_by_statuses(self, statuses, *, strict=True):
         if self._error is not None:
@@ -203,9 +221,13 @@ class FakeKVStorage:
     ``FakeVectorStorage.is_empty`` raises to match it.
     """
 
-    def __init__(self, *, rows=0, error=None):
+    def __init__(self, *, rows=0, error=None, chunk_owner="doc-1"):
         self._rows = rows
         self._error = error
+        # Which document each chunk row names. None models a chunk row that is
+        # gone, or one whose owning document was never recorded -- what
+        # ainsert_custom_kg leaves behind, since it writes no doc-status row.
+        self._chunk_owner = chunk_owner
         self.empty_reads = 0
 
     async def is_empty(self) -> bool:
@@ -213,6 +235,11 @@ class FakeKVStorage:
         if self._error is not None:
             return True  # what every real KV backend does on failure
         return self._rows == 0
+
+    async def get_by_ids(self, ids):
+        if self._chunk_owner is None:
+            return []
+        return [{"id": cid, "full_doc_id": self._chunk_owner} for cid in ids]
 
 
 def _entity_row(name="Alice", content="Alice is an engineer."):
@@ -524,6 +551,75 @@ class TestUnfinishedWorkExemption:
             )
 
         assert excinfo.value.vdb_name == "relationships"
+
+    async def test_a_custom_kg_object_sourced_to_a_real_chunk_still_refuses(self):
+        """``ainsert_custom_kg`` maps its entities onto the call's OWN chunks, so
+        their ``source_id`` is a real ``chunk-*`` id -- not a placeholder. But it
+        writes no doc-status row, so the chunk's ``full_doc_id`` names nothing a
+        retry will ever reprocess. A placeholder test read that as
+        document-produced and handed it the exemption."""
+        with pytest.raises(VectorStorageEmptyError) as excinfo:
+            await _run(
+                FakeGraph(labels=["Custom"], source_id="chunk-abc123"),
+                FakeVectorStorage(rows=[]),
+                FakeEmbedding(),
+                doc_status=FakeDocStatus(
+                    processed=5,
+                    unfinished=1,
+                    # The chunk names this document; doc_status has never heard
+                    # of it, which is exactly what ainsert_custom_kg leaves.
+                    doc_statuses={"doc-unrelated": DocStatus.PENDING},
+                ),
+                text_chunks=FakeKVStorage(rows=3, chunk_owner="custom-kg-doc"),
+            )
+
+        assert excinfo.value.vdb_name == "entities"
+
+    async def test_a_finished_document_is_not_healed_by_an_unrelated_pending_one(self):
+        """The workspace-wide count cannot see this: the sampled objects belong
+        to a document that has FINISHED, so the PENDING document's retry will
+        not rewrite them."""
+        with pytest.raises(VectorStorageEmptyError):
+            await _run(
+                FakeGraph(labels=["Alice"], source_id="chunk-1"),
+                FakeVectorStorage(rows=[]),
+                FakeEmbedding(),
+                doc_status=FakeDocStatus(
+                    processed=5,
+                    unfinished=1,
+                    doc_statuses={
+                        "doc-1": DocStatus.PROCESSED,
+                        "doc-other": DocStatus.PENDING,
+                    },
+                ),
+                text_chunks=FakeKVStorage(rows=3, chunk_owner="doc-1"),
+            )
+
+    async def test_an_object_owned_by_the_unfinished_document_is_exempt(self):
+        """The case the whole exemption exists for, now resolved by the trail
+        rather than by a workspace-wide count."""
+        await _run(
+            FakeGraph(labels=["Alice"], source_id="chunk-1"),
+            FakeVectorStorage(rows=[]),
+            FakeEmbedding(),
+            doc_status=FakeDocStatus(
+                processed=0,
+                unfinished=1,
+                doc_statuses={"doc-1": DocStatus.PROCESSING},
+            ),
+            text_chunks=FakeKVStorage(rows=3, chunk_owner="doc-1"),
+        )
+
+    async def test_an_unreadable_chunk_trail_keeps_the_exemption(self):
+        """A KV read that comes back empty is a swallowed transport error as
+        often as a real absence, so it must not be read as an orphan."""
+        await _run(
+            FakeGraph(labels=["Alice"], source_id="chunk-1"),
+            FakeVectorStorage(rows=[]),
+            FakeEmbedding(),
+            doc_status=FakeDocStatus(processed=5, unfinished=1),
+            text_chunks=FakeKVStorage(rows=3, chunk_owner=None),
+        )
 
     async def test_an_unreadable_node_payload_keeps_the_exemption(self):
         """Sampling is sound here ONLY because a miss declines to refuse. A
