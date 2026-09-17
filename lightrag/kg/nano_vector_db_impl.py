@@ -1232,6 +1232,54 @@ class NanoVectorDBStorage(BaseVectorStorage):
             await self._save_to_disk_locked(_committed)
             return True
 
+    async def vector_space_adoption_pending(self) -> bool:
+        """Whether this file holds rows whose embedding model is unrecorded.
+
+        Read straight off ``_vector_space_certified``, which ``_build_client``
+        already derived from the snapshot it loaded: it is ``False`` exactly
+        when the file had rows AND named no model, which is the transitional
+        state the adoption probe exists to resolve. An empty file certifies
+        itself, so it never reports pending -- there are no rows to
+        misdescribe, and the next save stamps it without any evidence.
+        """
+        return (
+            self._client is not None
+            and not self._vector_space_certified
+            and declared_model_name(self.embedding_func) is not None
+        )
+
+    async def adopt_vector_space(self) -> bool:
+        """Record this process's embedding model over the loaded snapshot.
+
+        Certification is flipped and the file rewritten immediately rather than
+        left to the next ordinary save, because a reader-only deployment may
+        never take one -- and because ``_reload_client_from_disk_locked``
+        re-derives certification from whatever snapshot it loads, so an
+        un-persisted verdict does not survive the first peer commit.
+
+        Never raises, per the base contract. A save this process cannot
+        complete leaves the file unmarked and certification set: the evidence
+        the probe gathered is about the rows, not about the disk, so the next
+        ordinary save still stamps them.
+        """
+        if declared_model_name(self.embedding_func) is None:
+            return False
+
+        async def _committed() -> None:
+            return None
+
+        async with self._storage_lock:
+            self._vector_space_certified = True
+            try:
+                await self._save_to_disk_locked(_committed)
+            except Exception as e:
+                logger.warning(
+                    f"[{self.workspace}] Could not record the embedding-space "
+                    f"marker in '{self._client_file_name}': {e}"
+                )
+                return False
+        return True
+
     @staticmethod
     def _format_record(dp: dict[str, Any]) -> dict[str, Any]:
         """Shape a stored/pending record into the public read result."""

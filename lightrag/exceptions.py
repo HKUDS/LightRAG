@@ -771,3 +771,61 @@ class VectorSpaceMismatchError(RuntimeError):
         self.expected_dim = expected_dim
         self.stored_model = stored_model
         self.stored_dim = stored_dim
+
+
+class VectorStorageEmptyError(RuntimeError):
+    """The knowledge graph holds entities and the vector storage holds none.
+
+    Raised at startup by the cross-storage gate in
+    ``LightRAG.initialize_storages()``. It is a *refusal to serve*: every
+    retrieval mode but ``naive`` would silently return nothing, which reads as
+    "no relevant context" rather than as a broken deployment.
+
+    Why it is not ``VectorSpaceMismatchError``: no vectors were written in
+    another embedding space, because there are no vectors at all. The
+    distinction is load-bearing for ``lightrag-rebuild-vdb``, which answers
+    that type by DROPPING the container -- pointless here, and a tool that
+    conflated the two would report a destruction it did not need to perform.
+    The remedy is the same rebuild, but it starts at the rebuild, not at a drop.
+
+    Milvus, Qdrant and PostgreSQL are the backends that reach this condition by
+    design: they encode the embedding model in the container NAME, so changing
+    the model provisions a NEW, EMPTY, correctly-named container instead of
+    refusing. No marker can fire there -- the new container is genuinely
+    theirs. This gate is what notices, and it also catches what no marker
+    could: a deleted vector file, a container emptied out of band, a rebuild
+    that was interrupted.
+
+    The condition self-clears. Once a rebuild populates the container the
+    question answers itself, which is why the gate asks it fresh at every
+    startup rather than recording anything.
+
+    Args:
+        vdb_name: the vector storage that came back empty, e.g. ``"entities"``.
+        container: the physical container, when the backend can name it.
+        sampled: how many graph entities were looked up.
+    """
+
+    def __init__(
+        self,
+        *,
+        vdb_name: str,
+        container: str | None = None,
+        sampled: int = 0,
+    ) -> None:
+        where = f" ('{container}')" if container else ""
+        message = (
+            f"The {vdb_name} vector storage{where} holds no vectors for any of "
+            f"{sampled} entities sampled from the knowledge graph. Serving this "
+            f"would return no context for every query mode that uses vectors. "
+            f"The usual cause is a changed embedding model or dimension: "
+            f"Milvus, Qdrant and PostgreSQL put the model in the container "
+            f"name, so a change provisions a new, empty one. Rebuild the vector "
+            f"storages from the knowledge graph with `lightrag-rebuild-vdb` "
+            f"(run it with this embedding configuration), or point this "
+            f"instance back at the previous embedding configuration."
+        )
+        super().__init__(message)
+        self.vdb_name = vdb_name
+        self.container = container
+        self.sampled = sampled

@@ -67,6 +67,7 @@ from ..constants import (
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 from ..kg.vector_space import (
     assert_vector_space_matches,
+    declared_model_name,
     read_vector_space_marker,
     vector_space_marker,
 )
@@ -6263,6 +6264,12 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         # this lock to keep in-process readers race-free during a flush and
         # to order cross-worker flushes against the same OpenSearch index.
         self._flush_lock = None
+        # Whether the index records an embedding model: True / False once
+        # ``_assert_index_is_usable`` has read the mapping, None while this is
+        # still unknown -- which includes an index THIS instance created, whose
+        # marker went in with the create body. Only an explicit False means
+        # there is something to adopt.
+        self._vector_space_marked: bool | None = None
         (
             self._max_upsert_payload_bytes,
             self._max_upsert_records_per_batch,
@@ -6305,6 +6312,67 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             if not self._index_ready:
                 await self._create_knn_index_if_not_exists()
                 self._index_ready = True
+
+    async def vector_space_adoption_pending(self) -> bool:
+        """Whether this index holds vectors whose embedding model is unrecorded.
+
+        ``_assert_index_is_usable`` records the answer from the mapping it
+        already read at attach, so this asks the cluster nothing.
+
+        Unlike the file backends, an *empty* unmarked index also reports
+        pending: nothing here writes the marker outside ``indices.create``, so
+        emptiness cannot mark itself. The probe then finds no sample and lands
+        inconclusive, which leaves the index exactly where it was and costs one
+        retry per start until rows arrive. Accepted rather than special-cased,
+        because an unmarked index that is also empty only exists where a
+        pre-marker deployment created one and never wrote to it.
+        """
+        return (
+            self._vector_space_marked is False
+            and declared_model_name(self.embedding_func) is not None
+        )
+
+    async def adopt_vector_space(self) -> bool:
+        """Record this process's embedding model in the index ``_meta``.
+
+        ``put_mapping`` replaces ``_meta`` wholesale, so the existing keys are
+        merged rather than overwritten -- dropping them would strip the
+        workspace identity that ``_claim_index_for_workspace`` depends on and
+        hand the index to any folding-equivalent deployment.
+
+        Never raises, per the base contract, and for the reason
+        ``_claim_index_for_workspace`` already gives: a read-only account, a
+        restored snapshot or ``index.blocks.write`` must not turn a safeguard
+        into a startup failure. The index simply stays unmarked, which is
+        where every index was before this feature existed.
+        """
+        if declared_model_name(self.embedding_func) is None:
+            return False
+        try:
+            mapping = await self.client.indices.get_mapping(index=self._index_name)
+            await self.client.indices.put_mapping(
+                index=self._index_name,
+                body={
+                    "_meta": {
+                        **_index_meta(mapping, self._index_name),
+                        **vector_space_marker(self.embedding_func),
+                    }
+                },
+            )
+        except Exception as e:
+            logger.warning(
+                f"[{self.workspace}] Could not record the embedding-space marker "
+                f"on index '{self._index_name}' ({e}); it stays unmarked, so a "
+                f"later swap to a different model of the same dimension cannot "
+                f"be detected"
+            )
+            return False
+        self._vector_space_marked = True
+        logger.info(
+            f"[{self.workspace}] Adopted pre-existing index '{self._index_name}' "
+            f"for embedding model '{declared_model_name(self.embedding_func)}'"
+        )
+        return True
 
     def _mark_index_missing(self):
         """Mark the vector index as unavailable for subsequent read short-circuiting.
@@ -6365,6 +6433,9 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             stored_model=stored_model,
             stored_dim=mapping_dim if mapping_dim is not None else marker_dim,
         )
+        # Remembered from the mapping already in hand so
+        # ``vector_space_adoption_pending`` costs no round trip of its own.
+        self._vector_space_marked = stored_model is not None
 
     async def _recheck_index_presence(self) -> None:
         """Lift a stale missing-index mark when OUR index is back. Never creates.

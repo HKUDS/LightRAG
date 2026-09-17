@@ -58,6 +58,7 @@ from .._version import __version__
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 from ..kg.vector_space import (
     assert_vector_space_matches,
+    declared_model_name,
     read_vector_space_marker,
     vector_space_marker,
 )
@@ -4282,6 +4283,12 @@ class MongoVectorDBStorage(BaseVectorStorage):
         self.cosine_better_than_threshold = cosine_threshold
         self._collection_name = self.final_namespace
         self._max_batch_size = self.global_config["embedding_batch_num"]
+        # Whether the collection records an embedding model: True / False once
+        # ``_assert_collection_is_usable`` has read the validator, None while
+        # this is still unknown -- which includes a collection THIS instance
+        # created, whose marker went in with the create. Only an explicit False
+        # means there is something to adopt.
+        self._vector_space_marked: bool | None = None
 
         # Flush-time batching limits (see module-level DEFAULT_MONGO_* constants).
         # A non-positive value disables that splitting dimension. The upsert and
@@ -4367,6 +4374,50 @@ class MongoVectorDBStorage(BaseVectorStorage):
             stored_model=stored_model,
             stored_dim=index_dim if index_dim is not None else marker_dim,
         )
+        # Remembered from the validator already read, so
+        # ``vector_space_adoption_pending`` costs no round trip of its own.
+        self._vector_space_marked = stored_model is not None
+
+    async def vector_space_adoption_pending(self) -> bool:
+        """Whether this collection holds documents whose model is unrecorded.
+
+        ``_assert_collection_is_usable`` records the answer from the validator
+        it already read at attach, so this asks Mongo nothing.
+
+        Unlike the file backends, an *empty* unmarked collection also reports
+        pending: nothing here writes the marker outside collection creation and
+        ``drop()``, so emptiness cannot mark itself. The probe then finds no
+        sample and lands inconclusive, which leaves the collection exactly
+        where it was. Accepted rather than special-cased -- an unmarked
+        collection that is also empty only exists where a pre-marker
+        deployment created one and never wrote to it.
+        """
+        return (
+            self._vector_space_marked is False
+            and declared_model_name(self.embedding_func) is not None
+        )
+
+    async def adopt_vector_space(self) -> bool:
+        """Record this process's embedding model in the collection validator.
+
+        Never raises, per the base contract. ``_record_vector_space_marker``
+        already reports a denied ``collMod`` rather than raising it, and here
+        that denial is unambiguously benign: this path runs only over a
+        collection recording NO model, so a failed write leaves it unmarked --
+        where every collection was before this feature existed. (The drop path
+        cannot say that, which is why it inspects the result instead.)
+        """
+        if declared_model_name(self.embedding_func) is None:
+            return False
+        if not await self._record_vector_space_marker():
+            return False
+        self._vector_space_marked = True
+        logger.info(
+            f"[{self.workspace}] Adopted pre-existing collection "
+            f"'{self._collection_name}' for embedding model "
+            f"'{declared_model_name(self.embedding_func)}'"
+        )
+        return True
 
     async def _read_search_index_dimension(self) -> int | None:
         """``numDimensions`` of the Atlas vector index, or ``None``.

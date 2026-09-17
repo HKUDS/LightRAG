@@ -396,6 +396,108 @@ enumerate sibling containers per backend, or ask the cross-storage question,
 - It also catches what a marker cannot: a deleted vector file, a container
   emptied out of band, an interrupted rebuild.
 
+### What makes an empty container a defect
+
+"The vector store is empty while the graph is not" is *not* by itself a
+refusal, and the first implementation that treated it that way broke two
+existing pipeline tests — correctly. A graph ahead of its vector store is a
+routine, self-healing residue: an ingest interrupted before its vector flush, a
+batch that failed and will be retried, a graph built through the admin API.
+`AGENTS.md` *Consistency without transactions* says such a state must not be
+escalated, and escalating it here refuses to start the very process whose next
+run repairs it.
+
+The discriminator is **doc-status**: the gate refuses only when at least one
+document is `PROCESSED`. That status is the pipeline's own claim that it wrote
+everything that document produces, vectors included, so it is what turns a
+missing vector from work-in-flight into a defect. Consulted only when the
+sample comes back empty, so the healthy path pays nothing for it, and a
+doc-status backend that cannot be read answers "do not refuse" — it is the last
+question asked before a refusal, and an unread answer is not evidence.
+
+### How "empty" is measured
+
+`lightrag/vector_space_gate.py` asks the graph for up to `SAMPLE_SIZE` (32)
+entities via `get_popular_labels`, turns each into its vector id
+(`compute_mdhash_id(label, prefix="ent-")`), and looks all of them up in
+`entities_vdb` in one `get_by_ids`. The gate refuses only when **not one** of
+them has a row.
+
+`get_popular_labels` rather than `iter_labels`: it is implemented by every
+graph backend (`iter_labels` fails closed where it was never added), it is
+bounded by construction, and ranking by degree biases the sample towards
+entities that certainly exist — the base contract warns that a backend MAY
+surface a label with edges but no node document, and such an artifact would
+never have been embedded.
+
+Sampling rather than a new `is_empty()` on `BaseVectorStorage`: a store that
+still holds half its rows survives 32 lookups with probability 2⁻³², while one
+that has lost 99% of them is caught about half the time — and being caught is
+the right answer there too. It costs one graph query and one batched read per
+startup, and no backend has to grow a method.
+
+One shape had to be handled explicitly. The backends **disagree on what a miss
+looks like**: `BaseVectorStorage.get_by_ids` documents "the objects that were
+found" and most return a compacted list, but `NanoVectorDBStorage` returns one
+entry per requested id, positionally, with `None` where the row is absent.
+Counting the list rather than the rows would read `[None, None, None]` as a
+populated store — the difference between catching a vanished vector store and
+starting on top of one.
+
+### What the probe's verdict bands mean
+
+The probe re-embeds one stored `content` and compares it with the vector stored
+beside it. Three outcomes, not two:
+
+| cosine | verdict |
+| --- | --- |
+| ≥ `ADOPT_COSINE` (0.95) | adopt — the marker is recorded |
+| ≤ `REFUSE_COSINE` (0.70) | refuse — `VectorSpaceMismatchError` |
+| between the two | **inconclusive** — no marker, no refusal, logged |
+
+The band exists because the governing invariant is *only a probe that returned
+a **negative** verdict may refuse*, and a middling cosine is not one. The same
+model re-embedding the same text lands at ~1.0 and a different model at 0.0–0.5,
+so the band is empty in practice; what it protects against is the cases where
+it is not — an unusually short `content`, a provider that silently truncated, a
+fine-tune of the same base model. Failing a live deployment closed on that
+evidence is worse than leaving the container where it already was.
+
+Two further rules the module keeps:
+
+- **A comparison that cannot be made is `None`, never `0.0`.** A length
+  mismatch, a zero-magnitude vector or a non-finite value all mean the
+  comparison says nothing — and `0.0` is the strongest possible evidence of a
+  changed model, so spelling it that way would refuse on silence.
+- **Nothing but the two typed refusals escapes.** An unreachable graph backend,
+  a vector store that errors on a read, a marker that cannot be written: none is
+  evidence about the embedding space, and none was a startup failure before this
+  check existed.
+
+### The adoption surface
+
+Two optional methods on `BaseVectorStorage`, both defaulting to the answer the
+named-container backends need (`False`), so Milvus, Qdrant and PostgreSQL are
+untouched:
+
+- `vector_space_adoption_pending()` — "this container records no model, AND
+  this process can name one". Answered from state `initialize()` already
+  computed, so it costs no round trip, and a process with no `model_name`
+  answers `False`: it has nothing to record, so inviting a probe would buy
+  evidence nobody can act on. An *empty* container never reports pending —
+  Nano and FAISS mark it themselves, without evidence, because there are no
+  vectors to misdescribe.
+- `adopt_vector_space()` — records the marker. **MUST NOT raise.** A read-only
+  account, a denied `collMod`, a full disk: all leave the container unmarked,
+  which is where every container was before this feature existed. Returning
+  `False` costs one more probe next start; raising would turn a safety feature
+  into an outage.
+
+`initialize_storages()` probes `entities_vdb` because the graph's own ids
+address it directly, then adopts every pending storage: the three share one
+`embedding_func` and were written by the same deployment, so one probe settles
+all three.
+
 ## Accepted residues
 
 Per *Consistency without transactions* in `AGENTS.md`, each of these is a
@@ -443,4 +545,4 @@ Each row lands with its own change; a row is only true once that change is in.
 | PR 3 | MongoDB | marker in the JSON Schema validator `description`; `drop()` must rewrite that description and rebuild the Atlas search index when the DIMENSION changed (the index definition records a dimension and nothing else, so a same-dimension model change leaves a usable index) |
 | PR 4 / 5 | FAISS, Nano | marker in a `.space.json` sidecar / `additional_data`; move the refusal out of `__post_init__` so the object survives it and stays droppable |
 | PR 6 / 7 / 8 | Milvus, Qdrant, PostgreSQL | no marker. Replace the legacy-path `DataMigrationError` with the typed refusal so the tool can tolerate it, and make a refused instance drop-capable (Qdrant and PostgreSQL assign `_flush_lock` *after* their init block, the same shape as the OpenSearch bug) — see *The named-container backends' refusal* |
-| gate | — | the empty-container gate and the adoption probe in `LightRAG.initialize_storages()` |
+| PR 9 | — | the empty-container gate and the adoption probe in `LightRAG.initialize_storages()`, plus the two-method adoption surface on `BaseVectorStorage` and its implementations on the four marker backends — see *The empty-container gate* |

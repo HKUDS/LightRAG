@@ -478,3 +478,113 @@ async def test_faiss_refuses_to_publish_beside_a_contradicting_marker(tmp_path):
     ):
         with pytest.raises(VectorSpaceMismatchError, match="'bge-m3' -> 'e5-large'"):
             await storage.index_done_callback()
+
+
+# ---------------------------------------------------------------------------
+# Adoption: ending the silence on a container written before the marker
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.asyncio
+async def test_a_legacy_store_reports_adoption_pending(backend, tmp_path):
+    """A store with rows but no recorded model is the transitional state.
+
+    Left alone it stays that way forever -- *absent evidence never refuses*
+    means the silence cannot end by itself.
+    """
+    await _seed(backend, tmp_path, _Embed(None, 8))
+
+    storage = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    await storage.initialize()
+
+    assert await storage.vector_space_adoption_pending() is True
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.asyncio
+async def test_a_marked_store_reports_nothing_pending(backend, tmp_path):
+    """Once recorded, the probe never runs again -- the cost is zero forever."""
+    await _seed(backend, tmp_path, _Embed("bge-m3", 8))
+
+    storage = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    await storage.initialize()
+
+    assert await storage.vector_space_adoption_pending() is False
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.asyncio
+async def test_an_empty_store_is_never_pending(backend, tmp_path):
+    """It certifies itself: there are no rows to misdescribe, so it needs no
+    evidence from one layer up."""
+    storage = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    await storage.initialize()
+
+    assert await storage.vector_space_adoption_pending() is False
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.asyncio
+async def test_a_process_with_no_model_has_nothing_to_adopt(backend, tmp_path):
+    """Pending must mean "someone can act on this". A process that cannot name
+    its own model would otherwise invite a probe no one can use the result of.
+    """
+    await _seed(backend, tmp_path, _Embed(None, 8))
+
+    storage = backend.storage(tmp_path, _Embed(None, 8))
+    await storage.initialize()
+
+    assert await storage.vector_space_adoption_pending() is False
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.asyncio
+async def test_adoption_records_the_model_and_ends_the_silence(backend, tmp_path):
+    """The payoff: after adoption a same-dimension swap is finally refused.
+
+    Before it, the peer below attaches happily and serves the previous model's
+    neighbours -- which is the whole defect issue #3978 is about.
+    """
+    await _seed(backend, tmp_path, _Embed(None, 8))
+    assert backend.read_marker(tmp_path) == (None, 8)
+
+    storage = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    await storage.initialize()
+    assert await storage.adopt_vector_space() is True
+    assert backend.read_marker(tmp_path) == ("bge-m3", 8)
+
+    peer = backend.storage(tmp_path, _Embed("e5-large", 8))
+    with pytest.raises(VectorSpaceMismatchError):
+        await peer.initialize()
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.asyncio
+async def test_adoption_survives_a_reattach(backend, tmp_path):
+    """The marker has to be on DISK, not just in the adopting process: the
+    next start is what has to see it."""
+    await _seed(backend, tmp_path, _Embed(None, 8))
+
+    storage = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    await storage.initialize()
+    await storage.adopt_vector_space()
+
+    reattached = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    await reattached.initialize()
+    assert await reattached.vector_space_adoption_pending() is False
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.asyncio
+async def test_adoption_keeps_the_rows_readable(backend, tmp_path):
+    """Adoption is metadata. It must not disturb, reorder or drop a single row."""
+    await _seed(backend, tmp_path, _Embed(None, 8))
+
+    storage = backend.storage(tmp_path, _Embed("bge-m3", 8))
+    await storage.initialize()
+    await storage.adopt_vector_space()
+
+    rows = await storage.get_by_ids(["v1"])
+    assert [row["id"] for row in rows] == ["v1"]
+    assert rows[0]["content"] == "hello"

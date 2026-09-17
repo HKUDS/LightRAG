@@ -166,6 +166,7 @@ from lightrag.utils_pipeline import (
     require_doc_status_record,
 )
 from lightrag.constants import GRAPH_FIELD_SEP, RELATION_NO_EVIDENCE_SOURCE_IDS
+from lightrag.vector_space_gate import check_vector_space_at_startup
 from lightrag.exceptions import (
     ADMIN_WRITE_LOCK_BUSY_PREFIX,
     ADMIN_WRITE_PIPELINE_BUSY_PREFIX,
@@ -2032,6 +2033,35 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 self.doc_status,
                 require=bool(self.pipeline_require_strict_storage_reads),
             )
+
+            # The two checks no single storage can make for itself: the graph
+            # holds entities while the vector store holds none (a model change
+            # on a backend that names its container after the model), and an
+            # unmarked container that has to be adopted before its silence can
+            # end. Deliberately NOT in a backend's initialize(): it takes the
+            # graph and a vector store together, and `lightrag-rebuild-vdb`
+            # drives the storages directly, so the tool that FIXES these
+            # conditions is never blocked by them.
+            # See docs/design/VectorSpaceProvenance.md.
+            if (
+                self.entities_vdb is not None
+                and self.chunk_entity_relation_graph is not None
+            ):
+                await check_vector_space_at_startup(
+                    graph=self.chunk_entity_relation_graph,
+                    entities_vdb=self.entities_vdb,
+                    doc_status=self.doc_status,
+                    embedding_func=self.embedding_func,
+                    adoptable=[
+                        vdb
+                        for vdb in (
+                            self.entities_vdb,
+                            self.relationships_vdb,
+                            self.chunks_vdb,
+                        )
+                        if vdb is not None
+                    ],
+                )
 
             self._storages_status = StoragesStatus.INITIALIZED
             logger.debug("All storage types initialized")
