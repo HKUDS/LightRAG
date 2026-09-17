@@ -97,6 +97,19 @@ free, because neither call site rejects a colliding keyword the way a literal
 call expression does -- both build their kwargs as a single dict before the
 call.
 
+## Binding support
+
+Reaching a binding is not the same as that binding doing something with the
+extra kwargs: `openai_complete_if_cache` already forwards unrecognized
+kwargs to the chat completion call, but `openai_embed` had a closed
+parameter list and raised `TypeError` on anything else -- so
+`extra_embedding_kwargs` reached the queue and the binding call correctly,
+and still failed, until `openai_embed` gained a `**kwargs` passthrough to
+the embeddings API call. `azure_openai_embed` wraps `openai_embed.func`
+with its own separate, still-closed parameter list and does not yet forward
+extra kwargs. Any other binding not audited here should be assumed closed
+until checked.
+
 ## Rejected alternative
 
 Extending `RoleLLMConfig` (`lightrag/llm_roles.py`) to carry this instead was
